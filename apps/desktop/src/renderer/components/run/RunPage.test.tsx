@@ -399,6 +399,76 @@ describe("RunPage Advanced lane runtime drawer", () => {
     expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-run:pty-run");
   });
 
+  it("reveals and selects a terminal started from a group run event", async () => {
+    const { handlers } = installAdeStub();
+    const group = { id: "group-dev", name: "Dev" };
+    const definitions = [
+      {
+        id: "proc-1",
+        name: "API",
+        command: ["npm", "run", "api"],
+        cwd: ".",
+        env: {},
+        groupIds: [group.id],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" as const },
+      },
+      {
+        id: "proc-2",
+        name: "Web",
+        command: ["npm", "run", "web"],
+        cwd: ".",
+        env: {},
+        groupIds: [group.id],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" as const },
+      },
+    ];
+    const ade = (window as unknown as { ade: {
+      projectConfig: { get: ReturnType<typeof vi.fn> };
+      processes: { listDefinitions: ReturnType<typeof vi.fn>; startGroup: ReturnType<typeof vi.fn> };
+    } }).ade;
+    ade.projectConfig.get.mockResolvedValue({
+      effective: { processGroups: [group] },
+      shared: { processGroups: [group], processes: definitions },
+      local: { processGroups: [], processes: [] },
+    });
+    ade.processes.listDefinitions.mockResolvedValue(definitions);
+    ade.processes.startGroup.mockResolvedValue(undefined);
+
+    render(<RunPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /Dev\s*2/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run all/i }));
+
+    await waitFor(() => {
+      expect(ade.processes.startGroup).toHaveBeenCalledWith({
+        groupId: "group-dev",
+        laneByProcessId: { "proc-1": "lane-a", "proc-2": "lane-a" },
+      });
+    });
+
+    await act(async () => {
+      handlers.process?.({
+        type: "runtime",
+        runtime: {
+          ...baseRuntime,
+          runId: "run-2",
+          processId: "proc-2",
+          sessionId: "terminal-group",
+          ptyId: "pty-group",
+        },
+      });
+    });
+
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-group:pty-group");
+  });
+
   it("keeps the project root cwd when saving a new command", async () => {
     const ade = (window as unknown as {
       ade: {

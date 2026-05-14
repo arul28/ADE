@@ -207,11 +207,11 @@ function LanesNavCapture() {
   return <div data-testid="lanes-nav">{`${loc.pathname}${loc.search}`}</div>;
 }
 
-function renderFilesPage(initialState?: Record<string, unknown>) {
+function renderFilesPage(initialState?: Record<string, unknown>, props?: React.ComponentProps<typeof FilesPage>) {
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/files", state: initialState }]}>
       <Routes>
-        <Route path="/files" element={<FilesPage />} />
+        <Route path="/files" element={<FilesPage {...props} />} />
         <Route path="/lanes" element={<LanesNavCapture />} />
       </Routes>
     </MemoryRouter>,
@@ -554,6 +554,41 @@ describe("FilesPage", () => {
     expect(await screen.findByText(/PREVIEW UNAVAILABLE/i)).toBeTruthy();
     expect(screen.getByText(/too large to display inline/i)).toBeTruthy();
     expect(screen.queryByTestId("mock-monaco-editor")).toBeNull();
+  });
+
+  it("stacks merge conflict panes when Files is embedded in a narrow Work drawer", async () => {
+    fileContents["src/index.ts"] = [
+      "export function title() {",
+      "<<<<<<< HEAD",
+      "  return \"ours\";",
+      "=======",
+      "  return \"theirs\";",
+      ">>>>>>> feature",
+      "}",
+      "",
+    ].join("\n");
+
+    renderFilesPage(
+      {
+        openFilePath: "src/index.ts",
+        preferPrimaryWorkspace: true,
+      },
+      { embedded: true },
+    );
+
+    await waitForEditorText("<<<<<<< HEAD");
+    fireEvent.click(screen.getByRole("button", { name: "MERGE" }));
+
+    const layout = await screen.findByTestId("files-conflict-layout");
+    expect(layout.getAttribute("data-layout")).toBe("stacked");
+    expect(layout.className).toContain("flex-col");
+    expect(layout.style.gridTemplateColumns).toBe("");
+
+    const hunks = screen.getByTestId("files-conflict-hunks");
+    expect(hunks.style.maxHeight).toBe("42%");
+    const mergeEditor = screen.getAllByRole("textbox")
+      .find((node): node is HTMLTextAreaElement => node instanceof HTMLTextAreaElement);
+    expect(mergeEditor?.value).toContain("<<<<<<< HEAD");
   });
 
   it("remaps clean open tabs when files are renamed", async () => {

@@ -2012,8 +2012,26 @@ export function FilesPage({
                 </div>
               )
             ) : (
-              <div className="grid h-full" style={{ gridTemplateColumns: "300px 1fr" }}>
-                <div style={{ padding: 12, borderRight: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+              <div
+                data-testid="files-conflict-layout"
+                data-layout={embedded ? "stacked" : "split"}
+                className={cn(
+                  "h-full min-h-0 min-w-0",
+                  embedded ? "flex flex-col" : "grid",
+                )}
+                style={embedded ? undefined : { gridTemplateColumns: "minmax(220px, 300px) minmax(0, 1fr)" }}
+              >
+                <div
+                  data-testid="files-conflict-hunks"
+                  className="min-h-0 min-w-0 overflow-auto"
+                  style={{
+                    padding: 12,
+                    borderRight: embedded ? "none" : `1px solid ${COLORS.border}`,
+                    borderBottom: embedded ? `1px solid ${COLORS.border}` : "none",
+                    background: COLORS.cardBg,
+                    maxHeight: embedded ? "42%" : undefined,
+                  }}
+                >
                   <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
                     <span style={{ ...LABEL_STYLE }}>CONFLICT HUNKS</span>
                     <span style={inlineBadge(
@@ -2067,7 +2085,7 @@ export function FilesPage({
                     ) : null}
                   </div>
                 </div>
-                <div className="h-full">
+                <div className="h-full min-h-0 min-w-0 flex-1">
                   <textarea
                     value={activeTab?.content ?? ""}
                     onChange={(e) => {
@@ -2075,7 +2093,7 @@ export function FilesPage({
                       setOpenTabs((prev) => prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab)));
                     }}
                     style={{
-                      height: "100%", width: "100%", resize: "none", padding: 12,
+                      height: "100%", width: "100%", minWidth: 0, resize: "none", padding: 12,
                       fontFamily: MONO_FONT, fontSize: 12, outline: "none",
                       background: COLORS.recessedBg, color: COLORS.textPrimary, border: "none",
                     }}
@@ -2093,7 +2111,8 @@ export function FilesPage({
     searchQuery, inlineRenameRequest, selectedTreeNodePath, conflictHunks, editorTheme, editorModeHint,
     resolvedConflictKeys, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate,
-    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo
+    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo,
+    embedded
   ]);
 
   const renderPane = useCallback((paneId: keyof typeof paneConfigs) => {
@@ -2120,7 +2139,7 @@ export function FilesPage({
             background: "linear-gradient(180deg, color-mix(in srgb, var(--color-fg) 2%, transparent), transparent)",
           }}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {Icon ? <Icon size={14} weight="fill" style={{ color: COLORS.accent }} /> : null}
             <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textSecondary }}>
               {config.title.toUpperCase()}
@@ -2135,7 +2154,7 @@ export function FilesPage({
               </span>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex min-w-0 shrink items-center justify-end gap-2 overflow-x-auto">
             {config.headerActions}
           </div>
         </div>
