@@ -164,13 +164,30 @@ function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
 
-function defaultFilesWorkspaceId(workspaces: FilesWorkspace[], preferredLaneId: string | null): string {
+function defaultFilesWorkspaceId(
+  workspaces: FilesWorkspace[],
+  preferredLaneId: string | null,
+  unavailableWorkspaceIds: ReadonlySet<string> = new Set(),
+): string {
+  const availableWorkspaces = workspaces.filter((workspace) => !unavailableWorkspaceIds.has(workspace.id));
   if (preferredLaneId) {
-    const laneWorkspace = workspaces.find((workspace) => workspace.kind !== "primary" && workspace.laneId === preferredLaneId)
-      ?? workspaces.find((workspace) => workspace.laneId === preferredLaneId);
+    const laneWorkspace = availableWorkspaces.find((workspace) => workspace.kind !== "primary" && workspace.laneId === preferredLaneId)
+      ?? availableWorkspaces.find((workspace) => workspace.laneId === preferredLaneId);
     if (laneWorkspace) return laneWorkspace.id;
   }
-  return workspaces[0]?.id ?? "";
+  return availableWorkspaces[0]?.id ?? workspaces[0]?.id ?? "";
+}
+
+function formatFilesError(err: unknown, fallback = "File operation failed."): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim() || fallback;
+}
+
+function isMissingWorkspaceRootError(message: string): boolean {
+  return /(?:ENOENT|no such file or directory|worktree is missing|workspace is missing)/i.test(message);
 }
 
 function touchFilesPageSession(sessionKey: string): void {
@@ -522,6 +539,7 @@ export function FilesPage({
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
+  const [unavailableWorkspaceIds, setUnavailableWorkspaceIds] = useState<Set<string>>(() => new Set());
   const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(initialSession?.allowPrimaryEdit ?? false);
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -815,15 +833,19 @@ export function FilesPage({
     return nodeByComparablePath.get(normalizePathForWorkspaceComparison(selectedNodePath, workspaceComparisonRoot))?.path ?? null;
   }, [nodeByComparablePath, selectedNodePath, workspaceComparisonRoot]);
   const activeContextPath = contextMenu?.nodePath ?? selectedTreeNodePath ?? activeTabPath;
-  const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
+  const laneWorkspaces = useMemo(
+    () => workspaces.filter((ws) => ws.kind !== "primary" && !unavailableWorkspaceIds.has(ws.id)),
+    [unavailableWorkspaceIds, workspaces],
+  );
   const suggestedLaneWorkspace = useMemo(() => {
+    if (unavailableWorkspaceIds.size > 0) return null;
     if (!laneWorkspaces.length) return null;
     if (selectedLaneId) {
       const fromSelectedLane = laneWorkspaces.find((ws) => ws.laneId === selectedLaneId);
       if (fromSelectedLane) return fromSelectedLane;
     }
     return laneWorkspaces[0] ?? null;
-  }, [laneWorkspaces, selectedLaneId]);
+  }, [laneWorkspaces, selectedLaneId, unavailableWorkspaceIds]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.files.page_mount");
@@ -917,6 +939,13 @@ export function FilesPage({
       }
       if (!parentPath) {
         setTree(nodes);
+        setError(null);
+        setUnavailableWorkspaceIds((prev) => {
+          if (!prev.has(workspaceId)) return prev;
+          const next = new Set(prev);
+          next.delete(workspaceId);
+          return next;
+        });
         return;
       }
 
@@ -928,16 +957,30 @@ export function FilesPage({
         });
       setTree((prev) => merge(prev));
     } catch (err) {
+      const message = formatFilesError(err);
       if (isRootRefresh) {
         logRendererDebugEvent("renderer.files.refresh_tree.failed", {
           workspaceId,
           durationMs: Math.round(performance.now() - startedAt),
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
         });
       }
-      setError(err instanceof Error ? err.message : String(err));
+      const primaryWorkspace = activeWorkspace?.kind !== "primary"
+        ? workspaces.find((workspace) => workspace.kind === "primary")
+        : null;
+      if (isRootRefresh && primaryWorkspace && primaryWorkspace.id !== workspaceId && isMissingWorkspaceRootError(message) && !hasUnsavedTabs) {
+        setUnavailableWorkspaceIds((prev) => new Set(prev).add(workspaceId));
+        setTree([]);
+        setExpanded(new Set());
+        setSelectedNodePath(null);
+        setOpenTabs([]);
+        setActiveTabPath(null);
+        setWorkspaceId(primaryWorkspace.id);
+        return;
+      }
+      setError(message);
     }
-  }, [workspaceId]);
+  }, [activeWorkspace?.kind, hasUnsavedTabs, workspaceId, workspaces]);
 
   refreshTreeNowRef.current = refreshTreeNow;
 
@@ -1256,7 +1299,7 @@ export function FilesPage({
             setActiveTabPath(null);
             setSelectedNodePath(null);
           }
-          return defaultFilesWorkspaceId(items, selectedLaneId);
+          return defaultFilesWorkspaceId(items, selectedLaneId, unavailableWorkspaceIds);
         });
       })
       .catch((err) => {
@@ -1273,7 +1316,7 @@ export function FilesPage({
   // Reconcile the active workspace when the preferred lane changes (without refetching).
   useEffect(() => {
     if (!preferredLaneId || !workspaces.length) return;
-    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId, unavailableWorkspaceIds);
     if (!nextWorkspaceId) return;
     setWorkspaceId((current) => {
       if (current === nextWorkspaceId) return current;
@@ -1286,13 +1329,13 @@ export function FilesPage({
       }
       return nextWorkspaceId;
     });
-  }, [preferredLaneId, selectedLaneId, workspaces]);
+  }, [preferredLaneId, selectedLaneId, unavailableWorkspaceIds, workspaces]);
 
   useEffect(() => {
     if (workspaceId || !workspaces.length) return;
-    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId, unavailableWorkspaceIds);
     if (nextWorkspaceId) setWorkspaceId(nextWorkspaceId);
-  }, [selectedLaneId, workspaceId, workspaces]);
+  }, [selectedLaneId, unavailableWorkspaceIds, workspaceId, workspaces]);
 
   useEffect(() => {
     if (!workspaceId) return;

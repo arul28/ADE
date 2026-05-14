@@ -61,6 +61,18 @@ function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
   githubTabWarmCache = cache;
 }
 
+function formatGitHubSnapshotError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  const message = raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+  if (/github token missing/i.test(message)) {
+    return "Connect GitHub in Settings to sync pull requests.";
+  }
+  return message || "Unable to sync pull requests.";
+}
+
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "all") return true;
   if (filter === "open") return item.state === "open" || item.state === "draft";
@@ -500,7 +512,7 @@ export function GitHubTab({
       })
       .catch((err) => {
         if (projectRootRef.current === requestProjectRoot && isCurrentSnapshotRequest()) {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(formatGitHubSnapshotError(err));
         }
         return snapshotRef.current as GitHubPrSnapshot;
       })

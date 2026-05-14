@@ -989,7 +989,7 @@ describe("FilesPage", () => {
       },
     ]);
 
-    renderFilesPage();
+    renderFilesPage(undefined, { preferredLaneId: laneId });
 
     await waitFor(() => {
       expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("lane-ws");
@@ -999,6 +999,52 @@ describe("FilesPage", () => {
         workspaceId: "lane-ws",
       }));
     });
+  });
+
+  it("falls back to primary when the selected lane workspace is missing", async () => {
+    const laneId = "lane-missing";
+    useAppStore.setState({
+      selectedLaneId: laneId,
+      lanes: [{ id: laneId, name: "Missing lane", branchRef: "refs/heads/feat/missing" }] as any,
+    });
+    vi.mocked(window.ade.files.listWorkspaces).mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: "refs/heads/main",
+        rootPath: projectRoot,
+        isReadOnlyByDefault: false,
+      },
+      {
+        id: "lane-ws",
+        kind: "worktree",
+        laneId,
+        name: "Missing lane",
+        branchRef: "refs/heads/feat/missing",
+        rootPath: `${projectRoot}/.ade/worktrees/missing`,
+        isReadOnlyByDefault: false,
+      },
+    ]);
+    vi.mocked(window.ade.files.listTree).mockImplementation(async ({ workspaceId, parentPath, includeIgnored }: { workspaceId: string; parentPath?: string; includeIgnored?: boolean }) => {
+      if (workspaceId === "lane-ws") {
+        throw new Error(
+          "Error invoking remote method 'ade.files.listTree': Error: ENOENT: no such file or directory, realpath '/tmp/missing'",
+        );
+      }
+      return listTreeForRequest(parentPath, includeIgnored);
+    });
+
+    renderFilesPage(undefined, { preferredLaneId: laneId });
+
+    await waitFor(() => {
+      expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("primary");
+    });
+    expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "lane-ws" }));
+    expect(window.ade.files.listTree).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: "primary" }));
+    expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /switch to: missing lane/i })).toBeNull();
   });
 
   it("View lane opens /lanes with no query for primary workspace", async () => {

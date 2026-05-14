@@ -440,6 +440,13 @@ export function createFileService({
     (relPath: string, includeIgnored: boolean) => isIgnoredPath(rootPath, relPath, includeIgnored);
   const primeIgnoreCacheForRoot = (rootPath: string) =>
     (relPaths: string[], includeIgnored: boolean) => primeIgnoreCache(rootPath, relPaths, includeIgnored);
+  const workspaceRootExists = (rootPath: string): boolean => {
+    try {
+      return fs.existsSync(rootPath) && fs.statSync(rootPath).isDirectory();
+    } catch {
+      return false;
+    }
+  };
 
   const emitLaneMutation = (workspaceId: string, reason: string) => {
     if (!onLaneWorktreeMutation) return;
@@ -452,12 +459,14 @@ export function createFileService({
   };
 
   const listWorkspaces = (_args: FilesListWorkspacesArgs = {}): FilesWorkspace[] => {
-    const scopes = [...laneService.getFilesWorkspaces()].sort((a, b) => {
-      if (a.kind === b.kind) return 0;
-      if (a.kind === "primary") return -1;
-      if (b.kind === "primary") return 1;
-      return 0;
-    });
+    const scopes = [...laneService.getFilesWorkspaces()]
+      .filter((scope) => scope.kind === "primary" || workspaceRootExists(scope.rootPath))
+      .sort((a, b) => {
+        if (a.kind === b.kind) return 0;
+        if (a.kind === "primary") return -1;
+        if (b.kind === "primary") return 1;
+        return 0;
+      });
     return scopes.map((scope) => ({
       id: scope.id,
       kind: scope.kind,

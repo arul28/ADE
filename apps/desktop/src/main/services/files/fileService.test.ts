@@ -386,6 +386,8 @@ describe("fileService", () => {
     const service = createFileService({ laneService });
 
     try {
+      fs.mkdirSync(path.join(rootPath, "lane-1"), { recursive: true });
+      fs.mkdirSync(path.join(rootPath, "lane-2"), { recursive: true });
       const workspaces = service.listWorkspaces();
       expect(workspaces.map((workspace) => workspace.id)).toEqual([
         "primary",
@@ -393,6 +395,51 @@ describe("fileService", () => {
         "lane-1",
       ]);
       expect(workspaces.every((workspace) => workspace.mobileReadOnly === true)).toBe(true);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("does not list missing non-primary workspaces", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-missing-workspaces-"));
+    const laneRoot = path.join(rootPath, "lane-existing");
+    const laneService = {
+      resolveWorkspaceById: vi.fn(),
+      getFilesWorkspaces: vi.fn(() => [
+        {
+          id: "primary",
+          kind: "primary",
+          laneId: null,
+          name: "Repo",
+          branchRef: "refs/heads/main",
+          rootPath,
+          isReadOnlyByDefault: true,
+        },
+        {
+          id: "lane-existing",
+          kind: "worktree",
+          laneId: "lane-existing",
+          name: "Existing lane",
+          branchRef: "refs/heads/existing",
+          rootPath: laneRoot,
+          isReadOnlyByDefault: false,
+        },
+        {
+          id: "lane-missing",
+          kind: "worktree",
+          laneId: "lane-missing",
+          name: "Missing lane",
+          branchRef: "refs/heads/missing",
+          rootPath: path.join(rootPath, "missing"),
+          isReadOnlyByDefault: false,
+        },
+      ]),
+    } as any;
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(laneRoot, { recursive: true });
+      expect(service.listWorkspaces().map((workspace) => workspace.id)).toEqual(["primary", "lane-existing"]);
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
