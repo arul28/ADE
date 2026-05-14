@@ -276,6 +276,7 @@ export function LanesPage() {
 
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
+  const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
   const [gridResetKey, setGridResetKey] = useState(0);
   const [laneFilter, setLaneFilter] = useState("");
   const [laneStatusFilter, setLaneStatusFilter] = useState<"all" | "running" | "awaiting-input" | "ended">("all");
@@ -1966,7 +1967,8 @@ export function LanesPage() {
   }, [urlLaneDeeplinks.action]);
 
   // ?action=manage&laneId=X opens ManageLaneDialog for that lane. Used by other
-  // pages (graph, PR cleanup) to route through the canonical delete surface.
+  // pages (graph, PR cleanup, Work-tab lane right-click) to route through the
+  // canonical delete surface.
   useEffect(() => {
     if (urlLaneDeeplinks.action !== "manage") return;
     const targetId = urlLaneDeeplinks.laneId;
@@ -1980,12 +1982,80 @@ export function LanesPage() {
     setDeleteRemoteName("origin");
     setDeleteConfirmText("");
     setManageOpen(true);
+    setPulsingLaneId(targetId);
     // Scrub the action param so refreshes don't re-open.
     const next = new URLSearchParams(location.search);
     next.delete("action");
     navigate(`${location.pathname}?${next.toString()}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
+
+  // Clear the pulse marker shortly after it is set so the animation can replay.
+  useEffect(() => {
+    if (!pulsingLaneId) return;
+    const t = window.setTimeout(() => setPulsingLaneId(null), 700);
+    return () => window.clearTimeout(t);
+  }, [pulsingLaneId]);
+
+  // Handle additional Work-tab right-click actions that route to the Lanes tab.
+  useEffect(() => {
+    const action = urlLaneDeeplinks.action;
+    if (!action) return;
+    const laneId = urlLaneDeeplinks.laneId;
+    let handled = false;
+    if (action === "adopt" && laneId) {
+      const lane = lanesById.get(laneId);
+      if (lane && lane.laneType === "attached" && !deletingLaneIds.has(laneId)) {
+        selectLane(laneId);
+        reopenAdoptHint();
+        requestAdoptAttachedLane(laneId);
+        handled = true;
+      }
+    } else if (action === "split-open" && laneId) {
+      if (!deletingLaneIds.has(laneId) && lanesById.has(laneId)) {
+        const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+        setActiveLaneIds((prev) => mergeUnique(prev, [laneId], pinned));
+        selectLane(laneId);
+        handled = true;
+      }
+    } else if (action === "split-remove" && laneId) {
+      removeSplitLane(laneId);
+      handled = true;
+    } else if (action === "split-close-others" && laneId) {
+      const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
+      setActiveLaneIds(mergeUnique([laneId], pinned));
+      selectLane(laneId);
+      handled = true;
+    } else if (action === "select-all") {
+      const allIds = filteredLanes.map((lane) => lane.id);
+      setActiveLaneIds(allIds);
+      handled = true;
+    } else if (action === "batch") {
+      const raw = urlLaneDeeplinks.laneIdsRaw;
+      if (raw) {
+        const ids = raw.split(",").map((id) => id.trim()).filter(Boolean);
+        if (ids.length > 0) {
+          openBatchManage(ids);
+          handled = true;
+        }
+      }
+    }
+    if (!handled) return;
+    if (laneId) setPulsingLaneId(laneId);
+    const next = new URLSearchParams(location.search);
+    next.delete("action");
+    next.delete("laneIds");
+    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    urlLaneDeeplinks.action,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.laneIdsRaw,
+    lanesById,
+    deletingLaneIds,
+    pinnedLaneIds,
+    filteredLanes,
+  ]);
 
   useEffect(() => {
     if (!urlLaneDeeplinks.laneIdsRaw) return;
@@ -3018,7 +3088,7 @@ export function LanesPage() {
               role="button"
               tabIndex={isDeleting ? -1 : 0}
               aria-disabled={isDeleting}
-              className="group flex items-center gap-2 shrink-0"
+              className={`group flex items-center gap-2 shrink-0${pulsingLaneId === lane.id ? " ade-lane-row-pulse" : ""}`}
               style={{
                 position: "relative",
                 padding: "0 16px",

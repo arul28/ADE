@@ -578,6 +578,14 @@ function AppearanceSection({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const used = React.useMemo(() => colorsInUse(allLanes, lane.id), [allLanes, lane.id]);
+  const usedOwners = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const candidate of allLanes) {
+      if (candidate.archivedAt || candidate.id === lane.id || !candidate.color) continue;
+      map.set(candidate.color.toLowerCase(), candidate.name);
+    }
+    return map;
+  }, [allLanes, lane.id]);
   const currentName = laneColorName(lane.color);
 
   const apply = async (next: string | null) => {
@@ -606,6 +614,7 @@ function AppearanceSection({
         value={lane.color}
         onChange={(next) => { void apply(next); }}
         usedColors={used}
+        usedColorOwners={usedOwners}
       />
       {error ? (
         <div className="mt-2 text-xs text-red-300">{error}</div>

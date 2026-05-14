@@ -21,6 +21,12 @@ vi.mock("./TerminalView", () => ({
   ),
 }));
 
+// The Work-tab lane context menu hook depends on react-router's useNavigate.
+// These tests render WorkViewArea bare (no router), so stub the hook out.
+vi.mock("./useWorkLaneContextMenu", () => ({
+  useWorkLaneContextMenu: () => ({ trigger: () => {}, menu: null }),
+}));
+
 vi.mock("./WorkCliSessionHeader", () => ({
   WorkCliSessionHeader: ({
     session,

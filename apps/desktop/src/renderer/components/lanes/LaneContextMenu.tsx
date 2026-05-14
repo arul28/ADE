@@ -3,7 +3,7 @@ import type { LaneSummary } from "../../../shared/types";
 import { revealLabel } from "../../lib/platform";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
-import { LANE_COLOR_PALETTE, colorsInUse } from "./laneColorPalette";
+import { LANE_CLASSIC_COUNT, LANE_COLOR_PALETTE, colorsInUse, type LaneColor } from "./laneColorPalette";
 
 const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -293,7 +293,16 @@ function ColorSwatchRow({
 }) {
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const used = React.useMemo(() => colorsInUse(Array.from(lanesById.values()), ctxLane.id), [lanesById, ctxLane.id]);
+  const lanesArray = React.useMemo(() => Array.from(lanesById.values()), [lanesById]);
+  const used = React.useMemo(() => colorsInUse(lanesArray, ctxLane.id), [lanesArray, ctxLane.id]);
+  const owners = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const lane of lanesArray) {
+      if (lane.archivedAt || lane.id === ctxLane.id || !lane.color) continue;
+      map.set(lane.color.toLowerCase(), lane.name);
+    }
+    return map;
+  }, [lanesArray, ctxLane.id]);
   const currentLower = ctxLane.color?.toLowerCase() ?? null;
 
   const apply = async (next: string | null) => {
@@ -309,49 +318,41 @@ function ColorSwatchRow({
     }
   };
 
+  const rainbow = LANE_COLOR_PALETTE.slice(LANE_CLASSIC_COUNT);
+  const classic = LANE_COLOR_PALETTE.slice(0, LANE_CLASSIC_COUNT);
+
   return (
-    <div style={{ padding: "4px 12px 8px" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        {LANE_COLOR_PALETTE.map((entry) => {
-          const isSelected = currentLower === entry.hex.toLowerCase();
-          const isTaken = !isSelected && used.has(entry.hex.toLowerCase());
-          return (
-            <button
-              key={entry.hex}
-              type="button"
-              title={isTaken ? `${entry.name} — in use` : entry.name}
-              disabled={isTaken || busy}
-              aria-label={entry.name}
-              aria-pressed={isSelected}
-              onClick={() => apply(entry.hex)}
-              style={{
-                width: 18,
-                height: 18,
-                borderRadius: 9999,
-                backgroundColor: entry.hex,
-                opacity: isTaken ? 0.25 : 1,
-                cursor: isTaken ? "not-allowed" : "pointer",
-                outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
-                outlineOffset: 1,
-                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
-                border: "none",
-                padding: 0,
-              }}
-            />
-          );
-        })}
-        {currentLower ? (
+    <div style={{ padding: "4px 12px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
+      <SwatchGroup
+        label="Rainbow"
+        colors={rainbow}
+        selectedLower={currentLower}
+        used={used}
+        owners={owners}
+        busy={busy}
+        onPick={apply}
+      />
+      <SwatchGroup
+        label="Classic"
+        colors={classic}
+        selectedLower={currentLower}
+        used={used}
+        owners={owners}
+        busy={busy}
+        onPick={apply}
+        trailing={currentLower ? (
           <button
             type="button"
             title="Clear color"
             aria-label="Clear color"
+            disabled={busy}
             onClick={() => apply(null)}
             style={{
               width: 18,
               height: 18,
               borderRadius: 9999,
               backgroundColor: "transparent",
-              cursor: "pointer",
+              cursor: busy ? "not-allowed" : "pointer",
               border: "1px dashed rgba(255,255,255,0.35)",
               padding: 0,
               color: "rgba(255,255,255,0.55)",
@@ -362,10 +363,100 @@ function ColorSwatchRow({
             ✕
           </button>
         ) : null}
-      </div>
+      />
       {error ? (
-        <div style={{ marginTop: 6, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
+        <div style={{ marginTop: 2, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
       ) : null}
+    </div>
+  );
+}
+
+function SwatchGroup({
+  label,
+  colors,
+  selectedLower,
+  used,
+  owners,
+  busy,
+  onPick,
+  trailing,
+}: {
+  label: string;
+  colors: readonly LaneColor[];
+  selectedLower: string | null;
+  used: Set<string>;
+  owners: Map<string, string>;
+  busy: boolean;
+  onPick: (hex: string) => void;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span
+        style={{
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: "0.12em",
+          textTransform: "uppercase",
+          color: COLORS.textDim,
+        }}
+      >
+        {label}
+      </span>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {colors.map((entry) => {
+          const lower = entry.hex.toLowerCase();
+          const isSelected = selectedLower === lower;
+          const isTaken = !isSelected && used.has(lower);
+          const owner = isTaken ? owners.get(lower) ?? null : null;
+          const title = isTaken
+            ? owner
+              ? `${entry.name} — used by ${owner}`
+              : `${entry.name} — in use`
+            : entry.name;
+          return (
+            <button
+              key={entry.hex}
+              type="button"
+              title={title}
+              disabled={isTaken || busy}
+              aria-label={title}
+              aria-pressed={isSelected}
+              onClick={() => onPick(entry.hex)}
+              style={{
+                position: "relative",
+                width: 18,
+                height: 18,
+                borderRadius: 9999,
+                backgroundColor: entry.hex,
+                opacity: isTaken ? 0.65 : 1,
+                cursor: isTaken ? "not-allowed" : "pointer",
+                outline: isSelected ? `2px solid ${COLORS.textPrimary}` : "none",
+                outlineOffset: 1,
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+                border: "none",
+                padding: 0,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {isTaken ? (
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  style={{ color: "rgba(255,255,255,0.95)", filter: "drop-shadow(0 1px 1px rgba(0,0,0,0.45))" }}
+                >
+                  <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : null}
+            </button>
+          );
+        })}
+        {trailing}
+      </div>
     </div>
   );
 }
