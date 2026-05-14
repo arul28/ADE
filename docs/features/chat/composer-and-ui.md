@@ -354,7 +354,11 @@ new entry, and the `AgentChatPane` `revealCreatedTerminal` effect calls
 the same drawer with the recovered `{ terminalId, ptyId, label }`.
 
 `ChatTerminalToggle` is the header button that shows the active tab
-count.
+count. The drawer is mounted only when lane tool drawers are visible on
+the chat surface. Work-grid tiles pass `hideLaneToolDrawers` because the
+Work sidebar owns lane-scoped tools there; in that mode the header
+toggle is absent and the pane does not call `ade.terminal.list` just to
+hydrate a hidden drawer.
 
 ## Pending input modal
 

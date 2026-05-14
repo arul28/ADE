@@ -308,6 +308,7 @@ function renderPane(args: {
   getDetail?: ReturnType<typeof vi.fn>;
   getFiles?: ReturnType<typeof vi.fn>;
   getCommits?: ReturnType<typeof vi.fn>;
+  getActionRuns?: ReturnType<typeof vi.fn>;
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
@@ -334,12 +335,14 @@ function renderPane(args: {
   const aiResolutionStop = vi.fn().mockResolvedValue(undefined);
   const getReviewThreads = vi.fn().mockResolvedValue(args.reviewThreads);
   const getChecks = vi.fn().mockResolvedValue(args.freshChecks ?? args.checks);
-  const getActionRuns = vi.fn();
-  if (args.freshActionRuns) {
-    getActionRuns.mockResolvedValueOnce(args.actionRuns ?? []);
-    getActionRuns.mockResolvedValue(args.freshActionRuns);
-  } else {
-    getActionRuns.mockResolvedValue(args.actionRuns ?? []);
+  const getActionRuns = args.getActionRuns ?? vi.fn();
+  if (!args.getActionRuns) {
+    if (args.freshActionRuns) {
+      getActionRuns.mockResolvedValueOnce(args.actionRuns ?? []);
+      getActionRuns.mockResolvedValue(args.freshActionRuns);
+    } else {
+      getActionRuns.mockResolvedValue(args.actionRuns ?? []);
+    }
   }
   const getStatus = vi.fn().mockResolvedValue(args.statusOverrides ? makeStatus(args.statusOverrides) : makeStatus());
   const issueInventorySync = vi.fn().mockResolvedValue({
@@ -531,6 +534,8 @@ function renderPane(args: {
   let currentChecks = args.checks;
   let currentReviews = args.reviews ?? [];
   let currentComments = args.comments ?? [];
+  let currentSnapshotHydration = args.snapshotHydration;
+  let currentLiveDetailReady = args.liveDetailReady;
   const renderSubject = (prOverrides: Partial<PrWithConflicts> = args.prOverrides ?? {}) => (
     <MemoryRouter>
       <PrDetailPane
@@ -539,9 +544,9 @@ function renderPane(args: {
         checks={currentChecks}
         reviews={currentReviews}
         comments={currentComments}
-        snapshotHydration={args.snapshotHydration}
+        snapshotHydration={currentSnapshotHydration}
         snapshotHydrationOwnedByContext={args.snapshotHydrationOwnedByContext}
-        liveDetailReady={args.liveDetailReady}
+        liveDetailReady={currentLiveDetailReady}
         detailBusy={false}
         lanes={laneList}
         mergeMethod={args.mergeMethod ?? "squash"}
@@ -576,10 +581,22 @@ function renderPane(args: {
     writeClipboardText,
     land,
     onRefresh,
-    rerenderPane: (prOverrides: Partial<PrWithConflicts>, nextDetail?: { checks?: PrCheck[]; reviews?: PrReview[]; comments?: PrComment[] }) => {
+    rerenderPane: (prOverrides: Partial<PrWithConflicts>, nextDetail?: {
+      checks?: PrCheck[];
+      reviews?: PrReview[];
+      comments?: PrComment[];
+      snapshotHydration?: PrSnapshotHydration | null;
+      liveDetailReady?: boolean;
+    }) => {
       currentChecks = nextDetail?.checks ?? currentChecks;
       currentReviews = nextDetail?.reviews ?? currentReviews;
       currentComments = nextDetail?.comments ?? currentComments;
+      if (nextDetail && "snapshotHydration" in nextDetail) {
+        currentSnapshotHydration = nextDetail.snapshotHydration;
+      }
+      if (nextDetail && "liveDetailReady" in nextDetail) {
+        currentLiveDetailReady = nextDetail.liveDetailReady;
+      }
       rendered.rerender(renderSubject({ ...(args.prOverrides ?? {}), ...prOverrides }));
     },
     ...rendered,
@@ -615,6 +632,30 @@ describe("PrDetailPane issue resolver CTA", () => {
     // Path to Merge is now a permanent tab (2nd position), always rendered
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /path to merge/i })).toBeTruthy();
+    });
+  });
+
+  it("renders live PR detail without waiting for slow action-run hydration", async () => {
+    const user = userEvent.setup();
+    renderPane({
+      checks: [],
+      reviewThreads: [],
+      getFiles: vi.fn().mockResolvedValue([
+        {
+          filename: "src/pr-detail.ts",
+          status: "modified",
+          additions: 3,
+          deletions: 1,
+          patch: null,
+          previousFilename: null,
+        },
+      ]),
+      getActionRuns: vi.fn(() => new Promise(() => {})),
+    });
+
+    await user.click(screen.getByRole("button", { name: /files/i }));
+    await waitFor(() => {
+      expect(screen.getByText("src/pr-detail.ts")).toBeTruthy();
     });
   });
 
@@ -832,6 +873,51 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Context snapshot check")).toBeTruthy();
     });
     expect(listSnapshots).not.toHaveBeenCalled();
+  });
+
+  it("does not let late context snapshot hydration overwrite live rich detail", async () => {
+    const freshDetail = {
+      prId: "pr-80",
+      body: "Fresh live body",
+      labels: [{ name: "fresh-label", color: "22c55e", description: null }],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const staleSnapshot: PrSnapshotHydration = {
+      prId: "pr-80",
+      detail: {
+        ...freshDetail,
+        body: "Stale cached body",
+        labels: [{ name: "stale-label", color: "ef4444", description: null }],
+      },
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    const { rerenderPane } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      getDetail: vi.fn().mockResolvedValue(freshDetail),
+      snapshotHydration: null,
+      snapshotHydrationOwnedByContext: true,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh-label")).toBeTruthy();
+    });
+
+    rerenderPane({}, { snapshotHydration: staleSnapshot });
+
+    expect(screen.getByText("fresh-label")).toBeTruthy();
+    expect(screen.queryByText("stale-label")).toBeNull();
   });
 
   it("prefers authoritative empty live detail over cached snapshot data", async () => {

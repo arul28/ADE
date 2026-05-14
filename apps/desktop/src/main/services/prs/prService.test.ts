@@ -389,35 +389,33 @@ describe("prService.getGithubSnapshot", () => {
       })),
       apiRequest: vi.fn()
         .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
-        .mockResolvedValueOnce({ data: { items: [] } })
-        .mockImplementationOnce(() => revalidationStarted)
-        .mockResolvedValueOnce({ data: { items: [] } }),
+        .mockImplementationOnce(() => revalidationStarted),
     });
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
 
     try {
       const first = await service.getGithubSnapshot();
       expect(first.repoPullRequests[0]?.title).toBe("Cached PR");
-      expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
 
       nowSpy.mockReturnValue(Date.parse("2026-01-01T00:00:00Z") + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
       const stale = await service.getGithubSnapshot();
       expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
       await flushMicrotasks(30);
-      expect(githubService.apiRequest).toHaveBeenCalledTimes(3);
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
 
       resolveRevalidation({ data: [makeGitHubPull({ title: "Fresh PR", updated_at: "2026-01-01T00:05:00Z" })] });
       await flushMicrotasks();
 
       const fresh = await service.getGithubSnapshot();
       expect(fresh.repoPullRequests[0]?.title).toBe("Fresh PR");
-      expect(githubService.apiRequest).toHaveBeenCalledTimes(4);
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
     } finally {
       nowSpy.mockRestore();
     }
   });
 
-  it("fetches open external PRs by default and only includes closed external history when requested", async () => {
+  it("keeps GitHub tab snapshots scoped to the current repo", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => ({
         tokenStored: true,
@@ -430,17 +428,21 @@ describe("prService.getGithubSnapshot", () => {
     });
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
 
-    await service.getGithubSnapshot({ force: true });
-    const defaultExternalCall = githubService.apiRequest.mock.calls.find(([args]: [{ path: string }]) => args.path === "/search/issues");
-    expect(defaultExternalCall?.[0].query.q).toContain("is:open");
+    const defaultSnapshot = await service.getGithubSnapshot({ force: true });
+    expect(defaultSnapshot.externalPullRequests).toEqual([]);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/search/issues" }),
+    );
 
     githubService.apiRequest.mockClear();
-    await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
-    const fullHistoryExternalCall = githubService.apiRequest.mock.calls.find(([args]: [{ path: string }]) => args.path === "/search/issues");
-    expect(fullHistoryExternalCall?.[0].query.q).not.toContain("is:open");
+    const fullHistorySnapshot = await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+    expect(fullHistorySnapshot.externalPullRequests).toEqual([]);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/search/issues" }),
+    );
   });
 
-  it("does not reuse or overwrite full-history snapshots with narrower in-flight requests", async () => {
+  it("reuses an in-flight repo snapshot when closed-history is requested", async () => {
     let resolveOpenRepo!: (value: unknown) => void;
     const openRepoRequest = new Promise<unknown>((resolve) => {
       resolveOpenRepo = resolve;
@@ -452,235 +454,57 @@ describe("prService.getGithubSnapshot", () => {
         repo: REPO,
         userLogin: "octocat",
       })),
-      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
+      apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
-          if (repoCalls === 1) return openRepoRequest;
-          return { data: [makeGitHubPull({ number: 2, title: "Full history PR" })] };
+          return openRepoRequest;
         }
-        return {
-          data: {
-            items: [
-              makeGitHubPull({
-                number: args.query?.q?.includes("is:open") ? 3 : 4,
-                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
-                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
-                repository_url: "https://api.github.com/repos/elsewhere/project",
-              }),
-            ],
-          },
-        };
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
       }),
     });
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
-
-    const openOnly = service.getGithubSnapshot();
-    await flushMicrotasks();
-
-    const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
-    expect(fullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
-    expect(fullHistory.externalPullRequests[0]?.title).toBe("Closed external");
-
-    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
-    await expect(openOnly).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
-    }));
-
-    const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
-    expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Full history PR");
-    expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Closed external");
-    expect(repoCalls).toBe(2);
-  });
-
-  it("keeps a superseded open-only snapshot cached when a full-history upgrade fails", async () => {
-    let resolveOpenRepo!: (value: unknown) => void;
-    const openRepoRequest = new Promise<unknown>((resolve) => {
-      resolveOpenRepo = resolve;
-    });
-    let rejectFullRepo!: (reason: unknown) => void;
-    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
-      rejectFullRepo = reject;
-    });
-    let repoCalls = 0;
-    const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
-      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
-        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
-          repoCalls += 1;
-          if (repoCalls === 1) return openRepoRequest;
-          return fullRepoRequest;
-        }
-        return {
-          data: {
-            items: [
-              makeGitHubPull({
-                number: 3,
-                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
-                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/3" },
-                repository_url: "https://api.github.com/repos/elsewhere/project",
-              }),
-            ],
-          },
-        };
-      }),
-    });
-    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
-
-    const openOnly = service.getGithubSnapshot();
-    await flushMicrotasks();
-
-    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
-    await flushMicrotasks();
-
-    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
-    await expect(openOnly).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
-      externalPullRequests: [expect.objectContaining({ title: "Open external" })],
-    }));
-
-    rejectFullRepo(new Error("full history failed"));
-    await expect(fullHistory).rejects.toThrow("full history failed");
-
-    const apiCallsAfterOpenOnly = githubService.apiRequest.mock.calls.length;
-    const cachedOpenOnly = await service.getGithubSnapshot();
-    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Open-only PR");
-    expect(cachedOpenOnly.externalPullRequests[0]?.title).toBe("Open external");
-    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterOpenOnly);
-    expect(repoCalls).toBe(2);
-  });
-
-  it("keeps the existing open-only cache when a superseded refresh and full-history upgrade fail", async () => {
-    let resolveOpenRepo!: (value: unknown) => void;
-    const openRepoRequest = new Promise<unknown>((resolve) => {
-      resolveOpenRepo = resolve;
-    });
-    let rejectFullRepo!: (reason: unknown) => void;
-    const fullRepoRequest = new Promise<unknown>((_resolve, reject) => {
-      rejectFullRepo = reject;
-    });
-    let repoCalls = 0;
-    const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
-      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
-        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
-          repoCalls += 1;
-          if (repoCalls === 1) return { data: [makeGitHubPull({ number: 1, title: "Cached open-only PR" })] };
-          if (repoCalls === 2) return openRepoRequest;
-          return fullRepoRequest;
-        }
-        return {
-          data: {
-            items: [
-              makeGitHubPull({
-                number: args.query?.q?.includes("is:open") ? 3 : 4,
-                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
-                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
-                repository_url: "https://api.github.com/repos/elsewhere/project",
-              }),
-            ],
-          },
-        };
-      }),
-    });
-    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
-    const cached = await service.getGithubSnapshot({ force: true });
-    expect(cached.repoPullRequests[0]?.title).toBe("Cached open-only PR");
-
-    const openOnlyRefresh = service.getGithubSnapshot({ force: true });
-    await flushMicrotasks();
-    const fullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
-    await flushMicrotasks();
-
-    resolveOpenRepo({ data: [makeGitHubPull({ number: 2, title: "Superseded open-only PR" })] });
-    await expect(openOnlyRefresh).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Superseded open-only PR" })],
-    }));
-    rejectFullRepo(new Error("full history failed"));
-    await expect(fullHistory).rejects.toThrow("full history failed");
-
-    const apiCallsAfterFailure = githubService.apiRequest.mock.calls.length;
-    const cachedOpenOnly = await service.getGithubSnapshot();
-    expect(cachedOpenOnly.repoPullRequests[0]?.title).toBe("Cached open-only PR");
-    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterFailure);
-    expect(repoCalls).toBe(3);
-  });
-
-  it("does not publish a fallback snapshot from a superseded full-history failure", async () => {
-    let resolveOpenRepo!: (value: unknown) => void;
-    const openRepoRequest = new Promise<unknown>((resolve) => {
-      resolveOpenRepo = resolve;
-    });
-    let rejectSupersededFullRepo!: (reason: unknown) => void;
-    const supersededFullRepoRequest = new Promise<unknown>((_resolve, reject) => {
-      rejectSupersededFullRepo = reject;
-    });
-    let resolveCurrentFullRepo!: (value: unknown) => void;
-    const currentFullRepoRequest = new Promise<unknown>((resolve) => {
-      resolveCurrentFullRepo = resolve;
-    });
-    let repoCalls = 0;
-    const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
-      apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
-        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
-          repoCalls += 1;
-          if (repoCalls === 1) return openRepoRequest;
-          if (repoCalls === 2) return supersededFullRepoRequest;
-          return currentFullRepoRequest;
-        }
-        return {
-          data: {
-            items: [
-              makeGitHubPull({
-                number: args.query?.q?.includes("is:open") ? 3 : 4,
-                title: args.query?.q?.includes("is:open") ? "Open external" : "Closed external",
-                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/4" },
-                repository_url: "https://api.github.com/repos/elsewhere/project",
-              }),
-            ],
-          },
-        };
-      }),
-    });
-    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
-
-    const openOnly = service.getGithubSnapshot();
-    await flushMicrotasks();
-    const supersededFullHistory = service.getGithubSnapshot({ includeExternalClosed: true });
-    await flushMicrotasks();
-
-    resolveOpenRepo({ data: [makeGitHubPull({ number: 1, title: "Open-only PR" })] });
-    await expect(openOnly).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Open-only PR" })],
-    }));
-
-    const currentFullHistory = service.getGithubSnapshot({ force: true, includeExternalClosed: true });
-    await flushMicrotasks();
-    rejectSupersededFullRepo(new Error("superseded full history failed"));
-    await expect(supersededFullHistory).rejects.toThrow("superseded full history failed");
 
     const defaultSnapshot = service.getGithubSnapshot();
-    resolveCurrentFullRepo({ data: [makeGitHubPull({ number: 2, title: "Current full-history PR" })] });
+    await flushMicrotasks();
+    const closedHistorySnapshot = service.getGithubSnapshot({ includeExternalClosed: true });
+    await flushMicrotasks();
 
-    await expect(currentFullHistory).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
-    }));
+    resolveOpenRepo({ data: [makeGitHubPull({ number: 2, title: "Repo PR" })] });
     await expect(defaultSnapshot).resolves.toEqual(expect.objectContaining({
-      repoPullRequests: [expect.objectContaining({ title: "Current full-history PR" })],
+      repoPullRequests: [expect.objectContaining({ title: "Repo PR" })],
+      externalPullRequests: [],
     }));
-    expect(repoCalls).toBe(3);
+    await expect(closedHistorySnapshot).resolves.toEqual(expect.objectContaining({
+      repoPullRequests: [expect.objectContaining({ title: "Repo PR" })],
+      externalPullRequests: [],
+    }));
+    expect(repoCalls).toBe(1);
+  });
+
+  it("serves closed-history requests from a fresh repo snapshot cache", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [makeGitHubPull({ number: 1, title: "Cached repo PR" })] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const cached = await service.getGithubSnapshot({ force: true });
+    expect(cached.repoPullRequests[0]?.title).toBe("Cached repo PR");
+
+    const apiCallsAfterCache = githubService.apiRequest.mock.calls.length;
+    const closedHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+    expect(closedHistory.repoPullRequests[0]?.title).toBe("Cached repo PR");
+    expect(closedHistory.externalPullRequests).toEqual([]);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(apiCallsAfterCache);
   });
 
   it("does not let a superseded open-only snapshot overwrite a fresher cache", async () => {
@@ -730,11 +554,10 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(2);
   });
 
-  it("preserves full-history cache mode during stale open-only revalidation", async () => {
+  it("preserves repo snapshot cache mode during stale revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
     let repoCalls = 0;
-    const externalQueries: string[] = [];
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => ({
         tokenStored: true,
@@ -753,43 +576,28 @@ describe("prService.getGithubSnapshot", () => {
             ],
           };
         }
-        externalQueries.push(args.query?.q ?? "");
-        return {
-          data: {
-            items: [
-              makeGitHubPull({
-                number: externalQueries.length === 1 ? 10 : 11,
-                title: externalQueries.length === 1 ? "Cached closed external" : "Fresh closed external",
-                state: "closed",
-                pull_request: { url: "https://api.github.com/repos/elsewhere/project/pulls/11" },
-                repository_url: "https://api.github.com/repos/elsewhere/project",
-              }),
-            ],
-          },
-        };
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
       }),
     });
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
 
     try {
       const fullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
-      expect(fullHistory.externalPullRequests[0]?.title).toBe("Cached closed external");
-      expect(externalQueries[0]).not.toContain("is:open");
+      expect(fullHistory.externalPullRequests).toEqual([]);
 
       nowSpy.mockReturnValue(Date.parse("2030-01-01T00:00:00Z"));
       const staleOpenOnly = await service.getGithubSnapshot();
       expect(staleOpenOnly.repoPullRequests[0]?.title).toBe("Cached full history");
 
-      const refreshedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
-      expect(externalQueries[1]).not.toContain("is:open");
-      expect(refreshedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
-      expect(refreshedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+      const staleClosedHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
+      expect(staleClosedHistory.repoPullRequests[0]?.title).toBe("Cached full history");
+      expect(staleClosedHistory.externalPullRequests).toEqual([]);
+      await flushMicrotasks();
 
       const cachedFullHistory = await service.getGithubSnapshot({ includeExternalClosed: true });
       expect(cachedFullHistory.repoPullRequests[0]?.title).toBe("Fresh full history");
-      expect(cachedFullHistory.externalPullRequests[0]?.title).toBe("Fresh closed external");
+      expect(cachedFullHistory.externalPullRequests).toEqual([]);
       expect(repoCalls).toBe(2);
-      expect(externalQueries).toHaveLength(2);
     } finally {
       nowSpy.mockRestore();
     }

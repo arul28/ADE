@@ -121,7 +121,7 @@ struct PRsTabView: View {
   }
 
   private var allGitHubPrs: [GitHubPrListItem] {
-    (githubSnapshot?.repoPullRequests ?? []) + (githubSnapshot?.externalPullRequests ?? [])
+    repoScopedGitHubPullRequests(from: githubSnapshot)
   }
 
   private var filteredGitHubPrs: [GitHubPrListItem] {

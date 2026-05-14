@@ -492,8 +492,12 @@ function PRsPageInner() {
 }
 
 export function PRsPage() {
+  const providerKey = useAppStore((state) =>
+    state.projectBinding?.key ?? state.project?.rootPath ?? "__no_project__"
+  );
+
   return (
-    <PrsProvider>
+    <PrsProvider key={providerKey}>
       <PRsPageInner />
     </PrsProvider>
   );

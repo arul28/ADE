@@ -1068,6 +1068,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
     let cancelled = false;
     let liveDetailApplied = false;
+    let snapshotForRequest: PrSnapshotHydration | null = null;
     const prId = selectedPrId;
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshDetailCache =
@@ -1106,6 +1107,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           setDetailBusy(false);
           return;
         }
+        snapshotForRequest = snapshot;
         detailSnapshotStatePrIdRef.current = prId;
         detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
         setDetailSnapshot(snapshot);
@@ -1134,65 +1136,79 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setDetailBusy(true);
     detailFetchInProgress.current = true;
 
-    Promise.allSettled([
-      window.ade.prs.getStatus(prId),
-      window.ade.prs.getChecks(prId),
-      window.ade.prs.getReviews(prId),
-      window.ade.prs.getComments(prId),
-    ])
-      .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
-        if (cancelled) return;
-        // Check for rate-limit errors in any rejected result
-        for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
-          if (result.status === "rejected") {
-            const msg = String(result.reason?.message ?? result.reason);
-            if (msg.includes("rate limit") || msg.includes("API rate")) {
-              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
-              console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-              // Keep cached snapshot/detail data visible while GitHub is degraded.
-              setDetailLiveDataPrId(null);
-              return;
-            }
-          }
-        }
-
-        liveDetailApplied = true;
-        detailStatePrIdRef.current = prId;
-        if (statusResult.status === "fulfilled") {
-          setDetailStatus(statusResult.value ?? null);
-        } else {
-          console.warn("[PrsContext] Failed to load PR status:", statusResult.reason);
-          setDetailStatus(null);
-        }
-        if (checksResult.status === "fulfilled") {
-          setDetailChecks(checksResult.value);
-        } else {
-          console.warn("[PrsContext] Failed to load PR checks:", checksResult.reason);
-          setDetailChecks([]);
-        }
-        if (reviewsResult.status === "fulfilled") {
-          setDetailReviews(reviewsResult.value);
-        } else {
-          console.warn("[PrsContext] Failed to load PR reviews:", reviewsResult.reason);
-          setDetailReviews([]);
-        }
-        if (commentsResult.status === "fulfilled") {
-          setDetailComments(commentsResult.value);
-        } else {
-          console.warn("[PrsContext] Failed to load PR comments:", commentsResult.reason);
-          setDetailComments([]);
-        }
-        if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
-          setDetailLiveDataPrId(prId);
-        } else {
-          setDetailLiveDataPrId(null);
-        }
-        detailLoadedAtByPrIdRef.current[prId] = Date.now();
-      })
-      .finally(() => {
+    let primarySettledCount = 0;
+    let primaryFulfilledCount = 0;
+    let rateLimited = false;
+    const primaryRequestCount = 4;
+    const markPrimarySettled = (fulfilled: boolean) => {
+      primarySettledCount += 1;
+      if (fulfilled) primaryFulfilledCount += 1;
+      if (selectedPrIdRef.current === prId && primarySettledCount === 1) {
         detailFetchInProgress.current = false;
-        if (!cancelled) setDetailBusy(false);
-      });
+      }
+      if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
+        detailFetchInProgress.current = false;
+        setDetailLiveDataPrId(primaryFulfilledCount === primaryRequestCount ? prId : null);
+      }
+    };
+    const isRateLimitError = (error: unknown): boolean => {
+      const msg = String((error as { message?: unknown } | null)?.message ?? error);
+      return msg.includes("rate limit") || msg.includes("API rate");
+    };
+    const loadPrimaryPiece = <T,>(
+      name: string,
+      promise: Promise<T>,
+      apply: (value: T) => void,
+    ) => {
+      let fulfilled = false;
+      promise
+        .then((value) => {
+          if (cancelled || selectedPrIdRef.current !== prId) return;
+          if (rateLimited) return;
+          fulfilled = true;
+          if (value != null && (!Array.isArray(value) || value.length > 0)) {
+            liveDetailApplied = true;
+          }
+          detailStatePrIdRef.current = prId;
+          detailLoadedAtByPrIdRef.current[prId] = Date.now();
+          apply(value);
+          setDetailBusy(false);
+        })
+        .catch((error: unknown) => {
+          if (cancelled || selectedPrIdRef.current !== prId) return;
+          if (isRateLimitError(error)) {
+            rateLimited = true;
+            rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+            console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+            if (snapshotForRequest?.prId === prId) {
+              setDetailStatus(snapshotForRequest.status);
+              setDetailChecks(snapshotForRequest.checks);
+              setDetailReviews(snapshotForRequest.reviews);
+              setDetailComments(snapshotForRequest.comments);
+            }
+            setDetailLiveDataPrId(null);
+          } else {
+            console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
+          }
+          setDetailBusy(false);
+        })
+        .finally(() => {
+          markPrimarySettled(fulfilled);
+        });
+    };
+
+    loadPrimaryPiece("status", window.ade.prs.getStatus(prId), (value) => {
+      setDetailStatus(value ?? null);
+    });
+    loadPrimaryPiece("checks", window.ade.prs.getChecks(prId), (value) => {
+      setDetailChecks(value);
+    });
+    loadPrimaryPiece("reviews", window.ade.prs.getReviews(prId), (value) => {
+      setDetailReviews(value);
+    });
+    loadPrimaryPiece("comments", window.ade.prs.getComments(prId), (value) => {
+      setDetailComments(value);
+    });
 
     // Progressive secondary fetch (review threads, deployments, AI summary) — yields
     // to the main paint so the primary header + checks render first.

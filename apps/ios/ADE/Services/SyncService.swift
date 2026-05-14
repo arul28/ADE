@@ -218,8 +218,18 @@ enum InitialHydrationGate {
 enum SyncRequestTimeout {
   static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
   static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
+  static let laneDeleteTimeoutNanoseconds: UInt64 = 240_000_000_000
   static let message = "The machine took too long to respond. Reconnecting now."
   static let chatSendMessage = "The machine is still starting this chat turn. Live updates will keep syncing."
+
+  static func commandTimeoutNanoseconds(for action: String) -> UInt64 {
+    switch action {
+    case "lanes.delete":
+      return laneDeleteTimeoutNanoseconds
+    default:
+      return defaultTimeoutNanoseconds
+    }
+  }
 
   static func error(message: String = Self.message, underlyingError: Error? = nil) -> NSError {
     var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
@@ -6549,17 +6559,18 @@ final class SyncService: ObservableObject {
     commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
-    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
+    timeoutNanoseconds: UInt64? = nil
   ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
     }
     let requestId = commandId ?? makeRequestId()
+    let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
       timeoutMessage: timeoutMessage,
-      timeoutNanoseconds: timeoutNanoseconds
+      timeoutNanoseconds: effectiveTimeoutNanoseconds
     ) {
       self.sendEnvelope(
         type: "command",
@@ -6581,7 +6592,7 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
-    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
+    timeoutNanoseconds: UInt64? = nil
   ) async throws -> Any {
     let commandId = makeRequestId()
     if canSendLiveRequests() {

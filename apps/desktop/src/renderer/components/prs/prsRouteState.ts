@@ -101,9 +101,11 @@ export function sanitizeStoredPrsRoute(value: string | null | undefined): string
 
 export function readStoredPrsRoute(projectRoot?: string | null): string | null {
   if (typeof window === "undefined") return null;
+  const root = projectRoot?.trim();
   try {
-    const scopedRoute = sanitizeStoredPrsRoute(window.localStorage.getItem(scopedPrsRouteStorageKey(projectRoot)));
-    if (scopedRoute) return scopedRoute;
+    if (root) {
+      return sanitizeStoredPrsRoute(window.localStorage.getItem(scopedPrsRouteStorageKey(root)));
+    }
     return sanitizeStoredPrsRoute(window.localStorage.getItem(PRS_LAST_ROUTE_STORAGE_KEY));
   } catch {
     return null;

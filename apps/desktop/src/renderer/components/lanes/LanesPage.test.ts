@@ -9,6 +9,7 @@ import {
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
+  runLaneDeleteBatchSequentially,
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
@@ -368,6 +369,48 @@ describe("selectLanePrTag", () => {
   });
 });
 
+describe("runLaneDeleteBatchSequentially", () => {
+  it("runs independent lane deletes one at a time and preserves failures", async () => {
+    const lanes = [
+      { id: "lane-a", parentLaneId: null },
+      { id: "lane-b", parentLaneId: null },
+      { id: "lane-c", parentLaneId: null },
+    ];
+    const order: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+
+    const results = await runLaneDeleteBatchSequentially(lanes, async (lane) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(`start:${lane.id}`);
+      await Promise.resolve();
+      if (lane.id === "lane-b") {
+        active -= 1;
+        order.push(`fail:${lane.id}`);
+        throw new Error("locked");
+      }
+      active -= 1;
+      order.push(`done:${lane.id}`);
+    });
+
+    expect(maxActive).toBe(1);
+    expect(order).toEqual([
+      "start:lane-a",
+      "done:lane-a",
+      "start:lane-b",
+      "fail:lane-b",
+      "start:lane-c",
+      "done:lane-c",
+    ]);
+    expect(results.map((result) => [result.lane.id, result.status])).toEqual([
+      ["lane-a", "fulfilled"],
+      ["lane-b", "rejected"],
+      ["lane-c", "fulfilled"],
+    ]);
+  });
+});
+
 describe("selectLaneTabPrTag", () => {
   it("falls back to repo GitHub PRs by lane branch when no ADE PR row is mapped", () => {
     const githubPr = makeGitHubPr({
@@ -395,6 +438,43 @@ describe("selectLaneTabPrTag", () => {
       id: "mapped-pr",
       linkedPrId: "mapped-pr",
       state: "closed",
+    });
+  });
+
+  it("uses a fresh GitHub terminal state over a stale open ADE row for the same PR", () => {
+    const mappedPr = makePr({ id: "mapped-pr", state: "open" });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "merged",
+      linkedPrId: "mapped-pr",
+      linkedLaneId: "lane-1",
+      title: "Merged upstream",
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "github",
+      id: "github-pr",
+      linkedPrId: "mapped-pr",
+      state: "merged",
+      title: "Merged upstream",
+    });
+  });
+
+  it("keeps the ADE row when the GitHub match is not the same PR", () => {
+    const mappedPr = makePr({ id: "mapped-pr", state: "open", githubPrNumber: 224 });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "merged",
+      githubPrNumber: 999,
+      githubUrl: "https://github.com/arul28/ADE/pull/999",
+      linkedPrId: "other-pr",
+      linkedLaneId: "lane-1",
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "ade",
+      id: "mapped-pr",
+      state: "open",
     });
   });
 

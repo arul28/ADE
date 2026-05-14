@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 
@@ -349,6 +349,12 @@ async function validatePackagedRuntime(appPath, description) {
   await assertExecutable(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
+  const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
+  for (const token of ["__dirname", "__filename"]) {
+    if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
+      throw new Error(`[release:mac] Bundled ADE code TUI references ${token} without an ESM shim`);
+    }
+  }
   await assertRemoteRuntimeBundle(resourcesPath, description);
   await validatePackageHygiene(appPath, description);
 
@@ -414,6 +420,30 @@ async function validatePackagedRuntime(appPath, description) {
   });
   if (!adeCliHelp.includes("Agent-focused command-line interface for ADE")) {
     throw new Error("[release:mac] Bundled ADE CLI wrapper did not print ADE CLI help");
+  }
+
+  const tuiSmokeDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-mac-tui-smoke-"));
+  try {
+    const tuiRunnerPath = path.join(tuiSmokeDir, "run-tui-help.mjs");
+    await fs.writeFile(
+      tuiRunnerPath,
+      `const tui = await import(${JSON.stringify(pathToFileURL(adeCliTuiPath).href)});\n` +
+        "process.exitCode = await tui.runAdeCodeCli(['--help']);\n",
+      "utf8",
+    );
+    const { stdout: adeCodeHelp } = await execFileAsync(executablePath, [tuiRunnerPath], {
+      cwd: resourcesPath,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        NODE_PATH: "",
+      },
+    });
+    if (!adeCodeHelp.includes("Terminal-native ADE Work chat.")) {
+      throw new Error("[release:mac] Bundled ADE code TUI did not print help");
+    }
+  } finally {
+    await fs.rm(tuiSmokeDir, { recursive: true, force: true });
   }
 
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);

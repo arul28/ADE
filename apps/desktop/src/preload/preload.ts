@@ -1244,6 +1244,14 @@ async function callRemoteProjectRuntimeActionOr<T>(
   return remote.handled ? remote.result : local();
 }
 
+function callPrReadRuntimeActionOr<T>(
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callRemoteProjectRuntimeActionOr("pr", action, request, local);
+}
+
 async function callProjectFileRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -1379,6 +1387,48 @@ const remoteSyncStatusEventCallbacks = new Set<
 const remoteReviewEventCallbacks = new Set<
   (payload: ReviewEventPayload) => void
 >();
+
+function createLocalIpcEventSubscription<T>(
+  channel: string,
+  logLabel: string,
+): (cb: (payload: T) => void) => () => void {
+  const callbacks = new Set<(payload: T) => void>();
+  let listener: ((_event: Electron.IpcRendererEvent, payload: T) => void) | null = null;
+
+  return (cb: (payload: T) => void) => {
+    callbacks.add(cb);
+    if (!listener) {
+      listener = (_event: Electron.IpcRendererEvent, payload: T) => {
+        for (const callback of [...callbacks]) {
+          try {
+            callback(payload);
+          } catch (error) {
+            console.error(`preload ${logLabel} listener failed`, error);
+          }
+        }
+      };
+      ipcRenderer.on(channel, listener);
+    }
+    return () => {
+      callbacks.delete(cb);
+      if (callbacks.size === 0 && listener) {
+        ipcRenderer.removeListener(channel, listener);
+        listener = null;
+      }
+    };
+  };
+}
+
+const subscribeLocalSessionChangedEvents =
+  createLocalIpcEventSubscription<TerminalSessionChangedEvent>(
+    IPC.sessionsChanged,
+    "session changed",
+  );
+const subscribeLocalPrEvents = createLocalIpcEventSubscription<PrEventPayload>(
+  IPC.prsEvent,
+  "PR event",
+);
+
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
 let remoteRuntimeEventCursor = 0;
@@ -4893,15 +4943,11 @@ contextBridge.exposeInMainWorld("ade", {
     getDelta: async (sessionId: string): Promise<SessionDeltaSummary | null> =>
       sessionDeltaCache.get(sessionId),
     onChanged: (cb: (ev: TerminalSessionChangedEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: TerminalSessionChangedEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.sessionsChanged, listener);
+      const removeLocal = subscribeLocalSessionChangedEvents(cb);
       const removeRemote = subscribeRemoteSessionChangedEvents(cb);
       return () => {
         removeRemote();
-        ipcRenderer.removeListener(IPC.sessionsChanged, listener);
+        removeLocal();
       };
     },
   },
@@ -6842,41 +6888,41 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.prsLinkToLane, args),
       ),
     getForLane: async (laneId: string): Promise<PrSummary | null> =>
-      callProjectRuntimeActionOr("pr", "getForLane", { arg: laneId }, () =>
+      callPrReadRuntimeActionOr("getForLane", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
       ),
     listAll: async (): Promise<PrSummary[]> =>
-      callProjectRuntimeActionOr("pr", "listAll", { args: {} }, () =>
+      callPrReadRuntimeActionOr("listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),
       ),
     listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
-      callProjectRuntimeActionOr("pr", "listOpenPullRequests", {}, () =>
+      callPrReadRuntimeActionOr("listOpenPullRequests", {}, () =>
         ipcRenderer.invoke(IPC.prsListOpenForRepo),
       ),
     refresh: async (
       args: { prId?: string; prIds?: string[] } = {},
     ): Promise<PrSummary[]> =>
-      callProjectRuntimeActionOr("pr", "refresh", { args }, () =>
+      callPrReadRuntimeActionOr("refresh", { args }, () =>
         ipcRenderer.invoke(IPC.prsRefresh, args),
       ),
     getStatus: async (prId: string): Promise<PrStatus | null> =>
-      callProjectRuntimeActionOr("pr", "getStatus", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getStatus", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
       ),
     getChecks: async (prId: string): Promise<PrCheck[]> =>
-      callProjectRuntimeActionOr("pr", "getChecks", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getChecks", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
       ),
     getComments: async (prId: string): Promise<PrComment[]> =>
-      callProjectRuntimeActionOr("pr", "getComments", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getComments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetComments, { prId }),
       ),
     getReviews: async (prId: string): Promise<PrReview[]> =>
-      callProjectRuntimeActionOr("pr", "getReviews", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getReviews", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
       ),
     getReviewThreads: async (prId: string): Promise<PrReviewThread[]> =>
-      callProjectRuntimeActionOr("pr", "getReviewThreads", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getReviewThreads", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
       ),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> =>
@@ -7036,23 +7082,21 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
       ),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
-      callProjectRuntimeActionOr("pr", "getMergeContext", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getMergeContext", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
       ),
     getMergeContexts: (prIds: string[]): Promise<Record<string, PrMergeContext>> =>
-      callProjectRuntimeActionOr(
-        "pr",
+      callPrReadRuntimeActionOr(
         "getMergeContexts",
         { argsList: [prIds] },
         () => ipcRenderer.invoke(IPC.prsGetMergeContexts, { prIds }),
       ),
     listWithConflicts: (args: { includeConflictAnalysis?: boolean } = {}): Promise<PrWithConflicts[]> =>
-      callProjectRuntimeActionOr("pr", "listWithConflicts", { args }, () =>
+      callPrReadRuntimeActionOr("listWithConflicts", { args }, () =>
         ipcRenderer.invoke(IPC.prsListWithConflicts, args),
       ),
     listSnapshots: (args: { prId?: string } = {}): Promise<PrSnapshotHydration[]> =>
-      callProjectRuntimeActionOr(
-        "pr",
+      callPrReadRuntimeActionOr(
         "listSnapshots",
         { args },
         () => ipcRenderer.invoke(IPC.prsListSnapshots, args),
@@ -7061,8 +7105,7 @@ contextBridge.exposeInMainWorld("ade", {
       force?: boolean;
       includeExternalClosed?: boolean;
     }): Promise<GitHubPrSnapshot> =>
-      callProjectRuntimeActionOr(
-        "pr",
+      callPrReadRuntimeActionOr(
         "getGithubSnapshot",
         { args: args ?? {} },
         () => ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
@@ -7166,35 +7209,31 @@ contextBridge.exposeInMainWorld("ade", {
       };
     },
     onEvent: (cb: (ev: PrEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: PrEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.prsEvent, listener);
+      const unsubscribeLocal = subscribeLocalPrEvents(cb);
       const unsubscribeRemote = subscribeRemotePrEvents(cb);
       return () => {
         unsubscribeRemote();
-        ipcRenderer.removeListener(IPC.prsEvent, listener);
+        unsubscribeLocal();
       };
     },
     getDetail: async (prId: string): Promise<PrDetail> =>
-      callProjectRuntimeActionOr("pr", "getDetail", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getDetail", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
       ),
     getFiles: async (prId: string): Promise<PrFile[]> =>
-      callProjectRuntimeActionOr("pr", "getFiles", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getFiles", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
       ),
     getCommits: async (prId: string): Promise<PrCommit[]> =>
-      callProjectRuntimeActionOr("pr", "getCommits", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getCommits", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetCommits, { prId }),
       ),
     getActionRuns: async (prId: string): Promise<PrActionRun[]> =>
-      callProjectRuntimeActionOr("pr", "getActionRuns", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getActionRuns", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
       ),
     getActivity: async (prId: string): Promise<PrActivityEvent[]> =>
-      callProjectRuntimeActionOr("pr", "getActivity", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getActivity", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
       ),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> =>
@@ -7457,11 +7496,11 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
       ),
     getDeployments: async (prId: string): Promise<PrDeployment[]> =>
-      callProjectRuntimeActionOr("pr", "getDeployments", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getDeployments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
       ),
     getAiSummary: async (prId: string): Promise<PrAiSummary | null> =>
-      callProjectRuntimeActionOr("pr", "getAiSummary", { arg: prId }, () =>
+      callPrReadRuntimeActionOr("getAiSummary", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
       ),
     regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>

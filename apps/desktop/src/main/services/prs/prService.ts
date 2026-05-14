@@ -4976,24 +4976,17 @@ export function createPrService({
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
-  let cachedGithubSnapshotIncludesExternalClosed = false;
-  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null = null;
-  let pendingOpenOnlySnapshot: { snapshot: GitHubPrSnapshot; capturedAt: number } | null = null;
+  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot> } | null = null;
 
   const publishGithubSnapshot = (
     snapshot: GitHubPrSnapshot,
-    includesExternalClosed: boolean,
     capturedAt = Date.now(),
   ): void => {
     cachedGithubSnapshot = snapshot;
     cachedGithubSnapshotAt = capturedAt;
-    cachedGithubSnapshotIncludesExternalClosed = includesExternalClosed;
-    if (includesExternalClosed) {
-      pendingOpenOnlySnapshot = null;
-    }
   };
 
-  const getGithubSnapshotUncached = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
+  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
     const githubStatus = await githubService.getStatus();
     if (!githubStatus.tokenStored) {
       throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
@@ -5106,73 +5099,32 @@ export function createPrService({
       );
     }
 
-    const includeExternalClosed = options.includeExternalClosed === true;
-    const externalQueryState = includeExternalClosed ? "" : "is:open ";
-    const externalPullRequestsRaw = githubStatus.userLogin
-      ? await fetchAllPages<any>({
-          path: "/search/issues",
-          query: {
-            q: `is:pr ${externalQueryState}involves:${githubStatus.userLogin} archived:false -repo:${repo.owner}/${repo.name}`,
-            sort: "updated",
-            order: "desc",
-          },
-          select: (payload) => Array.isArray(payload?.items) ? payload.items : [],
-        })
-      : [];
-
     return {
       repo,
       viewerLogin: githubStatus.userLogin,
       repoPullRequests: repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo")),
-      externalPullRequests: externalPullRequestsRaw
-        .filter((rawPr) => rawPr?.pull_request)
-        .map((rawPr) => toGitHubItem(rawPr, "external")),
+      externalPullRequests: [],
       syncedAt: nowIso(),
     };
   };
 
   const getGithubSnapshot = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
     const force = options?.force === true;
-    const includeExternalClosed = options?.includeExternalClosed === true;
-    const cachedSnapshotSatisfiesRequest =
-      cachedGithubSnapshot != null
-      && (!includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed);
-    const startSnapshotRequest = (
-      allowStaleOnError: boolean,
-      requestIncludeExternalClosed = includeExternalClosed,
-    ): Promise<GitHubPrSnapshot> => {
+    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
       const staleFallback = cachedGithubSnapshot;
-      let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
-      const request = getGithubSnapshotUncached({ includeExternalClosed: requestIncludeExternalClosed })
+      let inFlight!: { request: Promise<GitHubPrSnapshot> };
+      const request = getGithubSnapshotUncached()
         .then((snapshot) => {
           const capturedAt = Date.now();
-          const hasWiderRequestInFlight =
-            githubSnapshotInFlight !== null
-            && githubSnapshotInFlight !== inFlight
-            && githubSnapshotInFlight.includeExternalClosed;
           const canPublishSnapshot =
             githubSnapshotInFlight === inFlight
-            || (
-              !requestIncludeExternalClosed
-              && cachedGithubSnapshot === null
-              && !cachedGithubSnapshotIncludesExternalClosed
-              && !hasWiderRequestInFlight
-            );
+            || cachedGithubSnapshot === null;
           if (canPublishSnapshot) {
-            publishGithubSnapshot(snapshot, requestIncludeExternalClosed, capturedAt);
-          } else if (!requestIncludeExternalClosed && cachedGithubSnapshot === null) {
-            pendingOpenOnlySnapshot = { snapshot, capturedAt };
+            publishGithubSnapshot(snapshot, capturedAt);
           }
           return snapshot;
         })
         .catch((error) => {
-          const isCurrentRequest = githubSnapshotInFlight === inFlight;
-          if (isCurrentRequest && requestIncludeExternalClosed && pendingOpenOnlySnapshot) {
-            if (cachedGithubSnapshot === null) {
-              publishGithubSnapshot(pendingOpenOnlySnapshot.snapshot, false, pendingOpenOnlySnapshot.capturedAt);
-            }
-            pendingOpenOnlySnapshot = null;
-          }
           if (allowStaleOnError && staleFallback) {
             logger.warn("prs.github_snapshot_refresh_failed_stale_returned", {
               error: error instanceof Error ? error.message : String(error),
@@ -5186,31 +5138,23 @@ export function createPrService({
             githubSnapshotInFlight = null;
           }
         });
-      inFlight = { request, includeExternalClosed: requestIncludeExternalClosed };
+      inFlight = { request };
       githubSnapshotInFlight = inFlight;
       return request;
     };
 
-    if (!force && cachedSnapshotSatisfiesRequest) {
+    if (!force && cachedGithubSnapshot) {
       const cachedSnapshot = cachedGithubSnapshot;
-      if (!cachedSnapshot) return startSnapshotRequest(false);
       const ageMs = Date.now() - cachedGithubSnapshotAt;
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
         return cachedSnapshot;
       }
-      const refreshIncludeExternalClosed = includeExternalClosed || cachedGithubSnapshotIncludesExternalClosed;
-      if (!githubSnapshotInFlight || (refreshIncludeExternalClosed && !githubSnapshotInFlight.includeExternalClosed)) {
-        void startSnapshotRequest(true, refreshIncludeExternalClosed).catch(() => {});
-      } else if (includeExternalClosed && githubSnapshotInFlight.includeExternalClosed) {
-        return githubSnapshotInFlight.request;
+      if (!githubSnapshotInFlight) {
+        void startSnapshotRequest(true).catch(() => {});
       }
       return cachedSnapshot;
     }
-    if (
-      !force
-      && githubSnapshotInFlight
-      && (!includeExternalClosed || githubSnapshotInFlight.includeExternalClosed)
-    ) {
+    if (!force && githubSnapshotInFlight) {
       return githubSnapshotInFlight.request;
     }
 

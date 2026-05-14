@@ -35,6 +35,7 @@ import {
   resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
+  runLaneDeleteBatchSequentially,
   selectLaneTabPrTag,
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
@@ -1548,17 +1549,17 @@ export function LanesPage() {
         });
         if (runnable.length === 0) continue;
 
-        const results = await Promise.allSettled(
-          runnable.map(async (lane) => {
+        const results = await runLaneDeleteBatchSequentially(
+          runnable,
+          async (lane) => {
             const args = deleteArgsByLaneId.get(lane.id);
             if (!args) return;
             await window.ade.lanes.delete(args);
-          }),
+          },
         );
-        results.forEach((result, index) => {
+        results.forEach((result) => {
           if (result.status === "fulfilled") return;
-          const lane = runnable[index];
-          if (!lane) return;
+          const lane = result.lane;
           blockedLaneIds.add(lane.id);
           errors.push(`${lane.name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
           setDeleteProgressByLaneId((prev) => {

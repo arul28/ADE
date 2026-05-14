@@ -548,6 +548,45 @@ describe("PrsContext refresh", () => {
     });
   });
 
+  it("applies selected PR status and checks without waiting for slow comments", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus: vi.fn(async () => ({ state: "open" })),
+      getChecks: vi.fn(async () => [
+        {
+          name: "ci",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ]),
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn((_prId: string) => new Promise(() => {})),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.getComments).toHaveBeenCalledWith("pr-1");
+  });
+
   it("does not let cached snapshot hydration overwrite live detail data", async () => {
     const user = userEvent.setup();
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);

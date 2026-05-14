@@ -114,6 +114,40 @@ describe("FooterControls", () => {
     expect(frame).toContain("help");
   });
 
+  it("adds the Claude terminal control toggle when a Claude terminal is active", () => {
+    const result = render(
+      <FooterControls
+        provider="claude"
+        modelDisplay="claude-opus"
+        permissionLabel="default"
+        terminalControlAvailable
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("^t");
+    expect(frame).toContain("Claude");
+  });
+
+  it("renders dedicated Claude control hints while the terminal owns input", () => {
+    const result = render(
+      <FooterControls
+        provider="claude"
+        modelDisplay="claude-opus"
+        permissionLabel="default"
+        terminalControlAvailable
+        terminalControlActive
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CLAUDE CONTROL");
+    expect(frame).toContain("^t");
+    expect(frame).toContain("ADE");
+    expect(frame).toContain("^]");
+    expect(frame).not.toContain("^o lanes");
+  });
+
   it("renders a focus indicator and cell hints when the inline row is focused", () => {
     const result = render(
       <FooterControls
