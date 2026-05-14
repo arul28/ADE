@@ -3,7 +3,7 @@ import type { LaneSummary } from "../../../shared/types";
 import { revealLabel } from "../../lib/platform";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
-import { LANE_CLASSIC_COUNT, LANE_COLOR_PALETTE, colorsInUse, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 
 const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -318,14 +318,11 @@ function ColorSwatchRow({
     }
   };
 
-  const rainbow = LANE_COLOR_PALETTE.slice(LANE_CLASSIC_COUNT);
-  const classic = LANE_COLOR_PALETTE.slice(0, LANE_CLASSIC_COUNT);
-
   return (
     <div style={{ padding: "4px 12px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
       <SwatchGroup
         label="Rainbow"
-        colors={rainbow}
+        colors={LANE_RAINBOW_COLORS}
         selectedLower={currentLower}
         used={used}
         owners={owners}
@@ -334,7 +331,7 @@ function ColorSwatchRow({
       />
       <SwatchGroup
         label="Classic"
-        colors={classic}
+        colors={LANE_CLASSIC_COLORS}
         selectedLower={currentLower}
         used={used}
         owners={owners}

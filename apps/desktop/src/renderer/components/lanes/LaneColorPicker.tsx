@@ -1,5 +1,5 @@
 import React from "react";
-import { LANE_CLASSIC_COUNT, LANE_COLOR_PALETTE, type LaneColor } from "./laneColorPalette";
+import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, type LaneColor } from "./laneColorPalette";
 
 type Props = {
   value: string | null | undefined;
@@ -19,14 +19,12 @@ export function LaneColorPicker({
   swatchSize = 22,
 }: Props) {
   const selected = value?.toLowerCase() ?? null;
-  const rainbow = LANE_COLOR_PALETTE.slice(LANE_CLASSIC_COUNT);
-  const classic = LANE_COLOR_PALETTE.slice(0, LANE_CLASSIC_COUNT);
 
   return (
     <div className="flex flex-col gap-2">
       <SwatchGroup
         label="Rainbow"
-        colors={rainbow}
+        colors={LANE_RAINBOW_COLORS}
         selected={selected}
         usedColors={usedColors}
         usedColorOwners={usedColorOwners}
@@ -35,7 +33,7 @@ export function LaneColorPicker({
       />
       <SwatchGroup
         label="Classic"
-        colors={classic}
+        colors={LANE_CLASSIC_COLORS}
         selected={selected}
         usedColors={usedColors}
         usedColorOwners={usedColorOwners}

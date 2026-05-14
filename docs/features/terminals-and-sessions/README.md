@@ -180,6 +180,9 @@ Renderer surfaces:
   ended / clear selection). The filter panel is width-constrained by
   the surrounding Work split, so status/group options wrap in an
   auto-fit grid and the embedded lane selector can fill its parent.
+  Lane group headers expose the same lane context menu used by the Work
+  tab so color, manage, split, and batch actions stay reachable without
+  leaving the session list.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Surfaces a small amber warning pip next to the title
@@ -197,6 +200,11 @@ Renderer surfaces:
   into a live runtime when one is still attached, or starts a fresh
   provider continuation internally and binds it back to the same
   durable session id.
+- `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
+  — shared Work-tab lane context menu hook. It portals `LaneContextMenu`
+  over lane bands, lane chips, collapsed lane pills, and grouped session
+  headers, running inline actions in place and routing modal-bearing lane
+  actions through `/lanes?action=...`.
 - `apps/desktop/src/renderer/components/terminals/WorkCliSessionHeader.tsx`
   — small chat-style header rendered above tracked agent CLI terminals
   (and their tabs). Shows the provider logo, primary title, status dot,

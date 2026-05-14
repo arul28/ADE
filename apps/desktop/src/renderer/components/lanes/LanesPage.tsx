@@ -27,6 +27,7 @@ import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
+  buildLaneActionClearedSearch,
   parseLaneIdsParam,
   laneHasAncestor,
   planLaneDeleteBatches,
@@ -35,6 +36,7 @@ import {
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
   selectLaneTabPrTag,
+  shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
   type LaneTabPrTag,
 } from "./lanePageModel";
@@ -1984,9 +1986,7 @@ export function LanesPage() {
     setManageOpen(true);
     setPulsingLaneId(targetId);
     // Scrub the action param so refreshes don't re-open.
-    const next = new URLSearchParams(location.search);
-    next.delete("action");
-    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+    navigate(`${location.pathname}${buildLaneActionClearedSearch(location.search)}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
 
@@ -2042,10 +2042,7 @@ export function LanesPage() {
     }
     if (!handled) return;
     if (laneId) setPulsingLaneId(laneId);
-    const next = new URLSearchParams(location.search);
-    next.delete("action");
-    next.delete("laneIds");
-    navigate(`${location.pathname}?${next.toString()}`, { replace: true });
+    navigate(`${location.pathname}${buildLaneActionClearedSearch(location.search)}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     urlLaneDeeplinks.action,
@@ -2058,7 +2055,10 @@ export function LanesPage() {
   ]);
 
   useEffect(() => {
-    if (!urlLaneDeeplinks.laneIdsRaw) return;
+    if (!shouldApplyLaneIdsDeepLink({
+      action: urlLaneDeeplinks.action,
+      laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
+    })) return;
     const laneIdsSelection = resolveLaneIdsDeepLinkSelection({
       laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
       inspectorTabParam: urlLaneDeeplinks.inspectorTab,
@@ -2075,9 +2075,17 @@ export function LanesPage() {
         setLaneInspectorTab(valid[0], urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
       }
     }
-  }, [availableLaneIds, selectLane, setLaneInspectorTab, urlLaneDeeplinks.laneIdsRaw, urlLaneDeeplinks.inspectorTab]);
+  }, [
+    availableLaneIds,
+    selectLane,
+    setLaneInspectorTab,
+    urlLaneDeeplinks.action,
+    urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.inspectorTab,
+  ]);
 
   useEffect(() => {
+    if (urlLaneDeeplinks.action) return;
     if (urlLaneDeeplinks.laneIdsRaw) return;
     consumedLaneIdsDeepLinkSignatureRef.current = null;
     const laneId = urlLaneDeeplinks.laneId;
@@ -2091,6 +2099,7 @@ export function LanesPage() {
       setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
     }
   }, [
+    urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneIdsRaw,
     urlLaneDeeplinks.laneId,
     urlLaneDeeplinks.focus,

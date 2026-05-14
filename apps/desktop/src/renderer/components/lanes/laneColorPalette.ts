@@ -5,10 +5,9 @@ export type LaneColor = {
   name: string;
 };
 
-// First 12 are the "Classic" group; the first 8 are also the legacy
-// LANE_ACCENT_COLORS array used as an index-based fallback for unassigned lanes.
-// Last 7 are the "Rainbow" group: pure primaries R O Y G B I V.
-export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
+// The first 8 classic colors are also the legacy LANE_ACCENT_COLORS fallback
+// used as an index-based accent for unassigned lanes.
+export const LANE_CLASSIC_COLORS: readonly LaneColor[] = [
   { hex: "#a78bfa", name: "Violet" },
   { hex: "#60a5fa", name: "Blue" },
   { hex: "#34d399", name: "Emerald" },
@@ -21,6 +20,10 @@ export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
   { hex: "#a3e635", name: "Lime" },
   { hex: "#22d3ee", name: "Cyan" },
   { hex: "#e879f9", name: "Fuchsia" },
+];
+
+// Pure rainbow primaries R O Y G B I V.
+export const LANE_RAINBOW_COLORS: readonly LaneColor[] = [
   { hex: "#ef4444", name: "Bright Red" },
   { hex: "#f97316", name: "Bright Orange" },
   { hex: "#facc15", name: "Bright Yellow" },
@@ -30,7 +33,12 @@ export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
   { hex: "#7c3aed", name: "Bright Violet" },
 ] as const;
 
-export const LANE_CLASSIC_COUNT = 12;
+export const LANE_COLOR_PALETTE: readonly LaneColor[] = [
+  ...LANE_CLASSIC_COLORS,
+  ...LANE_RAINBOW_COLORS,
+] as const;
+
+export const LANE_CLASSIC_COUNT = LANE_CLASSIC_COLORS.length;
 
 export const LANE_FALLBACK_COLORS: readonly string[] = LANE_COLOR_PALETTE
   .slice(0, 8)
