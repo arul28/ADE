@@ -8878,8 +8878,6 @@ export function createAgentChatService(args: {
           turnId,
         });
       }
-    } else {
-      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
     }
     persistChatState(managed);
   };
@@ -12413,8 +12411,10 @@ export function createAgentChatService(args: {
       runtime.awaitingTurnStart = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
-      rememberCodexPlanningApprovalGuard(runtime, turnId, runtime.pendingTurnPlanningApprovalGuarded);
-      runtime.pendingTurnPlanningApprovalGuarded = null;
+      if (runtime.pendingTurnPlanningApprovalGuarded !== null) {
+        rememberCodexPlanningApprovalGuard(runtime, turnId, runtime.pendingTurnPlanningApprovalGuarded);
+        runtime.pendingTurnPlanningApprovalGuarded = null;
+      }
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();

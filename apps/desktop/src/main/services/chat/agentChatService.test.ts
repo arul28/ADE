@@ -9413,6 +9413,16 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-1",
+          },
+        },
+      });
+
       await service.updateSession({
         sessionId: session.id,
         permissionMode: "full-auto",
@@ -9483,6 +9493,68 @@ describe("createAgentChatService", () => {
         && event.event.turnId === "turn-2"
         && event.event.message.includes("PLANNER CONTRACT VIOLATION")
       )).toBe(false);
+    });
+
+    it("carries Codex planner approval guard through async turn/started when turn/start has no id", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      mockState.codexResponseOverrides.set("turn/start", { turn: {} });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the investigation.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-async-1",
+          },
+        },
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-async-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-async-1",
+          turnId: "turn-async-1",
+          command: "/bin/zsh -lc 'ade --socket lanes list --text'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "error"
+          && event.event.turnId === "turn-async-1"
+          && event.event.message.includes("PLANNER CONTRACT VIOLATION")
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-async-1")).toMatchObject({
+        result: { decision: "decline" },
+      });
     });
 
     it("uses each updated Codex reasoning effort on the next post-turn send", async () => {
