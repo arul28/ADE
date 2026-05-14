@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isChatToolType, shortToolTypeLabel } from "./sessions";
+import { isChatToolType, normalizeSessionLabel, preferredSessionLabel, shortToolTypeLabel } from "./sessions";
 
 describe("isChatToolType", () => {
   it("returns false for null, undefined, or empty input", () => {
@@ -80,5 +80,17 @@ describe("shortToolTypeLabel", () => {
 
   it("replaces hyphens with spaces for unknown tool types", () => {
     expect(shortToolTypeLabel("my-custom-tool")).toBe("my custom tool");
+  });
+});
+
+describe("session labels", () => {
+  it("removes terminal controls before normalizing labels", () => {
+    expect(normalizeSessionLabel("\u001b7Claude Code\u001b8 ready")).toBe("Claude Code ready");
+    expect(preferredSessionLabel("Ran task \u001b[31mfailed\u001b[0m")).toBe("Ran task failed");
+  });
+
+  it("removes Claude fullscreen chrome from persisted terminal summaries", () => {
+    const label = "Ran Say exactly: patched exit works (FAIL, exit code 143, \u001b7\u001b8╭───Claude Codev2.1.141────)";
+    expect(normalizeSessionLabel(label)).toBe("Ran Say exactly: patched exit works (STOPPED, exit code 143)");
   });
 });

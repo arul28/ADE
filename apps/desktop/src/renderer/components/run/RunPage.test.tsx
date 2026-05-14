@@ -1,14 +1,29 @@
 // @vitest-environment jsdom
 
 import React from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { RunPage } from "./RunPage";
 import { useAppStore } from "../../state/appStore";
-import type { LaneSummary, ProjectInfo } from "../../../shared/types";
+import type { LaneSummary, ProcessRuntime, ProjectInfo } from "../../../shared/types";
 
 const STORAGE_KEY = "ade.run.laneRuntimeBarOpen";
+type EventHandler = (event: unknown) => void;
+type VitestMock = ReturnType<typeof vi.fn>;
+type RuntimeBarAdeStub = {
+  lanes: {
+    diagnosticsRunHealthCheck: VitestMock;
+    proxyGetPreviewInfo: VitestMock;
+    portGetLease: VitestMock;
+    proxyGetStatus: VitestMock;
+    oauthGetStatus: VitestMock;
+    oauthGenerateRedirectUris: VitestMock;
+  };
+  processes: {
+    listRuntime: VitestMock;
+  };
+};
 
 const mocks = vi.hoisted(() => ({
   laneBarSpy: vi.fn(),
@@ -59,7 +74,33 @@ const stubProject: ProjectInfo = {
   baseRef: "main",
 };
 
+const baseRuntime: ProcessRuntime = {
+  runId: "run-1",
+  laneId: "lane-a",
+  processId: "proc-1",
+  status: "running",
+  readiness: "unknown",
+  pid: 1234,
+  sessionId: null,
+  ptyId: null,
+  startedAt: "2026-05-13T00:00:00.000Z",
+  endedAt: null,
+  exitCode: null,
+  lastExitCode: null,
+  lastEndedAt: null,
+  uptimeMs: 1_000,
+  ports: [3000],
+  logPath: null,
+  updatedAt: "2026-05-13T00:00:01.000Z",
+};
+
 function installAdeStub() {
+  const handlers: {
+    process?: EventHandler;
+    proxy?: EventHandler;
+    port?: EventHandler;
+    diagnostics?: EventHandler;
+  } = {};
   const emptyConfig = {
     effective: { processGroups: [] },
     shared: { processGroups: [], processes: [] },
@@ -71,10 +112,63 @@ function installAdeStub() {
       save: vi.fn().mockResolvedValue(undefined),
       confirmTrust: vi.fn().mockResolvedValue(undefined),
     },
+    lanes: {
+      diagnosticsGetLaneHealth: vi.fn().mockResolvedValue({
+        laneId: "lane-a",
+        status: "unknown",
+        issues: [],
+        respondingPort: null,
+        portResponding: null,
+      }),
+      diagnosticsRunHealthCheck: vi.fn().mockResolvedValue({
+        laneId: "lane-a",
+        status: "healthy",
+        issues: [],
+        respondingPort: 3000,
+        portResponding: true,
+      }),
+      proxyGetPreviewInfo: vi.fn().mockResolvedValue({
+        laneId: "lane-a",
+        previewUrl: "http://lane-a.localhost:5174",
+        hostname: "lane-a.localhost",
+        proxyPort: 5174,
+        targetPort: 3000,
+        active: true,
+      }),
+      portGetLease: vi.fn().mockResolvedValue({
+        laneId: "lane-a",
+        status: "active",
+        rangeStart: 3000,
+        rangeEnd: 3099,
+      }),
+      proxyGetStatus: vi.fn().mockResolvedValue({ running: true, proxyPort: 5174 }),
+      oauthGetStatus: vi.fn().mockResolvedValue({ enabled: true }),
+      oauthGenerateRedirectUris: vi.fn().mockResolvedValue([
+        {
+          provider: "google",
+          uris: ["http://localhost:5174/oauth/callback"],
+        },
+      ]),
+      onDiagnosticsEvent: vi.fn((handler: EventHandler) => {
+        handlers.diagnostics = handler;
+        return vi.fn();
+      }),
+      onProxyEvent: vi.fn((handler: EventHandler) => {
+        handlers.proxy = handler;
+        return vi.fn();
+      }),
+      onPortEvent: vi.fn((handler: EventHandler) => {
+        handlers.port = handler;
+        return vi.fn();
+      }),
+    },
     processes: {
       listDefinitions: vi.fn().mockResolvedValue([]),
       listRuntime: vi.fn().mockResolvedValue([]),
-      onEvent: vi.fn(() => vi.fn()),
+      onEvent: vi.fn((handler: EventHandler) => {
+        handlers.process = handler;
+        return vi.fn();
+      }),
       start: vi.fn(),
       stop: vi.fn(),
       kill: vi.fn(),
@@ -90,7 +184,29 @@ function installAdeStub() {
       listRecent: vi.fn().mockResolvedValue([]),
       resolveIcon: vi.fn().mockResolvedValue({ dataUrl: null, sourcePath: null, mimeType: null }),
     },
+    app: {
+      writeClipboardText: vi.fn(),
+    },
   };
+  return { handlers };
+}
+
+async function flushPromises() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+async function advanceTimers(ms: number) {
+  await act(async () => {
+    vi.advanceTimersByTime(ms);
+    await Promise.resolve();
+  });
+  await flushPromises();
+}
+
+function getRuntimeBarAdeStub(): RuntimeBarAdeStub {
+  return (window as unknown as { ade: RuntimeBarAdeStub }).ade;
 }
 
 let originalAde: unknown;
@@ -281,5 +397,185 @@ describe("RunPage Advanced lane runtime drawer", () => {
       expect(ade.processes.start).toHaveBeenCalledWith({ laneId: "lane-a", processId: "proc-1" });
     });
     expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-run:pty-run");
+  });
+
+  it("reveals and selects a terminal started from a group run event", async () => {
+    const { handlers } = installAdeStub();
+    const group = { id: "group-dev", name: "Dev" };
+    const definitions = [
+      {
+        id: "proc-1",
+        name: "API",
+        command: ["npm", "run", "api"],
+        cwd: ".",
+        env: {},
+        groupIds: [group.id],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" as const },
+      },
+      {
+        id: "proc-2",
+        name: "Web",
+        command: ["npm", "run", "web"],
+        cwd: ".",
+        env: {},
+        groupIds: [group.id],
+        autostart: false,
+        restart: "never",
+        gracefulShutdownMs: 7000,
+        dependsOn: [],
+        readiness: { type: "none" as const },
+      },
+    ];
+    const ade = (window as unknown as { ade: {
+      projectConfig: { get: ReturnType<typeof vi.fn> };
+      processes: { listDefinitions: ReturnType<typeof vi.fn>; startGroup: ReturnType<typeof vi.fn> };
+    } }).ade;
+    ade.projectConfig.get.mockResolvedValue({
+      effective: { processGroups: [group] },
+      shared: { processGroups: [group], processes: definitions },
+      local: { processGroups: [], processes: [] },
+    });
+    ade.processes.listDefinitions.mockResolvedValue(definitions);
+    ade.processes.startGroup.mockResolvedValue(undefined);
+
+    render(<RunPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /Dev\s*2/i }));
+    fireEvent.click(screen.getByRole("button", { name: /run all/i }));
+
+    await waitFor(() => {
+      expect(ade.processes.startGroup).toHaveBeenCalledWith({
+        groupId: "group-dev",
+        laneByProcessId: { "proc-1": "lane-a", "proc-2": "lane-a" },
+      });
+    });
+
+    await act(async () => {
+      handlers.process?.({
+        type: "runtime",
+        runtime: {
+          ...baseRuntime,
+          runId: "run-2",
+          processId: "proc-2",
+          sessionId: "terminal-group",
+          ptyId: "pty-group",
+        },
+      });
+    });
+
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("terminal-group:pty-group");
+  });
+
+  it("keeps the project root cwd when saving a new command", async () => {
+    const ade = (window as unknown as {
+      ade: {
+        projectConfig: {
+          get: ReturnType<typeof vi.fn>;
+          save: ReturnType<typeof vi.fn>;
+        };
+      };
+    }).ade;
+
+    render(<RunPage />);
+    await waitFor(() => expect(ade.projectConfig.get).toHaveBeenCalled());
+    fireEvent.click(screen.getAllByRole("button", { name: /^add command$/i })[0]!);
+    fireEvent.change(await screen.findByPlaceholderText("e.g. Dev server"), { target: { value: "Docs" } });
+    fireEvent.change(screen.getByPlaceholderText("e.g. npm run dev"), { target: { value: "npm run docs" } });
+
+    const submitButton = within(document.body).getAllByRole("button", { name: /^add command$/i }).at(-1);
+    expect(submitButton).toBeTruthy();
+    await waitFor(() => expect((submitButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(submitButton!);
+
+    await waitFor(() => {
+      expect(ade.projectConfig.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          shared: expect.objectContaining({
+            processes: [
+              expect.objectContaining({
+                name: "Docs",
+                command: ["npm", "run", "docs"],
+                cwd: ".",
+              }),
+            ],
+          }),
+        }),
+      );
+    });
+  });
+});
+
+describe("LaneRuntimeBar refresh behavior", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refreshes health after runtime events without rereading the routing snapshot", async () => {
+    const { LaneRuntimeBar } = await vi.importActual<typeof import("./LaneRuntimeBar")>("./LaneRuntimeBar");
+    const { handlers } = installAdeStub();
+    const ade = getRuntimeBarAdeStub();
+    render(<LaneRuntimeBar laneId="lane-a" />);
+
+    await flushPromises();
+    expect(ade.lanes.proxyGetPreviewInfo).toHaveBeenCalledTimes(1);
+    await advanceTimers(200);
+    expect(ade.lanes.diagnosticsRunHealthCheck).toHaveBeenCalledTimes(1);
+
+    ade.lanes.proxyGetPreviewInfo.mockClear();
+    ade.lanes.portGetLease.mockClear();
+    ade.lanes.proxyGetStatus.mockClear();
+    ade.lanes.oauthGetStatus.mockClear();
+    ade.lanes.oauthGenerateRedirectUris.mockClear();
+    ade.lanes.diagnosticsRunHealthCheck.mockClear();
+    ade.processes.listRuntime.mockClear();
+
+    await act(async () => {
+      handlers.process?.({ type: "runtime", runtime: baseRuntime });
+    });
+    await advanceTimers(200);
+
+    expect(ade.lanes.diagnosticsRunHealthCheck).toHaveBeenCalledTimes(1);
+    expect(ade.processes.listRuntime).toHaveBeenCalledTimes(1);
+    expect(ade.lanes.proxyGetPreviewInfo).not.toHaveBeenCalled();
+    expect(ade.lanes.portGetLease).not.toHaveBeenCalled();
+    expect(ade.lanes.proxyGetStatus).not.toHaveBeenCalled();
+    expect(ade.lanes.oauthGetStatus).not.toHaveBeenCalled();
+    expect(ade.lanes.oauthGenerateRedirectUris).not.toHaveBeenCalled();
+  });
+
+  it("keeps routing refreshes event-driven between slower safety polls", async () => {
+    const { LaneRuntimeBar } = await vi.importActual<typeof import("./LaneRuntimeBar")>("./LaneRuntimeBar");
+    const { handlers } = installAdeStub();
+    const ade = getRuntimeBarAdeStub();
+    render(<LaneRuntimeBar laneId="lane-a" />);
+
+    await flushPromises();
+    expect(ade.lanes.proxyGetPreviewInfo).toHaveBeenCalledTimes(1);
+    await advanceTimers(200);
+
+    ade.lanes.proxyGetPreviewInfo.mockClear();
+    ade.lanes.portGetLease.mockClear();
+    ade.lanes.proxyGetStatus.mockClear();
+
+    await advanceTimers(10_000);
+    expect(ade.lanes.proxyGetPreviewInfo).not.toHaveBeenCalled();
+    expect(ade.lanes.portGetLease).not.toHaveBeenCalled();
+    expect(ade.lanes.proxyGetStatus).not.toHaveBeenCalled();
+
+    await act(async () => {
+      handlers.proxy?.({ type: "proxy-started" });
+    });
+    await advanceTimers(100);
+
+    expect(ade.lanes.proxyGetPreviewInfo).toHaveBeenCalledTimes(1);
+    expect(ade.lanes.portGetLease).toHaveBeenCalledTimes(1);
+    expect(ade.lanes.proxyGetStatus).toHaveBeenCalledTimes(1);
   });
 });

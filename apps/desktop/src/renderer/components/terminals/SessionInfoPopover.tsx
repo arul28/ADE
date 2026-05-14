@@ -1,11 +1,9 @@
 import { useEffect, useRef, useMemo, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
-  Clipboard,
   FileText,
   Info,
   Monitor,
-  Play,
   Stop as Square,
   Trash,
   X,
@@ -15,7 +13,6 @@ import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
-import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
@@ -80,29 +77,21 @@ export type InfoPopoverState = {
 export function SessionInfoPopover({
   popover,
   onClose,
-  onCloseSession,
-  onEndChat,
+  onStopRuntime,
   onDeleteChat,
   onDeleteSession,
-  onResume,
   onGoToLane,
   closingPtyIds,
-  closingChatSessionId,
   deletingSessionId,
-  resumingSessionId,
 }: {
   popover: InfoPopoverState;
   onClose: () => void;
-  onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
-  onEndChat: (sessionId: string) => void;
+  onStopRuntime: (args: { ptyId: string; sessionId: string }) => void;
   onDeleteChat: (session: TerminalSessionSummary) => void;
   onDeleteSession: (session: TerminalSessionSummary) => void;
-  onResume: (session: TerminalSessionSummary) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
   closingPtyIds: Set<string>;
-  closingChatSessionId: string | null;
   deletingSessionId: string | null;
-  resumingSessionId: string | null;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const outsideDismissReadyRef = useRef(false);
@@ -154,7 +143,6 @@ export function SessionInfoPopover({
   const isChat = isChatToolType(session.toolType);
   const runtime = getTerminalRuntimeSnapshot(session.id);
   const health = !isChat && runtime ? runtime.health ?? null : null;
-  const resumeCommand = resolveTrackedCliResumeCommand(session);
 
   const summaryRaw = (session.summary ?? "").trim();
   const duplicateSummary =
@@ -266,52 +254,6 @@ export function SessionInfoPopover({
           })
           : null}
 
-        {session.status !== "running" && resumeCommand
-          ? sectionShell({
-            title: isChat ? "Resume" : "Resume command",
-            icon: Play,
-            children: (
-              <div>
-                <code className="ade-chat-recessed block max-h-32 overflow-y-auto break-all rounded-lg px-2.5 py-2 font-mono text-[10px] leading-relaxed text-fg/80 scrollbar-none">
-                  {resumeCommand}
-                </code>
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                  <SmartTooltip
-                    content={{
-                      label: isChat ? "Resume" : "Resume in terminal",
-                      description: isChat
-                        ? "Continue or reopen this session using the stored resume key."
-                        : "Spawn a terminal with the same tracked command line used for this session.",
-                    }}
-                  >
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={resumingSessionId != null}
-                      onClick={() => onResume(session)}
-                    >
-                      <Play size={14} weight="regular" />
-                      {resumingSessionId === session.id ? "Resuming..." : isChat ? "Resume" : "Run command"}
-                    </Button>
-                  </SmartTooltip>
-                  <SmartTooltip content={{ label: "Copy", description: "Copy the resume value to the clipboard." }}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(resumeCommand);
-                      }}
-                    >
-                      <Clipboard size={14} weight="regular" />
-                      Copy
-                    </Button>
-                  </SmartTooltip>
-                </div>
-              </div>
-            ),
-          })
-          : null}
-
         {session.status !== "running" ? <SessionDeltaCard sessionId={session.id} className="border-0 bg-white/[0.02]" /> : null}
 
         {health && !isChat
@@ -333,34 +275,21 @@ export function SessionInfoPopover({
 
         <div className="flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-2.5">
           {session.status === "running" && session.ptyId && !isChat ? (
-            <SmartTooltip content={{ label: "Close", description: "End this running terminal process." }}>
+            <SmartTooltip content={{ label: "Stop runtime", description: "End this running terminal process." }}>
               <Button
                 variant="outline"
                 size="sm"
                 disabled={closingPtyIds.has(session.ptyId)}
                 onClick={() => {
-                  if (session.ptyId) onCloseSession({ ptyId: session.ptyId, sessionId: session.id });
+                  if (session.ptyId) onStopRuntime({ ptyId: session.ptyId, sessionId: session.id });
                 }}
               >
                 <Square size={14} weight="regular" />
-                {closingPtyIds.has(session.ptyId) ? "Closing…" : "Close"}
+                {closingPtyIds.has(session.ptyId) ? "Stopping..." : "Stop runtime"}
               </Button>
             </SmartTooltip>
           ) : null}
-          {session.status === "running" && isChat ? (
-            <SmartTooltip content={{ label: "End chat", description: "Stop the in-progress chat for this session." }}>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={closingChatSessionId === session.id}
-                onClick={() => onEndChat(session.id)}
-              >
-                <Square size={14} weight="regular" />
-                {closingChatSessionId === session.id ? "Ending…" : "End chat"}
-              </Button>
-            </SmartTooltip>
-          ) : null}
-          {session.status !== "running" && isChat ? (
+          {isChat ? (
             <SmartTooltip content={{ label: "Delete chat", description: "Permanently remove this chat from the project." }}>
               <Button
                 variant="danger"

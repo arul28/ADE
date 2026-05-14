@@ -103,4 +103,26 @@ describe("SlashPalette", () => {
     expect(frame).not.toContain("Group");
     expect(frame.split("\n")[0]?.length).toBeGreaterThanOrEqual(90);
   });
+
+  it("keeps slash palette rows boxed instead of wrapping mid-row", () => {
+    const frame = stripAnsi(render(
+      <SlashPalette
+        query="/feed"
+        userCommands={[
+          { name: "/feedback", description: "Runtime feedback command", source: "sdk" },
+          { name: "/very-long-runtime-command-name", description: "Runtime command with a long description that should truncate", source: "sdk" },
+        ]}
+        selectedIndex={2}
+        provider="claude"
+        width={80}
+      />,
+    ).lastFrame() ?? "");
+    const lines = frame.split("\n").filter(Boolean);
+
+    expect(lines).toHaveLength(8);
+    expect(lines.every((line) => /^[┌│└]/.test(line) && /[┐│┘]$/.test(line))).toBe(true);
+    expect(frame).toContain("/feedback");
+    expect(frame).toContain("Submit ADE feedback to GitHub issues");
+    expect(frame).not.toContain("Runtime feedback command");
+  });
 });

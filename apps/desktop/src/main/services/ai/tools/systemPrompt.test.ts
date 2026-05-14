@@ -302,9 +302,9 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## Operating Loop");
     expect(result).toContain("## ADE CLI");
     expect(result).toContain("only normal reason to skip ADE CLI");
-    expect(result).toContain("only supported from ADE desktop chats");
-    expect(result).toContain("ade help ios-sim");
-    expect(result).toContain("preview-render --source <swift-file>");
+    expect(result).toContain("ADE ships Agent Skills for deeper operating details");
+    expect(result).toContain("ade-ios-simulator");
+    expect(result).toContain("ade-cli-control-plane");
     expect(result).toContain("## Editing Rules");
     expect(result).toContain("## Verification Rules");
     expect(result).toContain("## User-Facing Progress");

@@ -20,7 +20,7 @@ globally-positioned overlays:
 
 - `SessionContextMenu` — right-click actions on session cards and tabs.
 - `SessionInfoPopover` — hover/click info panel showing tool type,
-  resume command, lane, transcript path, exit code.
+  lane, transcript path, exit code, and management actions.
 
 The page handles session navigation (selection, tab open, "go to lane")
 and invalidates the shared session list cache before pushing a
@@ -33,10 +33,11 @@ It also owns the sidebar's multi-select state:
   clears the multi-selection and opens the tab; shift-click selects the
   range from the anchor; meta/ctrl-click toggles the id in/out of the
   set; any of the three refresh the active single-selected item.
-- `handleBulkCloseSelected` runs on selected `running` sessions,
-  confirming before calling `closeChatSession` for chat rows or
-  `closeSession(ptyId, sessionId)` for PTY rows; failures are counted
-  and surfaced through `sessionActionError`.
+- `handleBulkStopSelected` runs on selected running PTY sessions,
+  confirming before calling `stopRuntime(ptyId, sessionId)`; failures
+  are counted and surfaced through `sessionActionError`. Chat rows stay
+  durable and are continued by sending a message instead of exposing a
+  separate lifecycle action.
 - `handleBulkDeleteSelected` runs on selected non-running sessions
   with a similar confirm + promise-all-settled loop, wired to
   `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
@@ -117,9 +118,9 @@ Three rows:
    lane icon/name, `ClaudeCacheTtlBadge` (Claude chat only), delta chips
    from `useSessionDelta`, exit code badge.
 
-Hover actions include an info button and a resume button. Resume is
-enabled only when the session has ended and has a resolvable CLI
-resume command.
+Hover actions include the info button. Ended agent CLI sessions are
+continued from the transcript surface by typing into the lightweight
+composer; the card itself does not expose a separate continuation action.
 
 The selected card adds a left accent border and elevated background.
 Cards in the multi-selection set (`isMultiSelected`) reuse the same
@@ -293,18 +294,36 @@ Tabs:
   from the layout (otherwise it would float over neighbouring panes
   because `WebContentsView` paints above DOM siblings).
 
-When the active Work session is a chat, the sidebar attaches selections
-to that chat by dispatching window events (`ade:agent-chat:add-attachment`,
-`add-ios-context`, `add-app-control-context`,
-`add-builtin-browser-context`, `insert-draft`) carrying the chat
-session id; the corresponding `AgentChatPane` listens for the matching
-session id and feeds the payload into the same handlers that the
-in-pane drawers use. The sidebar also owns its own
-`AppControlSession` / `IosSimulatorSession` subscriptions so it can
-detect lane mismatches (e.g. App Control was launched from a different
-lane) and disable attachment with a warning banner; the existing tool
-session can still be controlled, but it will not feed context into the
-mismatched lane's chat until the user re-launches.
+The sidebar picks a single insertion target per active Work session via
+`WorkSidebarContextTarget`: a chat (`kind: "chat"`) when the focused
+Work session is chat-typed, otherwise a tracked agent CLI PTY
+(`kind: "pty"`, carrying `sessionId`, `ptyId`, and `toolType`) when the
+focused Work session is Claude / Codex / Cursor / OpenCode / Droid.
+Chat targets receive selections through window events
+(`ade:agent-chat:add-attachment`, `add-ios-context`,
+`add-app-control-context`, `add-builtin-browser-context`,
+`add-macos-vm-context`, `insert-draft`); the matching `AgentChatPane`
+listens for its session id and feeds the payload into the same
+handlers that the in-pane drawers use. PTY targets get the same
+selections formatted into prompt text by
+`apps/desktop/src/renderer/lib/visualContextFormatting.ts`
+(`formatIosElementContextForPrompt`,
+`formatAppControlContextForPrompt`,
+`formatBuiltInBrowserContextForPrompt`,
+`formatMacosVmContextForPrompt`) and written into the PTY as a
+bracketed-paste payload (`\x1b[200~…\x1b[201~`) through
+`window.ade.pty.write`. After the write succeeds the sidebar dispatches
+`ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
+(`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the active
+`TerminalView` can show a brief "context inserted" affordance. When no
+chat or tracked agent CLI session is open in the active Work lane,
+attachment is disabled with the banner "Open a chat or agent CLI
+session in this lane before inserting tool context." The sidebar also
+owns its own `AppControlSession` / `IosSimulatorSession` subscriptions
+so it can detect lane mismatches (e.g. App Control was launched from a
+different lane) and disable attachment with a warning banner; the
+existing tool session can still be controlled, but it will not feed
+context into the mismatched lane until the user re-launches.
 
 Toggling and tab selection go through `useWorkSessions` setters
 (`setWorkSidebarOpen`, `setWorkSidebarTab`, `setWorkSidebarWidthPct`).
@@ -421,7 +440,8 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 - `buildTrackedCliLaunchCommand({ provider, permissionMode, ... })`
   returns the canonical `{ command?, args, startupCommand, env? }`
-  shape used for both fresh launches and resumes. Permission mode
+  shape used for fresh launches and internal provider continuation.
+  Permission mode
   choices map onto provider-native flags / configs:
   - **Claude** → `--permission-mode` flag (CLI default plus
     plan/acceptEdits/bypassPermissions).
@@ -444,22 +464,22 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   context.
 - `buildTrackedCliStartupCommand({ provider, permissionMode, ... })`
   thin wrapper that returns just the shell-typed `startupCommand`.
-- `resolveTrackedCliResumeCommand(session)` — used for the resume
-  action on the session card. Internally calls
-  `buildTrackedCliResumeCommand(metadata)`, which knows how to format
-  Claude (`claude --resume <uuid>`), Codex (`codex resume <thread>`),
-  Cursor (`cursor-agent --resume <chatId>` / `--continue`), Droid (the
-  same `--settings` preamble plus `droid --resume <id>`), and OpenCode
-  (`opencode --session <id>` / `--continue`).
+- `resolveTrackedCliResumeCommand(session)` — internal runtime helper
+  for rebuilding the command used behind the continuation composer.
+  It calls `buildTrackedCliResumeCommand(metadata)`, which knows how
+  to format Claude (`claude --resume <uuid>`), Codex (`codex resume
+  <thread>`), Cursor (`cursor-agent --resume <chatId>` / `--continue`),
+  Droid (the same `--settings` preamble plus `droid --resume <id>`),
+  and OpenCode (`opencode --session <id>` / `--continue`).
 
 ## Context menu: `SessionContextMenu.tsx`
 
 Right-click menu with branches per session type:
 
-- Chat: Rename (inline text input, sets `manuallyNamed: true`), Stop,
-  Resume, Go to lane, Copy session ID.
-- PTY: Stop (dispatches `ptyDispose`), Go to lane, Copy session ID,
-  Copy resume command (when available).
+- Chat: Rename (inline text input, sets `manuallyNamed: true`), Delete,
+  archive/restore, Go to lane, Copy session ID.
+- PTY: Stop runtime (dispatches `ptyDispose`), Go to lane, Copy
+  session ID.
 
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
@@ -501,10 +521,10 @@ argv-based spawn with ADE CLI guidance baked in. `profile` is a
 | "shell"`); the matching tab title and recorded `TerminalToolType`
 come from the shared `LAUNCH_PROFILE_TITLE` / `LAUNCH_PROFILE_TOOL_TYPE`
 maps in `apps/desktop/src/shared/cliLaunch.ts`.
-`inferToolFromResumeCommand` strips leading
-`ENV=value` assignments before sniffing the provider, so resume
-commands the OpenCode preamble emits (`OPENCODE_CONFIG_CONTENT=…
-opencode --session …`) round-trip correctly.
+The runtime strips leading `ENV=value` assignments before sniffing the
+provider, so continuation commands the OpenCode preamble emits
+(`OPENCODE_CONFIG_CONTENT=… opencode --session …`) round-trip
+correctly.
 
 `useLaneWorkSessions` (same file) wraps the same state but scopes to a
 single lane for the Lanes tab.

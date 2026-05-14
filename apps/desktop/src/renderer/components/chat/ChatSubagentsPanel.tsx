@@ -338,7 +338,14 @@ export function ChatSubagentsPanel({
 
   if (!snapshots.length) return null;
 
-  const activeTab = selectedTab;
+  // When only one category has content (e.g. Codex never emits Teammates and
+  // often only emits non-background subagents), drop the tab strip so the
+  // panel reads as a single labeled section instead of one lit-up tab next
+  // to two empty ones.
+  const nonEmptyTabs = (["subagents", "teammates", "background"] as SubagentPanelTab[])
+    .filter((tab) => tabCounts[tab] > 0);
+  const singleNonEmptyTab = nonEmptyTabs.length === 1 ? nonEmptyTabs[0] : null;
+  const activeTab = singleNonEmptyTab ?? selectedTab;
   const visibleSnapshots = snapshots.filter((snapshot) => {
     if (activeTab === "subagents") return !snapshot.background;
     if (activeTab === "teammates") return false;
@@ -347,7 +354,14 @@ export function ChatSubagentsPanel({
   });
 
   const tabs: SubagentPanelTab[] = ["subagents", "teammates", "background"];
-  const tabControls = (
+  const tabControls = singleNonEmptyTab ? (
+    <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-[11px] font-medium text-fg/65">
+      <span>{tabLabel(singleNonEmptyTab)}</span>
+      <span className="rounded-full bg-white/[0.04] px-1.5 py-px font-mono text-[9px] text-fg/45">
+        {tabCounts[singleNonEmptyTab]}
+      </span>
+    </div>
+  ) : (
     <div className="flex shrink-0 items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
       {tabs.map((tab) => (
         <button

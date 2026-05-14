@@ -108,7 +108,7 @@ Other paths are rejected.
 - Per-phase `evidenceRequirements` math and the mission preflight coverage/readiness gate.
 - Settings > Computer Use panel.
 - Ghost OS-specific readiness probes (`ghost status` / `ghost doctor` shelling and regex parsing).
-- MCP tool delivery for computer use.
+- Separate tool delivery for computer use.
 
 ## App Control bridge
 

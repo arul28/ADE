@@ -623,11 +623,7 @@ function makeDefaultClaudeSession() {
     query: {
       interrupt: vi.fn(async () => undefined),
       setPermissionMode: vi.fn(async () => undefined),
-      setMcpServers: vi.fn(async () => undefined),
-      mcpServerStatus: vi.fn(async () => []),
-      reconnectMcpServer: vi.fn(async () => undefined),
-      toggleMcpServer: vi.fn(async () => undefined),
-      reloadPlugins: vi.fn(async () => ({ commands: [], agents: [], plugins: [], mcpServers: [], error_count: 0 })),
+      reloadPlugins: vi.fn(async () => ({ commands: [], agents: [], plugins: [], error_count: 0 })),
       supportedCommands: vi.fn(async () => []),
     },
   };
@@ -761,42 +757,6 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return undefined;
     }),
-	    setMcpServers: vi.fn(async (servers: unknown) => {
-	      if (typeof session.setMcpServers === "function") {
-	        return session.setMcpServers(servers);
-	      }
-	      if (typeof session.query?.setMcpServers === "function") {
-	        return session.query.setMcpServers(servers);
-	      }
-	      return undefined;
-	    }),
-	    mcpServerStatus: vi.fn(async () => {
-	      if (typeof session.mcpServerStatus === "function") {
-	        return session.mcpServerStatus();
-	      }
-	      if (typeof session.query?.mcpServerStatus === "function") {
-	        return session.query.mcpServerStatus();
-	      }
-	      return [];
-	    }),
-	    reconnectMcpServer: vi.fn(async (serverName: string) => {
-	      if (typeof session.reconnectMcpServer === "function") {
-	        return session.reconnectMcpServer(serverName);
-	      }
-	      if (typeof session.query?.reconnectMcpServer === "function") {
-	        return session.query.reconnectMcpServer(serverName);
-	      }
-	      return undefined;
-	    }),
-	    toggleMcpServer: vi.fn(async (serverName: string, enabled: boolean) => {
-	      if (typeof session.toggleMcpServer === "function") {
-	        return session.toggleMcpServer(serverName, enabled);
-	      }
-	      if (typeof session.query?.toggleMcpServer === "function") {
-	        return session.query.toggleMcpServer(serverName, enabled);
-	      }
-	      return undefined;
-	    }),
 	    reloadPlugins: vi.fn(async () => {
 	      if (typeof session.reloadPlugins === "function") {
 	        return session.reloadPlugins();
@@ -804,7 +764,7 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
 	      if (typeof session.query?.reloadPlugins === "function") {
 	        return session.query.reloadPlugins();
 	      }
-	      return { commands: [], agents: [], plugins: [], mcpServers: [], error_count: 0 };
+	      return { commands: [], agents: [], plugins: [], error_count: 0 };
 	    }),
 	    applyFlagSettings: vi.fn(async (settings: unknown) => {
 	      if (typeof session.applyFlagSettings === "function") {
@@ -846,7 +806,6 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
         gridRows: [],
         model: "",
         memoryFiles: [],
-        mcpTools: [],
       };
     }),
     rewindFiles: vi.fn(async (userMessageId: string, options?: { dryRun?: boolean }) => {
@@ -1703,7 +1662,7 @@ describe("createAgentChatService", () => {
       ]);
     });
 
-    it("passes ADE MCP servers upfront and keeps project setting source enabled", async () => {
+    it("disables Claude MCP while keeping project setting source enabled", async () => {
       fs.writeFileSync(path.join(tmpRoot, ".mcp.json"), JSON.stringify({
         mcpServers: {
           projectTools: {
@@ -1733,17 +1692,17 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        mcpServers?: Record<string, unknown>;
+        managedSettings?: Record<string, unknown>;
         settingSources?: string[];
       } | undefined;
+      expect(opts).toBeTruthy();
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
-      expect(opts?.mcpServers).toEqual(expect.objectContaining({
-        ade: expect.objectContaining({
-          type: "stdio",
-          args: expect.arrayContaining(["--headless", "--role", "agent", "mcp"]),
-        }),
-      }));
-      expect(opts?.mcpServers?.projectTools).toBeUndefined();
+      expect(opts).not.toHaveProperty("mcpServers");
+      expect(opts?.managedSettings).toMatchObject({
+        allowedMcpServers: [],
+        allowManagedMcpServersOnly: true,
+        strictPluginOnlyCustomization: ["mcp"],
+      });
     });
 
     it("passes Claude subprocess spawns through the reaper", async () => {
@@ -1847,7 +1806,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
     });
 
-    it("omits the project slash commands section when no commands exist in the lane", async () => {
+    it("lists bundled ADE skills when no lane command files exist", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -1870,7 +1829,50 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toBeTruthy();
-      expect(opts?.systemPrompt?.append).not.toContain("## Project slash commands");
+      expect(opts?.systemPrompt?.append).toContain("## Project slash commands and skills");
+      expect(opts?.systemPrompt?.append).toContain("/ade-cli-control-plane");
+      expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
+    });
+
+    it("caps discovered command listings in the injected Claude prompt", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      for (let index = 0; index < 25; index += 1) {
+        fs.writeFileSync(path.join(commandsDir, `cmd-${String(index).padStart(2, "0")}.md`), [
+          "---",
+          `description: Command ${index}`,
+          "---",
+          "",
+          `Run command ${index}.`,
+          "",
+        ].join("\n"));
+      }
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-many-slash-commands",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("/cmd-00 — Command 0");
+      expect(opts?.systemPrompt?.append).toContain("/cmd-19 — Command 19");
+      expect(opts?.systemPrompt?.append).not.toContain("/cmd-24 — Command 24");
+      expect(opts?.systemPrompt?.append).toContain("5 more command(s) hidden to keep startup context lean");
     });
 
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
@@ -3076,13 +3078,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-1",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3155,13 +3159,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-non-identity",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3241,6 +3247,7 @@ describe("createAgentChatService", () => {
       });
       const persistedAfterPrime = readPersistedChatState(session.id);
       expect(persistedAfterPrime.lastLaneDirectiveKey).toBeTruthy();
+      await service.dispose({ sessionId: session.id });
 
       writePersistedChatState(session.id, {
         ...persistedAfterPrime,
@@ -3294,7 +3301,10 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Recovered");
-      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith("sdk-stale", expect.any(Object));
+      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(
+        "sdk-stale",
+        expect.objectContaining({ resume: "sdk-stale" }),
+      );
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledWith(expect.objectContaining({
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -4285,60 +4295,6 @@ describe("createAgentChatService", () => {
 	    });
 	  });
 
-  describe("Claude MCP status", () => {
-	    it("normalizes MCP status from the live Claude query", async () => {
-	      const mcpServerStatus = vi.fn(async () => [
-	        {
-	          name: "ade",
-	          status: "connected",
-	          scope: "project",
-	          config: { type: "stdio", command: "ade", args: ["mcp"] },
-	          tools: [
-	            {
-	              name: "list_tasks",
-	              description: "List tasks",
-	              annotations: { readOnly: true },
-	            },
-	          ],
-	        },
-	        {
-	          name: "broken",
-	          status: "failed",
-	          error: "connection refused",
-	        },
-	      ]);
-	      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-	        ...makeDefaultClaudeSession(),
-	        mcpServerStatus,
-	      });
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
-
-	      await service.sendMessage({ sessionId: session.id, text: "hello" });
-	      const statuses = await service.getClaudeMcpStatus({ sessionId: session.id });
-
-	      expect(mcpServerStatus).toHaveBeenCalled();
-	      expect(statuses).toEqual([
-	        expect.objectContaining({
-	          name: "ade",
-	          status: "connected",
-	          scope: "project",
-	          config: { type: "stdio", command: "ade", args: ["mcp"] },
-	          tools: [expect.objectContaining({ name: "list_tasks", readOnly: true })],
-	        }),
-	        expect.objectContaining({
-	          name: "broken",
-	          status: "failed",
-	          error: "connection refused",
-	        }),
-	      ]);
-    });
-  });
-
   describe("Claude context usage", () => {
     it("normalizes used and free context categories against the full context window", async () => {
       const getContextUsage = vi.fn(async () => ({
@@ -4353,7 +4309,6 @@ describe("createAgentChatService", () => {
         gridRows: [],
         model: "claude-sonnet",
         memoryFiles: [],
-        mcpTools: [],
       }));
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         ...makeDefaultClaudeSession(),
@@ -4407,13 +4362,12 @@ describe("createAgentChatService", () => {
 	    });
 
 	    it("reloads plugins through the live Claude query", async () => {
-	      const reloadPlugins = vi.fn(async () => ({
-	        plugins: [{ name: "review-plugin", path: "/tmp/review-plugin" }],
-	        commands: [{ name: "review-plugin:audit", description: "Audit" }],
-	        agents: [{ name: "reviewer", description: "Review code" }],
-	        mcpServers: [{ name: "ade", status: "connected" }],
-	        error_count: 0,
-	      }));
+		      const reloadPlugins = vi.fn(async () => ({
+		        plugins: [{ name: "review-plugin", path: "/tmp/review-plugin" }],
+		        commands: [{ name: "review-plugin:audit", description: "Audit" }],
+		        agents: [{ name: "reviewer", description: "Review code" }],
+		        error_count: 0,
+		      }));
 	      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
 	        ...makeDefaultClaudeSession(),
 	        reloadPlugins,
@@ -4430,12 +4384,11 @@ describe("createAgentChatService", () => {
 
 	      expect(reloadPlugins).toHaveBeenCalled();
       expect(result).toEqual(expect.objectContaining({
-        plugins: [expect.objectContaining({ name: "review-plugin", path: "/tmp/review-plugin" })],
-        commands: [expect.objectContaining({ name: "review-plugin:audit", description: "Audit" })],
-        agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
-        mcpServers: [expect.objectContaining({ name: "ade", status: "connected" })],
-        errorCount: 0,
-      }));
+	        plugins: [expect.objectContaining({ name: "review-plugin", path: "/tmp/review-plugin" })],
+	        commands: [expect.objectContaining({ name: "review-plugin:audit", description: "Audit" })],
+	        agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
+	        errorCount: 0,
+	      }));
       expect(service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "/review-plugin:audit", description: "Audit" }),
       ]));
@@ -5313,6 +5266,28 @@ describe("createAgentChatService", () => {
       );
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
+
+    it("does not follow transcript symlinks outside ADE during purge", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const mainTranscriptPath = sessionService.get(session.id)?.transcriptPath ?? "";
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, "{\"event\":\"done\"}\n", "utf8");
+      fs.mkdirSync(path.dirname(mainTranscriptPath), { recursive: true });
+      fs.rmSync(mainTranscriptPath, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, mainTranscriptPath);
+
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(fs.existsSync(outsideTranscriptPath)).toBe(true);
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -5973,6 +5948,65 @@ describe("createAgentChatService", () => {
           && "turnId" in event.event
           && event.event.turnId === "turn-1",
       );
+    });
+
+    it("emits only one user_message for a Codex send while turn/start is delayed", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      mockState.delayedCodexMethods.add("turn/start");
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => {
+          events.push(event);
+        },
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Fix the duplicate first message render.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "user_message"
+          && event.event.text === "Fix the duplicate first message render.",
+      );
+      expect(events.filter((event) => event.event.type === "user_message")).toHaveLength(1);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "in_progress",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-1",
+          delta: "Checking the renderer path.",
+        },
+      });
+
+      mockState.flushCodexResponses();
+      await sendPromise;
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text"
+          && event.event.text === "Checking the renderer path.",
+      );
+      expect(events.filter((event) => event.event.type === "user_message")).toHaveLength(1);
     });
 
     it("ignores unsolicited Codex turn notifications when no turn is active", async () => {
@@ -6721,6 +6755,103 @@ describe("createAgentChatService", () => {
       expect(completedResults).toHaveLength(0);
     });
 
+    it("emits Codex subagent events for current collabAgentToolCall app-server items", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run parallel repository scans.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+            agentsStates: {},
+          },
+        },
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "subagent_started",
+            taskId: "agent-thread-1",
+            description: "Inspect the shared chat renderer",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      expect(
+        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+      ).toBe("running");
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-2",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: null,
+            agentsStates: {
+              "agent-thread-1": {
+                status: "completed",
+                message: "Renderer path mapped.",
+              },
+            },
+          },
+        },
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "subagent_result",
+            taskId: "agent-thread-1",
+            status: "completed",
+            summary: "Renderer path mapped.",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
+      expect(
+        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+      ).toBe("completed");
+    });
+
     it("does not add Codex cache breakdown tokens to derived totals", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -7401,6 +7532,33 @@ describe("createAgentChatService", () => {
         "fragment-a",
         "fragment-b",
       ]);
+    });
+
+    it("does not hydrate transcript symlinks that resolve outside ADE", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "outside-transcript" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      fs.rmSync(transcriptFile, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, transcriptFile);
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events).toEqual([]);
+      expect(parseAgentChatTranscript).not.toHaveBeenCalled();
     });
 
     it("drops history when the underlying session is deleted", async () => {
@@ -13131,7 +13289,6 @@ describe("createAgentChatService", () => {
     expect(resumeSession).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "persisted-droid-session-1",
       cwd: fs.realpathSync(tmpRoot),
-      mcpServers: expect.any(Array),
     }));
     expect(setSessionModel).toHaveBeenCalledWith({
       sessionId: "persisted-droid-session-1",

@@ -9,7 +9,6 @@ import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkCloudArtifactDownloadResult,
   CursorSdkCloudFollowupPayload,
-  CursorSdkCloudMcpServerConfig,
   CursorSdkCloudRunStartedResult,
   CursorSdkCloudSendStreamPayload,
   CursorSdkHookDecision,
@@ -332,9 +331,6 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
     cloud,
   };
   if (payload.modelSdkId?.trim()) options.model = { id: payload.modelSdkId.trim() };
-  if (payload.mcpServers && Object.keys(payload.mcpServers).length) {
-    options.mcpServers = payload.mcpServers as Record<string, CursorSdkCloudMcpServerConfig> as AgentOptions["mcpServers"];
-  }
   return options;
 }
 
@@ -343,9 +339,6 @@ function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partia
     apiKey: payload.apiKey?.trim() || undefined,
   };
   if (payload.modelSdkId?.trim()) options.model = { id: payload.modelSdkId.trim() };
-  if (payload.mcpServers && Object.keys(payload.mcpServers).length) {
-    options.mcpServers = payload.mcpServers as Record<string, CursorSdkCloudMcpServerConfig> as AgentOptions["mcpServers"];
-  }
   return options;
 }
 

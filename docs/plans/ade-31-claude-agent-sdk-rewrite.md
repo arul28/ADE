@@ -56,7 +56,7 @@ Things ADE does already better than t3code:
 - Five runtimes vs three.
 - TUI surface (`ade code`); t3code is web GUI only.
 - Lanes/worktrees as a core concept (t3code only has session scope).
-- Far richer UI: ChatSubagentsPanel, 20-section Settings, handoff button, plan-mode approval, AskUserQuestion integration, memory system, Linear/CTO/MCP integrations.
+- Far richer UI: ChatSubagentsPanel, 20-section Settings, handoff button, plan-mode approval, AskUserQuestion integration, memory system, and Linear/CTO integrations.
 - Effect adoption isn't a fit for ADE; we keep TS without it.
 
 ---
@@ -161,7 +161,6 @@ agentChatService.ts
   ├─ for await (msg of q) { … }
   ├─ q.setPermissionMode(mode)
   ├─ q.setModel(model)
-  ├─ q.setMcpServers(map)
   ├─ q.interrupt() / q.close()
   └─ resume:  query({ prompt: …, options: { resume: sessionId } })
 ```
@@ -177,9 +176,6 @@ Reference: [Sessions guide → "automatic session management" + "use session opt
 | `setModel(model?)` | swap model mid-session | n/a today |
 | `setMaxThinkingTokens(n)` | force thinking budget | manual in opts today |
 | `applyFlagSettings({...})` | apply settings at runtime without spawning CLI | n/a |
-| `setMcpServers(map)` | dynamic add/remove of MCP servers | `setMcpServers()` |
-| `mcpServerStatus()` | inspect MCP connection state | n/a |
-| `reconnectMcpServer(name)` / `toggleMcpServer(name, on)` | per-server control | n/a |
 | `supportedCommands()` / `supportedAgents()` / `supportedModels()` | runtime introspection | partial today |
 | `getContextUsage()` | context breakdown by category (drives `/context`) | n/a |
 | `promptSuggestion()` | re-request prompt suggestions | implicit today |
@@ -207,7 +203,7 @@ Each `query()` spawns a Claude Code subprocess (since 0.2.113, the SDK ships a p
 | Directory | Owner | Contents |
 |---|---|---|
 | `~/.claude/` | Claude Code-compat | settings.json, agents/, commands/, skills/, output-styles/, statusline (script + setting), keybindings.json, plugins/, projects/ (transcripts) |
-| `.claude/` | Project-level Claude-compat | settings.json, settings.local.json, agents/, commands/, skills/, output-styles/, .mcp.json |
+| `.claude/` | Project-level Claude-compat | settings.json, settings.local.json, agents/, commands/, skills/, output-styles/ |
 | `~/.ade/` | ADE-only | lanes/, identities/, memory DB, ade-state, runtime sock |
 | `.ade/` | Project-level ADE-only | lanes/, ade.db, skills/ (multi-runtime — read alongside `.claude/skills/`) |
 
@@ -347,7 +343,6 @@ function buildClaudeOptions(runtime, managed, chatConfig): Options {
     systemPrompt: { type: "preset", preset: "claude_code", append: ADE_SYSTEM_PROMPT_APPEND },
     settingSources: ["user", "project", "local"],
     skills: "all",                                          // NEW (replaces 'Skill' in allowedTools)
-    mcpServers: buildAdeBuiltinMcpServers(runtime),         // NEW: upfront, not post-init
     hooks: buildAdeHooks(),                                 // EXPANDED (see Phase 2)
     canUseTool: buildClaudeCanUseTool(runtime, managed),
     abortController: runtime.abortController,
@@ -393,10 +388,8 @@ const q = query({
 | `runtime.v2Session.send(msg)` | `pump.push(toSDKUserMessage(msg))` |
 | `runtime.v2Session.stream()` | `for await (const m of q) { … }` |
 | `runtime.v2Session.setPermissionMode(m)` | `await q.setPermissionMode(m)` |
-| `runtime.v2Session.setMcpServers(map)` | `await q.setMcpServers(map)` |
 | `runtime.v2Session.interrupt()` | `await q.interrupt()` |
 | `runtime.v2Session.close()` | `q.close()` |
-| `getClaudeV2SessionControl(s).setMcpServers(...)` | `q.setMcpServers(...)` |
 
 #### 1.4 Drop `'Skill'` from allowedTools
 
@@ -479,7 +472,6 @@ Context usage
   Tools                   8,113   6.6%
   CLAUDE.md / AGENTS.md     842   0.7%
   Skills (loaded)         2,401   2.0%
-  MCP servers             5,602   4.6%
   Conversation          61,884  50.4%
   Free                  39,571  32.2%
   ─────────────────────────────────
@@ -574,9 +566,9 @@ Expose Claude Code's built-in styles via `applyFlagSettings({ outputStyle: 'Defa
 
 Reference: [Output styles](https://code.claude.com/docs/en/output-styles).
 
-#### 2.9 MCP server upfront + .mcp.json discovery
+#### 2.9 ADE CLI guidance
 
-ADE built-ins (Linear, ghost-os, computer-use, etc.) move from post-init `setMcpServers()` to the `mcpServers` field of the initial `Options`. `.mcp.json` in the lane auto-discovers via `settingSources` containing `"project"`. `Query.setMcpServers()` continues to work for dynamic add/remove from plugins.
+ADE built-ins stay on the ADE CLI control plane. Claude SDK sessions receive the normal ADE CLI prompt guidance and environment instead of provider-side tool-server configuration.
 
 ### Phase 3 — UI refresh (4–6 days, parallelizable across components)
 
@@ -658,7 +650,7 @@ User configures via `~/.claude/settings.json` → `statusLine` setting key. Mult
 
 #### 4.4 Plugins
 
-Read `~/.claude/plugins/` (so anything installed via `claude /plugin install …` works in `ade code`). Internal ADE features (ade-linear, ade-cto, ade-memory) restructure as plugins using the same `.claude-plugin/plugin.json` manifest. Plugin sources (skills, commands, agents, hooks, MCP servers, output styles) all flow through ADE's pipelines.
+Read `~/.claude/plugins/` (so anything installed via `claude /plugin install …` works in `ade code`). Internal ADE features (ade-linear, ade-cto, ade-memory) restructure as plugins using the same `.claude-plugin/plugin.json` manifest. Plugin sources (skills, commands, agents, hooks, output styles) all flow through ADE's pipelines.
 
 Implementation:
 - `apps/desktop/src/main/services/plugins/pluginRegistry.ts` — scan + load.
@@ -695,7 +687,6 @@ When a Claude chat is active and the model spawns a subagent:
 - `/agents` — list view of installed agents (project + user + plugin sources). No Running tab — Running lives in the right-pane Subagents view.
 - `/skills` — list view of installed skills with type-to-filter search; Enter pre-fills `/<skill-name>`; sort by token count toggle.
 - `/memory` — open the canonical memory file (ADE memory: opens memory manager; Claude: opens CLAUDE.md). Dual-write: edits flow to both.
-- `/mcp` — server list with status, reconnect, toggle.
 - `/context` — context-usage breakdown panel (§2.2).
 - `/compact` — manual compaction trigger.
 - `/init` — generate AGENTS.md (canonical) + CLAUDE.md (thin pointer `@include AGENTS.md`).
@@ -781,7 +772,7 @@ This is the single source of truth from Q&A. If something below conflicts with t
 30. `~/.ade/` and `.ade/` for ADE-only state (lanes, identities, memory DB).
 31. Skills: read both `.ade/skills/` and `.claude/skills/` (multi-runtime support).
 32. `settingSources` stays `["user", "project", "local"]`.
-33. MCP servers: pass upfront in `query()` options + `.mcp.json` auto-discovery via `settingSources`; `Query.setMcpServers()` for dynamic add/remove.
+33. ADE CLI guidance stays the integration point for ADE-owned tools.
 
 ### TUI parity
 34. Keybindings: verbatim `~/.claude/keybindings.json` schema; vim mode via Settings.
@@ -793,7 +784,7 @@ This is the single source of truth from Q&A. If something below conflicts with t
 
 ### Slash commands
 40. Keep all existing ADE slash commands.
-41. Add Core: `/agents`, `/skills`, `/memory`, `/mcp`, `/context`, `/compact`, `/init`.
+41. Add Core: `/agents`, `/skills`, `/memory`, `/context`, `/compact`, `/init`.
 42. Add Operational: `/usage`, `/insights`, `/fast`, `/goal`, `/rename`, `/tag`.
 43. Skip: `/config`, `/branch`, `/teleport`, `/scheduled`, `/release-notes`, `/scroll-speed`.
 44. `/agents` and `/skills` are list-only — no Running tab (Running lives in ChatSubagentsPanel).
@@ -912,7 +903,6 @@ Notes:
 │  Tools                   8,113    6.6%  ▎             │
 │  AGENTS.md / CLAUDE.md     842    0.7%  ▏             │
 │  Skills (loaded)         2,401    2.0%  ▎             │
-│  MCP servers             5,602    4.6%  ▍             │
 │  Conversation           61,884   50.4%  ████████▌    │
 │  Free                   39,571   32.2%  █████▎       │
 │  ─────────────────────────────────────────────       │
@@ -1051,7 +1041,7 @@ This rewrite is large enough to benefit from parallel agent work. Independent sl
 2. `getContextUsage()` + emit canonical context-usage event (Phase 2.2)
 3. Hooks wiring: SubagentStart/Stop, PostToolUse trim, PostToolUseFailure, Notification, Stop (Phase 2.3)
 4. Session library wiring: `listSessions`, `renameSession`, `tagSession`, `getSessionMessages` + ADE pointer table (Phase 2.4)
-5. MCP servers upfront + `.mcp.json` discovery (Phase 2.9)
+5. ADE CLI guidance (Phase 2.9)
 6. ClaudeSubprocessReaper (§4.2)
 
 These six tickets touch different modules in the backend and have minimal UI overlap.
@@ -1108,7 +1098,6 @@ These six tickets touch different modules in the backend and have minimal UI ove
 - **Phase 1:** end-to-end chat flow on the new pipeline. Specific tests:
   - send / receive / streaming (assistant + partial messages)
   - tool approval through `canUseTool` (Allow / Deny / Allow for Session)
-  - MCP server invocation
   - resume by session_id from sidebar
   - permission mode switch mid-turn
   - compact_boundary + identity continuity preserved
@@ -1122,7 +1111,6 @@ These six tickets touch different modules in the backend and have minimal UI ove
   - PostToolUse trim — supply a 5MB tool output; verify trimmed to <200KB before reaching model context
   - Notification hook triggers green/yellow indicator
   - `listSessions()` round-trip with rename / tag
-  - MCP `.mcp.json` discovery — drop a fixture, see server appear
 - **Phase 3:**
   - Permission modal renders all 5 modes; auto row works
   - Handoff Fork — confirm full transcript inheritance
@@ -1167,7 +1155,7 @@ Targeted test files for this initiative:
 - **Phase 1 is a hard cutover.** If a regression slips, the only path back is `git revert`. Mitigation: heavy local smoke before opening the PR; require a second engineer's review specifically of the input-pump and stream loop.
 - **Cross-tool resume edge cases.** If session JSONL files end up under unexpected `cwd` encodings, `claude --resume` won't find them. Test on path with spaces, unicode, deep nesting.
 - **Subprocess orphans on Electron crash.** The reaper handles this only if it had a chance to register PIDs. Add a scan-on-startup for orphan PIDs matching the claude-code binary path.
-- **MCP `.mcp.json` autodiscovery surprises.** A user may have a stale `.mcp.json` in their lane that fails to connect. Surface the connection error prominently in `/mcp` and the chat header.
+- **Project setting surprises.** A user may have stale Claude project settings in their lane. Surface parse or compatibility errors through `/doctor`.
 - **Bundled binary version skew.** The bundled binary version is pinned to the SDK release (`claudeCodeVersion` in SDK package.json since 0.2.6). If a user's project has a `.claude/` config that requires a newer Claude Code feature, surface this in `/doctor`.
 - **Subagent UI re-key (`taskId` → `agent_id`).** During the rewrite, old events may coexist with new ones. Solution: dual-key snapshots (both fields populated) for one release.
 - **Handoff Fork inheriting too much.** A 200-message session forked yields a 200-message new session that costs full context on first turn. Mitigation: warn in the Fork tooltip; add a "Fork from message…" variant later if usage shows this matters.
@@ -1198,7 +1186,7 @@ These don't block the plan; they get resolved during implementation review:
 6. **`agentProgressSummaries` cache miss issue (CHANGELOG 0.2.128).** Verify post-migration we don't regress on cache hits for subagent progress.
 7. **`AskUserQuestion.previewFormat`.** Today ADE sets `markdown` for non-lightweight sessions (`agentChatService.ts:11461`). Keep that.
 8. **`includeHookEvents` option (CHANGELOG 0.2.89).** For diagnostics, useful to emit hook lifecycle messages. Off by default; surface via `/doctor`.
-9. **Settings hot-reload after Phase 4.** Plugin install / settings.json edit / .mcp.json change → does `q.reloadPlugins()` plus `q.applyFlagSettings()` cover all reactive cases?
+9. **Settings hot-reload after Phase 4.** Plugin install / settings.json edit → does `q.reloadPlugins()` plus `q.applyFlagSettings()` cover all reactive cases?
 10. **Plan mode + `planFilePath`.** Today's UI shows the plan inline. If `planFilePath` is set, do we open the file in the editor? Show side-by-side?
 11. **`/memory` UI in desktop chat.** Opens a memory pane vs opening the settings Memory section? Spec needed.
 12. **`/init` interactive flow.** Walk the user through generating AGENTS.md vs auto-generate from repo content vs both? Spec needed.
@@ -1214,7 +1202,7 @@ These don't block the plan; they get resolved during implementation review:
 - **Background agent** — a full separate Claude Code session running in parallel on the same machine. Listed in `claude agents`.
 - **Agent team** — a Team Lead session orchestrating Teammate sessions via SendMessage + shared mailbox under `~/.claude/tasks/<team-name>/`. Experimental (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`).
 - **Skill** — a Markdown-defined capability under `.claude/skills/<name>/SKILL.md`. Model autonomously invokes when description matches request. Also user-invocable via `/<skill-name>`.
-- **Plugin** — a directory with `.claude-plugin/plugin.json` bundling skills / commands / agents / hooks / MCP servers.
+- **Plugin** — a directory with `.claude-plugin/plugin.json` bundling skills / commands / agents / hooks.
 - **Output style** — a Markdown file under `.claude/output-styles/` that modifies the system prompt for tone / format.
 - **Handoff (ADE-specific)** — explicit user action that spawns a new chat from the current one. Two flavors: Fork (Claude→Claude, full history) and Brief (any direction, 12-message summary).
 

@@ -24,9 +24,11 @@ type SkillIndexRow = {
 
 const WATCH_PATTERNS = [
   ".ade/skills/**/*.md",
+  ".agents/skills/**/*.md",
   ".claude/skills/**/*.md",
   ".claude/commands/**/*.md",
   "CLAUDE.md",
+  "AGENTS.md",
   "agents.md",
 ];
 
@@ -49,7 +51,8 @@ function slugify(value: string): string {
 
 function inferKind(filePath: string): SkillIndexKind {
   const normalized = filePath.replace(/\\/g, "/");
-  if (normalized.endsWith("/CLAUDE.md") || normalized.endsWith("/agents.md")) return "root_doc";
+  const basename = path.basename(normalized);
+  if (basename === "CLAUDE.md" || basename.toLowerCase() === "agents.md") return "root_doc";
   if (normalized.includes("/.claude/commands/")) return "command";
   return "skill";
 }
@@ -139,6 +142,11 @@ function buildSkillMarkdown(input: {
   ];
 
   const lines = [
+    "---",
+    `name: ${slugify(input.title)}`,
+    `description: ${yamlQuotedScalar(`Use this skill when ${input.trigger.trim() || "the workflow applies"}.`)}`,
+    "---",
+    "",
     `# ${input.title}`,
     "",
     "## When to use",
@@ -155,6 +163,10 @@ function buildSkillMarkdown(input: {
   ];
 
   return lines.join("\n").trim();
+}
+
+function yamlQuotedScalar(value: string): string {
+  return JSON.stringify(value.replace(/\r\n?/g, "\n"));
 }
 
 export function createSkillRegistryService(args: {
@@ -295,7 +307,7 @@ export function createSkillRegistryService(args: {
 
     // Root docs (CLAUDE.md, agents.md) should be read directly from disk --
     // do NOT import them as procedure memories.
-    if (kind !== "root_doc") {
+    if (kind !== "root_doc" && source !== "exported") {
       const existingMemory = existing?.memory_id ? memoryService.getMemory(existing.memory_id) : null;
       const importedProcedureContent = buildProcedureBody(title, content, absolutePath);
 
@@ -349,7 +361,7 @@ export function createSkillRegistryService(args: {
           supersededByMemoryId: memoryId,
         });
       }
-    } else {
+    } else if (kind === "root_doc") {
       // Root doc -- clear any previously-imported memory reference.
       memoryId = null;
     }
@@ -384,9 +396,10 @@ export function createSkillRegistryService(args: {
       }
     };
     crawl(path.join(projectRoot, ".ade", "skills"));
+    crawl(path.join(projectRoot, ".agents", "skills"));
     crawl(path.join(projectRoot, ".claude", "skills"));
     crawl(path.join(projectRoot, ".claude", "commands"));
-    for (const fileName of ["CLAUDE.md", "agents.md"]) {
+    for (const fileName of ["CLAUDE.md", "AGENTS.md", "agents.md"]) {
       const absolute = path.join(projectRoot, fileName);
       if (fs.existsSync(absolute)) discovered.add(path.resolve(absolute));
     }
@@ -415,7 +428,7 @@ export function createSkillRegistryService(args: {
     while (fs.existsSync(destinationPath)) {
       slug = `${slugBase}-${counter}`;
       counter += 1;
-      destinationDir = path.join(projectRoot, ".claude", "skills", slug);
+      destinationDir = path.join(projectRoot, ".ade", "skills", slug);
       destinationPath = path.join(destinationDir, "SKILL.md");
     }
     fs.mkdirSync(destinationDir, { recursive: true });

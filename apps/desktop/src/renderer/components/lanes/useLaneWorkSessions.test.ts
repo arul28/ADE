@@ -359,7 +359,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       activeItemId: "session-2",
       selectedItemId: "session-2",
       viewMode: "grid",
-      draftKind: "shell",
+      draftKind: "cli",
       laneFilter: "all",
       statusFilter: "all",
       search: "",

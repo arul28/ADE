@@ -48,12 +48,10 @@ import type { LinearConnectionStatus } from "../../desktop/src/shared/types/line
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import {
   buildTrackedCliLaunchCommand,
-  buildTrackedCliResumeCommand,
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
-  launchProfileForTerminalSession,
   validateLaunchProfilePermissionMode,
   type CliProvider,
   type LaunchProfile,
@@ -172,6 +170,7 @@ type SessionState = {
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_PTY_COLS = 120;
 const DEFAULT_PTY_ROWS = 36;
+export const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 
 const RESOURCE_MIME_JSON = "application/json";
 
@@ -301,7 +300,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "start_cli_session",
-    description: "Start or resume a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    description: "Start a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
     inputSchema: {
       type: "object",
       required: ["laneId", "provider"],
@@ -312,13 +311,28 @@ const TOOL_SPECS: ToolSpec[] = [
         permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         title: { type: "string" },
         initialInput: { type: "string" },
-        cols: { type: "number", minimum: 20, maximum: 240, default: 120 },
-        rows: { type: "number", minimum: 4, maximum: 120, default: 36 },
+        cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
+        rows: { type: "number", minimum: 4, maximum: 200, default: 36 },
+        model: { type: "string" },
+        modelId: { type: "string" },
         cwd: { type: "string" },
         chatSessionId: { type: "string" },
-        resumeSessionId: { type: "string" },
-        resumeTargetId: { type: "string" },
         tracked: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "send_to_session",
+    description: "Send text to an ADE Work CLI session. If the session is ended and resumable, ADE starts the provider continuation internally and attaches it to the same durable session.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId", "text"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        text: { type: "string", minLength: 1 },
+        cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
+        rows: { type: "number", minimum: 4, maximum: 200, default: 36 }
       }
     }
   },
@@ -1770,30 +1784,6 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "resumeChat",
-    description: "Resume an ended ADE Work chat session.",
-    inputSchema: {
-      type: "object",
-      required: ["sessionId"],
-      additionalProperties: false,
-      properties: {
-        sessionId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "endChat",
-    description: "End an ADE Work chat session.",
-    inputSchema: {
-      type: "object",
-      required: ["sessionId"],
-      additionalProperties: false,
-      properties: {
-        sessionId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
     name: "listLinearWorkflows",
     description: "List active and queued Linear workflow runs managed by ADE.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} }
@@ -2197,6 +2187,7 @@ const MUTATION_TOOLS = new Set([
   "create_lane",
   "run_ade_action",
   "start_cli_session",
+  "send_to_session",
   "import_lane",
   "merge_lane",
   "git_fetch",
@@ -2231,8 +2222,6 @@ const MUTATION_TOOLS = new Set([
   "spawnChat",
   "sendChatMessage",
   "interruptChat",
-  "resumeChat",
-  "endChat",
   "resolveLinearRunAction",
   "cancelLinearRun",
   "routeLinearIssueToCto",
@@ -2499,25 +2488,6 @@ function clampInteger(value: unknown, fallback: number, min: number, max: number
 
 function isCliProvider(provider: LaunchProfile): provider is CliProvider {
   return provider !== "shell";
-}
-
-function requireCliResumeSession(
-  runtime: AdeRuntime,
-  sessionId: string,
-  provider: LaunchProfile,
-): TerminalSessionSummary {
-  const session = runtime.sessionService.get(sessionId) as TerminalSessionSummary | null;
-  if (!session) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `resumeSessionId '${sessionId}' was not found.`);
-  }
-  const existingProvider = launchProfileForTerminalSession(session);
-  if (existingProvider && existingProvider !== provider) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`,
-    );
-  }
-  return session;
 }
 
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
@@ -3149,8 +3119,6 @@ async function runCtoOperatorBridgeTool(
     previewSessionToolNames: agentChatService.previewSessionToolNames,
     sendChatMessage: agentChatService.sendMessage,
     interruptChat: agentChatService.interrupt,
-    resumeChat: agentChatService.resumeSession,
-    disposeChat: agentChatService.dispose,
     ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
       agentChatService.ensureIdentitySession({
         identityKey: "cto",
@@ -5138,36 +5106,21 @@ async function runTool(args: {
     } catch (err) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, err instanceof Error ? err.message : String(err));
     }
-    const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 240);
-    const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 120);
+    const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 400);
+    const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
-    const resumeSessionId = asOptionalTrimmedString(toolArgs.resumeSessionId);
-    const resumeTargetIdRaw = asOptionalTrimmedString(toolArgs.resumeTargetId);
-    const resumeTargetId = resumeTargetIdRaw ? stripInjectionChars(resumeTargetIdRaw) : null;
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
-    const resumeSession = resumeSessionId ? requireCliResumeSession(runtime, resumeSessionId, provider) : null;
+    const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
     const ptyService = runtime.ptyService;
-    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+    const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
 
     const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
       if (!isCliProvider(provider)) return {};
-      if (resumeSessionId || resumeTargetId) {
-        const startupCommand = resumeSession?.resumeMetadata
-          ? buildTrackedCliResumeCommand(resumeSession.resumeMetadata)
-          : resumeSession?.resumeCommand?.trim()
-            || buildTrackedCliResumeCommand({
-              provider,
-              targetKind: "session",
-              targetId: resumeTargetId,
-              launch: { permissionMode },
-            });
-        return { startupCommand };
-      }
-      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model });
     })();
 
     const created = await ptyService.create({
-      ...(resumeSessionId || preassignedSessionId ? { sessionId: resumeSessionId ?? preassignedSessionId } : {}),
+      ...(preassignedSessionId ? { sessionId: preassignedSessionId } : {}),
       ...(preassignedSessionId ? { allowNewSessionId: true } : {}),
       laneId,
       cols,
@@ -5194,6 +5147,18 @@ async function runTool(args: {
           "Created terminal session could not receive the initial input.",
         );
       }
+      if (provider === "claude") {
+        const confirmTimer = setTimeout(() => {
+          const confirmWritten = ptyService.writeBySessionId(created.sessionId, "\r");
+          if (!confirmWritten) {
+            runtime.logger.warn("rpc.start_cli_session_claude_initial_input_confirm_failed", {
+              sessionId: created.sessionId,
+              ptyId: created.ptyId,
+            });
+          }
+        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
+        confirmTimer.unref?.();
+      }
     }
 
     const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
@@ -5203,12 +5168,24 @@ async function runTool(args: {
       laneId,
       title,
       permissionMode,
+      model: provider === "claude" ? model ?? null : null,
       ptyId: created.ptyId,
       sessionId: created.sessionId,
       startupCommand: launchFields.startupCommand ?? null,
       initialInputWritten,
       session: enrichedSession ?? null,
     };
+  }
+
+  if (name === "send_to_session") {
+    const sessionId = assertNonEmptyString(toolArgs.sessionId, "sessionId");
+    const text = assertNonEmptyString(toolArgs.text, "text");
+    return await runtime.ptyService.sendToSession({
+      sessionId,
+      text,
+      cols: clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 400),
+      rows: clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200),
+    });
   }
 
   if (name === "get_ade_action_status") {

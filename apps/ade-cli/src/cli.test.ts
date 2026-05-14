@@ -79,6 +79,7 @@ describe("ADE CLI", () => {
     if (plan.kind !== "help") return;
     expect(plan.text).toContain("ade code --socket /tmp/ade.sock");
     expect(plan.text).toContain("ade code --require-socket");
+    expect(plan.text).toContain("ade code --lane <id|name|branch>");
     expect(plan.text).toContain("Command palette");
   });
 
@@ -97,11 +98,11 @@ describe("ADE CLI", () => {
   });
 
   it("keeps global version on the version surface", () => {
-    expect(buildCliPlan(["--version"])).toEqual({
-      kind: "help",
-      text: "ade 0.0.0\n",
-    });
-    expect(buildCliPlan(["-v"])).toEqual({ kind: "help", text: "ade 0.0.0\n" });
+    const version = buildCliPlan(["--version"]);
+    expect(version.kind).toBe("help");
+    if (version.kind !== "help") return;
+    expect(version.text).toMatch(/^ade \S+\n$/);
+    expect(buildCliPlan(["-v"])).toEqual(version);
   });
 
   it("builds runtime daemon and stdio RPC commands", () => {
@@ -271,7 +272,13 @@ describe("ADE CLI", () => {
   });
 
   it("forwards resolved roots and socket intent to ade code", () => {
-    const previous = process.env.ADE_RUNTIME_SOCKET_PATH;
+    const previousRuntimeSocket = process.env.ADE_RUNTIME_SOCKET_PATH;
+    const previousRpcSocket = process.env.ADE_RPC_SOCKET_PATH;
+    const previousRpcUrl = process.env.ADE_RPC_URL;
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    delete process.env.ADE_RPC_SOCKET_PATH;
+    delete process.env.ADE_RPC_URL;
+    delete process.env.ADE_WORKSPACE_ROOT;
     process.env.ADE_RUNTIME_SOCKET_PATH = "/tmp/ade-runtime.sock";
     try {
       const args = buildAdeCodeArgs(["--print-state"], {
@@ -293,8 +300,17 @@ describe("ADE CLI", () => {
         "--print-state",
       ]);
     } finally {
-      if (previous === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
-      else process.env.ADE_RUNTIME_SOCKET_PATH = previous;
+      if (previousRuntimeSocket === undefined)
+        delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = previousRuntimeSocket;
+      if (previousRpcSocket === undefined)
+        delete process.env.ADE_RPC_SOCKET_PATH;
+      else process.env.ADE_RPC_SOCKET_PATH = previousRpcSocket;
+      if (previousRpcUrl === undefined) delete process.env.ADE_RPC_URL;
+      else process.env.ADE_RPC_URL = previousRpcUrl;
+      if (previousWorkspace === undefined)
+        delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
     }
   });
 
@@ -416,11 +432,6 @@ describe("ADE CLI", () => {
         },
       ],
     });
-  });
-
-  it("builds the stdio MCP server command", () => {
-    expect(buildCliPlan(["mcp"])).toEqual({ kind: "mcp" });
-    expect(buildCliPlan(["mcp-server"])).toEqual({ kind: "mcp" });
   });
 
   it("builds nested generic ADE action args", () => {
@@ -932,6 +943,24 @@ describe("ADE CLI", () => {
 
   it("requires a chat session id for chat show", () => {
     expect(() => buildCliPlan(["chat", "show"])).toThrow(
+      /sessionId is required/,
+    );
+  });
+
+  it("builds chat slash commands for a positional session id", () => {
+    const plan = buildCliPlan(["chat", "slash", "chat-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("chat slash commands");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSlashCommands",
+        args: { sessionId: "chat-1" },
+      },
+    });
+    expect(() => buildCliPlan(["chat", "slash"])).toThrow(
       /sessionId is required/,
     );
   });
@@ -2074,36 +2103,26 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("finds a start-cli provider after resume value-taking options", () => {
-    const cases: Array<[string, string, string]> = [
-      ["--resume-session", "session-1", "resumeSessionId"],
-      ["--resume-session-id", "session-2", "resumeSessionId"],
-      ["--resume-target", "target-1", "resumeTargetId"],
-      ["--resume-target-id", "target-2", "resumeTargetId"],
-      ["--initial-input", "hello agent", "initialInput"],
-    ];
-
-    for (const [flag, value, field] of cases) {
-      const plan = buildCliPlan([
-        "shell",
-        "start-cli",
-        "--lane",
-        "lane-1",
-        flag,
-        value,
-        "codex",
-      ]);
-      expect(plan.kind).toBe("execute");
-      if (plan.kind !== "execute") return;
-      expect(plan.steps[0]?.params).toMatchObject({
-        name: "start_cli_session",
-        arguments: {
-          laneId: "lane-1",
-          provider: "codex",
-          [field]: value,
-        },
-      });
-    }
+  it("finds a start-cli provider after initial-input value-taking options", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "--lane",
+      "lane-1",
+      "--initial-input",
+      "hello agent",
+      "codex",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "codex",
+        initialInput: "hello agent",
+      },
+    });
   });
 
   it("accepts --provider on shell start as the CLI-session launcher", () => {
@@ -2114,8 +2133,6 @@ describe("ADE CLI", () => {
       "claude",
       "--lane",
       "lane-1",
-      "--resume-session",
-      "session-1",
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
@@ -2125,7 +2142,6 @@ describe("ADE CLI", () => {
         laneId: "lane-1",
         provider: "claude",
         permissionMode: "default",
-        resumeSessionId: "session-1",
       },
     });
   });

@@ -17,15 +17,13 @@ import {
   realpathIfExists,
 } from "./services/projects/projectRoots";
 import {
-  JsonRpcError,
-  JsonRpcErrorCode,
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
   type JsonRpcRequest,
   type JsonRpcTransport,
 } from "./jsonrpc";
-import { isAdeMcpNamedPipePath } from "../../desktop/src/shared/adeMcpIpc";
+import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import {
   isLaunchProfile,
   isTrackedCliPermissionMode,
@@ -131,8 +129,7 @@ type CliPlan =
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "init"; targetPath: string | null }
-  | { kind: "cursor-cloud"; rest: string[] }
-  | { kind: "mcp" };
+  | { kind: "cursor-cloud"; rest: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -186,47 +183,6 @@ const CLI_ENTRY_PATH =
   typeof process.argv[1] === "string" ? path.resolve(process.argv[1]) : "";
 const CLI_PACKAGE_ROOT = resolveCliPackageRoot(CLI_ENTRY_PATH);
 const CLI_DIST_PATH = path.join(CLI_PACKAGE_ROOT, "dist", "cli.cjs");
-const COORDINATOR_MCP_TOOL_NAMES = new Set([
-  "spawn_worker",
-  "insert_milestone",
-  "request_specialist",
-  "delegate_to_subagent",
-  "delegate_parallel",
-  "stop_worker",
-  "send_message",
-  "message_worker",
-  "broadcast",
-  "get_worker_output",
-  "list_workers",
-  "report_status",
-  "report_result",
-  "report_validation",
-  "read_mission_status",
-  "read_mission_state",
-  "update_mission_state",
-  "revise_plan",
-  "update_tool_profiles",
-  "transfer_lane",
-  "provision_lane",
-  "set_current_phase",
-  "create_task",
-  "update_task",
-  "assign_task",
-  "list_tasks",
-  "skip_step",
-  "mark_step_complete",
-  "mark_step_failed",
-  "retry_step",
-  "complete_mission",
-  "fail_mission",
-  "get_budget_status",
-  "request_user_input",
-  "read_file",
-  "read_step_output",
-  "search_files",
-  "get_project_context",
-]);
-
 const WORKER_MISSION_TOOL_CLI_NAMES = new Set([
   "get_mission",
   "get_run_graph",
@@ -431,7 +387,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
-    $ ade mcp                                      Expose ADE actions over stdio MCP
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
@@ -900,6 +855,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code --embedded                          Force the embedded runtime fallback
     $ ade code --require-socket                    Fail instead of embedding when no socket exists
     $ ade code --socket /tmp/ade.sock              Attach to a specific runtime socket
+    $ ade code --lane <id|name|branch>             Launch focused on a specific lane
     $ ade --project-root <path> code                Launch against a specific ADE project
 
   Keys:
@@ -1097,7 +1053,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat interrupt <session>                  Stop an active turn
-    $ ade chat resume <session>                     Resume a session
+    $ ade chat slash <session> --text               List slash commands for a session
     $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
 `,
   agent: `${ADE_BANNER}
@@ -1173,7 +1129,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim stream-stop                      Stop preview/live streaming (stopStream)
 
   Input and selection:
-    $ ade --socket ios-sim select --x 120 --y 420  Add UI context to drawer chat (selectPoint)
+    $ ade --socket ios-sim select --x 120 --y 420  Return/select simulator UI context (chat-owned sessions auto-attach)
     $ ade ios-sim tap 120 420                      Tap active simulator app (tap)
     $ ade ios-sim drag 120 700 120 250             Drag active simulator app (drag)
     $ ade ios-sim swipe 120 700 120 250            Swipe active simulator app (swipe)
@@ -1257,7 +1213,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control screenshot --text            Capture the active renderer screenshot
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
-    $ ade app-control select --x 120 --y 420       Add selected app context to the drawer chat
+    $ ade app-control select --x 120 --y 420       Return/select app context (chat-owned sessions auto-attach)
 
   Input:
     $ ade app-control click 120 420                Click screenshot coordinates
@@ -3672,22 +3628,6 @@ function buildPrPlan(args: string[]): CliPlan {
       label: "PR mobile snapshot",
       steps: [actionArgsListStep("result", "pr", "getMobileSnapshot", [])],
     };
-  if (sub === "snapshots") {
-    const mode = firstPositional(args) ?? "list";
-    const action = mode === "refresh" ? "refreshSnapshots" : "listSnapshots";
-    return {
-      kind: "execute",
-      label: `PR snapshots ${mode}`,
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          action,
-          withPr({ prId: prId ?? firstPositional(args) }),
-        ),
-      ],
-    };
-  }
   if (sub === "github-snapshot")
     return {
       kind: "execute",
@@ -4894,15 +4834,6 @@ function buildCliSessionStartPlan(
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
-    resumeSessionId: readValue(args, [
-      "--resume-session",
-      "--resume-session-id",
-    ]),
-    resumeTargetId: readValue(args, [
-      "--resume-target",
-      "--resume-target-id",
-      "--target",
-    ]),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
@@ -5183,12 +5114,6 @@ function buildChatPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "resume")
-    return {
-      kind: "execute",
-      label: "chat resume",
-      steps: [actionStep("result", "chat", "resumeSession", withSession())],
-    };
   if (sub === "delete" || sub === "rm")
     return {
       kind: "execute",
@@ -5217,7 +5142,7 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "getSlashCommands",
-          collectGenericObjectArgs(args),
+          withSession({ sessionId: requireValue(sessionId, "sessionId") }),
         ),
       ],
     };
@@ -7661,13 +7586,11 @@ function buildCtoPlan(args: string[]): CliPlan {
       transcript: "readChatTranscript",
       send: "sendChatMessage",
       interrupt: "interruptChat",
-      resume: "resumeChat",
-      end: "endChat",
     };
     const tool = toolByMode[mode];
     if (!tool)
       throw new CliUsageError(
-        "cto chats supports list, spawn, status, transcript, send, interrupt, resume, or end.",
+        "cto chats supports list, spawn, status, transcript, send, or interrupt.",
       );
     return {
       kind: "execute",
@@ -8503,10 +8426,6 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--reasoning",
   "--recent-limit",
   "--ref",
-  "--resume-session",
-  "--resume-session-id",
-  "--resume-target",
-  "--resume-target-id",
   "--role",
   "--root",
   "--root-lane",
@@ -8838,7 +8757,6 @@ function buildCliPlan(command: string[]): CliPlan {
     primary === "updates"
   )
     return buildUpdatePlan(args);
-  if (primary === "mcp" || primary === "mcp-server") return { kind: "mcp" };
   if (primary === "cursor") return buildCursorPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
 }
@@ -9255,7 +9173,7 @@ function buildReadinessSnapshot(args: {
     connection.mode === "runtime-socket" ||
     connection.mode === "desktop-socket";
   const desktopSocketAvailable = connection.mode === "desktop-socket";
-  const socketExists = isAdeMcpNamedPipePath(connection.socketPath)
+  const socketExists = isAdeRuntimeNamedPipePath(connection.socketPath)
     ? attachedSocketAvailable
     : fs.existsSync(connection.socketPath);
   const checks = {
@@ -9657,7 +9575,7 @@ async function startHeadlessRpcSocketServer(args: {
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<(() => void) | null> {
   if (
-    isAdeMcpNamedPipePath(args.socketPath) ||
+    isAdeRuntimeNamedPipePath(args.socketPath) ||
     fs.existsSync(args.socketPath)
   ) {
     return null;
@@ -9883,7 +9801,7 @@ async function startHeadlessRpcSocketServers(args: {
 export function shouldAttemptDesktopSocketConnection(
   socketPath: string,
 ): boolean {
-  return isAdeMcpNamedPipePath(socketPath) || fs.existsSync(socketPath);
+  return isAdeRuntimeNamedPipePath(socketPath) || fs.existsSync(socketPath);
 }
 
 async function initializeConnection(
@@ -10251,201 +10169,6 @@ function buildInitializeParams(
   };
 }
 
-function normalizeMcpAdeToolName(name: string): string {
-  const trimmed = name.trim();
-  const prefixPatterns = [
-    /^ade[_:.](.+)$/i,
-    /^mcp[_:.]ade[_:.](.+)$/i,
-    /^mcp__ade__(.+)$/i,
-  ];
-  for (const pattern of prefixPatterns) {
-    const match = pattern.exec(trimmed);
-    if (match?.[1]) return match[1].trim();
-  }
-  return trimmed;
-}
-
-function mcpToolScope(): "all" | "coordinator" {
-  return process.env.ADE_MCP_TOOL_SCOPE === "coordinator"
-    ? "coordinator"
-    : "all";
-}
-
-function isMcpToolVisible(name: string): boolean {
-  if (mcpToolScope() !== "coordinator") return true;
-  return COORDINATOR_MCP_TOOL_NAMES.has(normalizeMcpAdeToolName(name));
-}
-
-function formatMcpToolText(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value ?? null, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-async function runMcpServer(options: GlobalOptions): Promise<void> {
-  const roots = resolveRoots({
-    ...options,
-    headless: true,
-    requireSocket: false,
-  });
-  const previousRole = process.env.ADE_DEFAULT_ROLE;
-  process.env.ADE_DEFAULT_ROLE = options.role;
-  const [{ createAdeRuntime }, { createAdeRpcRequestHandler }] =
-    await Promise.all([import("./bootstrap"), import("./adeRpcServer")]);
-  const runtime = await createAdeRuntime({
-    projectRoot: roots.projectRoot,
-    workspaceRoot: roots.workspaceRoot,
-  });
-  const adeHandler = createAdeRpcRequestHandler({
-    runtime,
-    serverVersion: VERSION,
-    onActionsListChanged: () => {},
-  });
-  let initialized = false;
-  let nextAdeRequestId = 1;
-  const callAde = async (
-    method: string,
-    params?: JsonObject,
-  ): Promise<unknown> => {
-    return await adeHandler({
-      jsonrpc: "2.0",
-      id: nextAdeRequestId++,
-      method,
-      ...(params !== undefined ? { params } : {}),
-    });
-  };
-  const ensureInitialized = async (): Promise<void> => {
-    if (initialized) return;
-    await callAde("ade/initialize", buildInitializeParams(options, "ade-mcp"));
-    initialized = true;
-  };
-
-  const mcpHandler: JsonRpcHandler = async (request) => {
-    const method = typeof request.method === "string" ? request.method : "";
-    const params = isRecord(request.params) ? request.params : {};
-    if (method === "initialize") {
-      await ensureInitialized();
-      const requestedVersion =
-        asString(params.protocolVersion) ?? PROTOCOL_VERSION;
-      return {
-        protocolVersion: requestedVersion,
-        capabilities: {
-          tools: {
-            listChanged: false,
-          },
-        },
-        serverInfo: {
-          name: "ade",
-          version: VERSION,
-        },
-      };
-    }
-    if (method === "notifications/initialized" || method === "initialized") {
-      await ensureInitialized();
-      return null;
-    }
-    await ensureInitialized();
-    if (method === "tools/list") {
-      const listed = await callAde("ade/actions/list");
-      const actions =
-        isRecord(listed) && Array.isArray(listed.actions)
-          ? listed.actions.filter(isRecord)
-          : [];
-      return {
-        tools: actions
-          .map((action) => ({
-            name: asString(action.name) ?? "",
-            description: asString(action.description) ?? "",
-            inputSchema: isRecord(action.inputSchema)
-              ? action.inputSchema
-              : { type: "object", properties: {} },
-          }))
-          .filter(
-            (tool) => tool.name.length > 0 && isMcpToolVisible(tool.name),
-          ),
-      };
-    }
-    if (method === "tools/call") {
-      const rawName = asString(params.name);
-      if (!rawName) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "tools/call requires a tool name.",
-        );
-      }
-      if (!isMcpToolVisible(rawName)) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.methodNotFound,
-          `Tool not available in this MCP scope: ${rawName}`,
-        );
-      }
-      const result = await callAde("ade/actions/call", {
-        name: normalizeMcpAdeToolName(rawName),
-        arguments: isRecord(params.arguments) ? params.arguments : {},
-      });
-      const isError = isRecord(result) && result.ok === false;
-      return {
-        content: [
-          {
-            type: "text",
-            text: formatMcpToolText(result),
-          },
-        ],
-        structuredContent: result ?? null,
-        isError,
-      };
-    }
-    if (method === "shutdown") {
-      return {};
-    }
-    if (method === "exit") {
-      process.nextTick(() => process.exit(0));
-      return {};
-    }
-    throw new JsonRpcError(
-      JsonRpcErrorCode.methodNotFound,
-      `Method not found: ${method}`,
-    );
-  };
-
-  const transport: JsonRpcTransport = {
-    onData(callback) {
-      process.stdin.on("data", (chunk) =>
-        callback(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-      );
-    },
-    write(data) {
-      process.stdout.write(data);
-    },
-    close() {
-      process.stdin.pause();
-    },
-  };
-  const stop = startJsonRpcServer(mcpHandler, transport, { nonFatal: true });
-  await new Promise<void>((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      resolve();
-    };
-    process.stdin.once("end", finish);
-    process.stdin.once("close", finish);
-  });
-  stop();
-  try {
-    adeHandler.dispose?.();
-  } catch {}
-  try {
-    runtime.dispose();
-  } catch {}
-  if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-  else process.env.ADE_DEFAULT_ROLE = previousRole;
-}
-
 function parseOptionalPort(value: string | null, label: string): number | null {
   if (value == null) return null;
   const parsed = Number.parseInt(value, 10);
@@ -10457,7 +10180,7 @@ function parseOptionalPort(value: string | null, label: string): number | null {
 
 function normalizeRuntimeSocketPath(rawSocketPath: string): string {
   return rawSocketPath.startsWith("tcp://") ||
-    isAdeMcpNamedPipePath(rawSocketPath)
+    isAdeRuntimeNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
 }
@@ -10875,7 +10598,7 @@ async function runServe(
     readValue(args, ["--socket"]) ??
     process.env.ADE_RPC_SOCKET_PATH?.trim() ??
     layout.socketPath;
-  const socketPath = isAdeMcpNamedPipePath(rawSocketPath)
+  const socketPath = isAdeRuntimeNamedPipePath(rawSocketPath)
     ? rawSocketPath
     : path.resolve(rawSocketPath);
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
@@ -11072,7 +10795,7 @@ async function runServe(
   };
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
-  if (!isAdeMcpNamedPipePath(socketPath)) {
+  if (!isAdeRuntimeNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     try {
       fs.unlinkSync(socketPath);
@@ -11082,7 +10805,7 @@ async function runServe(
   const socketState = createHeadlessRpcServer(createHandler);
   states.push(socketState);
   await listen(socketState.server, socketPath);
-  if (!isAdeMcpNamedPipePath(socketPath)) {
+  if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.chmodSync(socketPath, 0o600);
     } catch {}
@@ -11118,7 +10841,7 @@ async function runServe(
     stopHeadlessRpcServer(state);
   }
   await scopeRegistry.disposeAll();
-  if (!isAdeMcpNamedPipePath(socketPath)) {
+  if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.unlinkSync(socketPath);
     } catch {}
@@ -13208,14 +12931,6 @@ async function runCli(
           throw new CliUsageError(error.message);
         throw error;
       }
-    }
-    if (plan.kind === "mcp") {
-      await runMcpServer({
-        ...parsed.options,
-        headless: true,
-        requireSocket: false,
-      });
-      return { output: "", exitCode: 0 };
     }
     if (plan.kind === "rpc-stdio") {
       await runNativeRpcStdio(parsed.options);

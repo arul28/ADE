@@ -33,13 +33,13 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/automate",
         description: "Generate comprehensive test suites",
         argumentHint: "[area]",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("uses nested project command paths for unambiguous discovery", () => {
@@ -54,12 +54,12 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/frontend:test",
         description: "Run frontend tests",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("skips legacy command directories deeper than the traversal cap", () => {
@@ -84,12 +84,12 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/level-0:level-1:level-2:level-3:level-4:level-5:level-6:level-7:level-8:level-9:visible",
         description: "Visible nested command",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("preserves command filename casing and dedupes case variants by project precedence", () => {
@@ -147,12 +147,85 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/fix-issue",
         description: "Fix a GitHub issue",
-      },
-    ]);
+      }),
+    ]));
+    expect(commands).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/background-context" }),
+    ]));
+  });
+
+  it("discovers cross-client .agents skills and ADE project skills", () => {
+    const agentsSkill = path.join(tmpRoot, ".agents", "skills", "ios-lab");
+    const adeSkill = path.join(tmpRoot, ".ade", "skills", "pr-resolver");
+    fs.mkdirSync(agentsSkill, { recursive: true });
+    fs.mkdirSync(adeSkill, { recursive: true });
+    fs.writeFileSync(path.join(agentsSkill, "SKILL.md"), [
+      "---",
+      "name: ios-lab",
+      "description: Use this skill for simulator work",
+      "---",
+      "",
+      "Inspect the simulator.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(adeSkill, "SKILL.md"), [
+      "---",
+      "name: pr-resolver",
+      "description: Use this skill for PR resolver work",
+      "---",
+      "",
+      "Resolve the PR.",
+      "",
+    ].join("\n"));
+
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "/ios-lab",
+        description: "Use this skill for simulator work",
+        source: "skill",
+      }),
+      expect.objectContaining({
+        name: "/pr-resolver",
+        description: "Use this skill for PR resolver work",
+        source: "skill",
+      }),
+    ]));
+  });
+
+  it("discovers bundled ADE agent skills from the desktop resources directory in dev", () => {
+    const cwdRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bundled-skills-cwd-"));
+    const skillDir = path.join(cwdRoot, "apps", "desktop", "resources", "agent-skills", "ade-cli-control-plane");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+      "---",
+      "name: ade-cli-control-plane",
+      "description: Operate ADE through the CLI",
+      "---",
+      "",
+      "Use ade doctor.",
+      "",
+    ].join("\n"));
+    vi.spyOn(process, "cwd").mockReturnValue(cwdRoot);
+
+    try {
+      const commands = discoverClaudeSlashCommands(tmpRoot);
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/ade-cli-control-plane",
+          description: "Operate ADE through the CLI",
+          source: "skill",
+          filePath: path.join(skillDir, "SKILL.md"),
+        }),
+      ]));
+    } finally {
+      fs.rmSync(cwdRoot, { recursive: true, force: true });
+    }
   });
 
   it("walks up parent directories to discover .claude/commands at workspace root from a lane subdir", () => {
@@ -169,13 +242,13 @@ describe("discoverClaudeSlashCommands", () => {
     const laneWorktree = path.join(tmpRoot, "lanes", "feature-x", "worktree");
     fs.mkdirSync(laneWorktree, { recursive: true });
 
-    expect(discoverClaudeSlashCommands(laneWorktree)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(laneWorktree)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/audit",
         description: "Workspace-root audit",
         source: "command",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("walks up parent directories for resolveClaudeSlashCommandInvocation as well", () => {
@@ -227,12 +300,12 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(tmpRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/ship",
         description: "Project ship",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("does not let home commands override project commands when the project is under home", () => {
@@ -242,12 +315,12 @@ describe("discoverClaudeSlashCommands", () => {
     fs.writeFileSync(path.join(homeRoot, ".claude", "commands", "audit.md"), "Personal audit.\n");
     fs.writeFileSync(path.join(projectRoot, ".claude", "commands", "audit.md"), "Project audit.\n");
 
-    expect(discoverClaudeSlashCommands(projectRoot)).toMatchObject([
-      {
+    expect(discoverClaudeSlashCommands(projectRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/audit",
         description: "Project audit.",
-      },
-    ]);
+      }),
+    ]));
   });
 
   it("keeps nested commands with the same basename distinct", () => {

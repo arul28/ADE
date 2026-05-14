@@ -16,6 +16,8 @@ on:
         type: string
 
 permissions:
+  actions: read
+  checks: read
   contents: write
 
 jobs:

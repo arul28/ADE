@@ -27,7 +27,7 @@ type GitHubTabProps = {
   onSelectPr: (id: string | null) => void;
   selectedDetailTab?: PrDetailRouteTab | null;
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
-  onRefreshAll: () => Promise<void>;
+  onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
   onOpenQueueView?: (groupId: string) => void;
 };
@@ -59,6 +59,18 @@ function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
   if (GITHUB_TAB_CACHE_DISABLED) return;
   if (!cache.projectRoot) return;
   githubTabWarmCache = cache;
+}
+
+function formatGitHubSnapshotError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  const message = raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+  if (/github token missing/i.test(message)) {
+    return "Connect GitHub in Settings to sync pull requests.";
+  }
+  return message || "Unable to sync pull requests.";
 }
 
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
@@ -483,11 +495,14 @@ export function GitHubTab({
     const isCurrentSnapshotRequest = () =>
       inFlightSnapshotRef.current?.request === pending
       && inFlightSnapshotRef.current.includeExternalClosed === includeExternalClosed;
-    pending = window.ade.prs.getGitHubSnapshot({
-      force: options?.force === true,
-      ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
-    })
+    pending = (async () => {
+      return window.ade.prs.getGitHubSnapshot({
+        force: options?.force === true,
+        ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+      });
+    })()
       .then((next) => {
+        if (!next) return next;
         if (projectRootRef.current !== requestProjectRoot) return next;
         if (!isCurrentSnapshotRequest()) return next;
         setSnapshot(next);
@@ -500,7 +515,7 @@ export function GitHubTab({
       })
       .catch((err) => {
         if (projectRootRef.current === requestProjectRoot && isCurrentSnapshotRequest()) {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(formatGitHubSnapshotError(err));
         }
         return snapshotRef.current as GitHubPrSnapshot;
       })
@@ -738,19 +753,24 @@ export function GitHubTab({
     };
   }, [mergeContextByPrId, selectedLinkedPr]);
 
-  const handleSync = React.useCallback(async () => {
+  const handleSync = React.useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
     setSyncing(true);
     startHotRefreshWindow();
     try {
+      const targeted = Boolean(args.prId || (args.prIds?.length ?? 0) > 0);
       const includeExternalClosed =
         externalHistoryLoadedRef.current || filterRef.current !== "open";
-      await Promise.all([
-        onRefreshAll().catch(() => {}),
-        loadSnapshot({
-          force: true,
-          ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
-        }),
-      ]);
+      if (targeted) {
+        await onRefreshAll(args).catch(() => {});
+      } else {
+        await Promise.all([
+          onRefreshAll().catch(() => {}),
+          loadSnapshot({
+            force: true,
+            ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+          }),
+        ]);
+      }
     } finally {
       setSyncing(false);
     }

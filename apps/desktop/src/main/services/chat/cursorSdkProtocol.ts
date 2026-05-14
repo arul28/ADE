@@ -57,20 +57,6 @@ export type CursorSdkSendPrompt = {
   force?: boolean;
 };
 
-export type CursorSdkCloudMcpServerConfig =
-  | {
-      type?: "stdio";
-      command: string;
-      args?: string[];
-      env?: Record<string, string>;
-      cwd?: string;
-    }
-  | {
-      type?: "http" | "sse";
-      url: string;
-      headers?: Record<string, string>;
-    };
-
 export type CursorSdkCloudRepoOverride = {
   url: string;
   startingRef?: string | null;
@@ -90,7 +76,6 @@ export type CursorSdkCloudSendStreamPayload = {
   skipReviewerRequest?: boolean;
   envType?: "cloud" | "pool" | "machine" | null;
   envName?: string | null;
-  mcpServers?: Record<string, CursorSdkCloudMcpServerConfig>;
 };
 
 export type CursorSdkCloudFollowupPayload = {
@@ -98,7 +83,6 @@ export type CursorSdkCloudFollowupPayload = {
   agentId: string;
   promptText: string;
   modelSdkId?: string | null;
-  mcpServers?: Record<string, CursorSdkCloudMcpServerConfig>;
 };
 
 export type CursorSdkCloudRunCancelPayload = {

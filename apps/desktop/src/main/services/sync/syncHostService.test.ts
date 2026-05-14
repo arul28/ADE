@@ -254,6 +254,7 @@ function createStubChatService() {
     resumeSession: vi.fn().mockResolvedValue(baseSession),
     updateSession: vi.fn().mockResolvedValue(baseSession),
     dispose: vi.fn().mockResolvedValue(undefined),
+    deleteSession: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     getSessionSummary: vi.fn().mockResolvedValue(null),
     getChatTranscript: vi.fn().mockResolvedValue([]),
@@ -2109,12 +2110,12 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       responseText: "No thanks",
     });
 
-    const resume = await sendCommand(secondClient.ws, secondClient.queue, {
-      commandId: "chat-resume",
-      action: "chat.resume",
+    const restart = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-restart",
+      action: "chat.restart",
       args: { sessionId: "session-1" },
     });
-    expect((resume.result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
+    expect((restart.result.payload as { ok: boolean; result: { sessionId: string } }).result.sessionId).toBe("session-1");
     expect(chatService.service.resumeSession).toHaveBeenCalledWith({ sessionId: "session-1" });
 
     const update = await sendCommand(secondClient.ws, secondClient.queue, {
@@ -2135,13 +2136,13 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       permissionMode: "edit",
     }));
 
-    const dispose = await sendCommand(secondClient.ws, secondClient.queue, {
-      commandId: "chat-dispose",
-      action: "chat.dispose",
+    const deleteResult = await sendCommand(secondClient.ws, secondClient.queue, {
+      commandId: "chat-delete",
+      action: "chat.delete",
       args: { sessionId: "session-1" },
     });
-    expect((dispose.result.payload as { ok: boolean }).ok).toBe(true);
-    expect(chatService.service.dispose).toHaveBeenCalledWith({ sessionId: "session-1" });
+    expect((deleteResult.result.payload as { ok: boolean }).ok).toBe(true);
+    expect(chatService.service.deleteSession).toHaveBeenCalledWith({ sessionId: "session-1" });
   }, 15_000);
 
   it("pairs a phone peer using the desktop PIN and allows paired reconnect auth", async () => {

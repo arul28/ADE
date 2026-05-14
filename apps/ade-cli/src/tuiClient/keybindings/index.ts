@@ -49,6 +49,7 @@ const SUPPORTED_ACTION_VALUES = [
   "chat:fastMode",
   "chat:thinkingToggle",
   "chat:submit",
+  "chat:launchBackground",
   "chat:newline",
   "chat:new-line",
   "chat:undo",

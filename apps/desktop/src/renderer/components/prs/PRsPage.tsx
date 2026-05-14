@@ -22,6 +22,7 @@ import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 import type { PrSummary } from "../../../shared/types";
 
 type SurfaceMode = "github" | "workflows";
+type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
 const LAST_WORKFLOW_TAB_KEY = "ade:prs:lastWorkflowTab";
 
@@ -99,12 +100,13 @@ function PRsPageInner() {
     }
   }, [activeTab, projectRoot]);
 
-  const handleRefresh = React.useCallback(async () => {
+  const handleRefresh = React.useCallback(async (args: PrRefreshArgs = {}) => {
+    const targeted = Boolean(args.prId || (args.prIds?.length ?? 0) > 0);
     await Promise.all([
-      refresh(),
-      refreshLanes().catch(() => {}),
+      refresh(args),
+      targeted ? Promise.resolve() : refreshLanes({ includeStatus: false, includeSnapshots: false }).catch(() => {}),
     ]);
-    setIntegrationRefreshNonce((prev) => prev + 1);
+    if (!targeted) setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
   const openCreatePr = React.useCallback(() => setCreatePrOpen(true), []);

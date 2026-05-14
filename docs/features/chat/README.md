@@ -19,7 +19,6 @@ machinery layered on top.
 | `apps/desktop/src/main/services/chat/buildClaudeV2Message.ts` | Builds Claude SDK user messages for the `query()` input stream. Handles base64 image content blocks and MIME inference. |
 | `apps/desktop/src/main/services/chat/claudeInputPump.ts` | Async iterable input pump that feeds live user turns into the Claude Agent SDK `query()` stream. |
 | `apps/desktop/src/main/services/chat/claudeSubprocessReaper.ts` | Tracks Claude SDK subprocesses and tears them down on runtime shutdown. |
-| `apps/desktop/src/main/services/chat/claudeMcpServers.ts` | Builds upfront Claude MCP server configuration from ADE built-ins and `.mcp.json`. |
 | `apps/desktop/src/main/services/chat/claudeOutputStyles.ts` | Discovers Claude output styles and plugins from project/user roots. Project roots are walked directly, while user-installed marketplace plugins are loaded only from Claude's installed-plugin registry when enabled in settings, so cache/source copies do not leak into ADE sessions. |
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers project and user Claude slash surfaces by walking ancestor `.claude` roots, reading `.claude/commands/**/*.md`, `~/.claude/commands/**/*.md`, and `.claude/skills/*/SKILL.md` / `~/.claude/skills/*/SKILL.md` entries with command frontmatter. Consumed by `agentChatService` to enrich both the `chat.slashCommands` response and Claude system prompt with local command/skill metadata. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
@@ -72,17 +71,15 @@ render them, but neither one *runs* them.
   stable `query()` API (SDK 0.2.139): every chat owns a `ClaudeQuery`,
   fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable that
   hands live user turns to `query.streamInput`. Warmup goes through the
-  SDK `startup()` hook, MCP servers are built upfront by
-  `claudeMcpServers.ts` (ADE built-ins plus `.mcp.json`), output styles
-  and plugins are discovered by `claudeOutputStyles.ts`, slash commands
-  by `claudeSlashCommandDiscovery.ts`, and every spawned subprocess is
+  SDK `startup()` hook, output styles and plugins are discovered by
+  `claudeOutputStyles.ts`, slash commands by `claudeSlashCommandDiscovery.ts`,
+  and every spawned subprocess is
   tracked by `claudeSubprocessReaper.ts` so runtime shutdown reaps
   child processes. Claude executable resolution prefers an explicit
   `CLAUDE_CODE_EXECUTABLE_PATH`, then the packaged bundled native
   binary, then detected auth/PATH/common locations, and the resolved
   path is passed through `pathToClaudeCodeExecutable`. Context usage,
-  rewindFiles, forkSession, MCP toggling, and output-style selection
-  all run through the SDK control channel surfaced on the active
+  rewindFiles, forkSession, and output-style selection all run through the SDK control channel surfaced on the active
   `Query` handle.
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
   `codex`, `opencode`, `cursor`, or a free-form string reserved for local
@@ -239,8 +236,8 @@ the session, persists chat state immediately, and skips the usual
 turn on that chat can therefore rehydrate the same Claude SDK session
 instead of creating a fresh one, even though the SDK process was
 released to reclaim budget or compact the pool. Terminal closes still
-run the full invalidation path so "End chat" and explicit model
-switches don't leave stale resume pointers behind.
+run the full invalidation path so runtime stops and explicit model
+switches don't leave stale continuation pointers behind.
 
 On app shutdown the service exposes `forceDisposeAll()` — called from
 `runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,
@@ -261,8 +258,8 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` for Codex sessions to start with the `serviceTier: "fast"` default. |
 | `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe base lane name from a parallel prompt using a lightweight model call with deterministic fallback. |
 | `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
-| `ade.agentChat.handoff` | invoke | End current session and create a new one with summarized context. Forwards `codexFastMode` when the target provider is Codex. |
-| `ade.agentChat.send` | invoke | Dispatch a user message + attachments into an active session. |
+| `ade.agentChat.handoff` | invoke | Create a handoff session with summarized context. Forwards `codexFastMode` when the target provider is Codex. |
+| `ade.agentChat.send` | invoke | Dispatch a user message + attachments. If the session has ended, sending is the continuation path. |
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn; queued when appropriate. |
 | `ade.agentChat.cancelSteer` / `ade.agentChat.editSteer` | invoke | Queue management for queued steers. |
 | `ade.agentChat.dispatchSteer` | invoke | Claude-only: deliver a queued steer immediately as `mode: "inline"` (folded into the active turn via SDK `shouldQuery: false` send) or `mode: "interrupt"` (interrupt the active turn so the steer runs next). Throws on Codex/OpenCode/Cursor. |
@@ -270,14 +267,12 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.interrupt` | invoke | Provider-specific interruption of the in-flight turn. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
 | `ade.agentChat.respondToInput` | invoke | Unified pending-input answer channel. |
-| `ade.agentChat.dispose` | invoke | End the runtime and persist final state ("End chat"). The row stays in `terminal_sessions` as `ended` so it remains resumable. |
-| `ade.agentChat.delete` | invoke | Permanently remove a chat session: disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat" on ended sessions. |
+| `ade.agentChat.delete` | invoke | Permanently remove a chat session: disposes the runtime if still running, cancels any pending turn collector, resolves outstanding input waiters, removes the persisted JSON + transcript, and deletes the `terminal_sessions` row. Renderer surfaces this as "Delete chat". |
 | `ade.agentChat.updateSession` | invoke | Mutate permission modes, `manuallyNamed`, capability mode, and the `codexFastMode` toggle. |
 | `ade.agentChat.warmupModel` | invoke | Preload a Claude SDK runtime for an eventual turn. |
 | `ade.agentChat.slashCommands` | invoke | List provider + local slash commands. |
 | `ade.agentChat.getContextUsage` | invoke | Claude-only: return the SDK control-channel context usage breakdown (`AgentChatContextUsage`) for the `/context` panel. |
 | `ade.agentChat.rewindFiles` | invoke | Claude-only: dry-run and apply SDK file rewind for a selected user message. The renderer dry-run opens a rich confirmation dialog with the message context, aggregate stats, per-file rows, and lazy diff previews; the apply call restores files without modifying conversation history. |
-| `ade.agentChat.claudeMcp.status` / `.reconnect` / `.toggle` | invoke | Claude-only: read the upfront MCP server connection status and reconnect/toggle individual servers. Backs the `/mcp` panel. |
 | `ade.agentChat.claudePlugins.list` / `.reload` | invoke | Claude-only: enumerate discovered Claude plugins and force a plugin reload. Backs `/plugin`. |
 | `ade.agentChat.claudeOutputStyles.list` / `.set` | invoke | Claude-only: list and select discovered output styles (user + project + plugin roots). Backs `/output-style`. |
 | `ade.agentChat.claudeSessions.list` / `.info` / `.messages` | invoke | Claude-only: enumerate SDK sessions, fetch session info, and stream messages for `forkSession` handoff and resume flows. |

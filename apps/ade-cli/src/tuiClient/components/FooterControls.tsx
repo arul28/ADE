@@ -4,34 +4,8 @@ import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
 
 const TOKEN_BAR_CELLS = 10;
-type FooterPane = "drawer" | "chat" | "details";
-type FooterDrawerMode = "lanes" | "chats";
 
-function Toggle({
-  label,
-  hint,
-  open,
-  focused,
-}: {
-  label: string;
-  hint: string;
-  open: boolean;
-  focused: boolean;
-}) {
-  const arrow = open ? "▾" : "▸";
-  if (focused) {
-    return (
-      <Text color={theme.color.accent} inverse>
-        {` ${arrow} ${label} ${hint} `}
-      </Text>
-    );
-  }
-  return (
-    <Text color={open ? theme.color.accent : theme.color.mutedFg} dimColor={!open}>
-      {`[${arrow} ${label} ${hint}]`}
-    </Text>
-  );
-}
+type InlineRowCell = 'provider' | 'model' | 'reasoning' | 'permission' | 'subagents' | null;
 
 function Hint({ keyLabel, action }: { keyLabel: string; action: string }) {
   return (
@@ -62,15 +36,50 @@ function TokenBar({ percent }: { percent: number }) {
   );
 }
 
+/**
+ * A single picker cell. When `focused` (and the parent row is focused), the
+ * value is wrapped in `[brackets]` and tinted with the violet accent (or the
+ * plan-mode accent when `planMode` is true). When `locked`, the cell renders
+ * dim regardless of focus.
+ */
+function Cell({
+  value,
+  focused,
+  rowFocused,
+  baseColor,
+  accentColor,
+  locked,
+}: {
+  value: string;
+  focused: boolean;
+  rowFocused: boolean;
+  baseColor: string;
+  accentColor: string;
+  locked?: boolean;
+}) {
+  if (locked) {
+    return (
+      <Text color={theme.color.mutedFg} dimColor>
+        {value}
+      </Text>
+    );
+  }
+  if (rowFocused && focused) {
+    return (
+      <Text color={accentColor} bold>
+        {`[${value}]`}
+      </Text>
+    );
+  }
+  if (rowFocused) {
+    return <Text color={theme.color.t2}>{value}</Text>;
+  }
+  return <Text color={baseColor}>{value}</Text>;
+}
+
 export function FooterControls({
-  drawerOpen,
-  rightOpen,
-  activePane = "chat",
-  drawerMode = "lanes",
-  drawerFocused,
-  detailsFocused,
-  footerControlActive,
   provider,
+  providerLocked,
   modelDisplay,
   reasoningEffort,
   permissionLabel,
@@ -78,23 +87,14 @@ export function FooterControls({
   tokenSummary,
   approvalActive,
   liveAgentCount,
-  rightPaneShowsAgents,
-  agentsAvailable,
-  agentsOpen,
-  agentsFocused,
+  subagentsButtonVisible,
   fastMode,
-  pendingSteerCount = 0,
-  chatScrollOffset = 0,
-  chatScrollMaxOffset = 0,
+  inlineRowFocused,
+  inlineRowCell,
+  planMode,
 }: {
-  drawerOpen: boolean;
-  rightOpen: boolean;
-  activePane?: FooterPane;
-  drawerMode?: FooterDrawerMode;
-  drawerFocused: boolean;
-  detailsFocused: boolean;
-  footerControlActive: boolean;
   provider?: AdeCodeProvider | null;
+  providerLocked?: boolean;
   modelDisplay?: string | null;
   reasoningEffort?: string | null;
   permissionLabel?: string | null;
@@ -102,174 +102,146 @@ export function FooterControls({
   tokenSummary?: string | null;
   approvalActive?: boolean;
   liveAgentCount?: number;
-  rightPaneShowsAgents?: boolean;
-  agentsAvailable?: boolean;
-  agentsOpen?: boolean;
-  agentsFocused?: boolean;
+  subagentsButtonVisible?: boolean;
   fastMode?: boolean;
-  pendingSteerCount?: number;
-  chatScrollOffset?: number;
-  chatScrollMaxOffset?: number;
+  inlineRowFocused?: boolean;
+  inlineRowCell?: InlineRowCell;
+  planMode?: boolean;
 }) {
   const brand = provider ? theme.provider(provider) : null;
-  const hasModeBar = Boolean(brand || modelDisplay || fastMode || reasoningEffort || permissionLabel || contextPercent != null || tokenSummary || pendingSteerCount > 0);
-  const showAgentsToggle = agentsAvailable === true;
-  const showAgentsChip = (liveAgentCount ?? 0) > 0 && !rightPaneShowsAgents && !showAgentsToggle;
-  const actionHint = (() => {
-    if (activePane === "drawer" && drawerMode === "chats") {
-      return (
-        <>
-          <Hint keyLabel="↑↓" action="chats" />
-          <Text dimColor>  </Text>
-          <Hint keyLabel="Esc" action="lanes" />
-        </>
-      );
-    }
-    if (activePane === "drawer") {
-      return (
-        <>
-          <Hint keyLabel="↑↓" action="lanes" />
-          <Text dimColor>  </Text>
-          <Hint keyLabel="↵" action="open" />
-        </>
-      );
-    }
-    if (activePane === "details") {
-      return (
-        <>
-          <Hint keyLabel="↑↓" action="move" />
-          <Text dimColor>  </Text>
-          <Hint keyLabel="↵" action="run" />
-        </>
-      );
-    }
-    const safeScrollMax = Math.max(0, chatScrollMaxOffset);
-    const safeScrollOffset = Math.max(0, Math.min(chatScrollOffset, safeScrollMax));
-    return (
-      <>
-        <Hint keyLabel="↑↓" action="scroll" />
-        {safeScrollMax > 0 ? <Text dimColor>{` ${safeScrollOffset}/${safeScrollMax}`}</Text> : null}
-        <Text dimColor>  </Text>
-        <Hint keyLabel="Tab" action={drawerOpen ? "lanes" : "open lanes"} />
-        {pendingSteerCount > 0 ? (
+  const rowFocused = inlineRowFocused === true;
+  const accentColor = planMode ? theme.color.planMode : theme.color.violet;
+  const agents = liveAgentCount ?? 0;
+  const showSubagents = subagentsButtonVisible === true;
+  const providerIsLocked = providerLocked === true;
+
+  return (
+    <Box flexDirection="row" paddingX={1} justifyContent="space-between" flexShrink={0}>
+      <Text wrap="truncate-end">
+        {rowFocused ? (
+          <Text color={theme.color.accent}>{"▸ "}</Text>
+        ) : null}
+        {brand ? (
+          <Cell
+            value={`${brand.glyph} ${brand.label}`}
+            focused={inlineRowCell === 'provider'}
+            rowFocused={rowFocused}
+            baseColor={planMode ? theme.color.planMode : brand.color}
+            accentColor={accentColor}
+            locked={providerIsLocked}
+          />
+        ) : null}
+        {modelDisplay ? (
           <>
-            <Text dimColor>  </Text>
-            <Hint keyLabel="/steer" action="staged" />
+            <Text>{"  "}</Text>
+            <Cell
+              value={modelDisplay}
+              focused={inlineRowCell === 'model'}
+              rowFocused={rowFocused}
+              baseColor={theme.color.t2}
+              accentColor={accentColor}
+            />
           </>
         ) : null}
-      </>
-    );
-  })();
-  return (
-    <Box flexDirection="column" flexShrink={0}>
-      {hasModeBar ? (
-        <Box
-          flexDirection="row"
-          paddingX={1}
-          justifyContent="space-between"
-          borderStyle="single"
-          borderColor={theme.color.borderSoft}
-          borderTop
-          borderLeft={false}
-          borderRight={false}
-          borderBottom={false}
-        >
-          <Text wrap="truncate-end">
-            {brand ? (
-              <Text color={brand.color} bold>{brand.glyph} {brand.label}</Text>
-            ) : null}
-            {modelDisplay ? (
+        {fastMode ? (
+          <>
+            <Text>{"  "}</Text>
+            <Text color={theme.color.warning}>fast</Text>
+          </>
+        ) : null}
+        {reasoningEffort ? (
+          <>
+            <Text>{"  "}</Text>
+            <Cell
+              value={reasoningEffort}
+              focused={inlineRowCell === 'reasoning'}
+              rowFocused={rowFocused}
+              baseColor={theme.color.t3}
+              accentColor={accentColor}
+            />
+          </>
+        ) : null}
+        {permissionLabel ? (
+          <>
+            <Text>{"  "}</Text>
+            <Cell
+              value={permissionLabel}
+              focused={inlineRowCell === 'permission'}
+              rowFocused={rowFocused}
+              baseColor={theme.color.t3}
+              accentColor={accentColor}
+            />
+          </>
+        ) : null}
+        {showSubagents ? (
+          <>
+            <Text>{"  "}</Text>
+            {(() => {
+              const subagentValue = `⊚ ${agents} subagent${agents === 1 ? '' : 's'}`;
+              const isFocused = inlineRowCell === 'subagents';
+              if (rowFocused && isFocused) {
+                return (
+                  <Text color={accentColor} bold>{`[${subagentValue}]`}</Text>
+                );
+              }
+              return (
+                <Text color={isFocused ? theme.color.accent : theme.color.t3}>
+                  {subagentValue}
+                </Text>
+              );
+            })()}
+          </>
+        ) : null}
+        {contextPercent != null || tokenSummary ? (
+          <>
+            <Text color={theme.color.t4}>{"  "}</Text>
+            {contextPercent != null ? (
               <>
-                <Text color={theme.color.t4}>{"  ·  "}</Text>
-                <Text color={theme.color.t2}>{modelDisplay}</Text>
+                <TokenBar percent={contextPercent} />
+                <Text dimColor>{` ${contextPercent}%`}</Text>
               </>
             ) : null}
-            {fastMode ? (
+            {tokenSummary ? (
               <>
-                <Text color={theme.color.t4}>{"  ·  "}</Text>
-                <Text color={theme.color.warning}>fast</Text>
+                <Text color={theme.color.t4}>{contextPercent != null ? " · " : ""}</Text>
+                <Text color={theme.color.t2}>{tokenSummary}</Text>
               </>
             ) : null}
-            {reasoningEffort ? (
-              <>
-                <Text color={theme.color.t4}>{"  ·  "}</Text>
-                <Text color={theme.color.t3}>{reasoningEffort}</Text>
-              </>
-            ) : null}
-            {permissionLabel ? (
-              <>
-                <Text color={theme.color.t4}>{"  ·  "}</Text>
-                <Text color={theme.color.t3}>{permissionLabel}</Text>
-              </>
-            ) : null}
-            {pendingSteerCount > 0 ? (
-              <>
-                <Text color={theme.color.t4}>{"  ·  "}</Text>
-                <Text color={theme.color.violet}>staged {pendingSteerCount}</Text>
-              </>
-            ) : null}
-          </Text>
-          {contextPercent != null || tokenSummary ? (
-            <Text wrap="truncate-start">
-              {contextPercent != null ? (
-                <>
-                  <TokenBar percent={contextPercent} />
-                  <Text dimColor>{` ${contextPercent}%`}</Text>
-                </>
-              ) : null}
-              {tokenSummary ? (
-                <>
-                  <Text color={theme.color.t4}>{"  "}</Text>
-                  <Text color={theme.color.t2}>{tokenSummary}</Text>
-                </>
-              ) : null}
-            </Text>
-          ) : null}
-        </Box>
-      ) : null}
-      <Box flexDirection="row" paddingX={1} justifyContent="space-between">
-        <Text wrap="truncate-end">
-          {showAgentsToggle ? (
-            <>
-              <Toggle label="agents" hint="^a" open={agentsOpen === true} focused={agentsFocused === true} />
-              <Text>{"  "}</Text>
-            </>
-          ) : null}
-          <Toggle label="lanes" hint="^o" open={drawerOpen} focused={drawerFocused} />
-          <Text>{"  "}</Text>
-          <Toggle label="info" hint="^p" open={rightOpen} focused={detailsFocused} />
-          {showAgentsChip ? (
-            <>
-              <Text>{"  "}</Text>
-              <Text color={theme.color.accent}>
-                {`[● ${liveAgentCount} agent${liveAgentCount === 1 ? "" : "s"} · ^a]`}
-              </Text>
-            </>
-          ) : null}
-        </Text>
-        <Text wrap="truncate-start">
-          {approvalActive ? (
-            <>
-              <Text color={theme.color.accent} bold>a</Text>
-              <Text dimColor>{" approve  "}</Text>
-              <Text color={theme.color.danger} bold>d</Text>
-              <Text dimColor>{" deny  ·  "}</Text>
-              <Text color={theme.color.accent}>← →</Text>
-              <Text dimColor>{" choose"}</Text>
-            </>
-          ) : footerControlActive ? (
-            <Text dimColor>↵ toggle  ← → choose  ↑ exit</Text>
-          ) : (
-            <>
-              {actionHint}
-              <Text dimColor>  </Text>
-              <Hint keyLabel="/" action="cmds" />
-              <Text dimColor>  </Text>
-              <Hint keyLabel="?" action="help" />
-            </>
-          )}
-        </Text>
-      </Box>
+          </>
+        ) : null}
+      </Text>
+      <Text wrap="truncate-start">
+        {approvalActive ? (
+          <>
+            <Text color={theme.color.accent} bold>a</Text>
+            <Text dimColor>{" approve  "}</Text>
+            <Text color={theme.color.danger} bold>d</Text>
+            <Text dimColor>{" deny  ·  "}</Text>
+            <Text color={theme.color.accent}>← →</Text>
+            <Text dimColor>{" choose"}</Text>
+          </>
+        ) : rowFocused ? (
+          <>
+            <Hint keyLabel="↑" action="prompt" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="←→" action="cells" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="↓" action="cycle" />
+          </>
+        ) : (
+          <>
+            <Hint keyLabel="^o" action="lanes" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="^p" action="info" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="^a" action="subagents" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="/" action="cmds" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="?" action="help" />
+          </>
+        )}
+      </Text>
     </Box>
   );
 }

@@ -64,6 +64,7 @@ type ChatIosSimulatorPanelProps = {
   sessionId: string | null;
   laneId?: string | null;
   projectRoot: string | null;
+  controlDisabledReason?: string | null;
   onAddContext?: (item: IosElementContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
@@ -887,6 +888,7 @@ export function ChatIosSimulatorPanel({
   sessionId,
   laneId = null,
   projectRoot,
+  controlDisabledReason = null,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
@@ -954,6 +956,8 @@ export function ChatIosSimulatorPanel({
     return status?.activeDevice ?? devices[0] ?? null;
   }, [devices, selectedDeviceUdid, status?.activeDevice]);
   const activeSession = status?.activeSession ?? null;
+  const controlsDisabled = Boolean(controlDisabledReason);
+  const controlsDisabledMessage = controlDisabledReason ?? "This iOS Simulator session is read-only from the current lane.";
   const discoveredDeviceBackedStreamActive = Boolean(
     activeDevice
     && !activeSession
@@ -1132,7 +1136,7 @@ export function ChatIosSimulatorPanel({
     }
     return {
       title: "Ready to render Xcode previews",
-      detail: "Choose a preview target, render it, then use Capture area to drag exact preview context into chat.",
+      detail: "Choose a preview target, render it, then use Capture area to drag exact preview context into the active session.",
     };
   }, [previewCapability, previewTargets.length]);
   const emptyStateFileLabel = useMemo(() => {
@@ -1156,16 +1160,20 @@ export function ChatIosSimulatorPanel({
     return owner !== sessionId ? owner : null;
   }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
+  const controlsOwnedElsewhere = ownedByOtherChat || controlsDisabled;
+  const inputBlockedMessage = ownedByOtherChat
+    ? "Another chat is already connected to the simulator. Use Take over to claim it."
+    : controlsDisabledMessage;
 
   const toggleSimulatorWindowMode = useCallback(() => {
-    if (!activeSession || ownedByOtherChat) return;
+    if (!activeSession || controlsOwnedElsewhere) return;
     const enable = simulatorWindowSessionId !== activeSession.id;
     liveDeviceStreamFailureTimestampsRef.current = [];
     setSimulatorWindowSessionId(enable ? activeSession.id : null);
     setMessage(enable
       ? "Opening Simulator.app and switching to window streaming..."
       : "Switching back to the headless simulator stream...");
-  }, [activeSession, ownedByOtherChat, simulatorWindowSessionId]);
+  }, [activeSession, controlsOwnedElsewhere, simulatorWindowSessionId]);
 
   const changeMediaZoom = useCallback((delta: number) => {
     setMediaZoom((current) => {
@@ -1229,6 +1237,10 @@ export function ChatIosSimulatorPanel({
   }, [syncExistingStreamStatus]);
 
   const shutdownSimulator = useCallback(async (force = false) => {
+    if (controlsDisabled) {
+      setMessage(controlsDisabledMessage);
+      return false;
+    }
     try {
       await window.ade.iosSimulator.shutdown({ force });
       await refreshStatus();
@@ -1240,12 +1252,12 @@ export function ChatIosSimulatorPanel({
       setMessage(error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [refreshStatus]);
+  }, [controlsDisabled, controlsDisabledMessage, refreshStatus]);
 
   const takeOver = useCallback(async () => {
     const stopped = await shutdownSimulator(true);
     if (!stopped) return;
-    setMessage("Reconnecting simulator to this chat...");
+    setMessage("Reconnecting simulator to this session...");
     void launchRef.current?.();
   }, [shutdownSimulator]);
 
@@ -1475,7 +1487,7 @@ export function ChatIosSimulatorPanel({
   }, [refreshStatus, startWindowCaptureVisual]);
 
   const retryAdeStream = useCallback(() => {
-    if (!activeDevice || !activeSession || activeSession.deviceUdid !== activeDevice.udid || ownedByOtherChat) return;
+    if (!activeDevice || !activeSession || activeSession.deviceUdid !== activeDevice.udid || controlsOwnedElsewhere) return;
     liveDeviceStreamFailureTimestampsRef.current = [];
     setSimulatorWindowSessionId(null);
     setMessage("Retrying ADE simulator stream...");
@@ -1492,7 +1504,7 @@ export function ChatIosSimulatorPanel({
         setMessage(`ADE simulator stream failed. ${message}`);
       }
     })();
-  }, [activeDevice, activeSession, ownedByOtherChat, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
+  }, [activeDevice, activeSession, controlsOwnedElsewhere, startDeviceBackedLiveVisual, stopRendererLiveVisual]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -2104,6 +2116,10 @@ export function ChatIosSimulatorPanel({
   ]);
 
   const launch = useCallback(async (options: { previewTarget?: IosSimulatorPreviewTarget | null } = {}) => {
+    if (controlsDisabled) {
+      setMessage(controlsDisabledMessage);
+      return;
+    }
     const previewTarget = options.previewTarget ?? null;
     setBusy(true);
     setLaunchBusy(true);
@@ -2140,7 +2156,7 @@ export function ChatIosSimulatorPanel({
       setLaunchBusy(false);
       setBusy(false);
     }
-  }, [activeTarget?.id, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId]);
+  }, [activeTarget?.id, controlsDisabled, controlsDisabledMessage, laneId, projectRoot, refreshSnapshot, refreshStatus, selectedDeviceUdid, selectedTargetId, sessionId]);
 
   useEffect(() => {
     launchRef.current = launch;
@@ -2208,6 +2224,10 @@ export function ChatIosSimulatorPanel({
   const sendTypedText = useCallback(async () => {
     const text = typedText;
     if (!text.trim()) return;
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
+      return;
+    }
     setTypedText("");
     armWindowCaptureRecoveryAfterInput();
     try {
@@ -2215,7 +2235,7 @@ export function ChatIosSimulatorPanel({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [armWindowCaptureRecoveryAfterInput, projectRoot, selectedDeviceUdid, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -2259,7 +2279,7 @@ export function ChatIosSimulatorPanel({
 
   const selectElementAt = useCallback(async (x: number, y: number, element: IosScreenElement | null) => {
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     setBusy(true);
@@ -2283,7 +2303,7 @@ export function ChatIosSimulatorPanel({
       const contextMessage = result.source === "coordinate-fallback"
         ? "Added coordinate fallback. No accessibility or ADE inspector element was found at that point."
         : `Added ${result.source} element context.`;
-      setMessage(`${contextMessage} Chat now uses simulator inspect context.`);
+      setMessage(`${contextMessage} Simulator inspect context inserted.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2363,7 +2383,7 @@ export function ChatIosSimulatorPanel({
   const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!snapshot?.screenshot.dataUrl) return;
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     const capture = await attachSimulatorCapture(frame).catch(() => null);
@@ -2413,7 +2433,7 @@ export function ChatIosSimulatorPanel({
       selectedAt: new Date().toISOString(),
     });
     setMessage(capture?.path
-      ? "Captured simulator screenshot region and attached it to chat with screen context."
+      ? "Captured simulator screenshot region and inserted it with screen context."
       : "Added simulator screenshot region context.");
   }, [attachSimulatorCapture, onAddContext, snapshot]);
 
@@ -2539,7 +2559,7 @@ export function ChatIosSimulatorPanel({
   const addPreviewCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!previewImage || !selectedPreviewTarget || !previewResult?.dataUrl) return;
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     const capture = await attachPreviewCapture(frame).catch(() => null);
@@ -2582,7 +2602,7 @@ export function ChatIosSimulatorPanel({
       selectedAt: new Date().toISOString(),
     });
     setMessage(capture?.path
-      ? "Captured preview area and attached it to chat with Swift source context."
+      ? "Captured preview area and inserted it with Swift source context."
       : "Added preview capture context with Swift source context.");
   }, [attachPreviewCapture, onAddContext, previewImage, previewResult, selectedPreviewTarget]);
 
@@ -2736,6 +2756,10 @@ export function ChatIosSimulatorPanel({
   }, [liveVisualKind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
+      return;
+    }
     const point = liveSimulatorPointFromPointer(event);
     if (!point) return;
     dragStartRef.current = {
@@ -2745,12 +2769,16 @@ export function ChatIosSimulatorPanel({
       clientY: event.clientY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [liveSimulatorPointFromPointer]);
+  }, [controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer]);
 
   const handleSnapshotInteractPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const start = dragStartRef.current;
     dragStartRef.current = null;
     if (!start) return;
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
+      return;
+    }
     const point = liveSimulatorPointFromPointer(event);
     if (!point) return;
     const moved = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
@@ -2777,10 +2805,14 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [armWindowCaptureRecoveryAfterInput, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
+      return;
+    }
     if (event.key === "Enter") {
       event.preventDefault();
       armWindowCaptureRecoveryAfterInput();
@@ -2796,7 +2828,7 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [armWindowCaptureRecoveryAfterInput, projectRoot, selectedDeviceUdid]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid]);
 
   const providerSummary = snapshot?.providers.map((provider) => {
     if (provider.source === "screenshot") return "screenshot";
@@ -2810,7 +2842,7 @@ export function ChatIosSimulatorPanel({
     if (previewResult?.error) {
       previewModeHint = previewResult.error;
     } else if (previewCaptureActive) {
-      previewModeHint = "Drag a region on the preview to attach an exact crop to chat.";
+      previewModeHint = "Drag a region on the preview to insert an exact crop as context.";
     } else if (previewResult?.ok) {
       previewModeHint = `Preview rendered from ${previewResult.target.sourceFilePath} at ${new Date(previewResult.renderedAt).toLocaleTimeString()}.`;
     } else if (previewTargets.length) {
@@ -2847,7 +2879,7 @@ export function ChatIosSimulatorPanel({
       ? "Drag a region on the simulator snapshot to attach a screenshot crop and screen context."
       : selectedElement
       ? `Selected ${selectedSourceLabel}: ${elementLabel(selectedElement)}. Click another outline to swap, or Alt-click to select a parent.`
-      : "Click a UI element outline to attach it as chat context. Alt-click to select a larger container.";
+      : "Click a UI element outline to insert it as context. Alt-click to select a larger container.";
   }
   const simulatorWindowWarning = mode === "interact"
     && liveVisualKind === "window"
@@ -2895,11 +2927,11 @@ export function ChatIosSimulatorPanel({
     && (liveVisual.status !== "error" || (liveVisual.kind === "mjpeg" && Boolean(liveVisual.url)));
   const canShowSnapshot = mode === "inspect" && Boolean(snapshotImage);
   const hasActiveSession = Boolean(activeSession);
-  const interactionDisabled = ownedByOtherChat || showSetupChecklist;
+  const interactionDisabled = controlsOwnedElsewhere || showSetupChecklist;
   const canRetryDeviceBackedStream = mode === "interact"
     && liveVisualKind === "mjpeg"
     && hasActiveSession
-    && !ownedByOtherChat
+    && !controlsOwnedElsewhere
     && Boolean(activeDevice);
   const showStreamRecoveryActions = canRetryDeviceBackedStream
     && (liveVisual?.status === "reconnecting" || liveVisual?.status === "error");
@@ -2948,7 +2980,7 @@ export function ChatIosSimulatorPanel({
               event.stopPropagation();
               if (!simulatorWindowModeEnabled) toggleSimulatorWindowMode();
             }}
-            disabled={!activeSession || ownedByOtherChat || simulatorWindowModeEnabled}
+            disabled={!activeSession || controlsOwnedElsewhere || simulatorWindowModeEnabled}
           >
             <Desktop size={11} />
             iOS window
@@ -3048,7 +3080,7 @@ export function ChatIosSimulatorPanel({
             <div className="font-sans text-[10px] text-muted-fg/52">
               {activeSurface === "simulator" ? "Simulator mode" : "Preview mode"}
             </div>
-            {activeSurface === "simulator" && hasActiveSession && !ownedByOtherChat ? (
+            {activeSurface === "simulator" && hasActiveSession && !controlsOwnedElsewhere ? (
               <div className="group relative">
                 <button
                   type="button"
@@ -3074,7 +3106,7 @@ export function ChatIosSimulatorPanel({
                     {simulatorWindowModeEnabled ? "ADE stream" : "Real iOS window"}
                   </div>
                   {simulatorWindowModeEnabled
-                    ? "Switches this chat back to ADE's built-in stream. Your app keeps running; only the live view changes."
+                    ? "Switches this session back to ADE's built-in stream. Your app keeps running; only the live view changes."
                     : "Opens Apple's iOS Simulator window and mirrors it into ADE. Useful when you want to compare against the real simulator. Resets for the next iOS session."}
                 </div>
               </div>
@@ -3102,17 +3134,18 @@ export function ChatIosSimulatorPanel({
               </select>
               <button
                 type="button"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:text-fg/85"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/[0.07] bg-white/[0.03] text-fg/55 transition-colors hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
                 onClick={() => {
                   void refreshStatus()
                     .then(() => refreshLaunchTargets(selectedDeviceUdid ?? activeDevice?.udid ?? undefined))
                     .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
                 }}
+                disabled={controlsOwnedElsewhere}
                 title="Refresh simulator state"
               >
                 <ArrowClockwise size={14} />
               </button>
-              {hasActiveSession && !ownedByOtherChat ? (
+              {hasActiveSession && !controlsOwnedElsewhere ? (
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-400/22 bg-rose-500/8 px-2 font-sans text-[11px] font-medium text-rose-200/80 transition-colors hover:bg-rose-500/12 disabled:cursor-not-allowed disabled:opacity-45"
@@ -3151,7 +3184,7 @@ export function ChatIosSimulatorPanel({
                 <Play size={13} weight="fill" />
                 Launch
               </button>
-              {hasActiveSession && !ownedByOtherChat ? (
+              {hasActiveSession && !controlsOwnedElsewhere ? (
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-1.5 rounded-md border border-cyan-400/20 bg-cyan-500/10 px-2 font-sans text-[11px] font-medium text-cyan-100/85 transition-colors hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-45"
@@ -3310,7 +3343,7 @@ export function ChatIosSimulatorPanel({
               Set up iOS prerequisites
             </div>
             <div className="font-sans text-[11px] leading-5 text-muted-fg/65">
-              Install the missing tools below to launch a simulator from this chat.
+              Install the missing tools below to launch a simulator from this session.
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto pr-1">
               {[...missingRequiredTools, ...missingOptionalTools].map((tool) => {
@@ -3391,7 +3424,7 @@ export function ChatIosSimulatorPanel({
                 type="button"
                 className="inline-flex h-5 shrink-0 items-center gap-1 rounded border border-amber-300/22 bg-amber-400/15 px-1.5 font-sans text-[10px] font-medium text-amber-50/90 transition-colors hover:bg-amber-400/22"
                 onClick={() => void draftPreviewAgentHelp()}
-                title="Draft this request for an agent in the chat composer"
+                title="Insert this request into the active session input"
               >
                 Ask agent
               </button>
@@ -3725,8 +3758,8 @@ export function ChatIosSimulatorPanel({
                     setHoveredElement(null);
                   }}
                   onPointerDown={(event) => event.stopPropagation()}
-                  disabled={!snapshot?.screenshot.dataUrl || ownedByOtherChat}
-                  title="Drag a screenshot region to attach it to chat with simulator context"
+                  disabled={!snapshot?.screenshot.dataUrl || controlsOwnedElsewhere}
+                  title="Drag a screenshot region to insert it with simulator context"
                 >
                   <ImageSquare size={11} />
                   Screenshot
@@ -3739,7 +3772,7 @@ export function ChatIosSimulatorPanel({
                   event.stopPropagation();
                   void refreshSnapshot({ priority: true }).catch(() => {});
                 }}
-                disabled={!hasActiveSession || snapshotRefreshing || ownedByOtherChat}
+                disabled={!hasActiveSession || snapshotRefreshing || controlsOwnedElsewhere}
                 title="Refresh inspector snapshot"
               >
                 <ArrowClockwise size={11} className={snapshotRefreshing ? "animate-spin" : undefined} />
@@ -3850,7 +3883,7 @@ export function ChatIosSimulatorPanel({
       </div>
 
       {!mediaExpanded ? <div className="shrink-0 space-y-2">
-        {mode === "interact" && !ownedByOtherChat && !showSetupChecklist ? (
+        {mode === "interact" && !controlsOwnedElsewhere && !showSetupChecklist ? (
           <div className="flex items-center gap-2">
             <TextT size={14} className="text-muted-fg/45" />
             <input
@@ -3882,7 +3915,7 @@ export function ChatIosSimulatorPanel({
             {footerStatus}
           </div>
         ) : null}
-        {mode === "interact" && !controlAvailable && !showSetupChecklist && !ownedByOtherChat ? (
+        {mode === "interact" && !controlAvailable && !showSetupChecklist && !controlsOwnedElsewhere ? (
           <div className="rounded-md border border-amber-400/15 bg-amber-500/10 px-2 py-1.5 font-sans text-[11px] text-amber-100/70">
             Install a supported full Xcode for native touch input, or idb + idb_companion for fallback tap, drag, and text.
           </div>

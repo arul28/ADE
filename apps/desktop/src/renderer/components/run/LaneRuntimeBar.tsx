@@ -24,6 +24,7 @@ const dividerStyle = {
 
 const RUNTIME_BAR_PASSIVE_REFRESH_MS = 10_000;
 const RUNTIME_BAR_HEALTH_REFRESH_MS = 30_000;
+const RUNTIME_BAR_ROUTING_REFRESH_MS = 30_000;
 
 export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarProps) {
   const [health, setHealth] = useState<LaneHealthCheck | null>(null);
@@ -35,7 +36,8 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
   const [oauthCallbackUrl, setOauthCallbackUrl] = useState<string | null>(null);
   const isMountedRef = useRef(true);
   const activeLaneIdRef = useRef<string | null>(laneId);
-  const refreshSeqRef = useRef(0);
+  const healthRefreshSeqRef = useRef(0);
+  const routingRefreshSeqRef = useRef(0);
 
   useEffect(() => {
     activeLaneIdRef.current = laneId;
@@ -47,29 +49,39 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
     };
   }, []);
 
-  const refreshRuntimeState = useCallback((targetLaneId: string, opts?: { runHealthCheck?: boolean }) => {
-    const requestId = ++refreshSeqRef.current;
+  const refreshHealthState = useCallback((targetLaneId: string, opts?: { runHealthCheck?: boolean }) => {
+    const requestId = ++healthRefreshSeqRef.current;
     const healthPromise = opts?.runHealthCheck
       ? window.ade.lanes.diagnosticsRunHealthCheck({ laneId: targetLaneId }).catch(() => null)
       : window.ade.lanes.diagnosticsGetLaneHealth({ laneId: targetLaneId }).catch(() => null);
 
     void Promise.all([
       healthPromise,
+      window.ade.processes.listRuntime(targetLaneId).catch(() => [] as ProcessRuntime[]),
+    ]).then(([nextHealth, nextRuntimes]) => {
+      if (!isMountedRef.current) return;
+      if (healthRefreshSeqRef.current !== requestId) return;
+      if (activeLaneIdRef.current !== targetLaneId) return;
+      setHealth(nextHealth);
+      setRuntimes(nextRuntimes);
+    });
+  }, []);
+
+  const refreshRoutingState = useCallback((targetLaneId: string) => {
+    const requestId = ++routingRefreshSeqRef.current;
+    void Promise.all([
       window.ade.lanes.proxyGetPreviewInfo({ laneId: targetLaneId }).catch(() => null),
       window.ade.lanes.portGetLease({ laneId: targetLaneId }).catch(() => null),
       window.ade.lanes.proxyGetStatus().catch(() => null),
-      window.ade.processes.listRuntime(targetLaneId).catch(() => [] as ProcessRuntime[]),
       window.ade.lanes.oauthGetStatus().catch(() => null),
       window.ade.lanes.oauthGenerateRedirectUris({ provider: "google" }).catch(() => []),
-    ]).then(([nextHealth, nextPreview, nextLease, nextProxyStatus, nextRuntimes, nextOauthStatus, nextOauthUris]) => {
+    ]).then(([nextPreview, nextLease, nextProxyStatus, nextOauthStatus, nextOauthUris]) => {
       if (!isMountedRef.current) return;
-      if (refreshSeqRef.current !== requestId) return;
+      if (routingRefreshSeqRef.current !== requestId) return;
       if (activeLaneIdRef.current !== targetLaneId) return;
-      setHealth(nextHealth);
       setPreview(nextPreview);
       setLease(nextLease);
       setProxyStatus(nextProxyStatus);
-      setRuntimes(nextRuntimes);
       setOauthEnabled(nextOauthStatus?.enabled ?? false);
       setOauthCallbackUrl(nextOauthUris[0]?.uris?.[0] ?? null);
     });
@@ -88,40 +100,60 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
     }
     let cancelled = false;
     let lastHealthRefreshAt = 0;
-    const runRefresh = (runHealthCheck: boolean) => {
+    const runHealthRefresh = (runHealthCheck: boolean) => {
       if (cancelled) return;
       if (document.visibilityState !== "visible") return;
       if (runHealthCheck) lastHealthRefreshAt = Date.now();
-      refreshRuntimeState(laneId, { runHealthCheck });
+      refreshHealthState(laneId, { runHealthCheck });
     };
-    runRefresh(false);
-    const deferredTimer = window.setTimeout(() => runRefresh(true), 160);
-    const refreshInterval = window.setInterval(() => {
+    const runRoutingRefresh = () => {
+      if (cancelled) return;
+      if (document.visibilityState !== "visible") return;
+      refreshRoutingState(laneId);
+    };
+    runHealthRefresh(false);
+    runRoutingRefresh();
+    const deferredTimer = window.setTimeout(() => runHealthRefresh(true), 160);
+    const healthInterval = window.setInterval(() => {
       const shouldRunHealthCheck = Date.now() - lastHealthRefreshAt >= RUNTIME_BAR_HEALTH_REFRESH_MS;
-      runRefresh(shouldRunHealthCheck);
+      runHealthRefresh(shouldRunHealthCheck);
     }, RUNTIME_BAR_PASSIVE_REFRESH_MS);
+    const routingInterval = window.setInterval(runRoutingRefresh, RUNTIME_BAR_ROUTING_REFRESH_MS);
 
     return () => {
       cancelled = true;
       window.clearTimeout(deferredTimer);
-      window.clearInterval(refreshInterval);
+      window.clearInterval(healthInterval);
+      window.clearInterval(routingInterval);
     };
-  }, [laneId, refreshRuntimeState]);
+  }, [laneId, refreshHealthState, refreshRoutingState]);
 
   useEffect(() => {
     if (!laneId) return;
     let cancelled = false;
-    let refreshTimer: number | null = null;
-    const scheduleRefresh = (runHealthCheck: boolean) => {
+    let healthRefreshTimer: number | null = null;
+    let routingRefreshTimer: number | null = null;
+    const scheduleHealthRefresh = (runHealthCheck: boolean) => {
       if (cancelled) return;
-      if (refreshTimer != null) {
-        window.clearTimeout(refreshTimer);
+      if (healthRefreshTimer != null) {
+        window.clearTimeout(healthRefreshTimer);
       }
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
+      healthRefreshTimer = window.setTimeout(() => {
+        healthRefreshTimer = null;
         if (cancelled) return;
-        refreshRuntimeState(laneId, { runHealthCheck });
+        refreshHealthState(laneId, { runHealthCheck });
       }, runHealthCheck ? 180 : 80);
+    };
+    const scheduleRoutingRefresh = () => {
+      if (cancelled) return;
+      if (routingRefreshTimer != null) {
+        window.clearTimeout(routingRefreshTimer);
+      }
+      routingRefreshTimer = window.setTimeout(() => {
+        routingRefreshTimer = null;
+        if (cancelled) return;
+        refreshRoutingState(laneId);
+      }, 80);
     };
 
     const unsubHealth = window.ade.lanes.onDiagnosticsEvent((ev) => {
@@ -131,7 +163,7 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
     const unsubProxy = window.ade.lanes.onProxyEvent((ev) => {
       if (cancelled) return;
       if (ev.route?.laneId === laneId || ev.type === "proxy-started" || ev.type === "proxy-stopped") {
-        scheduleRefresh(false);
+        scheduleRoutingRefresh();
       }
     });
 
@@ -139,7 +171,8 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
       if (cancelled) return;
       if (ev.lease?.laneId === laneId) {
         setLease(ev.lease);
-        scheduleRefresh(true);
+        scheduleRoutingRefresh();
+        scheduleHealthRefresh(true);
       }
     });
 
@@ -154,20 +187,23 @@ export function LaneRuntimeBar({ laneId, onOpenPreviewRouting }: LaneRuntimeBarP
         }
         return [...prev, ev.runtime];
       });
-      scheduleRefresh(true);
+      scheduleHealthRefresh(true);
     });
 
     return () => {
       cancelled = true;
-      if (refreshTimer != null) {
-        window.clearTimeout(refreshTimer);
+      if (healthRefreshTimer != null) {
+        window.clearTimeout(healthRefreshTimer);
+      }
+      if (routingRefreshTimer != null) {
+        window.clearTimeout(routingRefreshTimer);
       }
       unsubHealth();
       unsubProxy();
       unsubPorts();
       unsubProcesses();
     };
-  }, [laneId, refreshRuntimeState]);
+  }, [laneId, refreshHealthState, refreshRoutingState]);
 
   if (!laneId) {
     return (

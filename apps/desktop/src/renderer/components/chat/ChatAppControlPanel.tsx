@@ -29,6 +29,7 @@ type ChatAppControlPanelProps = {
   sessionId: string | null;
   laneId: string | null;
   projectRoot: string | null;
+  controlDisabledReason?: string | null;
   onAddContext?: (item: AppControlContextItem) => void;
   onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onInsertDraft?: (text: string) => void;
@@ -246,6 +247,7 @@ export function ChatAppControlPanel({
   sessionId,
   laneId,
   projectRoot,
+  controlDisabledReason = null,
   onAddContext,
   onAddAttachment,
   onInsertDraft,
@@ -292,6 +294,8 @@ export function ChatAppControlPanel({
 
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
   const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
+  const controlsDisabled = Boolean(controlDisabledReason);
+  const controlsDisabledMessage = controlDisabledReason ?? "This App Control session is read-only from the current lane.";
 
   useEffect(() => {
     activeTargetIdRef.current = activeSession?.cdpTargetId ?? null;
@@ -380,7 +384,7 @@ export function ChatAppControlPanel({
           scrollRafRef.current = null;
           const next = scrollPendingRef.current;
           scrollPendingRef.current = null;
-          if (!next) return;
+          if (!next || controlsDisabled) return;
           void window.ade.appControl.scroll(next).catch(() => {});
         });
       }
@@ -391,7 +395,7 @@ export function ChatAppControlPanel({
     // that should re-bind is the live/empty mount flip. Only depending on
     // liveFrameActive here is intentional — re-binding on every snapshot
     // refresh would create a brief gap where wheel events get missed.
-  }, [liveFrameActive]);
+  }, [controlsDisabled, liveFrameActive]);
 
   useEffect(() => {
     setScreenshotBlank(false);
@@ -587,6 +591,7 @@ export function ChatAppControlPanel({
   const launchSelected = useCallback(
     () =>
       runBusy("launch", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
         const command = launchCommand.trim();
         if (!command) throw new Error("Enter a launch command.");
         const cwd = launchCwd.trim();
@@ -618,7 +623,7 @@ export function ChatAppControlPanel({
           setMessage({ tone: "info", text: `Started ${launched.label} in the terminal.${cdpHint}` });
         }
       }),
-    [laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, runBusy, sessionId],
+    [controlsDisabled, controlsDisabledMessage, laneId, launchCommand, launchCwd, onShowTerminal, projectRoot, refreshSnapshot, runBusy, sessionId],
   );
 
   const pickProcess = useCallback((processId: string) => {
@@ -631,6 +636,10 @@ export function ChatAppControlPanel({
 
   const attachToTargetId = useCallback(
     (targetId: string) => {
+      if (controlsDisabled) {
+        setMessage({ tone: "error", text: controlsDisabledMessage });
+        return undefined;
+      }
       // Optimistically reflect the user's pick in the dropdown so it doesn't
       // appear to "snap back" while the new screencast spins up.
       setPendingTargetId(targetId);
@@ -644,12 +653,13 @@ export function ChatAppControlPanel({
         }
       });
     },
-    [refreshTargets, runBusy],
+    [controlsDisabled, controlsDisabledMessage, refreshTargets, runBusy],
   );
 
   const connectPort = useCallback(
     () =>
       runBusy("connect", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
         const port = Number(cdpPort);
         if (!Number.isFinite(port) || port <= 0) throw new Error("Enter a valid CDP port.");
         const connected = await window.ade.appControl.connect({
@@ -665,12 +675,13 @@ export function ChatAppControlPanel({
         await refreshSnapshot();
         setMessage({ tone: "info", text: `Connected to ${connected.label}.` });
       }),
-    [cdpPort, laneId, projectRoot, refreshSnapshot, runBusy, sessionId],
+    [cdpPort, controlsDisabled, controlsDisabledMessage, laneId, projectRoot, refreshSnapshot, runBusy, sessionId],
   );
 
   const stopSession = useCallback(
     () =>
       runBusy("stop", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
         await window.ade.appControl.stop();
         const nextStatus = await window.ade.appControl.getStatus();
         setStatus(nextStatus);
@@ -680,7 +691,7 @@ export function ChatAppControlPanel({
         setSelectedContextItem(null);
         setMessage({ tone: "info", text: "Session stopped." });
       }),
-    [runBusy],
+    [controlsDisabled, controlsDisabledMessage, runBusy],
   );
 
   const attachSelection = useCallback(
@@ -688,11 +699,14 @@ export function ChatAppControlPanel({
       if (modeRef.current !== "inspect") {
         throw new Error("Switch to Inspect mode to attach App Control context.");
       }
+      if (controlsDisabled) {
+        throw new Error(controlsDisabledMessage);
+      }
       if (screenshotBlank) {
         throw new Error("The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot before attaching context.");
       }
       if (!onAddContext) {
-        throw new Error("Chat attachments are not available in this panel.");
+        throw new Error("Context insertion is not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
         projectRoot,
@@ -733,7 +747,7 @@ export function ChatAppControlPanel({
           throw new Error(`Could not attach screenshot crop: ${errorMessage(error)}`);
         }
       } else if (screenshotDataUrl && !onAddAttachment) {
-        throw new Error("Chat attachments are not available in this panel.");
+        throw new Error("Context insertion is not available in this panel.");
       }
       const contextItem = {
         ...result.item,
@@ -746,7 +760,7 @@ export function ChatAppControlPanel({
       try {
         onAddContext(contextItem);
       } catch (error) {
-        throw new Error(`Could not attach App Control context to chat: ${errorMessage(error)}`);
+        throw new Error(`Could not insert App Control context: ${errorMessage(error)}`);
       }
       setSelectedContextItem(contextItem);
       setSelectedPoint({ x, y });
@@ -762,10 +776,10 @@ export function ChatAppControlPanel({
       setAttachmentAck(attachedLabel);
       setMessage({
         tone: "info",
-        text: `Attached ${attachedLabel} to chat.`,
+        text: `Inserted ${attachedLabel} context.`,
       });
     },
-    [onAddAttachment, onAddContext, projectRoot, screenshotBlank, snapshot],
+    [controlsDisabled, controlsDisabledMessage, onAddAttachment, onAddContext, projectRoot, screenshotBlank, snapshot],
   );
 
   const handleImageClick = useCallback(
@@ -787,6 +801,10 @@ export function ChatAppControlPanel({
       const sourceHeight = useLive ? liveDims.height : snapshot?.screenshot?.height ?? 0;
       const sourceScale = useLive ? liveDims.scale : snapshot?.screen.scale ?? 1;
       if (sourceWidth <= 0 || sourceHeight <= 0) return;
+      if (controlsDisabled) {
+        setMessage({ tone: "error", text: controlsDisabledMessage });
+        return;
+      }
       if (!useLive && screenshotBlank) {
         setMessage({
           tone: "error",
@@ -814,12 +832,13 @@ export function ChatAppControlPanel({
         });
       setMessage(null);
     },
-    [attachSelection, liveFrameActive, runBusy, screenshotBlank, snapshot],
+    [attachSelection, controlsDisabled, controlsDisabledMessage, liveFrameActive, runBusy, screenshotBlank, snapshot],
   );
 
   const typeIntoApp = useCallback(
     () =>
       runBusy("type", async () => {
+        if (controlsDisabled) throw new Error(controlsDisabledMessage);
         if (modeRef.current !== "control") throw new Error("Switch to Control mode to type into the app.");
         if (!typeText.trim()) return;
         await window.ade.appControl.typeText({ text: typeText });
@@ -832,7 +851,7 @@ export function ChatAppControlPanel({
         }
         setMessage({ tone: "info", text: "Typed into focused element." });
       }),
-    [refreshSnapshot, runBusy, typeText],
+    [controlsDisabled, controlsDisabledMessage, refreshSnapshot, runBusy, typeText],
   );
 
   const requestDebugHelp = useCallback(() => {
@@ -856,9 +875,9 @@ export function ChatAppControlPanel({
     && !activeSession.cdpEndpoint,
   );
   const hasActiveSession = Boolean(activeSession) && !["exited", "stopped", "failed"].includes(activeSession?.status ?? "");
-  const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession;
-  const canStop = hasActiveSession;
-  const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected;
+  const canLaunch = launchCommand.trim().length > 0 && !hasActiveSession && !controlsDisabled;
+  const canStop = hasActiveSession && !controlsDisabled;
+  const canType = mode === "control" && typeText.trim().length > 0 && sessionConnected && !controlsDisabled;
 
   const processOptions = useMemo(() => {
     return processes.map((proc) => {
@@ -905,7 +924,7 @@ export function ChatAppControlPanel({
           <div className="relative shrink-0">
             <select
               value=""
-              disabled={!processesLoaded || processOptions.length === 0}
+              disabled={!processesLoaded || processOptions.length === 0 || controlsDisabled}
               onChange={(event) => {
                 const value = event.target.value;
                 if (!value) return;
@@ -1010,6 +1029,7 @@ export function ChatAppControlPanel({
             placeholder="CDP port"
             aria-label="CDP port"
             inputMode="numeric"
+            disabled={controlsDisabled}
             className="w-[100px] shrink-0 rounded-md border border-white/[0.07] bg-black/20 px-2 py-1.5 text-[11px] text-fg/80 outline-none placeholder:text-muted-fg/40 focus:border-sky-300/30"
             onKeyDown={(event) => {
               if (event.key === "Enter" && cdpPort.trim()) void connectPort();
@@ -1017,7 +1037,7 @@ export function ChatAppControlPanel({
           />
           <button
             type="button"
-            disabled={Boolean(busy) || !cdpPort.trim()}
+            disabled={Boolean(busy) || !cdpPort.trim() || controlsDisabled}
             onClick={connectPort}
             className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-fg/72 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
             title="Connect to a running Electron app via CDP"
@@ -1030,7 +1050,7 @@ export function ChatAppControlPanel({
               type="button"
               onClick={requestDebugHelp}
               className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:text-fg/85"
-              title="Insert a chat draft asking the agent to wire CDP debug flags into this app"
+              title="Insert a draft asking the agent to wire CDP debug flags into this app"
             >
               <Wrench size={11} />
               Help wire CDP
@@ -1053,7 +1073,7 @@ export function ChatAppControlPanel({
             }}
             className="min-w-0 flex-1 rounded-md border border-white/[0.06] bg-black/30 px-2 py-1 text-[11px] text-fg/85 outline-none focus:border-sky-300/30"
             aria-label="Switch the controlled window"
-            disabled={Boolean(busy) || targets.length < 2}
+            disabled={Boolean(busy) || targets.length < 2 || controlsDisabled}
           >
             {targets.map((target) => {
               const baseTitle = (target.title ?? "").trim();
@@ -1078,7 +1098,8 @@ export function ChatAppControlPanel({
           <button
             type="button"
             onClick={() => void refreshTargets()}
-            className="inline-flex h-6 shrink-0 items-center justify-center rounded border border-white/[0.06] bg-white/[0.02] px-1.5 text-[10px] text-muted-fg/65 hover:text-fg/85"
+            disabled={controlsDisabled}
+            className="inline-flex h-6 shrink-0 items-center justify-center rounded border border-white/[0.06] bg-white/[0.02] px-1.5 text-[10px] text-muted-fg/65 hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
             title="Re-scan controlled app windows"
           >
             {targets.length}
@@ -1126,7 +1147,7 @@ export function ChatAppControlPanel({
         <div className="absolute left-2 top-2 z-10 flex flex-col items-start gap-1">
           <button
             type="button"
-            disabled={Boolean(busy) || !sessionConnected}
+            disabled={Boolean(busy) || !sessionConnected || controlsDisabled}
             onClick={() =>
               void runBusy("snapshot", async () => {
                 await refreshSnapshot();
@@ -1154,7 +1175,7 @@ export function ChatAppControlPanel({
               <button
                 key={nextMode}
                 type="button"
-                disabled={!hasActiveSession}
+                disabled={!hasActiveSession || controlsDisabled}
                 onClick={() => setMode(nextMode)}
                 className={cn(
                   "h-6 rounded px-2 text-[10px] font-medium transition-colors disabled:cursor-not-allowed",
@@ -1395,7 +1416,7 @@ export function ChatAppControlPanel({
           ) : (
             <div className="text-[11px] text-muted-fg/55">
               {sessionConnected
-                ? "Click an element to attach its source context to chat."
+                ? "Click an element to insert its source context."
                 : "Launch or connect to inspect elements."}
             </div>
           )}
@@ -1435,11 +1456,11 @@ export function ChatAppControlPanel({
                   : "border-white/[0.07] bg-white/[0.03] text-muted-fg/60",
               )}
             >
-              {attachmentAck ? `Attached ${attachmentAck} to chat` : "Inspect mode attaches clicks to chat"}
+              {attachmentAck ? `Inserted ${attachmentAck} context` : "Inspect mode inserts clicked element context"}
             </div>
             <button
               type="button"
-              disabled={Boolean(busy) || screenshotBlank || !selectedPoint || !sessionConnected}
+              disabled={Boolean(busy) || screenshotBlank || !selectedPoint || !sessionConnected || controlsDisabled}
               onClick={() => {
                 if (selectedPoint) void runBusy("select", () => attachSelection(selectedPoint.x, selectedPoint.y));
               }}

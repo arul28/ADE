@@ -81,8 +81,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
     ]),
     sendChatMessage: vi.fn().mockResolvedValue(undefined),
     interruptChat: vi.fn().mockResolvedValue(undefined),
-    resumeChat: vi.fn().mockResolvedValue(baseSession),
-    disposeChat: vi.fn().mockResolvedValue(undefined),
     ensureCtoSession: vi.fn().mockResolvedValue({ ...baseSession, id: "cto-session" }),
     ...overrides,
   };
@@ -101,8 +99,6 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("spawnChat");
     expect(toolKeys).toContain("sendChatMessage");
     expect(toolKeys).toContain("interruptChat");
-    expect(toolKeys).toContain("resumeChat");
-    expect(toolKeys).toContain("endChat");
     expect(toolKeys).toContain("getChatStatus");
     expect(toolKeys).toContain("getChatTranscript");
 
@@ -330,34 +326,6 @@ describe("createCtoOperatorTools", () => {
       });
 
       expect(deps.interruptChat).toHaveBeenCalledWith({ sessionId: "chat-1" });
-      expect(result).toMatchObject({ success: true, sessionId: "chat-1" });
-    });
-
-    it("resumes a chat session and returns navigation", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.resumeChat as any).execute({
-        sessionId: "chat-1",
-      });
-
-      expect(deps.resumeChat).toHaveBeenCalledWith({ sessionId: "chat-1" });
-      expect(result).toMatchObject({
-        success: true,
-        sessionId: "chat-1",
-        navigation: expect.objectContaining({ surface: "work" }),
-      });
-    });
-
-    it("ends a chat session", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      const result = await (tools.endChat as any).execute({
-        sessionId: "chat-1",
-      });
-
-      expect(deps.disposeChat).toHaveBeenCalledWith({ sessionId: "chat-1" });
       expect(result).toMatchObject({ success: true, sessionId: "chat-1" });
     });
 

@@ -156,6 +156,11 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("listSnapshots");
   });
 
+  it("exposes lane.listDeleteProgress for runtime-backed lane delete progress recovery", () => {
+    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
+    expect(actions).toContain("listDeleteProgress");
+  });
+
   it("exposes pr.listPrsByLane for runtime-backed drawer PR pills", () => {
     const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
     expect(actions).toContain("listPrsByLane");

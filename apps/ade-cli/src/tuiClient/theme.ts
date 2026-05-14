@@ -51,6 +51,10 @@ const REASONING = T4;
 const NOTICE = T3;
 const APPROVAL = ATTENTION;
 
+// Plan-mode signal color (used by the prompt border tint, the provider glyph
+// tint, and the persistent plan-mode banner when permission mode === plan).
+const PLAN_MODE = "#22D3EE";
+
 export type Tone = RenderedChatLine["tone"];
 
 const TONE_COLORS: Record<Tone, string> = {
@@ -70,12 +74,15 @@ type ProviderTheme = {
   label: string;
 };
 
+// Provider brand glyphs: closest single-cell unicode approximations of each
+// provider's official mark. `✻` (U+273B) is Anthropic's own canonical sparkle
+// (same glyph Claude Code uses in its spinner).
 const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
-  claude: { glyph: "◆", wordmark: "Claude", color: CLAUDE, label: "Claude" },
-  codex: { glyph: "◇", wordmark: "Codex", color: CODEX, label: "Codex" },
-  cursor: { glyph: "▲", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
-  droid: { glyph: "▣", wordmark: "Droid", color: DROID, label: "Droid" },
-  opencode: { glyph: "◈", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
+  claude: { glyph: "✻", wordmark: "Claude", color: CLAUDE, label: "Claude" },
+  codex: { glyph: "❋", wordmark: "Codex", color: CODEX, label: "Codex" },
+  cursor: { glyph: "▰", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
+  droid: { glyph: "◉", wordmark: "Droid", color: DROID, label: "Droid" },
+  opencode: { glyph: "▲", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
 };
 
 const FALLBACK_PROVIDER: ProviderTheme = { glyph: "•", wordmark: "Agent", color: T4, label: "Agent" };
@@ -176,6 +183,42 @@ export const theme = {
 
     // Misc
     tool: TOOL,
+    planMode: PLAN_MODE,
+
+    // Code highlighting (highlight.js token category → terminal color)
+    // Inline `code` uses violet to match the desktop's purple chip styling.
+    codeInline: "#A78BFA",
+    codeKeyword: "#C792EA",
+    codeString: "#C3E88D",
+    codeNumber: "#F78C6C",
+    codeComment: "#676E95",
+    codeFunction: "#82AAFF",
+    codeType: "#FFCB6B",
+    codeVariable: "#EEFFFF",
+    codeTag: "#F07178",
+    codeMeta: "#6B6A7A",
+
+    // Subagent / file badges
+    subagentRail: "#A78BFA",
+    fileBadge: {
+      tsx: "#3178C6",
+      ts: "#3178C6",
+      jsx: "#F7DF1E",
+      js: "#F7DF1E",
+      json: "#5C5C5C",
+      md: "#519ABA",
+      py: "#3776AB",
+      rs: "#CE412B",
+      go: "#00ADD8",
+      swift: "#FA7343",
+      sh: "#89E051",
+      yaml: "#CB171E",
+      yml: "#CB171E",
+      html: "#E34F26",
+      css: "#1572B6",
+      sql: "#336791",
+      default: "#6B6A7A",
+    },
   },
   tone(tone: Tone): string {
     return TONE_COLORS[tone] ?? T1;

@@ -325,49 +325,6 @@ extension WorkRootScreen {
     }
   }
 
-  func resumeSession(_ session: TerminalSessionSummary) {
-    if archivedSessionIds.contains(session.id) {
-      toggleArchive(session)
-    }
-    guard !isChatSession(session), session.status != "running", terminalSessionHasResumeTarget(session) else {
-      openSession(session)
-      return
-    }
-    Task {
-      do {
-        let provider = cliProviderForTerminalSession(session)
-        let result = try await syncService.startCliSession(
-          laneId: session.laneId,
-          provider: provider,
-          permissionMode: session.resumeMetadata?.launch.permissionMode ?? session.resumeMetadata?.permissionMode,
-          title: session.title,
-          resumeSessionId: session.id
-        )
-        let sessionToOpen: TerminalSessionSummary = {
-          if let resumed = result.session {
-            return resumed
-          }
-          var fallback = session
-          fallback.id = result.sessionId
-          fallback.ptyId = result.ptyId ?? session.ptyId
-          fallback.status = "running"
-          fallback.runtimeState = "running"
-          fallback.endedAt = nil
-          fallback.exitCode = nil
-          return fallback
-        }()
-        if sessionToOpen.id != session.id {
-          optimisticSessions[session.id] = nil
-        }
-        optimisticSessions[sessionToOpen.id] = sessionToOpen
-        openSession(sessionToOpen)
-        await reload(refreshRemote: true)
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
   func deleteChatSession(_ session: TerminalSessionSummary) {
     Task {
       do {
@@ -384,18 +341,12 @@ extension WorkRootScreen {
   }
 
   @MainActor
-  func endSession(_ session: TerminalSessionSummary) async {
-    defer { endTarget = nil }
+  func stopRuntime(_ session: TerminalSessionSummary) async {
+    defer { stopRuntimeTarget = nil }
     do {
-      if isChatSession(session) {
-        try await syncService.disposeChatSession(sessionId: session.id)
-      } else {
-        try await syncService.closeWorkSession(sessionId: session.id)
-      }
+      guard !isChatSession(session) else { return }
+      try await syncService.stopWorkRuntime(sessionId: session.id)
       await reload(refreshRemote: true)
-      if let refreshed = mergedSessions.first(where: { $0.id == session.id }), refreshed.status == session.status, isChatSession(session) {
-        errorMessage = "This machine keeps chat sessions alive until the turn finishes. Reconnect and try again if the status does not update."
-      }
     } catch {
       errorMessage = error.localizedDescription
     }

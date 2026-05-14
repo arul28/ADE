@@ -77,7 +77,6 @@ export type AgentChatReloadClaudePluginsResult = {
   plugins: AgentChatClaudePlugin[];
   commands: Array<{ name: string; description?: string }>;
   agents: Array<{ name: string; description?: string }>;
-  mcpServers: AgentChatClaudeMcpServerStatus[];
   errorCount: number;
 };
 export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-failure" | "never";
@@ -608,6 +607,19 @@ export type AgentChatEvent =
       files: TurnDiffFile[];
       totalAdditions: number;
       totalDeletions: number;
+    }
+  | {
+      /**
+       * Transient push event signalling a change to a chat session's
+       * summary-level metadata (title, manuallyNamed). Not persisted to
+       * the transcript — purely a renderer-state patch so the chat header
+       * can refresh without a full session list re-fetch.
+       */
+      type: "session_meta_updated";
+      title?: string;
+      manuallyNamed?: boolean;
+      // Accept turnId for uniformity with other variants — ignored by handlers.
+      turnId?: string;
     };
 
 export type AgentChatEventEnvelope = {
@@ -714,6 +726,8 @@ export type AgentChatSession = {
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   claudeOutputStyle?: string | null;
+  claudeBackgroundJobShort?: string | null;
+  claudeBackgroundResumeSessionId?: string | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
   codexConfigSource?: AgentChatCodexConfigSource;
@@ -858,53 +872,10 @@ export type AgentChatContextUsage = {
     type?: string;
     tokens: number;
   }>;
-  mcpTools?: Array<{
-    name: string;
-    serverName: string;
-    tokens: number;
-    isLoaded?: boolean;
-  }>;
 };
 
 export type AgentChatContextUsageArgs = {
   sessionId: string;
-};
-
-export type AgentChatClaudeMcpServerStatusValue = "connected" | "failed" | "needs-auth" | "pending" | "disabled" | (string & {});
-
-export type AgentChatClaudeMcpServerStatus = {
-  name: string;
-  status: AgentChatClaudeMcpServerStatusValue;
-  error?: string;
-  scope?: string;
-  config?: {
-    type?: string;
-    command?: string;
-    args?: string[];
-    url?: string;
-  };
-  tools?: Array<{
-    name: string;
-    description?: string;
-    readOnly?: boolean;
-    destructive?: boolean;
-    openWorld?: boolean;
-  }>;
-};
-
-export type AgentChatClaudeMcpStatusArgs = {
-  sessionId: string;
-};
-
-export type AgentChatClaudeMcpReconnectArgs = {
-  sessionId: string;
-  serverName: string;
-};
-
-export type AgentChatClaudeMcpToggleArgs = {
-  sessionId: string;
-  serverName: string;
-  enabled: boolean;
 };
 
 export type AgentChatRewindFilesArgs = {
@@ -1086,10 +1057,12 @@ export type AgentChatListArgs = {
 export type AgentChatSuggestLaneNameArgs = {
   /** Lane the user is launching from (worktree path for the naming model call). */
   laneId: string;
-  /** User prompt for the parallel chat launch (used to derive a short lane name prefix). */
+  /** User prompt for the chat launch (used to derive a short lane name prefix). */
   prompt: string;
   /** Registry model ID used to run the naming call (e.g. first selected model). */
   modelId: string;
+  /** Optional fallback used when model-backed naming is disabled or unavailable. */
+  fallbackName?: string;
 };
 
 export type AgentChatParallelLaunchStateStatus =
@@ -1189,10 +1162,6 @@ export type AgentChatCancelDispatchedSteerResult = {
 };
 
 export type AgentChatInterruptArgs = {
-  sessionId: string;
-};
-
-export type AgentChatResumeArgs = {
   sessionId: string;
 };
 

@@ -50,8 +50,6 @@ export function normalizeCoordinatorToolName(toolName: string): string {
   const trimmed = toolName.trim();
   const prefixPatterns = [
     /^ade[_:.](.+)$/i,
-    /^mcp[_:.]ade[_:.](.+)$/i,
-    /^mcp__ade__(.+)$/i,
   ];
   for (const pattern of prefixPatterns) {
     const match = pattern.exec(trimmed);

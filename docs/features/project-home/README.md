@@ -43,7 +43,7 @@ Renderer:
   the collapsible "Advanced" drawer that surfaces the current lane's
   runtime context: health, preview, port leases, OAuth callback.
   Mounted only when the user expands the drawer (state persisted to
-  `localStorage` under `ade.runPageLaneRuntimeBarOpen.v1`).
+  `localStorage` under `ade.run.laneRuntimeBarOpen`).
 - `apps/desktop/src/renderer/components/run/CommandCard.tsx` — the
   per-process card. Accepts the full `ProcessRuntime[]` for its
   `(laneId, processId)` (so concurrent/historical runs all show),
@@ -314,7 +314,7 @@ When a project is open and not in welcome state:
 1. **Header row** — page title with the active group / count chip,
    plus the affordance buttons: "Advanced" (toggles the
    `LaneRuntimeBar` drawer below the header), "New shell" (spawns
-   an untracked shell PTY for the fallback run lane), per-group
+   a tracked shell PTY for the fallback run lane), per-group
    "Run all" / "Stop all" (visible when a group is selected; calls
    `processes.startGroup` / `processes.stopGroup` with the lane map
    built from `commandLaneMap`), and "Add command".

@@ -3,13 +3,11 @@ import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
   AgentChatApproveArgs,
-  AgentChatDisposeArgs,
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
   AgentChatProvider,
   AgentChatRespondToInputArgs,
-  AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -95,6 +93,8 @@ import type {
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
+  SyncSendToSessionArgs,
+  SyncSendToSessionResult,
   SyncStartCliSessionArgs,
   SyncStartCliSessionResult,
   SyncRunQuickCommandArgs,
@@ -503,6 +503,9 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
 
 const DEFAULT_CLI_COLS = 120;
 const DEFAULT_CLI_ROWS = 36;
+const MAX_CLI_COLS = 400;
+const MAX_CLI_ROWS = 200;
+const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 
 function clampCliDimension(value: number | undefined, fallback: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value ?? fallback)));
@@ -533,22 +536,9 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     initialInput,
     cols: asOptionalNumber(value.cols),
     rows: asOptionalNumber(value.rows),
-    resumeSessionId: asTrimmedString(value.resumeSessionId),
+    model: asTrimmedString(value.model),
+    modelId: asTrimmedString(value.modelId),
   };
-}
-
-function requireResumeSessionForProvider(
-  sessionService: ReturnType<typeof createSessionService>,
-  sessionId: string,
-  provider: SyncStartCliSessionArgs["provider"],
-): TerminalSessionSummary {
-  const session = sessionService.get(sessionId) as TerminalSessionSummary | null;
-  if (!session) throw new Error(`work.startCliSession resumeSessionId '${sessionId}' was not found.`);
-  const existingProvider = launchProfileForTerminalSession(session);
-  if (existingProvider && existingProvider !== provider) {
-    throw new Error(`work.startCliSession resumeSessionId '${sessionId}' belongs to ${existingProvider}, not ${provider}.`);
-  }
-  return session;
 }
 
 function isChatToolType(toolType: string | null | undefined): boolean {
@@ -590,9 +580,19 @@ async function listRemoteWorkSessions(
   });
 }
 
-function parseCloseSessionArgs(value: Record<string, unknown>): { sessionId: string } {
+function parseSendToSessionArgs(value: Record<string, unknown>): SyncSendToSessionArgs {
+  const text = requireString(value.text, "work.sendToSession requires text.");
   return {
-    sessionId: requireString(value.sessionId, "work.closeSession requires sessionId."),
+    sessionId: requireString(value.sessionId, "work.sendToSession requires sessionId."),
+    text,
+    cols: asOptionalNumber(value.cols),
+    rows: asOptionalNumber(value.rows),
+  };
+}
+
+function parseStopRuntimeArgs(value: Record<string, unknown>): { sessionId: string } {
+  return {
+    sessionId: requireString(value.sessionId, "work.stopRuntime requires sessionId."),
   };
 }
 
@@ -698,12 +698,6 @@ function parseAgentChatInterruptArgs(value: Record<string, unknown>): AgentChatI
   };
 }
 
-function parseAgentChatResumeArgs(value: Record<string, unknown>): AgentChatResumeArgs {
-  return {
-    sessionId: requireString(value.sessionId, "chat.resume requires sessionId."),
-  };
-}
-
 function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.approve requires sessionId."),
@@ -761,12 +755,6 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
   return parsed;
-}
-
-function parseAgentChatDisposeArgs(value: Record<string, unknown>): AgentChatDisposeArgs {
-  return {
-    sessionId: requireString(value.sessionId, "chat.dispose requires sessionId."),
-  };
 }
 
 function parseAgentChatArchiveArgs(value: Record<string, unknown>, action: string): AgentChatArchiveArgs {
@@ -1788,38 +1776,27 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("work.startCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseStartCliSessionArgs(payload);
-    const cols = clampCliDimension(parsed.cols, DEFAULT_CLI_COLS, 20, 240);
-    const rows = clampCliDimension(parsed.rows, DEFAULT_CLI_ROWS, 4, 120);
-    const resumeSessionId = parsed.resumeSessionId?.trim() || undefined;
+    const cols = clampCliDimension(parsed.cols, DEFAULT_CLI_COLS, 20, MAX_CLI_COLS);
+    const rows = clampCliDimension(parsed.rows, DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS);
     const { provider } = parsed;
     const permissionMode = parsed.permissionMode ?? "default";
     validateLaunchProfilePermissionMode(provider, permissionMode);
-    const resumeSession = resumeSessionId
-      ? requireResumeSessionForProvider(args.sessionService, resumeSessionId, provider)
-      : null;
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
     const title = parsed.title?.trim() || LAUNCH_PROFILE_TITLE[provider];
-    const preassignedSessionId = provider === "claude" && !resumeSessionId ? randomUUID() : undefined;
+    const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
 
     function resolveLaunch(): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
       if (provider === "shell") return {};
-      if (resumeSessionId) {
-        if (!resumeSession) throw new Error(`work.startCliSession resumeSessionId '${resumeSessionId}' was not found.`);
-        const startupCommand = resolveTrackedCliResumeCommand(resumeSession)
-          ?? buildTrackedCliResumeCommand({
-            provider,
-            targetKind: "session",
-            targetId: null,
-            launch: { permissionMode },
-          });
-        return { startupCommand };
-      }
-      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId });
+      return buildTrackedCliLaunchCommand({
+        provider,
+        permissionMode,
+        sessionId: preassignedSessionId,
+        model: parsed.modelId ?? parsed.model ?? undefined,
+      });
     }
 
-    const sessionId = resumeSessionId ?? preassignedSessionId;
     const result = await args.ptyService.create({
-      ...(sessionId ? { sessionId } : {}),
+      ...(preassignedSessionId ? { sessionId: preassignedSessionId } : {}),
       allowNewSessionId: Boolean(preassignedSessionId),
       laneId: parsed.laneId,
       title,
@@ -1843,6 +1820,18 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         }
         throw new Error("work.startCliSession created a terminal session but could not write initialInput.");
       }
+      if (provider === "claude") {
+        const confirmTimer = setTimeout(() => {
+          const confirmWritten = args.ptyService.writeBySessionId(result.sessionId, "\r");
+          if (!confirmWritten) {
+            args.logger.warn("sync_remote.start_cli_session_claude_initial_input_confirm_failed", {
+              sessionId: result.sessionId,
+              ptyId: result.ptyId,
+            });
+          }
+        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
+        confirmTimer.unref?.();
+      }
     }
 
     const session = args.sessionService.get(result.sessionId);
@@ -1853,15 +1842,24 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       session: enriched,
     } satisfies SyncStartCliSessionResult;
   });
-  register("work.closeSession", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const { sessionId } = parseCloseSessionArgs(payload);
+  register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseSendToSessionArgs(payload);
+    const result = await args.ptyService.sendToSession({
+      sessionId: parsed.sessionId,
+      text: parsed.text,
+      ...(parsed.cols != null ? { cols: parsed.cols } : {}),
+      ...(parsed.rows != null ? { rows: parsed.rows } : {}),
+    });
+    return result satisfies SyncSendToSessionResult;
+  });
+  register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const { sessionId } = parseStopRuntimeArgs(payload);
     const session = args.sessionService.get(sessionId);
     if (session?.ptyId) {
       await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
     }
     return { ok: true };
   });
-
   register("processes.listDefinitions", { viewerAllowed: true }, async () =>
     requireService(args.processService, "Process service not available.").listDefinitions());
   register("processes.listRuntime", { viewerAllowed: true }, async (payload) =>
@@ -1935,20 +1933,15 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await requireService(args.agentChatService, "Agent chat service not available.").respondToInput(parseAgentChatRespondToInputArgs(payload));
     return { ok: true };
   });
-  register("chat.resume", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").resumeSession(parseAgentChatResumeArgs(payload)));
   // Restart: fired by iOS Live Activity + Attention Drawer "Restart" pill on
-  // a failed agent. Alias to resumeSession — same runtime-rewire behaviour.
-  // Keep as a distinct action name so telemetry can distinguish explicit
-  // restart intent from ordinary resume.
+  // a failed agent. Keep this explicit failure-recovery action distinct from
+  // ordinary continuation, which is handled by chat.send.
   register("chat.restart", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").resumeSession(parseAgentChatResumeArgs(payload)));
+    requireService(args.agentChatService, "Agent chat service not available.").resumeSession({
+      sessionId: requireString(payload.sessionId, "chat.restart requires sessionId."),
+    }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
-  register("chat.dispose", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").dispose(parseAgentChatDisposeArgs(payload));
-    return { ok: true };
-  });
   register("chat.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").archiveSession(parseAgentChatArchiveArgs(payload, "chat.archive"));
     return { ok: true };

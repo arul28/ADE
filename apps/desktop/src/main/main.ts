@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
-import { isAdeMcpNamedPipePath } from "../shared/adeMcpIpc";
+import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -1977,6 +1977,9 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -4004,7 +4007,7 @@ app.whenReady().then(async () => {
           : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
         : adePaths.socketPath;
 
-      if (!isAdeMcpNamedPipePath(rpcSocketPath)) {
+      if (!isAdeRuntimeNamedPipePath(rpcSocketPath)) {
         try {
           fs.unlinkSync(rpcSocketPath);
         } catch {}
@@ -4305,6 +4308,9 @@ app.whenReady().then(async () => {
       logger,
       projectRoot: normalizedRoot,
       appDataDir: app.getPath("userData"),
+      credentialStore: new EncryptedFileCredentialStore({
+        secretsDir: machineAdeLayout.secretsDir,
+      }),
     });
     const dormantProjectScaffoldService = createProjectScaffoldService({
       logger,
@@ -4430,7 +4436,7 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      if (ctx.rpcSocketPath && !isAdeMcpNamedPipePath(ctx.rpcSocketPath)) {
+      if (ctx.rpcSocketPath && !isAdeRuntimeNamedPipePath(ctx.rpcSocketPath)) {
         fs.unlinkSync(ctx.rpcSocketPath);
       }
     } catch {

@@ -223,7 +223,7 @@ iOS service files (`apps/ios/ADE/Services/`):
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
   command routing, keychain integration, PIN-based pairing, lane
   presence announcements, terminal subscribe/unsubscribe tracking,
-  terminal input/resize senders, mobile CLI session launch/resume,
+  terminal input/resize senders, mobile CLI launch/continuation,
   PR mobile snapshot fetch, live chat-event push listener, project
   home/catalog state, active-project scoping, unregistered-worktree
   discovery, and APNs push-token registration to the host.

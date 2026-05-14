@@ -9,6 +9,10 @@ export type TuiHeartbeat = {
   readCount: () => number;
 };
 
+export type TuiHeartbeatOptions = {
+  beforeSignalExit?: (signal: NodeJS.Signals) => void | Promise<void>;
+};
+
 const EXIT_CODES_BY_SIGNAL: Partial<Record<NodeJS.Signals, number>> = {
   SIGHUP: 129,
   SIGINT: 130,
@@ -16,8 +20,10 @@ const EXIT_CODES_BY_SIGNAL: Partial<Record<NodeJS.Signals, number>> = {
 };
 const EXIT_SIGNALS = Object.keys(EXIT_CODES_BY_SIGNAL) as NodeJS.Signals[];
 const activeHeartbeatCleanups = new Set<() => void>();
+const activeSignalExitHooks = new Set<(signal: NodeJS.Signals) => void | Promise<void>>();
 const signalHandlers = new Map<NodeJS.Signals, () => void>();
 let processHandlersRegistered = false;
+let signalExitInProgress = false;
 
 function safeUnlink(filePath: string): void {
   try {
@@ -79,8 +85,19 @@ function ensureProcessHandlers(): void {
   process.once("exit", onProcessExit);
   for (const signal of EXIT_SIGNALS) {
     const handler = () => {
+      if (signalExitInProgress) return;
+      signalExitInProgress = true;
+      const hooks = Array.from(activeSignalExitHooks);
       cleanupActiveHeartbeats();
-      process.exit(EXIT_CODES_BY_SIGNAL[signal] ?? 1);
+      void Promise.race([
+        Promise.allSettled(hooks.map((hook) => hook(signal))),
+        new Promise<void>((resolve) => {
+          const timeout = setTimeout(resolve, 1_000);
+          timeout.unref?.();
+        }),
+      ]).finally(() => {
+        process.exit(EXIT_CODES_BY_SIGNAL[signal] ?? 1);
+      });
     };
     signalHandlers.set(signal, handler);
     process.once(signal, handler);
@@ -98,10 +115,13 @@ function removeProcessHandlersIfIdle(): void {
   processHandlersRegistered = false;
 }
 
-export function startTuiHeartbeat(projectRoot: string): TuiHeartbeat {
+export function startTuiHeartbeat(projectRoot: string, options: TuiHeartbeatOptions = {}): TuiHeartbeat {
   const dir = path.join(projectRoot, ".ade", "cache", "ade-code", "clients");
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${process.pid}.json`);
+  if (options.beforeSignalExit) {
+    activeSignalExitHooks.add(options.beforeSignalExit);
+  }
   const startedAt = new Date().toISOString();
   const write = () => {
     try {
@@ -126,6 +146,9 @@ export function startTuiHeartbeat(projectRoot: string): TuiHeartbeat {
     stopped = true;
     clearInterval(timer);
     activeHeartbeatCleanups.delete(stop);
+    if (options.beforeSignalExit) {
+      activeSignalExitHooks.delete(options.beforeSignalExit);
+    }
     safeUnlink(filePath);
     removeProcessHandlersIfIdle();
   };

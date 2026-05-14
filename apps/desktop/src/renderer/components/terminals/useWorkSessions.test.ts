@@ -245,7 +245,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       activeItemId: "session-2",
       selectedItemId: "session-2",
       viewMode: "grid",
-      draftKind: "shell",
+      draftKind: "cli",
       laneFilter: "lane-1",
       statusFilter: "running",
       search: "alpha",
@@ -275,6 +275,17 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       viewMode: "tabs",
       draftKind: "chat",
     });
+  });
+
+  it("setDraftLaneId remembers the new-session lane per project and selects it globally", () => {
+    const { result } = renderHook(() => useWorkSessions());
+
+    act(() => {
+      result.current.setDraftLaneId("lane-2");
+    });
+
+    expect(setWorkViewStateSpy).toHaveBeenCalledWith("/fake/project", { draftLaneId: "lane-2" });
+    expect(selectLaneSpy).toHaveBeenCalledWith("lane-2");
   });
 
   it("setActiveItemId selects the active tab lane in tab mode", async () => {
@@ -414,77 +425,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(selectLaneSpy).not.toHaveBeenCalled();
-  });
-
-  it("resumeSession keeps the Work view active and reuses the existing tracked session id", async () => {
-    const session = {
-      id: "session-1",
-      laneId: "lane-1",
-      laneName: "Lane 1",
-      ptyId: null,
-      tracked: true,
-      pinned: false,
-      goal: "Resume codex",
-      toolType: "codex" as const,
-      title: "Codex",
-      status: "completed" as const,
-      startedAt: "2026-04-01T12:00:00.000Z",
-      endedAt: "2026-04-01T12:30:00.000Z",
-      exitCode: 0,
-      transcriptPath: "/tmp/session-1.log",
-      headShaStart: null,
-      headShaEnd: null,
-      lastOutputPreview: null,
-      summary: null,
-      runtimeState: "exited" as const,
-      resumeCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-1",
-      resumeMetadata: {
-        provider: "codex" as const,
-        targetKind: "thread" as const,
-        targetId: "thread-1",
-        launch: { permissionMode: "full-auto" as const },
-      },
-    };
-    listSessionsCachedMock.mockResolvedValue([session]);
-
-    const workState = {
-      openItemIds: [] as string[],
-      activeItemId: null as string | null,
-      selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
-      draftKind: "chat" as const,
-      laneFilter: "all",
-      statusFilter: "all" as const,
-      search: "",
-      sessionListOrganization: "by-lane" as const,
-      workCollapsedLaneIds: [] as string[],
-      workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
-    };
-    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
-      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
-      Object.assign(workState, resolved);
-    });
-    (window as any).ade.pty.create.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-2" });
-
-    const { result } = renderHook(() => useWorkSessions());
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
-    });
-
-    await act(async () => {
-      await result.current.resumeSession(session);
-    });
-
-    expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
-      startupCommand: "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-1",
-    }));
-    expect(focusSessionSpy).toHaveBeenCalledWith("session-1");
-    expect(workState.activeItemId).toBe("session-1");
-    expect(workState.selectedItemId).toBe("session-1");
-    expect(navigateSpy).not.toHaveBeenCalled();
   });
 
   it("preserves saved Work filters when a URL targets a specific session", async () => {

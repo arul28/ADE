@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from "react";
-import { ChatCircleText, Command, Terminal } from "@phosphor-icons/react";
+import { ChatCircleText, Command } from "@phosphor-icons/react";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
@@ -37,15 +37,6 @@ const ENTRY_OPTIONS: Array<{
     description: "Open the CLI tool for running commands with AI assistance.",
     docUrl: docs.terminals,
     dataTour: "lanes.workCliTool",
-  },
-  {
-    kind: "shell",
-    label: "New Shell",
-    icon: Terminal,
-    color: COLORS.entryShell,
-    description: "Open a new shell terminal in this lane's worktree.",
-    docUrl: docs.terminals,
-    dataTour: "lanes.workNewShell",
   },
 ];
 
@@ -159,6 +150,7 @@ export function LaneWorkPane({
           activeItemId={work.activeItemId}
           viewMode={work.viewMode}
           draftKind={work.draftKind}
+          draftLaneId={laneId}
           setViewMode={work.setViewMode}
           onSelectItem={work.setActiveItemId}
           onCloseItem={work.closeTab}

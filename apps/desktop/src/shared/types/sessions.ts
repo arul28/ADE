@@ -130,6 +130,22 @@ export type PtyCreateResult = {
   pid: number | null;
 };
 
+export type PtySendToSessionArgs = {
+  sessionId: string;
+  text: string;
+  cols?: number | null;
+  rows?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode | null;
+};
+
+export type PtySendToSessionResult = PtyCreateResult & {
+  session: TerminalSessionSummary | null;
+  resumed: boolean;
+  reusedExistingRuntime: boolean;
+};
+
 export type PtyDataEvent = {
   ptyId: string;
   sessionId: string;
@@ -151,6 +167,8 @@ export type ChatTerminalSession = {
   laneId: string;
   laneName: string;
   title: string;
+  toolType: TerminalToolType | null;
+  goal: string | null;
   status: TerminalSessionStatus;
   runtimeState: TerminalRuntimeState;
   active: boolean;
@@ -158,6 +176,10 @@ export type ChatTerminalSession = {
   endedAt: string | null;
   exitCode: number | null;
   pid: number | null;
+  resumeCommand: string | null;
+  resumeMetadata?: TerminalResumeMetadata | null;
+  lastOutputPreview: string | null;
+  summary: string | null;
 };
 
 export type ChatTerminalListArgs = {
@@ -186,6 +208,14 @@ export type ChatTerminalWriteArgs = {
   data: string;
 };
 
+export type ChatTerminalResizeArgs = {
+  terminalId?: string | null;
+  ptyId?: string | null;
+  chatSessionId?: string | null;
+  cols: number;
+  rows: number;
+};
+
 export type ChatTerminalSignalArgs = {
   terminalId?: string | null;
   ptyId?: string | null;
@@ -195,6 +225,58 @@ export type ChatTerminalSignalArgs = {
 
 export type ChatTerminalActiveForChatArgs = {
   chatSessionId: string;
+};
+
+export type TerminalSnapshotCell = {
+  text: string;
+  fg: number | null;
+  bg: number | null;
+  fgMode: "default" | "palette" | "rgb";
+  bgMode: "default" | "palette" | "rgb";
+  bold?: boolean;
+  dim?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  inverse?: boolean;
+  strikethrough?: boolean;
+};
+
+export type TerminalSnapshotRow = {
+  cells: TerminalSnapshotCell[];
+  text: string;
+  wrapped: boolean;
+};
+
+export type TerminalSerializedSnapshot = {
+  version: 1;
+  terminalId: string;
+  cols: number;
+  rows: number;
+  capturedAt: string;
+  status: TerminalSessionStatus;
+  runtimeState: TerminalRuntimeState;
+  bufferType: "normal" | "alternate";
+  cursorX: number;
+  cursorY: number;
+  baseY: number;
+  viewportY: number;
+  serialized: string;
+  visibleRows: TerminalSnapshotRow[];
+};
+
+export type ChatTerminalPreviewArgs = {
+  terminalId?: string | null;
+  chatSessionId?: string | null;
+  maxBytes?: number | null;
+};
+
+export type ChatTerminalPreviewResult = {
+  terminalId: string;
+  session: ChatTerminalSession;
+  source: "snapshot" | "transcript" | "empty";
+  snapshot: TerminalSerializedSnapshot | null;
+  transcript: string | null;
+  capturedAt: string;
 };
 
 export type TerminalSessionChangedEvent = {

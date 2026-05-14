@@ -73,7 +73,9 @@ describe("ChatSubagentsPanel", () => {
 
     fireEvent.click(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: /Background/i }));
+    // With only background snapshots, the single non-empty tab auto-resolves
+    // to "background" — the tab strip collapses into a section header so the
+    // background list renders directly without clicking a tab.
     expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
 
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
@@ -98,7 +100,6 @@ describe("ChatSubagentsPanel", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /Subagents/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Background/i }));
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
 
     expect(screen.queryByText("Progress 0")).toBeNull();
@@ -107,5 +108,25 @@ describe("ChatSubagentsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Copy id/i }));
     expect(writeText).toHaveBeenCalledWith("task-1");
+  });
+
+  it("renders the tab strip when more than one category is non-empty", () => {
+    const foregroundSnapshot: ChatSubagentSnapshot = {
+      ...snapshot,
+      taskId: "task-2",
+      description: "Inspect codex flow",
+      background: false,
+    };
+    render(
+      <ChatSubagentsPanel
+        snapshots={[snapshot, foregroundSnapshot]}
+        events={buildTimelineEvents(0)}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Subagents/i }));
+    // With both background and non-background snapshots present, both tabs
+    // should be clickable.
+    expect(screen.getAllByRole("button", { name: /Background/i }).length).toBeGreaterThan(0);
   });
 });

@@ -18,6 +18,8 @@ on:
         type: boolean
 
 permissions:
+  actions: read
+  checks: read
   contents: write
 
 jobs:
@@ -33,6 +35,36 @@ jobs:
         run: |
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+      - name: Ensure CI passed for release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_REF: ${{ inputs.target_ref }}
+        run: |
+          set -euo pipefail
+
+          ci_pass_json="$(
+            gh api "repos/$GH_REPO/commits/$TARGET_REF/check-runs" \
+              -f per_page=100 \
+              --paginate \
+              --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
+          )"
+
+          if [ -z "$ci_pass_json" ] || [ "$ci_pass_json" = "null" ]; then
+            echo "::error::No ci-pass check run was found for $TARGET_REF. Run CI before releasing."
+            exit 1
+          fi
+
+          status="$(printf '%s' "$ci_pass_json" | jq -r '.status // ""')"
+          conclusion="$(printf '%s' "$ci_pass_json" | jq -r '.conclusion // ""')"
+          url="$(printf '%s' "$ci_pass_json" | jq -r '.html_url // ""')"
+          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+            echo "::error::ci-pass for $TARGET_REF is $status/$conclusion. Release packaging requires green CI. $url"
+            exit 1
+          fi
+
+          echo "ci-pass succeeded for $TARGET_REF: $url"
 
   build-mac-release:
     needs:

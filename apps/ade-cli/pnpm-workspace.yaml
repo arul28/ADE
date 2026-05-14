@@ -1,0 +1,4 @@
+allowBuilds:
+  esbuild: set this to true or false
+  node-pty: set this to true or false
+  sqlite3: set this to true or false

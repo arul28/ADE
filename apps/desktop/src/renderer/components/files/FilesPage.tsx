@@ -164,13 +164,30 @@ function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
 }
 
-function defaultFilesWorkspaceId(workspaces: FilesWorkspace[], preferredLaneId: string | null): string {
+function defaultFilesWorkspaceId(
+  workspaces: FilesWorkspace[],
+  preferredLaneId: string | null,
+  unavailableWorkspaceIds: ReadonlySet<string> = new Set(),
+): string {
+  const availableWorkspaces = workspaces.filter((workspace) => !unavailableWorkspaceIds.has(workspace.id));
   if (preferredLaneId) {
-    const laneWorkspace = workspaces.find((workspace) => workspace.kind !== "primary" && workspace.laneId === preferredLaneId)
-      ?? workspaces.find((workspace) => workspace.laneId === preferredLaneId);
+    const laneWorkspace = availableWorkspaces.find((workspace) => workspace.kind !== "primary" && workspace.laneId === preferredLaneId)
+      ?? availableWorkspaces.find((workspace) => workspace.laneId === preferredLaneId);
     if (laneWorkspace) return laneWorkspace.id;
   }
-  return workspaces[0]?.id ?? "";
+  return availableWorkspaces[0]?.id ?? workspaces[0]?.id ?? "";
+}
+
+function formatFilesError(err: unknown, fallback = "File operation failed."): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim() || fallback;
+}
+
+function isMissingWorkspaceRootError(message: string): boolean {
+  return /(?:ENOENT|no such file or directory|worktree is missing|workspace is missing)/i.test(message);
 }
 
 function touchFilesPageSession(sessionKey: string): void {
@@ -522,6 +539,7 @@ export function FilesPage({
 
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState<string>(initialSession?.workspaceId ?? "");
+  const [unavailableWorkspaceIds, setUnavailableWorkspaceIds] = useState<Set<string>>(() => new Set());
   const [allowPrimaryEdit, setAllowPrimaryEdit] = useState(initialSession?.allowPrimaryEdit ?? false);
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -650,7 +668,7 @@ export function FilesPage({
   const activeTabPreviewKind = getFilePreviewKind(activeTab);
   const activeTabIsText = isTextTab(activeTab);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
-  const liveWatchEnabled = openTabs.length > 0;
+  const liveWatchEnabled = Boolean(workspaceId);
 
   useEffect(() => {
     if (!activeWorkspace?.rootPath) return;
@@ -815,15 +833,19 @@ export function FilesPage({
     return nodeByComparablePath.get(normalizePathForWorkspaceComparison(selectedNodePath, workspaceComparisonRoot))?.path ?? null;
   }, [nodeByComparablePath, selectedNodePath, workspaceComparisonRoot]);
   const activeContextPath = contextMenu?.nodePath ?? selectedTreeNodePath ?? activeTabPath;
-  const laneWorkspaces = useMemo(() => workspaces.filter((ws) => ws.kind !== "primary"), [workspaces]);
+  const laneWorkspaces = useMemo(
+    () => workspaces.filter((ws) => ws.kind !== "primary" && !unavailableWorkspaceIds.has(ws.id)),
+    [unavailableWorkspaceIds, workspaces],
+  );
   const suggestedLaneWorkspace = useMemo(() => {
+    if (unavailableWorkspaceIds.size > 0) return null;
     if (!laneWorkspaces.length) return null;
     if (selectedLaneId) {
       const fromSelectedLane = laneWorkspaces.find((ws) => ws.laneId === selectedLaneId);
       if (fromSelectedLane) return fromSelectedLane;
     }
     return laneWorkspaces[0] ?? null;
-  }, [laneWorkspaces, selectedLaneId]);
+  }, [laneWorkspaces, selectedLaneId, unavailableWorkspaceIds]);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.files.page_mount");
@@ -917,6 +939,13 @@ export function FilesPage({
       }
       if (!parentPath) {
         setTree(nodes);
+        setError(null);
+        setUnavailableWorkspaceIds((prev) => {
+          if (!prev.has(workspaceId)) return prev;
+          const next = new Set(prev);
+          next.delete(workspaceId);
+          return next;
+        });
         return;
       }
 
@@ -928,16 +957,30 @@ export function FilesPage({
         });
       setTree((prev) => merge(prev));
     } catch (err) {
+      const message = formatFilesError(err);
       if (isRootRefresh) {
         logRendererDebugEvent("renderer.files.refresh_tree.failed", {
           workspaceId,
           durationMs: Math.round(performance.now() - startedAt),
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
         });
       }
-      setError(err instanceof Error ? err.message : String(err));
+      const primaryWorkspace = activeWorkspace?.kind !== "primary"
+        ? workspaces.find((workspace) => workspace.kind === "primary")
+        : null;
+      if (isRootRefresh && primaryWorkspace && primaryWorkspace.id !== workspaceId && isMissingWorkspaceRootError(message) && !hasUnsavedTabs) {
+        setUnavailableWorkspaceIds((prev) => new Set(prev).add(workspaceId));
+        setTree([]);
+        setExpanded(new Set());
+        setSelectedNodePath(null);
+        setOpenTabs([]);
+        setActiveTabPath(null);
+        setWorkspaceId(primaryWorkspace.id);
+        return;
+      }
+      setError(message);
     }
-  }, [workspaceId]);
+  }, [activeWorkspace?.kind, hasUnsavedTabs, workspaceId, workspaces]);
 
   refreshTreeNowRef.current = refreshTreeNow;
 
@@ -1256,7 +1299,7 @@ export function FilesPage({
             setActiveTabPath(null);
             setSelectedNodePath(null);
           }
-          return defaultFilesWorkspaceId(items, selectedLaneId);
+          return defaultFilesWorkspaceId(items, selectedLaneId, unavailableWorkspaceIds);
         });
       })
       .catch((err) => {
@@ -1273,7 +1316,7 @@ export function FilesPage({
   // Reconcile the active workspace when the preferred lane changes (without refetching).
   useEffect(() => {
     if (!preferredLaneId || !workspaces.length) return;
-    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId, unavailableWorkspaceIds);
     if (!nextWorkspaceId) return;
     setWorkspaceId((current) => {
       if (current === nextWorkspaceId) return current;
@@ -1286,13 +1329,13 @@ export function FilesPage({
       }
       return nextWorkspaceId;
     });
-  }, [preferredLaneId, selectedLaneId, workspaces]);
+  }, [preferredLaneId, selectedLaneId, unavailableWorkspaceIds, workspaces]);
 
   useEffect(() => {
     if (workspaceId || !workspaces.length) return;
-    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId);
+    const nextWorkspaceId = defaultFilesWorkspaceId(workspaces, selectedLaneId, unavailableWorkspaceIds);
     if (nextWorkspaceId) setWorkspaceId(nextWorkspaceId);
-  }, [selectedLaneId, workspaceId, workspaces]);
+  }, [selectedLaneId, unavailableWorkspaceIds, workspaceId, workspaces]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -2012,8 +2055,26 @@ export function FilesPage({
                 </div>
               )
             ) : (
-              <div className="grid h-full" style={{ gridTemplateColumns: "300px 1fr" }}>
-                <div style={{ padding: 12, borderRight: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
+              <div
+                data-testid="files-conflict-layout"
+                data-layout={embedded ? "stacked" : "split"}
+                className={cn(
+                  "h-full min-h-0 min-w-0",
+                  embedded ? "flex flex-col" : "grid",
+                )}
+                style={embedded ? undefined : { gridTemplateColumns: "minmax(220px, 300px) minmax(0, 1fr)" }}
+              >
+                <div
+                  data-testid="files-conflict-hunks"
+                  className="min-h-0 min-w-0 overflow-auto"
+                  style={{
+                    padding: 12,
+                    borderRight: embedded ? "none" : `1px solid ${COLORS.border}`,
+                    borderBottom: embedded ? `1px solid ${COLORS.border}` : "none",
+                    background: COLORS.cardBg,
+                    maxHeight: embedded ? "42%" : undefined,
+                  }}
+                >
                   <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
                     <span style={{ ...LABEL_STYLE }}>CONFLICT HUNKS</span>
                     <span style={inlineBadge(
@@ -2067,7 +2128,7 @@ export function FilesPage({
                     ) : null}
                   </div>
                 </div>
-                <div className="h-full">
+                <div className="h-full min-h-0 min-w-0 flex-1">
                   <textarea
                     value={activeTab?.content ?? ""}
                     onChange={(e) => {
@@ -2075,7 +2136,7 @@ export function FilesPage({
                       setOpenTabs((prev) => prev.map((tab) => (tab.path === activeTab.path ? { ...tab, content: e.target.value } : tab)));
                     }}
                     style={{
-                      height: "100%", width: "100%", resize: "none", padding: 12,
+                      height: "100%", width: "100%", minWidth: 0, resize: "none", padding: 12,
                       fontFamily: MONO_FONT, fontSize: 12, outline: "none",
                       background: COLORS.recessedBg, color: COLORS.textPrimary, border: "none",
                     }}
@@ -2093,7 +2154,8 @@ export function FilesPage({
     searchQuery, inlineRenameRequest, selectedTreeNodePath, conflictHunks, editorTheme, editorModeHint,
     resolvedConflictKeys, createFileAt, createDirectoryAt, saveActive,
     closeTab, stagePath, unstagePath, discardPath, openFile, setShowQuickOpen, navigate,
-    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo
+    applyConflictResolution, setEditorHostRef, workspaceComparisonRoot, toggleDirectory, renamePathTo,
+    embedded
   ]);
 
   const renderPane = useCallback((paneId: keyof typeof paneConfigs) => {
@@ -2120,7 +2182,7 @@ export function FilesPage({
             background: "linear-gradient(180deg, color-mix(in srgb, var(--color-fg) 2%, transparent), transparent)",
           }}
         >
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {Icon ? <Icon size={14} weight="fill" style={{ color: COLORS.accent }} /> : null}
             <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textSecondary }}>
               {config.title.toUpperCase()}
@@ -2135,7 +2197,7 @@ export function FilesPage({
               </span>
             ) : null}
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
+          <div className="ml-auto flex min-w-0 shrink items-center justify-end gap-2 overflow-x-auto">
             {config.headerActions}
           </div>
         </div>

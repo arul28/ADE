@@ -45,6 +45,7 @@ function weeklyPercentFor(snapshot: UsageSnapshot | null, provider: UsageProvide
 }
 
 const OPEN_USAGE_EVENT = "ade-open-usage-drawer";
+const HEADER_USAGE_STARTUP_DELAY_MS = 5_000;
 
 export function HeaderUsageControl() {
   const [open, setOpen] = useState(false);
@@ -56,43 +57,50 @@ export function HeaderUsageControl() {
   const [guardrailsOpen, setGuardrailsOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
-  // Initial snapshot + live updates (always subscribed so the button reflects
-  // the latest poll whether or not the drawer is open).
+  // Delay background usage reads during project boot, but hydrate immediately
+  // when the drawer is opened.
   useEffect(() => {
     if (!window.ade?.usage) return;
     let cancelled = false;
-    window.ade.usage.getSnapshot()
-      .then((nextSnapshot) => {
-        if (!cancelled) setSnapshot(nextSnapshot);
-      })
-      .catch(() => {
-        if (!cancelled) setSnapshot(null);
+    let unsubscribe: (() => void) | undefined;
+    const timer = window.setTimeout(() => {
+      window.ade.usage.getSnapshot()
+        .then((nextSnapshot) => {
+          if (!cancelled) setSnapshot(nextSnapshot);
+        })
+        .catch(() => {
+          if (!cancelled) setSnapshot(null);
+        });
+      unsubscribe = window.ade.usage.onUpdate?.((next) => {
+        if (!cancelled) setSnapshot(next);
       });
-    const unsubscribe = window.ade.usage.onUpdate?.((next) => {
-      if (!cancelled) setSnapshot(next);
-    });
+    }, open ? 0 : HEADER_USAGE_STARTUP_DELAY_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
       unsubscribe?.();
     };
-  }, []);
+  }, [open]);
 
   // Fetch provider connection status so we can hide providers whose CLI is
   // not installed on this machine.
   useEffect(() => {
     if (!window.ade?.ai?.getStatus) return;
     let cancelled = false;
-    window.ade.ai.getStatus()
-      .then((status) => {
-        if (!cancelled) setProviderConnections(status.providerConnections ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setProviderConnections(null);
-      });
+    const timer = window.setTimeout(() => {
+      window.ade.ai.getStatus()
+        .then((status) => {
+          if (!cancelled) setProviderConnections(status.providerConnections ?? null);
+        })
+        .catch(() => {
+          if (!cancelled) setProviderConnections(null);
+        });
+    }, open ? 0 : HEADER_USAGE_STARTUP_DELAY_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [open]);
 
   // Listen for programmatic open requests (used by the threshold toast).
   useEffect(() => {

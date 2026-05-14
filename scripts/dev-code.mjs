@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import {
-  buildRuntimeCli,
+  buildRuntimeCliForDevClient,
   canConnectToSocket,
   cliPath,
   devRuntimeEnv,
@@ -16,7 +16,7 @@ function usage() {
   return [
     "Usage: npm run dev:code -- [options] [-- ade-code-args...]",
     "",
-    "Builds the ADE CLI/runtime, then launches ade code against the dev socket.",
+    "Uses the shared dev runtime, building it first when it is not already running.",
     "Default mode is --auto: start the dev runtime if it is missing.",
     "",
     "Options:",
@@ -108,12 +108,13 @@ async function main() {
   process.stdout.write(`[ade] project root: ${options.projectRoot}\n`);
   process.stdout.write(`[ade] workspace root: ${options.workspaceRoot}\n`);
   process.stdout.write(`[ade] runtime socket: ${options.socketPath}\n`);
-  await buildRuntimeCli(options.skipRuntimeBuild);
   if (options.mode === "attach") {
     if (!(await canConnectToSocket(options.socketPath))) {
       throw new Error(`No dev runtime is listening at ${options.socketPath}. Start it with npm run dev:runtime.`);
     }
+    await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
   } else {
+    await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
     await ensureRuntime(options.socketPath);
   }
   await run(

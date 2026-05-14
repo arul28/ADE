@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import {
-  buildRuntimeCli,
+  buildRuntimeCliForDevClient,
   ensureRuntime,
   resolveDevSocketPath,
   resolveProjectRoot,
@@ -11,7 +11,7 @@ function usage() {
   return [
     "Usage: npm run dev:all -- [options]",
     "",
-    "Builds the ADE CLI/runtime and starts the shared dev runtime.",
+    "Starts the shared dev runtime, building it first when it is not already running.",
     "Then run npm run dev:desktop:attach and npm run dev:code:attach in separate terminals.",
     "",
     "Options:",
@@ -69,7 +69,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   process.stdout.write(`[ade] project root: ${options.projectRoot}\n`);
   process.stdout.write(`[ade] runtime socket: ${options.socketPath}\n`);
-  await buildRuntimeCli(options.skipRuntimeBuild);
+  await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
   await ensureRuntime(options.socketPath);
   process.stdout.write("[ade] dev runtime is ready.\n");
   process.stdout.write("[ade] terminal 1: npm run dev:desktop:attach\n");

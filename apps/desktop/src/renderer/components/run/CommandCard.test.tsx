@@ -4,7 +4,14 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandCard } from "./CommandCard";
-import type { LaneSummary, ProcessDefinition, ProcessGroupDefinition, ProcessRuntime } from "../../../shared/types";
+import { formatEndedAt, formatProcessStatus, hasInspectableProcessOutput, isActiveProcessStatus } from "./processUtils";
+import type {
+  LaneSummary,
+  ProcessDefinition,
+  ProcessGroupDefinition,
+  ProcessRuntime,
+  ProcessRuntimeStatus,
+} from "../../../shared/types";
 
 afterEach(cleanup);
 
@@ -44,6 +51,15 @@ const baseDefinition: ProcessDefinition = {
 };
 
 const groups: ProcessGroupDefinition[] = [];
+const ALL_STATUSES: ProcessRuntimeStatus[] = [
+  "stopped",
+  "starting",
+  "running",
+  "degraded",
+  "stopping",
+  "exited",
+  "crashed",
+];
 
 function makeRuntime(overrides: Partial<ProcessRuntime> = {}): ProcessRuntime {
   return {
@@ -169,5 +185,65 @@ describe("CommandCard", () => {
       />,
     );
     expect(screen.getByText("No runs on this lane yet.")).toBeTruthy();
+  });
+});
+
+describe("process runtime presentation helpers", () => {
+  it.each(["running", "starting", "degraded", "stopping"] as const)(
+    "treats '%s' as active",
+    (status) => {
+      expect(isActiveProcessStatus(status)).toBe(true);
+    },
+  );
+
+  it.each(["stopped", "exited", "crashed"] as const)(
+    "treats '%s' as inactive",
+    (status) => {
+      expect(isActiveProcessStatus(status)).toBe(false);
+    },
+  );
+
+  it("covers every process runtime status", () => {
+    for (const status of ALL_STATUSES) {
+      expect(typeof isActiveProcessStatus(status)).toBe("boolean");
+    }
+  });
+
+  it("requires meaningful history before stopped processes are inspectable", () => {
+    expect(hasInspectableProcessOutput(makeRuntime({ status: "stopped" }))).toBe(false);
+    expect(hasInspectableProcessOutput(makeRuntime({ status: "stopped", startedAt: "2026-01-01T00:00:00Z" }))).toBe(true);
+    expect(hasInspectableProcessOutput(makeRuntime({ status: "stopped", lastEndedAt: "2026-01-01T00:00:00Z" }))).toBe(true);
+    expect(hasInspectableProcessOutput(makeRuntime({ status: "stopped", lastExitCode: 0 }))).toBe(true);
+    expect(hasInspectableProcessOutput(makeRuntime({ status: "stopped", lastExitCode: 1 }))).toBe(true);
+  });
+
+  it("keeps every non-stopped process inspectable", () => {
+    for (const status of ALL_STATUSES.filter((s) => s !== "stopped")) {
+      expect(hasInspectableProcessOutput(makeRuntime({ status }))).toBe(true);
+    }
+  });
+
+  it("formats process status with exit code only for terminal failures and exits", () => {
+    for (const status of ["stopped", "starting", "running", "degraded", "stopping"] as const) {
+      expect(formatProcessStatus({ status, lastExitCode: null })).toBe(status);
+      expect(formatProcessStatus({ status, lastExitCode: 1 })).toBe(status);
+    }
+
+    expect(formatProcessStatus({ status: "crashed", lastExitCode: 137 })).toBe("crashed:137");
+    expect(formatProcessStatus({ status: "exited", lastExitCode: 0 })).toBe("exited:0");
+    expect(formatProcessStatus({ status: "crashed", lastExitCode: null })).toBe("crashed");
+    expect(formatProcessStatus({ status: "exited", lastExitCode: null })).toBe("exited");
+    expect(formatProcessStatus({ status: "crashed", lastExitCode: 0 })).toBe("crashed:0");
+  });
+
+  it("formats ended timestamps with a stable locale fallback", () => {
+    expect(formatEndedAt(null)).toBe("—");
+
+    const formatted = formatEndedAt("2026-04-28T15:30:00.000Z", "en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "UTC",
+    });
+    expect(formatted).toMatch(/3:30/);
   });
 });

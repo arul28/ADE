@@ -71,6 +71,14 @@ function commandForVm(vm: MacosVmRecord | null, laneRoot: string | null): string
   return `lume run ${shellQuote(vm.name)} --shared-dir ${shellQuote(vm.sharedDirectory)}`;
 }
 
+function shortLaneId(laneId: string): string {
+  return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
+}
+
+function laneDisplayName(status: MacosVmStatus | null, laneId: string): string {
+  return status?.vms.find((entry) => entry.laneId === laneId)?.laneName ?? shortLaneId(laneId);
+}
+
 export function MacosVmPanel({
   laneId,
   laneRoot,
@@ -88,6 +96,7 @@ export function MacosVmPanel({
   const [openDisplay, setOpenDisplay] = useState(false);
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
   const [screenshotPath, setScreenshotPath] = useState<string | null>(null);
+  const [screenshotLaneId, setScreenshotLaneId] = useState<string | null>(null);
   const [previewSize, setPreviewSize] = useState<PreviewSize | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<SelectedPoint | null>(null);
   const [typeValue, setTypeValue] = useState("");
@@ -98,6 +107,10 @@ export function MacosVmPanel({
   const platformSupported = status?.supported !== false;
   const canOperate = Boolean(providerReady && platformSupported && laneId && !busyAction);
   const command = useMemo(() => commandForVm(vm, laneRoot), [laneRoot, vm]);
+  const screenshotLaneMismatch = Boolean(screenshotLaneId && screenshotLaneId !== laneId);
+  const screenshotLaneMismatchMessage = screenshotLaneMismatch && screenshotLaneId
+    ? `This macOS VM screenshot is from ${laneDisplayName(status, screenshotLaneId)}, not ${laneDisplayName(status, laneId)}. Quit this view, then restart it from a chat or Claude Code session in ${laneDisplayName(status, laneId)} before inserting context.`
+    : null;
 
   const refresh = useCallback(async (forceMessage = false) => {
     setBusyAction((current) => current ?? "refresh");
@@ -202,6 +215,7 @@ export function MacosVmPanel({
       const result = await window.ade.macosVm.captureScreenshot({ laneId });
       setScreenshotPath(result.path);
       setScreenshotDataUrl(result.dataUrl ?? null);
+      setScreenshotLaneId(laneId);
       setPreviewSize(null);
       setSelectedPoint(null);
       setMessage({ tone: "info", text: result.dataUrl ? "Captured VM screenshot." : `Screenshot saved to ${result.path}.` });
@@ -217,6 +231,10 @@ export function MacosVmPanel({
     const sourceWidth = event.currentTarget.naturalWidth || previewSize?.width || rect.width;
     const sourceHeight = event.currentTarget.naturalHeight || previewSize?.height || rect.height;
     if (!rect.width || !rect.height || !sourceWidth || !sourceHeight) return;
+    if (screenshotLaneMismatch) {
+      setMessage({ tone: "error", text: screenshotLaneMismatchMessage ?? "This VM screenshot belongs to a different lane." });
+      return;
+    }
     const x = Math.max(0, Math.round(((event.clientX - rect.left) / rect.width) * sourceWidth));
     const y = Math.max(0, Math.round(((event.clientY - rect.top) / rect.height) * sourceHeight));
     setBusyAction("select");
@@ -232,18 +250,20 @@ export function MacosVmPanel({
       setSelectedPoint({ x, y });
       if (result.item.screenshotDataUrl) setScreenshotDataUrl(result.item.screenshotDataUrl);
       if (result.screenshot?.path) setScreenshotPath(result.screenshot.path);
+      setScreenshotLaneId(laneId);
       onAddContext?.(result.item);
-      setMessage({ tone: "info", text: onAddContext ? "Attached VM point context to chat." : "Selected VM point." });
+      setMessage({ tone: "info", text: onAddContext ? "Inserted VM point context." : "Selected VM point." });
     } catch (error) {
       setMessage({ tone: "error", text: errorMessage(error) });
     } finally {
       setBusyAction(null);
     }
-  }, [laneId, onAddContext, previewSize]);
+  }, [laneId, onAddContext, previewSize, screenshotLaneMismatch, screenshotLaneMismatchMessage]);
 
   const clickSelectedPoint = useCallback(() => runAction(
     "click",
     async () => {
+      if (screenshotLaneMismatch) throw new Error(screenshotLaneMismatchMessage ?? "This VM screenshot belongs to a different lane.");
       if (!selectedPoint) throw new Error("Select a VM screenshot point first.");
       await window.ade.macosVm.click({
         laneId,
@@ -253,7 +273,7 @@ export function MacosVmPanel({
       });
     },
     "Clicked selected VM point.",
-  ), [laneId, runAction, selectedPoint]);
+  ), [laneId, runAction, screenshotLaneMismatch, screenshotLaneMismatchMessage, selectedPoint]);
 
   const typeIntoVm = useCallback(() => runAction(
     "type",
@@ -306,6 +326,13 @@ export function MacosVmPanel({
         >
           <WarningCircle size={14} weight="fill" className={cn("mt-0.5 shrink-0", message.tone === "error" ? "text-rose-200/80" : "text-muted-fg/60")} />
           <span>{message.text}</span>
+        </div>
+      ) : null}
+
+      {screenshotLaneMismatchMessage ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-4 text-amber-100/85">
+          <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
+          <span>{screenshotLaneMismatchMessage}</span>
         </div>
       ) : null}
 
@@ -495,9 +522,9 @@ export function MacosVmPanel({
               alt="macOS VM screenshot"
               className={cn(
                 "block max-h-[220px] w-full object-contain",
-                running ? "cursor-crosshair" : "cursor-default",
+                running && !screenshotLaneMismatch ? "cursor-crosshair" : "cursor-default",
               )}
-              onClick={running ? selectPreviewPoint : undefined}
+              onClick={running && !screenshotLaneMismatch ? selectPreviewPoint : undefined}
               onLoad={(event) => {
                 setPreviewSize({
                   width: event.currentTarget.naturalWidth,
@@ -529,7 +556,7 @@ export function MacosVmPanel({
             className="ade-shell-control inline-flex items-center gap-2 rounded-md px-3 py-2 text-[12px]"
             data-variant="ghost"
             onClick={clickSelectedPoint}
-            disabled={!canOperate || !running || !selectedPoint || busyAction === "click"}
+            disabled={!canOperate || !running || !selectedPoint || screenshotLaneMismatch || busyAction === "click"}
           >
             {busyAction === "click" ? Spinner : <CursorClick size={13} />}
             Click point

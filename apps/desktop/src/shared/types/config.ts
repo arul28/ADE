@@ -1330,9 +1330,9 @@ export type AiChatConfig = {
   /** Default permission mode for new OpenCode/API-model chat sessions */
   opencodePermissionMode?: AiInProcessPermissionMode;
   /**
-   * Auto-allow the MCP permission gate for the ADE `ask_user` tool so the
-   * inline question card surfaces immediately instead of being shadowed by an
-   * "Allow the ade MCP server to run tool ask_user?" prompt. Defaults to true.
+   * Auto-allow the provider permission gate for the ADE `ask_user` tool so the
+   * inline question card surfaces immediately instead of being shadowed by a
+   * redundant tool-approval prompt. Defaults to true.
    */
   autoAllowAskUser?: boolean;
 };

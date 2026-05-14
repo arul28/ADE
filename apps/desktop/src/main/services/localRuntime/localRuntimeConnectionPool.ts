@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { app } from "electron";
-import { isAdeMcpNamedPipePath } from "../../../shared/adeMcpIpc";
+import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -132,7 +132,7 @@ function resolveCliScriptPath(): string {
 
 function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<RuntimeRpcTransport> {
   return new Promise((resolve, reject) => {
-    const socket = isAdeMcpNamedPipePath(socketPath)
+    const socket = isAdeRuntimeNamedPipePath(socketPath)
       ? net.createConnection(socketPath)
       : net.createConnection({ path: socketPath });
     let settled = false;

@@ -277,19 +277,24 @@ IPC: `ade.lanes.diagnostics.getStatus / getLaneHealth / runHealthCheck
 status bar rendered at the top of the Run page. For a given
 `laneId`:
 
-- `refreshRuntimeState` issues six IPC calls in parallel
-  (`diagnosticsRunHealthCheck` or `diagnosticsGetLaneHealth`,
-  `proxyGetPreviewInfo`, `portGetLease`, `proxyGetStatus`,
-  `processes.listRuntime`, `oauthGetStatus` + `oauthGenerateRedirectUris`).
-- Uses an `refreshSeqRef` counter to discard out-of-order responses
-  when `laneId` changes mid-flight.
+- `refreshHealthState` reads health + `processes.listRuntime` together.
+  The cheap passive pass runs every 10s while the document is visible;
+  the heavier `diagnosticsRunHealthCheck` pass is deferred 160ms on
+  mount and then no more often than every 30s.
+- `refreshRoutingState` reads preview routing, port lease, proxy status,
+  OAuth status, and the generated Google callback URL. It runs on
+  mount, on proxy/port events, and on a 30s safety poll while visible.
+- Uses separate `healthRefreshSeqRef` and `routingRefreshSeqRef`
+  counters to discard out-of-order responses when `laneId` changes
+  mid-flight.
 - On mount: run an immediate refresh with `runHealthCheck: false`,
-  then a deferred 160 ms refresh with `runHealthCheck: true`, then
-  a 2.5 s interval refresh.
+  run the routing refresh once, schedule the deferred health check,
+  then start independent health and routing intervals.
 - Subscribes to `onDiagnosticsEvent`, `onProxyEvent`, `onPortEvent`,
-  `processes.onEvent`. Event-driven refreshes are debounced via a
-  local `refreshTimer` (80 ms when no health check needed, 180 ms
-  when a health check is needed).
+  `processes.onEvent`. Proxy events schedule only a routing refresh;
+  process events update the runtime list immediately and schedule a
+  health refresh; port events update the lease and schedule both. The
+  two event paths have separate debounce timers.
 - Uses `inlineBadge` / `outlineButton` / `healthColor` helpers from
   `laneDesignTokens.ts` to keep the bar visually coherent with the
   rest of the Lanes tab.
@@ -330,7 +335,7 @@ flash.
   user-controlled fields. Do not relax this — a proxy error can be
   triggered by a malicious OAuth provider redirecting to
   `<script>…`.
-- **Runtime bar refresh storm**. Every proxy/port/process event
-  triggers a refresh. Debouncing is intentional; resist the urge to
-  turn events into direct state setters because events can race with
-  each other and produce inconsistent snapshots.
+- **Runtime bar refresh storms**. Keep health/process refreshes
+  separate from preview routing / port / OAuth refreshes. Process
+  events should not force preview and port reads; those are handled by
+  proxy/port events plus the 30s routing safety poll.

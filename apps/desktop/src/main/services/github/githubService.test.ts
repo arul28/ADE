@@ -69,11 +69,40 @@ function resetMocks() {
   runGitMock.mockReset();
 }
 
-function makeService() {
+class MemoryCredentialStore {
+  values = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.getSync(key);
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    this.setSync(key, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.deleteSync(key);
+  }
+
+  getSync(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+
+  setSync(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+
+  deleteSync(key: string): void {
+    this.values.delete(key);
+  }
+}
+
+function makeService(options: { credentialStore?: MemoryCredentialStore } = {}) {
   return createGithubService({
     logger: makeLogger(),
     projectRoot: "/tmp/test-project",
     appDataDir: "/tmp/test-appdata",
+    credentialStore: options.credentialStore as any,
   });
 }
 
@@ -216,6 +245,29 @@ describe("githubService.apiRequest", () => {
     await expect(
       service.apiRequest({ method: "GET", path: "/test" }),
     ).rejects.toThrow("GitHub token missing");
+  });
+
+  it("uses the shared machine credential store token when present", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_machine_token");
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+
+    const service = makeService({ credentialStore });
+    await service.apiRequest({ method: "GET", path: "/test" });
+
+    const [, init] = mockFetch.mock.calls.at(-1) as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer ghp_machine_token");
+  });
+
+  it("stores and clears GitHub tokens in the shared machine credential store", () => {
+    const credentialStore = new MemoryCredentialStore();
+    const service = makeService({ credentialStore });
+
+    service.setToken("ghp_saved_token");
+    expect(credentialStore.getSync("github.token.v1")).toBe("ghp_saved_token");
+
+    service.clearToken();
+    expect(credentialStore.getSync("github.token.v1")).toBeNull();
   });
 });
 

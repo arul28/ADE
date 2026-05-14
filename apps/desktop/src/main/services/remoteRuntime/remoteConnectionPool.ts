@@ -142,11 +142,14 @@ export class RemoteConnectionPool {
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
-    const entry = await this.connectEntry(target);
-    return await entry.client.call(method, {
-      ...params,
-      projectId,
-    });
+    return await this.withEntryForTarget(
+      target,
+      (entry) => entry.client.call(method, {
+        ...params,
+        projectId,
+      }),
+      { retryOnConnectionError: true },
+    );
   }
 
   private async addProjectWithEntry(

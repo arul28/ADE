@@ -217,9 +217,6 @@ describe("discoverClaudePlugins", () => {
     fs.mkdirSync(path.join(disabledRoot, ".claude-plugin"), { recursive: true });
     fs.writeFileSync(path.join(enabledRoot, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "review-pack" }));
     fs.writeFileSync(path.join(disabledRoot, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "serena" }));
-    fs.writeFileSync(path.join(disabledRoot, ".mcp.json"), JSON.stringify({
-      serena: { command: "uvx", args: ["serena", "start-mcp-server"] },
-    }));
     fs.writeFileSync(path.join(homeRoot, ".claude", "settings.json"), JSON.stringify({
       enabledPlugins: {
         "review-pack@claude-plugins-official": true,

@@ -289,6 +289,80 @@ function activityEventColor(ev: PrActivityEvent): string {
   return COLORS.textMuted;
 }
 
+function stableActivityIdPart(value: string | number | null | undefined): string {
+  return encodeURIComponent(String(value ?? "none"));
+}
+
+function makeUniqueActivityId(base: string, seenIds: Map<string, number>): string {
+  const seen = seenIds.get(base) ?? 0;
+  seenIds.set(base, seen + 1);
+  return seen === 0 ? base : `${base}-${seen + 1}`;
+}
+
+function buildActivityFromLoadedDetail(
+  checks: PrCheck[],
+  reviews: PrReview[],
+  comments: PrComment[],
+): PrActivityEvent[] {
+  const events: PrActivityEvent[] = [];
+  const seenIds = new Map<string, number>();
+  for (const comment of comments) {
+    const baseId = `comment-${stableActivityIdPart(comment.id)}`;
+    events.push({
+      id: makeUniqueActivityId(baseId, seenIds),
+      type: "comment",
+      author: comment.author,
+      avatarUrl: comment.authorAvatarUrl ?? null,
+      body: comment.body,
+      timestamp: comment.createdAt ?? "",
+      metadata: {
+        source: comment.source,
+        path: comment.path,
+        line: comment.line,
+        url: comment.url,
+      },
+    });
+  }
+  for (const review of reviews) {
+    const baseId = [
+      "review",
+      stableActivityIdPart(review.reviewer),
+      stableActivityIdPart(review.submittedAt),
+    ].join("-");
+    events.push({
+      id: makeUniqueActivityId(baseId, seenIds),
+      type: "review",
+      author: review.reviewer,
+      avatarUrl: review.reviewerAvatarUrl ?? null,
+      body: review.body,
+      timestamp: review.submittedAt ?? "",
+      metadata: { state: review.state },
+    });
+  }
+  for (const check of checks) {
+    const baseId = [
+      "ci",
+      stableActivityIdPart(check.name),
+      stableActivityIdPart(check.detailsUrl),
+      stableActivityIdPart(check.startedAt),
+    ].join("-");
+    events.push({
+      id: makeUniqueActivityId(baseId, seenIds),
+      type: "ci_run",
+      author: "github-actions",
+      avatarUrl: null,
+      body: `${check.name}: ${check.conclusion ?? check.status}`,
+      timestamp: check.startedAt ?? check.completedAt ?? "",
+      metadata: {
+        status: check.status,
+        conclusion: check.conclusion,
+        detailsUrl: check.detailsUrl,
+      },
+    });
+  }
+  return events.sort((a, b) => Date.parse(b.timestamp || "0") - Date.parse(a.timestamp || "0"));
+}
+
 function activityEventLabel(ev: PrActivityEvent): string {
   if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
   if (ev.type === "review") return "review";
@@ -427,7 +501,7 @@ type PrDetailPaneProps = {
   detailBusy: boolean;
   lanes: LaneSummary[];
   mergeMethod: MergeMethod;
-  onRefresh: () => Promise<void>;
+  onRefresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onNavigate: (path: string) => void;
   onShowInGraph?: (laneId: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
@@ -798,19 +872,17 @@ export function PrDetailPane({
           applySnapshotHydration(cachedSnapshot);
         }
       }
-      const [d, f, c, a, act] = await Promise.all([
+      const [d, f, c, a] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
         (window.ade.prs.getCommits?.(pr.id) ?? Promise.resolve([])).catch(() => []),
         window.ade.prs.getActionRuns(pr.id).catch(() => []),
-        window.ade.prs.getActivity(pr.id).catch(() => []),
       ]);
       if (requestId !== detailLoadSeqRef.current) return;
       setDetail(d);
       setFiles(f);
       setCommits(c);
       setActionRuns(a);
-      setActivity(act);
     } catch {
       // silently fail - basic data still available from context
     }
@@ -855,6 +927,7 @@ export function PrDetailPane({
     setShowLabelEditor(false);
     setShowReviewerEditor(false);
     setShowReviewModal(false);
+    setActivity([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
@@ -897,31 +970,54 @@ export function PrDetailPane({
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
-  // Poll checks + actionRuns + activity + reviewThreads every 60s so the
+  const derivedActivity = React.useMemo(
+    () => buildActivityFromLoadedDetail(checks, reviews, comments),
+    [checks, comments, reviews],
+  );
+  const visibleActivity = activity.length > 0 ? activity : derivedActivity;
+
+  React.useEffect(() => {
+    const shouldLoadImmediately = activeTab === "activity" || Boolean(deepLinkState.eventId);
+    if (!shouldLoadImmediately) return undefined;
+    let cancelled = false;
+    window.ade.prs.getActivity(pr.id).then((events) => {
+      if (!cancelled) setActivity(events);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, deepLinkState.eventId, pr.id]);
+
+  // Poll checks + actionRuns + reviewThreads every 60s so the
   // Path to Merge readiness panel stays fresh without requiring a manual refresh.
+  // Full activity fetches include comments/reviews/checks again, so only do that
+  // while the Activity tab is actually visible.
   React.useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
+      const activityPromise = activeTab === "activity"
+        ? window.ade.prs.getActivity(pr.id)
+        : Promise.resolve(null);
       Promise.allSettled([
         window.ade.prs.getChecks(pr.id),
         window.ade.prs.getActionRuns(pr.id),
-        window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
-      ]).then(([checksResult, arResult, actResult, thrResult]) => {
+        activityPromise,
+      ]).then(([checksResult, arResult, thrResult, actResult]) => {
         if (cancelled) return;
         if (checksResult.status === "fulfilled" && checksResult.value.length > 0) {
           setConvergenceChecks(checksResult.value);
         }
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
-        if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
+        if (actResult.status === "fulfilled" && actResult.value) setActivity(actResult.value);
       });
     }, 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [pr.id]);
+  }, [activeTab, pr.id]);
 
   React.useEffect(() => {
     if (!issueResolverCopyNotice) return;
@@ -1155,12 +1251,12 @@ export function PrDetailPane({
   }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
-    const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail(), refreshReviewThreads()];
+    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail(), refreshReviewThreads()];
     if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
     await Promise.all(tasks);
-  }, [loadDetail, onRefresh, pr.state, refreshReviewThreads, syncInventory]);
+  }, [loadDetail, onRefresh, pr.id, pr.state, refreshReviewThreads, syncInventory]);
 
   const handleRefresh = React.useCallback(async () => {
     try {
@@ -2156,7 +2252,7 @@ export function PrDetailPane({
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
-    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
+    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: visibleActivity.length },
   ];
 
   return (
@@ -2326,7 +2422,7 @@ export function PrDetailPane({
             checks={checks}
             reviews={reviews}
             comments={comments}
-            activity={activity}
+            activity={visibleActivity}
             commits={commits}
             files={files}
             reviewThreads={reviewThreadsForTimeline}
@@ -2366,7 +2462,7 @@ export function PrDetailPane({
             onOpenRebaseTab={onOpenRebaseTab}
             matchingRebaseItemId={matchingRebaseItemId}
             localBehindCount={localBehindCount}
-            activity={activity}
+            activity={visibleActivity}
             lanes={lanes}
           />
         )}
@@ -2474,7 +2570,7 @@ export function PrDetailPane({
         )}
         {activeTab === "activity" && (
           <ActivityTab
-            activity={activity} comments={comments} reviews={reviews}
+            activity={visibleActivity} comments={comments} reviews={reviews}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
             actionBusy={actionBusy} onAddComment={handleAddComment}
           />

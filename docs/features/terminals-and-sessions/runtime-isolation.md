@@ -4,7 +4,7 @@ Every interactive terminal, every managed process run, every agent
 chat session runs *inside a specific lane worktree*. The session
 system encodes that as a hard invariant: `laneId` is required on
 `PtyCreateArgs`, the lane's worktree directory is the only legal
-spawn cwd, and resume flows will not cross lanes.
+spawn cwd, and provider continuation will not cross lanes.
 
 The lane gate runs inside the **active ADE runtime** for the window's
 project binding (local daemon for local-bound windows, SSH-attached
@@ -110,12 +110,12 @@ Consequences:
 - The session list can be filtered by `laneId`; lane panels do so to
   show only their sessions.
 - `ptyService.create` validates `existingSession.laneId === args.laneId`
-  on resume. Cross-lane resume fails with:
+  when reattaching a runtime. Cross-lane continuation fails with:
   `Terminal session '<id>' belongs to lane '<otherLaneId>', not '<laneId>'.`
 
-## Resume isolation
+## Continuation isolation
 
-A resumed session keeps its identity:
+A continued session keeps its identity:
 
 - same row (`sessionService.reattach` resets runtime fields, not identity)
 - same `laneId`

@@ -160,8 +160,29 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
  * Used by SessionCard and WorkViewArea.
  */
 
+const LABEL_OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+const LABEL_CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const LABEL_CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
+const LABEL_TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
+
+export function stripTerminalLabelControls(raw: string): string {
+  return raw
+    .replace(LABEL_OSC_REGEX, "")
+    .replace(LABEL_CSI_REGEX, "")
+    .replace(LABEL_CHARSET_REGEX, "")
+    .replace(LABEL_TWO_CHAR_ESC_REGEX, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
+function stripTerminalChromeFromLabel(raw: string): string {
+  return raw
+    .replace(/\(FAIL,\s*exit code (130|143)(?:,[^)]*)?\)/giu, "(STOPPED, exit code $1)")
+    .replace(/\((FAIL,\s*exit code \d+),\s*(?:[╭╮╯╰─│┌┐└┘├┤┬┴┼▌▐▛▜▘▝▄▀█▒░].*|Claude Code.*|\? for shortcuts.*)\)/giu, "($1)")
+    .replace(/\s*(?:[╭╮╯╰─│┌┐└┘├┤┬┴┼▌▐▛▜▘▝▄▀█▒░].*|Claude Codev?\d.*|\? for shortcuts.*)$/giu, "");
+}
+
 export function normalizeSessionLabel(raw: string | null | undefined): string | null {
-  const normalized = String(raw ?? "").replace(/\s+/g, " ").trim();
+  const normalized = stripTerminalChromeFromLabel(stripTerminalLabelControls(String(raw ?? ""))).replace(/\s+/g, " ").trim();
   return normalized.length ? normalized : null;
 }
 

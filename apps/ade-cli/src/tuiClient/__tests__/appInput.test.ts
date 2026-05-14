@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   clampChatScrollOffsetRows,
+  deletePreviousPromptLine,
   deletePreviousPromptWord,
+  encodeTerminalPromptSubmit,
   footerControlsForAvailability,
+  isPromptLineBackspace,
   isPromptWordBackspace,
+  isTerminalMouseTrackingEnabled,
   parseTerminalMouseInput,
+  promptDisplayRows,
+  resolveChatWrapWidth,
+  resolveTerminalPaneWidth,
   subagentSnapshotsFromEvents,
 } from "../app";
+import { clampTerminalPaneCols } from "../components/TerminalPane";
 
 describe("parseTerminalMouseInput", () => {
   it("parses SGR mouse wheel events from Ink input", () => {
@@ -56,6 +64,19 @@ describe("parseTerminalMouseInput", () => {
     });
   });
 
+  it("parses primary drags and releases for chat text selection", () => {
+    expect(parseTerminalMouseInput("[<32;7;8M")).toEqual({
+      kind: "drag",
+      x: 7,
+      y: 8,
+    });
+    expect(parseTerminalMouseInput("[<0;7;8m")).toEqual({
+      kind: "release",
+      x: 7,
+      y: 8,
+    });
+  });
+
   it("swallows batched SGR mouse events from fast scrolling", () => {
     expect(parseTerminalMouseInput("[<64;104;32M[<64;104;32M[<65;104;31M")).toEqual({
       kind: "wheel",
@@ -74,6 +95,22 @@ describe("footer control ordering", () => {
   it("puts agents first only when the active chat has subagent history", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("pane width helpers", () => {
+  it("caps prose chat width but lets embedded terminals use the full center pane", () => {
+    expect(resolveChatWrapWidth(180, false, 0)).toBe(110);
+    expect(resolveChatWrapWidth(Number.NaN, false, 0)).toBe(24);
+    expect(resolveTerminalPaneWidth(180)).toBe(180);
+    expect(resolveTerminalPaneWidth(Number.NaN)).toBe(24);
+    expect(clampTerminalPaneCols(360)).toBe(360);
+    expect(clampTerminalPaneCols(999)).toBe(400);
+    expect(clampTerminalPaneCols(Number.POSITIVE_INFINITY)).toBe(20);
+  });
+
+  it("does not further cap chat text when both side panes already narrow the center", () => {
+    expect(resolveChatWrapWidth(72, true, 34)).toBe(72);
   });
 });
 
@@ -144,5 +181,48 @@ describe("prompt editing helpers", () => {
     expect(isPromptWordBackspace("", { meta: true, backspace: true })).toBe(true);
     expect(isPromptWordBackspace("\x1b\u007f", { meta: true })).toBe(true);
     expect(isPromptWordBackspace("x", {})).toBe(false);
+  });
+
+  it("deletes the current prompt line from the end", () => {
+    expect(deletePreviousPromptLine("one two")).toBe("");
+    expect(deletePreviousPromptLine("one\ntwo")).toBe("one\n");
+    expect(deletePreviousPromptLine("one\ntwo\n")).toBe("one\ntwo");
+    expect(deletePreviousPromptLine("")).toBe("");
+  });
+
+  it("recognizes common line-backspace key encodings", () => {
+    expect(isPromptLineBackspace("u", { ctrl: true })).toBe(true);
+    expect(isPromptLineBackspace("", { meta: true, backspace: true })).toBe(false);
+    expect(isPromptLineBackspace("", { meta: true, delete: true })).toBe(false);
+    expect(isPromptLineBackspace("\x1b\u007f", { meta: true })).toBe(false);
+    expect(isPromptLineBackspace("\x1b[3;3~", { meta: true })).toBe(false);
+    expect(isPromptLineBackspace("", { ctrl: true, backspace: true } as { ctrl: boolean; backspace: boolean })).toBe(false);
+  });
+
+  it("caps prompt display rows at the newest visual lines", () => {
+    expect(promptDisplayRows("one\ntwo", 20)).toEqual(["one", "two"]);
+    expect(promptDisplayRows("abcdef", 2, 5)).toEqual(["ab", "cd", "ef"]);
+    expect(promptDisplayRows("1\n2\n3\n4\n5\n6", 20, 5)).toEqual(["2", "3", "4", "5", "6"]);
+  });
+});
+
+describe("terminal mouse tracking", () => {
+  it("is enabled by default for pane-safe chat selection and can be disabled", () => {
+    expect(isTerminalMouseTrackingEnabled(undefined)).toBe(true);
+    expect(isTerminalMouseTrackingEnabled("")).toBe(true);
+    expect(isTerminalMouseTrackingEnabled("0")).toBe(false);
+    expect(isTerminalMouseTrackingEnabled("false")).toBe(false);
+    expect(isTerminalMouseTrackingEnabled("1")).toBe(true);
+    expect(isTerminalMouseTrackingEnabled("yes")).toBe(true);
+  });
+});
+
+describe("encodeTerminalPromptSubmit", () => {
+  it("submits single-line prompts with return", () => {
+    expect(encodeTerminalPromptSubmit("hello")).toBe("hello\r");
+  });
+
+  it("uses bracketed paste for multiline prompts", () => {
+    expect(encodeTerminalPromptSubmit("one\r\ntwo")).toBe("\x1b[200~one\ntwo\x1b[201~\r");
   });
 });
