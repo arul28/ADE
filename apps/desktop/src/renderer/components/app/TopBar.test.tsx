@@ -143,6 +143,14 @@ function fireProjectTabDragEnd(
   fireEvent(element, event);
 }
 
+async function advancePhoneSyncStartupDelay() {
+  await act(async () => {
+    vi.advanceTimersByTime(5_000);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 describe("TopBar", () => {
   const originalAde = globalThis.window.ade;
 
@@ -360,24 +368,32 @@ describe("TopBar", () => {
   });
 
   it("opens the phone sync drawer from the host status control", async () => {
-    render(<TopBar />);
+    vi.useFakeTimers();
+    try {
+      render(<TopBar />);
 
-    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(screen.getByText("Phone sync")).toBeTruthy();
+      expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
+      await advancePhoneSyncStartupDelay();
+      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
 
-    expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
-    expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
-    expect(screen.getByTitle("Connect a phone to this machine").getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
 
-    fireEvent.click(screen.getByTitle("Close phone sync"));
+      expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
+      expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+      expect(screen.getByTitle("Connect a phone to this machine").getAttribute("aria-expanded")).toBe("true");
 
-    await waitFor(() => {
+      fireEvent.click(screen.getByTitle("Close phone sync"));
+
       expect(screen.queryByTestId("sync-devices-section")).toBeNull();
-    });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes the phone sync label from global sync events", async () => {
+    vi.useFakeTimers();
     let syncEventHandler: ((event: any) => void) | null = null;
     const getStatus = vi.fn()
       .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }));
@@ -389,25 +405,31 @@ describe("TopBar", () => {
       };
     }) as any;
 
-    render(<TopBar />);
+    try {
+      render(<TopBar />);
 
-    expect(await screen.findByText("Phone sync ready")).toBeTruthy();
+      await advancePhoneSyncStartupDelay();
+      expect(screen.getByText("Phone sync ready")).toBeTruthy();
 
-    await act(async () => {
-      syncEventHandler?.({
-        type: "sync-status",
-        snapshot: makeSyncSnapshot({
-          connectedPeers: [
-            { deviceId: "phone-1", deviceName: "Arul iPhone", platform: "iOS", deviceType: "phone" },
-          ],
-        }),
+      await act(async () => {
+        syncEventHandler?.({
+          type: "sync-status",
+          snapshot: makeSyncSnapshot({
+            connectedPeers: [
+              { deviceId: "phone-1", deviceName: "Arul iPhone", platform: "iOS", deviceType: "phone" },
+            ],
+          }),
+        });
       });
-    });
 
-    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("labels disabled local runtime sync as unavailable", async () => {
+    vi.useFakeTimers();
     const snapshot = makeSyncSnapshot();
     globalThis.window.ade.sync.getStatus = vi.fn(async () => makeSyncSnapshot({
       connectedPeers: [],
@@ -420,10 +442,15 @@ describe("TopBar", () => {
       },
     })) as any;
 
-    render(<TopBar />);
+    try {
+      render(<TopBar />);
 
-    expect(await screen.findByText("Phone sync unavailable")).toBeTruthy();
-    expect(screen.queryByText("Phone sync ready")).toBeNull();
+      await advancePhoneSyncStartupDelay();
+      expect(screen.getByText("Phone sync unavailable")).toBeTruthy();
+      expect(screen.queryByText("Phone sync ready")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not refresh phone sync status on an idle interval", async () => {
@@ -438,7 +465,7 @@ describe("TopBar", () => {
         await Promise.resolve();
       });
 
-      expect(getStatus).toHaveBeenCalledTimes(1);
+      expect(getStatus).not.toHaveBeenCalled();
 
       await act(async () => {
         vi.advanceTimersByTime(15_000);
@@ -452,21 +479,34 @@ describe("TopBar", () => {
   });
 
   it("refreshes phone sync status when the window regains focus", async () => {
+    vi.useFakeTimers();
     const getStatus = vi.fn()
       .mockResolvedValueOnce(makeSyncSnapshot({ connectedPeers: [] }))
       .mockResolvedValueOnce(makeSyncSnapshot());
     globalThis.window.ade.sync.getStatus = getStatus as any;
 
-    render(<TopBar />);
+    try {
+      render(<TopBar />);
 
-    expect(await screen.findByText("Phone sync ready")).toBeTruthy();
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
 
-    await act(async () => {
-      window.dispatchEvent(new Event("focus"));
-    });
+      expect(screen.getByText("Phone sync ready")).toBeTruthy();
 
-    expect(await screen.findByText("1 phone connected to ADE Desktop")).toBeTruthy();
-    expect(getStatus).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens Linear quick view and creates a linked lane from an issue", async () => {

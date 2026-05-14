@@ -66,6 +66,7 @@ const projectIconCache = new Map<string, ProjectIcon>();
 const PROJECT_ICON_ACCENT_CACHE_MAX = 48;
 const projectIconAccentCache = new Map<string, string | null>();
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
+const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 let recentProjectsCache:
   | { rows: RecentProjectSummary[]; fetchedAtMs: number }
   | null = null;
@@ -690,6 +691,7 @@ export function TopBar() {
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
   const remoteButtonLabel =
     connectedRemoteCount > 0 ? `Remote ${connectedRemoteCount}` : "Remote";
+  const showSyncControl = workspaceProjectOpen;
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -852,6 +854,9 @@ export function TopBar() {
   useEffect(() => {
     let cancelled = false;
     let statusRequestVersion = 0;
+    let started = false;
+    let startupTimer: number | null = null;
+    let disposeSyncEvents: (() => void) | null = null;
     if (!project?.rootPath || remoteBinding) {
       setSyncSnapshot(null);
       setPhoneSyncOpen(false);
@@ -873,24 +878,40 @@ export function TopBar() {
         });
     };
     setSyncSnapshot(null);
-    refreshSyncStatus();
-    window.addEventListener("focus", refreshSyncStatus);
-    const dispose = window.ade.sync.onEvent((event) => {
-      if (!cancelled && event.type === "sync-status") {
-        statusRequestVersion += 1;
-        setSyncSnapshot(event.snapshot);
+    const startSyncStatus = () => {
+      if (cancelled || started) return;
+      started = true;
+      refreshSyncStatus();
+      disposeSyncEvents = window.ade.sync.onEvent((event) => {
+        if (!cancelled && event.type === "sync-status") {
+          statusRequestVersion += 1;
+          setSyncSnapshot(event.snapshot);
+        }
+      });
+    };
+    const onFocus = () => {
+      if (started) {
+        refreshSyncStatus();
+      } else {
+        startSyncStatus();
       }
-    });
+    };
+    startupTimer = window.setTimeout(
+      startSyncStatus,
+      phoneSyncOpen ? 0 : PHONE_SYNC_STARTUP_DELAY_MS,
+    );
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", refreshSyncStatus);
-      dispose();
+      if (startupTimer != null) window.clearTimeout(startupTimer);
+      window.removeEventListener("focus", onFocus);
+      disposeSyncEvents?.();
     };
     // Background projects don't broadcast sync-status events (main.ts filters
     // them to the active project), so we re-run this effect on rootPath change
-    // to force an immediate refetch. Focus refresh covers state changes that
-    // happen while ADE is not active.
-  }, [project?.rootPath, remoteBinding]);
+    // and let the delayed startup check pick up the current state. Focus and
+    // explicit drawer opens still refresh immediately.
+  }, [phoneSyncOpen, project?.rootPath, remoteBinding]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
@@ -1334,7 +1355,7 @@ export function TopBar() {
     [],
   );
 
-  const syncLabel = deriveSyncLabel(syncSnapshot);
+  const syncLabel = deriveSyncLabel(syncSnapshot) ?? "Phone sync";
   const transitionTargetName = projectTransition?.rootPath
     ? (projectTabs.find(
         (entry) => entry.rootPath === projectTransition.rootPath,
@@ -1832,7 +1853,7 @@ export function TopBar() {
         {remoteButtonLabel}
       </button>
 
-      {syncSnapshot && syncLabel ? (
+      {showSyncControl ? (
         <button
           type="button"
           className={cn(
@@ -1853,7 +1874,7 @@ export function TopBar() {
           <span
             className={cn(
               "ade-status-dot h-1.5 w-1.5 shrink-0",
-              syncDotClass(syncSnapshot),
+              syncSnapshot ? syncDotClass(syncSnapshot) : "bg-white/30",
             )}
           />
           {syncLabel}
