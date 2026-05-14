@@ -542,6 +542,8 @@ type ClaudeRuntime = {
   pauseIdleWatchdog?: (() => void) | null;
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
+  /** Set after we've emitted the once-per-session "Approaching plan limit" notice. */
+  rateLimitWarningEmitted: boolean;
 };
 
 const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
@@ -9374,13 +9376,13 @@ export function createAgentChatService(args: {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
           const rawStatus = typeof info.status === "string" ? info.status : "updated";
-          const status = rawStatus.replace(/_/g, " ");
-          const severity: "info" | "warning" | "error" =
-            rawStatus === "allowed"
-              ? "info"
-              : rawStatus === "allowed_warning"
-                ? "warning"
-                : "error";
+          const isError = rawStatus !== "allowed" && rawStatus !== "allowed_warning";
+          // "allowed" = under threshold (no signal needed). "allowed_warning" = approaching limit;
+          // surface as an informational once-per-session notice. Anything else = real failure.
+          if (rawStatus === "allowed") continue;
+          if (rawStatus === "allowed_warning" && runtime.rateLimitWarningEmitted) continue;
+          if (rawStatus === "allowed_warning") runtime.rateLimitWarningEmitted = true;
+          const severity: "info" | "warning" | "error" = isError ? "error" : "info";
           const details: string[] = [];
           if (typeof info.utilization === "number") {
             const percent = info.utilization <= 1
@@ -9393,12 +9395,15 @@ export function createAgentChatService(args: {
             const resetDate = new Date(resetMs);
             if (!Number.isNaN(resetDate.getTime())) details.push(`resets ${resetDate.toISOString()}`);
           }
+          const message = isError
+            ? `Claude rate limit ${rawStatus.replace(/_/g, " ")}`
+            : "Approaching Claude plan limit";
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
             severity,
             status: rawStatus,
-            message: `Claude rate limit ${status}`,
+            message,
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
           });
@@ -14248,6 +14253,7 @@ export function createAgentChatService(args: {
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
+      rateLimitWarningEmitted: false,
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;

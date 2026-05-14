@@ -3634,9 +3634,9 @@ describe("createAgentChatService", () => {
       expect(rateLimitNotices[0].event).toMatchObject({
         type: "system_notice",
         noticeKind: "rate_limit",
-        severity: "warning",
+        severity: "info",
         status: "allowed_warning",
-        message: "Claude rate limit allowed warning",
+        message: "Approaching Claude plan limit",
       });
       expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
       expect(rateLimitNotices[0].event.detail).toContain("resets");

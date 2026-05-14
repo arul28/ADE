@@ -143,6 +143,7 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
@@ -1945,8 +1946,14 @@ export function AgentChatPane({
   }, [turnActiveBySession]);
   // Per-session memo of which sessions have already triggered the auto-open
   // affordance, so the panel doesn't keep re-opening every time a new subagent
-  // appears. We only slide it in on the *first* spawn within a session.
+  // appears or the user navigates back to the chat. We only slide it in on the
+  // *first* spawn within a session — after that, opening is up to the user.
+  // Persisted to localStorage so the suppression survives remounts.
   const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
+  const autoOpenStorageKey = useCallback(
+    (sessionId: string) => `${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`,
+    [],
+  );
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1960,7 +1967,20 @@ export function AgentChatPane({
     if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
       return;
     }
+    try {
+      if (window.localStorage.getItem(autoOpenStorageKey(selectedSessionId)) === "1") {
+        subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+        return;
+      }
+    } catch {
+      /* localStorage unavailable; fall back to in-memory ref */
+    }
     subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+    try {
+      window.localStorage.setItem(autoOpenStorageKey(selectedSessionId), "1");
+    } catch {
+      /* best-effort persistence */
+    }
     if (!subagentPaneOpen) {
       setProofDrawerOpen(false);
       setIosSimulatorOpen(false);
@@ -1968,7 +1988,7 @@ export function AgentChatPane({
       setCursorCloudPaneOpen(false);
       setSubagentPaneOpen(true);
     }
-  }, [selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen]);
+  }, [selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen, autoOpenStorageKey]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -6673,13 +6693,6 @@ export function AgentChatPane({
                     ) : null}
                     {selectedTodoItems.length ? (
                       <ChatTasksPanel items={selectedTodoItems} />
-                    ) : null}
-                    {selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
-                      <ChatSubagentsPanel
-                        snapshots={selectedSubagentSnapshots}
-                        events={selectedEvents}
-                        onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
-                      />
                     ) : null}
                     {selectedTurnDiffSummaries.length && selectedSessionId ? (
                       <ChatFileChangesPanel

@@ -2532,8 +2532,6 @@ function renderEvent(
       );
     }
     const inferredSeverity = event.severity
-      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed warning/i.test(event.message) ? "warning" as const : undefined)
-      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed/i.test(event.message) ? "info" as const : undefined)
       ?? (
         event.noticeKind === "rate_limit"
           || event.noticeKind === "error"
@@ -2560,6 +2558,9 @@ function renderEvent(
     const style = kindStyles[styleKey] ?? kindStyles.info!;
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
+    const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
+      ? "usage"
+      : event.noticeKind.replace("_", " ");
 
     if (hasDetail && event.noticeKind === "memory" && event.detail) {
       return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
@@ -2579,7 +2580,7 @@ function renderEvent(
           style.text,
         )}>
           <NoticeIcon size={11} weight="bold" />
-          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
           <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
           {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
         </div>
@@ -2594,7 +2595,7 @@ function renderEvent(
             <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
-                {event.noticeKind.replace("_", " ")}
+                {chipLabel}
               </span>
               <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55">{event.message}</span>
             </div>
@@ -2612,7 +2613,7 @@ function renderEvent(
         style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
         <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
       </div>
     );

@@ -548,7 +548,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
-  it("renders allowed rate-limit telemetry as a compact non-error notice", () => {
+  it("renders Claude plan usage warning as a compact non-error notice", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -557,16 +557,16 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "system_notice",
           noticeKind: "rate_limit",
           severity: "info",
-          status: "allowed",
-          message: "Claude rate limit allowed",
-          detail: "resets 2026-05-12T20:30:00.000Z",
+          status: "allowed_warning",
+          message: "Approaching Claude plan limit",
+          detail: "80% utilized | resets 2026-05-12T20:30:00.000Z",
         },
       },
     ]);
 
-    expect(screen.getByText("rate limit")).toBeTruthy();
-    expect(screen.getByText("Claude rate limit allowed")).toBeTruthy();
-    expect(screen.getByText("resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
+    expect(screen.getByText("usage")).toBeTruthy();
+    expect(screen.getByText("Approaching Claude plan limit")).toBeTruthy();
+    expect(screen.getByText("80% utilized | resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
   });
 
