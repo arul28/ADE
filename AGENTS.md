@@ -111,3 +111,7 @@ Desktop release:
 - The `ADE_PROJECT_ROOT=/workspace` env var tells the main process to auto-open a project at startup. However, there is a timing race: the renderer's initial `getProject()` call may return null before the async project switch completes, causing the welcome screen to appear even though the backend loaded the project. A workaround is to open the project manually via the "Open a project" button in the top bar.
 - Computer-use features (screenshot, video capture, GUI automation) are macOS-only (`screencapture`, `osascript`). On Linux these gracefully degrade — the app returns `blocked_by_capability`.
 - `electron-builder` config only defines a `mac` target. Distributable Linux builds (deb/AppImage) are not configured, but dev mode works fine.
+- The `test:unit` script (`npm --prefix apps/desktop run test:unit`) uses `--project unit` which the pinned vitest 0.34.6 doesn't support. Use `npx vitest run <specific-test-file>` in `apps/desktop` for targeted tests, or `npm --prefix apps/desktop run test` for the full suite.
+- In the Cursor Cloud VM the active X display is `:1`, not `:99`. When launching Electron set `DISPLAY=:1`.
+- To launch the desktop dev app quickly when the CLI is already built: `npm run dev:desktop -- --skip-runtime-build`.
+- To launch the TUI against an already-running dev runtime: `npm run dev:code -- --skip-runtime-build --attach --project-root <path> --workspace-root <path>`.
