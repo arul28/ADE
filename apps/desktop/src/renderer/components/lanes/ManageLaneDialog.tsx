@@ -743,7 +743,12 @@ function StackPositionSection({
         Stack position
       </div>
       <div className="mt-1 mb-3 text-xs text-muted-fg/60">
-        Parent lane is where this lane sits in the stack (primary counts as the root). Base branch is the ref ADE uses for ahead/behind and for the rebase when you apply — leave it blank to use the parent lane's current branch.
+        Parent lane is where this lane sits in the stack (primary counts as the root). Base branch is the ref ADE uses for ahead/behind. Leave it blank to use the parent lane's current branch.
+      </div>
+
+      <div className="mb-3 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-muted-fg/80">
+        <span className="font-medium text-fg/90">Runs git rebase.</span> When you apply, ADE updates stack metadata then runs{" "}
+        <span className="font-mono text-fg/75">git rebase</span> in this lane's worktree onto the resolved base commit. If rebase fails, ADE aborts the rebase and restores the previous parent and base branch; the error appears below.
       </div>
 
       {!primaryLane ? (
