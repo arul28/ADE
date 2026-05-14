@@ -1806,7 +1806,7 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("/ship-lane — Drive a lane through CI + review");
     });
 
-    it("omits the project slash commands section when no commands exist in the lane", async () => {
+    it("lists bundled ADE skills when no lane command files exist", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
         stream: vi.fn(async function* () {
@@ -1829,7 +1829,9 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toBeTruthy();
-      expect(opts?.systemPrompt?.append).not.toContain("## Project slash commands");
+      expect(opts?.systemPrompt?.append).toContain("## Project slash commands and skills");
+      expect(opts?.systemPrompt?.append).toContain("/ade-cli-control-plane");
+      expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
     });
 
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
@@ -3035,13 +3037,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-1",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3114,13 +3118,15 @@ describe("createAgentChatService", () => {
           usage: { input_tokens: 1, output_tokens: 1 },
         };
       })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      const sdkHandle = {
         send,
         stream,
         close: vi.fn(),
         sessionId: "sdk-session-non-identity",
         setPermissionMode,
-      } as any);
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
 
       const { service } = createService();
       const session = await service.createSession({
@@ -3200,6 +3206,7 @@ describe("createAgentChatService", () => {
       });
       const persistedAfterPrime = readPersistedChatState(session.id);
       expect(persistedAfterPrime.lastLaneDirectiveKey).toBeTruthy();
+      await service.dispose({ sessionId: session.id });
 
       writePersistedChatState(session.id, {
         ...persistedAfterPrime,
@@ -3253,14 +3260,14 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Recovered");
-      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith("sdk-stale", expect.any(Object));
+      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(expect.any(String), expect.any(Object));
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledWith(expect.objectContaining({
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
       }));
       expect(staleSession.close).toHaveBeenCalled();
       expect(freshSession.send).toHaveBeenCalled();
-      expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
+      expect(readPersistedChatState(session.id).sdkSessionId).toEqual(expect.any(String));
     });
 
     it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {

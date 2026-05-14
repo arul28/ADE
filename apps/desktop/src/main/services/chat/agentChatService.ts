@@ -9162,16 +9162,25 @@ export function createAgentChatService(args: {
         bumpClaudeIdleDeadline();
         markFirstStreamEvent(msg.type);
 
-        // Capture session_id from any message
-        if (!runtime.sdkSessionId && (msg as any).session_id) {
-          runtime.sdkSessionId = (msg as any).session_id;
+        // Capture the provider's canonical session_id from any message. The
+        // SDK can replace a stale/resume-rejected id when ADE starts fresh.
+        const messageSessionId = typeof (msg as any).session_id === "string"
+          ? (msg as any).session_id.trim()
+          : "";
+        if (messageSessionId.length > 0 && runtime.sdkSessionId !== messageSessionId) {
+          runtime.sdkSessionId = messageSessionId;
+          mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
           persistChatState(managed);
         }
 
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
-          runtime.sdkSessionId = initMsg.session_id ?? runtime.sdkSessionId;
+          if (typeof initMsg.session_id === "string" && initMsg.session_id.trim().length > 0 && runtime.sdkSessionId !== initMsg.session_id) {
+            runtime.sdkSessionId = initMsg.session_id;
+            mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
+            persistChatState(managed);
+          }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
           if (Array.isArray(initMsg.slash_commands)) {
             applyClaudeSlashCommands(runtime, initMsg.slash_commands);
@@ -10519,7 +10528,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
-    if (runtimeKind === "claude") {
+    if (runtimeKind === "claude" || managed.session.provider === "claude") {
+      ensureClaudeSessionRuntime(managed);
       return runClaudeTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
@@ -14152,9 +14162,7 @@ export function createAgentChatService(args: {
     });
     const claudePointer = getClaudeSessionPointerForChat(managed.session.id);
     const laneScopedClaudePointer = claudePointer?.laneId === managed.session.laneId ? claudePointer : null;
-    const sdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
-      ? persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null
-      : laneScopedClaudePointer?.sessionId ?? null;
+    const sdkSessionId = persisted?.sdkSessionId ?? laneScopedClaudePointer?.sessionId ?? null;
     const forkFromSdkSessionId = currentLaneDirectiveKey != null && persisted?.lastLaneDirectiveKey === currentLaneDirectiveKey
       ? persisted?.forkFromSdkSessionId ?? null
       : null;
@@ -14814,13 +14822,13 @@ export function createAgentChatService(args: {
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
     if (handoffMode === "fork") {
-      if (createdManaged.runtime?.kind !== "claude") {
-        throw new Error("Full-history fork can only target Claude chats.");
+      createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
+      mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
+      if (createdManaged.runtime?.kind === "claude") {
+        resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
+        createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId;
+        prewarmClaudeQuery(createdManaged);
       }
-      resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
-      createdManaged.runtime.sdkSessionId = randomUUID();
-      createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId ?? null;
-      prewarmClaudeQuery(createdManaged);
     }
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
@@ -18284,7 +18292,7 @@ export function createAgentChatService(args: {
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
-      if (runtime.busy) {
+      if (runtime.busy || managed.session.status === "active") {
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
@@ -18522,19 +18530,23 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
-    const runtime = ensureClaudeSessionRuntime(managed);
-    if (runtime.busy) {
-      enqueueSteerOrDrop(
-        managed,
-        runtime,
-        sessionId,
-        steerId,
-        preparedSteer.visibleText,
-        preparedSteer.attachments,
-        preparedSteer.contextAttachments,
-        preparedSteer.resolvedAttachments,
-      );
-      return { steerId, queued: true };
+    if (managed.session.provider === "claude") {
+      const runtime = ensureClaudeSessionRuntime(managed);
+      if (runtime.busy || managed.session.status === "active") {
+        enqueueSteerOrDrop(
+          managed,
+          runtime,
+          sessionId,
+          steerId,
+          preparedSteer.visibleText,
+          preparedSteer.attachments,
+          preparedSteer.contextAttachments,
+          preparedSteer.resolvedAttachments,
+        );
+        return { steerId, queued: true };
+      }
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
     }
     await executePreparedSendMessage(preparedSteer);
     return { steerId, queued: false };
@@ -18860,6 +18872,22 @@ export function createAgentChatService(args: {
         turnId: runtime.activeTurnId
       });
       stopActiveCodexSubagents(managed, runtime, runtime.activeTurnId ?? undefined, "Interrupted by user");
+      return;
+    }
+
+    if (managed.session.provider === "claude" && managed.claudeBackgroundJobShort && managed.runtime?.kind !== "claude") {
+      const short = managed.claudeBackgroundJobShort;
+      if (short) {
+        await runClaudeBackgroundCliCommand(managed, ["stop", short], 15_000).catch((error) => {
+          logger.warn("agent_chat.claude_background_stop_failed", {
+            sessionId,
+            short,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      markSessionIdleWithFreshCache(managed);
+      persistChatState(managed);
       return;
     }
 
@@ -20564,12 +20592,14 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // Only prewarm if the session is idle (not mid-turn) and not already warmed
-    if (managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) return;
-
-    // Ensure a Claude runtime exists and kick off pre-warming
-    ensureClaudeSessionRuntime(managed);
+    if (managed.session.provider !== "claude") return;
+    if (managed.session.modelId !== descriptor.id) return;
+    if (managed.session.status === "active") return;
+    const runtime = ensureClaudeSessionRuntime(managed);
+    if (runtime.busy) return;
+    if (runtime.query || runtime.warmQuery || runtime.warmupDone) return;
     prewarmClaudeQuery(managed);
+    persistChatState(managed);
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
