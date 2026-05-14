@@ -534,6 +534,88 @@ describe("PrsContext refresh", () => {
     expect(screen.getByTestId("checks-count").textContent).toBe("0");
   });
 
+  it("keeps cached selected PR detail visible when live GitHub detail is rate limited", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async ({ prId }: { prId: string }) => [
+        {
+          prId,
+          detail: null,
+          status: {
+            prId,
+            state: "open",
+            checksStatus: "passing",
+            reviewStatus: "approved",
+            isMergeable: true,
+            mergeConflicts: false,
+            behindBaseBy: 0,
+          },
+          checks: [
+            {
+              name: "cached-ci",
+              status: "completed",
+              conclusion: "success",
+              detailsUrl: null,
+              startedAt: null,
+              completedAt: null,
+            },
+          ],
+          reviews: [
+            {
+              reviewer: "octocat",
+              reviewerAvatarUrl: null,
+              state: "approved",
+              body: null,
+              submittedAt: null,
+            },
+          ],
+          comments: [
+            {
+              id: "comment-1",
+              author: "octocat",
+              authorAvatarUrl: null,
+              body: "cached comment",
+              source: "issue",
+              url: null,
+              path: null,
+              line: null,
+              createdAt: null,
+            },
+          ],
+          files: [],
+          commits: [],
+          updatedAt: "2026-03-24T12:00:00.000Z",
+        },
+      ]),
+      getStatus: vi.fn(async () => {
+        throw new Error("GitHub API rate limit exceeded");
+      }),
+      getChecks: vi.fn(async () => []),
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn(async () => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("reviews-count").textContent).toBe("1");
+      expect(screen.getByTestId("comments-count").textContent).toBe("1");
+    });
+  });
+
   it("falls back to single merge-context hydration for IDs missing from a batch response", async () => {
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
     Object.assign(window.ade.prs, {

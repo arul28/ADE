@@ -1020,8 +1020,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     ])
       .then(([statusResult, checksResult, reviewsResult, commentsResult]) => {
         if (cancelled) return;
-        liveDetailApplied = true;
-
         // Check for rate-limit errors in any rejected result
         for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
           if (result.status === "rejected") {
@@ -1029,22 +1027,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
             if (msg.includes("rate limit") || msg.includes("API rate")) {
               rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
               console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
-              // Clear stale data on rate limit
-              detailStatePrIdRef.current = null;
+              // Keep cached snapshot/detail data visible while GitHub is degraded.
               setDetailLiveDataPrId(null);
-              setDetailStatus(null);
-              setDetailChecks([]);
-              setDetailReviews([]);
-              setDetailComments([]);
-              setDetailReviewThreads([]);
-              setDetailDeployments([]);
-              setDetailAiSummary(null);
-              setDetailSnapshot(null);
               return;
             }
           }
         }
 
+        liveDetailApplied = true;
         detailStatePrIdRef.current = prId;
         if (statusResult.status === "fulfilled") {
           setDetailStatus(statusResult.value ?? null);
