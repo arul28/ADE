@@ -221,6 +221,93 @@ describe("connectToAde embedded mode", () => {
     expect(requests.at(-1)?.params).toMatchObject({ projectId: "project-daemon" });
   });
 
+  it("adapts multi-project runtime chat events into the TUI chat stream", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const serverSocketRef: { current: net.Socket | null } = { current: null };
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const server = net.createServer((socket) => {
+      serverSocketRef.current = socket;
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown> };
+          requests.push({ method: request.method, params: request.params });
+          const result = (() => {
+            if (request.method === "ade/initialize") {
+              return {
+                runtimeInfo: { multiProject: true },
+                capabilities: { projects: true },
+              };
+            }
+            if (request.method === "projects.add") {
+              return { projectId: "project-daemon", rootPath: project.projectRoot };
+            }
+            if (request.method === "runtimeEvents.subscribe") {
+              return { subscriptionId: "runtime-sub-1" };
+            }
+            if (request.method === "runtimeEvents.unsubscribe") {
+              return { removed: true };
+            }
+            return null;
+          })();
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const connection = await connectToAde({
+      project,
+      socketPath,
+    });
+    try {
+      const delivered = new Promise<AgentChatEventEnvelope>((resolve) => {
+        connection.onChatEvent(resolve);
+      });
+      await vi.waitUntil(
+        () => requests.some((request) => request.method === "runtimeEvents.subscribe"),
+        { timeout: 1000 },
+      );
+      expect(requests.find((request) => request.method === "runtimeEvents.subscribe")?.params)
+        .toMatchObject({ projectId: "project-daemon", category: "runtime" });
+
+      const envelope = {
+        sessionId: "chat-1",
+        timestamp: "2026-05-14T00:00:00.000Z",
+        event: { type: "text", text: "hello from daemon" },
+        sequence: 1,
+      } as AgentChatEventEnvelope;
+      serverSocketRef.current?.write(`${JSON.stringify({
+        jsonrpc: "2.0",
+        method: "runtime/event",
+        params: {
+          subscriptionId: "runtime-sub-1",
+          projectId: "project-daemon",
+          event: {
+            id: 1,
+            timestamp: "2026-05-14T00:00:00.000Z",
+            category: "runtime",
+            payload: envelope,
+          },
+        },
+      })}\n`);
+
+      await expect(delivered).resolves.toEqual(envelope);
+    } finally {
+      await connection.close();
+      serverSocketRef.current?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("spawns the standalone binary directly when no CLI script entrypoint exists", async () => {
     const socketPath = useMissingMachineSocket();
     const missingEntrypointDir = fs.mkdtempSync(
