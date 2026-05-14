@@ -1,35 +1,13 @@
 import type { AgentChatPermissionMode, PrAgentPermissionMode, PrComment } from "../../../shared/types";
+import { isActionablePrIssueComment } from "../../../shared/prIssueResolution";
 import { runGit } from "../git/git";
 
 // ---------------------------------------------------------------------------
 // Noisy comment detection — shared by issue inventory and issue resolver
 // ---------------------------------------------------------------------------
 
-const NOISY_BOT_AUTHORS = new Set(["vercel", "vercel[bot]", "mintlify", "mintlify[bot]"]);
-
-const NOISY_BODY_PATTERNS = [
-  /\[vc\]:/i,
-  /mintlify-preview/i,
-  /this is an auto-generated comment/i,
-  /<!--\s*capy:auto-review-spend-limit\s*-->/i,
-  /\bcapy auto-review is paused\b/i,
-  /pre-merge checks/i,
-  /thanks for using \[coderabbit\]/i,
-  /<!-- internal state/i,
-  /walkthrough/i,
-  /@codex review/i,
-  /^@(copilot|coderabbitai|greptile|codex)\s+review\b/i,
-  /\bship-lane handoff\b/i,
-  /\bclear-to-merge\b/i,
-  /\bci green\b/i,
-];
-
 export function isNoisyIssueComment(comment: PrComment): boolean {
-  const author = comment.author.trim().toLowerCase();
-  const body = (comment.body ?? "").trim();
-  if (!body) return true;
-  if (NOISY_BOT_AUTHORS.has(author)) return true;
-  return NOISY_BODY_PATTERNS.some((pattern) => pattern.test(body));
+  return !isActionablePrIssueComment(comment);
 }
 
 const RESOLUTION_NEGATION_PATTERNS = [

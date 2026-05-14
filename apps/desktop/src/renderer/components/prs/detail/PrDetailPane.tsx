@@ -1134,7 +1134,7 @@ export function PrDetailPane({
     return need ? rebaseNeedItemKey(need) : null;
   }, [pr.baseBranch, pr.id, pr.laneId, rebaseNeeds]);
   const issueResolutionAvailability = React.useMemo(() => {
-    const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+    const availability = getPrIssueResolutionAvailability(checks, reviewThreads, comments);
     if (laneForPr) return availability;
     return {
       ...availability,
@@ -1142,7 +1142,7 @@ export function PrDetailPane({
       hasActionableComments: false,
       hasAnyActionableIssues: false,
     };
-  }, [checks, laneForPr, reviewThreads]);
+  }, [checks, comments, laneForPr, reviewThreads]);
 
   const handleOpenIssueResolver = React.useCallback(() => {
     setIssueResolverError(null);

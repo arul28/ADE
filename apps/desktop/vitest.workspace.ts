@@ -25,21 +25,13 @@ const shared = {
     forks: { maxForks: 4 },
   },
   environment: "node" as const,
-  deps: {
-    inline: [/@emoji-mart\//, /@lobehub\//],
-  },
-  server: {
-    deps: {
-      inline: [/@emoji-mart\//, /@lobehub\//],
-    },
-  },
 };
 
-const sharedResolveAlias = {
-  "@emoji-mart/data": emojiDataStub,
-  "@lobehub/icons": lobeIconsStub,
-  "lottie-react": lottieReactStub,
-};
+const sharedResolveAlias = [
+  { find: /^@emoji-mart\/data(?:\/.*)?$/, replacement: emojiDataStub },
+  { find: "@lobehub/icons", replacement: lobeIconsStub },
+  { find: "lottie-react", replacement: lottieReactStub },
+];
 
 export default defineWorkspace([
   {

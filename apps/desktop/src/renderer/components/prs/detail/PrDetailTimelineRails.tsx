@@ -1,6 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { buildPrsRouteSearch, parsePrsRouteState } from "../prsRouteState";
+import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
   PrActivityEvent,
   PrAiSummary,
@@ -30,6 +30,24 @@ export type PrDetailTimelineRailsRef = {
   openPalette: (kind: PaletteKind) => void;
   closePalette: () => void;
 };
+
+export function buildTimelineVisibleEventSearch(args: {
+  current: ParsedPrsRouteState;
+  prId: string;
+  eventId: string | null;
+}): string {
+  const tab = args.current.tab === "github" || args.current.tab === "normal" ? args.current.tab : "normal";
+  return buildPrsRouteSearch({
+    activeTab: tab,
+    selectedPrId: args.prId,
+    selectedQueueGroupId: null,
+    selectedRebaseItemId: null,
+    eventId: args.eventId,
+    threadId: args.current.threadId,
+    commitSha: args.current.commitSha,
+    detailTab: args.current.detailTab,
+  });
+}
 
 type Props = {
   pr: PrWithConflicts;
@@ -519,16 +537,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         if ((current.eventId ?? null) === eventId) return;
         // Only write URL for PR-scoped tabs with a selected PR.
         if (current.prId !== pr.id) return;
-        const tab = current.tab === "github" || current.tab === "normal" ? current.tab : "normal";
-        const nextSearch = buildPrsRouteSearch({
-          activeTab: tab,
-          selectedPrId: pr.id,
-          selectedQueueGroupId: null,
-          selectedRebaseItemId: null,
-          eventId,
-          threadId: current.threadId,
-          commitSha: current.commitSha,
-        });
+        const nextSearch = buildTimelineVisibleEventSearch({ current, prId: pr.id, eventId });
         if (nextSearch === locationSearchRef.current) return;
         void navigate({ pathname: locationPathnameRef.current, search: nextSearch }, { replace: true });
       },

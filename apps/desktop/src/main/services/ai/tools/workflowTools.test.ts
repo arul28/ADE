@@ -86,6 +86,8 @@ describe("createWorkflowTools", () => {
       hasActionableComments: true,
       failingCheckCount: 1,
       actionableReviewThreadCount: 1,
+      actionableIssueCommentCount: 1,
+      actionableCommentCount: 2,
     });
     expect(result.reviewThreads).toHaveLength(1);
     expect(result.failingWorkflowRuns[0]).toMatchObject({ name: "CI" });

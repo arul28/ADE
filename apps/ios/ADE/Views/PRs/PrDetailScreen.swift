@@ -1342,7 +1342,7 @@ struct PrDetailView: View {
     }
   }
 
-  /// Builds a markdown-style prompt summarising unresolved review comments
+  /// Builds a markdown-style prompt summarising unresolved PR feedback
   /// and failing checks, then copies it to the system clipboard. Mirrors the
   /// "Copy Prompt" affordance on the desktop Path-to-Merge view — the user can
   /// paste this into Claude/Codex/etc to bootstrap a fix session.
@@ -1362,7 +1362,7 @@ struct PrDetailView: View {
     }
     if !active.isEmpty {
       lines.append("")
-      lines.append("## Unresolved review comments (\(active.count))")
+      lines.append("## Unresolved PR feedback (\(active.count))")
       for item in active {
         let severity = (item.severity ?? "note").uppercased()
         var location = ""

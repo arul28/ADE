@@ -4,7 +4,7 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrSnapshotHydration, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -27,6 +27,21 @@ function TargetedRefreshHarness() {
   const { refresh, loading } = usePrs();
   return (
     <div>
+      <button type="button" onClick={() => void refresh({ prId: "pr-1" })}>
+        refresh pr-1
+      </button>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+    </div>
+  );
+}
+
+function DualRefreshHarness() {
+  const { refresh, loading } = usePrs();
+  return (
+    <div>
+      <button type="button" onClick={() => void refresh()}>
+        refresh all
+      </button>
       <button type="button" onClick={() => void refresh({ prId: "pr-1" })}>
         refresh pr-1
       </button>
@@ -239,6 +254,41 @@ describe("PrsContext refresh", () => {
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "refresh pr-1" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prId: "pr-1" });
+    });
+  });
+
+  it("preserves targeted refresh args queued behind an in-flight refresh", async () => {
+    const user = userEvent.setup();
+    let resolveFirstRefresh!: () => void;
+    vi.mocked(window.ade.prs.refresh).mockImplementationOnce(() => new Promise<PrSummary[]>((resolve) => {
+      resolveFirstRefresh = () => resolve([]);
+    }));
+
+    render(
+      <PrsProvider>
+        <DualRefreshHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "refresh all" }));
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "refresh pr-1" }));
+    expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstRefresh();
+      await Promise.resolve();
+    });
 
     await waitFor(() => {
       expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prId: "pr-1" });

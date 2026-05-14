@@ -584,11 +584,12 @@ export function createPathToMergeOrchestrator(deps: PathToMergeDeps): PathToMerg
     requestedScope: PrIssueResolutionScope,
     options: { allowFallback: boolean } = { allowFallback: true },
   ): Promise<PrIssueResolutionScope | null> {
-    const [checks, reviewThreads] = await Promise.all([
+    const [checks, reviewThreads, comments] = await Promise.all([
       prService.getChecks(prId),
       prService.getReviewThreads(prId),
+      prService.getComments(prId).catch(() => []),
     ]);
-    const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+    const availability = getPrIssueResolutionAvailability(checks, reviewThreads, comments);
     if (requestedScope === "both") {
       return defaultPrIssueResolutionScope(availability);
     }

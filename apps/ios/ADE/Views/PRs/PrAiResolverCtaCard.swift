@@ -17,8 +17,8 @@ struct PrAiResolverCtaCard: View {
 
   init(
     variant: Variant = .inline,
-    title: String = "Resolve threads with a worker",
-    subtitle: String = "Spins up pr-resolver · auto-pushes fixes",
+    title: String = "Resolve PR feedback with a worker",
+    subtitle: String = "Fixes comments, threads, and failing checks",
     isBusy: Bool = false,
     isRunning: Bool = false,
     isLive: Bool = true,
@@ -207,7 +207,7 @@ struct PrAiResolverSheet: View {
           PrAiResolverCtaCard(
             variant: .prominent,
             title: "Fix PR #\(prNumber) with AI",
-            subtitle: "Worker will analyze failing checks and push a fix commit",
+            subtitle: "Worker will analyze comments, threads, and checks",
             isBusy: isBusy,
             isRunning: isRunning,
             isLive: true,
@@ -245,7 +245,7 @@ struct PrAiResolverSheet: View {
         }
 
         Section {
-          Text("The resolver reads failing checks and unresolved review threads, drafts fixes, and pushes commits to this branch.")
+          Text("The resolver reads failing checks, review threads, and actionable PR comments, then pushes fixes to this branch.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
         }

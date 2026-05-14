@@ -173,6 +173,9 @@ function installAdeMocks(
     },
     prs: {
       getForLane: vi.fn().mockResolvedValue(null),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      getChecks: vi.fn().mockResolvedValue([]),
+      openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
     pty: {
       create: vi.fn().mockResolvedValue({ ptyId: "pty-created", sessionId: "terminal-created", pid: 1234 }),

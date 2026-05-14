@@ -226,7 +226,7 @@ struct PrActivityTab: View {
         ADEEmptyStateView(
           symbol: "bubble.left.and.bubble.right",
           title: "No reviews yet",
-          message: "Review threads and reviewer responses will appear here once the machine syncs them."
+          message: "PR comments, review threads, and reviewer responses will appear here once the machine syncs them."
         )
       }
 

@@ -8135,12 +8135,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.createFromLane(arg);
+    const result = await ctx.prService.createFromLane(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.linkToLane(arg);
+    const result = await ctx.prService.linkToLane(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   const ensurePrPolling = () => {
@@ -8223,11 +8227,14 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.delete(arg);
+    const result = await ctx.prService.delete(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
@@ -8237,17 +8244,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    return await ctx.prService.land(arg);
+    const result = await ctx.prService.land(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    return await ctx.prService.landStack(arg);
+    const result = await ctx.prService.landStack(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
     const ctx = getCtx();
-    return await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
+    await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
@@ -8257,12 +8269,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.createIntegrationPr(arg);
+    const result = await ctx.prService.createIntegrationPr(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    return await ctx.prService.landStackEnhanced(arg);
+    const result = await ctx.prService.landStackEnhanced(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
@@ -8292,14 +8308,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();
-    return await ctx.prService.createQueuePrs(arg);
+    const result = await ctx.prService.createQueuePrs(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.commitIntegration(arg);
+    const result = await ctx.prService.commitIntegration(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
@@ -8328,7 +8348,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    return await ctx.prService.landQueueNext(arg);
+    const result = await ctx.prService.landQueueNext(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
@@ -8346,7 +8368,9 @@ export function registerIpc({
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
 
   ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
-    await getCtx().prService.reorderQueuePrs(arg);
+    const ctx = getCtx();
+    await ctx.prService.reorderQueuePrs(arg);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));

@@ -2665,7 +2665,7 @@ describe("buildPrIssueResolutionPrompt", () => {
       recentCommits: [{ sha: "abcdef123456", subject: "Refine PR detail header" }],
     });
 
-    expect(prompt).toContain("Selected scope: checks and review comments");
+    expect(prompt).toContain("Selected scope: checks and PR comments");
     expect(prompt).toContain("ADE PR id (for ADE tools): pr-80");
     expect(prompt).toContain("Runtime: Workflow chat with ADE PR tools");
     expect(prompt).toContain("Please keep the PR description accurate if behavior changes.");
@@ -3096,12 +3096,24 @@ describe("buildPrIssueResolutionPrompt — inventory items", () => {
           author: null,
           url: "https://example.com/check/1",
         }),
+        makeInventoryItem({
+          id: "inv-3",
+          type: "issue_comment",
+          source: "human",
+          severity: "minor",
+          filePath: null,
+          line: null,
+          headline: "Clarify rollout note",
+          externalId: "issue-comment:c-1",
+          author: "reviewer",
+          url: "https://example.com/comment/c-1",
+        }),
       ],
     }));
 
     // Should use inventory section instead of raw threads/checks
     expect(prompt).toContain("Current issues to address (from inventory");
-    expect(prompt).toContain("[Major] Thread thread:t-1 at src/prs.ts:55");
+    expect(prompt).toContain("[Major] Review thread thread:t-1 at src/prs.ts:55");
     expect(prompt).toContain("source: coderabbit");
     expect(prompt).toContain("author: coderabbitai");
     expect(prompt).toContain("Summary: Handle the loading state");
@@ -3110,6 +3122,8 @@ describe("buildPrIssueResolutionPrompt — inventory items", () => {
     // Check failure formatting
     expect(prompt).toContain('Check check:ci / lint at unknown location');
     expect(prompt).toContain('Summary: CI check "ci / lint" failing');
+    expect(prompt).toContain("[Minor] PR comment issue-comment:c-1 at unknown location");
+    expect(prompt).toContain("Summary: Clarify rollout note");
 
     // Should NOT contain the raw threads/checks sections
     expect(prompt).not.toContain("Current failing checks");

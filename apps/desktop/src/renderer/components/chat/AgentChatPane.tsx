@@ -143,6 +143,8 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
+const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
@@ -157,6 +159,63 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+type SubagentAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
+
+export function getSubagentAutoOpenStorageKey(sessionId: string): string {
+  return `${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
+}
+
+function encodeSubagentAutoOpenRecord(nowMs: number): string {
+  return JSON.stringify({ firedAt: nowMs });
+}
+
+function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
+  if (!raw) return null;
+  if (raw === "1") return "legacy";
+  try {
+    const parsed = JSON.parse(raw) as { firedAt?: unknown };
+    return typeof parsed.firedAt === "number" && Number.isFinite(parsed.firedAt)
+      ? parsed.firedAt
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function cleanupSubagentAutoOpenStorage(storage: SubagentAutoOpenStorage, nowMs = Date.now()): void {
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(`${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
+  }
+  for (const key of keys) {
+    const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+    if (firedAt === "legacy") {
+      storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    } else if (firedAt === null || nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+      storage.removeItem(key);
+    }
+  }
+}
+
+function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
+  const key = getSubagentAutoOpenStorageKey(sessionId);
+  const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+  if (firedAt === "legacy") {
+    storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    return true;
+  }
+  if (firedAt === null) {
+    storage.removeItem(key);
+    return false;
+  }
+  if (nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+    storage.removeItem(key);
+    return false;
+  }
+  return true;
+}
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
@@ -1945,8 +2004,18 @@ export function AgentChatPane({
   }, [turnActiveBySession]);
   // Per-session memo of which sessions have already triggered the auto-open
   // affordance, so the panel doesn't keep re-opening every time a new subagent
-  // appears. We only slide it in on the *first* spawn within a session.
+  // appears or the user navigates back to the chat. We only slide it in on the
+  // *first* spawn within a session — after that, opening is up to the user.
+  // Persisted to localStorage so the suppression survives remounts.
   const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      cleanupSubagentAutoOpenStorage(window.localStorage);
+    } catch {
+      /* localStorage unavailable; fall back to in-memory ref */
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1960,7 +2029,23 @@ export function AgentChatPane({
     if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
       return;
     }
+    try {
+      if (hasSubagentAutoOpenFired(window.localStorage, selectedSessionId)) {
+        subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+        return;
+      }
+    } catch {
+      /* localStorage unavailable; fall back to in-memory ref */
+    }
     subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+    try {
+      window.localStorage.setItem(
+        getSubagentAutoOpenStorageKey(selectedSessionId),
+        encodeSubagentAutoOpenRecord(Date.now()),
+      );
+    } catch {
+      /* best-effort persistence */
+    }
     if (!subagentPaneOpen) {
       setProofDrawerOpen(false);
       setIosSimulatorOpen(false);
@@ -6673,13 +6758,6 @@ export function AgentChatPane({
                     ) : null}
                     {selectedTodoItems.length ? (
                       <ChatTasksPanel items={selectedTodoItems} />
-                    ) : null}
-                    {selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
-                      <ChatSubagentsPanel
-                        snapshots={selectedSubagentSnapshots}
-                        events={selectedEvents}
-                        onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
-                      />
                     ) : null}
                     {selectedTurnDiffSummaries.length && selectedSessionId ? (
                       <ChatFileChangesPanel

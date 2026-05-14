@@ -17,6 +17,17 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
+  it("routes PR comments to the right pane", () => {
+    const parsed = parseCommand("/pr comments");
+    expect(parsed?.name).toBe("/pr comments");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/pr comm")).toContainEqual(expect.objectContaining({
+      name: "/pr comments",
+      source: "ade",
+      description: "Show actionable PR comments",
+    }));
+  });
+
   it("routes /feedback to the ADE Code right pane", () => {
     const parsed = parseCommand("/feedback");
     expect(parsed?.spec?.name).toBe("/feedback");

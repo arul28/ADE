@@ -27,6 +27,9 @@ function installAdeMocks() {
     },
     prs: {
       getForLane: vi.fn().mockResolvedValue(null),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      getChecks: vi.fn().mockResolvedValue([]),
+      openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
     projectConfig: {
       get: vi.fn().mockResolvedValue({
