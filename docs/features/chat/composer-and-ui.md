@@ -16,7 +16,7 @@ stream plus session metadata.
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
-| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail (loaded through `window.ade.app.getImageDataUrl`), open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Non-image attachments fall back to the file glyph. |
+| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail, open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Pasted images can pass a seeded preview URL from the composer while the temp file is being saved; tray-only image refs fall back to `window.ade.app.getImageDataUrl`. Non-image attachments fall back to the file glyph. |
 | `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
@@ -79,9 +79,14 @@ and a footer that contains the composer.
   enclosing `AgentChatPane` reports `isTileActive: true` (for packed
   grid tiles) or any equivalent active state — typing in the grid
   immediately targets the focused tile's composer.
-- **Attachments** via drag-drop, paste, and an inline picker. Images are
-  written through `ade.agentChat.saveTempAttachment` (10 MB cap; MIME
-  validated per provider).
+- **Attachments** via drag-drop, paste, and an inline picker. Pasted and
+  dropped image files show a pending thumbnail while ADE writes the
+  temp attachment. Electron clipboard images use
+  `ade.app.saveClipboardImageAttachment` when available so the main
+  process can save the PNG and return a small preview without sending
+  the full base64 payload through the renderer; the legacy
+  `ade.agentChat.saveTempAttachment` path remains as the fallback.
+  Temp images keep the 10 MB cap and provider-specific MIME validation.
 - **Linear issue context.** A Linear-branded chip in the composer
   opens `LinearIssueContextDialog`, which mounts the shared
   `LinearIssueBrowser` so the user can attach a Linear issue as
@@ -220,8 +225,13 @@ and a footer that contains the composer.
 
 ### Attachment handling
 
-- Pasted and dropped images are written to a temp location via
-  `ade.agentChat.saveTempAttachment` (10 MB cap).
+- Pasted and dropped images are written to a temp location. File-backed
+  renderer payloads use `ade.agentChat.saveTempAttachment`; native
+  clipboard images prefer `ade.app.saveClipboardImageAttachment`, which
+  reads the Electron clipboard, writes the PNG beside other chat
+  attachments, and returns a downsized preview data URL. While either
+  save is in flight, the composer disables send and shows a cancellable
+  pending thumbnail in `ChatAttachmentTray`.
 - iOS Simulator selections add `IosElementContextItem` chips to the
   composer instead of plain attachments. Each chip is a `data-ios-context`
   node in a contenteditable rich-input variant; submission serialises

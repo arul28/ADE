@@ -38,7 +38,7 @@ import { cn } from "../ui/cn";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
-import { ChatAttachmentTray } from "./ChatAttachmentTray";
+import { ChatAttachmentTray, type ChatAttachmentPendingImage } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
@@ -53,6 +53,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
+const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
 const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -100,6 +101,16 @@ function normalizeImageAttachmentUrl(value: string | null | undefined): string |
   } catch {
     return null;
   }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += BASE64_ENCODE_CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, i + BASE64_ENCODE_CHUNK_SIZE);
+    parts.push(String.fromCharCode(...chunk));
+  }
+  return btoa(parts.join(""));
 }
 
 function getIssueContextMenuStyle(trigger: HTMLButtonElement): React.CSSProperties {
@@ -976,6 +987,8 @@ export function AgentChatComposer({
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attachNotice, setAttachNotice] = useState<{ message: string; undoPath: string } | null>(null);
+  const [pendingImageAttachments, setPendingImageAttachments] = useState<ChatAttachmentPendingImage[]>([]);
+  const [imagePreviewUrls, setImagePreviewUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!attachNotice) return;
@@ -1010,6 +1023,12 @@ export function AgentChatComposer({
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
+  const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
+  const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
+  const pendingImageAttachmentSequenceRef = useRef(0);
+  const previousImagePreviewUrlsRef = useRef<Record<string, string>>({});
+  const previousPendingImageAttachmentsRef = useRef<ChatAttachmentPendingImage[]>([]);
+  const previousAttachmentPathsRef = useRef<Set<string>>(new Set());
   const clipboardImagePasteHandledRef = useRef(0);
   const clipboardImagePasteFallbackTimerRef = useRef<number | null>(null);
   // Set when the keydown-driven fallback path actually attaches a clipboard
@@ -1028,12 +1047,13 @@ export function AgentChatComposer({
     : turnActive
       ? `Steer active turn: ${composerInputContextLabel}`
       : composerInputContextLabel;
-  const canAttach = !composerInputLocked && (!parallelChatMode || attachments.length < PARALLEL_CHAT_MAX_ATTACHMENTS);
+  const attachmentSlotsUsed = attachments.length + pendingImageAttachments.length;
+  const canAttach = !composerInputLocked && (!parallelChatMode || attachmentSlotsUsed < PARALLEL_CHAT_MAX_ATTACHMENTS);
   const attachBlockedReason = getAttachBlockedReason({
     composerInputLocked,
     composerInputLockMessage,
     parallelChatMode,
-    attachmentCount: attachments.length,
+    attachmentCount: attachmentSlotsUsed,
   });
   const contextAttachmentCount = contextAttachments.length;
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
@@ -1063,6 +1083,10 @@ export function AgentChatComposer({
         window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
         clipboardImagePasteFallbackTimerRef.current = null;
       }
+      if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+        for (const url of objectPreviewUrlsRef.current) URL.revokeObjectURL(url);
+      }
+      objectPreviewUrlsRef.current.clear();
     };
   }, []);
   useEffect(() => {
@@ -1077,7 +1101,14 @@ export function AgentChatComposer({
       clipboardImagePasteFallbackTimerRef.current = null;
     }
     clipboardImagePasteFallbackAttachedRef.current = false;
-  }, [composerInputLocked]);
+    for (const attachment of pendingImageAttachments) {
+      cancelledPendingImageAttachmentsRef.current.add(attachment.id);
+    }
+    setPendingImageAttachments((current) => {
+      if (!current.length) return current;
+      return [];
+    });
+  }, [composerInputLocked, pendingImageAttachments]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -1087,6 +1118,109 @@ export function AgentChatComposer({
     () => buildSlashCommands(sdkSlashCommands, { includeLocalClear: typeof onClearEvents === "function" }),
     [sdkSlashCommands, onClearEvents],
   );
+
+  const revokePreviewUrl = useCallback((url: string | null | undefined) => {
+    if (!url || !objectPreviewUrlsRef.current.has(url)) return;
+    if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(url);
+    }
+    objectPreviewUrlsRef.current.delete(url);
+  }, []);
+
+  const rememberPreviewUrl = useCallback((path: string, url: string | null | undefined) => {
+    if (!url) return;
+    setImagePreviewUrls((current) => {
+      const previous = current[path];
+      if (previous === url) return current;
+      return { ...current, [path]: url };
+    });
+  }, []);
+
+  const clearPreviewForPath = useCallback((path: string) => {
+    setImagePreviewUrls((current) => {
+      if (!current[path]) return current;
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+  }, []);
+
+  const createObjectPreviewUrl = useCallback((file: File): string | null => {
+    if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
+    try {
+      const url = URL.createObjectURL(file);
+      objectPreviewUrlsRef.current.add(url);
+      return url;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const addPendingImageAttachment = useCallback((name: string, previewUrl: string | null): ChatAttachmentPendingImage => {
+    const pending = {
+      id: `pending-image-${Date.now()}-${++pendingImageAttachmentSequenceRef.current}`,
+      name,
+      previewUrl,
+    };
+    setPendingImageAttachments((current) => [...current, pending]);
+    return pending;
+  }, []);
+
+  const dropPendingImageAttachment = useCallback((
+    id: string,
+    options: { markCancelled?: boolean } = {},
+  ) => {
+    if (options.markCancelled) cancelledPendingImageAttachmentsRef.current.add(id);
+    setPendingImageAttachments((current) => {
+      return current.filter((entry) => entry.id !== id);
+    });
+  }, []);
+
+  const removePendingImageAttachment = useCallback((id: string) => {
+    dropPendingImageAttachment(id, { markCancelled: true });
+  }, [dropPendingImageAttachment]);
+
+  const handleRemoveAttachment = useCallback((path: string) => {
+    clearPreviewForPath(path);
+    onRemoveAttachment(path);
+  }, [clearPreviewForPath, onRemoveAttachment]);
+
+  useEffect(() => {
+    const previous = previousImagePreviewUrlsRef.current;
+    for (const [path, previousUrl] of Object.entries(previous)) {
+      if (imagePreviewUrls[path] !== previousUrl) {
+        revokePreviewUrl(previousUrl);
+      }
+    }
+    previousImagePreviewUrlsRef.current = imagePreviewUrls;
+  }, [imagePreviewUrls, revokePreviewUrl]);
+
+  useEffect(() => {
+    const currentPendingIds = new Set(pendingImageAttachments.map((attachment) => attachment.id));
+    const storedPreviewUrls = new Set(Object.values(imagePreviewUrls));
+    for (const attachment of previousPendingImageAttachmentsRef.current) {
+      const pendingPreviewUrl = attachment.previewUrl ?? null;
+      if (!currentPendingIds.has(attachment.id) && (!pendingPreviewUrl || !storedPreviewUrls.has(pendingPreviewUrl))) {
+        revokePreviewUrl(attachment.previewUrl);
+      }
+    }
+    previousPendingImageAttachmentsRef.current = pendingImageAttachments;
+  }, [imagePreviewUrls, pendingImageAttachments, revokePreviewUrl]);
+
+  useEffect(() => {
+    const currentPaths = new Set(attachments.map((attachment) => attachment.path));
+    const previousPaths = previousAttachmentPathsRef.current;
+    setImagePreviewUrls((current) => {
+      let next = current;
+      for (const path of Object.keys(current)) {
+        if (!previousPaths.has(path) || currentPaths.has(path)) continue;
+        if (next === current) next = { ...current };
+        delete next[path];
+      }
+      return next;
+    });
+    previousAttachmentPathsRef.current = currentPaths;
+  }, [attachments]);
 
   /* ── Attachment picker effects ── */
   useEffect(() => {
@@ -1131,7 +1265,7 @@ export function AgentChatComposer({
 
   const selectAttachment = (attachment: AgentChatFileRef) => {
     setAttachError(null);
-    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+    if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
       setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
       return;
     }
@@ -1139,25 +1273,33 @@ export function AgentChatComposer({
     setAttachmentPickerOpen(false);
   };
 
-  const addFileAttachments = async (files: FileList | null | undefined) => {
+  const addFileAttachments = async (files: FileList | File[] | null | undefined) => {
     if (!files?.length) return;
-    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
+    if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
     try {
       let addedInBatch = 0;
+      const initialSlotCount = attachmentSlotsUsed;
       for (const file of Array.from(files)) {
-        if (parallelChatMode && attachments.length + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+        if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
         }
         const fileWithPath = file as File & { path?: string };
         const hasRealPath = typeof fileWithPath.path === "string" && fileWithPath.path.trim().length > 0;
+        const attachmentName = file.name || "clipboard.png";
+        const isImageAttachment = inferAttachmentType(attachmentName, file.type) === "image";
 
         if (hasRealPath) {
           const filePath = fileWithPath.path!;
-          onAddAttachment({ path: filePath, type: inferAttachmentType(filePath, file.type) });
+          const attachmentType = inferAttachmentType(filePath, file.type);
+          if (attachmentType === "image") {
+            const previewUrl = createObjectPreviewUrl(file);
+            if (previewUrl) rememberPreviewUrl(filePath, previewUrl);
+          }
+          onAddAttachment({ path: filePath, type: attachmentType });
           addedInBatch += 1;
           continue;
         }
@@ -1169,19 +1311,32 @@ export function AgentChatComposer({
           continue;
         }
 
+        const pendingImage = isImageAttachment
+          ? addPendingImageAttachment(attachmentName, createObjectPreviewUrl(file))
+          : null;
         try {
           const buf = await file.arrayBuffer();
-          const bytes = new Uint8Array(buf);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-          const base64 = btoa(binary);
+          const base64 = arrayBufferToBase64(buf);
           const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
             data: base64,
-            filename: file.name || "clipboard.png",
+            filename: attachmentName,
           });
-          onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, file.type) });
+          if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+            cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
+            continue;
+          }
+          const attachmentType = inferAttachmentType(tempPath, file.type);
+          const pendingPreviewUrl = pendingImage?.previewUrl ?? null;
+          if (attachmentType === "image" && pendingPreviewUrl) {
+            rememberPreviewUrl(tempPath, pendingPreviewUrl);
+          }
+          onAddAttachment({ path: tempPath, type: attachmentType });
+          if (pendingImage) {
+            dropPendingImageAttachment(pendingImage.id);
+          }
           addedInBatch += 1;
         } catch {
+          if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
       }
@@ -1192,19 +1347,40 @@ export function AgentChatComposer({
 
   const addNativeClipboardImageAttachment = async () => {
     if (!canAttach) return;
-    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
+    if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
+    const pendingImage = addPendingImageAttachment("clipboard.png", null);
     try {
-      const payload = await window.ade.app.readClipboardImage();
-      if (!payload) return;
-      const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-        data: payload.data,
-        filename: payload.filename || "clipboard.png",
-      });
-      onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, payload.mimeType) });
+      const payload = window.ade.app.saveClipboardImageAttachment
+        ? await window.ade.app.saveClipboardImageAttachment()
+        : await (async () => {
+            const legacyPayload = await window.ade.app.readClipboardImage();
+            if (!legacyPayload) return null;
+            const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+              data: legacyPayload.data,
+              filename: legacyPayload.filename || "clipboard.png",
+            });
+            return {
+              path: tempPath,
+              mimeType: legacyPayload.mimeType,
+              previewDataUrl: `data:${legacyPayload.mimeType};base64,${legacyPayload.data}`,
+            };
+          })();
+      if (!payload) {
+        dropPendingImageAttachment(pendingImage.id);
+        return;
+      }
+      if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+        cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
+        return;
+      }
+      if (payload.previewDataUrl) rememberPreviewUrl(payload.path, payload.previewDataUrl);
+      onAddAttachment({ path: payload.path, type: inferAttachmentType(payload.path, payload.mimeType) });
+      dropPendingImageAttachment(pendingImage.id);
     } catch {
+      dropPendingImageAttachment(pendingImage.id);
       setAttachError("Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
@@ -1213,14 +1389,14 @@ export function AgentChatComposer({
 
   const addImageUrlAttachment = useCallback((url: string): boolean => {
     if (!canAttach) return false;
-    if (parallelChatMode && attachments.length >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
+    if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
       setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
       return false;
     }
     setAttachError(null);
     onAddAttachment({ path: url, type: "image-url", url });
     return true;
-  }, [attachments.length, canAttach, onAddAttachment, parallelChatMode]);
+  }, [attachmentSlotsUsed, canAttach, onAddAttachment, parallelChatMode]);
 
   const addImageUrlFromTransfer = useCallback((
     data: DataTransfer | React.ClipboardEvent<HTMLElement>["clipboardData"],
@@ -2335,9 +2511,7 @@ export function AgentChatComposer({
     event.preventDefault();
     if (fallbackAlreadyAttached) return;
     clipboardImagePasteHandledRef.current += 1;
-    const dt = new DataTransfer();
-    for (const file of collected) dt.items.add(file);
-    void addFileAttachments(dt.files);
+    void addFileAttachments(collected);
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
@@ -2434,6 +2608,9 @@ export function AgentChatComposer({
     if (pendingInput?.blocking) {
       return;
     }
+    if (pendingImageAttachments.length > 0) {
+      return;
+    }
     if (parallelChatMode) {
       if (busy || parallelLaunchBusy) return;
       if (parallelModelSlots.length < 2) return;
@@ -2471,7 +2648,7 @@ export function AgentChatComposer({
     }
     if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) return;
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2538,16 +2715,19 @@ export function AgentChatComposer({
     || hasMacosVmContext
     || contextAttachmentCount > 0
   );
-  const sendEnabled = !busy && !backgroundLaunchBusy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
+  const hasPendingImageAttachments = pendingImageAttachments.length > 0;
+  const sendEnabled = !busy && !backgroundLaunchBusy && !parallelLaunchBusy && !composerInputLocked && !hasPendingImageAttachments && (parallelReady || singleReady);
   const backgroundSendEnabled = Boolean(onSubmitInBackground)
     && !busy
     && !backgroundLaunchBusy
     && !parallelLaunchBusy
     && !composerInputLocked
+    && !hasPendingImageAttachments
     && singleReady;
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
+    if (hasPendingImageAttachments) return "Finish attaching images";
     if (parallelChatMode) {
       if (parallelModelSlots.length < 2) return "Add at least two models";
       if (draft.trim().length === 0 && attachments.length === 0 && contextAttachmentCount === 0) return "Add a message or at least one attachment";
@@ -2701,7 +2881,7 @@ export function AgentChatComposer({
         )
       ) : undefined}
       trays={
-        attachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
+        attachments.length || pendingImageAttachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext || selectedMacosVmContext ? (
           <div className="space-y-2 px-1 py-2">
             {selectedMacosVmContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-violet-300/12 bg-black/20 p-2 pr-6">
@@ -2953,7 +3133,7 @@ export function AgentChatComposer({
                   type="button"
                   className="rounded px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*10/14)] text-sky-200/65 underline-offset-2 transition-colors hover:text-sky-100 hover:underline"
                   onClick={() => {
-                    onRemoveAttachment(attachNotice.undoPath);
+                    handleRemoveAttachment(attachNotice.undoPath);
                     setAttachNotice(null);
                   }}
                 >
@@ -2972,9 +3152,12 @@ export function AgentChatComposer({
             <ChatAttachmentTray
               attachments={attachments}
               contextAttachments={contextAttachments}
+              pendingImageAttachments={pendingImageAttachments}
+              imagePreviewUrls={imagePreviewUrls}
               mode={surfaceMode}
-              onRemove={onRemoveAttachment}
+              onRemove={handleRemoveAttachment}
               onRemoveContext={onRemoveContextAttachment}
+              onRemovePendingImageAttachment={removePendingImageAttachment}
               className="px-3 py-0"
             />
           </div>
