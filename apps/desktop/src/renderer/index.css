@@ -2774,7 +2774,7 @@ button:active, [role="button"]:active {
   line-height: 1;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: var(--lane-band-color, var(--color-muted-fg));
+  color: var(--lane-band-color, var(--color-fg));
   cursor: pointer;
   user-select: none;
   opacity: 0.75;
@@ -2805,7 +2805,7 @@ button:active, [role="button"]:active {
   border: none;
   background: color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 10%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--lane-band-color, var(--color-fg)) 18%, transparent);
-  color: var(--lane-band-color, var(--color-muted-fg));
+  color: var(--lane-band-color, var(--color-fg));
   cursor: pointer;
   transition: background 120ms ease, box-shadow 120ms ease;
 }
@@ -2834,6 +2834,17 @@ button:active, [role="button"]:active {
   font-size: 10px;
   line-height: 1;
   opacity: 0.55;
+}
+
+/* Pulse used when navigating to a lane row from the Work-tab context menu. */
+@keyframes ade-lane-row-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-fg) 36%, transparent); }
+  60%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-fg) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-fg) 0%, transparent); }
+}
+
+.ade-lane-row-pulse {
+  animation: ade-lane-row-pulse 600ms ease-out;
 }
 
 .ade-work-tab-strip-roomy {

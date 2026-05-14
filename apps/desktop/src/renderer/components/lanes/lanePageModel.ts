@@ -61,6 +61,19 @@ export function parseLaneIdsParam(value: string | null): string[] {
     .filter(Boolean);
 }
 
+export function shouldApplyLaneIdsDeepLink(args: { action: string | null; laneIdsRaw: string | null }): boolean {
+  return !args.action && parseLaneIdsParam(args.laneIdsRaw).length > 0;
+}
+
+export function buildLaneActionClearedSearch(search: string): string {
+  const next = new URLSearchParams(search);
+  next.delete("action");
+  next.delete("laneId");
+  next.delete("laneIds");
+  const query = next.toString();
+  return query ? `?${query}` : "";
+}
+
 export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parentLaneId">>(lanes: T[]): T[][] {
   const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const remaining = new Set(lanesById.keys());

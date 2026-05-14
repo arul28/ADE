@@ -70,6 +70,11 @@ Lists sessions grouped by one of three modes (controlled by
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`.
 
+Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
+actions are available from the session sidebar: color changes and copy/reveal
+run inline, while manage/adopt/batch/split actions route through the Lanes tab
+deeplinks.
+
 In `by-lane` mode, any session whose `laneId` is not in the current
 lanes list is still rendered under its own sticky "orphan lane" group
 below the active lane groups. The list is built from
@@ -141,7 +146,9 @@ Owns the render target for open sessions. Supports three modes tied to
 
 - `tabs` — tab-strip + single `SessionSurface` for the active tab, plus
   a "New Chat" button in the tab strip. A second sub-mode (`hasGroupedTabs`)
-  renders lane-grouped tab chips with per-group collapse.
+  renders lane-grouped tab chips with per-group collapse. Lane group chips use
+  `useWorkLaneContextMenu` for the same color/manage/split/batch actions as
+  the Lanes tab.
 - `grid` — tiled pane layout. Each session becomes a `PaneConfig` that
   mounts a `SessionSurface` in `grid-tile` variant. The tiling tree is
   rendered by `PaneTilingLayout`, seeded by
