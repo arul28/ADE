@@ -171,6 +171,15 @@ and a footer that contains the composer.
   sent to every child lane, so the cap is enforced both when toggling
   parallel mode and when adding files.
 
+- **Work auto-create launch behavior.** The embedded draft composer can
+  ask the main process for a lane name before creating a new Work lane.
+  The request includes a temporary `chat-YYYYMMDD-HHMMSS` fallback so
+  prompt-derived fallback names remain unique when model naming is
+  unavailable. Foreground launches call `onSessionCreated` with
+  `{ activate: true, source: "draft-launch" }` so Work selects the new
+  lane/session; background launches pass `activate: false`, keep the
+  current Work focus, and show a dismissible notice with an Open action.
+
 - **Border beam.** On standard (non-grid-tile) layout the composer
   shell is wrapped in `BorderBeam` (`colorVariant="colorful"` at rest,
   `"ocean"` with a slower duration while a turn is active). `active`

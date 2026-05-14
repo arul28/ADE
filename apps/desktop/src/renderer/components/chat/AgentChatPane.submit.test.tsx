@@ -1729,9 +1729,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-primary",
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
-      }));
-      expect(suggestLaneName).not.toHaveBeenCalledWith(expect.objectContaining({
-        fallbackName: expect.any(String),
+        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
       }));
       expect(createLane).toHaveBeenCalledWith({
         name: "fix-auto-create-flow",
@@ -1747,7 +1745,9 @@ describe("AgentChatPane submit recovery", () => {
         { activate: true, source: "draft-launch" },
       );
     });
-    expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
+    });
   });
 
   it("background auto-create reports the new chat without stealing focus and shows a dismissible notice", async () => {
@@ -2278,6 +2278,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         prompt: "Fix the login bug",
         modelId: "openai/gpt-5.4",
+        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
       }));
       expect(createChild).toHaveBeenCalledTimes(2);
     });

@@ -2443,9 +2443,11 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
 }
 
+const GENERIC_PROMPT_LANE_NAME = "parallel-task";
+
 function fallbackLaneNameFromPrompt(prompt: string): string {
   const collapsed = prompt.replace(/\s+/g, " ");
-  if (!collapsed.length) return "parallel-task";
+  if (!collapsed.length) return GENERIC_PROMPT_LANE_NAME;
   const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
   const slug = words
     .join("-")
@@ -2453,7 +2455,28 @@ function fallbackLaneNameFromPrompt(prompt: string): string {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  return slug.length ? slug.slice(0, 48) : "parallel-task";
+  return slug.length ? slug.slice(0, 48) : GENERIC_PROMPT_LANE_NAME;
+}
+
+function uniquePromptFallbackLaneName(promptFallback: string, explicitFallback: string | null): string {
+  if (promptFallback === GENERIC_PROMPT_LANE_NAME) {
+    return explicitFallback ?? promptFallback;
+  }
+  if (!explicitFallback) return promptFallback;
+
+  const uniqueSuffix = explicitFallback
+    .replace(/^chat-?/u, "")
+    .replace(/[^a-z0-9-]+/giu, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  if (!uniqueSuffix.length) return promptFallback;
+
+  const maxPrefixLength = Math.max(1, 60 - uniqueSuffix.length - 1);
+  const prefix = promptFallback
+    .slice(0, maxPrefixLength)
+    .replace(/-+$/g, "");
+  return `${prefix}-${uniqueSuffix}`;
 }
 
 function normalizeSuggestedLaneName(raw: string): string | null {
@@ -6530,11 +6553,7 @@ export function createAgentChatService(args: {
       ? normalizeSuggestedLaneName(args.fallbackName)
       : null;
     const promptFallback = fallbackLaneNameFromPrompt(prompt);
-    const fallback = () => (
-      promptFallback !== "parallel-task"
-        ? promptFallback
-        : explicitFallback ?? promptFallback
-    );
+    const fallback = () => uniquePromptFallbackLaneName(promptFallback, explicitFallback);
 
     if (!prompt.length) {
       return fallback();

@@ -11,7 +11,7 @@ machinery layered on top.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for parallel launch. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable` so packaged builds can prefer the bundled native binary before PATH/auth fallbacks. Large orchestrator file. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, and prompt-derived lane-name suggestions for auto-created / parallel lanes. Lane naming runs through the session-intelligence prompt path, retries the requested/configured/default title models, then falls back to a prompt slug with an optional temporary suffix for uniqueness. Tracks Codex Fast Mode (`codexFastMode: boolean`) per session and forwards it as `serviceTier: "fast" \| null` on every Codex `thread/start` and `turn/start` JSON-RPC call (see [Agent Routing](agent-routing.md#codex-service-tiers-fast-mode)). Spawns Claude/Codex agent runtimes with `buildAgentRuntimeEnv(managed)` so every agent process inherits `ADE_CHAT_SESSION_ID`, `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (used by the agent guidance to call `ade --socket app-control logs` / `terminal read --chat-session "$ADE_CHAT_SESSION_ID"` without resolving the chat ID itself). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable` so packaged builds can prefer the bundled native binary before PATH/auth fallbacks. Large orchestrator file. |
 | `apps/desktop/src/main/services/chat/runtimeEvents.ts` | Canonical cross-runtime event vocabulary (`turn.*`, `content.delta`, `tool.*`, `subagent.*`, teammate/task events, compaction boundaries) plus shims between legacy `AgentChatEvent` rows and the canonical runtime envelope. Claude emits canonical subagent events alongside the legacy rows while the other adapters migrate. |
 | `apps/ade-cli/src/tuiClient/` | Terminal **Work** chat TUI (Ink + React): same action/RPC contracts as desktop, **attached** (socket) or **embedded** (headless runtime via `ade-cli`). See [ADE Code](../ade-code/README.md). |
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts` | Main-process broker for the in-app web browser. Owns a single `persist:ade-browser` partition, multiple `WebContentsView` tabs (cap 10), bounds + visibility against the renderer-supplied frame, debugger-protocol attachment for inspect-mode hit tests, screenshot capture, and emission of `BuiltInBrowserContextItem`s for selected page elements. Spoofs a desktop Chrome `User-Agent` and the matching `Sec-CH-UA*` client hints on every request through `webRequest.onBeforeSendHeaders` so external sign-in flows (Google, etc.) treat the embedded view as a normal desktop Chrome instead of refusing to load — the previous "open Google sign-in in the system browser" branch was removed because the spoofed UA stops Google from blocking the page in the first place. Window-open requests are forwarded into a fresh tab with `openPanel: true` so the Work sidebar Browser tab pops automatically. Backs the `ade.builtInBrowser.*` IPC surface and is consumed by both `ChatBuiltInBrowserPanel` (sidebar Browser tab) and `openExternal.ts` (links inside the renderer route through the built-in browser when the protocol is `http`/`https`/`about:blank`). |
@@ -127,11 +127,15 @@ render them, but neither one *runs* them.
   command runs in the **active runtime** — a remote-bound desktop
   window installs / logs in on the remote machine. See
   [Agents](../agents/README.md#agent-cli-install--auth-from-chat).
-- **Parallel multi-model launch.** From an empty embedded Work composer,
-  the user can enable parallel mode, select two or more model/control
-  slots, and send one prompt. ADE creates child lanes, starts one chat
-  in each lane, sends the same prompt and attachments to every session,
-  then opens the Lanes view focused on the new lane set.
+- **Work draft launches.** From an empty embedded Work composer, the
+  user can auto-create a lane for a single foreground/background chat,
+  or enable parallel mode, select two or more model/control slots, and
+  send one prompt. Foreground auto-create opens the new chat in Work.
+  Background auto-create records the session without stealing focus and
+  shows a dismissible launch notice. Parallel launch still creates
+  child lanes, starts one chat in each lane, sends the same prompt and
+  attachments to every session, then opens the Lanes view focused on
+  the new lane set.
 - **Built-in browser.** The main process owns a persistent
   `persist:ade-browser` partition with multiple `WebContentsView` tabs.
   The Work right-edge sidebar's `browser` tab renders this surface
@@ -199,10 +203,12 @@ Parallel launch is a renderer-orchestrated workflow layered on the same
 session primitives:
 
 1. `AgentChatPane` asks `ade.agentChat.suggestLaneName` for a slug base
-   derived from the user's prompt. The service uses a lightweight
-   OpenCode text call when an eligible model is available and falls back
-   to a deterministic first-four-words slug (`parallel-task` for empty
-   prompts).
+   derived from the user's prompt. The service runs the shared
+   session-intelligence title prompt against the requested model, the
+   configured title model, and fallback title models. If no model can
+   produce a usable name, it keeps the first-four-words prompt slug and
+   appends the renderer's temporary fallback suffix for uniqueness; the
+   generic empty-prompt fallback is `parallel-task`.
 2. The pane creates one child lane per selected model slot using a
    unique `<base>-<model-family>` style name and persists progress under
    `agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`.
@@ -256,7 +262,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`. |
 | `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` for Codex sessions to start with the `serviceTier: "fast"` default. |
-| `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe base lane name from a parallel prompt using a lightweight model call with deterministic fallback. |
+| `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe lane name from a Work launch prompt using the session-intelligence title prompt, with a prompt-slug + optional unique temporary fallback. |
 | `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
 | `ade.agentChat.handoff` | invoke | Create a handoff session with summarized context. Forwards `codexFastMode` when the target provider is Codex. |
 | `ade.agentChat.send` | invoke | Dispatch a user message + attachments. If the session has ended, sending is the continuation path. |

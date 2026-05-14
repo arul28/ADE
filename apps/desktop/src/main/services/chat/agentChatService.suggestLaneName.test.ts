@@ -551,7 +551,7 @@ describe("suggestLaneNameFromPrompt", () => {
     );
   });
 
-  it("uses the prompt fallback instead of the temporary explicit fallback when title generation is disabled", async () => {
+  it("keeps the prompt fallback readable while adding the temporary suffix when title generation is disabled", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
@@ -564,8 +564,20 @@ describe("suggestLaneNameFromPrompt", () => {
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("fix-the-authentication-login");
+    expect(result).toBe("fix-the-authentication-login-20260514-010203");
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("uses the explicit fallback directly when the prompt fallback is generic", async () => {
+    const { service } = createService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "!!!",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("chat-20260514-010203");
   });
 
   it("uses AI-generated name when the model runtime succeeds", async () => {

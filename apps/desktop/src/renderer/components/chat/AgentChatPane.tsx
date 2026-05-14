@@ -189,6 +189,15 @@ type BackgroundLaunchNotice = {
   sessionId: string;
 };
 
+function createTemporaryAutoLaneName(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    "chat",
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
+  ].join("-");
+}
+
 export type AgentChatSessionCreatedOptions = {
   activate?: boolean;
   source?: "chat" | "draft-launch" | "handoff";
@@ -4243,6 +4252,7 @@ export function AgentChatPane({
         laneId: primaryLane.id,
         prompt: buildDraftLaunchNamingSeed(snapshot),
         modelId,
+        fallbackName: createTemporaryAutoLaneName(),
       });
       const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
       await refreshLanesStore();
@@ -4548,6 +4558,7 @@ export function AgentChatPane({
           laneId,
           prompt: namingSeed,
           modelId: parallelModelSlots[0]!.modelId,
+          fallbackName: createTemporaryAutoLaneName(),
         });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
 
