@@ -566,6 +566,11 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+
     fireEvent.click(await screen.findByRole("button", { name: /linear quick view/i }));
 
     await waitFor(() => {
@@ -617,6 +622,13 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
+    expect(getLinearConnectionStatus).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
     await waitFor(() => {
       expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
     });

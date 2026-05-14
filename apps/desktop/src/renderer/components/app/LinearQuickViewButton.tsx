@@ -15,6 +15,8 @@ import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "./LinearIssue
 
 type PopoverPosition = { top: number; right: number } | null;
 
+const INITIAL_VISIBILITY_CHECK_DELAY_MS = 8_000;
+
 export function LinearQuickViewButton() {
   const project = useAppStore((s) => s.project);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -42,15 +44,18 @@ export function LinearQuickViewButton() {
     setVisible(false);
     setOpen(false);
     setQuickView(null);
-    void loadVisibility()
+    const timer = window.setTimeout(() => {
+      void loadVisibility()
       .then((nextVisible) => {
         if (!cancelled) setVisible(nextVisible);
       })
       .catch(() => {
         if (!cancelled) setVisible(false);
       });
+    }, INITIAL_VISIBILITY_CHECK_DELAY_MS);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [loadVisibility, project?.rootPath]);
 
