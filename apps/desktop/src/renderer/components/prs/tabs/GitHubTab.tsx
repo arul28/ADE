@@ -496,13 +496,6 @@ export function GitHubTab({
       inFlightSnapshotRef.current?.request === pending
       && inFlightSnapshotRef.current.includeExternalClosed === includeExternalClosed;
     pending = (async () => {
-      const githubStatus = await window.ade.github?.getStatus?.().catch(() => null);
-      if (githubStatus && !githubStatus.tokenStored) {
-        if (projectRootRef.current === requestProjectRoot && isCurrentSnapshotRequest()) {
-          setError("Connect GitHub in Settings to sync pull requests.");
-        }
-        return snapshotRef.current as GitHubPrSnapshot;
-      }
       return window.ade.prs.getGitHubSnapshot({
         force: options?.force === true,
         ...(includeExternalClosed ? { includeExternalClosed: true } : {}),

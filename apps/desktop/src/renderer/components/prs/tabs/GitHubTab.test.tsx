@@ -215,23 +215,16 @@ describe("GitHubTab", () => {
   });
 
   it("shows friendly copy when GitHub is not connected", async () => {
-    (window.ade.github.getStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      tokenStored: false,
-      tokenDecryptionFailed: false,
-      storageScope: "app",
-      repo: { owner: "ade-dev", name: "ade" },
-      hasOrigin: true,
-      userLogin: null,
-      scopes: [],
-      checkedAt: "2026-03-13T12:00:00.000Z",
-    });
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("Error invoking remote method 'prs:getGitHubSnapshot': Error: GitHub token missing. Set it in Settings to sync pull requests."),
+    );
 
     renderTab();
 
     await waitFor(() => {
       expect(screen.getByText("Connect GitHub in Settings to sync pull requests.")).toBeTruthy();
     });
-    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalled();
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     expect(screen.getByRole("button", { name: /connect github/i })).toBeTruthy();
   });

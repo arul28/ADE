@@ -10,6 +10,7 @@ type CliOptions = {
   requireSocket: boolean;
   projectRoot: string | null;
   workspaceRoot: string | null;
+  laneHint: string | null;
   socketPath: string | null;
 };
 
@@ -21,6 +22,7 @@ function parseArgs(argv: string[]): CliOptions {
     requireSocket: false,
     projectRoot: null,
     workspaceRoot: null,
+    laneHint: null,
     socketPath: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -31,6 +33,7 @@ function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--require-socket") options.requireSocket = true;
     else if (arg === "--project-root") options.projectRoot = argv[++i] ?? null;
     else if (arg === "--workspace-root") options.workspaceRoot = argv[++i] ?? null;
+    else if (arg === "--lane") options.laneHint = argv[++i] ?? null;
     else if (arg === "--socket") options.socketPath = argv[++i] ?? null;
   }
   return options;
@@ -42,7 +45,7 @@ function printHelp(): void {
 Terminal-native ADE Work chat.
 
 Usage:
-  ade code [--project-root <path>] [--workspace-root <path>] [--socket <path>]
+  ade code [--project-root <path>] [--workspace-root <path>] [--lane <id|name|branch>] [--socket <path>]
   ade code --embedded
   ade code --require-socket
   ade code --print-state
@@ -87,6 +90,7 @@ async function printState(options: CliOptions): Promise<void> {
   const project = detectProjectLaunchContext({
     projectRoot: options.projectRoot,
     workspaceRoot: options.workspaceRoot,
+    laneHint: options.laneHint,
   });
   const connection = await connectToAde({
     project,
@@ -126,6 +130,7 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
   const project = detectProjectLaunchContext({
     projectRoot: options.projectRoot,
     workspaceRoot: options.workspaceRoot,
+    laneHint: options.laneHint,
   });
   const instance = render(
     <AdeCodeApp

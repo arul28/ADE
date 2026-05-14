@@ -1834,6 +1834,47 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).not.toContain("Commands (file-backed prompts):");
     });
 
+    it("caps discovered command listings in the injected Claude prompt", async () => {
+      const commandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(commandsDir, { recursive: true });
+      for (let index = 0; index < 25; index += 1) {
+        fs.writeFileSync(path.join(commandsDir, `cmd-${String(index).padStart(2, "0")}.md`), [
+          "---",
+          `description: Command ${index}`,
+          "---",
+          "",
+          `Run command ${index}.`,
+          "",
+        ].join("\n"));
+      }
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-many-slash-commands",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
+      expect(opts?.systemPrompt?.append).toContain("/cmd-00 — Command 0");
+      expect(opts?.systemPrompt?.append).toContain("/cmd-19 — Command 19");
+      expect(opts?.systemPrompt?.append).not.toContain("/cmd-24 — Command 24");
+      expect(opts?.systemPrompt?.append).toContain("5 more command(s) hidden to keep startup context lean");
+    });
+
     it("does not attach ADE-owned tool definitions to Claude SDK sessions", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),

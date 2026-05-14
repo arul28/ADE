@@ -174,4 +174,30 @@ describe("skillRegistryService", () => {
     expect(superseded?.supersededByMemoryId).toBe(imported.memoryId);
     expect(duplicateMemory?.status).toBe("archived");
   });
+
+  it("indexes AGENTS.md as a root doc instead of importing it as a procedure", async () => {
+    const fixture = await createFixture();
+    const rootDocPath = path.join(fixture.projectRoot, "AGENTS.md");
+    fs.writeFileSync(rootDocPath, "# Project agent instructions\n\nKeep release checks honest.\n", "utf8");
+
+    const service = createSkillRegistryService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      projectRoot: fixture.projectRoot,
+      memoryService: fixture.memoryService,
+      proceduralLearningService: fixture.proceduralLearningService,
+    });
+
+    const indexed = await service.reindexSkills({ paths: [rootDocPath] });
+    const rootDoc = indexed.find((entry) => entry.path === rootDocPath);
+
+    expect(rootDoc?.kind).toBe("root_doc");
+    expect(rootDoc?.memoryId).toBeNull();
+    expect(fixture.memoryService.listMemories({
+      projectId: fixture.projectId,
+      scope: "project",
+      categories: ["procedure"],
+      limit: 10,
+    })).toHaveLength(0);
+  });
 });

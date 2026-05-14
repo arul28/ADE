@@ -51,7 +51,8 @@ function slugify(value: string): string {
 
 function inferKind(filePath: string): SkillIndexKind {
   const normalized = filePath.replace(/\\/g, "/");
-  if (normalized.endsWith("/CLAUDE.md") || normalized.endsWith("/agents.md")) return "root_doc";
+  const basename = path.basename(normalized);
+  if (basename === "CLAUDE.md" || basename.toLowerCase() === "agents.md") return "root_doc";
   if (normalized.includes("/.claude/commands/")) return "command";
   return "skill";
 }

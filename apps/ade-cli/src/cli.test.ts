@@ -79,6 +79,7 @@ describe("ADE CLI", () => {
     if (plan.kind !== "help") return;
     expect(plan.text).toContain("ade code --socket /tmp/ade.sock");
     expect(plan.text).toContain("ade code --require-socket");
+    expect(plan.text).toContain("ade code --lane <id|name|branch>");
     expect(plan.text).toContain("Command palette");
   });
 

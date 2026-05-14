@@ -855,6 +855,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code --embedded                          Force the embedded runtime fallback
     $ ade code --require-socket                    Fail instead of embedding when no socket exists
     $ ade code --socket /tmp/ade.sock              Attach to a specific runtime socket
+    $ ade code --lane <id|name|branch>             Launch focused on a specific lane
     $ ade --project-root <path> code                Launch against a specific ADE project
 
   Keys:
