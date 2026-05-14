@@ -325,13 +325,18 @@ function formatInventoryItemsSummary(items: IssueInventoryItem[]): string {
     const severityPrefix = item.severity ? `[${item.severity[0].toUpperCase()}${item.severity.slice(1)}] ` : "";
     const sourceTag = item.source !== "unknown" ? ` | source: ${item.source}` : "";
     const authorTag = item.author ? ` | author: ${item.author}` : "";
-    return `${index + 1}. ${severityPrefix}${item.type === "check_failure" ? "Check" : "Thread"} ${item.externalId} at ${location}${sourceTag}${authorTag}\n   Summary: ${item.headline}\n   Reference: ${item.url ?? "(no URL available)"}`;
+    const itemLabel = item.type === "check_failure"
+      ? "Check"
+      : item.type === "issue_comment"
+        ? "PR comment"
+        : "Review thread";
+    return `${index + 1}. ${severityPrefix}${itemLabel} ${item.externalId} at ${location}${sourceTag}${authorTag}\n   Summary: ${item.headline}\n   Reference: ${item.url ?? "(no URL available)"}`;
   }).join("\n");
 }
 
 function buildSelectedScopeDescription(scope: PrIssueResolutionScope): string {
-  if (scope === "both") return "checks and review comments";
-  if (scope === "comments") return "review comments";
+  if (scope === "both") return "checks and PR comments";
+  if (scope === "comments") return "PR comments";
   return "checks";
 }
 
@@ -432,6 +437,7 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   promptSections.push(
     `- Actionable failing checks: ${availability.hasActionableChecks ? availability.failingCheckCount : 0}`,
     `- Actionable unresolved review threads: ${actionableThreads.length}`,
+    `- Actionable top-level PR comments: ${availability.actionableIssueCommentCount}`,
     "",
     "Purpose / intent",
     purposeBits.length > 0 ? purposeBits.join("\n\n") : "- No additional PR purpose text was available.",
@@ -538,9 +544,9 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
       "- Run `ade doctor` if readiness is unclear. Use `--json` for structured output and `--text` for readable summaries.",
       "- Discover additional ADE actions with `ade actions list --text`; prefer typed PR commands first and `ade actions run ...` only as an escape hatch.",
       `- Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool} ${args.pr.id}\`.`,
-      `- Immediately after that, run \`${runtimeCapabilities.getReviewCommentsTool} ${args.pr.id}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      `- Immediately after that, run \`${runtimeCapabilities.getReviewCommentsTool} ${args.pr.id}\` to load the full PR comment bodies and line context before deciding which comments are stale, valid, or already addressed.`,
       `- Reply to review threads with \`${runtimeCapabilities.replyThreadTool} ${args.pr.id} --thread <thread-id> --body <text>\` and resolve completed threads with \`${runtimeCapabilities.resolveThreadTool} ${args.pr.id} --thread <thread-id>\`.`,
-      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
+      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed PR comments instead of guessing.",
       "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
       "- If the ADE CLI is unavailable in-session, continue with the prompt's issue context and linked GitHub thread/check URLs instead of reverse-engineering ADE internals.",
     );
@@ -548,8 +554,8 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
     const toolList = listRequiredRuntimeTools(runtimeCapabilities).map((toolName) => `\`${toolName}\``).join(", ");
     promptSections.push(
       `- This workflow chat is expected to expose ADE PR tools. Start by refreshing the PR issue inventory with \`${runtimeCapabilities.refreshInventoryTool}\`.`,
-      `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full review-thread bodies and line context before deciding which comments are stale, valid, or already addressed.`,
-      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed review comments instead of guessing.",
+      `- Immediately after that, call \`${runtimeCapabilities.getReviewCommentsTool}\` to load the full PR comment bodies and line context before deciding which comments are stale, valid, or already addressed.`,
+      "- Treat the refreshed inventory as a triage index, not as the full source of truth for long comment bodies. If a summary looks compact or truncated, fetch the detailed PR comments instead of guessing.",
       "- Do not spend your first steps reading local skill docs, repo docs, or unrelated files before those PR context calls succeed.",
       `- Required PR tools for this run: ${toolList}. If any of them are unavailable, stop and report that the chat was launched without the required ADE PR tools.`,
       "- Do not waste time reverse-engineering ADE runtime wiring from inside the task session.",
@@ -557,8 +563,8 @@ export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): s
   }
 
   promptSections.push(
-    "- Verify review comments before changing code. Some comments may be stale, incorrect, or already addressed.",
-    "- If you work on review comments, reply on the review thread when useful and resolve the thread only after the fix is truly in place or the thread is clearly outdated/invalid.",
+    "- Verify PR comments before changing code. Some comments may be stale, incorrect, or already addressed.",
+    "- If you work on review threads, reply on the thread when useful and resolve it only after the fix is truly in place or the thread is clearly outdated/invalid.",
     "- If you are running outside ADE, use the linked GitHub thread/check URLs together with your local git and CI tooling.",
     runtimeCapabilities.executionMode
       ? "- Use parallel agents or subagents when they will materially speed up independent fixes."

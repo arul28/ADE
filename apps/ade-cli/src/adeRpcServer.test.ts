@@ -4876,6 +4876,8 @@ describe("adeRpcServer", () => {
         failingCheckCount: 0,
         pendingCheckCount: 0,
         actionableReviewThreadCount: 1,
+        actionableIssueCommentCount: 1,
+        actionableCommentCount: 2,
         hasActionableChecks: false,
         hasActionableComments: true,
       }),

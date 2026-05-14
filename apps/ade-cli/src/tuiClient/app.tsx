@@ -4222,10 +4222,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const pr = name === "/pr checks"
         ? await conn.actionList("pr", "getChecks", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) }))
-        : await Promise.all([
-            conn.actionList("pr", "getReviews", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
-            conn.actionList("pr", "getReviewThreads", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
-          ]).then(([reviews, threads]) => ({ reviews, threads }));
+        : name === "/pr comments"
+          ? await conn.tool("pr_get_review_comments", { prId }).catch((err) => ({ error: err instanceof Error ? err.message : String(err) }))
+          : await Promise.all([
+              conn.actionList("pr", "getReviews", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
+              conn.actionList("pr", "getReviewThreads", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
+              conn.actionList("pr", "getComments", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
+            ]).then(([reviews, threads, comments]) => ({ reviews, threads, comments }));
       setRightPane({ kind: "details", title: name.slice(1), body: renderObject(pr, 24) });
       return;
     }
