@@ -11,12 +11,12 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. |
-| `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. |
+| `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
-| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail (loaded through `window.ade.app.getImageDataUrl`), open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Non-image attachments fall back to the file glyph. |
+| `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail, open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Pasted images can pass a seeded preview URL from the composer while the temp file is being saved; tray-only image refs fall back to `window.ade.app.getImageDataUrl`. Non-image attachments fall back to the file glyph. |
 | `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
@@ -27,12 +27,13 @@ stream plus session metadata.
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. See [iOS Simulator feature](../ios-simulator/README.md). |
 | `ChatBuiltInBrowserPanel.tsx` | In-app browser panel mounted under the Work right-edge sidebar's `browser` tab. Renders the address bar, navigation/tab strip, inspect toolbar, screenshot capture, and an empty/error state derived from `BuiltInBrowserStatus`; the actual page content is painted by a main-process `WebContentsView` whose bounds the panel reports back to the broker via `ade.builtInBrowser.setBounds`. Inspect-mode hit-tests emit `BuiltInBrowserContextItem` payloads through `onAddContext`; the sidebar then dispatches `ade:agent-chat:add-builtin-browser-context` to the active chat. The panel does not run inside `AgentChatPane` directly — instead, anywhere in the renderer that wants to open a URL calls `openUrlInAdeBrowser()` (in `apps/desktop/src/renderer/lib/openExternal.ts`), which fires `ADE_OPEN_BUILT_IN_BROWSER_EVENT` and asks the broker to open a new tab. |
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
-| `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. |
+| `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. The PR action opens a linked PR when one exists, otherwise opens the PR creation handoff for the current lane targeting the primary branch. |
 | `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. |
 | `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
+| `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context. Automatic macOS VM capability context is attached only when the outgoing prompt asks for ADE VM / macOS VM / Lume / isolated macOS GUI use, unless a caller forces it. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS` and parallel launch state types. |
 
 ## Pane layout
@@ -79,9 +80,14 @@ and a footer that contains the composer.
   enclosing `AgentChatPane` reports `isTileActive: true` (for packed
   grid tiles) or any equivalent active state — typing in the grid
   immediately targets the focused tile's composer.
-- **Attachments** via drag-drop, paste, and an inline picker. Images are
-  written through `ade.agentChat.saveTempAttachment` (10 MB cap; MIME
-  validated per provider).
+- **Attachments** via drag-drop, paste, and an inline picker. Pasted and
+  dropped image files show a pending thumbnail while ADE writes the
+  temp attachment. Electron clipboard images use
+  `ade.app.saveClipboardImageAttachment` when available so the main
+  process can save the PNG and return a small preview without sending
+  the full base64 payload through the renderer; the legacy
+  `ade.agentChat.saveTempAttachment` path remains as the fallback.
+  Temp images keep the 10 MB cap and provider-specific MIME validation.
 - **Linear issue context.** A Linear-branded chip in the composer
   opens `LinearIssueContextDialog`, which mounts the shared
   `LinearIssueBrowser` so the user can attach a Linear issue as
@@ -229,8 +235,13 @@ and a footer that contains the composer.
 
 ### Attachment handling
 
-- Pasted and dropped images are written to a temp location via
-  `ade.agentChat.saveTempAttachment` (10 MB cap).
+- Pasted and dropped images are written to a temp location. File-backed
+  renderer payloads use `ade.agentChat.saveTempAttachment`; native
+  clipboard images prefer `ade.app.saveClipboardImageAttachment`, which
+  reads the Electron clipboard, writes the PNG beside other chat
+  attachments, and returns a downsized preview data URL. While either
+  save is in flight, the composer disables send and shows a cancellable
+  pending thumbnail in `ChatAttachmentTray`.
 - iOS Simulator selections add `IosElementContextItem` chips to the
   composer instead of plain attachments. Each chip is a `data-ios-context`
   node in a contenteditable rich-input variant; submission serialises
@@ -430,7 +441,15 @@ These modules are pure and unit-testable:
 - **Virtual-scroll offset drift.** `@tanstack/react-virtual` is
   sensitive to changing row heights (plan approval cards, work-log
   expansion). Measurement caching uses stable keys; rolling back to an
-  unstable key causes the list to "jump" on updates.
+  unstable key causes the list to "jump" on updates. Sticky-bottom
+  recovery intentionally follows for a few animation frames after row
+  measurement changes; removing that follow-up can make active streams
+  appear to stop short of the newest output.
+- **Automatic macOS VM context is intent-gated.** `submit()` passes the
+  outgoing prompt text into `buildAutomaticMacosVmContextForPrompt()`.
+  Ordinary sends should not call `ade.macosVm.getStatus` or inject VM
+  state; only prompts that mention ADE VM / macOS VM / Lume / isolated
+  macOS GUI usage get the automatic capability block.
 - **Native permission picker updates serialize before submit.**
   `AgentChatPane` tracks the in-flight native-control update through
   `pendingNativeControlUpdateRef` (sessionId + monotonic `updateId` +

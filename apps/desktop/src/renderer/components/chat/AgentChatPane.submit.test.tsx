@@ -271,6 +271,9 @@ function installAdeMocks(options?: {
     },
     prs: {
       getForLane: vi.fn().mockResolvedValue(options?.linkedPr ?? null),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      getChecks: vi.fn().mockResolvedValue([]),
+      openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
     pty: {
       create: vi.fn().mockResolvedValue({ ptyId: "pty-created", sessionId: "terminal-created", pid: 1234 }),
@@ -820,6 +823,46 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("does not inject lane macOS VM context into unrelated sends", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send } = installAdeMocks({ sessions: [session] });
+    (window.ade as any).macosVm = {
+      getStatus: vi.fn().mockResolvedValue({
+        platform: "darwin",
+        arch: "arm64",
+        supported: true,
+        checkedAt: "2026-05-07T00:00:00.000Z",
+        activeProvider: {
+          kind: "lume",
+          available: true,
+          version: "0.3.9",
+          detail: "Lume is available.",
+          docsUrl: "https://cua.ai/docs/lume/guide/fundamentals/vm-management",
+        },
+        tools: [],
+        laneVm: null,
+        vms: [],
+        docs: {},
+      }),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+    };
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Fix the PR header action." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(window.ade.macosVm.getStatus).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        displayText: "Fix the PR header action.",
+        text: "Fix the PR header action.",
+      }));
+    });
+  });
+
   it("shows an optimistic queued bubble immediately for Cursor-style sends", async () => {
     const session = buildSession("session-1", { status: "idle" });
     let resolveSend!: () => void;
@@ -938,6 +981,36 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Render this Codex message once.")).toHaveLength(1);
     });
+  });
+
+  it("renders committed user messages without waiting for the debounced event flush", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [session],
+    });
+
+    renderPane(session);
+
+    await screen.findByRole("textbox");
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-03-24T05:57:46.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "Render this committed message immediately.",
+          },
+        });
+      });
+
+      expect(screen.getByText("Render this committed message immediately.")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
@@ -2225,6 +2298,112 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+  });
+
+  it("streams live events into visible inactive grid tiles without requiring focus", async () => {
+    const session = buildSession("grid-live-chat", {
+      title: "Grid live chat",
+    });
+    const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+    window.ade.sessions.readTranscriptTail = vi.fn().mockResolvedValue("") as any;
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          layoutVariant="grid-tile"
+          isTileActive={false}
+          isTileVisible
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("textbox");
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-03-24T06:00:02.000Z",
+          sequence: 2,
+          event: {
+            type: "text",
+            text: "Visible inactive grid tile streamed",
+            turnId: "turn-grid-live",
+            messageId: "assistant-grid-live",
+          },
+        });
+      });
+
+      expect(screen.getByText("Visible inactive grid tile streamed")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("poll-recovers visible active grid tiles when live IPC misses an event", async () => {
+    vi.useFakeTimers();
+    const session = buildSession("grid-recovery-chat", {
+      title: "Grid recovery chat",
+      status: "active",
+    });
+    installAdeMocks({ sessions: [session] });
+    let transcript = "";
+    const readTranscriptTail = vi.fn().mockImplementation(async () => transcript);
+    window.ade.sessions.readTranscriptTail = readTranscriptTail as any;
+
+    try {
+      render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={session.laneId}
+            lockSessionId={session.sessionId}
+            hideSessionTabs
+            initialSessionSummary={session}
+            layoutVariant="grid-tile"
+            isTileActive={false}
+            isTileVisible
+          />
+        </MemoryRouter>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(600);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.queryByText("Recovered grid tile output")).toBeNull();
+
+      transcript = `${JSON.stringify({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T06:00:03.000Z",
+        sequence: 3,
+        event: {
+          type: "text",
+          text: "Recovered grid tile output",
+          turnId: "turn-grid-recovery",
+          messageId: "assistant-grid-recovery",
+        },
+      })}\n`;
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText("Recovered grid tile output")).toBeTruthy();
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not hydrate hidden inactive chat tiles", async () => {

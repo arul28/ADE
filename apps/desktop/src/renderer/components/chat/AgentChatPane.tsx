@@ -143,6 +143,8 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
+const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
@@ -157,6 +159,63 @@ const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
+
+type SubagentAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
+
+export function getSubagentAutoOpenStorageKey(sessionId: string): string {
+  return `${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
+}
+
+function encodeSubagentAutoOpenRecord(nowMs: number): string {
+  return JSON.stringify({ firedAt: nowMs });
+}
+
+function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
+  if (!raw) return null;
+  if (raw === "1") return "legacy";
+  try {
+    const parsed = JSON.parse(raw) as { firedAt?: unknown };
+    return typeof parsed.firedAt === "number" && Number.isFinite(parsed.firedAt)
+      ? parsed.firedAt
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function cleanupSubagentAutoOpenStorage(storage: SubagentAutoOpenStorage, nowMs = Date.now()): void {
+  const keys: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key?.startsWith(`${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
+  }
+  for (const key of keys) {
+    const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+    if (firedAt === "legacy") {
+      storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    } else if (firedAt === null || nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+      storage.removeItem(key);
+    }
+  }
+}
+
+function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
+  const key = getSubagentAutoOpenStorageKey(sessionId);
+  const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+  if (firedAt === "legacy") {
+    storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    return true;
+  }
+  if (firedAt === null) {
+    storage.removeItem(key);
+    return false;
+  }
+  if (nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+    storage.removeItem(key);
+    return false;
+  }
+  return true;
+}
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
@@ -1843,6 +1902,11 @@ export function AgentChatPane({
     const lane = lanes.find((entry) => entry.id === scopedLaneId);
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
+  const activeLaneWorktreePath = useMemo(() => {
+    if (!laneId) return projectRoot;
+    const lane = lanes.find((entry) => entry.id === laneId);
+    return lane?.worktreePath ?? projectRoot;
+  }, [laneId, lanes, projectRoot]);
 
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
@@ -1950,8 +2014,18 @@ export function AgentChatPane({
   }, [turnActiveBySession]);
   // Per-session memo of which sessions have already triggered the auto-open
   // affordance, so the panel doesn't keep re-opening every time a new subagent
-  // appears. We only slide it in on the *first* spawn within a session.
+  // appears or the user navigates back to the chat. We only slide it in on the
+  // *first* spawn within a session — after that, opening is up to the user.
+  // Persisted to localStorage so the suppression survives remounts.
   const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    try {
+      cleanupSubagentAutoOpenStorage(window.localStorage);
+    } catch {
+      /* localStorage unavailable; fall back to in-memory ref */
+    }
+  }, []);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1965,7 +2039,23 @@ export function AgentChatPane({
     if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
       return;
     }
+    try {
+      if (hasSubagentAutoOpenFired(window.localStorage, selectedSessionId)) {
+        subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+        return;
+      }
+    } catch {
+      /* localStorage unavailable; fall back to in-memory ref */
+    }
     subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+    try {
+      window.localStorage.setItem(
+        getSubagentAutoOpenStorageKey(selectedSessionId),
+        encodeSubagentAutoOpenRecord(Date.now()),
+      );
+    } catch {
+      /* best-effort persistence */
+    }
     if (!subagentPaneOpen) {
       setProofDrawerOpen(false);
       setIosSimulatorOpen(false);
@@ -3350,6 +3440,39 @@ export function AgentChatPane({
   }, [isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileVisible || !selectedSessionId) return undefined;
+    const shouldRecoverLiveTranscript =
+      turnActive
+      || selectedSession?.status === "active"
+      || selectedSessionAwaitingInput;
+    if (!shouldRecoverLiveTranscript) return undefined;
+
+    let disposed = false;
+    const offset = stableSessionDelayOffset(selectedSessionId);
+    const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
+    const intervalMs = isTileActive ? 2200 : 2800 + (offset % 700);
+    const recover = () => {
+      if (disposed) return;
+      void loadHistory(selectedSessionId, { force: true });
+    };
+    const initialTimer = window.setTimeout(recover, initialDelayMs);
+    const intervalTimer = window.setInterval(recover, intervalMs);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalTimer);
+    };
+  }, [
+    isTileActive,
+    isTileVisible,
+    loadHistory,
+    selectedSession?.status,
+    selectedSessionAwaitingInput,
+    selectedSessionId,
+    turnActive,
+  ]);
+
+  useEffect(() => {
     if (!isTileActive) {
       setComputerUseSnapshot(null);
       return;
@@ -3561,9 +3684,15 @@ export function AgentChatPane({
         });
       }
 
-      // "done" events must flush immediately so turnActive clears and the
-      // spinner stops.  Other events can use the debounced 16ms schedule.
-      if (envelope.event.type === "done") {
+      // User messages and lifecycle edges must flush immediately so the
+      // optimistic bubble cannot disappear behind the 16ms debounce and
+      // visible grid tiles show fresh activity without requiring focus.
+      if (
+        envelope.event.type === "done"
+        || envelope.event.type === "user_message"
+        || envelope.event.type === "status"
+        || (layoutVariant === "grid-tile" && isTileVisible)
+      ) {
         if (eventFlushTimerRef.current != null) {
           window.clearTimeout(eventFlushTimerRef.current);
           eventFlushTimerRef.current = null;
@@ -3632,7 +3761,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -4181,7 +4310,9 @@ export function AgentChatPane({
     snapshot: DraftLaunchSnapshot,
     targetLaneId: string,
   ): Promise<PreparedDraftLaunch> => {
-    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId);
+    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId, {
+      promptText: snapshot.text,
+    });
     const finalTextPrefix = [automaticMacosVmContextPrefix, snapshot.visualContextPrefix].filter(Boolean).join("\n");
     let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
     if (!finalText.trim().length && snapshot.contextAttachments.length) {
@@ -4871,7 +5002,9 @@ export function AgentChatPane({
     }
 
     try {
-      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId);
+      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId, {
+        promptText: text,
+      });
       let justCreatedSession = false;
       const finalTextPrefix = [automaticMacosVmContextPrefix, visualContextPrefix].filter(Boolean).join("\n");
       let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
@@ -4930,6 +5063,7 @@ export function AgentChatPane({
           model: runtimeModel,
           reasoningEffort,
           initialPrompt: cliPrompt,
+          laneWorktreePath: activeLaneWorktreePath,
         });
         await onLaunchCliSession({
           laneId,
@@ -5095,6 +5229,7 @@ export function AgentChatPane({
     forceDraft,
     embeddedWorkLayout,
     projectRoot,
+    activeLaneWorktreePath,
     navigate,
     onLaunchCliSession,
     buildNativeControlPayloadForSlot,
@@ -6726,13 +6861,6 @@ export function AgentChatPane({
                     ) : null}
                     {selectedTodoItems.length ? (
                       <ChatTasksPanel items={selectedTodoItems} />
-                    ) : null}
-                    {selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
-                      <ChatSubagentsPanel
-                        snapshots={selectedSubagentSnapshots}
-                        events={selectedEvents}
-                        onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
-                      />
                     ) : null}
                     {selectedTurnDiffSummaries.length && selectedSessionId ? (
                       <ChatFileChangesPanel

@@ -56,16 +56,17 @@ export function getAdeAgentSkillRootCandidates(options: {
   const roots: string[] = [];
   const seen = new Set<string>();
 
+  const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
+  if (cwd) {
+    // Prefer the active lane worktree before inherited app roots.
+    addPath(roots, seen, joinPath(cwd, "apps", "desktop", "resources", "agent-skills"));
+    addPath(roots, seen, joinPath(cwd, "resources", "agent-skills"));
+  }
+
   for (const root of splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV])) addPath(roots, seen, root);
 
   const resourcesPath = options.resourcesPath ?? (proc as (NodeJS.Process & { resourcesPath?: string }) | null)?.resourcesPath ?? null;
   if (resourcesPath) addPath(roots, seen, joinPath(resourcesPath, "agent-skills"));
-
-  const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
-  if (cwd) {
-    addPath(roots, seen, joinPath(cwd, "resources", "agent-skills"));
-    addPath(roots, seen, joinPath(cwd, "apps", "desktop", "resources", "agent-skills"));
-  }
 
   const dirname = options.dirname ?? (typeof __dirname !== "undefined" ? __dirname : null);
   if (dirname && options.includeDeepSourceFallbacks) {

@@ -171,6 +171,24 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
   // -----------------------------------------------------------------------
   it("launchPtySession: awaits refresh() before calling focusSession and openSessionTab", async () => {
     const callOrder: string[] = [];
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+    };
 
     const { result } = renderHook(() => useWorkSessions());
 
@@ -195,8 +213,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       callOrder.push("focusSession");
     });
     // openSessionTab calls setWorkViewState (via setProjectViewState)
-    setWorkViewStateSpy.mockImplementation(() => {
-      if (!callOrder.includes("openSessionTab")) {
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const beforeHasLaunchedTab = workState.openItemIds.includes("new-pty-session");
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+      if (!beforeHasLaunchedTab && workState.openItemIds.includes("new-pty-session")) {
         callOrder.push("openSessionTab");
       }
     });
@@ -237,6 +258,66 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(refreshDoneIdx).toBeLessThan(focusIdx);
     expect(refreshDoneIdx).toBeLessThan(openTabIdx);
+  });
+
+  it("launchPtySession keeps the new terminal visible when the forced refresh is stale", async () => {
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "cli" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "new-pty-session",
+      ptyId: "pty-1",
+      pid: 1234,
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+    listSessionsCachedMock.mockClear();
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Dina prompt",
+      });
+    });
+
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(result.current.sessions).toEqual([
+      expect.objectContaining({
+        id: "new-pty-session",
+        ptyId: "pty-1",
+        title: "Dina prompt",
+        toolType: "codex",
+        status: "running",
+      }),
+    ]);
+    expect(workState.openItemIds).toContain("new-pty-session");
+    expect(workState.activeItemId).toBe("new-pty-session");
+    expect(workState.selectedItemId).toBe("new-pty-session");
   });
 
   it("showDraftKind: clears the active session and re-enters chat draft mode without closing tabs", () => {

@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
-import { CreatePrModal } from "./CreatePrModal";
+import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
 import { useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab } from "./tabs/GitHubTab";
@@ -49,6 +49,59 @@ function writeLastWorkflowTab(projectRoot: string | null, tab: WorkflowCategory)
   }
 }
 
+function parseParams(search: string): URLSearchParams {
+  return new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+}
+
+function parseHashParams(hash: string): URLSearchParams {
+  const queryIndex = hash.indexOf("?");
+  if (queryIndex < 0) return new URLSearchParams();
+  return parseParams(hash.slice(queryIndex + 1));
+}
+
+function createInitialValuesFromParams(params: URLSearchParams): CreatePrModalInitialValues | null {
+  const create = params.get("create");
+  if (create !== "1" && create !== "true") return null;
+
+  const sourceLaneId = (params.get("sourceLaneId") ?? params.get("laneId") ?? "").trim();
+  const target = params.get("target") === "primary" ? "primary" : null;
+  return {
+    sourceLaneId: sourceLaneId || null,
+    target,
+  };
+}
+
+function readCreatePrRouteRequest(args: { search: string; hash: string }): {
+  key: string;
+  initialValues: CreatePrModalInitialValues;
+} | null {
+  const searchParams = parseParams(args.search);
+  const searchInitialValues = createInitialValuesFromParams(searchParams);
+  if (searchInitialValues) {
+    return {
+      key: searchParams.toString(),
+      initialValues: searchInitialValues,
+    };
+  }
+
+  const hashParams = parseHashParams(args.hash);
+  if (!args.hash.startsWith("#/prs")) return null;
+  const initialValues = createInitialValuesFromParams(hashParams);
+  if (!initialValues) return null;
+  return {
+    key: hashParams.toString(),
+    initialValues,
+  };
+}
+
+function createInitialValuesFromDialogProps(props?: Record<string, unknown>): CreatePrModalInitialValues | null {
+  if (!props) return null;
+  const sourceLaneId = typeof props.sourceLaneId === "string" ? props.sourceLaneId.trim() : "";
+  const target = props.target === "primary" ? "primary" : null;
+  if (!sourceLaneId && !target) return null;
+  return { sourceLaneId: sourceLaneId || null, target };
+}
+
 function PRsPageInner() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -73,6 +126,8 @@ function PRsPageInner() {
   } = usePrs();
 
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
+  const [createPrInitialValues, setCreatePrInitialValues] = React.useState<CreatePrModalInitialValues | null>(null);
+  const consumedCreateRouteKeyRef = React.useRef<string | null>(null);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
   const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
@@ -109,7 +164,10 @@ function PRsPageInner() {
     if (!targeted) setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
-  const openCreatePr = React.useCallback(() => setCreatePrOpen(true), []);
+  const openCreatePr = React.useCallback((props?: Record<string, unknown>) => {
+    setCreatePrInitialValues(createInitialValuesFromDialogProps(props));
+    setCreatePrOpen(true);
+  }, []);
   const closeCreatePr = React.useCallback(() => setCreatePrOpen(false), []);
 
   useDialogBus("prs.create", {
@@ -133,6 +191,10 @@ function PRsPageInner() {
           hash: window.location.hash,
         });
         const resolved = resolvePrsActiveTab(routeState);
+        const createRequest = readCreatePrRouteRequest({
+          search: location.search,
+          hash: window.location.hash,
+        });
         const routeRebaseItemId = resolveRouteRebaseSelection({
           rebaseNeeds,
           routeItemId: routeState.laneId,
@@ -152,6 +214,13 @@ function PRsPageInner() {
         }
         if (resolved.effectiveWorkflow === "rebase") {
           setSelectedRebaseItemId(routeRebaseItemId);
+        }
+        if (createRequest && consumedCreateRouteKeyRef.current !== createRequest.key) {
+          consumedCreateRouteKeyRef.current = createRequest.key;
+          setCreatePrInitialValues(createRequest.initialValues);
+          setCreatePrOpen(true);
+        } else if (!createRequest) {
+          consumedCreateRouteKeyRef.current = null;
         }
       } catch {
         // Ignore malformed URLs and fall back to current state.
@@ -202,6 +271,7 @@ function PRsPageInner() {
 
   React.useEffect(() => {
     if (location.pathname !== "/prs") return;
+    if (readCreatePrRouteRequest({ search: location.search, hash: window.location.hash })) return;
     writeStoredPrsRoute(`${location.pathname}${location.search}`, projectRoot);
   }, [location.pathname, location.search, projectRoot]);
 
@@ -353,7 +423,7 @@ function PRsPageInner() {
           <button
             type="button"
             data-tour="prs.createBtn"
-            onClick={() => setCreatePrOpen(true)}
+            onClick={() => openCreatePr()}
             className="flex items-center gap-2 active:scale-[0.97]"
             style={{
               height: 34,
@@ -415,6 +485,7 @@ function PRsPageInner() {
         open={createPrOpen}
         onOpenChange={setCreatePrOpen}
         onCreated={handlePrCreated}
+        initialValues={createPrInitialValues}
       />
     </div>
   );

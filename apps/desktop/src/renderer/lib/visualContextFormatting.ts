@@ -298,35 +298,38 @@ function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: s
   const vm = status.laneVm;
   const state = vm?.state ?? "not_created";
   const guestPath = vm?.guestSharedPath ?? "/Volumes/My Shared Files";
-  const hostPath = vm?.laneRoot ?? "current ADE lane worktree";
   const lines = [
     "ADE macOS VM capability for this lane (automatic context).",
-    "Use this capability only when the user asks to use the ADE VM, needs isolated macOS GUI validation, or asks for VM-backed computer use. Query fresh state before acting; do not assume this snapshot is current.",
     `- Lane id: ${laneId}`,
     `- Provider: ${status.activeProvider.kind}${status.activeProvider.version ? ` ${status.activeProvider.version}` : ""}`,
     vm
-      ? `- Current lane VM: ${vm.name} (${state})`
-      : "- Current lane VM: not provisioned yet",
-    `- Host lane path: ${hostPath}`,
+      ? `- VM: ${vm.name} (${state})`
+      : "- VM: not provisioned yet",
     `- Guest lane path: ${guestPath}`,
-    vm?.sharedDirectory ? `- Shared directory mounted into the VM: ${vm.sharedDirectory}` : null,
     vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
-    vm?.vncUrl ? `- Sanitized VNC URL: ${vm.vncUrl}` : "- Sanitized VNC URL: available after the VM is running",
-    "- ADE RPC tools: macos_vm_status, macos_vm_start, macos_vm_focus, macos_vm_screenshot, macos_vm_select, macos_vm_click, macos_vm_type.",
-    `- ADE CLI examples: ade macos-vm status --lane ${laneId} --text; ade macos-vm start --lane ${laneId} --create --no-display; ade macos-vm screenshot --lane ${laneId} --text.`,
-    "- GUI control goes through ADE's direct headless VNC bridge when available, then falls back to a visible VM viewer. Do not target the host ADE window when the task is to control the lane VM.",
     state === "running"
-      ? "- The VM is currently running; prefer macos_vm_screenshot first, then click/type/select against the VM."
-      : "- The VM is not running; start it only if the user asked for VM use or the task clearly needs isolated macOS GUI validation.",
-    vm?.metadata?.shareMode === "sanitized-mirror"
-      ? "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git."
-      : "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
+      ? "- VM is running; use macos_vm_screenshot before VM clicks/types."
+      : "- Do not start the VM unless the user asked for ADE VM use or isolated macOS GUI validation.",
+    "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
     "",
   ];
   return lines.filter((line): line is string => Boolean(line)).join("\n");
 }
 
-export async function buildAutomaticMacosVmContextForPrompt(laneId: string): Promise<string> {
+export function shouldAttachAutomaticMacosVmContext(promptText: string): boolean {
+  const text = promptText.toLowerCase();
+  return /\b(ade\s+)?mac\s*os\s+vm\b/.test(text)
+    || /\bade\s+vm\b/.test(text)
+    || /\bisolated\s+mac(?:os)?\s+gui\b/.test(text)
+    || /\blane[-\s]?tied\s+mac(?:os)?\s+vm\b/.test(text)
+    || /\blume\b/.test(text);
+}
+
+export async function buildAutomaticMacosVmContextForPrompt(
+  laneId: string,
+  options: { promptText?: string; force?: boolean } = {},
+): Promise<string> {
+  if (!options.force && !shouldAttachAutomaticMacosVmContext(options.promptText ?? "")) return "";
   const api = window.ade?.macosVm;
   if (!api?.getStatus) return "";
   try {

@@ -2532,8 +2532,6 @@ function renderEvent(
       );
     }
     const inferredSeverity = event.severity
-      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed warning/i.test(event.message) ? "warning" as const : undefined)
-      ?? (event.noticeKind === "rate_limit" && /^Claude rate limit allowed/i.test(event.message) ? "info" as const : undefined)
       ?? (
         event.noticeKind === "rate_limit"
           || event.noticeKind === "error"
@@ -2560,6 +2558,9 @@ function renderEvent(
     const style = kindStyles[styleKey] ?? kindStyles.info!;
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
+    const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
+      ? "usage"
+      : event.noticeKind.replace("_", " ");
 
     if (hasDetail && event.noticeKind === "memory" && event.detail) {
       return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
@@ -2579,7 +2580,7 @@ function renderEvent(
           style.text,
         )}>
           <NoticeIcon size={11} weight="bold" />
-          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
           <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
           {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
         </div>
@@ -2594,7 +2595,7 @@ function renderEvent(
             <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", style.border, style.bg, style.text)}>
-                {event.noticeKind.replace("_", " ")}
+                {chipLabel}
               </span>
               <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55">{event.message}</span>
             </div>
@@ -2612,7 +2613,7 @@ function renderEvent(
         style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{event.noticeKind.replace("_", " ")}</span>
+        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]">{chipLabel}</span>
         <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
       </div>
     );
@@ -3700,6 +3701,7 @@ export function AgentChatMessageList({
   // coalesce every source (ResizeObserver, stick-flip effect, jump button)
   // into at most one scrollTop assignment per frame.
   const scrollRafRef = useRef<number | null>(null);
+  const scrollFollowFramesRef = useRef(0);
   // Each programmatic scroll write increments this counter; the matching
   // scroll event then decrements it and skips stick-state updates. Keeps
   // user gestures as the only thing that toggles auto-follow off.
@@ -3836,26 +3838,37 @@ export function AgentChatMessageList({
   // - A ResizeObserver on the content wrapper picks up every size change —
   //   new rows appearing *and* streaming tokens extending existing rows —
   //   without the old MutationObserver's characterData firehose.
-  const scrollToBottomSoon = useCallback(() => {
+  const scrollToBottomSoon = useCallback((followUpFrames = 1) => {
+    scrollFollowFramesRef.current = Math.max(scrollFollowFramesRef.current, followUpFrames);
     if (scrollRafRef.current !== null) return;
-    scrollRafRef.current = requestAnimationFrame(() => {
+    const run = () => {
       scrollRafRef.current = null;
       const el = scrollRef.current;
-      if (!el || !stickToBottomRef.current) return;
-      const target = el.scrollHeight - el.clientHeight;
-      if (target <= 0) return;
-      const before = el.scrollTop;
-      if (Math.abs(before - target) < 1) return;
-      el.scrollTop = target;
-      // Only register a pending programmatic scroll event if the assignment
-      // actually moved the element. Otherwise (clamped to the same value,
-      // hidden element, etc.) no scroll event will fire and the counter
-      // would stay positive forever, misclassifying the next real user
-      // scroll as programmatic.
-      if (el.scrollTop !== before) {
-        programmaticScrollCountRef.current += 1;
+      if (!el || !stickToBottomRef.current) {
+        scrollFollowFramesRef.current = 0;
+        return;
       }
-    });
+      const target = Math.max(0, el.scrollHeight - el.clientHeight);
+      const before = el.scrollTop;
+      if (Math.abs(before - target) >= 1) {
+        el.scrollTop = target;
+        setScrollTop(el.scrollTop);
+        // Only register a pending programmatic scroll event if the assignment
+        // actually moved the element. Otherwise (clamped to the same value,
+        // hidden element, etc.) no scroll event will fire and the counter
+        // would stay positive forever, misclassifying the next real user
+        // scroll as programmatic.
+        if (el.scrollTop !== before) {
+          programmaticScrollCountRef.current += 1;
+        }
+      }
+      const remaining = scrollFollowFramesRef.current;
+      if (remaining > 0) {
+        scrollFollowFramesRef.current = remaining - 1;
+        scrollRafRef.current = requestAnimationFrame(run);
+      }
+    };
+    scrollRafRef.current = requestAnimationFrame(run);
   }, []);
 
   useEffect(() => () => {
@@ -3863,6 +3876,7 @@ export function AgentChatMessageList({
       cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
     }
+    scrollFollowFramesRef.current = 0;
   }, []);
 
   // When the user re-enters the sticky zone (or on first mount), snap to bottom.
@@ -3883,7 +3897,7 @@ export function AgentChatMessageList({
       return;
     }
     const ro = new ResizeObserver(() => {
-      if (stickToBottomRef.current) scrollToBottomSoon();
+      if (stickToBottomRef.current) scrollToBottomSoon(2);
     });
     ro.observe(wrapper);
     return () => ro.disconnect();
@@ -3944,14 +3958,18 @@ export function AgentChatMessageList({
       }
       // Debounce measurement tick updates to batch rapid height changes
       // into a single re-render instead of one per row.
-      if (!measureFlushTimer.current) {
-        measureFlushTimer.current = setTimeout(() => {
-          measureFlushTimer.current = null;
-          setMeasurementTick((value) => value + 1);
-        }, 80);
+      const isFollowingBottom = stickToBottomRef.current;
+      if (measureFlushTimer.current) {
+        if (!isFollowingBottom) return;
+        clearTimeout(measureFlushTimer.current);
       }
+      measureFlushTimer.current = setTimeout(() => {
+        measureFlushTimer.current = null;
+        setMeasurementTick((value) => value + 1);
+        if (isFollowingBottom) scrollToBottomSoon(2);
+      }, isFollowingBottom ? 16 : 80);
     }
-  }, [rowHeight, shouldVirtualize, timelineRowGapPx]);
+  }, [rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
 
   // Compute the visible window of rows when virtualization is active.
   // measurementTick forces recomputation when row heights are measured so
@@ -3971,6 +3989,10 @@ export function AgentChatMessageList({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
+
+  useLayoutEffect(() => {
+    if (stickToBottomRef.current) scrollToBottomSoon(2);
+  }, [containerHeight, groupedRows.length, measurementTick, scrollToBottomSoon, shouldVirtualize, totalHeight]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;

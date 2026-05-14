@@ -57,6 +57,7 @@ import { cn } from "../ui/cn";
 import { launchProfileForTerminalSession, type LaunchProfile } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
+import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
   return sessionStatusBucket({
@@ -1406,6 +1407,7 @@ export function WorkViewArea({
   };
   const workEmbeddedChrome = useFloatingPaneEmbeddedChrome();
   const glassHeaderDragProps = workEmbeddedChrome?.dragHandleProps ?? {};
+  const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -1480,6 +1482,7 @@ export function WorkViewArea({
               laneColor={laneAccentColor}
               maxWidth={120}
               onClick={gotoLane}
+              onContextMenu={(e) => triggerLaneContextMenu(session.laneId, e)}
             />
             <span
               title={dot.label}
@@ -1564,6 +1567,7 @@ export function WorkViewArea({
     onSelectItem,
     onStopRunningSession,
     pageActive,
+    triggerLaneContextMenu,
     visibleSessions,
   ]);
   const resolvedTabGroups = tabGroups ?? [];
@@ -1674,6 +1678,7 @@ export function WorkViewArea({
             className="ade-work-grid-tiling flex-1 min-h-0 px-2 pb-2"
           />
         )}
+        {laneContextMenuPortal}
       </div>
     );
   }
@@ -1798,6 +1803,7 @@ export function WorkViewArea({
         </div>
 
         {tabBody}
+        {laneContextMenuPortal}
       </div>
     );
   }
@@ -1858,6 +1864,10 @@ export function WorkViewArea({
                       )}
                       style={bandCssVars}
                       onClick={() => toggleTabGroupCollapsed(group.id)}
+                      onContextMenu={(e) => {
+                        if (!laneId) return;
+                        triggerLaneContextMenu(laneId, e);
+                      }}
                     >
                       <GroupIcon size={16} weight="regular" />
                       <span className="ade-work-lane-band-collapsed-label">
@@ -1898,6 +1908,10 @@ export function WorkViewArea({
                           e.preventDefault();
                           toggleTabGroupCollapsed(group.id);
                         }
+                      }}
+                      onContextMenu={(e) => {
+                        if (!laneId) return;
+                        triggerLaneContextMenu(laneId, e);
                       }}
                     >
                       <span className="max-w-[220px] truncate">
@@ -1970,6 +1984,7 @@ export function WorkViewArea({
       </div>
 
       {tabBody}
+      {laneContextMenuPortal}
     </div>
   );
 }

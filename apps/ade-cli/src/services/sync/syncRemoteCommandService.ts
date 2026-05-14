@@ -1440,6 +1440,17 @@ async function resolvePrimaryLaneIdOnlyForSync(args: SyncRemoteCommandServiceArg
   return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
+function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, laneId: string): string | null {
+  try {
+    const lane = args.laneService.getLaneBaseAndBranch(laneId);
+    const trimmed = typeof lane?.worktreePath === "string" ? lane.worktreePath.trim() : "";
+    if (trimmed.length) return trimmed;
+  } catch {
+    // Ignore and let the caller fall back to process/app skill roots.
+  }
+  return null;
+}
+
 async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
   const lanes = await args.laneService.list({ includeStatus: false });
@@ -1792,6 +1803,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         permissionMode,
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
+        laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
       });
     }
 

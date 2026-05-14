@@ -48,6 +48,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/pr", description: "Show pull request state", placement: "right" },
   { name: "/pr open", description: "Create or open a PR for the active lane", placement: "right" },
   { name: "/pr review", description: "Show PR reviews", placement: "right" },
+  { name: "/pr comments", description: "Show actionable PR comments", placement: "right" },
   { name: "/pr checks", description: "Show PR checks", placement: "right" },
   { name: "/linear", description: "Run Linear workflow, route, sync, or ingress commands", placement: "right", argumentHint: "<group>" },
   { name: "/linear list", description: "List Linear work", placement: "right" },

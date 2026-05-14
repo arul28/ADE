@@ -108,22 +108,24 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   return "claude";
 }
 
-function workTabCliPreamblePrompt(): string {
+function workTabCliPreamblePrompt(skillRoots: readonly string[]): string {
   return [
     "ADE session guidance. Treat this as operating guidance for the CLI session, keep it in mind for future user messages, and wait for the user's next instruction before taking action.",
     "",
-    buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt()),
+    buildAdeCliInlineGuidance(skillRoots),
   ].join("\n");
 }
 
-function adeAgentSkillEnv(): Record<string, string> | null {
-  const roots = getAdeAgentSkillRootsForPrompt();
-  const value = joinAdeAgentSkillRoots(roots);
+function adeAgentSkillEnv(skillRoots: readonly string[]): Record<string, string> | null {
+  const value = joinAdeAgentSkillRoots(skillRoots);
   return value ? { [ADE_AGENT_SKILLS_DIRS_ENV]: value } : null;
 }
 
-function withAdeAgentSkillEnv(env?: Record<string, string>): Record<string, string> | undefined {
-  const skillsEnv = adeAgentSkillEnv();
+function withAdeAgentSkillEnv(
+  env: Record<string, string> | undefined,
+  skillRoots: readonly string[],
+): Record<string, string> | undefined {
+  const skillsEnv = adeAgentSkillEnv(skillRoots);
   if (!skillsEnv) return env;
   return { ...skillsEnv, ...(env ?? {}) };
 }
@@ -139,6 +141,8 @@ export function buildTrackedCliStartupCommand(args: {
   reasoningEffort?: string | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
+  /** Active lane worktree used to make ADE skill roots lane-aware. */
+  laneWorktreePath?: string | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -154,10 +158,13 @@ export function buildTrackedCliLaunchCommand(args: {
   reasoningEffort?: string | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
+  /** Active lane worktree used to make ADE skill roots lane-aware. */
+  laneWorktreePath?: string | null;
 }): TrackedCliLaunchCommand {
   validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
-  const agentSkillEnv = withAdeAgentSkillEnv();
+  const skillRoots = getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath ?? undefined });
+  const agentSkillEnv = adeAgentSkillEnv(skillRoots);
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -173,7 +180,7 @@ export function buildTrackedCliLaunchCommand(args: {
     if (reasoningEffort) {
       commandArgs.push("--effort", reasoningEffort);
     }
-    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt()));
+    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(skillRoots));
     commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
     if (initialPrompt) {
       commandArgs.push(initialPrompt);
@@ -192,7 +199,7 @@ export function buildTrackedCliLaunchCommand(args: {
       ...modelToCliFlag(args.model),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
-      workTabCliPrompt(initialPrompt),
+      workTabCliPrompt(initialPrompt, skillRoots),
     ];
     return {
       command: "codex",
@@ -203,7 +210,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "cursor") {
-    const prompt = workTabCliPrompt(initialPrompt);
+    const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     const commandArgs = [...permissionModeToCursorFlags(args.permissionMode), ...modelToCliFlag(args.model), prompt];
     const startupCommand = buildCursorPrecreatedChatCommand({
       permissionMode: args.permissionMode,
@@ -218,7 +225,7 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "droid") {
-    const prompt = workTabCliPrompt(initialPrompt);
+    const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     return {
       command: "droid",
       args: ["exec", ...modelToCliFlag(args.model), ...droidReasoningEffortFlags(args.reasoningEffort), ...permissionModeToDroidExecFlags(args.permissionMode), prompt],
@@ -235,9 +242,9 @@ export function buildTrackedCliLaunchCommand(args: {
   const opencode = buildOpenCodeCommandParts({
     permissionMode: args.permissionMode,
     model: args.model,
-    prompt: workTabCliPrompt(initialPrompt),
+    prompt: workTabCliPrompt(initialPrompt, skillRoots),
   });
-  const opencodeEnv = withAdeAgentSkillEnv(opencode.env);
+  const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
   return {
     command: "opencode",
     args: opencode.args,
@@ -271,8 +278,8 @@ function droidReasoningEffortFlags(reasoningEffort: string | null | undefined): 
   return effort ? ["--reasoning-effort", effort] : [];
 }
 
-function workTabCliPrompt(initialPrompt: string | null): string {
-  const preamble = workTabCliPreamblePrompt();
+function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
+  const preamble = workTabCliPreamblePrompt(skillRoots);
   if (!initialPrompt) return preamble;
   return [
     preamble,

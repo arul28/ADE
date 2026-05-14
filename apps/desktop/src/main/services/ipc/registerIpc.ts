@@ -3398,6 +3398,7 @@ export function registerIpc({
   };
 
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
   /**
    * Read an allow-listed image file from disk after a stat-based size check,
@@ -3419,6 +3420,26 @@ export function registerIpc({
       throw new Error("Path is not an image.");
     }
     return { data, mimeType };
+  };
+
+  const saveAgentChatTempAttachmentBuffer = async (
+    content: Buffer,
+    filename: string,
+  ): Promise<{ path: string }> => {
+    if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
+      throw new Error("Temporary attachments must be 10 MB or smaller.");
+    }
+    const ctx = getCtx();
+    // Save within the project's .ade directory so CLI subprocesses have
+    // filesystem access. Fall back to system temp if no project is open.
+    const baseDir = ctx.project?.rootPath
+      ? path.join(ctx.project.rootPath, ".ade", "attachments")
+      : path.join(app.getPath("temp"), "ade-attachments");
+    await fs.promises.mkdir(baseDir, { recursive: true });
+    const ext = path.extname(filename) || ".png";
+    const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
+    await fs.promises.writeFile(destPath, content);
+    return { path: destPath };
   };
 
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
@@ -3476,18 +3497,34 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appReadClipboardImage, async (): Promise<{ data: string; filename: string; mimeType: string } | null> => {
-    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
     const png = image.toPNG();
     if (!png.byteLength) return null;
-    if (png.byteLength > MAX_ATTACHMENT_BYTES) {
+    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
       throw new Error("Clipboard image must be 10 MB or smaller.");
     }
     return {
       data: png.toString("base64"),
       filename: "clipboard.png",
       mimeType: "image/png",
+    };
+  });
+
+  ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return null;
+    const png = image.toPNG();
+    if (!png.byteLength) return null;
+    if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
+      throw new Error("Clipboard image must be 10 MB or smaller.");
+    }
+    const saved = await saveAgentChatTempAttachmentBuffer(png, "clipboard.png");
+    const previewImage = image.resize({ width: 96, height: 96, quality: "best" });
+    return {
+      path: saved.path,
+      mimeType: "image/png",
+      previewDataUrl: previewImage.isEmpty() ? null : previewImage.toDataURL(),
     };
   });
 
@@ -6670,26 +6707,12 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
-    const ctx = getCtx();
-    const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-    const maxEncodedLength = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4;
+    const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
     if (typeof arg.data === "string" && arg.data.length > maxEncodedLength) {
       throw new Error("Temporary attachments must be 10 MB or smaller.");
     }
     const content = Buffer.from(arg.data, "base64");
-    if (content.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error("Temporary attachments must be 10 MB or smaller.");
-    }
-    // Save within the project's .ade directory so CLI subprocesses (Claude Code)
-    // have filesystem access. Fall back to system temp if no project is open.
-    const baseDir = ctx.project?.rootPath
-      ? path.join(ctx.project.rootPath, ".ade", "attachments")
-      : path.join(app.getPath("temp"), "ade-attachments");
-    fs.mkdirSync(baseDir, { recursive: true });
-    const ext = path.extname(arg.filename) || ".png";
-    const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-    fs.writeFileSync(destPath, content);
-    return { path: destPath };
+    return saveAgentChatTempAttachmentBuffer(content, arg.filename);
   });
 
   ipcMain.handle(IPC.agentChatGetTurnFileDiff, async (_event, arg: AgentChatGetTurnFileDiffArgs) => {
@@ -8112,12 +8135,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateFromLane, async (_event, arg: CreatePrFromLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.createFromLane(arg);
+    const result = await ctx.prService.createFromLane(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLinkToLane, async (_event, arg: LinkPrToLaneArgs): Promise<PrSummary> => {
     const ctx = getCtx();
-    return await ctx.prService.linkToLane(arg);
+    const result = await ctx.prService.linkToLane(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   const ensurePrPolling = () => {
@@ -8200,11 +8227,14 @@ export function registerIpc({
   ipcMain.handle(IPC.prsUpdateDescription, async (_event, arg: UpdatePrDescriptionArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.prService.updateDescription(arg);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsDelete, async (_event, arg: DeletePrArgs): Promise<DeletePrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.delete(arg);
+    const result = await ctx.prService.delete(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsDraftDescription, async (_event, arg: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
@@ -8214,17 +8244,22 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLand, async (_event, arg: LandPrArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    return await ctx.prService.land(arg);
+    const result = await ctx.prService.land(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    return await ctx.prService.landStack(arg);
+    const result = await ctx.prService.landStack(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
     const ctx = getCtx();
-    return await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
+    await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsOpenInGitHub, async (_event, arg: { prId: string }): Promise<void> => {
@@ -8234,12 +8269,16 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.createIntegrationPr(arg);
+    const result = await ctx.prService.createIntegrationPr(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
     const ctx = getCtx();
-    return await ctx.prService.landStackEnhanced(arg);
+    const result = await ctx.prService.landStackEnhanced(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
@@ -8269,14 +8308,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();
-    return await ctx.prService.createQueuePrs(arg);
+    const result = await ctx.prService.createQueuePrs(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> => getCtx().prService.simulateIntegration(arg));
 
   ipcMain.handle(IPC.prsCommitIntegration, async (_event, arg: CommitIntegrationArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = getCtx();
-    return await ctx.prService.commitIntegration(arg);
+    const result = await ctx.prService.commitIntegration(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsListProposals, async (): Promise<IntegrationProposal[]> =>
@@ -8305,7 +8348,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
     const ctx = getCtx();
-    return await ctx.prService.landQueueNext(arg);
+    const result = await ctx.prService.landQueueNext(arg);
+    ctx.prPollingService.poke();
+    return result;
   });
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
@@ -8323,7 +8368,9 @@ export function registerIpc({
   ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
 
   ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
-    await getCtx().prService.reorderQueuePrs(arg);
+    const ctx = getCtx();
+    await ctx.prService.reorderQueuePrs(arg);
+    ctx.prPollingService.poke();
   });
 
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));

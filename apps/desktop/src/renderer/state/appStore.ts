@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { KeybindingsSnapshot, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
@@ -555,6 +555,7 @@ export type AppState = {
   laneSnapshots: LaneListSnapshot[];
   lanes: LaneSummary[];
   lanesLoading: boolean;
+  laneDeleteProgressByLaneId: Record<string, LaneDeleteProgress>;
   selectedLaneId: string | null;
   focusedSessionId: string | null;
   projectRevision: number;
@@ -589,6 +590,11 @@ export type AppState = {
   setShowWelcome: (show: boolean) => void;
   clearProjectTransitionError: () => void;
   setLanes: (lanes: LaneSummary[]) => void;
+  setLaneDeleteProgressByLaneId: (
+    next:
+      | Record<string, LaneDeleteProgress>
+      | ((prev: Record<string, LaneDeleteProgress>) => Record<string, LaneDeleteProgress>)
+  ) => void;
   selectLane: (laneId: string | null) => void;
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
@@ -755,6 +761,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   laneSnapshots: [],
   lanes: [],
   lanesLoading: false,
+  laneDeleteProgressByLaneId: {},
   selectedLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
@@ -798,6 +805,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           : null,
         projectRevision:
           previousProjectRoot !== nextProjectRoot ? prev.projectRevision + 1 : prev.projectRevision,
+        laneDeleteProgressByLaneId:
+          previousProjectRoot !== nextProjectRoot ? {} : prev.laneDeleteProgressByLaneId,
       };
     }),
   setProjectBinding: (projectBinding) => set({ projectBinding }),
@@ -805,6 +814,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
+  setLaneDeleteProgressByLaneId: (next) =>
+    set((prev) => ({
+      laneDeleteProgressByLaneId:
+        typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next,
+    })),
   selectLane: (laneId) => set({ selectedLaneId: laneId }),
   setLaneInspectorTab: (laneId, tab) =>
     set((prev) => ({
@@ -1177,6 +1191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         lanesLoading: true,
+        laneDeleteProgressByLaneId: {},
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1229,6 +1244,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         lanesLoading: true,
+        laneDeleteProgressByLaneId: {},
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1316,6 +1332,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         lanesLoading: true,
+        laneDeleteProgressByLaneId: {},
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
@@ -1359,6 +1376,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneSnapshots: [],
         lanes: [],
         lanesLoading: false,
+        laneDeleteProgressByLaneId: {},
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},

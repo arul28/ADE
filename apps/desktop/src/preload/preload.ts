@@ -2549,6 +2549,11 @@ contextBridge.exposeInMainWorld("ade", {
       filename: string;
       mimeType: string;
     } | null> => ipcRenderer.invoke(IPC.appReadClipboardImage),
+    saveClipboardImageAttachment: async (): Promise<{
+      path: string;
+      mimeType: string;
+      previewDataUrl: string | null;
+    } | null> => ipcRenderer.invoke(IPC.appSaveClipboardImageAttachment),
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
       imageDataUrlCache.get(path),
     writeClipboardImage: async (path: string): Promise<void> =>

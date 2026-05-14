@@ -12,6 +12,7 @@ import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { isChatToolType } from "../../lib/sessions";
+import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
 const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; description: string }> = [
   { value: "all", label: "All", description: "Show sessions in every state." },
@@ -46,6 +47,7 @@ function StickyGroupHeader({
   count,
   collapsed,
   onToggleCollapsed,
+  onContextMenu,
   accentColor,
   children,
   subLabel,
@@ -57,6 +59,7 @@ function StickyGroupHeader({
   count: number;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  onContextMenu?: (e: React.MouseEvent<HTMLButtonElement>) => void;
   accentColor?: string | null;
   children: React.ReactNode;
   /** Branch label shown on the right for `variant="lane"` (e.g. from `branchNameFromRef`). */
@@ -83,6 +86,7 @@ function StickyGroupHeader({
           borderBottom: isLane ? undefined : "1px solid rgba(255, 255, 255, 0.04)",
         }}
         onClick={onToggleCollapsed}
+        onContextMenu={onContextMenu}
         data-section-id={sectionId}
       >
         {isLane ? (
@@ -211,6 +215,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 }) {
   const navigate = useNavigate();
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
+  const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
 
   const hasAnySessions =
     runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length > 0;
@@ -495,6 +500,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             collapsed={collapsed}
             accentColor={laneAccent}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
+            onContextMenu={(e) => triggerLaneContextMenu(lane.id, e)}
           >
             {renderCards(list)}
           </StickyGroupHeader>
@@ -778,6 +784,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           </button>
         </SmartTooltip>
       </div>
+      {laneContextMenuPortal}
     </div>
   );
 });

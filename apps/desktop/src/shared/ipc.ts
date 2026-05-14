@@ -15,6 +15,7 @@ export const IPC = {
   appWriteClipboardText: "ade.app.writeClipboardText",
   appHasClipboardImage: "ade.app.hasClipboardImage",
   appReadClipboardImage: "ade.app.readClipboardImage",
+  appSaveClipboardImageAttachment: "ade.app.saveClipboardImageAttachment",
   appGetImageDataUrl: "ade.app.getImageDataUrl",
   appWriteClipboardImage: "ade.app.writeClipboardImage",
   appOpenPathInEditor: "ade.app.openPathInEditor",

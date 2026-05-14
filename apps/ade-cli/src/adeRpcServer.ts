@@ -31,8 +31,16 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
-import { ADE_CLI_INLINE_GUIDANCE } from "../../desktop/src/shared/adeCliGuidance";
-import { getPrIssueResolutionAvailability } from "../../desktop/src/shared/prIssueResolution";
+import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  getAdeAgentSkillRootsForPrompt,
+  joinAdeAgentSkillRoots,
+} from "../../desktop/src/shared/agentSkillRoots";
+import {
+  getPrIssueResolutionAvailability,
+  isActionablePrIssueComment,
+} from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
   type ComputerUseArtifactOwner,
@@ -2694,11 +2702,6 @@ function requirePrService(runtime: AdeRuntime): NonNullable<AdeRuntime["prServic
   return runtime.prService;
 }
 
-function isBotAuthor(author: string): boolean {
-  const normalized = author.trim().toLowerCase();
-  return normalized.includes("[bot]") || normalized.includes("github-actions");
-}
-
 function summarizePrChecks(checks: PrCheck[]): { overall: "failing" | "pending" | "passing"; counts: { passing: number; failing: number; pending: number; total: number } } {
   const passing = checks.filter((check) => check.conclusion === "success").length;
   const failing = checks.filter((check) => check.conclusion === "failure").length;
@@ -2722,12 +2725,7 @@ function summarizePrReviewComments(
   checks: PrCheck[],
   reviewThreads: PrReviewThread[],
 ) {
-  // Issue comments: still skip bot chatter (e.g. CI status echoes). Inline review-thread
-  // comments are NOT filtered here — they come from review bots like Greptile/CodeRabbit,
-  // which are exactly the actionable signal the agent needs to address.
-  const actionableIssueComments = comments.filter(
-    (comment) => Boolean(comment.body?.trim()) && comment.source === "issue" && !isBotAuthor(comment.author),
-  );
+  const actionableIssueComments = comments.filter(isActionablePrIssueComment);
   const unresolvedThreads = reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated);
   const actionableThreadCommentCount = unresolvedThreads.reduce((acc, thread) => acc + thread.comments.length, 0);
   const pendingReviews = reviews.filter((review) => review.state === "changes_requested" || review.state === "commented");
@@ -2782,7 +2780,7 @@ function summarizePrIssueInventory(args: {
   reviewThreads: PrReviewThread[];
   comments: PrComment[];
 }) {
-  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads);
+  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads, args.comments);
   const failingRuns = args.actionRuns
     .filter((run) => run.conclusion === "failure" || run.conclusion === "timed_out" || run.conclusion === "action_required")
     .map((run) => ({
@@ -2824,7 +2822,7 @@ function summarizePrIssueInventory(args: {
         })),
       })),
     issueComments: args.comments
-      .filter((comment) => comment.source === "issue")
+      .filter(isActionablePrIssueComment)
       .map((comment) => ({
         id: comment.id,
         author: comment.author,
@@ -2986,6 +2984,10 @@ function resolveLaneWorktreePath(runtime: AdeRuntime, laneId: string | null | un
     // Ignore lane lookup failures and use the runtime fallback.
   }
   return null;
+}
+
+function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
+  return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
 }
 
 function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext): string | null {
@@ -5113,10 +5115,11 @@ async function runTool(args: {
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
     const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
 
     const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
       if (!isCliProvider(provider)) return {};
-      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model });
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model, laneWorktreePath });
     })();
 
     const created = await ptyService.create({
@@ -6819,7 +6822,7 @@ async function runTool(args: {
     });
 
     const promptSegments: string[] = [];
-    promptSegments.push(ADE_CLI_INLINE_GUIDANCE);
+    promptSegments.push(buildAdeInlineGuidanceForLane(laneWorktreePath));
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
         `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`
@@ -6888,6 +6891,8 @@ async function runTool(args: {
     // command remains a display/resume preview only; the actual launch uses
     // command/args/env so it works on Windows without POSIX inline assignment.
     const workerEnv: Record<string, string> = {};
+    const skillRootsEnv = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+    if (skillRootsEnv) workerEnv[ADE_AGENT_SKILLS_DIRS_ENV] = skillRootsEnv;
     const envPrefixParts: string[] = [];
     const addWorkerEnv = (key: string, value: string | null | undefined) => {
       if (!value) return;

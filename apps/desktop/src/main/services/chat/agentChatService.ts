@@ -215,7 +215,8 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
+import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -459,6 +460,8 @@ type CodexRuntime = {
   manualCompactionItemIds: Set<string>;
   manualCompactionPending: boolean;
   webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
+  planningApprovalGuardByTurnId: Map<string, boolean>;
+  pendingTurnPlanningApprovalGuarded: boolean | null;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -541,6 +544,8 @@ type ClaudeRuntime = {
   pauseIdleWatchdog?: (() => void) | null;
   /** Resume the active-turn idle watchdog after the blocking wait finishes. */
   resumeIdleWatchdog?: (() => void) | null;
+  /** Set after we've emitted the once-per-session "Approaching plan limit" notice. */
+  rateLimitWarningEmitted: boolean;
 };
 
 const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
@@ -925,6 +930,7 @@ function rememberTerminalCodexTurn(
   const normalizedTurnId = turnId?.trim() || null;
   if (!normalizedTurnId) return;
   rememberBoundedId(runtime.terminalTurnIds, normalizedTurnId);
+  runtime.planningApprovalGuardByTurnId.delete(normalizedTurnId);
   if (managed) rememberBoundedId(managed.codexTerminalTurnIds, normalizedTurnId);
 }
 
@@ -1447,6 +1453,8 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  /** Set after we've emitted the once-per-session Claude plan-limit notice. */
+  claudeRateLimitWarningEmitted: boolean;
   codexTerminalTurnIds: Set<string>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
@@ -1591,6 +1599,7 @@ const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 40_000;
 const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
 const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
+  "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
   "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git.",
   "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
 ] as const;
@@ -2369,7 +2378,33 @@ function mapApprovalDecisionForCodex(decision: AgentChatApprovalDecision): "acce
   return "decline";
 }
 
-function isPlanningApprovalGuarded(managed: ManagedChatSession): boolean {
+function rememberCodexPlanningApprovalGuard(
+  runtime: CodexRuntime,
+  turnId: string | null | undefined,
+  guarded: boolean | null | undefined,
+): void {
+  const normalizedTurnId = turnId?.trim() || null;
+  if (!normalizedTurnId) return;
+  runtime.planningApprovalGuardByTurnId.set(normalizedTurnId, guarded === true);
+  if (runtime.planningApprovalGuardByTurnId.size > MAX_SESSION_MAP_ENTRIES) {
+    const [first] = runtime.planningApprovalGuardByTurnId.keys();
+    if (first) runtime.planningApprovalGuardByTurnId.delete(first);
+  }
+}
+
+function isPlanningApprovalGuarded(
+  managed: ManagedChatSession,
+  runtime: CodexRuntime,
+  turnId?: string | null,
+): boolean {
+  const normalizedTurnId = turnId?.trim()
+    || runtime.activeTurnId
+    || runtime.startedTurnId
+    || null;
+  if (normalizedTurnId) {
+    const guarded = runtime.planningApprovalGuardByTurnId.get(normalizedTurnId);
+    if (guarded !== undefined) return guarded;
+  }
   return managed.session.permissionMode === "plan";
 }
 
@@ -3518,6 +3553,10 @@ type CodexCollaborationModePayload = {
   settings: {
     model: string;
     reasoning_effort: string | null;
+    // For native Codex plan mode, null means "use the app-server's built-in
+    // plan-mode instructions." ADE still sends its lane/runtime guidance via
+    // thread developerInstructions; overriding this field suppresses the
+    // upstream Plan Mode handoff that emits <proposed_plan>.
     developer_instructions: string | null;
   };
 };
@@ -3527,6 +3566,10 @@ function toHarnessPermissionMode(
 ): "plan" | "edit" | "full-auto" {
   if (mode === "plan" || mode === "full-auto") return mode;
   return "edit";
+}
+
+function buildAdeGuidanceForLane(laneWorktreePath: string): string {
+  return buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -3543,6 +3586,7 @@ function buildCodexDeveloperInstructions(args: {
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
     runtime: "codex-app-server",
+    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
   });
 }
 
@@ -3578,11 +3622,13 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: buildCodexDeveloperInstructions({
-        laneWorktreePath,
-        session,
-        collaborationMode: mode,
-      }),
+      developer_instructions: mode === "plan"
+        ? null
+        : buildCodexDeveloperInstructions({
+            laneWorktreePath,
+            session,
+            collaborationMode: mode,
+          }),
     },
   };
 }
@@ -8292,6 +8338,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -8824,7 +8871,9 @@ export function createAgentChatService(args: {
       const name = path.basename(attachment.path) || attachment.path;
       input.push({ type: "mention", name, path: stagedPath });
     }
+    const planningApprovalGuarded = managed.session.permissionMode === "plan";
     managed.runtime.awaitingTurnStart = true;
+    managed.runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
     let result: { turn?: { id?: string } };
     try {
       result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
@@ -8842,6 +8891,7 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       managed.runtime.awaitingTurnStart = false;
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       throw error;
     }
     markDispatched();
@@ -8850,6 +8900,8 @@ export function createAgentChatService(args: {
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
       managed.runtime.awaitingTurnStart = false;
+      rememberCodexPlanningApprovalGuard(managed.runtime, turnId, planningApprovalGuarded);
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       if (isTerminalCodexTurn(managed.runtime, turnId, managed)) {
         managed.runtime.activeTurnId = null;
         managed.runtime.startedTurnId = null;
@@ -9407,13 +9459,16 @@ export function createAgentChatService(args: {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
           const rawStatus = typeof info.status === "string" ? info.status : "updated";
-          const status = rawStatus.replace(/_/g, " ");
-          const severity: "info" | "warning" | "error" =
-            rawStatus === "allowed"
-              ? "info"
-              : rawStatus === "allowed_warning"
-                ? "warning"
-                : "error";
+          const isError = rawStatus !== "allowed" && rawStatus !== "allowed_warning";
+          // "allowed" = under threshold (no signal needed). "allowed_warning" = approaching limit;
+          // surface as an informational once-per-session notice. Anything else = real failure.
+          if (rawStatus === "allowed") continue;
+          if (rawStatus === "allowed_warning" && managed.claudeRateLimitWarningEmitted) continue;
+          if (rawStatus === "allowed_warning") {
+            managed.claudeRateLimitWarningEmitted = true;
+            runtime.rateLimitWarningEmitted = true;
+          }
+          const severity: "info" | "warning" | "error" = isError ? "error" : "info";
           const details: string[] = [];
           if (typeof info.utilization === "number") {
             const percent = info.utilization <= 1
@@ -9426,12 +9481,15 @@ export function createAgentChatService(args: {
             const resetDate = new Date(resetMs);
             if (!Number.isNaN(resetDate.getTime())) details.push(`resets ${resetDate.toISOString()}`);
           }
+          const message = isError
+            ? `Claude rate limit ${rawStatus.replace(/_/g, " ")}`
+            : "Approaching Claude plan limit";
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
             severity,
             status: rawStatus,
-            message: `Claude rate limit ${status}`,
+            message,
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
           });
@@ -10225,7 +10283,7 @@ export function createAgentChatService(args: {
       "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
       ...slashCommandsSection,
       "",
-      ADE_CLI_AGENT_GUIDANCE,
+      buildAdeGuidanceForLane(managed.laneWorktreePath),
     ].join("\n");
   };
 
@@ -11266,12 +11324,13 @@ export function createAgentChatService(args: {
     if (id == null) return;
 
     if (method === "item/commandExecution/requestApproval") {
-      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string } | null) ?? {};
-      if (isPlanningApprovalGuarded(managed)) {
+      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string; turnId?: string } | null) ?? {};
+      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
           message: buildPlanningApprovalViolation(params.command?.trim() || "command"),
-          turnId: runtime.activeTurnId ?? undefined,
+          turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
         return;
@@ -11293,7 +11352,7 @@ export function createAgentChatService(args: {
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
       emitPendingInputRequest(managed, request, {
@@ -11309,12 +11368,13 @@ export function createAgentChatService(args: {
     }
 
     if (method === "item/fileChange/requestApproval") {
-      const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string } | null) ?? {};
-      if (isPlanningApprovalGuarded(managed)) {
+      const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string; turnId?: string } | null) ?? {};
+      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
           message: buildPlanningApprovalViolation(params.reason?.trim() || "file change"),
-          turnId: runtime.activeTurnId ?? undefined,
+          turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
         return;
@@ -11335,7 +11395,7 @@ export function createAgentChatService(args: {
           grantRoot: params.grantRoot ?? null,
           reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
       emitPendingInputRequest(managed, request, {
@@ -12388,6 +12448,10 @@ export function createAgentChatService(args: {
     if (method === "turn/started") {
       const turn = startedTurn;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
+      if (!turnId && runtime.pendingTurnPlanningApprovalGuarded !== null) {
+        logger.warn(`[codex] ignoring turn/started without turnId (pending planning guard preserved) for session ${managed.session.id}`);
+        return;
+      }
       if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
         logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
         if (turnId) {
@@ -12402,6 +12466,10 @@ export function createAgentChatService(args: {
       runtime.awaitingTurnStart = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
+      if (runtime.pendingTurnPlanningApprovalGuarded !== null) {
+        rememberCodexPlanningApprovalGuard(runtime, turnId, runtime.pendingTurnPlanningApprovalGuarded);
+        runtime.pendingTurnPlanningApprovalGuarded = null;
+      }
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
@@ -12446,6 +12514,7 @@ export function createAgentChatService(args: {
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       const status = mapCodexTurnStatus(turn?.status);
@@ -12714,6 +12783,7 @@ export function createAgentChatService(args: {
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
@@ -13042,6 +13112,8 @@ export function createAgentChatService(args: {
       manualCompactionItemIds: new Set<string>(),
       manualCompactionPending: false,
       webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
+      planningApprovalGuardByTurnId: new Map<string, boolean>(),
+      pendingTurnPlanningApprovalGuarded: null,
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
@@ -13707,7 +13779,7 @@ export function createAgentChatService(args: {
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           ...slashCommandsSection,
           "",
-          ADE_CLI_AGENT_GUIDANCE,
+          buildAdeGuidanceForLane(managed.laneWorktreePath),
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -14281,6 +14353,7 @@ export function createAgentChatService(args: {
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
+      rateLimitWarningEmitted: managed.claudeRateLimitWarningEmitted,
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -14328,6 +14401,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -14773,6 +14847,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -15081,7 +15156,7 @@ export function createAgentChatService(args: {
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     // Guidance injection is capability-based, not session-state-based:
-    // Claude sessions receive ADE_CLI_AGENT_GUIDANCE in their persistent system
+    // Claude sessions receive lane-scoped ADE guidance in their persistent system
     // prompt, and native Codex app-server sessions receive ADE guidance through
     // developerInstructions/collaborationMode settings. Providers without a
     // trusted instruction channel still need the guidance in the user prompt,
@@ -15131,7 +15206,7 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
+          shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath) : null,
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),

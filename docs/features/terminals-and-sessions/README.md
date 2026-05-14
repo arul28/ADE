@@ -185,6 +185,9 @@ Renderer surfaces:
   ended / clear selection). The filter panel is width-constrained by
   the surrounding Work split, so status/group options wrap in an
   auto-fit grid and the embedded lane selector can fill its parent.
+  Lane group headers expose the same lane context menu used by the Work
+  tab so color, manage, split, and batch actions stay reachable without
+  leaving the session list.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Surfaces a small amber warning pip next to the title
@@ -202,6 +205,11 @@ Renderer surfaces:
   into a live runtime when one is still attached, or starts a fresh
   provider continuation internally and binds it back to the same
   durable session id.
+- `apps/desktop/src/renderer/components/terminals/useWorkLaneContextMenu.tsx`
+  — shared Work-tab lane context menu hook. It portals `LaneContextMenu`
+  over lane bands, lane chips, collapsed lane pills, and grouped session
+  headers, running inline actions in place and routing modal-bearing lane
+  actions through `/lanes?action=...`.
 - `apps/desktop/src/renderer/components/terminals/WorkCliSessionHeader.tsx`
   — small chat-style header rendered above tracked agent CLI terminals
   (and their tabs). Shows the provider logo, primary title, status dot,
@@ -238,7 +246,10 @@ Renderer surfaces:
   `ade.workViewState.v1`. Invalidates the shared session-list cache
   and schedules a background refresh on window focus /
   `visibilitychange` and on chat events, so returning to Work after a
-  tab switch always renders the current session set.
+  tab switch always renders the current session set. Fresh PTY launches
+  are inserted as short-lived optimistic sessions before the forced
+  session-list refresh returns, which keeps the new terminal tab visible
+  even when the runtime cache responds with a stale list.
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch
@@ -258,9 +269,12 @@ Renderer surfaces:
   Droid materializes a temp `--settings` JSON keyed off the active
   permission mode, and OpenCode passes its inline permission policy
   through the `OPENCODE_CONFIG_CONTENT` env var. ADE session guidance is
-  injected on every launch — Claude through `--append-system-prompt`
-  (text from `ADE_CLI_AGENT_GUIDANCE`), every other provider through a
-  leading prompt built from `ADE_CLI_INLINE_GUIDANCE`. The legacy
+  injected on every launch with skill roots resolved from the active
+  lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
+  through `--append-system-prompt`, while every other provider receives
+  a leading prompt from `buildAdeCliInlineGuidance(...)`. Launch env also
+  carries `ADE_AGENT_SKILLS_DIRS` when a bundled skills root is known.
+  The legacy
   `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
   are now thin wrappers over `buildTrackedCliLaunchCommand` for
   callers that only need the shell string. `buildTrackedCliResumeCommand`
@@ -283,9 +297,13 @@ Renderer surfaces:
   `apps/desktop/src/shared/shell.ts` to preserve existing renderer
   imports.
 - `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
-  for the ADE session guidance text injected into Claude/Codex CLI
-  launches. Exported as `ADE_CLI_AGENT_GUIDANCE` and
-  `ADE_CLI_INLINE_GUIDANCE`.
+  for ADE session guidance injected into tracked CLI launches. Exposes
+  builders plus compatibility constants; callers pass lane-aware skill
+  roots so prompt text can point agents at the right bundled ADE skills.
+- `apps/desktop/src/shared/agentSkillRoots.ts` — resolves candidate
+  ADE Agent Skills roots from the active lane worktree, inherited
+  `ADE_AGENT_SKILLS_DIRS`, packaged resources, and source fallbacks,
+  then formats the prompt line / env var value.
 - `apps/desktop/src/renderer/components/terminals/workSurfaceVisibility.ts`
   — exports the `WORK_SURFACE_REVEALED_EVENT` window-event constant
   and a `dispatchWorkSurfaceRevealed()` helper. The persistent Work

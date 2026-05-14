@@ -3579,7 +3579,9 @@ describe("createAgentChatService", () => {
     });
 
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
+      vi.useFakeTimers();
       const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
       let streamCall = 0;
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -3608,41 +3610,64 @@ describe("createAgentChatService", () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send,
         stream,
-        close: vi.fn(),
+        close,
+        sessionId: "sdk-session-rate-limit",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
         sessionId: "sdk-session-rate-limit",
       } as any);
 
       const onEvent = vi.fn();
       const { service } = createService({ onEvent });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "show usage pressure",
-        timeoutMs: 15_000,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "show usage pressure",
+          timeoutMs: 15_000,
+        });
 
-      const rateLimitNotices = onEvent.mock.calls
-        .map((call) => call[0])
-        .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
-      expect(rateLimitNotices).toHaveLength(1);
-      expect(rateLimitNotices[0].event).toMatchObject({
-        type: "system_notice",
-        noticeKind: "rate_limit",
-        severity: "warning",
-        status: "allowed_warning",
-        message: "Claude rate limit allowed warning",
-      });
-      expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
-      expect(rateLimitNotices[0].event.detail).toContain("resets");
-      expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
-        options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
-      )).toBe(true);
+        let rateLimitNotices = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
+        expect(rateLimitNotices).toHaveLength(1);
+        expect(rateLimitNotices[0].event).toMatchObject({
+          type: "system_notice",
+          noticeKind: "rate_limit",
+          severity: "info",
+          status: "allowed_warning",
+          message: "Approaching Claude plan limit",
+        });
+        expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
+        expect(rateLimitNotices[0].event.detail).toContain("resets");
+
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        expect(close).toHaveBeenCalledTimes(1);
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "show usage pressure again",
+          timeoutMs: 15_000,
+        });
+
+        rateLimitNotices = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
+        expect(rateLimitNotices).toHaveLength(1);
+        expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
+          options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
+        )).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {
@@ -7788,7 +7813,9 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
+      const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const threadParams = threadStartRequest?.params as { developerInstructions?: unknown } | undefined;
       const params = turnStartRequest?.params as {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown; networkAccess?: unknown; access?: { type?: unknown } };
@@ -7801,13 +7828,14 @@ describe("createAgentChatService", () => {
         | undefined;
       const textInputs = (params?.input ?? []).filter((item) => item.type === "text");
 
+      expect(threadParams?.developerInstructions).toBe("system prompt");
       expect(params?.approvalPolicy).toBe("untrusted");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
-      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");
@@ -9381,6 +9409,185 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.sandboxPolicy?.type).toBe("dangerFullAccess");
       expect(turnStartParams?.collaborationMode?.mode).toBe("default");
       expect(turnStartParams?.effort).toBe("medium");
+    });
+
+    it("keeps Codex planner approval guard scoped to the turn that started in plan mode", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the investigation.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-1",
+          },
+        },
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-1",
+          turnId: "turn-1",
+          command: "/bin/zsh -lc 'ade --socket lanes list --text'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "error"
+          && event.event.turnId === "turn-1"
+          && event.event.message.includes("PLANNER CONTRACT VIOLATION")
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-1")).toMatchObject({
+        result: { decision: "decline" },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: {
+          turn: {
+            id: "turn-1",
+            status: "completed",
+          },
+        },
+      });
+
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+      mockState.codexRequestPayloads = [];
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Now inspect with the updated permissions.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-full-auto-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-full-auto-1",
+          turnId: "turn-2",
+          command: "/bin/zsh -lc 'ade --socket chat list --text'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-full-auto-1"
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "error"
+        && event.event.turnId === "turn-2"
+        && event.event.message.includes("PLANNER CONTRACT VIOLATION")
+      )).toBe(false);
+    });
+
+    it("carries Codex planner approval guard through async turn/started when turn/start has no id", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      mockState.codexResponseOverrides.set("turn/start", { turn: {} });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "plan",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the investigation.",
+      }, { awaitDispatch: true });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {},
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          turn: {
+            id: "turn-async-1",
+          },
+        },
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-plan-async-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-plan-async-1",
+          turnId: "turn-async-1",
+          command: "/bin/zsh -lc 'ade --socket lanes list --text'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "error"
+          && event.event.turnId === "turn-async-1"
+          && event.event.message.includes("PLANNER CONTRACT VIOLATION")
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-plan-async-1")).toMatchObject({
+        result: { decision: "decline" },
+      });
     });
 
     it("uses each updated Codex reasoning effort on the next post-turn send", async () => {

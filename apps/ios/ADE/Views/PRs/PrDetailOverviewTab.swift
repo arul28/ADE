@@ -734,7 +734,7 @@ struct PrPathToMergeTab: View {
     issueInventory?.runtime.autoConvergeEnabled ?? false
   }
 
-  /// Active items shown in the REVIEW COMMENTS list — anything not yet
+  /// Active items shown in the PR FEEDBACK list — anything not yet
   /// reconciled (matches desktop's "unresolved" filter default).
   private var activeItems: [IssueInventoryItem] {
     let items = issueInventory?.items ?? []
@@ -916,7 +916,7 @@ struct PrPathToMergeTab: View {
     }
   }
 
-  // MARK: - Review comments list
+  // MARK: - PR feedback list
 
   @ViewBuilder
   private var reviewCommentsSection: some View {
@@ -925,7 +925,7 @@ struct PrPathToMergeTab: View {
         Image(systemName: "text.bubble")
           .font(.system(size: 10, weight: .bold))
           .foregroundStyle(ADEColor.textSecondary)
-        Text("REVIEW COMMENTS")
+        Text("PR FEEDBACK")
           .font(.system(size: 10, weight: .bold))
           .tracking(1.0)
           .foregroundStyle(ADEColor.textSecondary)
@@ -938,7 +938,7 @@ struct PrPathToMergeTab: View {
 
       if issueInventory == nil {
         VStack(alignment: .leading, spacing: 10) {
-          Text("Sync the issue inventory to see review comments grouped by source, severity, and round.")
+          Text("Sync the issue inventory to see actionable PR comments grouped by source, severity, and round.")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -954,7 +954,7 @@ struct PrPathToMergeTab: View {
           Image(systemName: "checkmark.seal.fill")
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(ADEColor.success)
-          Text("No active review comments — everything is reconciled.")
+          Text("No active PR feedback — everything is reconciled.")
             .font(.system(size: 12.5, weight: .medium))
             .foregroundStyle(ADEColor.textSecondary)
           Spacer(minLength: 0)
