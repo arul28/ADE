@@ -9548,6 +9548,14 @@ describe("createAgentChatService", () => {
         jsonrpc: "2.0",
         method: "turn/started",
         params: {
+          turn: {},
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
           turn: {
             id: "turn-async-1",
           },

@@ -12408,6 +12408,10 @@ export function createAgentChatService(args: {
     if (method === "turn/started") {
       const turn = startedTurn;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
+      if (!turnId && runtime.pendingTurnPlanningApprovalGuarded !== null) {
+        logger.warn(`[codex] ignoring turn/started without turnId (pending planning guard preserved) for session ${managed.session.id}`);
+        return;
+      }
       if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
         logger.warn(`[codex] ignoring unsolicited turn/started for session ${managed.session.id}`);
         if (turnId) {

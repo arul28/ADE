@@ -7,7 +7,7 @@ import {
   type ClaudeStartupProbeResult,
 } from "./packagedRuntimeSmokeShared";
 
-const PTY_PROBE_TIMEOUT_MS = 4_000;
+const PTY_PROBE_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 4_000;
 const CLAUDE_PROBE_TIMEOUT_MS = 20_000;
 
 async function probePty(): Promise<{ ok: true; output: string }> {
@@ -32,7 +32,7 @@ async function probePty(): Promise<{ ok: true; output: string }> {
       } catch {
         // ignore best-effort cleanup
       }
-      reject(new Error("PTY probe timed out"));
+      reject(new Error(`PTY probe timed out after ${PTY_PROBE_TIMEOUT_MS}ms`));
     }, PTY_PROBE_TIMEOUT_MS);
 
     term.onData((chunk) => {
