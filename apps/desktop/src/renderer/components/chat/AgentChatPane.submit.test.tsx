@@ -1742,7 +1742,7 @@ describe("AgentChatPane submit recovery", () => {
       }));
       expect(onSessionCreated).toHaveBeenCalledWith(
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
-        { activate: true, source: "draft-launch" },
+        { activate: false, source: "draft-launch" },
       );
     });
     await waitFor(() => {

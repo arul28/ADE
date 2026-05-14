@@ -4291,7 +4291,7 @@ export function AgentChatPane({
         select: false,
         notify: true,
         notifyOptions: {
-          activate: mode === "foreground",
+          activate: false,
           source: "draft-launch",
         },
       });
