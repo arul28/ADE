@@ -16,7 +16,11 @@ import type {
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
-import { AgentChatPane, isMatchingOptimisticUserMessage } from "./AgentChatPane";
+import {
+  AgentChatPane,
+  isMatchingOptimisticUserMessage,
+  type AgentChatSessionCreatedOptions,
+} from "./AgentChatPane";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -171,6 +175,8 @@ function installAdeMocks(options?: {
   const suggestLaneName = vi.fn().mockResolvedValue("parallel-task");
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
   const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
+  const deleteChat = vi.fn().mockResolvedValue(undefined);
+  const deleteLane = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
   const sessionChangeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -224,6 +230,7 @@ function installAdeMocks(options?: {
       warmupModel: vi.fn().mockResolvedValue(undefined),
       fileSearch: vi.fn().mockResolvedValue([]),
       create,
+      delete: deleteChat,
       dispose: vi.fn().mockResolvedValue(undefined),
     },
     sessions: {
@@ -249,7 +256,7 @@ function installAdeMocks(options?: {
       listSnapshots: vi.fn().mockResolvedValue([]),
       create: createLane,
       createChild: vi.fn(),
-      delete: vi.fn().mockResolvedValue(undefined),
+      delete: deleteLane,
     },
     git: {
       listBranches: vi.fn().mockResolvedValue([]),
@@ -285,6 +292,8 @@ function installAdeMocks(options?: {
     list,
     create,
     createLane,
+    deleteChat,
+    deleteLane,
     suggestLaneName,
     parallelLaunchStateGet,
     parallelLaunchStateSet,
@@ -418,7 +427,10 @@ function renderParallelDraftPane(args?: {
 }
 
 function renderAutoCreateDraftPane(args?: {
-  onSessionCreated?: (session: AgentChatSession, options?: any) => void | Promise<void>;
+  onSessionCreated?: (
+    session: AgentChatSession,
+    options?: AgentChatSessionCreatedOptions,
+  ) => void | Promise<void>;
 }) {
   const lanes = [
     {
@@ -1696,6 +1708,50 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("logs synchronous session-created callback failures without blocking the first send", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onSessionCreated = vi.fn(() => {
+      throw new Error("callback exploded");
+    });
+    const { send } = installAdeMocks({ sessions: [] });
+
+    try {
+      render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId="lane-1"
+            forceNewSession
+            onSessionCreated={onSessionCreated}
+          />
+        </MemoryRouter>,
+      );
+
+      const trigger = await screen.findByRole("button", { name: "Select model" });
+      const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+      await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+      const textbox = await screen.findByRole("textbox");
+      fireEvent.change(textbox, { target: { value: "Keep sending despite callback failure." } });
+      fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+      await waitFor(() => {
+        expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "created-session" }));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: "created-session",
+          text: "Keep sending despite callback failure.",
+        }));
+      });
+      await waitFor(() => {
+        expect(consoleError).toHaveBeenCalledWith("notifySessionCreated failed:", expect.any(Error));
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("foreground auto-create opens the new chat in Work instead of routing to Lanes", async () => {
     const onSessionCreated = vi.fn();
     const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
@@ -1791,6 +1847,48 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open" }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
+    });
+  });
+
+  it("rolls back the created session and auto-created lane when the first draft send fails", async () => {
+    const onSessionCreated = vi.fn();
+    const { send, createLane, suggestLaneName, deleteChat, deleteLane } = installAdeMocks({
+      sessions: [],
+      sendError: new Error("send failed"),
+    });
+    suggestLaneName.mockResolvedValue("failing-draft-lane");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "failing-draft-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/failing-draft-lane",
+      worktreePath: "/tmp/project-under-test/failing-draft-lane",
+      parentLaneId: "lane-primary",
+    });
+
+    renderAutoCreateDraftPane({ onSessionCreated });
+
+    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This first send will fail." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "This first send will fail.",
+      }));
+      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" });
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true });
+      expect(onSessionCreated).not.toHaveBeenCalled();
     });
   });
 

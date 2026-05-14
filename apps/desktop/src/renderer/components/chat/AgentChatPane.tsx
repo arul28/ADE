@@ -4022,10 +4022,13 @@ export function AgentChatPane({
   }, [initialNativeControls.opencodePermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
     if (!onSessionCreated) return;
-    const result = options === undefined
-      ? onSessionCreated(session)
-      : onSessionCreated(session, options);
-    void Promise.resolve(result).catch((err) => { console.error("notifySessionCreated failed:", err); });
+    void Promise.resolve()
+      .then(() => (
+        options === undefined
+          ? onSessionCreated(session)
+          : onSessionCreated(session, options)
+      ))
+      .catch((err) => { console.error("notifySessionCreated failed:", err); });
   }, [onSessionCreated]);
   const draftLaunchTargetIsAutoCreate = draftLaunchTargetId === AUTO_CREATE_LANE_OPTION_ID;
   const launchShellForDraftLane = useCallback(async () => {
@@ -4287,26 +4290,41 @@ export function AgentChatPane({
     try {
       const targetLane = await resolveDraftLaunchLane(snapshot);
       const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
-      const created = await createSessionForLane(targetLane.laneId, {
-        select: false,
-        notify: true,
-        notifyOptions: {
-          activate: false,
-          source: "draft-launch",
-        },
-      });
+      const created = await createSessionForLane(targetLane.laneId, { select: false });
       touchSession(created.id);
-      await window.ade.agentChat.send({
-        sessionId: created.id,
-        text: prepared.finalText,
-        displayText: prepared.finalDisplayText || "Selected visual app context",
-        attachments: prepared.selectedAttachments,
-        contextAttachments: prepared.selectedContextAttachments,
-        reasoningEffort,
-        executionMode,
-        interactionMode: created.provider === "claude" ? interactionMode : null,
-        ...(created.provider === "cursor" ? { runtime: "local" as const } : {}),
-      });
+      try {
+        await window.ade.agentChat.send({
+          sessionId: created.id,
+          text: prepared.finalText,
+          displayText: prepared.finalDisplayText || "Selected visual app context",
+          attachments: prepared.selectedAttachments,
+          contextAttachments: prepared.selectedContextAttachments,
+          reasoningEffort,
+          executionMode,
+          interactionMode: created.provider === "claude" ? interactionMode : null,
+          ...(created.provider === "cursor" ? { runtime: "local" as const } : {}),
+        });
+      } catch (sendError) {
+        await window.ade.agentChat.delete({ sessionId: created.id }).catch((cleanupError: unknown) => {
+          console.warn("draft chat launch session cleanup failed", cleanupError);
+        });
+        loadedHistoryRef.current.delete(created.id);
+        localTouchBySessionRef.current.delete(created.id);
+        optimisticSessionIdsRef.current.delete(created.id);
+        knownSessionIdsRef.current.delete(created.id);
+        invalidateSessionListCache();
+        if (targetLane.laneId === laneId) {
+          await refreshSessions().catch(() => undefined);
+        }
+        if (draftLaunchTargetIsAutoCreate) {
+          await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }).catch((cleanupError: unknown) => {
+            console.warn("draft chat launch lane cleanup failed", cleanupError);
+          });
+          await refreshLanesStore().catch(() => undefined);
+        }
+        throw sendError;
+      }
+      notifySessionCreated(created, { activate: false, source: "draft-launch" });
       invalidateSessionListCache();
       if (targetLane.laneId === laneId) {
         void refreshSessions().catch(() => {});
@@ -4336,6 +4354,7 @@ export function AgentChatPane({
     buildDraftLaunchSnapshotForCurrentState,
     busy,
     createSessionForLane,
+    draftLaunchTargetIsAutoCreate,
     executionMode,
     interactionMode,
     laneId,
@@ -4344,6 +4363,7 @@ export function AgentChatPane({
     parallelLaunchBusy,
     prepareDraftLaunchForSend,
     reasoningEffort,
+    refreshLanesStore,
     refreshSessions,
     resolveDraftLaunchLane,
     restoreDraftLaunchSnapshot,

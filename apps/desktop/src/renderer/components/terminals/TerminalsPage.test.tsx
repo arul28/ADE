@@ -4,6 +4,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSession, LaneSummary } from "../../../shared/types";
+import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
 
 const workMocks = vi.hoisted(() => {
@@ -160,7 +161,10 @@ vi.mock("./SessionInfoPopover", () => ({
 
 vi.mock("./WorkViewArea", () => ({
   WorkViewArea: (props: {
-    onOpenChatSession: (session: AgentChatSession, options?: { activate?: boolean; source?: "chat" | "draft-launch" | "handoff" }) => void | Promise<void>;
+    onOpenChatSession: (
+      session: AgentChatSession,
+      options?: AgentChatSessionCreatedOptions,
+    ) => void | Promise<void>;
   }) => (
     <div data-testid="work-view-area">
       <button
