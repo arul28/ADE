@@ -460,6 +460,8 @@ type CodexRuntime = {
   manualCompactionItemIds: Set<string>;
   manualCompactionPending: boolean;
   webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
+  planningApprovalGuardByTurnId: Map<string, boolean>;
+  pendingTurnPlanningApprovalGuarded: boolean | null;
   activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
@@ -926,6 +928,7 @@ function rememberTerminalCodexTurn(
   const normalizedTurnId = turnId?.trim() || null;
   if (!normalizedTurnId) return;
   rememberBoundedId(runtime.terminalTurnIds, normalizedTurnId);
+  runtime.planningApprovalGuardByTurnId.delete(normalizedTurnId);
   if (managed) rememberBoundedId(managed.codexTerminalTurnIds, normalizedTurnId);
 }
 
@@ -2370,7 +2373,33 @@ function mapApprovalDecisionForCodex(decision: AgentChatApprovalDecision): "acce
   return "decline";
 }
 
-function isPlanningApprovalGuarded(managed: ManagedChatSession): boolean {
+function rememberCodexPlanningApprovalGuard(
+  runtime: CodexRuntime,
+  turnId: string | null | undefined,
+  guarded: boolean | null | undefined,
+): void {
+  const normalizedTurnId = turnId?.trim() || null;
+  if (!normalizedTurnId) return;
+  runtime.planningApprovalGuardByTurnId.set(normalizedTurnId, guarded === true);
+  if (runtime.planningApprovalGuardByTurnId.size > MAX_SESSION_MAP_ENTRIES) {
+    const [first] = runtime.planningApprovalGuardByTurnId.keys();
+    if (first) runtime.planningApprovalGuardByTurnId.delete(first);
+  }
+}
+
+function isPlanningApprovalGuarded(
+  managed: ManagedChatSession,
+  runtime: CodexRuntime,
+  turnId?: string | null,
+): boolean {
+  const normalizedTurnId = turnId?.trim()
+    || runtime.activeTurnId
+    || runtime.startedTurnId
+    || null;
+  if (normalizedTurnId) {
+    const guarded = runtime.planningApprovalGuardByTurnId.get(normalizedTurnId);
+    if (guarded !== undefined) return guarded;
+  }
   return managed.session.permissionMode === "plan";
 }
 
@@ -8791,7 +8820,9 @@ export function createAgentChatService(args: {
       const name = path.basename(attachment.path) || attachment.path;
       input.push({ type: "mention", name, path: stagedPath });
     }
+    const planningApprovalGuarded = managed.session.permissionMode === "plan";
     managed.runtime.awaitingTurnStart = true;
+    managed.runtime.pendingTurnPlanningApprovalGuarded = planningApprovalGuarded;
     let result: { turn?: { id?: string } };
     try {
       result = await managed.runtime.request<{ turn?: { id?: string } }>("turn/start", {
@@ -8809,6 +8840,7 @@ export function createAgentChatService(args: {
       });
     } catch (error) {
       managed.runtime.awaitingTurnStart = false;
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       throw error;
     }
     markDispatched();
@@ -8817,6 +8849,8 @@ export function createAgentChatService(args: {
     const turnId = typeof result?.turn?.id === "string" ? result.turn.id : null;
     if (turnId) {
       managed.runtime.awaitingTurnStart = false;
+      rememberCodexPlanningApprovalGuard(managed.runtime, turnId, planningApprovalGuarded);
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       if (isTerminalCodexTurn(managed.runtime, turnId, managed)) {
         managed.runtime.activeTurnId = null;
         managed.runtime.startedTurnId = null;
@@ -8838,6 +8872,8 @@ export function createAgentChatService(args: {
           turnId,
         });
       }
+    } else {
+      managed.runtime.pendingTurnPlanningApprovalGuarded = null;
     }
     persistChatState(managed);
   };
@@ -11233,12 +11269,13 @@ export function createAgentChatService(args: {
     if (id == null) return;
 
     if (method === "item/commandExecution/requestApproval") {
-      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string } | null) ?? {};
-      if (isPlanningApprovalGuarded(managed)) {
+      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string; turnId?: string } | null) ?? {};
+      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
           message: buildPlanningApprovalViolation(params.command?.trim() || "command"),
-          turnId: runtime.activeTurnId ?? undefined,
+          turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
         return;
@@ -11260,7 +11297,7 @@ export function createAgentChatService(args: {
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
       emitPendingInputRequest(managed, request, {
@@ -11276,12 +11313,13 @@ export function createAgentChatService(args: {
     }
 
     if (method === "item/fileChange/requestApproval") {
-      const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string } | null) ?? {};
-      if (isPlanningApprovalGuarded(managed)) {
+      const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string; turnId?: string } | null) ?? {};
+      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
           message: buildPlanningApprovalViolation(params.reason?.trim() || "file change"),
-          turnId: runtime.activeTurnId ?? undefined,
+          turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
         return;
@@ -11302,7 +11340,7 @@ export function createAgentChatService(args: {
           grantRoot: params.grantRoot ?? null,
           reason: params.reason ?? null,
         },
-        turnId: runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
       emitPendingInputRequest(managed, request, {
@@ -12369,6 +12407,8 @@ export function createAgentChatService(args: {
       runtime.awaitingTurnStart = false;
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = turnId;
+      rememberCodexPlanningApprovalGuard(runtime, turnId, runtime.pendingTurnPlanningApprovalGuarded);
+      runtime.pendingTurnPlanningApprovalGuarded = null;
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
@@ -12413,6 +12453,7 @@ export function createAgentChatService(args: {
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       const status = mapCodexTurnStatus(turn?.status);
@@ -12681,6 +12722,7 @@ export function createAgentChatService(args: {
       runtime.canAttachResumedTurnStart = false;
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
+      runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.ignoredTurnIds.delete(turnId);
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
@@ -13009,6 +13051,8 @@ export function createAgentChatService(args: {
       manualCompactionItemIds: new Set<string>(),
       manualCompactionPending: false,
       webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
+      planningApprovalGuardByTurnId: new Map<string, boolean>(),
+      pendingTurnPlanningApprovalGuarded: null,
       activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
