@@ -12409,7 +12409,7 @@ export function createAgentChatService(args: {
       const turn = startedTurn;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
       if (!turnId && runtime.pendingTurnPlanningApprovalGuarded !== null) {
-        logger.warn(`[codex] deferring turn/started without turnId for session ${managed.session.id}`);
+        logger.warn(`[codex] ignoring turn/started without turnId (pending planning guard preserved) for session ${managed.session.id}`);
         return;
       }
       if (!runtime.awaitingTurnStart && !runtime.activeTurnId && !runtime.startedTurnId && !isResumedInProgressTurnStart) {
