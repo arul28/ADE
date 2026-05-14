@@ -289,6 +289,57 @@ function activityEventColor(ev: PrActivityEvent): string {
   return COLORS.textMuted;
 }
 
+function buildActivityFromLoadedDetail(
+  checks: PrCheck[],
+  reviews: PrReview[],
+  comments: PrComment[],
+): PrActivityEvent[] {
+  const events: PrActivityEvent[] = [];
+  for (const comment of comments) {
+    events.push({
+      id: `comment-${comment.id}`,
+      type: "comment",
+      author: comment.author,
+      avatarUrl: comment.authorAvatarUrl ?? null,
+      body: comment.body,
+      timestamp: comment.createdAt ?? "",
+      metadata: {
+        source: comment.source,
+        path: comment.path,
+        line: comment.line,
+        url: comment.url,
+      },
+    });
+  }
+  for (const review of reviews) {
+    events.push({
+      id: `review-${review.reviewer}-${review.submittedAt ?? ""}`,
+      type: "review",
+      author: review.reviewer,
+      avatarUrl: review.reviewerAvatarUrl ?? null,
+      body: review.body,
+      timestamp: review.submittedAt ?? "",
+      metadata: { state: review.state },
+    });
+  }
+  for (const check of checks) {
+    events.push({
+      id: `ci-${check.name}`,
+      type: "ci_run",
+      author: "github-actions",
+      avatarUrl: null,
+      body: `${check.name}: ${check.conclusion ?? check.status}`,
+      timestamp: check.startedAt ?? check.completedAt ?? "",
+      metadata: {
+        status: check.status,
+        conclusion: check.conclusion,
+        detailsUrl: check.detailsUrl,
+      },
+    });
+  }
+  return events.sort((a, b) => Date.parse(b.timestamp || "0") - Date.parse(a.timestamp || "0"));
+}
+
 function activityEventLabel(ev: PrActivityEvent): string {
   if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
   if (ev.type === "review") return "review";
@@ -427,7 +478,7 @@ type PrDetailPaneProps = {
   detailBusy: boolean;
   lanes: LaneSummary[];
   mergeMethod: MergeMethod;
-  onRefresh: () => Promise<void>;
+  onRefresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onNavigate: (path: string) => void;
   onShowInGraph?: (laneId: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
@@ -504,6 +555,10 @@ export function PrDetailPane({
   const checks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
   const reviews = liveDetailReady ? liveReviews : (hasSnapshotDetail ? snapshotReviews : liveReviews);
   const comments = liveDetailReady ? liveComments : (hasSnapshotDetail ? snapshotComments : liveComments);
+  const loadedDetailActivityRef = React.useRef({ checks, reviews, comments });
+  React.useEffect(() => {
+    loadedDetailActivityRef.current = { checks, reviews, comments };
+  }, [checks, comments, reviews]);
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);
@@ -798,19 +853,19 @@ export function PrDetailPane({
           applySnapshotHydration(cachedSnapshot);
         }
       }
-      const [d, f, c, a, act] = await Promise.all([
+      const [d, f, c, a] = await Promise.all([
         window.ade.prs.getDetail(pr.id).catch(() => null),
         window.ade.prs.getFiles(pr.id).catch(() => []),
         (window.ade.prs.getCommits?.(pr.id) ?? Promise.resolve([])).catch(() => []),
         window.ade.prs.getActionRuns(pr.id).catch(() => []),
-        window.ade.prs.getActivity(pr.id).catch(() => []),
       ]);
       if (requestId !== detailLoadSeqRef.current) return;
       setDetail(d);
       setFiles(f);
       setCommits(c);
       setActionRuns(a);
-      setActivity(act);
+      const loaded = loadedDetailActivityRef.current;
+      setActivity((prev) => prev.length > 0 ? prev : buildActivityFromLoadedDetail(loaded.checks, loaded.reviews, loaded.comments));
     } catch {
       // silently fail - basic data still available from context
     }
@@ -855,6 +910,7 @@ export function PrDetailPane({
     setShowLabelEditor(false);
     setShowReviewerEditor(false);
     setShowReviewModal(false);
+    setActivity([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
@@ -897,31 +953,52 @@ export function PrDetailPane({
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
-  // Poll checks + actionRuns + activity + reviewThreads every 60s so the
+  React.useEffect(() => {
+    setActivity((prev) => prev.length > 0 ? prev : buildActivityFromLoadedDetail(checks, reviews, comments));
+  }, [checks, comments, pr.id, reviews]);
+
+  React.useEffect(() => {
+    const shouldLoadImmediately = activeTab === "activity" || Boolean(deepLinkState.eventId);
+    if (!shouldLoadImmediately) return undefined;
+    let cancelled = false;
+    window.ade.prs.getActivity(pr.id).then((events) => {
+      if (!cancelled) setActivity(events);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, deepLinkState.eventId, pr.id]);
+
+  // Poll checks + actionRuns + reviewThreads every 60s so the
   // Path to Merge readiness panel stays fresh without requiring a manual refresh.
+  // Full activity fetches include comments/reviews/checks again, so only do that
+  // while the Activity tab is actually visible.
   React.useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
+      const activityPromise = activeTab === "activity"
+        ? window.ade.prs.getActivity(pr.id)
+        : Promise.resolve(null);
       Promise.allSettled([
         window.ade.prs.getChecks(pr.id),
         window.ade.prs.getActionRuns(pr.id),
-        window.ade.prs.getActivity(pr.id),
         window.ade.prs.getReviewThreads(pr.id),
-      ]).then(([checksResult, arResult, actResult, thrResult]) => {
+        activityPromise,
+      ]).then(([checksResult, arResult, thrResult, actResult]) => {
         if (cancelled) return;
         if (checksResult.status === "fulfilled" && checksResult.value.length > 0) {
           setConvergenceChecks(checksResult.value);
         }
         if (arResult.status === "fulfilled") setActionRuns(arResult.value);
-        if (actResult.status === "fulfilled") setActivity(actResult.value);
         if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
+        if (actResult.status === "fulfilled" && actResult.value) setActivity(actResult.value);
       });
     }, 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [pr.id]);
+  }, [activeTab, pr.id]);
 
   React.useEffect(() => {
     if (!issueResolverCopyNotice) return;
@@ -1155,12 +1232,12 @@ export function PrDetailPane({
   }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
-    const tasks: Array<Promise<unknown>> = [onRefresh(), loadDetail(), refreshReviewThreads()];
+    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail(), refreshReviewThreads()];
     if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
     await Promise.all(tasks);
-  }, [loadDetail, onRefresh, pr.state, refreshReviewThreads, syncInventory]);
+  }, [loadDetail, onRefresh, pr.id, pr.state, refreshReviewThreads, syncInventory]);
 
   const handleRefresh = React.useCallback(async () => {
     try {

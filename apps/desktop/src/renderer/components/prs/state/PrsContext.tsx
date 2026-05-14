@@ -114,7 +114,7 @@ type PrsContextValue = PrsState & {
   loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
   saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
   resetConvergenceState: (prId: string) => Promise<void>;
-  refresh: () => Promise<void>;
+  refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
   // Timeline + rails controls
   setPrsTimelineRailsEnabled: (enabled: boolean) => void;
@@ -772,6 +772,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const refreshCore = useCallback(async (options: {
     skipFreshWarmCache?: boolean;
     githubRefreshMode?: "await" | "background";
+    githubRefreshArgs?: { prId?: string; prIds?: string[] };
   } = {}) => {
     if (refreshInFlight.current) {
       refreshPending.current = true;
@@ -796,7 +797,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     try {
       if (options.githubRefreshMode === "await") {
-        await window.ade.prs.refresh().catch(() => {});
+        await window.ade.prs.refresh(options.githubRefreshArgs).catch(() => {});
       }
       const shouldLoadWorkflowDiagnostics =
         activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
@@ -827,8 +828,17 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [applyLocalPrState]);
 
-  const refresh = useCallback(async () => {
-    await refreshCore({ githubRefreshMode: "await" });
+  const refresh = useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
+    const prIds = [
+      ...(args.prId ? [args.prId] : []),
+      ...(args.prIds ?? []),
+    ].map((prId) => String(prId ?? "").trim()).filter(Boolean);
+    const githubRefreshArgs = prIds.length === 1
+      ? { prId: prIds[0] }
+      : prIds.length > 1
+        ? { prIds }
+        : undefined;
+    await refreshCore({ githubRefreshMode: "await", githubRefreshArgs });
   }, [refreshCore]);
 
   // Initial load

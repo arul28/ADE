@@ -23,6 +23,18 @@ function Harness() {
   );
 }
 
+function TargetedRefreshHarness() {
+  const { refresh, loading } = usePrs();
+  return (
+    <div>
+      <button type="button" onClick={() => void refresh({ prId: "pr-1" })}>
+        refresh pr-1
+      </button>
+      <div data-testid="loading">{loading ? "loading" : "idle"}</div>
+    </div>
+  );
+}
+
 function RouteHarness() {
   const { activeTab, selectedPrId, selectedQueueGroupId, selectedRebaseItemId } = usePrs();
   return (
@@ -209,6 +221,27 @@ describe("PrsContext refresh", () => {
 
     await waitFor(() => {
       expect(window.ade.prs.refresh).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("passes targeted PR refresh requests through to the PR service", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <PrsProvider>
+        <TargetedRefreshHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "refresh pr-1" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prId: "pr-1" });
     });
   });
 

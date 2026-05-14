@@ -27,7 +27,7 @@ type GitHubTabProps = {
   onSelectPr: (id: string | null) => void;
   selectedDetailTab?: PrDetailRouteTab | null;
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
-  onRefreshAll: () => Promise<void>;
+  onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
   onOpenQueueView?: (groupId: string) => void;
 };
@@ -738,19 +738,24 @@ export function GitHubTab({
     };
   }, [mergeContextByPrId, selectedLinkedPr]);
 
-  const handleSync = React.useCallback(async () => {
+  const handleSync = React.useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
     setSyncing(true);
     startHotRefreshWindow();
     try {
+      const targeted = Boolean(args.prId || (args.prIds?.length ?? 0) > 0);
       const includeExternalClosed =
         externalHistoryLoadedRef.current || filterRef.current !== "open";
-      await Promise.all([
-        onRefreshAll().catch(() => {}),
-        loadSnapshot({
-          force: true,
-          ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
-        }),
-      ]);
+      if (targeted) {
+        await onRefreshAll(args).catch(() => {});
+      } else {
+        await Promise.all([
+          onRefreshAll().catch(() => {}),
+          loadSnapshot({
+            force: true,
+            ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+          }),
+        ]);
+      }
     } finally {
       setSyncing(false);
     }

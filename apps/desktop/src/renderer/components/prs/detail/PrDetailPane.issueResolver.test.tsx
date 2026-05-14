@@ -800,6 +800,22 @@ describe("PrDetailPane issue resolver CTA", () => {
     expect(screen.queryByText("Cached review body")).toBeNull();
   });
 
+  it("targets the selected PR when refreshing detail manually", async () => {
+    const user = userEvent.setup();
+    const { onRefresh } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      actionRuns: [],
+    });
+    onRefresh.mockClear();
+
+    await user.click(screen.getByTitle("Refresh"));
+
+    await waitFor(() => {
+      expect(onRefresh).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+  });
+
   it("refreshes detail-side action runs when the selected PR status changes", async () => {
     const user = userEvent.setup();
     const { getActionRuns, rerenderPane } = renderPane({
@@ -1652,6 +1668,7 @@ describe("PrDetailPane issue resolver CTA", () => {
   });
 
   it("renders review activity bodies as markdown instead of raw source text", async () => {
+    const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
@@ -1668,6 +1685,7 @@ describe("PrDetailPane issue resolver CTA", () => {
       ],
     });
 
+    await user.click(screen.getByRole("button", { name: /activity/i }));
     expect(await screen.findByText("Actionable comments posted: 3")).toBeTruthy();
     expect(screen.queryByText(/\*\*Actionable comments posted: 3\*\*/)).toBeNull();
     expect(screen.getByText("Prompt for AI Agents")).toBeTruthy();
