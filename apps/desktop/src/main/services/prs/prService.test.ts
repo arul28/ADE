@@ -1124,7 +1124,7 @@ describe("prService.getActionRuns", () => {
       html_url: `https://github.com/test-owner/test-repo/actions/runs/${index + 1}`,
       created_at: `2026-01-01T00:${String(index).padStart(2, "0")}:00Z`,
       updated_at: `2026-01-01T00:${String(index).padStart(2, "0")}:30Z`,
-    }));
+    })).reverse();
     const githubService = makeGithubService({
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === "/repos/test-owner/test-repo/pulls/90") {
@@ -1167,7 +1167,14 @@ describe("prService.getActionRuns", () => {
       head_sha: "head-sha",
       per_page: 12,
     });
-    expect(calls.filter((call) => /\/actions\/runs\/\d+\/jobs$/.test(call.path))).toHaveLength(6);
+    expect(calls.filter((call) => /\/actions\/runs\/\d+\/jobs$/.test(call.path)).map((call) => call.path)).toEqual([
+      "/repos/test-owner/test-repo/actions/runs/20/jobs",
+      "/repos/test-owner/test-repo/actions/runs/19/jobs",
+      "/repos/test-owner/test-repo/actions/runs/18/jobs",
+      "/repos/test-owner/test-repo/actions/runs/17/jobs",
+      "/repos/test-owner/test-repo/actions/runs/16/jobs",
+      "/repos/test-owner/test-repo/actions/runs/15/jobs",
+    ]);
   });
 });
 

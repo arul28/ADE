@@ -3301,14 +3301,17 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.outputText).toContain("Recovered");
-      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(expect.any(String), expect.any(Object));
+      expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(
+        "sdk-stale",
+        expect.objectContaining({ resume: "sdk-stale" }),
+      );
       expect(claudeSdkCreateSessionCompat).toHaveBeenCalledWith(expect.objectContaining({
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
       }));
       expect(staleSession.close).toHaveBeenCalled();
       expect(freshSession.send).toHaveBeenCalled();
-      expect(readPersistedChatState(session.id).sdkSessionId).toEqual(expect.any(String));
+      expect(readPersistedChatState(session.id).sdkSessionId).toBe("sdk-fresh");
     });
 
     it("persists a continuity snapshot and prewarms a fresh Claude session after identity session reset errors", async () => {
@@ -5261,6 +5264,28 @@ describe("createAgentChatService", () => {
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId: session.id }),
       );
+      expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
+    });
+
+    it("does not follow transcript symlinks outside ADE during purge", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+
+      const mainTranscriptPath = sessionService.get(session.id)?.transcriptPath ?? "";
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, "{\"event\":\"done\"}\n", "utf8");
+      fs.mkdirSync(path.dirname(mainTranscriptPath), { recursive: true });
+      fs.rmSync(mainTranscriptPath, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, mainTranscriptPath);
+
+      await service.deleteSession({ sessionId: session.id });
+
+      expect(fs.existsSync(outsideTranscriptPath)).toBe(true);
       expect(sessionService.deleteSession).toHaveBeenCalledWith(session.id);
     });
   });
@@ -7507,6 +7532,33 @@ describe("createAgentChatService", () => {
         "fragment-a",
         "fragment-b",
       ]);
+    });
+
+    it("does not hydrate transcript symlinks that resolve outside ADE", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: "outside-transcript" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const outsideTranscriptPath = path.join(tmpHomeRoot, "outside-transcript.jsonl");
+      fs.writeFileSync(outsideTranscriptPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      fs.rmSync(transcriptFile, { force: true });
+      fs.symlinkSync(outsideTranscriptPath, transcriptFile);
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events).toEqual([]);
+      expect(parseAgentChatTranscript).not.toHaveBeenCalled();
     });
 
     it("drops history when the underlying session is deleted", async () => {

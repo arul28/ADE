@@ -289,15 +289,27 @@ function activityEventColor(ev: PrActivityEvent): string {
   return COLORS.textMuted;
 }
 
+function stableActivityIdPart(value: string | number | null | undefined): string {
+  return encodeURIComponent(String(value ?? "none"));
+}
+
+function makeUniqueActivityId(base: string, seenIds: Map<string, number>): string {
+  const seen = seenIds.get(base) ?? 0;
+  seenIds.set(base, seen + 1);
+  return seen === 0 ? base : `${base}-${seen + 1}`;
+}
+
 function buildActivityFromLoadedDetail(
   checks: PrCheck[],
   reviews: PrReview[],
   comments: PrComment[],
 ): PrActivityEvent[] {
   const events: PrActivityEvent[] = [];
+  const seenIds = new Map<string, number>();
   for (const comment of comments) {
+    const baseId = `comment-${stableActivityIdPart(comment.id)}`;
     events.push({
-      id: `comment-${comment.id}`,
+      id: makeUniqueActivityId(baseId, seenIds),
       type: "comment",
       author: comment.author,
       avatarUrl: comment.authorAvatarUrl ?? null,
@@ -312,8 +324,13 @@ function buildActivityFromLoadedDetail(
     });
   }
   for (const review of reviews) {
+    const baseId = [
+      "review",
+      stableActivityIdPart(review.reviewer),
+      stableActivityIdPart(review.submittedAt),
+    ].join("-");
     events.push({
-      id: `review-${review.reviewer}-${review.submittedAt ?? ""}`,
+      id: makeUniqueActivityId(baseId, seenIds),
       type: "review",
       author: review.reviewer,
       avatarUrl: review.reviewerAvatarUrl ?? null,
@@ -323,8 +340,14 @@ function buildActivityFromLoadedDetail(
     });
   }
   for (const check of checks) {
+    const baseId = [
+      "ci",
+      stableActivityIdPart(check.name),
+      stableActivityIdPart(check.detailsUrl),
+      stableActivityIdPart(check.startedAt),
+    ].join("-");
     events.push({
-      id: `ci-${check.name}`,
+      id: makeUniqueActivityId(baseId, seenIds),
       type: "ci_run",
       author: "github-actions",
       avatarUrl: null,
@@ -555,10 +578,6 @@ export function PrDetailPane({
   const checks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
   const reviews = liveDetailReady ? liveReviews : (hasSnapshotDetail ? snapshotReviews : liveReviews);
   const comments = liveDetailReady ? liveComments : (hasSnapshotDetail ? snapshotComments : liveComments);
-  const loadedDetailActivityRef = React.useRef({ checks, reviews, comments });
-  React.useEffect(() => {
-    loadedDetailActivityRef.current = { checks, reviews, comments };
-  }, [checks, comments, reviews]);
 
   const setActiveTab = React.useCallback((tab: DetailTab) => {
     setActiveTabState(tab);
@@ -864,8 +883,6 @@ export function PrDetailPane({
       setFiles(f);
       setCommits(c);
       setActionRuns(a);
-      const loaded = loadedDetailActivityRef.current;
-      setActivity((prev) => prev.length > 0 ? prev : buildActivityFromLoadedDetail(loaded.checks, loaded.reviews, loaded.comments));
     } catch {
       // silently fail - basic data still available from context
     }
@@ -953,9 +970,11 @@ export function PrDetailPane({
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
-  React.useEffect(() => {
-    setActivity((prev) => prev.length > 0 ? prev : buildActivityFromLoadedDetail(checks, reviews, comments));
-  }, [checks, comments, pr.id, reviews]);
+  const derivedActivity = React.useMemo(
+    () => buildActivityFromLoadedDetail(checks, reviews, comments),
+    [checks, comments, reviews],
+  );
+  const visibleActivity = activity.length > 0 ? activity : derivedActivity;
 
   React.useEffect(() => {
     const shouldLoadImmediately = activeTab === "activity" || Boolean(deepLinkState.eventId);
@@ -2233,7 +2252,7 @@ export function PrDetailPane({
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
-    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: activity.length > 0 ? activity.length : (comments.length + reviews.length) },
+    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: visibleActivity.length },
   ];
 
   return (
@@ -2403,7 +2422,7 @@ export function PrDetailPane({
             checks={checks}
             reviews={reviews}
             comments={comments}
-            activity={activity}
+            activity={visibleActivity}
             commits={commits}
             files={files}
             reviewThreads={reviewThreadsForTimeline}
@@ -2443,7 +2462,7 @@ export function PrDetailPane({
             onOpenRebaseTab={onOpenRebaseTab}
             matchingRebaseItemId={matchingRebaseItemId}
             localBehindCount={localBehindCount}
-            activity={activity}
+            activity={visibleActivity}
             lanes={lanes}
           />
         )}
@@ -2551,7 +2570,7 @@ export function PrDetailPane({
         )}
         {activeTab === "activity" && (
           <ActivityTab
-            activity={activity} comments={comments} reviews={reviews}
+            activity={visibleActivity} comments={comments} reviews={reviews}
             commentDraft={commentDraft} setCommentDraft={setCommentDraft}
             actionBusy={actionBusy} onAddComment={handleAddComment}
           />

@@ -144,7 +144,7 @@ function buildSkillMarkdown(input: {
   const lines = [
     "---",
     `name: ${slugify(input.title)}`,
-    `description: Use this skill when ${input.trigger.trim() || "the workflow applies"}.`,
+    `description: ${yamlQuotedScalar(`Use this skill when ${input.trigger.trim() || "the workflow applies"}.`)}`,
     "---",
     "",
     `# ${input.title}`,
@@ -163,6 +163,10 @@ function buildSkillMarkdown(input: {
   ];
 
   return lines.join("\n").trim();
+}
+
+function yamlQuotedScalar(value: string): string {
+  return JSON.stringify(value.replace(/\r\n?/g, "\n"));
 }
 
 export function createSkillRegistryService(args: {

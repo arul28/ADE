@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { normalizeAdeCodeState, scopedAdeCodeState } from "../state";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadAdeCodeState, normalizeAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "../state";
+
+afterEach(() => {
+  delete process.env.ADE_CODE_STATE_DIR;
+});
 
 describe("ade code persisted state", () => {
   it("prefers project-scoped lane and chat state over legacy global fallback", () => {
@@ -60,5 +67,30 @@ describe("ade code persisted state", () => {
       lastLaneId: null,
       lastLaneByProject: { "/repo-a": "repo-a-lane" },
     });
+  });
+
+  it("merges project-scoped saves with existing state under the shared state file", () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-state-"));
+    process.env.ADE_CODE_STATE_DIR = stateDir;
+
+    saveAdeCodeProjectState("/repo-a", {
+      lastChatByLane: { main: "repo-a-chat" },
+      lastLaneId: "repo-a-lane",
+    });
+    saveAdeCodeProjectState("/repo-b", {
+      lastChatByLane: { main: "repo-b-chat" },
+      lastLaneId: "repo-b-lane",
+    });
+
+    const persisted = loadAdeCodeState();
+    expect(persisted.lastChatByProjectLane).toEqual({
+      [path.resolve("/repo-a")]: { main: "repo-a-chat" },
+      [path.resolve("/repo-b")]: { main: "repo-b-chat" },
+    });
+    expect(persisted.lastLaneByProject).toEqual({
+      [path.resolve("/repo-a")]: "repo-a-lane",
+      [path.resolve("/repo-b")]: "repo-b-lane",
+    });
+    expect(fs.existsSync(path.join(stateDir, "ade-code-state.json.lock"))).toBe(false);
   });
 });

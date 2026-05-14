@@ -1161,6 +1161,9 @@ export function ChatIosSimulatorPanel({
   }, [activeSession?.chatSessionId, sessionId]);
   const ownedByOtherChat = otherChatSessionId !== null;
   const controlsOwnedElsewhere = ownedByOtherChat || controlsDisabled;
+  const inputBlockedMessage = ownedByOtherChat
+    ? "Another chat is already connected to the simulator. Use Take over to claim it."
+    : controlsDisabledMessage;
 
   const toggleSimulatorWindowMode = useCallback(() => {
     if (!activeSession || controlsOwnedElsewhere) return;
@@ -2221,8 +2224,8 @@ export function ChatIosSimulatorPanel({
   const sendTypedText = useCallback(async () => {
     const text = typedText;
     if (!text.trim()) return;
-    if (controlsDisabled) {
-      setMessage(controlsDisabledMessage);
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
       return;
     }
     setTypedText("");
@@ -2232,7 +2235,7 @@ export function ChatIosSimulatorPanel({
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
-  }, [armWindowCaptureRecoveryAfterInput, controlsDisabled, controlsDisabledMessage, projectRoot, selectedDeviceUdid, typedText]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid, typedText]);
 
   const updateInspectBounds = useCallback(() => {
     const image = imageRef.current;
@@ -2753,6 +2756,10 @@ export function ChatIosSimulatorPanel({
   }, [liveVisualKind, mapLivePointToSimulatorPixel, mediaHeight, mediaWidth]);
 
   const handleSnapshotInteractPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
+      return;
+    }
     const point = liveSimulatorPointFromPointer(event);
     if (!point) return;
     dragStartRef.current = {
@@ -2762,14 +2769,14 @@ export function ChatIosSimulatorPanel({
       clientY: event.clientY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
-  }, [liveSimulatorPointFromPointer]);
+  }, [controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer]);
 
   const handleSnapshotInteractPointerUp = useCallback((event: PointerEvent<HTMLDivElement>) => {
     const start = dragStartRef.current;
     dragStartRef.current = null;
     if (!start) return;
-    if (controlsDisabled) {
-      setMessage(controlsDisabledMessage);
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
       return;
     }
     const point = liveSimulatorPointFromPointer(event);
@@ -2798,12 +2805,12 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, [armWindowCaptureRecoveryAfterInput, controlsDisabled, controlsDisabledMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, liveSimulatorPointFromPointer, projectRoot, selectedDeviceUdid, snapshot?.screen.scale]);
 
   const handleVideoKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (controlsDisabled) {
-      setMessage(controlsDisabledMessage);
+    if (controlsOwnedElsewhere) {
+      setMessage(inputBlockedMessage);
       return;
     }
     if (event.key === "Enter") {
@@ -2821,7 +2828,7 @@ export function ChatIosSimulatorPanel({
         setMessage(error instanceof Error ? error.message : String(error));
       });
     }
-  }, [armWindowCaptureRecoveryAfterInput, controlsDisabled, controlsDisabledMessage, projectRoot, selectedDeviceUdid]);
+  }, [armWindowCaptureRecoveryAfterInput, controlsOwnedElsewhere, inputBlockedMessage, projectRoot, selectedDeviceUdid]);
 
   const providerSummary = snapshot?.providers.map((provider) => {
     if (provider.source === "screenshot") return "screenshot";

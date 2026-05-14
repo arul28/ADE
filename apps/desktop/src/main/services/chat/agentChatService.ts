@@ -1152,6 +1152,8 @@ type ClaudeDaemonResponse = {
   present?: boolean;
 };
 
+const MAX_CLAUDE_DAEMON_RESPONSE_BYTES = 1024 * 1024;
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1271,8 +1273,17 @@ function extractClaudeBackgroundTranscriptText(state: ClaudeBackgroundJobState |
   const configRoot = path.resolve(claudeConfigDir());
   if (!resolvedPath.startsWith(`${configRoot}${path.sep}`)) return "";
   if (!fs.existsSync(resolvedPath)) return "";
+  let realPath = resolvedPath;
+  let realConfigRoot = configRoot;
   try {
-    const text = readFileTailUtf8(resolvedPath);
+    realPath = fs.realpathSync(resolvedPath);
+    realConfigRoot = fs.realpathSync(configRoot);
+  } catch {
+    return "";
+  }
+  if (!realPath.startsWith(`${realConfigRoot}${path.sep}`)) return "";
+  try {
+    const text = readFileTailUtf8(realPath);
     let latest = "";
     for (const line of text.split(/\n+/)) {
       if (!line.trim()) continue;
@@ -1330,6 +1341,10 @@ async function sendClaudeDaemonRequest(
       socket.write(`${JSON.stringify({ proto: 1, ...request })}\n`);
     });
     socket.on("data", (chunk) => {
+      if (Buffer.byteLength(buffer, "utf8") + chunk.length > MAX_CLAUDE_DAEMON_RESPONSE_BYTES) {
+        finish(() => reject(new Error("Claude daemon response exceeded the 1MB limit.")));
+        return;
+      }
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
       const raw = (newline >= 0 ? buffer.slice(0, newline) : buffer).trim();
@@ -5278,8 +5293,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       return parseAgentChatTranscript(raw)
         .filter((entry) => entry.sessionId === managed.session.id)
         .flatMap((entry) => {
@@ -5300,8 +5316,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       const entries: AgentChatTranscriptEntry[] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
         if (entry.sessionId !== managed.session.id) continue;
@@ -5341,8 +5358,9 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
   ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      const raw = fs.readFileSync(managed.transcriptPath, "utf8");
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
       let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
       for (const entry of parseAgentChatTranscript(raw)) {
         if (entry.sessionId !== managed.session.id) continue;
@@ -5443,8 +5461,9 @@ export function createAgentChatService(args: {
 
   const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
     try {
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
       return [];
@@ -5480,8 +5499,9 @@ export function createAgentChatService(args: {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
-        flushQueuedTranscriptWrite(managed.transcriptPath);
-        return parseAgentChatTranscript(fs.readFileSync(managed.transcriptPath, "utf8"))
+        const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) return [];
+        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
           .filter((entry) => entry.sessionId === sessionId);
       } catch {
         return [];
@@ -5496,9 +5516,9 @@ export function createAgentChatService(args: {
     ];
     for (const candidatePath of candidates) {
       try {
-        flushQueuedTranscriptWrite(candidatePath);
-        if (!fs.existsSync(candidatePath)) continue;
-        const raw = fs.readFileSync(candidatePath, "utf8");
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) continue;
+        const raw = fs.readFileSync(transcriptPath, "utf8");
         return parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
       } catch {
         // try next candidate
@@ -6744,32 +6764,57 @@ export function createAgentChatService(args: {
 
   const metadataPathFor = (sessionId: string): string => path.join(chatSessionsDir, `${sessionId}.json`);
 
-  const deletePersistedChatFile = (filePath: string | null | undefined): void => {
+  const safeRealpath = (p: string): string | null => {
+    try { return fs.realpathSync(p); } catch { return null; }
+  };
+
+  const isWithinRoot = (target: string, root: string | null): boolean => {
+    if (!root) return false;
+    const rel = path.relative(root, target);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  };
+
+  const resolveContainedChatPath = (
+    filePath: string | null | undefined,
+    warnEvent = "agent_chat.chat_file_skipped_path_outside_ade",
+    allowMissing = false,
+  ): string | null => {
     const trimmed = typeof filePath === "string" ? filePath.trim() : "";
-    if (!trimmed.length) return;
+    if (!trimmed.length) return null;
     const resolvedPath = path.resolve(trimmed);
-    // Resolve symlinks on the target and both roots before comparing, so a
-    // symlink placed inside the chat dir cannot redirect rmSync outside.
-    const safeRealpath = (p: string): string | null => {
-      try { return fs.realpathSync(p); } catch { return null; }
-    };
+    const resolvedAdeDir = path.resolve(layout.adeDir);
+    const resolvedTranscriptRoot = path.resolve(transcriptsDir);
+    if (!isWithinRoot(resolvedPath, resolvedAdeDir) && !isWithinRoot(resolvedPath, resolvedTranscriptRoot)) {
+      logger.warn(warnEvent, { filePath: resolvedPath });
+      return null;
+    }
     const realTarget = safeRealpath(resolvedPath);
-    // Missing target is safe to skip — nothing to delete.
-    if (!realTarget) return;
+    if (!realTarget) return allowMissing ? resolvedPath : null;
     const realAdeDir = safeRealpath(layout.adeDir);
     const realTranscriptRoot = safeRealpath(path.resolve(transcriptsDir));
-    const isWithin = (root: string | null): boolean => {
-      if (!root) return false;
-      const rel = path.relative(root, realTarget);
-      return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-    };
-    if (!isWithin(realAdeDir) && !isWithin(realTranscriptRoot)) {
-      logger.warn("agent_chat.delete_skipped_path_outside_ade", {
+    if (!isWithinRoot(realTarget, realAdeDir) && !isWithinRoot(realTarget, realTranscriptRoot)) {
+      logger.warn(warnEvent, {
         filePath: resolvedPath,
         realTarget,
       });
-      return;
+      return null;
     }
+    return realTarget;
+  };
+
+  const resolveReadableChatPath = (
+    filePath: string | null | undefined,
+    warnEvent = "agent_chat.transcript_read_skipped_path_outside_ade",
+  ): string | null => {
+    if (!resolveContainedChatPath(filePath, warnEvent, true)) return null;
+    const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+    flushQueuedTranscriptWrite(path.resolve(trimmed));
+    return resolveContainedChatPath(filePath, warnEvent);
+  };
+
+  const deletePersistedChatFile = (filePath: string | null | undefined): void => {
+    const realTarget = resolveContainedChatPath(filePath, "agent_chat.delete_skipped_path_outside_ade");
+    if (!realTarget) return;
     try {
       fs.rmSync(realTarget, { force: true });
     } catch (error) {
@@ -9178,8 +9223,11 @@ export function createAgentChatService(args: {
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
-          if (typeof initMsg.session_id === "string" && initMsg.session_id.trim().length > 0 && runtime.sdkSessionId !== initMsg.session_id) {
-            runtime.sdkSessionId = initMsg.session_id;
+          const initSessionId = typeof initMsg.session_id === "string"
+            ? initMsg.session_id.trim()
+            : "";
+          if (initSessionId.length > 0 && runtime.sdkSessionId !== initSessionId) {
+            runtime.sdkSessionId = initSessionId;
             mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
             persistChatState(managed);
           }
@@ -10348,8 +10396,15 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "text", text: stateText, turnId });
       persistChatState(managed);
     };
+    const isManagedSessionStopped = (): boolean =>
+      managed.closed
+      || managed.session.status !== "active"
+      || (managed.runtime?.kind === "claude" && managed.runtime.interrupted);
 
     while (Date.now() - start < maxDurationMs) {
+      if (isManagedSessionStopped()) {
+        return { status: "interrupted", assistantText, state: lastState };
+      }
       lastState = readClaudeBackgroundJobState(short);
       if (lastState) {
         rememberClaudeBackgroundJob(managed, short, lastState);

@@ -286,6 +286,8 @@ function renderPane(args: {
   freshChecks?: PrCheck[];
   actionRuns?: PrActionRun[];
   freshActionRuns?: PrActionRun[];
+  reviews?: PrReview[];
+  comments?: PrComment[];
   reviewThreads: PrReviewThread[];
   lanes?: LaneSummary[];
   laneStatusOverrides?: Partial<LaneSummary["status"]>;
@@ -526,14 +528,17 @@ function renderPane(args: {
     },
   });
 
+  let currentChecks = args.checks;
+  let currentReviews = args.reviews ?? [];
+  let currentComments = args.comments ?? [];
   const renderSubject = (prOverrides: Partial<PrWithConflicts> = args.prOverrides ?? {}) => (
     <MemoryRouter>
       <PrDetailPane
         pr={makePr(prOverrides)}
         status={args.status === undefined ? makeStatus(args.statusOverrides) : args.status}
-        checks={args.checks}
-        reviews={[]}
-        comments={[]}
+        checks={currentChecks}
+        reviews={currentReviews}
+        comments={currentComments}
         snapshotHydration={args.snapshotHydration}
         snapshotHydrationOwnedByContext={args.snapshotHydrationOwnedByContext}
         liveDetailReady={args.liveDetailReady}
@@ -571,7 +576,10 @@ function renderPane(args: {
     writeClipboardText,
     land,
     onRefresh,
-    rerenderPane: (prOverrides: Partial<PrWithConflicts>) => {
+    rerenderPane: (prOverrides: Partial<PrWithConflicts>, nextDetail?: { checks?: PrCheck[]; reviews?: PrReview[]; comments?: PrComment[] }) => {
+      currentChecks = nextDetail?.checks ?? currentChecks;
+      currentReviews = nextDetail?.reviews ?? currentReviews;
+      currentComments = nextDetail?.comments ?? currentComments;
       rendered.rerender(renderSubject({ ...(args.prOverrides ?? {}), ...prOverrides }));
     },
     ...rendered,
@@ -735,6 +743,65 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Cached comment body")).toBeTruthy();
       expect(screen.getByText("Cached review body")).toBeTruthy();
     });
+  });
+
+  it("updates synthesized activity when selected PR detail inputs refresh", async () => {
+    const user = userEvent.setup();
+    const { rerenderPane } = renderPane({
+      checks: [makeCheck({ name: "Old CI", conclusion: "success" })],
+      reviewThreads: [],
+      prOverrides: {
+        checksStatus: "passing",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Old CI: success")).toBeTruthy();
+    });
+
+    rerenderPane(
+      {
+        checksStatus: "failing",
+        updatedAt: "2026-03-23T12:01:00.000Z",
+      },
+      { checks: [makeCheck({ name: "New CI", conclusion: "failure" })] },
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("New CI: failure")).toBeTruthy();
+      expect(screen.queryByText("Old CI: success")).toBeNull();
+    });
+  });
+
+  it("synthesizes unique activity keys for duplicate review and check identities", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const user = userEvent.setup();
+      renderPane({
+        checks: [
+          makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
+          makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
+        ],
+        reviews: [
+          makeReview({ reviewer: "reviewer", submittedAt: "2026-03-23T12:05:00.000Z", body: "First review" }),
+          makeReview({ reviewer: "reviewer", submittedAt: "2026-03-23T12:05:00.000Z", body: "Second review" }),
+        ],
+        reviewThreads: [],
+      });
+
+      await user.click(screen.getByRole("button", { name: /activity/i }));
+
+      await waitFor(() => {
+        expect(screen.getAllByText("CodeRabbit: failure")).toHaveLength(2);
+        expect(screen.getByText("First review")).toBeTruthy();
+        expect(screen.getByText("Second review")).toBeTruthy();
+      });
+      expect(consoleErrorSpy.mock.calls.some((call) => String(call[0]).includes("Encountered two children with the same key"))).toBe(false);
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("uses context-owned snapshot hydration without a duplicate snapshot IPC", async () => {

@@ -615,6 +615,50 @@ describe("ChatIosSimulatorPanel", () => {
     expect(api.tap).not.toHaveBeenCalled();
   });
 
+  it("blocks live simulator input when another chat owns the controls", async () => {
+    const { api } = installIosSimulatorApi({
+      status: {
+        ...activeStatus,
+        activeSession: {
+          ...activeStatus.activeSession!,
+          chatSessionId: "chat-2",
+        },
+      },
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const canvas = await screen.findByLabelText("iOS Simulator live stream") as HTMLCanvasElement;
+    const mediaRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    canvas.getBoundingClientRect = () => mediaRect;
+    const liveSurface = canvas.closest("[tabindex]") as HTMLDivElement;
+
+    fireEvent.keyDown(liveSurface, { key: "a" });
+    fireEvent.pointerDown(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
+    fireEvent.pointerUp(liveSurface, { clientX: 50, clientY: 40, pointerId: 1 });
+
+    expect(await screen.findByText("Another chat is already connected to the simulator. Use Take over to claim it.")).toBeTruthy();
+    expect(api.typeText).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
+    expect(api.drag).not.toHaveBeenCalled();
+  });
+
   it("selects an inspected simulator element and opens Preview Lab for its matching target", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     vi.stubGlobal("Image", class {
