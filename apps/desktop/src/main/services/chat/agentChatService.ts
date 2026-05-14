@@ -1450,6 +1450,8 @@ type ManagedChatSession = {
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
   runtimeInvalidated: boolean;
+  /** Set after we've emitted the once-per-session Claude plan-limit notice. */
+  claudeRateLimitWarningEmitted: boolean;
   codexTerminalTurnIds: Set<string>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
@@ -8261,6 +8263,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: persisted?.selectedExecutionLaneId ?? null,
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -9380,8 +9383,11 @@ export function createAgentChatService(args: {
           // "allowed" = under threshold (no signal needed). "allowed_warning" = approaching limit;
           // surface as an informational once-per-session notice. Anything else = real failure.
           if (rawStatus === "allowed") continue;
-          if (rawStatus === "allowed_warning" && runtime.rateLimitWarningEmitted) continue;
-          if (rawStatus === "allowed_warning") runtime.rateLimitWarningEmitted = true;
+          if (rawStatus === "allowed_warning" && managed.claudeRateLimitWarningEmitted) continue;
+          if (rawStatus === "allowed_warning") {
+            managed.claudeRateLimitWarningEmitted = true;
+            runtime.rateLimitWarningEmitted = true;
+          }
           const severity: "info" | "warning" | "error" = isError ? "error" : "info";
           const details: string[] = [];
           if (typeof info.utilization === "number") {
@@ -14253,7 +14259,7 @@ export function createAgentChatService(args: {
       turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
-      rateLimitWarningEmitted: false,
+      rateLimitWarningEmitted: managed.claudeRateLimitWarningEmitted,
     };
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -14301,6 +14307,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,
@@ -14746,6 +14753,7 @@ export function createAgentChatService(args: {
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
+      claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
       todoItems: [],
       activeAssistantMessageId: null,

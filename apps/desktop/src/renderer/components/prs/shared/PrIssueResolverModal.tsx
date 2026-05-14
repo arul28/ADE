@@ -69,10 +69,10 @@ function formatThreadLocation(thread: PrReviewThread): string {
 
 function issueCountLabel(scope: PrIssueResolutionScope, availability: PrIssueResolutionAvailability): string {
   if (scope === "both") {
-    return `${availability.failingCheckCount + availability.actionableReviewThreadCount} items`;
+    return `${availability.failingCheckCount + availability.actionableCommentCount} items`;
   }
   if (scope === "comments") {
-    return `${availability.actionableReviewThreadCount} threads`;
+    return `${availability.actionableCommentCount} comments`;
   }
   return `${availability.failingCheckCount} checks`;
 }
@@ -121,7 +121,13 @@ export function PrIssueResolverModal({
   React.useEffect(() => {
     if (!open) return;
     const raf = window.requestAnimationFrame(() => {
-      dialogScrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
+      const node = dialogScrollRef.current;
+      if (!node) return;
+      if (typeof node.scrollTo === "function") {
+        node.scrollTo({ top: 0, behavior: "auto" });
+      } else {
+        node.scrollTop = 0;
+      }
     });
     return () => window.cancelAnimationFrame(raf);
   }, [open]);
@@ -151,7 +157,7 @@ export function PrIssueResolverModal({
     {
       id: "both",
       label: "Checks + comments",
-      description: "Use one agent run to clear CI failures and unresolved review threads together.",
+      description: "Use one agent run to clear CI failures and actionable PR comments together.",
       enabled: availability.hasActionableChecks && availability.hasActionableComments,
       accent: COLORS.accent,
     },
@@ -165,7 +171,7 @@ export function PrIssueResolverModal({
     {
       id: "comments",
       label: "Comments only",
-      description: "Address GitHub review threads, reply when useful, and resolve them after the fix lands.",
+      description: "Address GitHub review threads and PR issue comments in one focused pass.",
       enabled: availability.hasActionableComments,
       accent: COLORS.info,
     },
@@ -362,13 +368,13 @@ export function PrIssueResolverModal({
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
                   <ChatText size={16} weight="fill" style={{ color: availability.hasActionableComments ? COLORS.info : COLORS.textDim }} />
                   <div>
-                    <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>Review threads</div>
+                    <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>Comments</div>
                     <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                      Unresolved, non-outdated GitHub review threads that ADE will feed into the resolver prompt.
+                      Unresolved review threads and actionable PR issue comments that ADE will feed into the resolver prompt.
                     </div>
                   </div>
                   <span style={{ marginLeft: "auto", padding: "4px 8px", borderRadius: 999, background: "color-mix(in srgb, var(--color-info) 18%, transparent)", color: availability.hasActionableComments ? COLORS.info : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
-                    {availability.actionableReviewThreadCount} actionable
+                    {availability.actionableCommentCount} actionable
                   </span>
                 </div>
 
@@ -402,9 +408,13 @@ export function PrIssueResolverModal({
                         </div>
                       </div>
                     );
-                  }) : (
+                  }) : availability.actionableIssueCommentCount > 0 ? (
                     <div style={{ padding: "14px 12px", borderRadius: 12, border: `1px dashed ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                      No unresolved non-outdated review threads are currently actionable.
+                      {availability.actionableIssueCommentCount} actionable PR issue comment{availability.actionableIssueCommentCount === 1 ? "" : "s"} will be included from the latest refresh.
+                    </div>
+                  ) : (
+                    <div style={{ padding: "14px 12px", borderRadius: 12, border: `1px dashed ${COLORS.border}`, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.6 }}>
+                      No unresolved review threads or PR issue comments are currently actionable.
                     </div>
                   )}
                 </div>

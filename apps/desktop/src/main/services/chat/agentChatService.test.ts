@@ -3579,7 +3579,9 @@ describe("createAgentChatService", () => {
     });
 
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
+      vi.useFakeTimers();
       const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
       let streamCall = 0;
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -3608,41 +3610,64 @@ describe("createAgentChatService", () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send,
         stream,
-        close: vi.fn(),
+        close,
+        sessionId: "sdk-session-rate-limit",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
         sessionId: "sdk-session-rate-limit",
       } as any);
 
       const onEvent = vi.fn();
       const { service } = createService({ onEvent });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "show usage pressure",
-        timeoutMs: 15_000,
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "show usage pressure",
+          timeoutMs: 15_000,
+        });
 
-      const rateLimitNotices = onEvent.mock.calls
-        .map((call) => call[0])
-        .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
-      expect(rateLimitNotices).toHaveLength(1);
-      expect(rateLimitNotices[0].event).toMatchObject({
-        type: "system_notice",
-        noticeKind: "rate_limit",
-        severity: "info",
-        status: "allowed_warning",
-        message: "Approaching Claude plan limit",
-      });
-      expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
-      expect(rateLimitNotices[0].event.detail).toContain("resets");
-      expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
-        options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
-      )).toBe(true);
+        let rateLimitNotices = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
+        expect(rateLimitNotices).toHaveLength(1);
+        expect(rateLimitNotices[0].event).toMatchObject({
+          type: "system_notice",
+          noticeKind: "rate_limit",
+          severity: "info",
+          status: "allowed_warning",
+          message: "Approaching Claude plan limit",
+        });
+        expect(rateLimitNotices[0].event.detail).toContain("82% utilized");
+        expect(rateLimitNotices[0].event.detail).toContain("resets");
+
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        expect(close).toHaveBeenCalledTimes(1);
+
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "show usage pressure again",
+          timeoutMs: 15_000,
+        });
+
+        rateLimitNotices = onEvent.mock.calls
+          .map((call) => call[0])
+          .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit");
+        expect(rateLimitNotices).toHaveLength(1);
+        expect(claudeSdkCreateSessionCompat.mock.calls.some(([options]) =>
+          options?.pathToClaudeCodeExecutable === "/usr/local/bin/claude",
+        )).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {

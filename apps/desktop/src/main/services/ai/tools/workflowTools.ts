@@ -381,7 +381,7 @@ export function createWorkflowTools(
             prService.getReviewThreads(prId),
             prService.getComments(prId),
           ]);
-          const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+          const availability = getPrIssueResolutionAvailability(checks, reviewThreads, comments);
           const failingRuns = actionRuns
             .filter((run) => run.conclusion === "failure" || run.conclusion === "timed_out" || run.conclusion === "action_required")
             .map((run) => ({

@@ -40,6 +40,48 @@ import { useAppStore } from "../../../state/appStore";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
+type PrRefreshArgs = { prId?: string; prIds?: string[] };
+
+type RefreshCoreOptions = {
+  skipFreshWarmCache?: boolean;
+  githubRefreshMode?: "await" | "background";
+  githubRefreshArgs?: PrRefreshArgs;
+};
+
+function normalizePrRefreshArgs(args?: PrRefreshArgs): PrRefreshArgs | undefined {
+  const prIds = [
+    ...(args?.prId ? [args.prId] : []),
+    ...(args?.prIds ?? []),
+  ].map((prId) => String(prId ?? "").trim()).filter(Boolean);
+  const uniquePrIds = [...new Set(prIds)];
+  if (uniquePrIds.length === 0) return undefined;
+  return uniquePrIds.length === 1 ? { prId: uniquePrIds[0] } : { prIds: uniquePrIds };
+}
+
+function mergePrRefreshArgs(a?: PrRefreshArgs, b?: PrRefreshArgs): PrRefreshArgs | undefined {
+  return normalizePrRefreshArgs({
+    prIds: [
+      ...(a?.prId ? [a.prId] : []),
+      ...(a?.prIds ?? []),
+      ...(b?.prId ? [b.prId] : []),
+      ...(b?.prIds ?? []),
+    ],
+  });
+}
+
+function mergeRefreshCoreOptions(a: RefreshCoreOptions | null, b: RefreshCoreOptions): RefreshCoreOptions {
+  const githubRefreshMode = a?.githubRefreshMode === "await" || b.githubRefreshMode === "await"
+    ? "await"
+    : a?.githubRefreshMode ?? b.githubRefreshMode;
+  return {
+    skipFreshWarmCache: a
+      ? Boolean(a.skipFreshWarmCache && b.skipFreshWarmCache)
+      : Boolean(b.skipFreshWarmCache),
+    githubRefreshMode,
+    githubRefreshArgs: mergePrRefreshArgs(a?.githubRefreshArgs, b.githubRefreshArgs),
+  };
+}
+
 type InlineTerminalState = {
   ptyId: string;
   sessionId: string;
@@ -627,7 +669,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
 
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
-  const refreshPending = React.useRef(false);
+  const refreshPending = React.useRef<RefreshCoreOptions | null>(null);
   const prsRef = React.useRef<PrWithConflicts[]>(warmCache?.prs ?? []);
   const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>(warmCache?.mergeContextByPrId ?? {});
   React.useEffect(() => { prsRef.current = prs; }, [prs]);
@@ -709,24 +751,15 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
     const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
       && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
-    const [prList, laneList, queueStateList, refreshedRebaseNeeds, refreshedAutoRebaseStatuses] = await Promise.all([
+    // Block only on the fast DB reads (PR list, lanes, queue states). Rebase
+    // scanning is git work on disk — let it populate in the background so the
+    // PR list renders immediately when the user opens the tab.
+    const [prList, laneList, queueStateList] = await Promise.all([
       window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
       window.ade.lanes.list({ includeStatus: false }),
       shouldLoadWorkflowState
         ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
         : Promise.resolve([] as QueueLandingState[]),
-      shouldLoadRebaseState
-        ? window.ade.rebase.scanNeeds().catch((err) => {
-            console.warn("[PrsContext] Failed to refresh rebase needs:", err);
-            return rebaseNeedsRef.current;
-          })
-        : Promise.resolve(rebaseNeedsRef.current),
-      shouldLoadRebaseState
-        ? window.ade.lanes.listAutoRebaseStatuses().catch((err) => {
-            console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err);
-            return autoRebaseStatusesRef.current;
-          })
-        : Promise.resolve(autoRebaseStatusesRef.current),
     ]);
     const changedPrIds = diffPrIds(prsRef.current, prList);
 
@@ -734,10 +767,6 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     // to avoid unnecessary re-render cascades in child components.
     setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
-    if (shouldLoadRebaseState) {
-      setRebaseNeeds((prev) => (jsonEqual(prev, refreshedRebaseNeeds) ? prev : refreshedRebaseNeeds));
-      setAutoRebaseStatuses((prev) => (jsonEqual(prev, refreshedAutoRebaseStatuses) ? prev : refreshedAutoRebaseStatuses));
-    }
     if (shouldLoadWorkflowState) {
       setQueueStates((prev) => {
         const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
@@ -745,6 +774,17 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       });
     }
     prsRef.current = prList;
+
+    // Fire-and-forget rebase scans — these were the long pole on PRs-tab cold
+    // open. The header/list doesn't depend on them, so let them stream in.
+    if (shouldLoadRebaseState) {
+      void window.ade.rebase.scanNeeds()
+        .then((next) => setRebaseNeeds((prev) => (jsonEqual(prev, next) ? prev : next)))
+        .catch((err) => console.warn("[PrsContext] Failed to refresh rebase needs:", err));
+      void window.ade.lanes.listAutoRebaseStatuses()
+        .then((next) => setAutoRebaseStatuses((prev) => (jsonEqual(prev, next) ? prev : next)))
+        .catch((err) => console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err));
+    }
 
     // Clear selectedPrId if the PR no longer exists
     setSelectedPrId((prev) => {
@@ -769,27 +809,43 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshMergeContexts, refreshQueueStates]);
 
-  const refreshCore = useCallback(async (options: {
-    skipFreshWarmCache?: boolean;
-    githubRefreshMode?: "await" | "background";
-    githubRefreshArgs?: { prId?: string; prIds?: string[] };
-  } = {}) => {
+  const refreshCore = useCallback(async (options: RefreshCoreOptions = {}) => {
     if (refreshInFlight.current) {
-      refreshPending.current = true;
+      refreshPending.current = mergeRefreshCoreOptions(refreshPending.current, options);
       return;
     }
     const warmCacheAgeMs = Date.now() - warmCacheHydratedAtRef.current;
-    if (
-      options.skipFreshWarmCache
-      && initialLoadDone.current
-      && warmCacheHydratedAtRef.current > 0
+    const warmCacheUsable =
+      warmCacheHydratedAtRef.current > 0
       && warmCacheAgeMs < PRS_CONTEXT_CACHE_TTL_MS
-    ) {
+      && prsRef.current.length > 0;
+    if (options.skipFreshWarmCache && warmCacheUsable) {
+      // Cache is fresh — render what we have immediately and refresh silently
+      // in the background. Avoids the visible cold-load freeze on tab return.
       setLoading(false);
+      initialLoadDone.current = true;
+      const shouldLoadWorkflowDiagnostics =
+        activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
+      void applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics })
+        .then(() => options.githubRefreshMode === "background"
+          ? window.ade.prs.refresh(options.githubRefreshArgs).catch(() => null)
+          : null)
+        .then(() => {
+          if (options.githubRefreshMode === "background") {
+            return applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
+          }
+          return null;
+        })
+        .then(() => {
+          warmCacheHydratedAtRef.current = Date.now();
+        })
+        .catch((err) => {
+          console.warn("[PrsContext] Silent background refresh failed:", err);
+        });
       return;
     }
     refreshInFlight.current = true;
-    refreshPending.current = false;
+    refreshPending.current = null;
     // Only show the loading indicator during the initial fetch —
     // background refreshes should NOT flash loading state.
     const isInitial = !initialLoadDone.current;
@@ -804,7 +860,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
       warmCacheHydratedAtRef.current = Date.now();
       if (options.githubRefreshMode === "background") {
-        void window.ade.prs.refresh()
+        void window.ade.prs.refresh(options.githubRefreshArgs)
           .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
           .then(() => {
             warmCacheHydratedAtRef.current = Date.now();
@@ -821,25 +877,13 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       refreshInFlight.current = false;
 
       // If another refresh was requested while we were in flight, run it now.
-      if (refreshPending.current) {
-        refreshPending.current = false;
-        void refreshCore({ githubRefreshMode: "await" });
+      const pendingRefresh = refreshPending.current;
+      if (pendingRefresh) {
+        refreshPending.current = null;
+        void refreshCore(pendingRefresh);
       }
     }
   }, [applyLocalPrState]);
-
-  const refresh = useCallback(async (args: { prId?: string; prIds?: string[] } = {}) => {
-    const prIds = [
-      ...(args.prId ? [args.prId] : []),
-      ...(args.prIds ?? []),
-    ].map((prId) => String(prId ?? "").trim()).filter(Boolean);
-    const githubRefreshArgs = prIds.length === 1
-      ? { prId: prIds[0] }
-      : prIds.length > 1
-        ? { prIds }
-        : undefined;
-    await refreshCore({ githubRefreshMode: "await", githubRefreshArgs });
-  }, [refreshCore]);
 
   // Initial load
   useEffect(() => {
@@ -921,6 +965,65 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       });
   }, []);
 
+  const refreshSelectedPrDetail = useCallback(async (prId: string) => {
+    if (selectedPrIdRef.current !== prId) return;
+    if (!prsRef.current.some((p) => p.id === prId)) return;
+    if (Date.now() < rateLimitedUntilRef.current) return;
+
+    detailFetchInProgress.current = true;
+    try {
+      const [statusResult, checksResult, reviewsResult, commentsResult, threadsResult] = await Promise.allSettled([
+        window.ade.prs.getStatus(prId),
+        window.ade.prs.getChecks(prId),
+        window.ade.prs.getReviews(prId),
+        window.ade.prs.getComments(prId),
+        typeof window.ade.prs.getReviewThreads === "function"
+          ? window.ade.prs.getReviewThreads(prId)
+          : Promise.resolve([] as PrReviewThread[]),
+      ]);
+      if (selectedPrIdRef.current !== prId) return;
+
+      for (const result of [statusResult, checksResult, reviewsResult, commentsResult, threadsResult]) {
+        if (result.status === "rejected") {
+          const msg = String(result.reason?.message ?? result.reason);
+          if (msg.includes("rate limit") || msg.includes("API rate")) {
+            rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+            console.warn("[PrsContext] GitHub rate limit hit — pausing detail polling for 5 min");
+            return;
+          }
+        }
+      }
+
+      detailStatePrIdRef.current = prId;
+      if (statusResult.status === "fulfilled") setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
+      if (checksResult.status === "fulfilled") setDetailChecks((prev) => (jsonEqual(prev, checksResult.value) ? prev : checksResult.value));
+      if (reviewsResult.status === "fulfilled") setDetailReviews((prev) => (jsonEqual(prev, reviewsResult.value) ? prev : reviewsResult.value));
+      if (commentsResult.status === "fulfilled") setDetailComments((prev) => (jsonEqual(prev, commentsResult.value) ? prev : commentsResult.value));
+      if (threadsResult.status === "fulfilled") setDetailReviewThreads((prev) => (jsonEqual(prev, threadsResult.value) ? prev : threadsResult.value));
+      if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+        setDetailLiveDataPrId(prId);
+      }
+      detailLoadedAtByPrIdRef.current[prId] = Date.now();
+    } finally {
+      detailFetchInProgress.current = false;
+    }
+  }, []);
+
+  const refresh = useCallback(async (args: PrRefreshArgs = {}) => {
+    const githubRefreshArgs = normalizePrRefreshArgs(args);
+    await refreshCore({ githubRefreshMode: "await", githubRefreshArgs });
+
+    const selectedPrId = selectedPrIdRef.current;
+    if (!selectedPrId) return;
+    const targetedIds = new Set([
+      ...(githubRefreshArgs?.prId ? [githubRefreshArgs.prId] : []),
+      ...(githubRefreshArgs?.prIds ?? []),
+    ]);
+    if (targetedIds.size === 0 || targetedIds.has(selectedPrId)) {
+      await refreshSelectedPrDetail(selectedPrId);
+    }
+  }, [refreshCore, refreshSelectedPrDetail]);
+
   // Load detail data when selected PR changes, then poll every 60s.
   // Reset rate-limit backoff on each mount / PR change so stale backoff
   // from a previous session doesn't block the first fetch.
@@ -995,7 +1098,14 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
         if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
         const snapshot = snapshots[0];
-        if (!snapshot) return;
+        // Clear the busy spinner once we know what the DB has — either we
+        // prefill with snapshot data, or we already have the PR summary on
+        // screen and the live fetch can finish in the background without
+        // blocking the visible UI.
+        if (!snapshot) {
+          setDetailBusy(false);
+          return;
+        }
         detailSnapshotStatePrIdRef.current = prId;
         detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
         setDetailSnapshot(snapshot);
@@ -1004,7 +1114,9 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         setDetailReviews(snapshot.reviews);
         setDetailComments(snapshot.comments);
         setDetailBusy(false);
-      }).catch(() => {});
+      }).catch(() => {
+        if (!cancelled) setDetailBusy(false);
+      });
     }
     if (hasFreshDetailCache) {
       setDetailLiveDataPrId(prId);

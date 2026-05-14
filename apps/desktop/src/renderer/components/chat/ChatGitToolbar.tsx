@@ -9,11 +9,15 @@ import {
   CheckCircle,
   XCircle,
   Clock,
+  CaretRight,
+  GithubLogo,
+  Copy,
+  Check,
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
 import { QuickRunMenu } from "../run/QuickRunMenu";
-import type { DiffChanges, PrSummary } from "../../../shared/types";
+import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
 import {
   beginLaneGitActionRuntime,
   patchLaneGitActionRuntimeStateIfCurrent,
@@ -68,6 +72,39 @@ function prStateDot(state: PrSummary["state"]) {
   }
 }
 
+function formatRelativeTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return null;
+  const deltaMs = Date.now() - ts;
+  if (deltaMs < 0) return "just now";
+  const sec = Math.floor(deltaMs / 1000);
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 14) return `${day}d ago`;
+  return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; running: number; total: number } {
+  let passed = 0;
+  let failed = 0;
+  let running = 0;
+  for (const c of checks) {
+    if (c.status !== "completed") {
+      running += 1;
+    } else if (c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped") {
+      passed += 1;
+    } else if (c.conclusion === "failure" || c.conclusion === "cancelled") {
+      failed += 1;
+    }
+  }
+  return { passed, failed, running, total: checks.length };
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -85,6 +122,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const [commitOpen, setCommitOpen] = useState(false);
   const [commitMsg, setCommitMsg] = useState("");
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
+  const [prMenuOpen, setPrMenuOpen] = useState(false);
+  const [prChecks, setPrChecks] = useState<PrCheck[] | null>(null);
+  const [prChecksLoading, setPrChecksLoading] = useState(false);
+  const [copyConfirmed, setCopyConfirmed] = useState(false);
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link
@@ -130,6 +171,22 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     }
     prevBusy.current = runtime.busyAction;
   }, [runtime.busyAction, refreshStatus, refreshPr]);
+
+  // Subscribe to backend PR events so the linked-PR pill reflects external
+  // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
+  useEffect(() => {
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      // Only re-fetch when an update could plausibly touch this lane's PR.
+      if (event.prs.some((pr) => pr.laneId === laneId)) {
+        void refreshPr();
+      } else if (linkedPr && !event.prs.some((pr) => pr.id === linkedPr.id)) {
+        // The linked PR vanished from the latest snapshot — clear the pill.
+        setLinkedPr(null);
+      }
+    });
+    return unsubscribe;
+  }, [laneId, linkedPr, refreshPr]);
 
   // -----------------------------------------------------------------------
   // Shared action wrapper — mirrors LaneGitActionsPane.runAction
@@ -223,6 +280,68 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     }
   }, [linkedPr, navigate]);
 
+  // Reset menu state when the linked PR identity changes (lane switch, PR
+  // unlinked) so stale data from another PR doesn't show.
+  const linkedPrId = linkedPr?.id ?? null;
+  useEffect(() => {
+    setPrMenuOpen(false);
+    setPrChecks(null);
+  }, [linkedPrId]);
+
+  // Fetch live check details when the PR menu opens. Lazy: only fetched while
+  // the menu is open so closed-state idles cost zero.
+  useEffect(() => {
+    if (!prMenuOpen || !linkedPr) return;
+    let cancelled = false;
+    setPrChecksLoading(true);
+    window.ade.prs.getChecks(linkedPr.id)
+      .then((checks) => {
+        if (!cancelled) setPrChecks(checks);
+      })
+      .catch(() => {
+        if (!cancelled) setPrChecks(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPrChecksLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [prMenuOpen, linkedPr]);
+
+  // Reset the copy-confirmed checkmark a moment after it's shown.
+  useEffect(() => {
+    if (!copyConfirmed) return;
+    const id = window.setTimeout(() => setCopyConfirmed(false), 1500);
+    return () => window.clearTimeout(id);
+  }, [copyConfirmed]);
+
+  const handleOpenInAde = useCallback(() => {
+    if (!linkedPr) return;
+    setPrMenuOpen(false);
+    navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
+  }, [linkedPr, navigate]);
+
+  const handleOpenInGitHub = useCallback(async () => {
+    if (!linkedPr) return;
+    try {
+      await window.ade.prs.openInGitHub(linkedPr.id);
+    } catch {
+      // Best-effort fallback: let the OS handle the URL directly.
+      try { window.open(linkedPr.githubUrl, "_blank", "noopener,noreferrer"); } catch { /* noop */ }
+    }
+  }, [linkedPr]);
+
+  const handleCopyLink = useCallback(async () => {
+    if (!linkedPr) return;
+    try {
+      await navigator.clipboard.writeText(linkedPr.githubUrl);
+      setCopyConfirmed(true);
+    } catch {
+      /* clipboard denied; surface a notice another time */
+    }
+  }, [linkedPr]);
+
   const handleCommitKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -248,16 +367,124 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     return (
       <button
         type="button"
-        className={cn(btnBase, "gap-1.5")}
-        onClick={handlePr}
+        className={cn(btnBase, "gap-1.5", prMenuOpen && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
+        onClick={() => setPrMenuOpen((open) => !open)}
+        aria-expanded={prMenuOpen}
+        aria-haspopup="menu"
         title={`${label}: ${linkedPr.title}`}
       >
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", prStateDot(linkedPr.state))} />
         <span>{label}</span>
         {checksIcon(linkedPr.checksStatus)}
+        <CaretRight
+          size={9}
+          weight="bold"
+          className={cn("text-fg/35 transition-transform duration-150", prMenuOpen && "rotate-90 text-fg/65")}
+        />
       </button>
     );
-  }, [linkedPr, handlePr]);
+  }, [linkedPr, prMenuOpen]);
+
+  // Slide-out panel that appears to the right of the PR badge when toggled.
+  // Mirrors the inline expansion pattern used by the commit input above.
+  const prMenu = useMemo(() => {
+    if (!linkedPr) return null;
+    const summary = prChecks ? summarizeChecks(prChecks) : null;
+    const updatedRelative = formatRelativeTime(linkedPr.updatedAt);
+    return (
+      <motion.div
+        key="pr-menu"
+        className="flex items-center gap-1 overflow-hidden"
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: "auto", opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+      >
+        {/* Action buttons */}
+        <button
+          type="button"
+          className={cn(btnBase, "gap-1")}
+          onClick={handleOpenInAde}
+          title="Open PR in ADE"
+        >
+          <GitPullRequest size={10} weight="bold" />
+          <span>ADE</span>
+        </button>
+        <button
+          type="button"
+          className={cn(btnBase, "gap-1")}
+          onClick={() => void handleOpenInGitHub()}
+          title="Open PR on GitHub"
+        >
+          <GithubLogo size={10} weight="bold" />
+          <span>GitHub</span>
+        </button>
+        <button
+          type="button"
+          className={cn(btnBase, "gap-1", copyConfirmed && "border-emerald-400/25 bg-emerald-500/[0.06] text-emerald-300/80")}
+          onClick={() => void handleCopyLink()}
+          title="Copy PR link"
+        >
+          {copyConfirmed ? <Check size={10} weight="bold" /> : <Copy size={10} weight="bold" />}
+          <span>{copyConfirmed ? "Copied" : "Copy"}</span>
+        </button>
+
+        {/* Vertical separator */}
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-white/[0.08]" />
+
+        {/* Live status preview */}
+        <div className="flex items-center gap-2 whitespace-nowrap rounded-lg border border-white/[0.04] bg-white/[0.015] px-2.5 py-1 font-mono text-[10px] text-fg/55">
+          {prChecksLoading && !prChecks ? (
+            <span className="inline-flex items-center gap-1 text-fg/35">
+              <CircleNotch size={9} className="animate-spin" />
+              <span>checking</span>
+            </span>
+          ) : summary && summary.total > 0 ? (
+            <span className="inline-flex items-center gap-2">
+              {summary.passed > 0 ? (
+                <span className="inline-flex items-center gap-1 text-emerald-300/80">
+                  <CheckCircle size={9} weight="fill" />
+                  {summary.passed}
+                </span>
+              ) : null}
+              {summary.failed > 0 ? (
+                <span className="inline-flex items-center gap-1 text-red-300/85">
+                  <XCircle size={9} weight="fill" />
+                  {summary.failed}
+                </span>
+              ) : null}
+              {summary.running > 0 ? (
+                <span className="inline-flex items-center gap-1 text-amber-300/80">
+                  <Clock size={9} weight="fill" />
+                  {summary.running}
+                </span>
+              ) : null}
+              {summary.passed === 0 && summary.failed === 0 && summary.running === 0 ? (
+                <span className="text-fg/35">{summary.total} check{summary.total === 1 ? "" : "s"}</span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="text-fg/35">no checks</span>
+          )}
+          {linkedPr.additions > 0 || linkedPr.deletions > 0 ? (
+            <>
+              <span aria-hidden className="text-fg/15">·</span>
+              <span className="inline-flex items-center gap-1">
+                <span className="text-emerald-400/55">+{linkedPr.additions}</span>
+                <span className="text-red-400/55">−{linkedPr.deletions}</span>
+              </span>
+            </>
+          ) : null}
+          {updatedRelative ? (
+            <>
+              <span aria-hidden className="text-fg/15">·</span>
+              <span className="text-fg/45">{updatedRelative}</span>
+            </>
+          ) : null}
+        </div>
+      </motion.div>
+    );
+  }, [linkedPr, prChecks, prChecksLoading, copyConfirmed, handleOpenInAde, handleOpenInGitHub, handleCopyLink]);
 
   // -----------------------------------------------------------------------
   // Render
@@ -366,8 +593,16 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         <span>Push</span>
       </button>
 
-      {/* PR badge or create button */}
-      {prBadge ?? (
+      {/* PR badge or create button. When the badge is open it expands into a
+          slide-out with action buttons + live PR status preview. */}
+      {prBadge ? (
+        <div className="flex items-center gap-1.5">
+          {prBadge}
+          <AnimatePresence initial={false}>
+            {prMenuOpen ? prMenu : null}
+          </AnimatePresence>
+        </div>
+      ) : (
         <button type="button" className={cn(btnBase)} onClick={handlePr} disabled={isBusy}>
           <GitPullRequest size={10} weight="bold" />
           <span>PR</span>

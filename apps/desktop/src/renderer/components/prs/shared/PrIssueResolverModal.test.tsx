@@ -43,6 +43,8 @@ function makeAvailability(overrides: Partial<PrIssueResolutionAvailability> = {}
     failingCheckCount: 1,
     pendingCheckCount: 0,
     actionableReviewThreadCount: 1,
+    actionableIssueCommentCount: 0,
+    actionableCommentCount: 1,
     hasActionableChecks: true,
     hasActionableComments: true,
     hasAnyActionableIssues: true,

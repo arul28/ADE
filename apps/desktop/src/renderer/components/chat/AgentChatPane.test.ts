@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { getModelById } from "../../../shared/modelRegistry";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../shared/types";
+
+vi.mock("./AgentChatComposer", () => ({
+  AgentChatComposer: () => null,
+}));
+
 import {
   buildParallelLaunchPrompt,
+  cleanupSubagentAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
+  getSubagentAutoOpenStorageKey,
   mergeChatHistorySnapshot,
   parallelLaneModelSuffix,
   resolveNextSelectedSessionId,
@@ -119,6 +126,49 @@ describe("mergeChatHistorySnapshot", () => {
       "snapshot last",
       "same millisecond tail",
     ]);
+  });
+});
+
+describe("subagent auto-open storage", () => {
+  function createStorageShim(initial: Record<string, string> = {}) {
+    const entries = new Map(Object.entries(initial));
+    return {
+      get length() {
+        return entries.size;
+      },
+      key(index: number) {
+        return Array.from(entries.keys())[index] ?? null;
+      },
+      getItem(key: string) {
+        return entries.get(key) ?? null;
+      },
+      setItem(key: string, value: string) {
+        entries.set(key, value);
+      },
+      removeItem(key: string) {
+        entries.delete(key);
+      },
+    };
+  }
+
+  it("expires timestamped auto-open markers and migrates legacy markers", () => {
+    const now = Date.parse("2026-05-14T12:00:00.000Z");
+    const freshKey = getSubagentAutoOpenStorageKey("fresh-session");
+    const staleKey = getSubagentAutoOpenStorageKey("stale-session");
+    const legacyKey = getSubagentAutoOpenStorageKey("legacy-session");
+    const storage = createStorageShim();
+
+    storage.setItem(freshKey, JSON.stringify({ firedAt: now - 60_000 }));
+    storage.setItem(staleKey, JSON.stringify({ firedAt: now - 8 * 24 * 60 * 60 * 1000 }));
+    storage.setItem(legacyKey, "1");
+    storage.setItem("ade.chat.other", "keep");
+
+    cleanupSubagentAutoOpenStorage(storage, now);
+
+    expect(storage.getItem(freshKey)).toBe(JSON.stringify({ firedAt: now - 60_000 }));
+    expect(storage.getItem(staleKey)).toBeNull();
+    expect(storage.getItem(legacyKey)).toBe(JSON.stringify({ firedAt: now }));
+    expect(storage.getItem("ade.chat.other")).toBe("keep");
   });
 });
 

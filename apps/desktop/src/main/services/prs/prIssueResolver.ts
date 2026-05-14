@@ -394,7 +394,7 @@ function listRequiredRuntimeTools(runtimeCapabilities: PrIssueResolutionRuntimeC
 
 export function buildPrIssueResolutionPrompt(args: IssueResolutionPromptArgs): string {
   const actionableThreads = args.reviewThreads.filter((thread) => !thread.isResolved && !thread.isOutdated);
-  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads);
+  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads, args.issueComments);
   const prBodySummary = summarizePrBody(args.detail?.body);
   const purposeBits = [
     args.pr.title.trim(),
@@ -612,7 +612,7 @@ async function preparePrIssueResolutionPrompt(
     deps.prService.getComments(pr.id).catch(() => [] as PrComment[]),
   ]);
 
-  const availability = getPrIssueResolutionAvailability(checks, reviewThreads);
+  const availability = getPrIssueResolutionAvailability(checks, reviewThreads, comments);
   if (args.scope === "checks" && !availability.hasActionableChecks) {
     throw new Error("Failing checks are not currently actionable. Checks must be finished running and still failing.");
   }
