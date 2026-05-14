@@ -228,6 +228,13 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/agent-skills",
+        "to": "agent-skills",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",

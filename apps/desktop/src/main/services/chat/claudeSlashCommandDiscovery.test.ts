@@ -147,12 +147,55 @@ describe("discoverClaudeSlashCommands", () => {
       "",
     ].join("\n"));
 
-    expect(discoverClaudeSlashCommands(tmpRoot)).toMatchObject([
-      {
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
         name: "/fix-issue",
         description: "Fix a GitHub issue",
-      },
-    ]);
+      }),
+    ]));
+    expect(commands).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "/background-context" }),
+    ]));
+  });
+
+  it("discovers cross-client .agents skills and ADE project skills", () => {
+    const agentsSkill = path.join(tmpRoot, ".agents", "skills", "ios-lab");
+    const adeSkill = path.join(tmpRoot, ".ade", "skills", "pr-resolver");
+    fs.mkdirSync(agentsSkill, { recursive: true });
+    fs.mkdirSync(adeSkill, { recursive: true });
+    fs.writeFileSync(path.join(agentsSkill, "SKILL.md"), [
+      "---",
+      "name: ios-lab",
+      "description: Use this skill for simulator work",
+      "---",
+      "",
+      "Inspect the simulator.",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(adeSkill, "SKILL.md"), [
+      "---",
+      "name: pr-resolver",
+      "description: Use this skill for PR resolver work",
+      "---",
+      "",
+      "Resolve the PR.",
+      "",
+    ].join("\n"));
+
+    const commands = discoverClaudeSlashCommands(tmpRoot);
+    expect(commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "/ios-lab",
+        description: "Use this skill for simulator work",
+        source: "skill",
+      }),
+      expect.objectContaining({
+        name: "/pr-resolver",
+        description: "Use this skill for PR resolver work",
+        source: "skill",
+      }),
+    ]));
   });
 
   it("walks up parent directories to discover .claude/commands at workspace root from a lane subdir", () => {

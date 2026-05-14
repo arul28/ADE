@@ -251,15 +251,67 @@ function claudeRootsByPrecedence(cwd: string): string[] {
   return roots;
 }
 
+function ancestorSkillRoots(cwd: string, dirName: ".agents" | ".ade"): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const home = path.resolve(os.homedir());
+  let current = path.resolve(cwd);
+  let depth = 0;
+  while (depth < 25) {
+    const candidate = path.join(current, dirName, "skills");
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      roots.push(candidate);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    if (current === home) break;
+    current = parent;
+    depth += 1;
+  }
+  return roots;
+}
+
+function bundledSkillRoots(): string[] {
+  const candidates: string[] = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, "agent-skills"));
+  }
+  return candidates;
+}
+
+function skillRootsByPrecedence(cwd: string): string[] {
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const addRoot = (root: string): void => {
+    const resolved = path.resolve(root);
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    roots.push(resolved);
+  };
+
+  for (const root of claudeRootsByPrecedence(cwd)) addRoot(path.join(root, "skills"));
+  for (const root of ancestorSkillRoots(cwd, ".agents")) addRoot(root);
+  for (const root of ancestorSkillRoots(cwd, ".ade")) addRoot(root);
+  addRoot(path.join(os.homedir(), ".agents", "skills"));
+  addRoot(path.join(os.homedir(), ".ade", "skills"));
+  for (const root of bundledSkillRoots()) addRoot(root);
+  return roots;
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
-  const roots = claudeRootsByPrecedence(cwd);
+  const claudeRoots = claudeRootsByPrecedence(cwd);
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
-  for (const root of roots) {
-    const discovered = [
-      ...discoverLegacyCommands(path.join(root, "commands")),
-      ...discoverSkills(path.join(root, "skills")),
-    ];
+  for (const root of claudeRoots) {
+    const discovered = discoverLegacyCommands(path.join(root, "commands"));
+    for (const command of discovered) {
+      const key = slashCommandKey(command.name);
+      if (!byName.has(key)) byName.set(key, command);
+    }
+  }
+  for (const root of skillRootsByPrecedence(cwd)) {
+    const discovered = discoverSkills(root);
     for (const command of discovered) {
       const key = slashCommandKey(command.name);
       if (!byName.has(key)) byName.set(key, command);
@@ -317,17 +369,17 @@ export function resolveClaudeSlashCommandInvocation(
   const name = match[1];
   if (!name) return null;
   const argumentsText = match[2]?.trim() ?? "";
-  const roots = claudeRootsByPrecedence(cwd);
+  const claudeRoots = claudeRootsByPrecedence(cwd);
 
   // Prefer command files; fall back to user-invocable skills (SKILL.md).
   let resolvedFile: string | null = null;
-  for (const root of roots) {
+  for (const root of claudeRoots) {
     resolvedFile = resolveLegacyCommandFile(path.join(root, "commands"), name);
     if (resolvedFile) break;
   }
   if (!resolvedFile) {
-    for (const root of roots) {
-      resolvedFile = resolveSkillFile(path.join(root, "skills"), name);
+    for (const root of skillRootsByPrecedence(cwd)) {
+      resolvedFile = resolveSkillFile(root, name);
       if (resolvedFile) break;
     }
   }
