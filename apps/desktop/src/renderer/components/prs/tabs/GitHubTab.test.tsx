@@ -123,6 +123,18 @@ describe("GitHubTab", () => {
           getGitHubSnapshot: vi.fn().mockResolvedValue(snapshot),
           linkToLane: vi.fn(),
         },
+        github: {
+          getStatus: vi.fn().mockResolvedValue({
+            tokenStored: true,
+            tokenDecryptionFailed: false,
+            storageScope: "app",
+            repo: { owner: "ade-dev", name: "ade" },
+            hasOrigin: true,
+            userLogin: "octocat",
+            scopes: [],
+            checkedAt: "2026-03-13T12:00:00.000Z",
+          }),
+        },
         app: {
           openExternal: vi.fn(),
         },
@@ -203,15 +215,23 @@ describe("GitHubTab", () => {
   });
 
   it("shows friendly copy when GitHub is not connected", async () => {
-    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error("Error invoking remote method 'ade.prs.getGitHubSnapshot': Error: GitHub token missing. Set it in Settings to sync pull requests."),
-    );
+    (window.ade.github.getStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      tokenStored: false,
+      tokenDecryptionFailed: false,
+      storageScope: "app",
+      repo: { owner: "ade-dev", name: "ade" },
+      hasOrigin: true,
+      userLogin: null,
+      scopes: [],
+      checkedAt: "2026-03-13T12:00:00.000Z",
+    });
 
     renderTab();
 
     await waitFor(() => {
       expect(screen.getByText("Connect GitHub in Settings to sync pull requests.")).toBeTruthy();
     });
+    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalled();
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     expect(screen.getByRole("button", { name: /connect github/i })).toBeTruthy();
   });
@@ -409,11 +429,15 @@ describe("GitHubTab", () => {
     await waitFor(() => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     });
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).toBeTruthy();
+    });
     vi.useFakeTimers();
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
 
+    await vi.advanceTimersByTimeAsync(0);
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(1);
 
