@@ -7788,7 +7788,9 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "collaborationMode/list")).toBe(true);
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
+      const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
+      const threadParams = threadStartRequest?.params as { developerInstructions?: unknown } | undefined;
       const params = turnStartRequest?.params as {
         approvalPolicy?: unknown;
         sandboxPolicy?: { type?: unknown; networkAccess?: unknown; access?: { type?: unknown } };
@@ -7801,13 +7803,14 @@ describe("createAgentChatService", () => {
         | undefined;
       const textInputs = (params?.input ?? []).filter((item) => item.type === "text");
 
+      expect(threadParams?.developerInstructions).toBe("system prompt");
       expect(params?.approvalPolicy).toBe("untrusted");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.effort).toBe("medium");
       expect(collaborationMode?.mode).toBe("plan");
       expect(collaborationMode?.settings?.model).toBe("gpt-5.4");
       expect(collaborationMode?.settings?.reasoning_effort).toBe("medium");
-      expect(collaborationMode?.settings?.developer_instructions).toBe("system prompt");
+      expect(collaborationMode?.settings?.developer_instructions).toBeNull();
       expect(textInputs).toHaveLength(1);
       expect(textInputs.at(-1)?.text).toContain("User request:");
       expect(textInputs.at(-1)?.text).toContain("Ask one planning question before coding.");

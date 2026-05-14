@@ -3525,6 +3525,10 @@ type CodexCollaborationModePayload = {
   settings: {
     model: string;
     reasoning_effort: string | null;
+    // For native Codex plan mode, null means "use the app-server's built-in
+    // plan-mode instructions." ADE still sends its lane/runtime guidance via
+    // thread developerInstructions; overriding this field suppresses the
+    // upstream Plan Mode handoff that emits <proposed_plan>.
     developer_instructions: string | null;
   };
 };
@@ -3585,11 +3589,13 @@ function buildCodexCollaborationMode(
     settings: {
       model: session.model,
       reasoning_effort: session.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      developer_instructions: buildCodexDeveloperInstructions({
-        laneWorktreePath,
-        session,
-        collaborationMode: mode,
-      }),
+      developer_instructions: mode === "plan"
+        ? null
+        : buildCodexDeveloperInstructions({
+            laneWorktreePath,
+            session,
+            collaborationMode: mode,
+          }),
     },
   };
 }
