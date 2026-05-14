@@ -404,10 +404,15 @@ function parseRenameLaneArgs(value: Record<string, unknown>): RenameLaneArgs {
 }
 
 function parseReparentLaneArgs(value: Record<string, unknown>): ReparentLaneArgs {
-  return {
+  const parsed: ReparentLaneArgs = {
     laneId: requireString(value.laneId, "lanes.reparent requires laneId."),
     newParentLaneId: requireString(value.newParentLaneId, "lanes.reparent requires newParentLaneId."),
   };
+  const stackBase = asTrimmedString(value.stackBaseBranchRef);
+  if (stackBase) {
+    parsed.stackBaseBranchRef = stackBase;
+  }
+  return parsed;
 }
 
 function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLaneAppearanceArgs {

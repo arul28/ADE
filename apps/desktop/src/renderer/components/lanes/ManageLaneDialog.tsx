@@ -13,7 +13,8 @@ import {
   Cube,
   CheckCircle,
   X,
-  Minus
+  Minus,
+  TreeStructure
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type {
@@ -64,7 +65,8 @@ export function ManageLaneDialog({
   onAdoptAttached,
   onArchive,
   onDelete,
-  onAppearanceChanged
+  onAppearanceChanged,
+  onStackReorganized
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -88,6 +90,7 @@ export function ManageLaneDialog({
   onArchive: () => void;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
+  onStackReorganized?: () => void | Promise<void>;
 }) {
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
@@ -237,6 +240,15 @@ export function ManageLaneDialog({
           {/* Appearance — single lane only */}
           {!isBatch && lanes[0] ? (
             <AppearanceSection lane={lanes[0]} allLanes={allLanes} disabled={laneActionBusy} onChanged={onAppearanceChanged} />
+          ) : null}
+
+          {!isBatch && lanes[0] && lanes[0].laneType !== "primary" ? (
+            <StackPositionSection
+              lane={lanes[0]}
+              allLanes={allLanes}
+              disabled={laneActionBusy}
+              onDone={onStackReorganized}
+            />
           ) : null}
 
           {/* Archive */}
@@ -622,6 +634,184 @@ function AppearanceSection({
       {busy || disabled ? (
         <div className="sr-only" role="status">Updating</div>
       ) : null}
+    </section>
+  );
+}
+
+function collectDescendantLaneIds(rootId: string, all: LaneSummary[]): Set<string> {
+  const childrenByParent = new Map<string, LaneSummary[]>();
+  for (const row of all) {
+    if (!row.parentLaneId) continue;
+    const list = childrenByParent.get(row.parentLaneId) ?? [];
+    list.push(row);
+    childrenByParent.set(row.parentLaneId, list);
+  }
+  const out = new Set<string>();
+  const stack = [...(childrenByParent.get(rootId) ?? [])];
+  while (stack.length) {
+    const row = stack.pop()!;
+    if (out.has(row.id)) continue;
+    out.add(row.id);
+    const kids = childrenByParent.get(row.id);
+    if (kids) stack.push(...kids);
+  }
+  return out;
+}
+
+function StackPositionSection({
+  lane,
+  allLanes,
+  disabled,
+  onDone,
+}: {
+  lane: LaneSummary;
+  allLanes: LaneSummary[];
+  disabled: boolean;
+  onDone?: () => void | Promise<void>;
+}) {
+  const primaryLane = React.useMemo(
+    () => allLanes.find((l) => l.laneType === "primary" && !l.archivedAt) ?? null,
+    [allLanes],
+  );
+
+  const effectiveCurrentParentId = lane.parentLaneId ?? primaryLane?.id ?? "";
+
+  const candidates = React.useMemo(() => {
+    const descendants = collectDescendantLaneIds(lane.id, allLanes);
+    const list = allLanes.filter(
+      (l) => !l.archivedAt && l.id !== lane.id && !descendants.has(l.id),
+    );
+    list.sort((a, b) => {
+      const ap = a.laneType === "primary" ? 0 : 1;
+      const bp = b.laneType === "primary" ? 0 : 1;
+      if (ap !== bp) return ap - bp;
+      return a.name.localeCompare(b.name);
+    });
+    return list;
+  }, [allLanes, lane.id]);
+
+  const [stackParentId, setStackParentId] = React.useState(effectiveCurrentParentId);
+  const [baseBranchInput, setBaseBranchInput] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [success, setSuccess] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setStackParentId(effectiveCurrentParentId);
+    setBaseBranchInput("");
+    setError(null);
+    setSuccess(null);
+  }, [lane.id, lane.parentLaneId, lane.baseRef, effectiveCurrentParentId]);
+
+  const defaultBaseBranch = candidates.find((c) => c.id === stackParentId)?.branchRef ?? "";
+
+  const baseOverrideTrim = baseBranchInput.trim();
+  const parentChanged = stackParentId !== effectiveCurrentParentId;
+  const baseChanged = baseOverrideTrim.length > 0 && baseOverrideTrim !== lane.baseRef;
+  const canApply =
+    !lane.status.dirty &&
+    !lane.status.rebaseInProgress &&
+    !busy &&
+    !disabled &&
+    Boolean(stackParentId) &&
+    (parentChanged || baseChanged);
+
+  const apply = async () => {
+    if (!canApply || !stackParentId) return;
+    setError(null);
+    setSuccess(null);
+    setBusy(true);
+    try {
+      await window.ade.lanes.reparent({
+        laneId: lane.id,
+        newParentLaneId: stackParentId,
+        stackBaseBranchRef: baseOverrideTrim || null,
+      });
+      setSuccess("Stack position updated.");
+      await onDone?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update stack position.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={SECTION_CLASS_NAME} data-tour="lanes.manageDialog.stack">
+      <div className="flex items-center gap-2 text-sm font-semibold text-fg">
+        <TreeStructure size={15} className="text-accent" />
+        Stack position
+      </div>
+      <div className="mt-1 mb-3 text-xs text-muted-fg/60">
+        Parent lane is where this lane sits in the stack (primary counts as the root). Base branch is the ref ADE uses for ahead/behind and for the rebase when you apply — leave it blank to use the parent lane's current branch.
+      </div>
+
+      {!primaryLane ? (
+        <div className="text-xs text-amber-300/90">No primary lane found; stack changes may be limited.</div>
+      ) : null}
+
+      {lane.status.dirty ? (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
+          <WarningCircle size={14} className="shrink-0" />
+          Commit or stash changes before changing stack position.
+        </div>
+      ) : null}
+
+      {lane.status.rebaseInProgress ? (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
+          <WarningCircle size={14} className="shrink-0" />
+          Finish or abort the in-progress rebase before changing stack position.
+        </div>
+      ) : null}
+
+      <span className={LABEL_CLASS_NAME}>Parent lane</span>
+      <select
+        className={`${INPUT_CLASS_NAME} mt-1.5`}
+        value={stackParentId}
+        disabled={busy || disabled || candidates.length === 0}
+        onChange={(e) => {
+          setStackParentId(e.target.value);
+          setBaseBranchInput("");
+          setSuccess(null);
+        }}
+      >
+        {candidates.length === 0 ? (
+          <option value="">No valid parent</option>
+        ) : (
+          candidates.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.laneType === "primary" ? `${c.name} (primary)` : `${c.name} · ${c.branchRef}`}
+            </option>
+          ))
+        )}
+      </select>
+
+      <span className={`${LABEL_CLASS_NAME} mt-3 block`}>Base branch (optional)</span>
+      <input
+        className={`${INPUT_CLASS_NAME} mt-1.5`}
+        value={baseBranchInput}
+        disabled={busy || disabled}
+        onChange={(e) => {
+          setBaseBranchInput(e.target.value);
+          setSuccess(null);
+        }}
+        placeholder={defaultBaseBranch ? `Default: ${defaultBaseBranch}` : "branch-name"}
+      />
+      {defaultBaseBranch ? (
+        <div className="mt-1 text-[11px] text-muted-fg/55">
+          Selected parent is on <span className="font-mono text-fg/70">{defaultBaseBranch}</span> right now; that is used when the field above is empty.
+        </div>
+      ) : null}
+
+      {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
+      {success ? <div className="mt-2 text-xs text-emerald-300">{success}</div> : null}
+
+      <div className="mt-3">
+        <Button size="sm" variant="outline" disabled={!canApply} onClick={() => { void apply(); }}>
+          {busy ? <CircleNotch size={13} className="animate-spin" /> : null}
+          {busy ? "Applying…" : "Apply stack change"}
+        </Button>
+      </div>
     </section>
   );
 }

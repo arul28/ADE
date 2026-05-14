@@ -2053,6 +2053,85 @@ describe("laneService reparent", () => {
       expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
     );
   });
+
+  it("reparents onto stackBaseBranchRef when provided", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-stack-base-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-stack-base", repoRoot });
+
+    let childHeadReads = 0;
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/child")) {
+        childHeadReads += 1;
+        return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
+      }
+      return "sha-unused";
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/develop") {
+        return { exitCode: 0, stdout: "sha-origin-develop\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-origin-develop");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-stack-base",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.reparent({
+      laneId: "lane-child",
+      newParentLaneId: "lane-main",
+      stackBaseBranchRef: "develop",
+    });
+
+    expect(result.newBaseRef).toBe("develop");
+    expect(result.newParentLaneId).toBe("lane-main");
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["rebase", "sha-origin-develop"],
+      expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
+    );
+  });
+
+  it("skips git rebase when parent and base ref are unchanged", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-noop-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-noop", repoRoot });
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-stable");
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockReset();
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-noop",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-parent" });
+
+    expect(runGitOrThrow).not.toHaveBeenCalled();
+  });
 });
 
 describe("laneService missionId and laneRole", () => {
