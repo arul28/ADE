@@ -539,7 +539,9 @@ describe("ade-code TUI state", () => {
     const { loadAdeCodeState } = await loadStateModule(home);
     expect(loadAdeCodeState()).toEqual({
       lastChatByLane: { "lane-1": "chat-1" },
+      lastChatByProjectLane: {},
       lastLaneId: null,
+      lastLaneByProject: {},
     });
   });
 
@@ -549,12 +551,16 @@ describe("ade-code TUI state", () => {
 
     saveAdeCodeState({
       lastChatByLane: { "lane-2": "chat-9" },
+      lastChatByProjectLane: {},
       lastLaneId: "lane-2",
+      lastLaneByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
       lastChatByLane: { "lane-2": "chat-9" },
+      lastChatByProjectLane: {},
       lastLaneId: "lane-2",
+      lastLaneByProject: {},
     });
   });
 });

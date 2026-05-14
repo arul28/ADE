@@ -107,7 +107,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
-import { loadAdeCodeState, saveAdeCodeState } from "./state";
+import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
 import { buildLinearToolRequest } from "./linearCommands";
 import {
@@ -1676,7 +1676,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const draftSeededFromHistoryRef = useRef(false);
   const initialNewChatPreviewRef = useRef(true);
   const attachProbeInFlightRef = useRef(false);
-  const [initialAdeCodeState] = useState(loadAdeCodeState);
+  const [initialAdeCodeState] = useState(() => scopedAdeCodeState(loadAdeCodeState(), project.projectRoot));
   const lastChatByLaneRef = useRef<Map<string, string>>(new Map(Object.entries(initialAdeCodeState.lastChatByLane)));
   const lastLaneIdRef = useRef<string | null>(initialAdeCodeState.lastLaneId);
   const lastChatByLaneWriteTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1705,9 +1705,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       for (const [laneId, sessionId] of lastChatByLaneRef.current) {
         lastChatByLane[laneId] = sessionId;
       }
-      saveAdeCodeState({ lastChatByLane, lastLaneId: lastLaneIdRef.current });
+      saveAdeCodeProjectState(project.projectRoot, { lastChatByLane, lastLaneId: lastLaneIdRef.current });
     }, 500);
-  }, []);
+  }, [project.projectRoot]);
 
   const setChatScrollOffset = useCallback((value: number | ((previous: number) => number)) => {
     setChatScrollOffsetRows((previous) => {
@@ -3279,7 +3279,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         for (const [laneId, sessionId] of lastChatByLaneRef.current) {
           lastChatByLane[laneId] = sessionId;
         }
-        saveAdeCodeState({ lastChatByLane, lastLaneId: lastLaneIdRef.current });
+        saveAdeCodeProjectState(project.projectRoot, { lastChatByLane, lastLaneId: lastLaneIdRef.current });
       }
       if (pendingModelCommitTimerRef.current) {
         clearTimeout(pendingModelCommitTimerRef.current);
