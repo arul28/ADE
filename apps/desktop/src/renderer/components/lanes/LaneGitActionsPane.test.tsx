@@ -324,7 +324,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await waitFor(() => {
       expect(mockStoreState.refreshLanes).toHaveBeenCalledWith({
         includeStatus: true,
-        includeSnapshots: true,
+        includeSnapshots: false,
       });
     });
     await waitFor(() => {
