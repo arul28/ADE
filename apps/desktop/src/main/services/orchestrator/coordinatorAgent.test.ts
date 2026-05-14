@@ -2533,12 +2533,7 @@ describe("CoordinatorAgent", () => {
       const startCalls = vi.mocked(startOpenCodeSession).mock.calls;
       expect(startCalls.length).toBeGreaterThan(0);
       expect(startCalls[0]?.[0]?.leaseKind).toBe("shared");
-      expect(Object.keys(startCalls[0]?.[0] ?? {}).sort()).toEqual(expect.arrayContaining(["adeMcp", "directory", "leaseKind", "ownerId", "ownerKind"]));
-      expect(startCalls[0]?.[0]?.adeMcp).toEqual(expect.objectContaining({
-        missionId: "mission-1",
-        runId: "run-1",
-        role: "orchestrator",
-      }));
+      expect(Object.keys(startCalls[0]?.[0] ?? {}).sort()).toEqual(expect.arrayContaining(["directory", "leaseKind", "ownerId", "ownerKind"]));
       expect(mockState.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
         body: expect.objectContaining({
           agent: "ade-plan",

@@ -216,7 +216,7 @@ describe("ChatAppControlPanel", () => {
     });
 
     fireEvent.click(screen.getByText("Inspect"));
-    expect(screen.getByText("Inspect mode attaches clicks to chat")).toBeTruthy();
+    expect(screen.getByText("Inspect mode inserts clicked element context")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Control"));
     expect(screen.getByText("Click the screenshot to drive the app, or type into the focused element below.")).toBeTruthy();
@@ -284,7 +284,7 @@ describe("ChatAppControlPanel", () => {
       id: "context-1",
       sourceFile: "src/App.tsx",
     }));
-    expect(await screen.findByText("Attached cdp to chat")).toBeTruthy();
+    expect(await screen.findByText("Inserted cdp context")).toBeTruthy();
 
     const selectCallsBeforeReattach = api.appControl.selectPoint.mock.calls.length;
     fireEvent.click(screen.getByText("Re-attach"));

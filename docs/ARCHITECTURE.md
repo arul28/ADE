@@ -1,6 +1,6 @@
 # ADE Architecture Reference
 
-Consolidated technical reference for the ADE (Agentic Development Environment) system. This document is the entry point for engineers and AI agents who need to understand the shape of the system before reading feature-specific docs. Deeper, subsystem-specific documentation lives in `docs/architecture/*.md`.
+Consolidated technical reference for the ADE (Agentic Development Environment) system. This document is the entry point for engineers and AI agents who need to understand the shape of the system before reading feature-specific docs. Deeper subsystem docs live under `docs/features/`.
 
 ---
 
@@ -74,7 +74,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Run modes:**
 
-- **Daemon (`ade serve`)** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, and listens on `~/.ade/sock/ade.sock` (Windows: a named pipe under `\\.\pipe\ade-<hash>`, with the hash derived in `apps/desktop/src/shared/adeMcpIpc.ts`). Installable / removable as a login service with `ade serve --install-service` / `--uninstall-service` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
+- **Daemon (`ade serve`)** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, and listens on `~/.ade/sock/ade.sock` (Windows: a named pipe under `\\.\pipe\ade-<hash>`, with the hash derived in `apps/desktop/src/shared/adeRuntimeIpc.ts`). Installable / removable as a login service with `ade serve --install-service` / `--uninstall-service` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
 - **Single-session CLI** — `ade <command>` connects to the local daemon over the machine socket, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through a daemon — used in CI and for one-off scripts.
 - **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes; does not expose remote memory features.
 - **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to `~/.ade/sock/ade.sock` and will start `ade serve` if the socket is missing. `ade --socket /path code` requires a specific socket; `ade code --embedded` keeps the legacy in-process fallback explicit.
@@ -205,7 +205,7 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 | `devices` + `sync_cluster_state` | Device registry and singleton host-authority row (host is `brain_device_id` internally; legacy naming). |
 | `kv` | Generic key-value store for UI layout, config trust hashes, misc settings, and short-lived recovery records such as `agent-chat-parallel-launch:<projectRoot>:<laneId>`. |
 
-Types for these tables are split into domain modules under `apps/desktop/src/shared/types/`. The barrel `index.ts` re-exports `core`, `models`, `git`, `lanes`, `conflicts`, `prs`, `files`, `sessions`, `chat`, `missions`, `orchestrator`, `config`, `automations`, `packs`, `budget`, `usage`, and more. Full schema coverage lives in [`docs/architecture/DATA_MODEL.md`](../docs/architecture/DATA_MODEL.md).
+Types for these tables are split into domain modules under `apps/desktop/src/shared/types/`. The barrel `index.ts` re-exports `core`, `models`, `git`, `lanes`, `conflicts`, `prs`, `files`, `sessions`, `chat`, `missions`, `orchestrator`, `config`, `automations`, `packs`, `budget`, `usage`, and more. Feature docs under `docs/features/` call out the table subsets that are load-bearing for each surface.
 
 ### 3.3 Filesystem state
 
@@ -344,7 +344,7 @@ Agent tools are split by domain:
 
 Interactive chat (Terminals, Work) bypasses mission runtime semantics but still flows through the unified executor with the same memory/permission plumbing.
 
-Full contract: [`docs/architecture/AI_INTEGRATION.md`](../docs/architecture/AI_INTEGRATION.md) and `docs/ORCHESTRATOR_OVERHAUL.md`.
+Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/agents/README.md), and [Missions orchestration](./features/missions/orchestration.md).
 
 ---
 
@@ -582,7 +582,7 @@ Enforced rules (from the stability overhaul):
 2. New integrations are dormant-until-configured.
 3. Feature pages stage data: cheapest (list/summary/topology) first, heavy (dashboard/settings/model metadata/overlays) on delay.
 4. Never mount expensive trees eagerly — settings dialogs, advanced launcher sections unmount when closed.
-5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist. The plain PR list does not fire a GitHub refresh on mount, fetches open external PRs before closed/all history, skips conflict analysis, and defers rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. Workflow PR views batch merge contexts and conflict analysis against metadata-only lane rows instead of running per-PR git/status work. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
+5. Renderer polling is route-scoped; terminal attention only polls on terminal routes; lane panels only poll while live sessions exist. The plain PR list does not fire a GitHub refresh on mount, fetches open external PRs before closed/all history, skips conflict analysis, and defers rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. Workflow PR views batch merge contexts and conflict analysis against metadata-only lane rows instead of running per-PR git/status work. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. Run's `LaneRuntimeBar` keeps health/process refreshes separate from preview routing / port / OAuth refreshes so process events do not reread routing state. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
 6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots).
 7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
 8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
@@ -601,7 +601,7 @@ Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, 
 - `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.missions`, …) that tour steps and the `HelpMenu` link to.
 - `renderer/components/onboarding/fx/*` — shared motion-FX primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`, `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`) with a `useReducedMotion` hook. Used by the 13-act first-session tutorial and per-tab tours.
 
-Full UI rules: [`docs/architecture/UI_FRAMEWORK.md`](../docs/architecture/UI_FRAMEWORK.md).
+Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-surfaces.md), [Files and editor](./features/files-and-editor/README.md), and [Onboarding and settings](./features/onboarding-and-settings/README.md).
 
 ---
 
@@ -665,7 +665,7 @@ Every IPC handler **validates** its arguments; invalid args return structured er
 - **Path validation** (`resolvePathWithinRoot()`) resolves symlinks via `realpathSync` before containment checks. Applied to lane env init, coordinator tools, process working dirs, sync artifact paths, ADE CLI context file resolution, computer-use artifact ingestion.
 - **Config trust**: process/test commands from `ade.yaml` require SHA-256 hash approval before execution. Commands in `local.yaml` are always trusted. Trust stored in `kv` with the config hash as key.
 
-Full surface: [`docs/architecture/SECURITY_AND_PRIVACY.md`](../docs/architecture/SECURITY_AND_PRIVACY.md).
+Related trust-boundary docs: [Computer-use artifact broker](./features/computer-use/artifact-broker.md), [Computer-use backends](./features/computer-use/backends.md), and [Configuration schema](./features/onboarding-and-settings/configuration-schema.md).
 
 ---
 
@@ -720,7 +720,7 @@ Worktree lifecycle: create (60s timeout), archive (DB status only, worktree rema
 - Branch-protection support on primary lane.
 - Destructive ops (discard, hard reset) require UI confirmation.
 
-Full detail: [`docs/architecture/GIT_ENGINE.md`](../docs/architecture/GIT_ENGINE.md).
+Related Git docs: [Lanes](./features/lanes/README.md), [Lane runtime isolation](./features/lanes/runtime.md), and [Pull requests](./features/pull-requests/README.md).
 
 ---
 
@@ -789,7 +789,7 @@ Quality controls:
 
 Embedding worker (`embeddingWorkerService.ts`) processes unembedded entries in batches; states `idle → loading → ready` (or `unavailable`). Health polled every 10s in Settings → Memory. Probe cache auto-loads model from local HuggingFace cache when present.
 
-Full surface: [`docs/architecture/MEMORY.md`](../docs/architecture/MEMORY.md).
+Related memory docs: [Memory](./features/memory/README.md), [Memory storage](./features/memory/storage.md), and [Memory compaction](./features/memory/compaction.md).
 
 ---
 
@@ -907,7 +907,7 @@ The sync subsystem is **owned by the ADE runtime daemon** (`apps/ade-cli/src/ser
 - Linear creds, GitHub tokens, provider API keys stay on the host.
 - Commands from non-host devices validated and executed by the host only.
 
-Full detail: [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MULTI_DEVICE_SYNC.md) and [`docs/architecture/IOS_APP.md`](../docs/architecture/IOS_APP.md).
+Related sync docs: [Sync and multi-device](./features/sync-and-multi-device/README.md), [iOS companion](./features/sync-and-multi-device/ios-companion.md), and [Remote commands](./features/sync-and-multi-device/remote-commands.md).
 
 ---
 
@@ -924,9 +924,10 @@ ADE/
 │   └── web/            # Marketing + download landing (Vite + React)
 ├── docs/
 │   ├── PRD.md
-│   ├── architecture/   # Deep subsystem docs (source for this file)
 │   ├── features/
-│   └── final-plan/
+│   ├── perf/
+│   ├── plans/
+│   └── playbooks/
 ├── scripts/            # Release, validate, notarize, after-pack (per-platform)
 │                       # Platform-specific: validate-mac-artifacts.mjs,
 │                       # validate-win-artifacts.mjs, ade-cli-windows-wrapper.cmd, etc.
@@ -1060,19 +1061,17 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 
 ## Cross-reference index
 
-- System overview · [`docs/architecture/SYSTEM_OVERVIEW.md`](../docs/architecture/SYSTEM_OVERVIEW.md)
-- Desktop runtime + startup · [`docs/architecture/DESKTOP_APP.md`](../docs/architecture/DESKTOP_APP.md)
-- Data model + schema · [`docs/architecture/DATA_MODEL.md`](../docs/architecture/DATA_MODEL.md)
-- AI integration + orchestrator · [`docs/architecture/AI_INTEGRATION.md`](../docs/architecture/AI_INTEGRATION.md)
-- Configuration + trust · [`docs/architecture/CONFIGURATION.md`](../docs/architecture/CONFIGURATION.md)
-- Security + privacy · [`docs/architecture/SECURITY_AND_PRIVACY.md`](../docs/architecture/SECURITY_AND_PRIVACY.md)
-- Git engine · [`docs/architecture/GIT_ENGINE.md`](../docs/architecture/GIT_ENGINE.md)
-- Memory · [`docs/architecture/MEMORY.md`](../docs/architecture/MEMORY.md)
-- Context contract · [`docs/architecture/CONTEXT_CONTRACT.md`](../docs/architecture/CONTEXT_CONTRACT.md)
-- Computer-use broker · [`docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md`](../docs/architecture/COMPUTER_USE_ARTIFACT_BROKER.md)
-- Job engine · [`docs/architecture/JOB_ENGINE.md`](../docs/architecture/JOB_ENGINE.md)
-- UI framework · [`docs/architecture/UI_FRAMEWORK.md`](../docs/architecture/UI_FRAMEWORK.md)
-- Multi-device sync · [`docs/architecture/MULTI_DEVICE_SYNC.md`](../docs/architecture/MULTI_DEVICE_SYNC.md)
-- iOS app · [`docs/architecture/IOS_APP.md`](../docs/architecture/IOS_APP.md)
-- Feature docs · [`docs/features/`](./features/)
-- Product spec · [`docs/PRD.md`](../docs/PRD.md)
+- Product spec · [PRD.md](./PRD.md)
+- Runtime and remote bindings · [Remote runtime](./features/remote-runtime/README.md)
+- Terminal client · [ADE Code](./features/ade-code/README.md)
+- Project dashboard / Run tab · [Project Home](./features/project-home/README.md)
+- Lanes and Git isolation · [Lanes](./features/lanes/README.md)
+- Agent chat · [Chat](./features/chat/README.md)
+- Missions and orchestration · [Missions](./features/missions/README.md)
+- Pull requests and queues · [Pull Requests](./features/pull-requests/README.md)
+- Multi-device sync and iOS · [Sync and Multi-device](./features/sync-and-multi-device/README.md)
+- Terminal sessions and Work · [Terminals and Sessions](./features/terminals-and-sessions/README.md)
+- Computer-use proof · [Computer Use](./features/computer-use/README.md)
+- Memory · [Memory](./features/memory/README.md)
+- Settings and onboarding · [Onboarding and Settings](./features/onboarding-and-settings/README.md)
+- Feature index · [features/](./features/)

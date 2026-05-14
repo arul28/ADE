@@ -24,7 +24,7 @@ export type TerminalAttentionSummary = {
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
-const TWO_CHAR_ESC_REGEX = /\u001b[@-Z\\-_]/g;
+const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
 
 const NEEDS_INPUT_PATTERNS: RegExp[] = [
   /\b(?:waiting|awaiting)\b.{0,28}\b(?:input|confirmation|response|prompt)\b/i,

@@ -803,12 +803,6 @@ async function runSmokeCase(client, testCase, laneId, options) {
     } finally {
       if (out.created?.id) {
         try {
-          await withTimeout(window.ade.agentChat.dispose({ sessionId: out.created.id }), "agentChat.dispose");
-          cleanup.push({ action: "dispose", ok: true });
-        } catch (error) {
-          cleanup.push({ action: "dispose", ok: false, error: serializeError(error) });
-        }
-        try {
           await withTimeout(window.ade.agentChat.delete({ sessionId: out.created.id }), "agentChat.delete");
           cleanup.push({ action: "delete", ok: true });
         } catch (error) {

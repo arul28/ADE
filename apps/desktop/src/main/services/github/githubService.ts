@@ -6,10 +6,12 @@ import { runGit } from "../git/git";
 import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 
 import { nowIso, asString } from "../shared/utils";
 
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
+const MACHINE_TOKEN_KEY = "github.token.v1";
 const GITHUB_API_TIMEOUT_MS = 20_000;
 
 async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
@@ -137,10 +139,12 @@ export function createGithubService({
   logger,
   projectRoot,
   appDataDir,
+  credentialStore,
 }: {
   logger: Logger;
   projectRoot: string;
   appDataDir: string;
+  credentialStore?: SyncCredentialStore | null;
 }) {
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
@@ -148,6 +152,49 @@ export function createGithubService({
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
 
   let tokenDecryptionFailed = false;
+  let machineTokenReadFailed = false;
+
+  const readMachineToken = (): string | null => {
+    if (!credentialStore) return null;
+    try {
+      const token = credentialStore.getSync(MACHINE_TOKEN_KEY)?.trim() ?? "";
+      machineTokenReadFailed = false;
+      return token.length > 0 ? token : null;
+    } catch (error) {
+      machineTokenReadFailed = true;
+      logger.warn("github.machine_token_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const persistMachineToken = (token: string | null): void => {
+    if (!credentialStore) return;
+    try {
+      const clean = (token ?? "").trim();
+      if (clean) {
+        credentialStore.setSync(MACHINE_TOKEN_KEY, clean);
+      } else {
+        credentialStore.deleteSync(MACHINE_TOKEN_KEY);
+      }
+      machineTokenReadFailed = false;
+    } catch (error) {
+      machineTokenReadFailed = true;
+      logger.warn("github.machine_token_write_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  };
+
+  const syncMachineToken = (token: string | null): void => {
+    try {
+      persistMachineToken(token);
+    } catch {
+      // persistMachineToken already logged the write failure.
+    }
+  };
 
   const readEncryptedToken = (candidatePath: string): string | null => {
     if (!fs.existsSync(candidatePath)) return null;
@@ -210,6 +257,7 @@ export function createGithubService({
   const migrateLegacyTokenIfNeeded = (): string | null => {
     const globalToken = readEncryptedToken(tokenPath);
     if (globalToken) {
+      syncMachineToken(globalToken);
       tokenDecryptionFailed = false;
       migrationDone = true;
       return globalToken;
@@ -222,6 +270,7 @@ export function createGithubService({
 
     try {
       persistEncryptedToken(tokenPath, legacyToken);
+      syncMachineToken(legacyToken);
       removeTokenFile(legacyTokenPath);
       logger.info("github.token_migrated_to_global_store", { projectRoot });
     } catch (error) {
@@ -236,15 +285,21 @@ export function createGithubService({
   };
 
   const readStoredToken = (): string | null => {
+    const machineToken = readMachineToken();
+    if (machineToken) {
+      tokenDecryptionFailed = false;
+      return machineToken;
+    }
     const token = migrateLegacyTokenIfNeeded();
     if (token) return token;
-    tokenDecryptionFailed = false;
+    tokenDecryptionFailed = machineTokenReadFailed;
     const envToken = (process.env.GITHUB_TOKEN ?? process.env.ADE_GITHUB_TOKEN ?? "").trim();
     return envToken.length > 0 ? envToken : null;
   };
 
   const persistToken = (token: string | null): void => {
     persistEncryptedToken(tokenPath, token);
+    persistMachineToken(token);
     if (!(token ?? "").trim()) {
       removeTokenFile(legacyTokenPath);
     } else if (fs.existsSync(legacyTokenPath)) {

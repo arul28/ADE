@@ -73,7 +73,6 @@ import type {
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
-  AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -85,7 +84,6 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
-  AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
@@ -95,10 +93,6 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
-  AgentChatClaudeMcpReconnectArgs,
-  AgentChatClaudeMcpServerStatus,
-  AgentChatClaudeMcpStatusArgs,
-  AgentChatClaudeMcpToggleArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudeSessionInfo,
@@ -442,6 +436,8 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtySendToSessionArgs,
+  PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
   ReadTranscriptTailArgs,
@@ -598,6 +594,7 @@ import type {
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
   LaneDeleteEvent,
+  LaneDeleteProgress,
   LaneDeleteRisk,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
@@ -731,6 +728,8 @@ import type {
   RemoteRuntimeTargetInput,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
+  ChatTerminalPreviewArgs,
+  ChatTerminalPreviewResult,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
   ChatTerminalSession,
@@ -1335,6 +1334,7 @@ declare global {
         cancelDelete: (args: {
           laneId: string;
         }) => Promise<{ cancelled: boolean; reason?: string }>;
+        listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
         getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
         onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
@@ -1468,11 +1468,9 @@ declare global {
           args: AgentChatCancelDispatchedSteerArgs,
         ) => Promise<AgentChatCancelDispatchedSteerResult>;
         interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
-        resume: (args: AgentChatResumeArgs) => Promise<AgentChatSession>;
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
-        dispose: (args: AgentChatDisposeArgs) => Promise<void>;
         archive: (args: AgentChatArchiveArgs) => Promise<void>;
         unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
         delete: (args: AgentChatDeleteArgs) => Promise<void>;
@@ -1487,15 +1485,6 @@ declare global {
         slashCommands: (
           args: AgentChatSlashCommandsArgs,
         ) => Promise<AgentChatSlashCommand[]>;
-        getClaudeMcpStatus: (
-          args: AgentChatClaudeMcpStatusArgs,
-        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
-        reconnectClaudeMcpServer: (
-          args: AgentChatClaudeMcpReconnectArgs,
-        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
-        toggleClaudeMcpServer: (
-          args: AgentChatClaudeMcpToggleArgs,
-        ) => Promise<AgentChatClaudeMcpServerStatus[]>;
         listClaudePlugins: (
           args?: AgentChatClaudePluginsArgs,
         ) => Promise<AgentChatClaudePlugin[]>;
@@ -1750,14 +1739,23 @@ declare global {
       terminal: {
         list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;
         read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
+        preview: (
+          args?: ChatTerminalPreviewArgs,
+        ) => Promise<ChatTerminalPreviewResult>;
         write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
         signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
         activeForChat: (
           args: ChatTerminalActiveForChatArgs,
         ) => Promise<ChatTerminalSession | null>;
       };
+      localhost: {
+        probePort: (port: number) => Promise<boolean>;
+      };
       pty: {
         create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
+        sendToSession: (
+          args: PtySendToSessionArgs,
+        ) => Promise<PtySendToSessionResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
         resize: (args: {
           ptyId: string;

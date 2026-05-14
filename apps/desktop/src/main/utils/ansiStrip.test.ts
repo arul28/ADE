@@ -14,6 +14,10 @@ describe("stripAnsi", () => {
     expect(stripAnsi("\u001b]0;title\u0007hello")).toBe("hello");
   });
 
+  it("removes cursor save and restore escapes", () => {
+    expect(stripAnsi("\u001b7claude\u001b8 ready")).toBe("claude ready");
+  });
+
   it("removes carriage returns", () => {
     expect(stripAnsi("a\rb")).toBe("ab");
   });

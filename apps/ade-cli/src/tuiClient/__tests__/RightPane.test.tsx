@@ -3,128 +3,10 @@ import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import { RightPane } from "../components/RightPane";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
-import type { ProviderReadinessRow, RightPaneContent, SetupPaneRow } from "../types";
-
-const setupRows: SetupPaneRow[] = [
-  { kind: "provider", label: "Provider", value: "Codex", cyclable: true },
-  { kind: "model", label: "Model", value: "GPT-5.5", cyclable: true, detail: "5 available" },
-  { kind: "reasoning", label: "Reasoning", value: "medium", cyclable: true, detail: "low, medium, high" },
-  { kind: "permission", label: "Permissions", value: "default", cyclable: true },
-  { kind: "codex-fast", label: "Fast mode", value: "off", cyclable: true, detail: "Codex service tier" },
-  { kind: "refresh-status", label: "Refresh status", value: "run", detail: "checks provider auth/runtime state" },
-  { kind: "open-settings", label: "Full settings", value: "open desktop", detail: "Settings > AI Providers" },
-];
-
-const providerRows: ProviderReadinessRow[] = [
-  { provider: "codex", label: "Codex", status: "ready", detail: "ready at /usr/local/bin/codex", modelCount: 6 },
-  { provider: "claude", label: "Claude", status: "ready", detail: "ready at /usr/local/bin/claude", modelCount: 4 },
-  { provider: "cursor", label: "Cursor", status: "unknown", detail: "API key store not yet readable", modelCount: 0 },
-  { provider: "droid", label: "Droid", status: "unavailable", detail: "no Factory Droid CLI or FACTORY_API_KEY", modelCount: 0 },
-  { provider: "opencode", label: "OpenCode", status: "ready", detail: "user-installed · 0 shared runtime", modelCount: 4442 },
-];
 
 function stripAnsi(text: string): string {
-  return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  return text.replace(/\[[0-?]*[ -/]*[@-~]/g, "");
 }
-
-function content(overrides: Partial<Extract<RightPaneContent, { kind: "model-setup" }>> = {}): RightPaneContent {
-  return {
-    kind: "model-setup",
-    rows: setupRows,
-    providerRows,
-    activeProvider: "codex",
-    checkedAt: "2026-05-09T19:57:09.000Z",
-    desktopAttached: true,
-    ...overrides,
-  };
-}
-
-function renderModelSetup(selectedIndex: number, overrides: Partial<Extract<RightPaneContent, { kind: "model-setup" }>> = {}): string {
-  const result = render(
-    <RightPane content={content(overrides)} selectedIndex={selectedIndex} focused />,
-  );
-  return result.lastFrame() ?? "";
-}
-
-describe("RightPane model-setup", () => {
-  it("renders PROVIDER tab strip + MODEL section header", () => {
-    const frame = renderModelSetup(0);
-    expect(frame).toContain("PROVIDER");
-    expect(frame).toContain("MODEL");
-  });
-
-  it("renders all five providers as compact brand chips", () => {
-    const frame = stripAnsi(renderModelSetup(0));
-    expect(frame).toContain("[● Codex]");
-    expect(frame).toContain("[● Claude]");
-    expect(frame).toContain("[● Cursor]");
-    expect(frame).toContain("[● Droid]");
-    expect(frame).toContain("[● OpenCode]");
-    expect(frame).not.toContain("◇ Codex");
-    expect(frame).not.toContain("◆ Claude");
-  });
-
-  it("renders the STATUS readiness section for the active provider", () => {
-    const frame = renderModelSetup(0);
-    expect(frame).toContain("STATUS · CODEX");
-  });
-
-  it("uses the compact target title and active-first provider order in wide mode", () => {
-    const result = render(
-      <RightPane
-        content={content({ activeProvider: "claude" })}
-        selectedIndex={0}
-        focused
-        width={84}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("SETUP · MODEL");
-    expect(frame.indexOf("Claude")).toBeLessThan(frame.indexOf("Codex"));
-  });
-
-  it("renders output style as a model setup row when provided", () => {
-    const result = render(
-      <RightPane
-        content={content({
-          activeProvider: "claude",
-          rows: [
-            ...setupRows,
-            {
-              kind: "output-style",
-              label: "Output style",
-              value: "default",
-              detail: "default · concise · verbose",
-              cyclable: true,
-            },
-          ],
-        })}
-        selectedIndex={5}
-        focused
-        width={84}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("Output style");
-    expect(frame).toContain("default · concise · verbose");
-  });
-
-  it("renders provider tab readiness legend", () => {
-    const frame = renderModelSetup(0);
-    expect(frame).toContain("ready");
-    expect(frame).toContain("active");
-    expect(frame).toContain("needs login");
-  });
-
-  it("renders the footer hint row", () => {
-    const frame = renderModelSetup(0);
-    expect(frame).toContain("provider");
-    expect(frame).toContain("apply");
-    expect(frame).toContain("login");
-  });
-});
 
 describe("RightPane subagents", () => {
   it("renders an agents process table with main, subagents, and teammates", () => {
@@ -153,6 +35,23 @@ describe("RightPane subagents", () => {
     expect(frame).toContain("TEAMMATES");
     expect(frame).toContain("mate-x");
     expect(frame).toContain("transcript follows");
+  });
+
+  it("renders the empty-state copy when no subagents have run yet", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "subagents",
+          tab: "subagents",
+          provider: "claude",
+          snapshots: [],
+        }}
+        focused
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("No subagents yet.");
   });
 
   it("renders a single tab + placeholder for Droid (no subagents in ACP)", () => {

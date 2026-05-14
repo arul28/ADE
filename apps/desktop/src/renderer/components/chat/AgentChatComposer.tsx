@@ -731,6 +731,7 @@ export function AgentChatComposer({
   draft,
   attachments,
   contextAttachments = [],
+  allowAttachmentOnlySubmit = false,
   pinnedLinearIssue = null,
   pendingInput,
   approvalResponding,
@@ -764,6 +765,9 @@ export function AgentChatComposer({
   onDraftChange,
   onClearDraft,
   onSubmit,
+  onSubmitInBackground,
+  backgroundLaunchBusy = false,
+  backgroundLaunchLabel = "Background",
   onInterrupt,
   onApproval,
   onAddAttachment,
@@ -847,6 +851,7 @@ export function AgentChatComposer({
   draft: string;
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  allowAttachmentOnlySubmit?: boolean;
   pinnedLinearIssue?: LaneLinearIssue | null;
   pendingInput: PendingInputRequest | null;
   approvalResponding?: boolean;
@@ -880,6 +885,9 @@ export function AgentChatComposer({
   onDraftChange: (value: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
+  onSubmitInBackground?: () => void;
+  backgroundLaunchBusy?: boolean;
+  backgroundLaunchLabel?: string;
   onInterrupt: () => void;
   onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
@@ -2521,8 +2529,22 @@ export function AgentChatComposer({
   const hasAppControlContext = appControlContextItems.length > 0;
   const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
   const hasMacosVmContext = macosVmContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (draft.trim().length > 0 || hasIosElementContext || hasAppControlContext || hasBuiltInBrowserContext || hasMacosVmContext || contextAttachmentCount > 0);
-  const sendEnabled = !busy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
+  const singleReady = !parallelChatMode && Boolean(modelId) && (
+    draft.trim().length > 0
+    || (allowAttachmentOnlySubmit && attachments.length > 0)
+    || hasIosElementContext
+    || hasAppControlContext
+    || hasBuiltInBrowserContext
+    || hasMacosVmContext
+    || contextAttachmentCount > 0
+  );
+  const sendEnabled = !busy && !backgroundLaunchBusy && !parallelLaunchBusy && !composerInputLocked && (parallelReady || singleReady);
+  const backgroundSendEnabled = Boolean(onSubmitInBackground)
+    && !busy
+    && !backgroundLaunchBusy
+    && !parallelLaunchBusy
+    && !composerInputLocked
+    && singleReady;
 
   function sendButtonTitle(): string {
     if (composerInputLocked) return composerInputLockMessage ?? "Resolve the pending request before sending.";
@@ -2532,6 +2554,7 @@ export function AgentChatComposer({
       return "Send to all lanes";
     }
     if (!modelId) return "Select a model first";
+    if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";
     if (!draft.trim().length && hasIosElementContext) return "Send selected iOS context";
@@ -3471,27 +3494,50 @@ export function AgentChatComposer({
                     ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
                     : "Send this prompt to the selected model.";
                 return (
-                  <SmartTooltip content={{ label, description, effect: sendButtonTitle() }}>
-                    <button
-                      type="button"
-                      className={cn(
-                        "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
-                        sendEnabled
-                          ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-50 hover:border-violet-300/45 hover:bg-violet-500/[0.22] active:scale-[0.97]"
-                          : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
-                      )}
-                      disabled={!sendEnabled}
-                      onClick={submitComposerDraft}
-                      aria-label={label}
-                    >
-                      {cloudMode
-                        ? <CloudArrowUp className="h-3 w-3" size={12} weight="fill" />
-                        : <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />}
-                      <span className="ml-1 max-w-[10rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[13rem]">
-                        {label}
-                      </span>
-                    </button>
-                  </SmartTooltip>
+                  <>
+                    <SmartTooltip content={{ label, description, effect: sendButtonTitle() }}>
+                      <button
+                        type="button"
+                        className={cn(
+                          "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
+                          sendEnabled
+                            ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-50 hover:border-violet-300/45 hover:bg-violet-500/[0.22] active:scale-[0.97]"
+                            : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
+                        )}
+                        disabled={!sendEnabled}
+                        onClick={submitComposerDraft}
+                        aria-label={label}
+                      >
+                        {cloudMode
+                          ? <CloudArrowUp className="h-3 w-3" size={12} weight="fill" />
+                          : <PaperPlaneTilt className="h-3 w-3" size={12} weight="fill" />}
+                        <span className="ml-1 max-w-[10rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)] sm:max-w-[13rem]">
+                          {label}
+                        </span>
+                      </button>
+                    </SmartTooltip>
+                    {onSubmitInBackground && !parallelChatMode && !cloudMode ? (
+                      <SmartTooltip content={{ label: "Launch in background", description: "Start this chat without leaving the new chat pane." }}>
+                        <button
+                          type="button"
+                          className={cn(
+                            "inline-flex h-8 min-h-0 items-center justify-center rounded-lg border px-2.5 transition-all",
+                            backgroundSendEnabled
+                              ? "border-emerald-300/25 bg-emerald-500/[0.12] text-emerald-100 hover:border-emerald-300/40 hover:bg-emerald-500/[0.18] active:scale-[0.97]"
+                              : "border-white/[0.04] bg-white/[0.02] text-muted-fg/15",
+                          )}
+                          disabled={!backgroundSendEnabled}
+                          onClick={onSubmitInBackground}
+                          aria-label="Launch in background"
+                        >
+                          <Lightning className="h-3 w-3" size={12} weight="fill" />
+                          <span className="ml-1 max-w-[7rem] truncate font-sans text-[length:calc(var(--chat-font-size)*10/14)]">
+                            {backgroundLaunchBusy ? "Launching" : backgroundLaunchLabel}
+                          </span>
+                        </button>
+                      </SmartTooltip>
+                    ) : null}
+                  </>
                 );
               })()
             )}

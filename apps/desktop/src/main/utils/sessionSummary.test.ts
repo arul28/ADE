@@ -54,4 +54,24 @@ describe("summarizeTerminalSession", () => {
     expect(summary).toContain("npm run test");
     expect(summary).not.toMatch(/@acme\/pkg@1\.0\.0/i);
   });
+
+  it("filters Claude terminal chrome from stopped session summaries", () => {
+    const transcript = [
+      "\u001b7\u001b8╭───Claude Codev2.1.141────",
+      "? for shortcuts · ← for agents",
+      "Say exactly: patched exit works",
+      "Resume this session with:",
+      "claude --resume 5647da1e",
+    ].join("\r");
+
+    const summary = summarizeTerminalSession({
+      title: "Say exactly: patched exit works",
+      exitCode: 143,
+      transcript,
+    });
+
+    expect(summary).toBe("Ran Say exactly: patched exit works (STOPPED, exit code 143)");
+    expect(summary).not.toContain("Claude Code");
+    expect(summary).not.toContain("╭");
+  });
 });

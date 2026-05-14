@@ -1,8 +1,20 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { AgentChatProvider, AgentChatSlashCommand } from "../../../../desktop/src/shared/types/chat";
-import { paletteCommands } from "../commands";
+import { paletteCommands, type CommandPlacement } from "../commands";
 import { theme } from "../theme";
+
+const PLACEMENT_GLYPHS: Record<CommandPlacement, string> = {
+  right: "↗",
+  chat: "✉",
+  inline: "·",
+  overlay: "◇",
+};
+
+function placementGlyph(placement?: CommandPlacement): string {
+  if (!placement) return " ";
+  return PLACEMENT_GLYPHS[placement] ?? " ";
+}
 
 const VISIBLE_ROWS = 5;
 export const SLASH_PALETTE_ROWS = VISIBLE_ROWS + 3;
@@ -12,7 +24,8 @@ const MIN_PALETTE_WIDTH = 56;
 
 function clampPaletteWidth(width?: number): number {
   const available = Number.isFinite(width) ? Math.floor(width ?? DEFAULT_PALETTE_WIDTH) : DEFAULT_PALETTE_WIDTH;
-  return Math.max(MIN_PALETTE_WIDTH, Math.min(MAX_PALETTE_WIDTH, available));
+  const safeAvailable = Math.max(1, available - 2);
+  return Math.max(Math.min(MIN_PALETTE_WIDTH, safeAvailable), Math.min(MAX_PALETTE_WIDTH, safeAvailable));
 }
 
 const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
@@ -37,12 +50,27 @@ function selectedExample(row: PaletteRow): string {
 
 function endTruncate(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
-  if (value.length <= max) return value;
-  return `${value.slice(0, Math.max(0, max - 1))}…`;
+  if (textWidth(value) <= max) return value;
+  const ellipsis = "…";
+  const ellipsisWidth = textWidth(ellipsis);
+  let width = 0;
+  let result = "";
+  for (const char of value) {
+    const nextWidth = textWidth(char);
+    if (width + nextWidth + ellipsisWidth > max) break;
+    result += char;
+    width += nextWidth;
+  }
+  return `${result}${ellipsis}`;
+}
+
+function terminalCellWidth(char: string): number {
+  const codePoint = char.codePointAt(0) ?? 0;
+  return codePoint > 0x7f ? 2 : 1;
 }
 
 function textWidth(value: string): number {
-  return [...value].length;
+  return [...value].reduce((width, char) => width + terminalCellWidth(char), 0);
 }
 
 function padEnd(value: string, width: number): string {
@@ -113,20 +141,28 @@ export function SlashPalette({
     belowCount ? `${belowCount} below` : null,
   ].filter(Boolean).join(" · ");
   const header = topLine(`Commands · ${providerLabel(provider)} · ${queryLabel} · ${total} match${total === 1 ? "" : "es"}`, paletteWidth);
-  const rowLines = window.map((row, index) => {
+  const rowLines: Array<
+    | { kind: "blank"; value: string }
+    | {
+        kind: "row";
+        selected: boolean;
+        value: string;
+      }
+  > = window.map((row, index) => {
     const absoluteIndex = start + index;
     const isSelected = absoluteIndex === safeIndex;
     const command = selectedExample(row);
+    const rail = isSelected ? theme.rail : " ";
+    const glyph = placementGlyph(row.placement);
+    const rowText = `${rail} ${glyph} ${fillLine(command, nameWidth)} ${endTruncate(row.description, descriptionWidth)}`;
     return {
+      kind: "row" as const,
       selected: isSelected,
-      value: bodyLine(
-        `${isSelected ? theme.rail : " "} ${fillLine(command, nameWidth)} ${endTruncate(row.description, descriptionWidth)}`,
-        paletteWidth,
-      ),
+      value: bodyLine(rowText, paletteWidth),
     };
   });
   while (rowLines.length < VISIBLE_ROWS) {
-    rowLines.push({ selected: false, value: bodyLine("", paletteWidth) });
+    rowLines.push({ kind: "blank" as const, value: bodyLine("", paletteWidth) });
   }
   const footer = bottomLine(
     `${moreSummary ? `${moreSummary} · ` : ""}↑↓ move · Tab insert · Enter run · Esc close`,
@@ -136,11 +172,21 @@ export function SlashPalette({
   return (
     <Box width={paletteWidth} flexDirection="column">
       {paletteLine(header, theme.color.violet)}
-      {rowLines.map((line, index) => (
-        <React.Fragment key={index}>
-          {paletteLine(line.value, line.selected ? theme.color.t1 : theme.color.t2)}
-        </React.Fragment>
-      ))}
+      {rowLines.map((line, index) => {
+        if (line.kind === "blank") {
+          return (
+            <React.Fragment key={index}>
+              {paletteLine(line.value, theme.color.t2)}
+            </React.Fragment>
+          );
+        }
+        const textColor = line.selected ? theme.color.t1 : theme.color.t2;
+        return (
+          <Text key={index} backgroundColor={theme.color.surface1} color={textColor}>
+            {line.value}
+          </Text>
+        );
+      })}
       {paletteLine(bodyLine(selectedSummary, paletteWidth), theme.color.t3)}
       {paletteLine(footer, theme.color.t4)}
     </Box>

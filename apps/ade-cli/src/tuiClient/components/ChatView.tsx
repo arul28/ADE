@@ -1,15 +1,24 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { LocalNotice } from "../types";
 import {
   parseInlineRuns,
+  compactPath,
   type AssistantMarkdownBlock,
+  type HighlightedToken,
   type InlineRun,
   type RenderedChatLine,
 } from "../format";
-import { aggregateChatBlocks, type AggregatedBlock, type PlanStep, type WorkTool } from "../aggregate";
+import {
+  aggregateChatBlocks,
+  type AggregatedBlock,
+  type FileChangeEntry,
+  type PlanStep,
+  type ToolCallEntry,
+  type WorkToolStatus,
+} from "../aggregate";
 import { theme } from "../theme";
 import { useBrailleSpin, useDotPulse, useSpinFrame } from "../spinTick";
 import { AdeWordmark } from "./AdeWordmark";
@@ -32,6 +41,13 @@ type RenderedChatRow = {
   italic?: boolean;
   rail?: string | null;
   runs?: InlineRun[];
+};
+
+export type ChatTextSelection = {
+  startRow: number;
+  startColumn: number;
+  endRow: number;
+  endColumn: number;
 };
 
 function textWidth(value: string): number {
@@ -442,50 +458,113 @@ function padCells(cells: string[], width: number): string[] {
   return out;
 }
 
+function shouldSpaceMarkdownBlocks(
+  prev: AssistantMarkdownBlock["kind"],
+  next: AssistantMarkdownBlock["kind"],
+): boolean {
+  // Headings packed flush to the heading they precede is fine, but everything
+  // else (bullets, numbered items, paragraphs) gets a single blank line above
+  // for breathing room — matches the desktop's line-height rhythm.
+  return true;
+}
+
+const HIGHLIGHT_COLOR: Record<NonNullable<HighlightedToken["category"]>, string> = {
+  keyword: theme.color.codeKeyword,
+  string: theme.color.codeString,
+  number: theme.color.codeNumber,
+  comment: theme.color.codeComment,
+  function: theme.color.codeFunction,
+  type: theme.color.codeType,
+  variable: theme.color.codeVariable,
+  tag: theme.color.codeTag,
+  meta: theme.color.codeMeta,
+};
+
+function tokensToRuns(tokens: HighlightedToken[]): InlineRun[] {
+  return tokens.map((token) => {
+    const color = token.category ? HIGHLIGHT_COLOR[token.category] : theme.color.t1;
+    const run: InlineRun = { text: token.text, color };
+    if (token.bold) run.bold = true;
+    if (token.italic) run.italic = true;
+    return run;
+  });
+}
+
 function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: string): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
+  let prevKind: AssistantMarkdownBlock["kind"] | null = null;
 
   for (const block of blocks) {
-    if (rows.length) rows.push(spacerRow(`${id}:markdown-spacer:${rows.length}`, "assistant"));
+    if (prevKind && shouldSpaceMarkdownBlocks(prevKind, block.kind)) {
+      rows.push(spacerRow(`${id}:md-spacer:${rows.length}`, "assistant"));
+    }
     if (block.kind === "heading") {
       rows.push(...inlineRowsFromText(block.text, width, id, "", "", { color: theme.color.accent, bold: true }));
-      continue;
-    }
-    if (block.kind === "bullet") {
+    } else if (block.kind === "bullet") {
       rows.push(...inlineRowsFromText(block.text, width, id, "• ", "  "));
-      continue;
-    }
-    if (block.kind === "numbered") {
+    } else if (block.kind === "numbered") {
       const prefix = `${block.number}. `;
       rows.push(...inlineRowsFromText(block.text, width, id, prefix, repeat(" ", textWidth(prefix))));
-      continue;
-    }
-    if (block.kind === "quote") {
+    } else if (block.kind === "quote") {
       rows.push(...inlineRowsFromText(block.text, width, id, "> ", "> ", { dim: true }));
-      continue;
-    }
-    if (block.kind === "code") {
-      const label = block.language ? ` ${block.language}` : "";
-      rows.push({ id, tone: "assistant", text: `  ┌${repeat("─", Math.max(1, Math.min(width - 5, 24)))}${label}`, color: theme.color.border, dim: true });
-      for (const codeLine of block.lines.length ? block.lines : [""]) {
-        const available = Math.max(1, width - 4);
-        const chunks = hardWrapWord(codeLine || " ", available);
+    } else if (block.kind === "code") {
+      const label = block.language ? ` ${block.language} ` : "";
+      const ruleWidth = Math.max(1, Math.min(width - 5, 24));
+      rows.push({
+        id,
+        tone: "assistant",
+        text: `  ┌─${label}${repeat("─", Math.max(0, ruleWidth - label.length))}`,
+        color: theme.color.border,
+        dim: true,
+      });
+      const codeLines = block.lines.length ? block.lines : [""];
+      const tokensPerLine = block.tokens && block.tokens.length === codeLines.length ? block.tokens : null;
+      const available = Math.max(1, width - 4);
+      for (let lineIndex = 0; lineIndex < codeLines.length; lineIndex += 1) {
+        const codeLine = codeLines[lineIndex] ?? "";
+        if (!codeLine) {
+          rows.push({ id, tone: "assistant", text: "  │ ", color: theme.color.border, dim: true });
+          continue;
+        }
+        if (tokensPerLine) {
+          const lineTokens = tokensPerLine[lineIndex] ?? [];
+          if (!lineTokens.length) {
+            rows.push({ id, tone: "assistant", text: "  │ ", color: theme.color.border, dim: true });
+            continue;
+          }
+          // Hard-wrap by width across the token sequence so we keep colored runs intact.
+          const wrapped = wrapInlineRuns(tokensToRuns(lineTokens), available, "  │ ", "  │ ");
+          for (const lineSegments of wrapped) {
+            rows.push({
+              id: `${id}:code:${lineIndex}`,
+              tone: "assistant",
+              text: runsPlainText(lineSegments),
+              runs: lineSegments,
+              rail: null,
+            });
+          }
+          continue;
+        }
+        // No tokens (unknown language): render plain code text in t1 with wrap.
+        const chunks = hardWrapWord(codeLine, available);
         for (const chunk of chunks) {
-          rows.push({ id, tone: "assistant", text: `  │ ${chunk}`, color: theme.color.tool, dim: true });
+          rows.push({
+            id,
+            tone: "assistant",
+            text: `  │ ${chunk}`,
+            color: theme.color.t1,
+          });
         }
       }
       rows.push({ id, tone: "assistant", text: "  └", color: theme.color.border, dim: true });
-      continue;
-    }
-    if (block.kind === "table") {
+    } else if (block.kind === "table") {
       rows.push(...tableRows(block, width, id));
-      continue;
-    }
-    if (block.kind === "hr") {
+    } else if (block.kind === "hr") {
       rows.push({ id, tone: "assistant", text: repeat("─", Math.min(width, 72)), color: theme.color.border, dim: true });
-      continue;
+    } else {
+      rows.push(...inlineRowsFromText(block.text, width, id, "", ""));
     }
-    rows.push(...inlineRowsFromText(block.text, width, id, "", ""));
+    prevKind = block.kind;
   }
   return rows;
 }
@@ -496,15 +575,24 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
 
 const LINK_COLOR = theme.color.info;
 const MEMORY_COLOR = theme.color.tool;
-const WORK_STATUS_COLOR: Record<WorkTool["status"], string> = {
+const WORK_STATUS_COLOR: Record<WorkToolStatus, string> = {
   running: theme.color.violet,
   ok: theme.color.running,
   failed: theme.color.error,
 };
 
+// How many entries to render inline per work-group before collapsing into "+N more".
+// Tight by design: the TUI can't expand groups, so flooding with all tools is just noise.
+const GROUP_VISIBLE_CAP = 3;
+// Per-row arg/command truncation. Chosen so each tool entry stays on a single
+// terminal line at typical widths (~120 cols) — the noise from line-wrapped
+// shell args was the user's main complaint.
+const LONG_LINE_TRUNCATE_AT = 80;
+
 function formatDurationMs(ms: number | undefined): string | null {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
-  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return null;
+  if (ms < 1) return "<1ms";
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
   const seconds = ms / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const minutes = Math.floor(seconds / 60);
@@ -512,81 +600,178 @@ function formatDurationMs(ms: number | undefined): string | null {
   return `${minutes}m ${remSeconds}s`;
 }
 
-function workBlockRows(
-  block: Extract<AggregatedBlock, { kind: "work-block" }>,
-  width: number,
-  brailleFrame: string,
+function statusGlyph(status: WorkToolStatus, spinFrame: string): string {
+  if (status === "failed") return "✗";
+  if (status === "running") return spinFrame;
+  return "✓";
+}
+
+function truncateLongLine(value: string): string {
+  if (textWidth(value) <= LONG_LINE_TRUNCATE_AT) return value;
+  return `${[...value].slice(0, LONG_LINE_TRUNCATE_AT - 1).join("")}…`;
+}
+
+function groupHeaderRuns(
+  label: string,
+  total: number,
+  liveSummary: { ok: number; failed: number } | null,
+  spinFrame: string,
+): InlineRun[] {
+  const runs: InlineRun[] = [
+    { text: "▸ ", color: theme.color.t3 },
+    { text: `${label} (${total})`, color: theme.color.t2, bold: true },
+  ];
+  if (liveSummary) {
+    const tail: string[] = [];
+    if (liveSummary.ok > 0) tail.push(`${liveSummary.ok} ok`);
+    if (liveSummary.failed > 0) tail.push(`${liveSummary.failed} failed`);
+    if (tail.length) {
+      runs.push({ text: "  ·  ", color: theme.color.t4 });
+      runs.push({ text: tail.join(" · "), color: theme.color.t4 });
+    }
+  } else {
+    runs.push({ text: "  ", color: theme.color.t4 });
+    runs.push({ text: spinFrame, color: theme.color.violet });
+    runs.push({ text: " working…", color: theme.color.violet, italic: true });
+  }
+  return runs;
+}
+
+function moreLineRow(blockId: string, remaining: number): RenderedChatRow {
+  return {
+    id: `${blockId}:more`,
+    tone: "work",
+    text: `    + ${remaining} more`,
+    color: theme.color.t4,
+    italic: true,
+    rail: null,
+  };
+}
+
+function visibleEntries<T>(entries: T[], live: boolean): { shown: T[]; remaining: number } {
+  if (entries.length <= GROUP_VISIBLE_CAP) return { shown: entries, remaining: 0 };
+  // When live, prefer the most recent N; when done, prefer the most recent N as well
+  // (the user wants "most recent x show"). Drop the oldest ones into the "+N more" tail.
+  const shown = live ? entries.slice(-GROUP_VISIBLE_CAP) : entries.slice(-GROUP_VISIBLE_CAP);
+  return { shown, remaining: entries.length - shown.length };
+}
+
+function toolCallsGroupRows(
+  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
   spinFrame: string,
 ): RenderedChatRow[] {
-  if (!block.tools.length) return [];
+  if (!block.entries.length) return [];
   const out: RenderedChatRow[] = [];
-  const total = block.tools.length;
-  const ok = block.tools.filter((tool) => tool.status === "ok").length;
-  const failed = block.tools.filter((tool) => tool.status === "failed").length;
-
-  const headerText = block.live
-    ? `▸ working · ${total} tool${total === 1 ? "" : "s"} so far ${brailleFrame}`
-    : (() => {
-        const parts: string[] = [`▸ ${total} tool${total === 1 ? "" : "s"}`];
-        if (ok > 0) parts.push(`${ok} ok`);
-        if (failed > 0) parts.push(`${failed} failed`);
-        const dur = formatDurationMs(block.durationMs);
-        if (dur) parts.push(dur);
-        return parts.join(" · ");
-      })();
+  const total = block.entries.length;
+  const ok = block.entries.filter((entry) => entry.status === "ok").length;
+  const failed = block.entries.filter((entry) => entry.status === "failed").length;
 
   out.push({
     id: block.id,
     tone: "work",
-    text: headerText,
-    color: theme.color.t3,
+    text: `▸ Tool calls (${total})`,
+    runs: groupHeaderRuns("Tool calls", total, block.live ? null : { ok, failed }, spinFrame),
     rail: null,
   });
 
-  type Display = { tool: WorkTool; faded: boolean };
-  let displays: Display[];
-  if (block.live) {
-    const recent = block.tools.slice(-3).reverse();
-    displays = recent.map((tool, index) => ({ tool, faded: index === recent.length - 1 && total > 3 }));
-  } else {
-    const failedTools = block.tools.filter((tool) => tool.status === "failed");
-    if (failedTools.length === 0) {
-      const lastOk = [...block.tools].reverse().find((tool) => tool.status === "ok");
-      displays = lastOk ? [{ tool: lastOk, faded: false }] : [];
-    } else {
-      displays = failedTools.map((tool) => ({ tool, faded: false }));
-      if (failed < total) {
-        const lastOk = [...block.tools].reverse().find((tool) => tool.status === "ok");
-        if (lastOk) displays.push({ tool: lastOk, faded: false });
-      }
-    }
-  }
-
-  for (const { tool, faded } of displays) {
-    const glyph = tool.status === "failed" ? "✗" : tool.status === "running" ? spinFrame : "✓";
-    const statusColor = faded ? theme.color.t5 : WORK_STATUS_COLOR[tool.status];
-    const dur = formatDurationMs(tool.durationMs);
-    const nameColor = faded ? theme.color.t5 : theme.color.t1;
-    const argColor = faded ? theme.color.t5 : theme.color.t3;
-    const tailColor = faded ? theme.color.t5 : theme.color.t4;
-    const argText = tool.arg ? ` · ${tool.arg}` : "";
-    const tailText = dur ? `  ${dur}` : "";
+  const { shown, remaining } = visibleEntries(block.entries, block.live);
+  for (const entry of shown) {
+    const glyph = statusGlyph(entry.status, spinFrame);
+    const dur = formatDurationMs(entry.durationMs);
+    const arg = entry.arg ? truncateLongLine(entry.arg) : "";
     const runs: InlineRun[] = [
-      { text: "  " },
-      { text: glyph, color: statusColor },
-      { text: ` ${tool.tool}`, color: nameColor },
+      { text: "    " },
+      { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
+      { text: ` ${entry.tool}`, color: theme.color.t1 },
     ];
-    if (argText) runs.push({ text: argText, color: argColor });
-    if (tailText) runs.push({ text: tailText, color: tailColor });
-    const lineText = `  ${glyph} ${tool.tool}${argText}${tailText}`;
+    if (arg) runs.push({ text: `  ${arg}`, color: theme.color.t3 });
+    if (dur) runs.push({ text: `  ${dur}`, color: theme.color.t4 });
     out.push({
-      id: `${block.id}:${tool.itemId}`,
+      id: `${block.id}:${entry.itemId}`,
       tone: "work",
-      text: lineText,
+      text: `    ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
       runs,
       rail: null,
     });
   }
+  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
+  return out;
+}
+
+function fileBadgeFor(entry: FileChangeEntry): { label: string; color: string } {
+  const badges = theme.color.fileBadge as Record<string, string>;
+  const lower = entry.path.toLowerCase();
+  const lastDot = lower.lastIndexOf(".");
+  const ext = lastDot >= 0 ? lower.slice(lastDot + 1) : "";
+  const color = badges[ext] ?? badges.default ?? theme.color.t4;
+  const label = (ext || "•").slice(0, 3).toUpperCase();
+  return { label, color };
+}
+
+function filesChangedGroupRows(
+  block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
+  width: number,
+  spinFrame: string,
+): RenderedChatRow[] {
+  if (!block.entries.length) return [];
+  const out: RenderedChatRow[] = [];
+  const total = block.entries.length;
+  const failed = block.entries.filter((entry) => entry.status === "failed").length;
+  const ok = total - failed;
+  const label = total === 1 ? "file changed" : "files changed";
+
+  out.push({
+    id: block.id,
+    tone: "work",
+    text: `▸ ${total} ${label}`,
+    runs: [
+      { text: "▸ ", color: theme.color.t3 },
+      { text: `${total} ${label}`, color: theme.color.t2, bold: true },
+      ...(block.live
+        ? [
+            { text: "  ", color: theme.color.t4 } as InlineRun,
+            { text: spinFrame, color: theme.color.violet } as InlineRun,
+            { text: " working…", color: theme.color.violet, italic: true } as InlineRun,
+          ]
+        : [
+            ...(failed > 0
+              ? [{ text: `  ·  ${failed} failed`, color: theme.color.t4 } as InlineRun]
+              : []),
+          ]),
+    ],
+    rail: null,
+  });
+  void ok;
+
+  const pathWidth = Math.max(20, width - 18);
+  const { shown, remaining } = visibleEntries(block.entries, block.live);
+  for (const entry of shown) {
+    const badge = fileBadgeFor(entry);
+    const glyph = statusGlyph(entry.status, spinFrame);
+    const trimmedPath = compactPath(entry.path, pathWidth);
+    const stats = entry.deleted
+      ? "Deleted"
+      : `+${entry.additions} −${entry.deletions}`;
+    const statsColor = entry.deleted ? theme.color.error : theme.color.t4;
+    const runs: InlineRun[] = [
+      { text: "    " },
+      { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
+      { text: " " },
+      { text: badge.label.padEnd(3, " "), color: badge.color, bold: true },
+      { text: "  " },
+      { text: trimmedPath, color: theme.color.t1 },
+      { text: "  " },
+      { text: stats, color: statsColor },
+    ];
+    out.push({
+      id: `${block.id}:${entry.itemId}`,
+      tone: "work",
+      text: `    ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
+      runs,
+      rail: null,
+    });
+  }
+  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
 }
 
@@ -684,6 +869,17 @@ function modelWorkingRows(dots: string): RenderedChatRow[] {
   }];
 }
 
+function modelInterruptedRows(): RenderedChatRow[] {
+  return [{
+    id: "model-interrupted",
+    tone: "work",
+    text: "Interrupted · chat to continue",
+    color: theme.color.mutedFg,
+    bold: true,
+    rail: null,
+  }];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Passthrough renderers (user-bubble, assistant-text, approval, error, notice)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -748,15 +944,12 @@ function rowsForBlock(
     case "error":
     case "notice":
       return passthroughRows(block.line, width);
-    case "assistant-text": {
-      const rows = passthroughRows(block.line, width);
-      if (block.precededByHeavy) {
-        rows.unshift(spacerRow(`${block.id}:leading-spacer`, "assistant"));
-      }
-      return rows;
-    }
-    case "work-block":
-      return workBlockRows(block, width, brailleFrame, spinFrame);
+    case "assistant-text":
+      return passthroughRows(block.line, width);
+    case "tool-calls-group":
+      return toolCallsGroupRows(block, spinFrame);
+    case "files-changed-group":
+      return filesChangedGroupRows(block, width, spinFrame);
     case "memory":
       return memoryRows(block, brailleFrame);
     case "compaction":
@@ -805,7 +998,12 @@ function spacerRow(
   return { id, tone, text: BLANK_ROW_TEXT, dim: true, rail: null };
 }
 
-function sliceRows(rows: RenderedChatRow[], maxRows?: number, scrollOffsetRows = 0): RenderedChatRow[] {
+function sliceRows(
+  rows: RenderedChatRow[],
+  maxRows?: number,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+): RenderedChatRow[] {
   if (!maxRows || maxRows <= 0) return rows;
   const viewportRows = Math.max(1, maxRows);
   if (rows.length <= viewportRows) {
@@ -836,28 +1034,27 @@ function sliceRows(rows: RenderedChatRow[], maxRows?: number, scrollOffsetRows =
     result.push(spacerRow(`scroll-filler:${result.length}`));
   }
   if (hasNewer) {
-    result.push({ id: "newer-indicator", tone: "indicator", text: "↓ newer messages", dim: true, rail: null });
+    // If we know how many unseen messages arrived since the user scrolled away,
+    // surface that count as the "↓ N new" pill. Falls back to the plain indicator.
+    const pillText = unseenMessageCount > 0
+      ? `↓ ${unseenMessageCount} new message${unseenMessageCount === 1 ? "" : "s"} · press End`
+      : "↓ newer messages";
+    result.push({
+      id: "newer-indicator",
+      tone: "indicator",
+      text: pillText,
+      color: unseenMessageCount > 0 ? theme.color.violet : undefined,
+      bold: unseenMessageCount > 0,
+      rail: null,
+    });
   }
   return result;
 }
 
-function railColorForTone(tone: RenderedChatRow["tone"]): string | null {
-  switch (tone) {
-    case "assistant":
-      return theme.color.t1;
-    case "tool":
-      return theme.color.tool;
-    case "reasoning":
-      return theme.color.violet;
-    case "notice":
-      return theme.color.t4;
-    case "error":
-      return theme.color.danger;
-    case "approval":
-      return theme.color.attention;
-    default:
-      return null;
-  }
+function railColorForTone(_tone: RenderedChatRow["tone"]): string | null {
+  // User-facing decision: drop the left vertical bar entirely. Subagent rows
+  // get their own colored side rail via the row's explicit `rail` field.
+  return null;
 }
 
 function InlineSpans({ runs }: { runs: InlineRun[] }) {
@@ -866,8 +1063,9 @@ function InlineSpans({ runs }: { runs: InlineRun[] }) {
       {runs.map((run, index) => {
         const key = `${index}:${run.text}`;
         if (run.code) {
+          // Codex-style: green foreground, no background chip.
           return (
-            <Text key={key} backgroundColor={theme.color.surface1} color={run.color ?? theme.color.t1}>
+            <Text key={key} color={run.color ?? theme.color.codeInline}>
               {run.text}
             </Text>
           );
@@ -889,9 +1087,70 @@ function InlineSpans({ runs }: { runs: InlineRun[] }) {
   );
 }
 
-function ChatRow({ row }: { row: RenderedChatRow }) {
+function normalizeSelection(selection: ChatTextSelection): ChatTextSelection {
+  if (
+    selection.startRow < selection.endRow
+    || (selection.startRow === selection.endRow && selection.startColumn <= selection.endColumn)
+  ) {
+    return selection;
+  }
+  return {
+    startRow: selection.endRow,
+    startColumn: selection.endColumn,
+    endRow: selection.startRow,
+    endColumn: selection.startColumn,
+  };
+}
+
+function selectedRangeForRow(rowIndex: number, selection: ChatTextSelection, lineLength: number): [number, number] | null {
+  const normalized = normalizeSelection(selection);
+  if (rowIndex < normalized.startRow || rowIndex > normalized.endRow) return null;
+  const rawStart = rowIndex === normalized.startRow ? normalized.startColumn : 0;
+  const rawEnd = rowIndex === normalized.endRow ? normalized.endColumn + 1 : Math.max(lineLength, 1);
+  const start = Math.max(0, Math.min(rawStart, Math.max(lineLength, 1)));
+  const end = Math.max(start, Math.min(rawEnd, Math.max(lineLength, 1)));
+  return end > start ? [start, end] : null;
+}
+
+function splitTextByColumns(value: string, start: number, end: number): [string, string, string] {
+  const chars = [...(value || BLANK_ROW_TEXT)];
+  const safeStart = Math.max(0, Math.min(start, chars.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, chars.length));
+  return [
+    chars.slice(0, safeStart).join(""),
+    chars.slice(safeStart, safeEnd).join(""),
+    chars.slice(safeEnd).join(""),
+  ];
+}
+
+function ChatRow({
+  row,
+  rowIndex,
+  selection,
+}: {
+  row: RenderedChatRow;
+  rowIndex: number;
+  selection?: ChatTextSelection | null;
+}) {
   const railColor = row.rail === undefined ? railColorForTone(row.tone) : row.rail;
   const plainText = row.text || BLANK_ROW_TEXT;
+  const selectedRange = selection ? selectedRangeForRow(rowIndex, selection, textWidth(renderedRowText(row))) : null;
+  if (selectedRange) {
+    const [before, selected, after] = splitTextByColumns(renderedRowText(row), selectedRange[0], selectedRange[1]);
+    return (
+      <Text
+        color={row.color ?? (row.tone === "indicator" ? theme.color.accent : undefined)}
+        dimColor={row.dim}
+        bold={row.bold}
+        italic={row.italic}
+      >
+        {railColor ? <Text color={railColor}>{"▎ "}</Text> : null}
+        {before}
+        <Text inverse>{selected || BLANK_ROW_TEXT}</Text>
+        {after}
+      </Text>
+    );
+  }
   return (
     <Text
       color={row.color ?? (row.tone === "indicator" ? theme.color.accent : undefined)}
@@ -912,6 +1171,99 @@ function renderedRowText(row: RenderedChatRow): string {
 
 function isPaginationIndicatorRow(row: RenderedChatRow): boolean {
   return row.id === "older-indicator" || row.id === "newer-indicator";
+}
+
+function visibleRowsForBlocks({
+  blocks,
+  maxRows,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+  brailleFrame = "·",
+  spinFrame = "◐",
+  dotPulse = "",
+}: {
+  blocks: AggregatedBlock[];
+  maxRows?: number;
+  scrollOffsetRows?: number;
+  unseenMessageCount?: number;
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+  brailleFrame?: string;
+  spinFrame?: string;
+  dotPulse?: string;
+}): RenderedChatRow[] {
+  const innerWidth = Math.max(24, width - 4);
+  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
+  return sliceRows(
+    streaming
+      ? [...baseRows, ...modelWorkingRows(dotPulse)]
+      : interrupted
+        ? [...baseRows, ...modelInterruptedRows()]
+        : baseRows,
+    maxRows,
+    scrollOffsetRows,
+    unseenMessageCount,
+  );
+}
+
+export function renderChatVisibleRowTexts({
+  events,
+  notices,
+  activeSession,
+  expandedLineIds,
+  maxRows,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+}: {
+  events: AgentChatEventEnvelope[];
+  notices: LocalNotice[];
+  activeSession: AgentChatSessionSummary | null;
+  expandedLineIds?: Set<string>;
+  maxRows?: number;
+  scrollOffsetRows?: number;
+  unseenMessageCount?: number;
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+}): string[] {
+  const blocks = aggregateChatBlocks({
+    events,
+    notices,
+    activeSession,
+    expandedLineIds,
+  });
+  return visibleRowsForBlocks({
+    blocks,
+    maxRows,
+    scrollOffsetRows,
+    unseenMessageCount,
+    width,
+    streaming,
+    interrupted,
+  }).map(renderedRowText);
+}
+
+export function selectedTextFromVisibleChatRows(rows: string[], selection: ChatTextSelection): string {
+  const normalized = normalizeSelection(selection);
+  const selected: string[] = [];
+  for (let rowIndex = normalized.startRow; rowIndex <= normalized.endRow; rowIndex += 1) {
+    const row = rows[rowIndex] ?? "";
+    const chars = [...row];
+    const range = selectedRangeForRow(rowIndex, normalized, chars.length);
+    if (!range) {
+      selected.push("");
+      continue;
+    }
+    selected.push(chars.slice(range[0], range[1]).join(""));
+  }
+  return selected.join("\n").trimEnd();
 }
 
 export function renderChatTranscriptPlainText({
@@ -952,6 +1304,7 @@ export function computeChatScrollMaxOffset({
   expandedLineIds,
   maxRows,
   streaming = false,
+  interrupted = false,
   width = DEFAULT_VIEW_WIDTH,
 }: {
   events: AgentChatEventEnvelope[];
@@ -960,6 +1313,7 @@ export function computeChatScrollMaxOffset({
   expandedLineIds?: Set<string>;
   maxRows?: number;
   streaming?: boolean;
+  interrupted?: boolean;
   width?: number;
 }): number {
   const blocks = aggregateChatBlocks({
@@ -968,9 +1322,10 @@ export function computeChatScrollMaxOffset({
     activeSession,
     expandedLineIds,
   });
-  if (!blocks.length && !streaming) return 0;
+  if (!blocks.length && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
-  const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐").length + (streaming ? modelWorkingRows("").length : 0);
+  const statusRows = streaming ? modelWorkingRows("").length : interrupted ? modelInterruptedRows().length : 0;
+  const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐").length + statusRows;
   return maxScrollOffsetForRows(rowCount, maxRows);
 }
 
@@ -984,10 +1339,13 @@ export function ChatView({
   provider,
   modelDisplay,
   streaming = false,
+  interrupted = false,
   worktreeAvailable = true,
   expandedLineIds,
   maxRows,
   scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+  selection = null,
   width = DEFAULT_VIEW_WIDTH,
 }: {
   events: AgentChatEventEnvelope[];
@@ -999,22 +1357,45 @@ export function ChatView({
   provider?: AdeCodeProvider | null;
   modelDisplay?: string | null;
   streaming?: boolean;
+  interrupted?: boolean;
   worktreeAvailable?: boolean;
   expandedLineIds?: Set<string>;
   maxRows?: number;
   scrollOffsetRows?: number;
+  unseenMessageCount?: number;
+  selection?: ChatTextSelection | null;
   width?: number;
 }) {
-  const blocks = aggregateChatBlocks({
-    events,
-    notices,
-    activeSession,
-    expandedLineIds,
-  });
+  // Memoize the heavy aggregation pass — it walks the entire transcript and
+  // shouldn't re-run on every spinner tick. Events identity changes only when
+  // the underlying chat history advances, which is the right invalidation key.
+  const blocks = useMemo(
+    () => aggregateChatBlocks({ events, notices, activeSession, expandedLineIds }),
+    [events, notices, activeSession, expandedLineIds],
+  );
   const brailleFrame = useBrailleSpin();
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
-  if (!blocks.length && !streaming) {
+  // Memoize the rendered row list. Spinner ticks change brailleFrame/spinFrame
+  // every animation frame; without memoization we'd rebuild every row tree per
+  // tick. Most non-live rows don't depend on the frames, so this is a big win
+  // for large transcripts.
+  const rows = useMemo(
+    () => visibleRowsForBlocks({
+      blocks,
+      maxRows,
+      scrollOffsetRows,
+      unseenMessageCount,
+      width,
+      streaming,
+      interrupted,
+      brailleFrame,
+      spinFrame,
+      dotPulse,
+    }),
+    [blocks, brailleFrame, dotPulse, interrupted, maxRows, scrollOffsetRows, spinFrame, streaming, unseenMessageCount, width],
+  );
+  if (!blocks.length && !streaming && !interrupted) {
     return (
       <BootHero
         projectName={projectName}
@@ -1027,17 +1408,10 @@ export function ChatView({
       />
     );
   }
-  const innerWidth = Math.max(24, width - 4);
-  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
-  const rows = sliceRows(
-    streaming ? [...baseRows, ...modelWorkingRows(dotPulse)] : baseRows,
-    maxRows,
-    scrollOffsetRows,
-  );
   return (
     <Box flexDirection="column" paddingX={1} height={maxRows}>
       {rows.map((row, index) => (
-        <ChatRow key={`${row.id}:${index}`} row={row} />
+        <ChatRow key={`${row.id}:${index}`} row={row} rowIndex={index} selection={selection} />
       ))}
     </Box>
   );

@@ -232,7 +232,7 @@ describe("ChatBuiltInBrowserPanel", () => {
     render(<ChatBuiltInBrowserPanel sessionId="chat-1" onAddContext={onAddContext} />);
 
     expect(await screen.findByText("Submit")).toBeTruthy();
-    fireEvent.click(screen.getByTitle("Attach the selected browser element as chat context"));
+    fireEvent.click(screen.getByTitle("Insert the selected browser element as context"));
 
     await waitFor(() => {
       expect(api.selectCurrent).toHaveBeenCalled();

@@ -13,7 +13,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.getMobileSnapshot",
   "work.runQuickCommand",
   "work.startCliSession",
-  "work.closeSession",
+  "work.sendToSession",
+  "work.stopRuntime",
   "processes.listDefinitions",
   "processes.listRuntime",
   "processes.start",
@@ -90,9 +91,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "chat.cancelDispatchedSteer",
   "chat.approve",
   "chat.respondToInput",
-  "chat.resume",
   "chat.updateSession",
-  "chat.dispose",
   "cto.getRoster",
   "cto.ensureSession",
   "cto.ensureAgentSession",
@@ -327,6 +326,14 @@ function createMockQueueLandingService() {
 function createMockPtyService() {
   return {
     create: vi.fn().mockResolvedValue({ sessionId: "pty-1", ptyId: "pty-proc" }),
+    sendToSession: vi.fn().mockResolvedValue({
+      sessionId: "pty-1",
+      ptyId: "pty-proc",
+      pid: 123,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    }),
     writeBySessionId: vi.fn().mockReturnValue(true),
     dispose: vi.fn().mockResolvedValue(undefined),
     enrichSessions: vi.fn((sessions) => sessions),
@@ -1309,14 +1316,6 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("chat.dispose routes to agentChatService.dispose", async () => {
-      const result = await service.execute(makePayload("chat.dispose", {
-        sessionId: "sess-1",
-      }));
-      expect(agentChatService.dispose).toHaveBeenCalledWith({ sessionId: "sess-1" });
-      expect(result).toEqual({ ok: true });
-    });
-
     it("chat.interrupt routes to agentChatService.interrupt", async () => {
       const result = await service.execute(makePayload("chat.interrupt", {
         sessionId: "sess-1",
@@ -1554,18 +1553,6 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("chat.resume routes to agentChatService.resumeSession", async () => {
-      await service.execute(makePayload("chat.resume", {
-        sessionId: "sess-1",
-      }));
-      expect(agentChatService.resumeSession).toHaveBeenCalledWith({ sessionId: "sess-1" });
-    });
-
-    it("chat.resume throws when sessionId is missing", async () => {
-      await expect(service.execute(makePayload("chat.resume", {})))
-        .rejects.toThrow("chat.resume requires sessionId.");
-    });
-
     it("chat.models returns available models for a provider", async () => {
       await service.execute(makePayload("chat.models", { provider: "codex" }));
       expect(agentChatService.getAvailableModels).toHaveBeenCalledWith({ provider: "codex" });
@@ -1708,6 +1695,21 @@ describe("createSyncRemoteCommandService", () => {
       );
     });
 
+    it("work.startCliSession preserves wide terminal dimensions", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "codex",
+        cols: 999,
+        rows: 999,
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cols: 400,
+          rows: 200,
+        }),
+      );
+    });
+
     it("work.startCliSession opens a shell without accepting arbitrary startup commands", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
@@ -1760,70 +1762,55 @@ describe("createSyncRemoteCommandService", () => {
       expect(call?.toolType).toBe("claude");
     });
 
-    it("work.startCliSession rebuilds the resume command from stored metadata when resumeSessionId is given", async () => {
-      sessionService.get.mockReturnValue({
-        id: "pty-existing",
-        laneId: "lane-1",
-        ptyId: "pty-existing",
-        toolType: "codex",
-        title: "Codex",
-        status: "running",
-        resumeCommand: "codex resume picker",
-        resumeMetadata: {
-          provider: "codex",
-          targetKind: "thread",
-          targetId: "thread-77",
-          launch: { permissionMode: "edit" },
-        },
-      });
-      await service.execute(makePayload("work.startCliSession", {
-        laneId: "lane-1",
-        provider: "codex",
-        resumeSessionId: "pty-existing",
-      }));
-      const call = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(call?.sessionId).toBe("pty-existing");
-      expect(call?.allowNewSessionId).toBe(false);
-      expect(call?.startupCommand).toBe(
-        "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
-      );
-      expect(call?.command).toBeUndefined();
-    });
-
-    it("work.startCliSession fails fast when resumeSessionId is missing", async () => {
-      sessionService.get.mockReturnValue(null);
-
-      await expect(service.execute(makePayload("work.startCliSession", {
-        laneId: "lane-1",
-        provider: "codex",
-        resumeSessionId: "missing-session",
-      }))).rejects.toThrow("missing-session");
-      expect(ptyService.create).not.toHaveBeenCalled();
-    });
-
-    it("work.startCliSession fails fast when resumeSessionId belongs to a different provider", async () => {
-      sessionService.get.mockReturnValue({
-        id: "pty-existing",
-        laneId: "lane-1",
-        ptyId: "pty-existing",
-        toolType: "claude",
-        title: "Claude",
-        status: "running",
-        resumeCommand: "claude --resume old",
-        resumeMetadata: {
+    it("work.startCliSession passes Claude model and confirms initial input", async () => {
+      vi.useFakeTimers();
+      try {
+        await service.execute(makePayload("work.startCliSession", {
+          laneId: "lane-1",
           provider: "claude",
-          targetKind: "session",
-          targetId: "old",
-          launch: { permissionMode: "default" },
-        },
-      });
+          model: "anthropic/claude-opus-4-7-1m",
+          initialInput: "hello?",
+        }));
 
-      await expect(service.execute(makePayload("work.startCliSession", {
-        laneId: "lane-1",
-        provider: "codex",
-        resumeSessionId: "pty-existing",
-      }))).rejects.toThrow("belongs to claude, not codex");
-      expect(ptyService.create).not.toHaveBeenCalled();
+        const call = ptyService.create.mock.calls.at(-1)?.[0];
+        expect(call?.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
+        expect(call?.startupCommand).toContain("opus[1m]");
+        expect(ptyService.writeBySessionId).toHaveBeenCalledTimes(1);
+        expect(ptyService.writeBySessionId).toHaveBeenNthCalledWith(1, "pty-1", "hello?\r");
+
+        await vi.advanceTimersByTimeAsync(1200);
+
+        expect(ptyService.writeBySessionId).toHaveBeenCalledTimes(2);
+        expect(ptyService.writeBySessionId).toHaveBeenNthCalledWith(2, "pty-1", "\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("work.sendToSession sends through the durable session continuation path", async () => {
+      const result = await service.execute(makePayload("work.sendToSession", {
+        sessionId: "pty-existing",
+        text: "continue here",
+        cols: 999,
+        rows: 999,
+      }));
+      expect(ptyService.sendToSession).toHaveBeenCalledWith({
+        sessionId: "pty-existing",
+        text: "continue here",
+        cols: 999,
+        rows: 999,
+      });
+      expect(result).toMatchObject({
+        sessionId: "pty-1",
+        ptyId: "pty-proc",
+        resumed: true,
+      });
+    });
+
+    it("work.sendToSession throws when text is missing", async () => {
+      await expect(service.execute(makePayload("work.sendToSession", {
+        sessionId: "pty-existing",
+      }))).rejects.toThrow("work.sendToSession requires text.");
     });
 
     it("work.startCliSession disposes the created session when initial input cannot be written", async () => {
@@ -1837,9 +1824,9 @@ describe("createSyncRemoteCommandService", () => {
       expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-proc", sessionId: "pty-1" });
     });
 
-    it("work.closeSession disposes pty if session has a ptyId", async () => {
+    it("work.stopRuntime disposes pty if session has a ptyId", async () => {
       sessionService.get.mockReturnValue({ ptyId: "pty-42" });
-      const result = await service.execute(makePayload("work.closeSession", {
+      const result = await service.execute(makePayload("work.stopRuntime", {
         sessionId: "sess-1",
       }));
       expect(sessionService.get).toHaveBeenCalledWith("sess-1");
@@ -1847,9 +1834,9 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ ok: true });
     });
 
-    it("work.closeSession skips pty disposal when the session has no ptyId", async () => {
+    it("work.stopRuntime skips pty disposal when the session has no ptyId", async () => {
       sessionService.get.mockReturnValue(null);
-      const result = await service.execute(makePayload("work.closeSession", {
+      const result = await service.execute(makePayload("work.stopRuntime", {
         sessionId: "sess-1",
       }));
       expect(sessionService.get).toHaveBeenCalledWith("sess-1");

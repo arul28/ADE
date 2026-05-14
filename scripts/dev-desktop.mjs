@@ -2,7 +2,7 @@
 
 import fs from "node:fs";
 import {
-  buildRuntimeCli,
+  buildRuntimeCliForDevClient,
   canConnectToSocket,
   devRuntimeEnv,
   npmCommand,
@@ -15,7 +15,7 @@ function usage() {
   return [
     "Usage: npm run dev:desktop -- [options]",
     "",
-    "Builds the ADE CLI/runtime, then launches desktop dev against the dev socket.",
+    "Uses the shared dev runtime, building it first when it is not already running.",
     "Default mode is --auto: desktop is allowed to auto-create the dev runtime.",
     "",
     "Options:",
@@ -94,10 +94,10 @@ async function main() {
   process.stdout.write(`[ade] desktop mode: ${options.mode}\n`);
   process.stdout.write(`[ade] project root: ${options.projectRoot}\n`);
   process.stdout.write(`[ade] runtime socket: ${options.socketPath}\n`);
-  await buildRuntimeCli(options.skipRuntimeBuild);
   if (options.mode === "attach" && !(await canConnectToSocket(options.socketPath))) {
     throw new Error(`No dev runtime is listening at ${options.socketPath}. Start it with npm run dev:runtime.`);
   }
+  await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
   const desktopScript = options.clean ? "dev:clean" : "dev";
   await run(
     npmCommand,

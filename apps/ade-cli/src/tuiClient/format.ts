@@ -1,8 +1,12 @@
 import path from "node:path";
+import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
+
+export type { HighlightedToken } from "./highlightCache";
 
 function singleLine(value: unknown, max = 96): string {
   const text = (() => {
@@ -64,7 +68,7 @@ export type AssistantMarkdownBlock =
   | { kind: "bullet"; text: string }
   | { kind: "numbered"; number: string; text: string }
   | { kind: "quote"; text: string }
-  | { kind: "code"; language?: string; lines: string[] }
+  | { kind: "code"; language?: string; lines: string[]; tokens?: HighlightedToken[][] }
   | { kind: "table"; headers: string[]; rows: string[][] }
   | { kind: "hr" };
 
@@ -78,34 +82,101 @@ export type InlineRun = {
   dim?: boolean;
 };
 
-const INLINE_TOKEN_RE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(__[^_\n]+__)|(\*[^*\s][^*\n]*\*)|(_[^_\s][^_\n]*_)|(\[[^\]\n]+\]\([^)\n]+\))/;
+type InlineFlags = { bold?: boolean; italic?: boolean; code?: boolean; link?: boolean };
+
+function pushInlineRun(runs: InlineRun[], text: string, flags: InlineFlags): void {
+  if (!text.length) return;
+  const last = runs[runs.length - 1];
+  const sameFlags = last
+    && (last.bold ?? false) === (flags.bold ?? false)
+    && (last.italic ?? false) === (flags.italic ?? false)
+    && (last.code ?? false) === (flags.code ?? false)
+    && (last.link ?? false) === (flags.link ?? false);
+  if (sameFlags && last) {
+    last.text += text;
+    return;
+  }
+  const run: InlineRun = { text };
+  if (flags.bold) run.bold = true;
+  if (flags.italic) run.italic = true;
+  if (flags.code) run.code = true;
+  if (flags.link) run.link = true;
+  runs.push(run);
+}
+
+function walkInlineTokens(tokens: Token[], runs: InlineRun[], flags: InlineFlags): void {
+  for (const token of tokens) {
+    switch (token.type) {
+      case "text": {
+        const text = token as Tokens.Text;
+        if (text.tokens && text.tokens.length) walkInlineTokens(text.tokens, runs, flags);
+        else pushInlineRun(runs, text.text, flags);
+        break;
+      }
+      case "escape":
+        pushInlineRun(runs, (token as Tokens.Escape).text, flags);
+        break;
+      case "codespan":
+        pushInlineRun(runs, (token as Tokens.Codespan).text, { ...flags, code: true });
+        break;
+      case "strong": {
+        const strong = token as Tokens.Strong;
+        walkInlineTokens(strong.tokens, runs, { ...flags, bold: true });
+        break;
+      }
+      case "em": {
+        const em = token as Tokens.Em;
+        walkInlineTokens(em.tokens, runs, { ...flags, italic: true });
+        break;
+      }
+      case "del": {
+        const del = token as Tokens.Del;
+        walkInlineTokens(del.tokens, runs, flags);
+        break;
+      }
+      case "link": {
+        const link = token as Tokens.Link;
+        const child: InlineRun[] = [];
+        if (link.tokens && link.tokens.length) walkInlineTokens(link.tokens, child, { ...flags, link: true });
+        else pushInlineRun(child, link.text, { ...flags, link: true });
+        for (const c of child) runs.push(c);
+        break;
+      }
+      case "image":
+        pushInlineRun(runs, (token as Tokens.Image).text, flags);
+        break;
+      case "br":
+        pushInlineRun(runs, "\n", flags);
+        break;
+      case "html":
+        pushInlineRun(runs, (token as Tokens.HTML).text, flags);
+        break;
+      default: {
+        const generic = token as Tokens.Generic;
+        if (generic.tokens && generic.tokens.length) {
+          walkInlineTokens(generic.tokens, runs, flags);
+        } else if (typeof generic.text === "string") {
+          pushInlineRun(runs, generic.text, flags);
+        } else if (typeof generic.raw === "string") {
+          pushInlineRun(runs, generic.raw, flags);
+        }
+        break;
+      }
+    }
+  }
+}
 
 export function parseInlineRuns(text: string): InlineRun[] {
-  const runs: InlineRun[] = [];
-  let remaining = text;
-  while (remaining.length) {
-    const match = INLINE_TOKEN_RE.exec(remaining);
-    if (!match) {
-      runs.push({ text: remaining });
-      break;
-    }
-    const start = match.index;
-    if (start > 0) runs.push({ text: remaining.slice(0, start) });
-    const token = match[0];
-    if (match[1]) {
-      runs.push({ text: token.slice(1, -1), code: true });
-    } else if (match[2] || match[3]) {
-      runs.push({ text: token.slice(2, -2), bold: true });
-    } else if (match[4] || match[5]) {
-      runs.push({ text: token.slice(1, -1), italic: true });
-    } else if (match[6]) {
-      const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
-      runs.push({ text: linkMatch?.[1] ?? token, link: true });
-    }
-    remaining = remaining.slice(start + token.length);
+  if (!text.length) return [{ text: "" }];
+  try {
+    const tokens = Lexer.lexInline(text);
+    const runs: InlineRun[] = [];
+    walkInlineTokens(tokens, runs, {});
+    if (!runs.length) return [{ text }];
+    return runs;
+  } catch {
+    return [{ text }];
   }
-  if (!runs.length) runs.push({ text });
-  return runs;
 }
 
 export function chatEventLineId(envelope: AgentChatEventEnvelope, index = 0): string {
@@ -131,120 +202,178 @@ function multiLine(value: unknown, maxLines = 18): string {
   return renderObject(value, maxLines);
 }
 
-function isMarkdownBoundary(line: string): boolean {
-  const trimmed = line.trim();
-  return (
-    trimmed.length === 0
-    || /^```/.test(trimmed)
-    || /^#{1,6}\s+/.test(trimmed)
-    || /^>\s?/.test(trimmed)
-    || /^[-*+]\s+/.test(trimmed)
-    || /^\d+[.)]\s+/.test(trimmed)
-    || /^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)
-  );
+function flattenInlineTokensToText(tokens: Token[] | undefined): string {
+  if (!tokens || !tokens.length) return "";
+  let out = "";
+  for (const token of tokens) {
+    const generic = token as Tokens.Generic;
+    // Preserve inline markdown markers so the downstream re-tokenization in
+    // parseInlineRuns can re-create the styled runs (codespan, bold, italic).
+    // Without this, code spans like `LaneRuntimeBar` get flattened to plain
+    // text and lose their violet inline-code styling in the renderer.
+    if (token.type === "codespan") {
+      const text = typeof generic.text === "string" ? generic.text : "";
+      out += `\`${text}\``;
+      continue;
+    }
+    if (token.type === "strong") {
+      out += `**${flattenInlineTokensToText(generic.tokens)}**`;
+      continue;
+    }
+    if (token.type === "em") {
+      out += `*${flattenInlineTokensToText(generic.tokens)}*`;
+      continue;
+    }
+    if (token.type === "link") {
+      // Preserve only the visible label — the URL is dropped because the TUI
+      // doesn't render hyperlinks distinctly today.
+      out += flattenInlineTokensToText(generic.tokens) || (typeof generic.text === "string" ? generic.text : "");
+      continue;
+    }
+    if (generic.tokens && generic.tokens.length) {
+      out += flattenInlineTokensToText(generic.tokens);
+    } else if (typeof generic.text === "string") {
+      out += generic.text;
+    } else if (typeof generic.raw === "string") {
+      out += generic.raw;
+    }
+  }
+  return out;
+}
+
+function blockTokenToText(token: Token): string {
+  const generic = token as Tokens.Generic;
+  if (generic.tokens && generic.tokens.length) {
+    const inline = flattenInlineTokensToText(generic.tokens);
+    if (inline.length) return inline;
+  }
+  if (typeof generic.text === "string") return generic.text;
+  if (typeof generic.raw === "string") return generic.raw.trim();
+  return "";
+}
+
+function listItemText(item: Tokens.ListItem): string {
+  if (item.tokens && item.tokens.length) {
+    const parts: string[] = [];
+    for (const child of item.tokens) {
+      if (child.type === "list") continue;
+      parts.push(blockTokenToText(child));
+    }
+    const joined = parts.filter((p) => p.length).join(" ");
+    if (joined.length) return joined;
+  }
+  return item.text ?? "";
+}
+
+function stripTaskCheckboxPrefix(value: string): string {
+  return value.replace(/^\[([ xX])\]\s*/, "");
+}
+
+function appendListBlocks(list: Tokens.List, blocks: AssistantMarkdownBlock[]): void {
+  let counter = typeof list.start === "number" && list.start > 0 ? list.start : 1;
+  for (const item of list.items) {
+    const checkboxPrefix = item.task ? (item.checked ? "[x] " : "[ ] ") : "";
+    const rawText = listItemText(item).replace(/\s+/g, " ").trim();
+    const baseText = item.task ? stripTaskCheckboxPrefix(rawText) : rawText;
+    const text = `${checkboxPrefix}${baseText}`.trim();
+    if (list.ordered) {
+      blocks.push({ kind: "numbered", number: String(counter), text });
+      counter += 1;
+    } else {
+      blocks.push({ kind: "bullet", text });
+    }
+    if (item.tokens) {
+      for (const child of item.tokens) {
+        if (child.type === "list") {
+          appendListBlocks(child as Tokens.List, blocks);
+        }
+      }
+    }
+  }
+}
+
+function appendBlockTokens(tokens: Token[], blocks: AssistantMarkdownBlock[]): void {
+  for (const token of tokens) {
+    switch (token.type) {
+      case "space":
+        break;
+      case "heading": {
+        const heading = token as Tokens.Heading;
+        const text = flattenInlineTokensToText(heading.tokens) || heading.text;
+        blocks.push({ kind: "heading", level: heading.depth, text: text.trim() });
+        break;
+      }
+      case "paragraph": {
+        const paragraph = token as Tokens.Paragraph;
+        const text = flattenInlineTokensToText(paragraph.tokens) || paragraph.text;
+        const normalized = text.replace(/\s+/g, " ").trim();
+        if (normalized.length) blocks.push({ kind: "paragraph", text: normalized });
+        break;
+      }
+      case "code": {
+        const code = token as Tokens.Code;
+        const language = code.lang?.trim() || undefined;
+        const rawLines = code.text.split("\n");
+        const block: AssistantMarkdownBlock = language
+          ? { kind: "code", language, lines: rawLines }
+          : { kind: "code", lines: rawLines };
+        const highlighted = highlightCode(code.text, language);
+        if (language && highlighted.length === rawLines.length) {
+          (block as { tokens?: HighlightedToken[][] }).tokens = highlighted;
+        }
+        blocks.push(block);
+        break;
+      }
+      case "blockquote": {
+        const quote = token as Tokens.Blockquote;
+        const text = flattenInlineTokensToText(quote.tokens) || quote.text;
+        blocks.push({ kind: "quote", text: text.replace(/\s+/g, " ").trim() });
+        break;
+      }
+      case "list":
+        appendListBlocks(token as Tokens.List, blocks);
+        break;
+      case "hr":
+        blocks.push({ kind: "hr" });
+        break;
+      case "table": {
+        const table = token as Tokens.Table;
+        const headers = table.header.map((cell) => (flattenInlineTokensToText(cell.tokens) || cell.text).trim());
+        const rows = table.rows.map((row) => row.map((cell) => (flattenInlineTokensToText(cell.tokens) || cell.text).trim()));
+        blocks.push({ kind: "table", headers, rows });
+        break;
+      }
+      case "html": {
+        const html = token as Tokens.HTML;
+        const text = html.text.trim();
+        if (text.length) blocks.push({ kind: "paragraph", text });
+        break;
+      }
+      case "text": {
+        const text = token as Tokens.Text;
+        const value = flattenInlineTokensToText(text.tokens) || text.text;
+        const normalized = value.replace(/\s+/g, " ").trim();
+        if (normalized.length) blocks.push({ kind: "paragraph", text: normalized });
+        break;
+      }
+      default: {
+        const generic = token as Tokens.Generic;
+        if (generic.tokens && generic.tokens.length) appendBlockTokens(generic.tokens, blocks);
+        break;
+      }
+    }
+  }
 }
 
 export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
-  const sourceLines = text.replace(/\r\n/g, "\n").split("\n");
+  if (!text.length) return [];
   const blocks: AssistantMarkdownBlock[] = [];
-  let paragraph: string[] = [];
-
-  const flushParagraph = () => {
-    const value = paragraph.join(" ").replace(/\s+/g, " ").trim();
-    if (value.length) blocks.push({ kind: "paragraph", text: value });
-    paragraph = [];
-  };
-
-  for (let index = 0; index < sourceLines.length; index += 1) {
-    const line = sourceLines[index] ?? "";
-    const trimmed = line.trim();
-
-    if (!trimmed.length) {
-      flushParagraph();
-      continue;
-    }
-
-    const fence = /^```([\w.+-]*)\s*$/.exec(trimmed);
-    if (fence) {
-      flushParagraph();
-      const codeLines: string[] = [];
-      const language = fence[1]?.trim() || undefined;
-      index += 1;
-      for (; index < sourceLines.length; index += 1) {
-        const codeLine = sourceLines[index] ?? "";
-        if (/^```\s*$/.test(codeLine.trim())) break;
-        codeLines.push(codeLine.replace(/\s+$/g, ""));
-      }
-      blocks.push({ kind: "code", ...(language ? { language } : {}), lines: codeLines });
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushParagraph();
-      blocks.push({ kind: "heading", level: heading[1]?.length ?? 1, text: heading[2]?.trim() ?? "" });
-      continue;
-    }
-
-    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-      const next = sourceLines[index + 1]?.trim() ?? "";
-      const isSeparator = /^\|[\s:|-]+\|$/.test(next) && /-/.test(next);
-      if (isSeparator) {
-        const parseRow = (raw: string): string[] => raw
-          .replace(/^\|/, "")
-          .replace(/\|$/, "")
-          .split("|")
-          .map((cell) => cell.trim());
-        const headers = parseRow(trimmed);
-        const bodyRows: string[][] = [];
-        index += 2;
-        while (index < sourceLines.length) {
-          const candidate = sourceLines[index]?.trim() ?? "";
-          if (!candidate.startsWith("|") || !candidate.endsWith("|")) break;
-          bodyRows.push(parseRow(candidate));
-          index += 1;
-        }
-        index -= 1;
-        flushParagraph();
-        blocks.push({ kind: "table", headers, rows: bodyRows });
-        continue;
-      }
-    }
-
-    if (/^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)) {
-      flushParagraph();
-      blocks.push({ kind: "hr" });
-      continue;
-    }
-
-    const quote = /^>\s?(.*)$/.exec(trimmed);
-    if (quote) {
-      flushParagraph();
-      blocks.push({ kind: "quote", text: quote[1]?.trim() ?? "" });
-      continue;
-    }
-
-    const bullet = /^[-*+]\s+(.+)$/.exec(trimmed);
-    if (bullet) {
-      flushParagraph();
-      blocks.push({ kind: "bullet", text: bullet[1]?.trim() ?? "" });
-      continue;
-    }
-
-    const numbered = /^(\d+)[.)]\s+(.+)$/.exec(trimmed);
-    if (numbered) {
-      flushParagraph();
-      blocks.push({ kind: "numbered", number: numbered[1] ?? "1", text: numbered[2]?.trim() ?? "" });
-      continue;
-    }
-
-    if (paragraph.length && isMarkdownBoundary(sourceLines[index - 1] ?? "")) {
-      flushParagraph();
-    }
-    paragraph.push(trimmed);
+  try {
+    const tokens = Lexer.lex(text.replace(/\r\n/g, "\n"));
+    appendBlockTokens(tokens, blocks);
+  } catch {
+    // Marked lexer is robust; on the off chance it throws, fall through.
   }
-
-  flushParagraph();
   if (!blocks.length && text.trim().length) {
     blocks.push({ kind: "paragraph", text: text.trim() });
   }
@@ -624,11 +753,15 @@ function headerSpeakerKey(header: string | undefined): string {
 }
 
 function smartConcat(prev: string, next: string): string {
+  // Codex/Claude stream assistant text as small chunks that may break mid-word
+  // (e.g., "Consolid" + "ated", or "complete" + "."). Joining with a forced
+  // space corrupted words and inserted spaces before punctuation. Streaming
+  // chunks already include the whitespace they intend — direct concat is
+  // correct. If the model wants a space or newline between fragments, it sends
+  // one explicitly.
   if (!prev) return next;
   if (!next) return prev;
-  if (/\s$/.test(prev) || /^\s/.test(next)) return `${prev}${next}`;
-  if (/\n$/.test(prev) || /^\n/.test(next)) return `${prev}${next}`;
-  return `${prev} ${next}`;
+  return `${prev}${next}`;
 }
 
 function coalesceLines(lines: RenderedChatLine[]): RenderedChatLine[] {

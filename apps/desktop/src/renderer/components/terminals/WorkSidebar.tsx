@@ -20,9 +20,21 @@ import type {
   LaneSummary,
   MacosVmContextItem,
   TerminalSessionSummary,
+  TerminalToolType,
 } from "../../../shared/types";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
+import {
+  formatAppControlContextForPrompt,
+  formatBuiltInBrowserContextForPrompt,
+  formatIosElementContextForPrompt,
+  formatMacosVmContextForPrompt,
+  normalizeBuiltInBrowserContextItem,
+} from "../../lib/visualContextFormatting";
+import {
+  dispatchWorkPtyContextInserted,
+  type WorkPtyContextInsertKind,
+} from "../../lib/workPtyContextEvents";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
@@ -46,7 +58,33 @@ const WORK_SIDEBAR_TABS: Array<{
   { id: "macos-vm", label: "Mac VM", Icon: Cube },
 ];
 
-const NOT_CHAT_ERROR = "Context attachment only works in ADE chat sessions.";
+export type WorkSidebarContextTarget =
+  | { kind: "chat"; sessionId: string }
+  | { kind: "pty"; sessionId: string; ptyId: string; toolType: TerminalToolType | null };
+
+const NO_CONTEXT_TARGET_ERROR = "Open a chat or agent CLI session in this lane before inserting tool context.";
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
+
+function shortLaneId(laneId: string): string {
+  return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
+}
+
+function laneDisplayName(lanes: LaneSummary[], laneId: string | null): string {
+  if (!laneId) return "another lane";
+  return lanes.find((lane) => lane.id === laneId)?.name ?? shortLaneId(laneId);
+}
+
+function laneMismatchMessage(
+  toolName: string,
+  ownerLaneId: string | null,
+  activeLaneId: string | null,
+  lanes: LaneSummary[],
+): string {
+  const ownerLane = laneDisplayName(lanes, ownerLaneId);
+  const activeLane = laneDisplayName(lanes, activeLaneId);
+  return `This ${toolName} view is attached to ${ownerLane}, not ${activeLane}. Quit this view, then restart it from a chat or Claude Code session in ${activeLane} before inserting context.`;
+}
 
 function dispatchAgentChatEvent<T>(eventName: string, sessionId: string, key: string, value: T): void {
   window.dispatchEvent(new CustomEvent(eventName, {
@@ -55,6 +93,19 @@ function dispatchAgentChatEvent<T>(eventName: string, sessionId: string, key: st
       [key]: value,
     },
   }));
+}
+
+function bracketedPaste(text: string): string {
+  return `${BRACKETED_PASTE_START}${text.trimEnd()}\n${BRACKETED_PASTE_END}`;
+}
+
+function formatAttachmentForPty(attachment: AgentChatFileRef): string {
+  return [
+    "ADE visual attachment saved by the Work sidebar.",
+    `Path: ${attachment.path}`,
+    `Type: ${attachment.type}`,
+    "",
+  ].join("\n");
 }
 
 function hideBuiltInBrowserView(): void {
@@ -87,8 +138,8 @@ export function WorkSidebar({
   tab,
   onTabChange,
   onClose,
-  attachChatSessionId,
-  attachDisabledReason,
+  contextTarget,
+  contextDisabledReason: targetDisabledReason,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -97,8 +148,8 @@ export function WorkSidebar({
   tab: WorkSidebarTab;
   onTabChange: (tab: WorkSidebarTab) => void;
   onClose: () => void;
-  attachChatSessionId: string | null;
-  attachDisabledReason: string | null;
+  contextTarget: WorkSidebarContextTarget | null;
+  contextDisabledReason: string | null;
 }) {
   const navigate = useNavigate();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -106,6 +157,7 @@ export function WorkSidebar({
   const [selectedCommit, setSelectedCommit] = useState<GitCommitSummary | null>(null);
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
+  const [browserViewLaneId, setBrowserViewLaneId] = useState<string | null>(tab === "browser" ? laneId : null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
 
@@ -144,6 +196,16 @@ export function WorkSidebar({
       if (previousBrowserTabRef.current) hideBuiltInBrowserView();
     };
   }, [active, tab]);
+
+  const previousTabForBrowserOwnerRef = useRef<WorkSidebarTab>(tab);
+  useEffect(() => {
+    if (!active) return;
+    const previousTab = previousTabForBrowserOwnerRef.current;
+    if (tab === "browser" && (previousTab !== "browser" || !browserViewLaneId)) {
+      setBrowserViewLaneId(laneId);
+    }
+    previousTabForBrowserOwnerRef.current = tab;
+  }, [active, browserViewLaneId, laneId, tab]);
 
   useEffect(() => {
     if (!active) return undefined;
@@ -195,46 +257,120 @@ export function WorkSidebar({
 
   function resolveLaneMismatchReason(): string | null {
     if (!laneId) return null;
+    if (tab === "browser" && browserViewLaneId && browserViewLaneId !== laneId) {
+      return laneMismatchMessage("Browser", browserViewLaneId, laneId, lanes);
+    }
     if (tab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return "App Control is attached to a different lane. You can still stop or relaunch it here, but ADE will not attach selections to this chat until the tool session matches the active lane.";
+      return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
     }
     if (tab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return "The iOS Simulator session was launched from a different lane. You can still inspect it, but ADE will not attach simulator context to this chat until the tool session matches the active lane.";
+      return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, lanes);
     }
     return null;
   }
-  const contextDisabledReason = resolveLaneMismatchReason() ?? attachDisabledReason;
-  const canAttachToChat = Boolean(attachChatSessionId && !contextDisabledReason);
+  const contextDisabledReason = resolveLaneMismatchReason() ?? targetDisabledReason;
+  const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
+  const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
-  const dispatchTargetRef = useRef({ attachChatSessionId, contextDisabledReason });
-  dispatchTargetRef.current = { attachChatSessionId, contextDisabledReason };
+  const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
+  dispatchTargetRef.current = { contextTarget, contextDisabledReason };
 
-  const dispatchToChat = useCallback(<T,>(eventName: string, key: string, value: T, fallbackError: string) => {
-    const { attachChatSessionId: targetSessionId, contextDisabledReason: targetReason } = dispatchTargetRef.current;
-    if (!targetSessionId || targetReason) {
+  const insertIntoPty = useCallback((
+    target: Extract<WorkSidebarContextTarget, { kind: "pty" }>,
+    text: string,
+    kind: WorkPtyContextInsertKind,
+  ) => {
+    const payload = text.trimEnd();
+    if (!payload) return;
+    void window.ade.terminal.write({
+      terminalId: target.sessionId,
+      ptyId: target.ptyId,
+      data: bracketedPaste(payload),
+    })
+      .then(() => {
+        dispatchWorkPtyContextInserted({
+          sessionId: target.sessionId,
+          ptyId: target.ptyId,
+          toolType: target.toolType,
+          kind,
+        });
+      })
+      .catch((error: unknown) => {
+        console.error("[WorkSidebar] Failed to insert context into PTY", {
+          sessionId: target.sessionId,
+          toolType: target.toolType,
+          error,
+        });
+      });
+  }, []);
+
+  const withContextTarget = useCallback((
+    fallbackError: string,
+    action: (target: WorkSidebarContextTarget) => void,
+  ) => {
+    const { contextTarget: target, contextDisabledReason: targetReason } = dispatchTargetRef.current;
+    if (!target || targetReason) {
       throw new Error(targetReason ?? fallbackError);
     }
-    dispatchAgentChatEvent(eventName, targetSessionId, key, value);
+    action(target);
   }, []);
 
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
-    dispatchToChat("ade:agent-chat:add-attachment", "attachment", attachment, NOT_CHAT_ERROR);
-  }, [dispatchToChat]);
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:add-attachment", target.sessionId, "attachment", attachment);
+        return;
+      }
+      insertIntoPty(target, formatAttachmentForPty(attachment), "attachment");
+    });
+  }, [insertIntoPty, withContextTarget]);
   const addIosContext = useCallback((item: IosElementContextItem) => {
-    dispatchToChat("ade:agent-chat:add-ios-context", "item", item, NOT_CHAT_ERROR);
-  }, [dispatchToChat]);
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:add-ios-context", target.sessionId, "item", item);
+        return;
+      }
+      insertIntoPty(target, formatIosElementContextForPrompt([item]), "ios");
+    });
+  }, [insertIntoPty, withContextTarget]);
   const addAppControlContext = useCallback((item: AppControlContextItem) => {
-    dispatchToChat("ade:agent-chat:add-app-control-context", "item", item, NOT_CHAT_ERROR);
-  }, [dispatchToChat]);
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:add-app-control-context", target.sessionId, "item", item);
+        return;
+      }
+      insertIntoPty(target, formatAppControlContextForPrompt([item]), "app-control");
+    });
+  }, [insertIntoPty, withContextTarget]);
   const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
-    dispatchToChat("ade:agent-chat:add-macos-vm-context", "item", item, NOT_CHAT_ERROR);
-  }, [dispatchToChat]);
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:add-macos-vm-context", target.sessionId, "item", item);
+        return;
+      }
+      insertIntoPty(target, formatMacosVmContextForPrompt([item]), "macos-vm");
+    });
+  }, [insertIntoPty, withContextTarget]);
   const addBuiltInBrowserContext = useCallback((item: unknown) => {
-    dispatchToChat("ade:agent-chat:add-builtin-browser-context", "item", item, NOT_CHAT_ERROR);
-  }, [dispatchToChat]);
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:add-builtin-browser-context", target.sessionId, "item", item);
+        return;
+      }
+      const browserItem = normalizeBuiltInBrowserContextItem(item);
+      if (!browserItem) return;
+      insertIntoPty(target, formatBuiltInBrowserContextForPrompt([browserItem]), "browser");
+    });
+  }, [insertIntoPty, withContextTarget]);
   const insertDraft = useCallback((text: string) => {
-    dispatchToChat("ade:agent-chat:insert-draft", "text", text, "Draft insertion only works in ADE chat sessions.");
-  }, [dispatchToChat]);
+    withContextTarget("Open a chat or agent CLI session in this lane before inserting draft text.", (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent("ade:agent-chat:insert-draft", target.sessionId, "text", text);
+        return;
+      }
+      insertIntoPty(target, text, "draft");
+    });
+  }, [insertIntoPty, withContextTarget]);
 
   const content = useMemo(() => {
     if (!active) return null;
@@ -244,10 +380,10 @@ export function WorkSidebar({
           {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
           <div className="min-h-0 flex-1 overflow-hidden">
             <ChatBuiltInBrowserPanel
-              sessionId={attachChatSessionId}
-              onAddAttachment={canAttachToChat ? addAttachment : undefined}
-              onAddContext={canAttachToChat ? addBuiltInBrowserContext : undefined}
-              onInsertDraft={canAttachToChat ? insertDraft : undefined}
+              sessionId={panelSessionId}
+              onAddAttachment={canInsertContext ? addAttachment : undefined}
+              onAddContext={canInsertContext ? addBuiltInBrowserContext : undefined}
+              onInsertDraft={canInsertContext ? insertDraft : undefined}
             />
           </div>
         </div>
@@ -321,7 +457,7 @@ export function WorkSidebar({
             <MacosVmPanel
               laneId={laneId}
               laneRoot={laneRoot}
-              onAddContext={canAttachToChat ? addMacosVmContext : undefined}
+              onAddContext={canInsertContext ? addMacosVmContext : undefined}
             />
           </div>
         </div>
@@ -330,21 +466,21 @@ export function WorkSidebar({
 
     const panel = tab === "ios" ? (
       <ChatIosSimulatorPanel
-        sessionId={null}
+        sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
-        onAddAttachment={canAttachToChat ? addAttachment : undefined}
-        onAddContext={canAttachToChat ? addIosContext : undefined}
-        onInsertDraft={canAttachToChat ? insertDraft : undefined}
+        onAddAttachment={canInsertContext ? addAttachment : undefined}
+        onAddContext={canInsertContext ? addIosContext : undefined}
+        onInsertDraft={canInsertContext ? insertDraft : undefined}
       />
     ) : (
       <ChatAppControlPanel
-        sessionId={null}
+        sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
-        onAddAttachment={canAttachToChat ? addAttachment : undefined}
-        onAddContext={canAttachToChat ? addAppControlContext : undefined}
-        onInsertDraft={canAttachToChat ? insertDraft : undefined}
+        onAddAttachment={canInsertContext ? addAttachment : undefined}
+        onAddContext={canInsertContext ? addAppControlContext : undefined}
+        onInsertDraft={canInsertContext ? insertDraft : undefined}
       />
     );
     return (
@@ -359,8 +495,8 @@ export function WorkSidebar({
     addBuiltInBrowserContext,
     addIosContext,
     addMacosVmContext,
-    attachChatSessionId,
-    canAttachToChat,
+    panelSessionId,
+    canInsertContext,
     contextDisabledReason,
     insertDraft,
     laneId,

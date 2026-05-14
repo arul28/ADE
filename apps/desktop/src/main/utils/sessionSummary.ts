@@ -1,4 +1,4 @@
-import { stripAnsi } from "./ansiStrip";
+import { stripAnsiWithOptions } from "./ansiStrip";
 
 type ParsedTestSummary = {
   status: "PASS" | "FAIL";
@@ -110,6 +110,18 @@ function findFailureHint(lines: string[]): string | null {
   return null;
 }
 
+function isTerminalChromeLine(raw: string): boolean {
+  const line = raw.trim();
+  if (!line) return true;
+  if (/^[╭╮╯╰─│┌┐└┘├┤┬┴┼▌▐▛▜▘▝▄▀█▒░\s]+$/u.test(line)) return true;
+  if (/\bClaude Codev?\d/i.test(line) || /^Claude Code\b/i.test(line)) return true;
+  if (/\b(?:for shortcuts|for agents|bypass permissions|auto mode on)\b/i.test(line)) return true;
+  if (/^Resume this session with:/i.test(line)) return true;
+  if (/^(?:claude\s+--resume|codex\s+resume|cursor-agent\s+--resume|droid\s+--resume|opencode\s+--(?:continue|session))\b/i.test(line)) return true;
+  if (/^\[?esc\]?\s+close\b/i.test(line)) return true;
+  return false;
+}
+
 export function summarizeTerminalSession(args: {
   title: string;
   goal?: string | null;
@@ -121,11 +133,12 @@ export function summarizeTerminalSession(args: {
   const goal = (args.goal ?? "").trim();
   const intent = goal || title || "terminal session";
 
-  const transcript = stripAnsi(args.transcript ?? "");
+  const transcript = stripAnsiWithOptions(args.transcript ?? "", { preserveCarriageReturns: true });
   const lines = transcript
-    .split(/\r?\n/)
+    .split(/\r\n|\n|\r/)
     .map((line) => line.trim())
     .filter(Boolean)
+    .filter((line) => !isTerminalChromeLine(line))
     .slice(-320);
 
   const cmd = findLikelyCommand(lines) ?? intent;
@@ -144,6 +157,9 @@ export function summarizeTerminalSession(args: {
   }
   if (args.exitCode === 0) {
     return `${prefix} (OK)`;
+  }
+  if (args.exitCode === 130 || args.exitCode === 143) {
+    return `${prefix} (STOPPED, exit code ${args.exitCode})`;
   }
 
   const hint = findFailureHint(lines);

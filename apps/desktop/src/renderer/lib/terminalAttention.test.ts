@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { runningSessionNeedsAttention, sessionIndicatorState, sessionStatusDot } from "./terminalAttention";
+import {
+  runningSessionNeedsAttention,
+  sanitizeTerminalInlineText,
+  sessionIndicatorState,
+  sessionStatusDot,
+} from "./terminalAttention";
 
 describe("terminalAttention", () => {
   it("does not treat a plain shell prompt as awaiting user input", () => {
@@ -20,6 +25,10 @@ describe("terminalAttention", () => {
         lastOutputPreview: "Confirm continue? (y/n)",
       }),
     ).toBe("running-needs-attention");
+  });
+
+  it("removes cursor save and restore escapes from inline previews", () => {
+    expect(sanitizeTerminalInlineText("\u001b7Claude Code\u001b8 ready")).toBe("Claude Code ready");
   });
 
   it("treats idle chat sessions as a static ready state", () => {

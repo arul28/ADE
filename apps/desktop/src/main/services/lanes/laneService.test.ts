@@ -2794,6 +2794,40 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(wtStep?.status).toBe("completed");
   });
 
+  it("keeps recent delete progress queryable for remounted renderers", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service } = await setupWithLane({ teardown: fake, events });
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
+      if (args[0] === "worktree" && args[1] === "remove") {
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false });
+    const runningProgress = service.listDeleteProgress();
+
+    expect(runningProgress).toHaveLength(1);
+    expect(runningProgress[0]?.laneId).toBe("lane-child");
+    expect(runningProgress[0]?.overallStatus).toBe("running");
+
+    runningProgress[0]!.steps[0]!.status = "failed";
+    expect(service.listDeleteProgress()[0]?.steps[0]?.status).not.toBe("failed");
+
+    await deletePromise;
+
+    const completedProgress = service.listDeleteProgress();
+    expect(completedProgress).toHaveLength(1);
+    expect(completedProgress[0]?.laneId).toBe("lane-child");
+    expect(completedProgress[0]?.overallStatus).toBe("completed");
+  });
+
   it("deletes the lane locally when optional remote branch cleanup fails", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

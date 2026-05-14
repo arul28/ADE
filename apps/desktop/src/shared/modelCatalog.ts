@@ -283,6 +283,7 @@ export function buildProviderGroupBlocks(
   models: ModelDescriptor[],
   modelOrder: Map<string, number>,
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>,
+  includeEmptyOpenCodeProviders = true,
 ): ModelProviderGroupBlock[] {
   const byGroup = new Map<ProviderGroupKey, Map<string, Map<string, ModelDescriptor[]>>>();
 
@@ -305,7 +306,7 @@ export function buildProviderGroupBlocks(
     subMap.set(subKey, list);
   }
 
-  if (!byGroup.has("opencode")) {
+  if (includeEmptyOpenCodeProviders && !byGroup.has("opencode")) {
     byGroup.set("opencode", new Map());
   }
 
@@ -344,7 +345,7 @@ export function buildProviderGroupBlocks(
       });
     }
 
-    if (groupKey === "opencode") {
+    if (groupKey === "opencode" && includeEmptyOpenCodeProviders) {
       const existingFamilies = new Set(providers.map((p) => p.key));
       const potentialProviders = opencodeProviders?.length
         ? opencodeProviders.map((p) => ({ id: p.id, name: p.name }))

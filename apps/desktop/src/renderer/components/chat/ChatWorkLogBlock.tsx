@@ -109,6 +109,71 @@ function collectLocalhostUrls(entries: ChatWorkLogEntry[]): ChatLocalhostUrl[] {
   return urls.slice(0, 4);
 }
 
+const PORT_PROBE_POSITIVE_TTL_MS = 5 * 60 * 1000;
+const PORT_PROBE_NEGATIVE_TTL_MS = 30 * 1000;
+
+type PortProbeCacheEntry = { alive: boolean; checkedAtMs: number };
+
+const portProbeCache = new Map<number, PortProbeCacheEntry>();
+const portProbeInFlight = new Map<number, Promise<boolean>>();
+
+function isCacheEntryFresh(entry: PortProbeCacheEntry, nowMs: number): boolean {
+  const ttl = entry.alive ? PORT_PROBE_POSITIVE_TTL_MS : PORT_PROBE_NEGATIVE_TTL_MS;
+  return nowMs - entry.checkedAtMs < ttl;
+}
+
+async function runPortProbe(port: number): Promise<boolean> {
+  const existing = portProbeInFlight.get(port);
+  if (existing) return existing;
+  const probe = window.ade?.localhost?.probePort;
+  if (typeof probe !== "function") return false;
+  const promise = (async () => {
+    try {
+      const result = await probe(port);
+      portProbeCache.set(port, { alive: Boolean(result), checkedAtMs: Date.now() });
+      return Boolean(result);
+    } catch {
+      portProbeCache.set(port, { alive: false, checkedAtMs: Date.now() });
+      return false;
+    } finally {
+      portProbeInFlight.delete(port);
+    }
+  })();
+  portProbeInFlight.set(port, promise);
+  return promise;
+}
+
+function useLiveLocalhostUrls(urls: ChatLocalhostUrl[]): ChatLocalhostUrl[] {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const now = Date.now();
+    const portsToProbe: number[] = [];
+    for (const url of urls) {
+      if (url.port === null) continue;
+      const cached = portProbeCache.get(url.port);
+      if (!cached || !isCacheEntryFresh(cached, now)) portsToProbe.push(url.port);
+    }
+    if (portsToProbe.length === 0) return;
+    void Promise.all(portsToProbe.map((port) => runPortProbe(port))).then(() => {
+      if (!cancelled) setTick((value) => value + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [urls]);
+
+  return useMemo(() => {
+    const now = Date.now();
+    return urls.filter((url) => {
+      if (url.port === null) return false;
+      const cached = portProbeCache.get(url.port);
+      if (!cached || !isCacheEntryFresh(cached, now)) return false;
+      return cached.alive;
+    });
+  }, [urls, tick]);
+}
+
 function localhostUrlLabel(url: ChatLocalhostUrl): string {
   if (url.port !== null) return `localhost:${url.port}`;
   try {
@@ -552,7 +617,8 @@ function LocalhostServersStrip({
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 }) {
-  const urls = useMemo(() => collectLocalhostUrls(entries), [entries]);
+  const detectedUrls = useMemo(() => collectLocalhostUrls(entries), [entries]);
+  const urls = useLiveLocalhostUrls(detectedUrls);
   const [busy, setBusy] = useState(false);
   if (urls.length === 0) return null;
 

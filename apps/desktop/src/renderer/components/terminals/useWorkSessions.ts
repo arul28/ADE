@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, TerminalSessionSummary, TerminalToolType } from "../../../shared/types";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   useAppStore,
   type WorkDraftKind,
@@ -12,12 +12,10 @@ import {
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
-import { buildOptimisticChatSessionSummary, isChatToolType, isRunOwnedSession } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
   resolveLaunchFields,
-  resolveTrackedCliResumeCommand,
-  withCodexNoAltScreen,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
   type LaunchProfile,
@@ -30,6 +28,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   selectedItemId: null,
   viewMode: "tabs",
   draftKind: "chat",
+  draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
   search: "",
@@ -271,16 +270,6 @@ export function buildWorkTabGroupModel(args: {
   return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
 }
 
-function inferToolFromResumeCommand(command: string): string | null {
-  const n = command.trim().toLowerCase().replace(/^(?:[a-z_][a-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s+)+/, "");
-  if (n.startsWith("claude ")) return "claude";
-  if (n.startsWith("codex ")) return "codex";
-  if (n.startsWith("cursor-agent ")) return "cursor-cli";
-  if (n.startsWith("droid ")) return "droid";
-  if (n.startsWith("opencode ")) return "opencode";
-  return null;
-}
-
 function arraysEqual(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -356,8 +345,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
-  const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
-  const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const hasRunningSessionsRef = useRef(false);
@@ -395,6 +382,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const selectedSessionId = projectViewState.selectedItemId;
   const viewMode = projectViewState.viewMode;
   const draftKind = projectViewState.draftKind;
+  const draftLaneId = projectViewState.draftLaneId;
   const filterLaneId = projectViewState.laneFilter;
   const filterStatus = projectViewState.statusFilter;
   const q = projectViewState.search;
@@ -470,6 +458,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }));
     },
     [setProjectViewState],
+  );
+
+  const setDraftLaneId = useCallback(
+    (laneId: string) => {
+      const normalizedLaneId = laneId.trim();
+      setProjectViewState({ draftLaneId: normalizedLaneId || null });
+      if (normalizedLaneId) selectLane(normalizedLaneId);
+    },
+    [selectLane, setProjectViewState],
   );
 
   const setFilterLaneId = useCallback(
@@ -707,7 +704,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           openItemIds: nextOpen,
           activeItemId: nextActive,
           selectedItemId: nextSelected,
-          draftKind: nextOpen.length === 0 ? "chat" : prev.draftKind,
+          draftKind: prev.draftKind,
         };
       });
     },
@@ -1146,7 +1143,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     );
   };
 
-  const closeSession = useCallback(
+  const stopRuntime = useCallback(
     async (ptyId: string, sessionId?: string) => {
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
@@ -1178,76 +1175,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [scheduleBackgroundRefresh],
   );
 
-  const resumeSession = useCallback(
-    async (session: TerminalSessionSummary) => {
-      if (isChatToolType(session.toolType)) {
-        if (resumingSessionId) return;
-        setResumingSessionId(session.id);
-        try {
-          await window.ade.agentChat.resume({ sessionId: session.id });
-          selectLane(session.laneId);
-          focusSession(session.id);
-          setActiveItemId(session.id);
-          await refresh();
-        } finally {
-          setResumingSessionId(null);
-        }
-        return;
-      }
-      const command = resolveTrackedCliResumeCommand(session);
-      if (!command || resumingSessionId) return;
-      setResumingSessionId(session.id);
-      try {
-        const toolType = (session.toolType ?? inferToolFromResumeCommand(command) ?? null) as TerminalToolType | null;
-        const resumed = await window.ade.pty.create({
-          sessionId: session.id,
-          laneId: session.laneId,
-          cols: 100,
-          rows: 30,
-          title: session.goal?.trim() || session.title || "Terminal",
-          tracked: session.tracked,
-          toolType,
-          startupCommand: toolType === "codex" || toolType === "codex-orchestrated"
-            ? withCodexNoAltScreen(command)
-            : command,
-        });
-        invalidateSessionListCache();
-        try {
-          await refresh({ showLoading: false, force: true });
-        } catch { /* best-effort after reattach */ }
-        selectLane(session.laneId);
-        focusSession(resumed.sessionId);
-        setActiveItemId(resumed.sessionId);
-      } finally {
-        setResumingSessionId(null);
-      }
-    },
-    [focusSession, refresh, resumingSessionId, selectLane, setActiveItemId],
-  );
-
-  const closeChatSession = useCallback(
-    async (sessionId: string) => {
-      setClosingChatSessionId(sessionId);
-      try {
-        await window.ade.agentChat.dispose({ sessionId });
-        await refresh();
-      } finally {
-        setClosingChatSessionId((current) => (current === sessionId ? null : current));
-      }
-    },
-    [refresh],
-  );
-
-  const closeAllRunning = useCallback(async () => {
+  const stopAllRuntimes = useCallback(async () => {
     const ptyIds = runningSessions.map((session) => session.ptyId).filter((id): id is string => Boolean(id));
-    const chatSessionIds = runningSessions
-      .filter((session) => isChatToolType(session.toolType))
-      .map((session) => session.id);
     await Promise.allSettled([
-      ...ptyIds.map((id) => closeSession(id)),
-      ...chatSessionIds.map((id) => closeChatSession(id)),
+      ...ptyIds.map((id) => stopRuntime(id)),
     ]);
-  }, [runningSessions, closeSession, closeChatSession]);
+  }, [runningSessions, stopRuntime]);
 
   const launchPtySession = useCallback(
     async (args: {
@@ -1357,21 +1290,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     viewMode,
     setViewMode,
     draftKind,
+    draftLaneId,
+    setDraftLaneId,
     showDraftKind,
     openSessionTab,
     closeTab,
 
     closingPtyIds,
-    closingChatSessionId,
-    resumingSessionId,
-
     refresh,
     upsertOptimisticChatSession,
     removeSessionFromList,
-    closeSession,
-    closeAllRunning,
-    resumeSession,
-    closeChatSession,
+    stopRuntime,
+    stopAllRuntimes,
     launchPtySession,
 
     navigate,

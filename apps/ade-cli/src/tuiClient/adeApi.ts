@@ -9,7 +9,6 @@ import type {
   AgentChatClaudeOutputStyle,
   AgentChatClaudePlugin,
   AgentChatReloadClaudePluginsResult,
-  AgentChatClaudeMcpServerStatus,
   AgentChatClaudePermissionMode,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -37,6 +36,12 @@ import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop
 import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
+import type {
+  ChatTerminalPreviewResult,
+  ChatTerminalSession,
+  PtySendToSessionResult,
+  TerminalSessionSummary,
+} from "../../../desktop/src/shared/types";
 import { discoverClaudeSlashCommands } from "../../../desktop/src/main/services/chat/claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "../../../desktop/src/main/services/chat/codexSlashCommandDiscovery";
 import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
@@ -67,6 +72,156 @@ export async function listChatSessions(
   return await connection.actionList<AgentChatSessionSummary[]>("chat", "listSessions", argsList);
 }
 
+export async function listTerminalSessions(
+  connection: AdeCodeConnection,
+  laneId?: string | null,
+): Promise<ChatTerminalSession[]> {
+  const sessions = await connection.action<ChatTerminalSession[]>("terminal", "list", {
+    ...(laneId ? { laneId } : {}),
+    limit: 200,
+  });
+  return sessions.filter((session) => {
+    if (
+      session.toolType === "codex-chat"
+      || session.toolType === "claude-chat"
+      || session.toolType === "opencode-chat"
+      || session.toolType === "cursor"
+      || session.toolType === "droid-chat"
+    ) {
+      return false;
+    }
+    return session.toolType === "claude"
+      || session.toolType === "claude-orchestrated"
+      || session.toolType === "codex"
+      || session.toolType === "codex-orchestrated"
+      || session.resumeMetadata?.provider === "claude"
+      || session.resumeMetadata?.provider === "codex";
+  });
+}
+
+export async function previewTerminal(
+  connection: AdeCodeConnection,
+  terminalId: string,
+): Promise<ChatTerminalPreviewResult> {
+  return await connection.action<ChatTerminalPreviewResult>("terminal", "preview", {
+    terminalId,
+  });
+}
+
+export async function writeTerminal(
+  connection: AdeCodeConnection,
+  terminalId: string,
+  data: string,
+): Promise<void> {
+  await connection.action("terminal", "write", { terminalId, data });
+}
+
+export async function resizeTerminal(
+  connection: AdeCodeConnection,
+  terminalId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  await connection.action("terminal", "resize", { terminalId, cols, rows });
+}
+
+export async function signalTerminal(
+  connection: AdeCodeConnection,
+  terminalId: string,
+  signal: "SIGINT" | "SIGTERM" | "SIGKILL",
+): Promise<void> {
+  await connection.action("terminal", "signal", { terminalId, signal });
+}
+
+export type StartClaudeTerminalSessionResult = {
+  provider: "claude";
+  laneId: string;
+  title: string;
+  permissionMode: AgentChatPermissionMode;
+  model: string | null;
+  ptyId: string;
+  sessionId: string;
+  startupCommand: string | null;
+  initialInputWritten: boolean;
+  session: ChatTerminalSession | null;
+};
+
+function terminalSummaryToChatSession(session: TerminalSessionSummary): ChatTerminalSession {
+  return {
+    terminalId: session.id,
+    ptyId: session.ptyId,
+    chatSessionId: session.chatSessionId ?? null,
+    laneId: session.laneId,
+    laneName: session.laneName,
+    title: session.title,
+    toolType: session.toolType,
+    goal: session.goal,
+    status: session.status,
+    runtimeState: session.runtimeState,
+    active: session.status === "running",
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    exitCode: session.exitCode,
+    pid: null,
+    resumeCommand: session.resumeCommand,
+    resumeMetadata: session.resumeMetadata,
+    lastOutputPreview: session.lastOutputPreview,
+    summary: session.summary,
+  };
+}
+
+export function normalizeChatTerminalSession(
+  session: ChatTerminalSession | TerminalSessionSummary | null,
+): ChatTerminalSession | null {
+  if (!session) return null;
+  if ("terminalId" in session) return session;
+  return terminalSummaryToChatSession(session);
+}
+
+export async function startClaudeTerminalSession(args: {
+  connection: AdeCodeConnection;
+  laneId: string;
+  title?: string | null;
+  model?: string | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  initialInput?: string | null;
+  cols: number;
+  rows: number;
+}): Promise<StartClaudeTerminalSessionResult> {
+  const result = await args.connection.tool<Omit<StartClaudeTerminalSessionResult, "session"> & {
+    session: ChatTerminalSession | TerminalSessionSummary | null;
+  }>("start_cli_session", {
+    laneId: args.laneId,
+    provider: "claude",
+    title: args.title ?? undefined,
+    model: args.model ?? undefined,
+    permissionMode: args.permissionMode ?? "default",
+    initialInput: args.initialInput ?? undefined,
+    cols: args.cols,
+    rows: args.rows,
+    tracked: true,
+  });
+  return {
+    ...result,
+    session: normalizeChatTerminalSession(result.session),
+  };
+}
+
+export async function sendToTerminalSession(args: {
+  connection: AdeCodeConnection;
+  sessionId: string;
+  text: string;
+  cols: number;
+  rows: number;
+}): Promise<PtySendToSessionResult> {
+  return await args.connection.action<PtySendToSessionResult>("pty", "sendToSession", {
+    sessionId: args.sessionId,
+    text: args.text,
+    cols: args.cols,
+    rows: args.rows,
+  });
+}
+
 export async function listPrsByLane(connection: AdeCodeConnection): Promise<PrLaneSummary[]> {
   return await connection.action<PrLaneSummary[]>("pr", "listPrsByLane", {});
 }
@@ -74,7 +229,7 @@ export async function listPrsByLane(connection: AdeCodeConnection): Promise<PrLa
 export async function getChatHistory(
   connection: AdeCodeConnection,
   sessionId: string,
-  maxEvents = 500,
+  maxEvents = 20_000,
 ): Promise<ChatHistorySnapshot> {
   return await connection.actionList<ChatHistorySnapshot>("chat", "getChatEventHistory", [sessionId, { maxEvents }]);
 }
@@ -94,13 +249,6 @@ export async function getContextUsage(
   sessionId: string,
 ): Promise<AgentChatContextUsage | null> {
   return await connection.action<AgentChatContextUsage | null>("chat", "getContextUsage", { sessionId });
-}
-
-export async function getClaudeMcpStatus(
-  connection: AdeCodeConnection,
-  sessionId: string,
-): Promise<AgentChatClaudeMcpServerStatus[]> {
-  return await connection.action<AgentChatClaudeMcpServerStatus[]>("chat", "getClaudeMcpStatus", { sessionId });
 }
 
 export async function listClaudePlugins(

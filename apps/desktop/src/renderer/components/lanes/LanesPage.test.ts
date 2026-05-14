@@ -7,6 +7,7 @@ import {
   resolveLaneDeleteStartSelection,
   resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
+  resolveVisibleLaneIds,
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
@@ -257,6 +258,38 @@ describe("resolveLaneDeleteStartSelection", () => {
     expect(result.selectedLaneId).toBe("lane-main");
     expect(result.activeLaneIds).toEqual(["lane-main"]);
     expect(Array.from(result.pinnedLaneIds)).toEqual([]);
+  });
+});
+
+describe("resolveVisibleLaneIds", () => {
+  it("keeps a fallback lane visible when every filtered lane is deleting", () => {
+    expect(resolveVisibleLaneIds({
+      activeLaneIds: ["lane-main"],
+      existingLaneIds: ["lane-main", "lane-deleting"],
+      filteredLaneIds: ["lane-deleting"],
+      selectableFilteredLaneIds: [],
+      deletingLaneIds: ["lane-deleting"],
+    })).toEqual(["lane-main"]);
+  });
+
+  it("does not bypass an ordinary empty filter", () => {
+    expect(resolveVisibleLaneIds({
+      activeLaneIds: ["lane-main"],
+      existingLaneIds: ["lane-main", "lane-other"],
+      filteredLaneIds: [],
+      selectableFilteredLaneIds: [],
+      deletingLaneIds: [],
+    })).toEqual([]);
+  });
+
+  it("keeps normal filter scoping when a selectable filtered lane remains", () => {
+    expect(resolveVisibleLaneIds({
+      activeLaneIds: ["lane-main", "lane-other"],
+      existingLaneIds: ["lane-main", "lane-other", "lane-deleting"],
+      filteredLaneIds: ["lane-deleting", "lane-other"],
+      selectableFilteredLaneIds: ["lane-other"],
+      deletingLaneIds: ["lane-deleting"],
+    })).toEqual(["lane-other"]);
   });
 });
 

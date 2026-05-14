@@ -1,0 +1,473 @@
+/* @vitest-environment jsdom */
+
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  AppControlContextItem,
+  AppControlSession,
+  IosElementContextItem,
+  IosSimulatorSession,
+  LaneSummary,
+  TerminalSessionSummary,
+} from "../../../shared/types";
+import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
+import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+
+vi.mock("../chat/ChatIosSimulatorPanel", async () => {
+  const React = await import("react");
+  return {
+    ChatIosSimulatorPanel: (props: {
+      sessionId: string | null;
+      onAddAttachment?: (attachment: { path: string; type: "image" }) => void;
+      onAddContext?: (item: IosElementContextItem) => void;
+      onInsertDraft?: (text: string) => void;
+    }) => React.createElement("div", { "data-testid": "ios-panel", "data-session-id": props.sessionId ?? "" }, [
+      React.createElement("button", {
+        key: "context",
+        type: "button",
+        disabled: !props.onAddContext,
+        onClick: () => props.onAddContext?.(iosContextItem),
+      }, "Add iOS context"),
+      React.createElement("button", {
+        key: "attachment",
+        type: "button",
+        disabled: !props.onAddAttachment,
+        onClick: () => props.onAddAttachment?.({ path: ".ade/artifacts/ios.png", type: "image" }),
+      }, "Add iOS attachment"),
+      React.createElement("button", {
+        key: "draft",
+        type: "button",
+        disabled: !props.onInsertDraft,
+        onClick: () => props.onInsertDraft?.("inspect this iOS screen"),
+      }, "Insert iOS draft"),
+    ]),
+  };
+});
+
+vi.mock("../chat/ChatAppControlPanel", async () => {
+  const React = await import("react");
+  return {
+    ChatAppControlPanel: (props: {
+      sessionId: string | null;
+      onAddContext?: (item: AppControlContextItem) => void;
+    }) => React.createElement("div", { "data-testid": "app-control-panel", "data-session-id": props.sessionId ?? "" },
+      React.createElement("button", {
+        type: "button",
+        disabled: !props.onAddContext,
+        onClick: () => props.onAddContext?.(appControlContextItem),
+      }, "Add App Control context"),
+    ),
+  };
+});
+
+vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
+  const React = await import("react");
+  return {
+    ChatBuiltInBrowserPanel: (props: {
+      sessionId: string | null;
+      onAddAttachment?: (attachment: { path: string; type: "image" }) => void;
+      onAddContext?: (item: unknown) => void;
+    }) => React.createElement("div", { "data-testid": "browser-panel", "data-session-id": props.sessionId ?? "" }, [
+      React.createElement("button", {
+        key: "context",
+        type: "button",
+        disabled: !props.onAddContext,
+        onClick: () => props.onAddContext?.({
+          kind: "built_in_browser_element",
+          id: "browser-context-1",
+          componentId: "button.submit",
+          label: "Submit",
+          selector: "button.submit",
+          frame: { x: 1, y: 2, width: 30, height: 12 },
+          metadata: { label: "Submit", selector: "button.submit" },
+          selectedAt: "2026-05-13T00:00:00.000Z",
+        }),
+      }, "Add Browser context"),
+      React.createElement("button", {
+        key: "attachment",
+        type: "button",
+        disabled: !props.onAddAttachment,
+        onClick: () => props.onAddAttachment?.({ path: ".ade/artifacts/browser.png", type: "image" }),
+      }, "Add Browser attachment"),
+    ]),
+  };
+});
+
+vi.mock("./MacosVmPanel", async () => {
+  const React = await import("react");
+  return {
+    MacosVmPanel: (props: { onAddContext?: (item: unknown) => void }) => React.createElement("button", {
+      type: "button",
+      disabled: !props.onAddContext,
+      onClick: () => props.onAddContext?.({
+        kind: "macos_vm_target",
+        id: "vm-context-1",
+        provider: "lume",
+        state: "running",
+        laneId: "lane-1",
+        laneName: "Lane 1",
+        vmName: "ADE VM",
+        hostLanePath: "/repo",
+        guestLanePath: "/Volumes/ADE",
+        runCommand: "lume run ADE",
+        sshCommand: "ssh ade-vm",
+        vncUrl: null,
+        windowTitleQuery: null,
+        metadata: {},
+        selectedAt: "2026-05-13T00:00:00.000Z",
+      }),
+    }, "Add VM context"),
+  };
+});
+
+vi.mock("../files/FilesPage", async () => {
+  const React = await import("react");
+  return { FilesPage: () => React.createElement("div", null, "Files") };
+});
+
+vi.mock("../lanes/LaneDiffPane", async () => {
+  const React = await import("react");
+  return { LaneDiffPane: () => React.createElement("div", null, "Diff") };
+});
+
+vi.mock("../lanes/LaneGitActionsPane", async () => {
+  const React = await import("react");
+  return { LaneGitActionsPane: () => React.createElement("div", null, "Git") };
+});
+
+vi.mock("../ui/SmartTooltip", async () => {
+  const React = await import("react");
+  return { SmartTooltip: ({ children }: { children: unknown }) => React.createElement(React.Fragment, null, children as never) };
+});
+
+const lane: LaneSummary = {
+  id: "lane-1",
+  name: "Lane 1",
+  laneType: "worktree",
+  baseRef: "main",
+  branchRef: "feature/test",
+  worktreePath: "/repo",
+  parentLaneId: null,
+  childCount: 0,
+  stackDepth: 0,
+  parentStatus: null,
+  isEditProtected: false,
+  status: {
+    dirty: false,
+    ahead: 0,
+    behind: 0,
+    remoteBehind: 0,
+    rebaseInProgress: false,
+  },
+  createdAt: "2026-05-13T00:00:00.000Z",
+  color: null,
+  icon: null,
+  tags: [],
+  missionId: null,
+};
+
+const laneTwo: LaneSummary = {
+  ...lane,
+  id: "lane-2",
+  name: "Lane 2",
+  branchRef: "feature/other",
+  worktreePath: "/repo-two",
+};
+
+const activeSession: TerminalSessionSummary = {
+  id: "session-1",
+  laneId: "lane-1",
+  laneName: "Lane 1",
+  ptyId: "pty-1",
+  tracked: true,
+  pinned: false,
+  goal: null,
+  toolType: "claude",
+  title: "Claude Code",
+  status: "running",
+  startedAt: "2026-05-13T00:00:00.000Z",
+  endedAt: null,
+  exitCode: null,
+  transcriptPath: "/tmp/transcript",
+  headShaStart: null,
+  headShaEnd: null,
+  lastOutputPreview: null,
+  summary: null,
+  runtimeState: "running",
+  resumeCommand: null,
+};
+
+const otherLaneAppControlSession: AppControlSession = {
+  id: "app-control-session-2",
+  appKind: "electron",
+  label: "Other lane app",
+  projectRoot: "/repo-two",
+  laneId: "lane-2",
+  cwd: "/repo-two",
+  command: "npm run dev",
+  pid: 123,
+  terminalSessionId: "term-2",
+  terminalPtyId: "pty-2",
+  cdpPort: 9222,
+  cdpEndpoint: "http://127.0.0.1:9222",
+  cdpTargetId: "target-2",
+  provider: "cdp",
+  chatSessionId: "chat-2",
+  startedAt: "2026-05-13T00:00:00.000Z",
+  connectedAt: "2026-05-13T00:00:01.000Z",
+  status: "connected",
+  lastError: null,
+};
+
+const otherLaneIosSession: IosSimulatorSession = {
+  id: "ios-session-2",
+  deviceUdid: "device-2",
+  deviceName: "iPhone 16",
+  bundleId: "com.example.app",
+  appName: "Example",
+  appBundlePath: null,
+  targetId: null,
+  projectRoot: "/repo-two",
+  laneId: "lane-2",
+  chatSessionId: "chat-2",
+  mode: "live",
+  bridgeUrl: null,
+  startedAt: "2026-05-13T00:00:00.000Z",
+};
+
+const iosContextItem: IosElementContextItem = {
+  kind: "ios_element",
+  id: "ios-context-1",
+  componentId: "ContentView/Continue",
+  sourceFile: "ContentView.swift",
+  sourceLine: 12,
+  frame: { x: 1, y: 2, width: 3, height: 4 },
+  metadata: { label: "Continue", role: "Button" },
+  screenshotDataUrl: null,
+  selectedAt: "2026-05-13T00:00:00.000Z",
+};
+
+const appControlContextItem: AppControlContextItem = {
+  kind: "app_control_element",
+  id: "app-context-1",
+  appKind: "electron",
+  sessionId: "app-control-session-1",
+  provider: "cdp",
+  componentId: "Run button",
+  sourceFile: "src/App.tsx",
+  sourceLine: 42,
+  frame: { x: 10, y: 20, width: 30, height: 40 },
+  metadata: { label: "Run", selector: "button.run" },
+  screenshotDataUrl: null,
+  selectedAt: "2026-05-13T00:00:00.000Z",
+};
+
+function installAdeMock(options: {
+  appControlSession?: AppControlSession | null;
+  iosSession?: IosSimulatorSession | null;
+} = {}) {
+  const terminalWrite = vi.fn().mockResolvedValue({ ok: true });
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    value: {
+      appControl: {
+        getStatus: vi.fn().mockResolvedValue({ activeSession: options.appControlSession ?? null }),
+        onEvent: vi.fn(() => () => {}),
+      },
+      builtInBrowser: {
+        stopInspect: vi.fn().mockResolvedValue(undefined),
+        setBounds: vi.fn().mockResolvedValue(undefined),
+      },
+      iosSimulator: {
+        getStatus: vi.fn().mockResolvedValue({ activeSession: options.iosSession ?? null }),
+        onEvent: vi.fn(() => () => {}),
+      },
+      terminal: {
+        write: terminalWrite,
+      },
+    },
+  });
+  return { terminalWrite };
+}
+
+function renderSidebar(args: {
+  tab: "ios" | "app-control" | "browser" | "macos-vm";
+  contextTarget: WorkSidebarContextTarget | null;
+  contextDisabledReason?: string | null;
+  laneId?: string;
+  lanes?: LaneSummary[];
+  activeSession?: TerminalSessionSummary | null;
+}) {
+  return render(
+    <MemoryRouter>
+      <WorkSidebar
+        active
+        laneId={args.laneId ?? "lane-1"}
+        lanes={args.lanes ?? [lane]}
+        activeSession={args.activeSession ?? activeSession}
+        tab={args.tab}
+        onTabChange={vi.fn()}
+        onClose={vi.fn()}
+        contextTarget={args.contextTarget}
+        contextDisabledReason={args.contextDisabledReason ?? null}
+      />
+    </MemoryRouter>,
+  );
+}
+
+describe("WorkSidebar context targets", () => {
+  beforeEach(() => {
+    installAdeMock();
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete (window as unknown as { ade?: unknown }).ade;
+    vi.restoreAllMocks();
+  });
+
+  it("passes chat session ids into iOS and App Control panels and dispatches chat events", async () => {
+    const received: unknown[] = [];
+    window.addEventListener("ade:agent-chat:add-ios-context", (event) => {
+      received.push((event as CustomEvent).detail);
+    });
+    renderSidebar({ tab: "ios", contextTarget: { kind: "chat", sessionId: "chat-1" } });
+
+    expect(screen.getByTestId("ios-panel").getAttribute("data-session-id")).toBe("chat-1");
+    fireEvent.click(screen.getByText("Add iOS context"));
+
+    expect(received).toEqual([expect.objectContaining({
+      sessionId: "chat-1",
+      item: expect.objectContaining({ id: "ios-context-1" }),
+    })]);
+
+    cleanup();
+    renderSidebar({ tab: "app-control", contextTarget: { kind: "chat", sessionId: "chat-1" } });
+
+    expect(screen.getByTestId("app-control-panel").getAttribute("data-session-id")).toBe("chat-1");
+  });
+
+  it("writes formatted context to active PTY targets instead of dispatching chat events", async () => {
+    const { terminalWrite } = installAdeMock();
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    const inserted: unknown[] = [];
+    window.addEventListener(ADE_WORK_PTY_CONTEXT_INSERTED_EVENT, (event) => {
+      inserted.push((event as CustomEvent).detail);
+    });
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "claude" },
+    });
+
+    expect(screen.getByTestId("ios-panel").getAttribute("data-session-id")).toBe("");
+    fireEvent.click(screen.getByText("Add iOS context"));
+
+    await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
+    expect(terminalWrite).toHaveBeenCalledWith({
+      terminalId: "term-1",
+      ptyId: "pty-1",
+      data: expect.stringContaining("\x1b[200~"),
+    });
+    expect(terminalWrite.mock.calls[0]?.[0].data).toContain("iOS visual inspect context attached by the user.");
+    expect(terminalWrite.mock.calls[0]?.[0].data).toContain("Continue");
+    expect(dispatchSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: "ade:agent-chat:add-ios-context" }));
+    await waitFor(() => expect(inserted).toEqual([expect.objectContaining({
+      sessionId: "term-1",
+      ptyId: "pty-1",
+      toolType: "claude",
+      kind: "ios",
+    })]));
+  });
+
+  it("inserts screenshot attachment paths immediately for PTY targets", async () => {
+    const { terminalWrite } = installAdeMock();
+    renderSidebar({
+      tab: "browser",
+      contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
+    });
+
+    fireEvent.click(screen.getByText("Add Browser attachment"));
+
+    await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
+    expect(terminalWrite.mock.calls[0]?.[0].data).toContain(".ade/artifacts/browser.png");
+    expect(terminalWrite.mock.calls[0]?.[0].data).not.toContain("base64");
+  });
+
+  it("keeps tools mounted but disables context insertion when there is no target", () => {
+    renderSidebar({
+      tab: "ios",
+      contextTarget: null,
+      contextDisabledReason: "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.",
+    });
+
+    expect(screen.getByTestId("ios-panel")).toBeTruthy();
+    expect(screen.getByText(/Shell sessions can use the lane tools/)).toBeTruthy();
+    expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("warns when App Control is attached to another lane and disables context insertion", async () => {
+    installAdeMock({ appControlSession: otherLaneAppControlSession });
+
+    renderSidebar({
+      tab: "app-control",
+      contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "claude" },
+      lanes: [lane, laneTwo],
+    });
+
+    expect(await screen.findByText(/This App Control view is attached to Lane 2, not Lane 1/)).toBeTruthy();
+    expect((screen.getByText("Add App Control context") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("warns when the iOS Simulator is attached to another lane and disables context insertion", async () => {
+    installAdeMock({ iosSession: otherLaneIosSession });
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "claude" },
+      lanes: [lane, laneTwo],
+    });
+
+    expect(await screen.findByText(/This iOS Simulator view is attached to Lane 2, not Lane 1/)).toBeTruthy();
+    expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("warns when the Browser view survives a lane switch", async () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <WorkSidebar
+          active
+          laneId="lane-1"
+          lanes={[lane, laneTwo]}
+          activeSession={activeSession}
+          tab="browser"
+          onTabChange={vi.fn()}
+          onClose={vi.fn()}
+          contextTarget={{ kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "claude" }}
+          contextDisabledReason={null}
+        />
+      </MemoryRouter>,
+    );
+
+    rerender(
+      <MemoryRouter>
+        <WorkSidebar
+          active
+          laneId="lane-2"
+          lanes={[lane, laneTwo]}
+          activeSession={{ ...activeSession, laneId: "lane-2", laneName: "Lane 2" }}
+          tab="browser"
+          onTabChange={vi.fn()}
+          onClose={vi.fn()}
+          contextTarget={{ kind: "pty", sessionId: "term-2", ptyId: "pty-2", toolType: "claude" }}
+          contextDisabledReason={null}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/This Browser view is attached to Lane 1, not Lane 2/)).toBeTruthy();
+    expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(true);
+  });
+});

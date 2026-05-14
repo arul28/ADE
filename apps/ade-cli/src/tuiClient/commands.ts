@@ -17,7 +17,6 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/stage all", description: "Stage all changes in the active lane", placement: "inline" },
   { name: "/clear", description: "Clear the local terminal transcript view", placement: "inline" },
   { name: "/copy", description: "Copy the visible chat transcript", placement: "inline" },
-  { name: "/end", description: "End the active chat runtime", placement: "inline" },
   { name: "/login", description: "Sign in to the active CLI-backed provider from this terminal", placement: "inline" },
   { name: "/open", description: "Open this ADE context in desktop", placement: "inline" },
   { name: "/quit", description: "Exit ade code", placement: "inline" },
@@ -36,8 +35,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/status", description: "Show project, lane, and runtime state", placement: "right" },
   { name: "/context", description: "Show Claude context usage", placement: "right", providers: ["claude"] },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"] },
+  { name: "/subagents", description: "Show live subagents and teammates for the active chat", placement: "right" },
   { name: "/skills", description: "List Claude skills from user and project config", placement: "right", providers: ["claude"] },
-  { name: "/mcp", description: "Show Claude MCP server status", placement: "right", providers: ["claude"] },
   { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex"] },
   { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"] },
   { name: "/usage", description: "Show Claude usage through the active SDK session", placement: "chat", providers: ["claude"] },
@@ -61,6 +60,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear comment", description: "Comment on a Linear ticket", placement: "right", argumentHint: "<id> <text>" },
   { name: "/linear status", description: "Show Linear sync status", placement: "right" },
   { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>" },
+  { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right" },
   { name: "/memory", description: "Search ADE memory", placement: "right", argumentHint: "[query]" },
   { name: "/forget", description: "Open memory management", placement: "right" },
   { name: "/chats", description: "List chats in the active lane", placement: "right" },
@@ -69,15 +69,14 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/keybindings", description: "Show Claude-compatible keybinding config diagnostics", placement: "right" },
   { name: "/statusline", description: "Show Claude-compatible status line config", placement: "right" },
   { name: "/doctor", description: "Show ADE Code and Claude-compat diagnostics", placement: "right" },
-  { name: "/model", description: "Pick the active chat model", placement: "right" },
-  { name: "/effort", description: "Pick reasoning effort", placement: "right" },
+  { name: "/model", description: "Open the model, reasoning, and permission picker", placement: "right" },
   { name: "/system", description: "Show system and runtime details", placement: "right" },
   { name: "/ade", description: "Run an ADE action or force a TUI command", placement: "right", argumentHint: "<domain.action|command> [json]" },
 ];
 
-const ADE_OWNED_SINGLE_WORD_COMMANDS = new Set(
+const ADE_LOCAL_SINGLE_WORD_COMMANDS = new Set(
   BUILTIN_COMMANDS
-    .filter((command) => command.placement === "inline" && !command.name.includes(" "))
+    .filter((command) => command.placement !== "chat" && !command.name.includes(" "))
     .map((command) => command.name.toLowerCase()),
 );
 
@@ -90,6 +89,13 @@ const ADE_OWNED_CLAUDE_PARITY_COMMANDS = new Set([
   "/insights",
   "/fast",
   "/goal",
+]);
+
+// Commands ADE *must* dispatch locally — never let a runtime/SDK or user command
+// hijack these. /model and /subagents open right-side panes.
+const ADE_PARSER_OVERRIDE = new Set([
+  "/model",
+  "/subagents",
 ]);
 
 export type ParsedCommand = {
@@ -130,14 +136,16 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
   }
 
   const exactUserCommand = userCommands.find((command) => slashCommandKey(command.name) === firstKey) ?? null;
-  const adeOwnedSingleWordCommand = candidates.find((command) =>
-    slashCommandKey(command.name) === firstKey && ADE_OWNED_SINGLE_WORD_COMMANDS.has(slashCommandKey(command.name))
-  );
-  if (adeOwnedSingleWordCommand) {
+  const adeOwnedOverride = candidates.find((command) => {
+    const key = slashCommandKey(command.name);
+    return key === firstKey
+      && (ADE_LOCAL_SINGLE_WORD_COMMANDS.has(key) || ADE_PARSER_OVERRIDE.has(key));
+  });
+  if (adeOwnedOverride) {
     return {
-      name: adeOwnedSingleWordCommand.name,
+      name: adeOwnedOverride.name,
       args: trimmed.slice(first.length).trim(),
-      spec: adeOwnedSingleWordCommand,
+      spec: adeOwnedOverride,
       userCommand: null,
     };
   }
@@ -181,11 +189,19 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
   };
 }
 
+export type PaletteCommand = {
+  name: string;
+  description: string;
+  source: "ade" | "user";
+  argumentHint?: string;
+  placement?: CommandPlacement;
+};
+
 export function paletteCommands(
   query: string,
   userCommands: AgentChatSlashCommand[] = [],
   options: { provider?: AgentChatProvider | null } = {},
-): Array<{ name: string; description: string; source: "ade" | "user"; argumentHint?: string }> {
+): PaletteCommand[] {
   const normalizedQuery = query.trim().toLowerCase();
   const queryToken = normalizedQuery.replace(/^\//, "");
   const builtins = BUILTIN_COMMANDS
@@ -195,24 +211,28 @@ export function paletteCommands(
       description: command.description,
       source: "ade" as const,
       argumentHint: command.argumentHint,
+      placement: command.placement,
     }));
   const users = userCommands.map((command) => ({
     name: command.name,
     description: command.description,
     source: "user" as const,
     argumentHint: command.argumentHint,
+    placement: "chat" as CommandPlacement,
   }));
-  // Dedupe by name. Most runtime/user commands win over ADE built-ins, but
-  // ADE-owned inline terminal controls must match parseCommand dispatch.
-  const byName = new Map<string, { name: string; description: string; source: "ade" | "user"; argumentHint?: string }>();
+  // Dedupe by name. Runtime/user chat commands can still replace chat-placement
+  // built-ins, but ADE local controls must match parseCommand dispatch so a row
+  // marked as opening the right pane never falls through as a chat message.
+  const byName = new Map<string, PaletteCommand>();
   for (const command of builtins) {
     const key = slashCommandKey(command.name);
     if (!byName.has(key)) byName.set(key, command);
   }
   for (const command of users) {
     const key = slashCommandKey(command.name);
-    if (ADE_OWNED_SINGLE_WORD_COMMANDS.has(key)) continue;
+    if (ADE_LOCAL_SINGLE_WORD_COMMANDS.has(key)) continue;
     if (ADE_OWNED_CLAUDE_PARITY_COMMANDS.has(key)) continue;
+    if (ADE_PARSER_OVERRIDE.has(key)) continue;
     byName.set(key, command);
   }
   const merged = [...byName.values()];

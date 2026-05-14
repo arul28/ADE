@@ -130,13 +130,13 @@ Listed in order of appearance in the registry:
 
 **Work** (`work.*`)
 - `listSessions`, `updateSessionMeta`, `runQuickCommand`,
-  `startCliSession`, `closeSession`
+  `startCliSession`, `sendToSession`, `stopRuntime`
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
-- `resume`, `updateSession`, `dispose`, `models`
+- `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`
 
 `chat.dispatchSteer` (Claude SDK only) takes
 `{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds
@@ -211,23 +211,21 @@ A handful have more logic:
   `ptyService.create`, and returns the PTY handle for the controller
   to subscribe to via `terminal_subscribe`.
 - **`work.startCliSession`** — host-side mobile CLI launcher used by
-  the iOS Work "new session" surface and by tap-to-resume on existing
-  PTY rows. Args are validated through `parseStartCliSessionArgs`,
+  the iOS Work "new session" surface. Args are validated through
+  `parseStartCliSessionArgs`,
   which restricts `provider` to the allowlist
   `claude | codex | cursor | droid | opencode | shell` (any other
   value throws `"work.startCliSession requires provider."`), clamps
   `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
   `initialInput` at 20 KB. Provider-specific argv, env, and shell
-  preambles come from `buildTrackedCliLaunchCommand` /
-  `buildTrackedCliResumeCommand` in `apps/desktop/src/shared/cliLaunch.ts`
+  preambles come from `buildTrackedCliLaunchCommand` in
+  `apps/desktop/src/shared/cliLaunch.ts`
   — the same module the desktop Work tab uses — so the host owns the
   startup-command shape and a phone cannot smuggle in a free-form
   shell command (the `shell` provider takes no startup payload at all).
   Claude launches mint a pre-assigned `--session-id` upfront via
-  `randomUUID()` so resume works as soon as the row exists. When
-  `resumeSessionId` is set, the handler reuses the saved
-  `resumeMetadata` (or the persisted `resumeCommand`) to rebuild the
-  startup line. After `ptyService.create` returns, any `initialInput`
+  `randomUUID()` so continuation works as soon as the row exists.
+  After `ptyService.create` returns, any `initialInput`
   is forwarded as keystrokes via `ptyService.writeBySessionId`. The
   result is `SyncStartCliSessionResult` (`{ sessionId, ptyId,
   session: TerminalSessionSummary | null }`) — the controller can
@@ -236,8 +234,13 @@ A handful have more logic:
   only the returned session handle and summary, not the `initialInput`
   text, so reconnect replay does not leak the user's prompt into the
   host-side ledger.
-- **`work.closeSession`** — looks up the session's PTY id and
-  disposes the PTY.
+- **`work.sendToSession`** — sends text to an existing durable Work
+  CLI session. If the PTY is live, the host writes into it; if the
+  process ended and the session is resumable, the host starts the
+  provider continuation internally and attaches the runtime to the
+  same session id.
+- **`work.stopRuntime`** — looks up the session's PTY id and disposes
+  the PTY without deleting the durable session row or transcript.
 - **`chat.create`** — resolves a missing `model` to the first
   available provider model via `agentChatService.getAvailableModels`
   before forwarding.
@@ -345,7 +348,7 @@ can be sensitive.
   `lanes`, `sessions`, `linear_workflow_runs`, etc. rows arriving
   after the host finishes the command.
 - **Terminal sub-protocol** pairs with `work.runQuickCommand`,
-  `work.startCliSession`, and `work.closeSession`. The controller
+  `work.startCliSession`, `work.sendToSession`, and `work.stopRuntime`. The controller
   invokes the command, then sends `terminal_subscribe` with the
   returned session id to stream output and enable input/resize control.
 - **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
@@ -414,8 +417,8 @@ see the chat README for the passive/active contract.
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
-  must subscribe to the terminal stream and tear down with
-  `work.closeSession`. A daemon configured without a real PTY service
+  must subscribe to the terminal stream and stop the process with
+  `work.stopRuntime`. A daemon configured without a real PTY service
   (rare; only used in some headless test harnesses) will surface
   `pty service not available` for this command.
 - **`work.startCliSession` provider list is host-controlled.** The

@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
+import * as HeadlessXterm from "@xterm/headless";
+import type { IBufferCell } from "@xterm/headless";
+import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
@@ -18,13 +21,21 @@ import type {
   PtyExitEvent,
   PtyCreateArgs,
   PtyCreateResult,
+  PtySendToSessionArgs,
+  PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
+  ChatTerminalResizeArgs,
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
+  ChatTerminalPreviewArgs,
+  ChatTerminalPreviewResult,
+  TerminalSerializedSnapshot,
+  TerminalSnapshotCell,
+  TerminalSnapshotRow,
   TerminalResumeMetadata,
   TerminalRuntimeState,
   TerminalSessionStatus,
@@ -36,12 +47,25 @@ import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
 import {
+  buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
+  normalizeResumeCommand,
   parseTrackedCliLaunchConfig,
+  providerFromTool,
   runtimeStateFromOsc133Chunk,
   sanitizeResumeTargetId,
 } from "../../utils/terminalSessionSignals";
+
+type HeadlessXtermModule = typeof HeadlessXterm;
+type XtermSerializeModule = typeof XtermSerialize;
+
+const headlessXtermModule = ((HeadlessXterm as unknown as { default?: HeadlessXtermModule }).default
+  ?? HeadlessXterm) as HeadlessXtermModule;
+const xtermSerializeModule = ((XtermSerialize as unknown as { default?: XtermSerializeModule }).default
+  ?? XtermSerialize) as XtermSerializeModule;
+const { Terminal: HeadlessTerminal } = headlessXtermModule;
+const { SerializeAddon } = xtermSerializeModule;
 
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
@@ -66,15 +90,28 @@ const CLI_USER_TITLE_SEED_MAX_LEN = 180;
 const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
+const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
+const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
+const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
+const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
+const PTY_SEND_DEFAULT_COLS = 100;
+const PTY_SEND_DEFAULT_ROWS = 30;
+const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
 
 type CodexStorageSessionMatch = {
   id: string;
   filePath: string;
   threadName: string | null;
+};
+
+type ClaudeStorageSessionMatch = {
+  id: string;
+  filePath: string;
+  title: string | null;
 };
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -199,7 +236,10 @@ function sentenceCase(raw: string): string {
 }
 
 function deterministicCliTitleFromSeed(seed: string): string {
-  const cleaned = trimPromptLeadIn(seed)
+  const naturalLanguageSlashTitle = seed.startsWith("/") && !isProviderSlashCommandInput(seed)
+    ? seed.slice(1).trim()
+    : seed;
+  const cleaned = trimPromptLeadIn(naturalLanguageSlashTitle)
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -224,7 +264,7 @@ function isCliPlaceholderTitle(title: string | null | undefined, toolType: Termi
 }
 
 function sanitizeGeneratedCliTitle(raw: string): string {
-  const title = stripAnsi(raw)
+  let title = stripAnsi(raw)
     .replace(/\p{Extended_Pictographic}/gu, "")
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/\s+/g, " ")
@@ -234,10 +274,14 @@ function sanitizeGeneratedCliTitle(raw: string): string {
     .trim();
   if (!title.length) return "";
   if (isProviderSlashCommandInput(title)) return "";
+  if (title.startsWith("/")) {
+    title = title.slice(1).trim();
+    if (!title.length) return "";
+  }
   const collapsed = title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   const rejected = new Set([
     "model", "models", "status", "help", "clear", "compact", "resume",
-    "chat", "session", "claude", "claude code", "codex", "codex cli",
+    "chat", "session", "claude", "claude code", "claude chat", "claude cli", "codex", "codex cli",
     "untitled", "untitled chat", "new chat", "new session",
     "completed", "done", "finished", "success",
   ]);
@@ -283,6 +327,7 @@ type PtyEntry = {
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
+  terminalSnapshot: TerminalSnapshotMirror | null;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
@@ -301,6 +346,16 @@ type PtyDataListener = (event: PtyDataEvent & { laneId: string }) => void;
 type PtyExitListener = (event: PtyExitEvent & { laneId: string }) => void;
 
 type ShellSpec = { file: string; args: string[] };
+
+type HeadlessTerminalInstance = InstanceType<typeof HeadlessTerminal>;
+type SerializeAddonInstance = InstanceType<typeof SerializeAddon>;
+
+type TerminalSnapshotMirror = {
+  terminal: HeadlessTerminalInstance;
+  serializeAddon: SerializeAddonInstance;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  lastErrorAt: number;
+};
 
 function resolveShellCandidates(): ShellSpec[] {
   if (process.platform === "win32") {
@@ -323,6 +378,15 @@ function quotePosixShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function withCodexNoAltScreen(command: string): string {
+  const trimmed = command.trim();
+  if (!/^codex(?:\s|$)/.test(trimmed)) return trimmed;
+  if (/(?:^|\s)--no-alt-screen(?:\s|$)/.test(trimmed)) return trimmed;
+  return trimmed === "codex"
+    ? "codex --no-alt-screen"
+    : trimmed.replace(/^codex\b/, "codex --no-alt-screen");
+}
+
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
   if (process.platform === "win32") return null;
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
@@ -337,6 +401,7 @@ function clampDims(cols: number, rows: number): { cols: number; rows: number } {
 function statusFromExit(exitCode: number | null): TerminalSessionStatus {
   if (exitCode == null) return "completed";
   if (exitCode === 0) return "completed";
+  if (exitCode === 130 || exitCode === 143) return "disposed";
   return "failed";
 }
 
@@ -374,7 +439,7 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
 
 /** Extract --session-id <uuid> from a Claude startup command if present. */
 function extractClaudeSessionIdFromCommand(command: string): string | null {
-  const match = command.match(/--session-id\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  const match = command.match(/--session-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return match?.[1] ?? null;
 }
 
@@ -434,6 +499,14 @@ function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "c
     || toolType === "codex-orchestrated";
 }
 
+function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
+  return toolType === "codex-chat"
+    || toolType === "claude-chat"
+    || toolType === "opencode-chat"
+    || toolType === "cursor"
+    || toolType === "droid-chat";
+}
+
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {
   if (!transcriptPath) return null;
   const normalized = transcriptPath.replace(/\\/g, "/");
@@ -491,6 +564,8 @@ export function createPtyService({
   const terminalChatSessions = new Map<string, string>();
   const activeTerminalByChatSession = new Map<string, string>();
   const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
+  const claudeTitleCaptureKeys = new Set<string>();
+  const resumeRuntimeFlights = new Map<string, Promise<PtyCreateResult>>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let ptyDataSummaryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -499,10 +574,207 @@ export function createPtyService({
   let ptyDataBatchCount = 0;
   let ptyDataCharCount = 0;
   let ptyDataMaxBatchChars = 0;
+  const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
     return ai?.sessionIntelligence;
+  };
+
+  const safeTerminalSnapshotPathFor = (sessionId: string): string => {
+    const safeName = sessionId.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return path.join(terminalSnapshotDir, `${safeName}.json`);
+  };
+
+  const colorMode = (cell: { isFgDefault(): boolean; isFgPalette(): boolean; isFgRGB(): boolean }, channel: "fg"): TerminalSnapshotCell["fgMode"] => {
+    if (channel === "fg") {
+      if (cell.isFgRGB()) return "rgb";
+      if (cell.isFgPalette()) return "palette";
+      return "default";
+    }
+    return "default";
+  };
+
+  const bgColorMode = (cell: { isBgDefault(): boolean; isBgPalette(): boolean; isBgRGB(): boolean }): TerminalSnapshotCell["bgMode"] => {
+    if (cell.isBgRGB()) return "rgb";
+    if (cell.isBgPalette()) return "palette";
+    return "default";
+  };
+
+  type TerminalCellLike = IBufferCell;
+
+  const snapshotCellFromXtermCell = (cell: TerminalCellLike | undefined): TerminalSnapshotCell => {
+    if (!cell || cell.getWidth() === 0 || cell.isInvisible()) {
+      return { text: " ", fg: null, bg: null, fgMode: "default", bgMode: "default" };
+    }
+    const fgMode = colorMode(cell, "fg");
+    const bgMode = bgColorMode(cell);
+    return {
+      text: cell.getChars() || " ",
+      fg: fgMode === "default" ? null : cell.getFgColor(),
+      bg: bgMode === "default" ? null : cell.getBgColor(),
+      fgMode,
+      bgMode,
+      ...(cell.isBold() ? { bold: true } : {}),
+      ...(cell.isDim() ? { dim: true } : {}),
+      ...(cell.isItalic() ? { italic: true } : {}),
+      ...(cell.isUnderline() ? { underline: true } : {}),
+      ...(cell.isInverse() ? { inverse: true } : {}),
+      ...(cell.isStrikethrough() ? { strikethrough: true } : {}),
+    };
+  };
+
+  const visibleRowsFromTerminal = (terminal: HeadlessTerminalInstance): TerminalSnapshotRow[] => {
+    const buffer = terminal.buffer.active;
+    const start = Math.max(0, buffer.viewportY);
+    const rows: TerminalSnapshotRow[] = [];
+    for (let y = 0; y < terminal.rows; y += 1) {
+      const line = buffer.getLine(start + y);
+      if (!line) {
+        rows.push({ cells: [], text: "", wrapped: false });
+        continue;
+      }
+      const reusable = buffer.getNullCell() as unknown as TerminalCellLike;
+      const cells: TerminalSnapshotCell[] = [];
+      for (let x = 0; x < terminal.cols; x += 1) {
+        cells.push(snapshotCellFromXtermCell(line.getCell(x, reusable) as unknown as TerminalCellLike | undefined));
+      }
+      rows.push({
+        cells,
+        text: line.translateToString(true),
+        wrapped: line.isWrapped,
+      });
+    }
+    return rows;
+  };
+
+  const createTerminalSnapshotMirror = (cols: number, rows: number): TerminalSnapshotMirror | null => {
+    try {
+      const safe = clampDims(cols, rows);
+      const terminal = new HeadlessTerminal({
+        allowProposedApi: true,
+        cols: safe.cols,
+        rows: safe.rows,
+        scrollback: TERMINAL_SNAPSHOT_SCROLLBACK,
+      });
+      const serializeAddon = new SerializeAddon();
+      terminal.loadAddon(serializeAddon as Parameters<HeadlessTerminalInstance["loadAddon"]>[0]);
+      return { terminal, serializeAddon, flushTimer: null, lastErrorAt: 0 };
+    } catch (err) {
+      logger.warn("pty.terminal_snapshot_init_failed", { err: String(err) });
+      return null;
+    }
+  };
+
+  const buildTerminalSnapshot = (entry: PtyEntry): TerminalSerializedSnapshot | null => {
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || !entry.tracked) return null;
+    const session = sessionService.get(entry.sessionId);
+    const status = session?.status ?? "running";
+    const runtimeState = computeRuntimeState(entry.sessionId, status);
+    const buffer = mirror.terminal.buffer.active;
+    return {
+      version: 1,
+      terminalId: entry.sessionId,
+      cols: mirror.terminal.cols,
+      rows: mirror.terminal.rows,
+      capturedAt: new Date().toISOString(),
+      status,
+      runtimeState,
+      bufferType: buffer.type,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      baseY: buffer.baseY,
+      viewportY: buffer.viewportY,
+      serialized: mirror.serializeAddon.serialize({ scrollback: TERMINAL_SNAPSHOT_SCROLLBACK }),
+      visibleRows: visibleRowsFromTerminal(mirror.terminal),
+    };
+  };
+
+  const writeTerminalSnapshot = (entry: PtyEntry): void => {
+    if (!entry.tracked) return;
+    const mirror = entry.terminalSnapshot;
+    if (!mirror) return;
+    const snapshot = buildTerminalSnapshot(entry);
+    if (!snapshot) return;
+    try {
+      fs.mkdirSync(terminalSnapshotDir, { recursive: true });
+      const finalPath = safeTerminalSnapshotPathFor(entry.sessionId);
+      const tmpPath = `${finalPath}.${process.pid}.${randomUUID()}.tmp`;
+      fs.writeFileSync(tmpPath, `${JSON.stringify(snapshot)}\n`, "utf8");
+      fs.renameSync(tmpPath, finalPath);
+    } catch (err) {
+      const now = Date.now();
+      if (now - mirror.lastErrorAt > 10_000) {
+        mirror.lastErrorAt = now;
+        logger.warn("pty.terminal_snapshot_write_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+    }
+  };
+
+  const scheduleTerminalSnapshotWrite = (entry: PtyEntry, delayMs = TERMINAL_SNAPSHOT_DEBOUNCE_MS): void => {
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || !entry.tracked || entry.disposed) return;
+    if (mirror.flushTimer) return;
+    mirror.flushTimer = setTimeout(() => {
+      mirror.flushTimer = null;
+      writeTerminalSnapshot(entry);
+    }, delayMs);
+    mirror.flushTimer.unref?.();
+  };
+
+  const feedTerminalSnapshot = (entry: PtyEntry, data: string): void => {
+    const mirror = entry.terminalSnapshot;
+    if (!mirror || !entry.tracked || entry.disposed || !data) return;
+    try {
+      mirror.terminal.write(data, () => {
+        scheduleTerminalSnapshotWrite(entry);
+      });
+    } catch (err) {
+      const now = Date.now();
+      if (now - mirror.lastErrorAt > 10_000) {
+        mirror.lastErrorAt = now;
+        logger.warn("pty.terminal_snapshot_feed_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+    }
+  };
+
+  const flushTerminalSnapshot = (entry: PtyEntry): void => {
+    const mirror = entry.terminalSnapshot;
+    if (!mirror) return;
+    if (mirror.flushTimer) {
+      clearTimeout(mirror.flushTimer);
+      mirror.flushTimer = null;
+    }
+    writeTerminalSnapshot(entry);
+  };
+
+  const resizeTerminalSnapshot = (entry: PtyEntry, cols: number, rows: number): void => {
+    const mirror = entry.terminalSnapshot;
+    if (!mirror) return;
+    try {
+      const safe = clampDims(cols, rows);
+      if (mirror.terminal.cols === safe.cols && mirror.terminal.rows === safe.rows) return;
+      mirror.terminal.resize(safe.cols, safe.rows);
+      scheduleTerminalSnapshotWrite(entry, 0);
+    } catch (err) {
+      const now = Date.now();
+      if (now - mirror.lastErrorAt > 10_000) {
+        mirror.lastErrorAt = now;
+        logger.warn("pty.terminal_snapshot_resize_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+    }
+  };
+
+  const readStoredTerminalSnapshot = (sessionId: string): TerminalSerializedSnapshot | null => {
+    try {
+      const raw = fs.readFileSync(safeTerminalSnapshotPathFor(sessionId), "utf8");
+      const parsed = JSON.parse(raw) as TerminalSerializedSnapshot;
+      if (parsed?.version !== 1 || parsed.terminalId !== sessionId) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
   };
 
   const isTitleGenerationEnabled = (): boolean => {
@@ -551,6 +823,10 @@ export function createPtyService({
           sessionService.updateMeta({ sessionId: entry.sessionId, title: fallbackTitle, manuallyNamed: false });
         }
       }
+      // Claude Code writes its own generated `ai-title` into local session
+      // storage. Keep ADE's prompt summarizer out of this path so that native
+      // Claude names win when they arrive.
+      if (entry.toolTypeHint === "claude" || entry.toolTypeHint === "claude-orchestrated") return;
       if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
       if (!isTitleGenerationEnabled()) return;
 
@@ -729,6 +1005,16 @@ export function createPtyService({
       .then(async () => {
         const session = sessionService.get(sessionId);
         if (!session) return;
+        const summaryToolType = session.toolType ?? null;
+        const summaryTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
+        const titleCaptureCwd = summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath;
+        if (
+          summaryTargetId
+          && (summaryToolType === "claude" || summaryToolType === "claude-orchestrated")
+          && titleCaptureCwd
+        ) {
+          scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, summaryTargetId, titleCaptureCwd);
+        }
 
         const transcript = session.tracked
           ? await sessionService.readTranscriptTail(session.transcriptPath, 220_000)
@@ -872,28 +1158,35 @@ export function createPtyService({
       });
   };
 
+  function claudeProjectDirForCwd(cwd: string): string {
+    return path.join(os.homedir(), ".claude", "projects", cwd.replace(/\//g, "-"));
+  }
+
+  function claudeSessionFilePathForCwd(cwd: string, claudeSessionId: string): string {
+    return path.join(claudeProjectDirForCwd(cwd), `${claudeSessionId}.jsonl`);
+  }
+
   /**
-   * Try to find the Claude session ID from Claude's local JSONL storage.
+   * Try to find the Claude session from Claude's local JSONL storage.
    * Claude Code stores conversations at ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl.
-   * We find the most recently modified JSONL in the project dir and return its UUID.
+   * We find the most recently modified JSONL in the project dir and return its UUID
+   * plus any runtime-generated title Claude has already written.
    */
-  const resolveClaudeSessionIdFromStorage = (cwd: string): string | null => {
+  const resolveClaudeSessionFromStorage = (cwd: string): ClaudeStorageSessionMatch | null => {
     try {
-      const homedir = require("node:os").homedir();
-      // Claude encodes the cwd by replacing / with - (and leading -)
-      // Claude encodes cwd by replacing all / with - (e.g. /Users/admin/Projects/ADE → -Users-admin-Projects-ADE)
-      const escapedCwd = cwd.replace(/\//g, "-");
-      const claudeProjectDir = path.join(homedir, ".claude", "projects", escapedCwd);
+      const claudeProjectDir = claudeProjectDirForCwd(cwd);
       if (!fs.existsSync(claudeProjectDir)) return null;
 
       // Find the most recently modified .jsonl that is a direct session (not in subagents/)
-      const entries = fs.readdirSync(claudeProjectDir, { withFileTypes: true });
+      const entries = fs.readdirSync(claudeProjectDir, { withFileTypes: true }) as Array<string | fs.Dirent>;
       let newest: { name: string; mtimeMs: number } | null = null;
       for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-        const stat = fs.statSync(path.join(claudeProjectDir, entry.name));
+        const name = typeof entry === "string" ? entry : entry.name;
+        const isFile = typeof entry === "string" ? true : entry.isFile();
+        if (!isFile || !name.endsWith(".jsonl")) continue;
+        const stat = fs.statSync(path.join(claudeProjectDir, name));
         if (!newest || stat.mtimeMs > newest.mtimeMs) {
-          newest = { name: entry.name, mtimeMs: stat.mtimeMs };
+          newest = { name, mtimeMs: stat.mtimeMs };
         }
       }
       if (!newest) return null;
@@ -903,7 +1196,12 @@ export function createPtyService({
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) return null;
       // Only consider if modified within the last 5 minutes (to avoid picking up stale sessions)
       if (Date.now() - newest.mtimeMs > 5 * 60 * 1000) return null;
-      return uuid;
+      const filePath = path.join(claudeProjectDir, newest.name);
+      return {
+        id: uuid,
+        filePath,
+        title: readClaudeRuntimeTitle(filePath, uuid),
+      };
     } catch {
       return null;
     }
@@ -989,6 +1287,38 @@ export function createPtyService({
         }
       }
     }
+  }
+
+  function titleFromClaudeRecord(record: unknown, claudeSessionId: string): string | null {
+    if (!record || typeof record !== "object") return null;
+    const obj = record as Record<string, unknown>;
+    const recordSessionId = typeof obj.sessionId === "string" ? obj.sessionId.trim() : "";
+    if (recordSessionId && recordSessionId !== claudeSessionId) return null;
+    const type = typeof obj.type === "string" ? obj.type : "";
+    if (type === "ai-title") {
+      return sanitizeGeneratedCliTitle(typeof obj.aiTitle === "string" ? obj.aiTitle : "");
+    }
+    if (type === "custom-title") {
+      return sanitizeGeneratedCliTitle(typeof obj.customTitle === "string" ? obj.customTitle : "");
+    }
+    return null;
+  }
+
+  function readClaudeRuntimeTitle(filePath: string, claudeSessionId: string): string | null {
+    const prefix = readFilePrefix(filePath, CLAUDE_TITLE_SCAN_BYTES) ?? "";
+    const suffix = readFileSuffix(filePath, CLAUDE_TITLE_SCAN_BYTES) ?? "";
+    const text = prefix && suffix && prefix !== suffix ? `${prefix}\n${suffix}` : (suffix || prefix);
+    if (!text) return null;
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const title = titleFromClaudeRecord(JSON.parse(lines[i]!), claudeSessionId);
+        if (title) return title;
+      } catch {
+        // Ignore malformed or partial JSONL fragments from prefix/suffix reads.
+      }
+    }
+    return null;
   }
 
   function sanitizeCodexRuntimeThreadName(raw: unknown): string | null {
@@ -1270,7 +1600,14 @@ export function createPtyService({
     if (!session?.tracked) return false;
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
     if (!isTrackedCliToolType(effectiveToolType)) return false;
-    if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return true;
+    const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
+    if (existingTargetId) {
+      const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+      if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
+        scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, existingTargetId, cwd);
+      }
+      return true;
+    }
     const recentMissing = missingResumeTargetBackfillFailures.get(sessionId);
     if (
       reason === "session-list"
@@ -1294,12 +1631,14 @@ export function createPtyService({
     const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
 
     if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
-      const claudeSessionId = resolveClaudeSessionIdFromStorage(cwd);
-      if (claudeSessionId) {
-        const resumeCmd = `claude --resume ${claudeSessionId}`;
+      const claudeSession = resolveClaudeSessionFromStorage(cwd);
+      if (claudeSession) {
+        const resumeCmd = `claude --resume ${claudeSession.id}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
-        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId });
+        adoptClaudeRuntimeTitle(sessionId, claudeSession.title, "claude-storage-backfill");
+        scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, claudeSession.id, cwd);
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "claude-storage", claudeSessionId: claudeSession.id });
         return true;
       }
     }
@@ -1307,7 +1646,7 @@ export function createPtyService({
     // The session-list and resume-launch paths both need this Codex storage
     // fallback. Fresh launches still use the live capture watcher below; this
     // path handles existing tracked sessions whose transcript did not yield a
-    // usable Codex thread id before the user presses Resume.
+    // usable Codex thread id before the user types to continue.
     if ((effectiveToolType === "codex" || effectiveToolType === "codex-orchestrated") && cwd) {
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
@@ -1386,8 +1725,76 @@ export function createPtyService({
   // ~1 s) and falls off so a slow startup doesn't keep timers alive forever.
   const CODEX_FALLBACK_POLL_DELAYS_MS = [500, 2_000, 5_000, 12_000, 30_000];
   const CODEX_TITLE_POLL_DELAYS_MS = [2_000, 5_000, 12_000, 30_000, 60_000];
+  const CLAUDE_TITLE_POLL_DELAYS_MS = [1_000, 2_500, 5_000, 12_000, 30_000, 60_000];
   const CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS = 60_000;
   const CODEX_WATCH_DEBOUNCE_MS = 200;
+
+  const adoptClaudeRuntimeTitle = (
+    sessionId: string,
+    rawTitle: string | null | undefined,
+    source: string,
+  ): boolean => {
+    const title = sanitizeGeneratedCliTitle(rawTitle ?? "");
+    if (!title) return false;
+    if (isSessionManuallyNamed(sessionService, sessionId)) {
+      logger.info("pty.claude_runtime_title_skipped_user_renamed", { sessionId, source });
+      return true;
+    }
+    const session = sessionService.get(sessionId);
+    if (!session) return true;
+    if (session.title?.trim() === title) return true;
+    sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
+    logger.info("pty.claude_runtime_title_adopted", {
+      sessionId,
+      source,
+      titleLength: title.length,
+    });
+    return true;
+  };
+
+  const scheduleClaudeRuntimeTitleCaptureBestEffort = (
+    sessionId: string,
+    claudeSessionId: string | null | undefined,
+    cwd: string,
+  ): void => {
+    const cleanClaudeSessionId = sanitizeResumeTargetId(claudeSessionId ?? null);
+    if (!cleanClaudeSessionId) return;
+    const key = `${sessionId}:${cleanClaudeSessionId}`;
+    if (claudeTitleCaptureKeys.has(key)) return;
+    claudeTitleCaptureKeys.add(key);
+
+    const filePath = claudeSessionFilePathForCwd(cwd, cleanClaudeSessionId);
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const cleanup = (): void => {
+      claudeTitleCaptureKeys.delete(key);
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+    };
+    const tryTitle = (source: string): boolean => {
+      const title = readClaudeRuntimeTitle(filePath, cleanClaudeSessionId);
+      return adoptClaudeRuntimeTitle(sessionId, title, source);
+    };
+
+    if (tryTitle("claude-storage-initial")) {
+      cleanup();
+      return;
+    }
+
+    for (let i = 0; i < CLAUDE_TITLE_POLL_DELAYS_MS.length; i += 1) {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        try {
+          if (tryTitle(`claude-storage-poll-${i}`)) cleanup();
+        } catch (err) {
+          logger.warn("pty.claude_runtime_title_capture_failed", { sessionId, attempt: i, err: String(err) });
+        } finally {
+          if (i === CLAUDE_TITLE_POLL_DELAYS_MS.length - 1) cleanup();
+        }
+      }, CLAUDE_TITLE_POLL_DELAYS_MS[i]);
+      timer.unref?.();
+      timers.add(timer);
+    }
+  };
 
   const adoptCodexRuntimeThreadName = (
     sessionId: string,
@@ -1569,6 +1976,7 @@ export function createPtyService({
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
     sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    flushTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
     const finalRuntimeState = runtimeFromStatus(status);
@@ -1796,6 +2204,8 @@ export function createPtyService({
       laneId: summary.laneId,
       laneName: summary.laneName,
       title: summary.title,
+      toolType: summary.toolType,
+      goal: summary.goal,
       status: fallbackStatus,
       runtimeState: computeRuntimeState(summary.id, fallbackStatus),
       active: Boolean(activeTerminalId && activeTerminalId === summary.id),
@@ -1803,6 +2213,10 @@ export function createPtyService({
       endedAt: live ? null : summary.endedAt,
       exitCode: live ? null : summary.exitCode,
       pid: live?.[1].pty.pid ?? null,
+      resumeCommand: summary.resumeCommand,
+      resumeMetadata: summary.resumeMetadata ?? null,
+      lastOutputPreview: live?.[1].latestPreviewLine ?? summary.lastOutputPreview,
+      summary: summary.summary,
     };
   };
 
@@ -1827,7 +2241,7 @@ export function createPtyService({
     return null;
   };
 
-  return {
+  const service = {
     async ensureResumeTargets(sessionIds: string[]): Promise<void> {
       const uniqueSessionIds = Array.from(new Set(
         sessionIds
@@ -2141,6 +2555,7 @@ export function createPtyService({
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
+        terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         aiTitleTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
@@ -2166,6 +2581,7 @@ export function createPtyService({
         // flight.
         if (entry.disposed) return;
         writeTranscript(entry, data);
+        feedTerminalSnapshot(entry, data);
         updatePreviewThrottled(entry, data);
         enqueuePtyData(entry, { ptyId, sessionId, data });
 
@@ -2211,7 +2627,7 @@ export function createPtyService({
           );
         }
 
-        // Resume-command scanning runs an ANSI strip + 2 regex passes over a
+        // Continuation-command scanning runs an ANSI strip + 2 regex passes over a
         // 12KB rolling buffer on every output chunk. Claude/codex print the
         // resume command near startup, so cap the window — long-running
         // sessions otherwise pay this cost forever. Storage-based backfill
@@ -2274,8 +2690,17 @@ export function createPtyService({
       ) {
         scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
       }
+      if ((toolTypeHint === "claude" || toolTypeHint === "claude-orchestrated") && cwd) {
+        scheduleClaudeRuntimeTitleCaptureBestEffort(
+          sessionId,
+          initialResumeMetadata?.provider === "claude" ? initialResumeMetadata.targetId : null,
+          cwd,
+        );
+      }
 
-      // Fire-and-forget: after 6s, attempt AI title from initial PTY output (not used for interactive Claude/Codex — those title from the first submitted user input via pty.write).
+      // Fire-and-forget: after 6s, attempt AI title from initial PTY output
+      // (not used for interactive agent TUIs, which title from native runtime
+      // storage or the first submitted user input).
       if (
         aiIntegrationService
         && aiIntegrationService.getMode() !== "guest"
@@ -2344,6 +2769,126 @@ export function createPtyService({
       return { ptyId, sessionId, pid: pty.pid ?? null };
     },
 
+    async sendToSession(args: PtySendToSessionArgs): Promise<PtySendToSessionResult> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      const text = typeof args.text === "string" ? args.text.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      if (!text) throw new Error("Message text is required.");
+
+      const buildResult = (
+        created: PtyCreateResult,
+        flags: { resumed: boolean; reusedExistingRuntime: boolean },
+      ): PtySendToSessionResult => {
+        const session = sessionService.get(created.sessionId);
+        const enriched = session ? service.enrichSessions([session])[0] ?? session : null;
+        return {
+          ...created,
+          session: enriched,
+          resumed: flags.resumed,
+          reusedExistingRuntime: flags.reusedExistingRuntime,
+        };
+      };
+
+      const live = liveEntryBySessionId(sessionId);
+      if (live) {
+        const [ptyId, entry] = live;
+        const written = service.writeBySessionId(sessionId, `${text}\r`);
+        if (!written) throw new Error(`Terminal session '${sessionId}' is not accepting input.`);
+        return buildResult(
+          { ptyId, sessionId, pid: entry.pty.pid ?? null },
+          { resumed: false, reusedExistingRuntime: true },
+        );
+      }
+
+      const session = sessionService.get(sessionId);
+      if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
+      if (!session.tracked) throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be continued.`);
+      if (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType)) {
+        throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
+      }
+
+      const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+      if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+
+      const requestedModel = typeof args.model === "string" && args.model.trim().length
+        ? args.model.trim()
+        : null;
+      const requestedReasoningEffort = typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
+        ? args.reasoningEffort.trim()
+        : null;
+      const requestedPermissionMode = typeof args.permissionMode === "string" && args.permissionMode.trim().length
+        ? args.permissionMode
+        : null;
+      const metadataResumeCommand = session.resumeMetadata
+        ? buildTrackedCliResumeCommand(session.resumeMetadata, {
+          model: requestedModel,
+          reasoningEffort: requestedReasoningEffort,
+          permissionMode: requestedPermissionMode,
+        })
+        : null;
+      const rawResumeCommand = metadataResumeCommand != null
+        ? metadataResumeCommand
+        : normalizeResumeCommand(session.resumeCommand, session.toolType);
+      const resumeCommand = provider === "codex" && rawResumeCommand
+        ? withCodexNoAltScreen(rawResumeCommand)
+        : rawResumeCommand;
+      if (!resumeCommand) {
+        throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
+      }
+
+      let resumeFlight = resumeRuntimeFlights.get(sessionId);
+      if (!resumeFlight) {
+        const { cols, rows } = clampDims(
+          typeof args.cols === "number" ? args.cols : PTY_SEND_DEFAULT_COLS,
+          typeof args.rows === "number" ? args.rows : PTY_SEND_DEFAULT_ROWS,
+        );
+        resumeFlight = service.create({
+          sessionId,
+          laneId: session.laneId,
+          cols,
+          rows,
+          title: session.goal?.trim() || session.title || "Terminal",
+          tracked: session.tracked,
+          toolType: session.toolType,
+          startupCommand: resumeCommand,
+        });
+        resumeRuntimeFlights.set(sessionId, resumeFlight);
+        void resumeFlight
+          .finally(() => {
+            if (resumeRuntimeFlights.get(sessionId) === resumeFlight) {
+              resumeRuntimeFlights.delete(sessionId);
+            }
+          })
+          .catch(() => {});
+      }
+
+      const created = await resumeFlight;
+      const written = service.writeBySessionId(created.sessionId, `${text}\r`);
+      if (!written) {
+        try {
+          service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        } catch {
+          // Best effort; preserve the send failure for the caller.
+        }
+        throw new Error(`Terminal session '${sessionId}' could not receive the message.`);
+      }
+
+      if (provider === "claude") {
+        const confirmTimer = setTimeout(() => {
+          const confirmWritten = service.writeBySessionId(created.sessionId, "\r");
+          if (!confirmWritten) {
+            logger.warn("pty.send_to_session_claude_initial_input_confirm_failed", {
+              sessionId: created.sessionId,
+              ptyId: created.ptyId,
+            });
+          }
+        }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
+        confirmTimer.unref?.();
+      }
+
+      return buildResult(created, { resumed: true, reusedExistingRuntime: false });
+    },
+
     write({ ptyId, data }: { ptyId: string; data: string }): void {
       const entry = ptys.get(ptyId);
       if (!entry) return;
@@ -2368,6 +2913,7 @@ export function createPtyService({
         limit,
       });
       return summaries
+        .filter((summary) => !isPersistedChatToolType(summary.toolType))
         .filter((summary) => {
           if (!chatSessionId) return true;
           const linkedChatSessionId = terminalChatSessions.get(summary.id)
@@ -2411,6 +2957,9 @@ export function createPtyService({
       if (!terminalId) throw new Error("terminal.read requires terminalId or an active chat terminal.");
       const session = sessionService.get(terminalId);
       if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
+      if (isPersistedChatToolType(session.toolType)) {
+        throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
+      }
       const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
         ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
         : DEFAULT_TERMINAL_READ_MAX_BYTES;
@@ -2423,6 +2972,60 @@ export function createPtyService({
         terminalId,
         data,
         nextSince: since + data.length,
+      };
+    },
+
+    async previewTerminal(args: ChatTerminalPreviewArgs = {}): Promise<ChatTerminalPreviewResult> {
+      const terminalId = resolveTerminalId(args);
+      if (!terminalId) throw new Error("terminal.preview requires terminalId or an active chat terminal.");
+      const session = sessionService.get(terminalId);
+      if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
+      if (isPersistedChatToolType(session.toolType)) {
+        throw new Error(`Session '${terminalId}' is an agent chat session, not a terminal.`);
+      }
+      const live = liveEntryBySessionId(terminalId);
+      if (live) {
+        flushTerminalSnapshot(live[1]);
+      }
+      const maxBytes = typeof args.maxBytes === "number" && Number.isFinite(args.maxBytes)
+        ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
+        : TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES;
+      const readTranscriptPreview = async (): Promise<string> =>
+        sessionService.readTranscriptTail(session.transcriptPath, maxBytes, {
+          raw: true,
+          alignToLineBoundary: true,
+        });
+      const snapshot = readStoredTerminalSnapshot(terminalId);
+      if (snapshot) {
+        let transcript: string | null = null;
+        if (session.status !== "running") {
+          try {
+            transcript = await readTranscriptPreview();
+          } catch (err) {
+            logger.warn("pty.terminal_preview_transcript_read_failed", {
+              terminalId,
+              err: String(err),
+            });
+          }
+        }
+        return {
+          terminalId,
+          session: terminalSessionFromSummary(session),
+          source: "snapshot",
+          snapshot,
+          transcript: transcript || null,
+          capturedAt: snapshot.capturedAt,
+        };
+      }
+
+      const transcript = await readTranscriptPreview();
+      return {
+        terminalId,
+        session: terminalSessionFromSummary(session),
+        source: transcript ? "transcript" : "empty",
+        snapshot: null,
+        transcript: transcript || null,
+        capturedAt: new Date().toISOString(),
       };
     },
 
@@ -2448,6 +3051,35 @@ export function createPtyService({
       setRuntimeState(entry.sessionId, "running");
       scheduleIdleTransition(entry.sessionId);
       return { ok: true };
+    },
+
+    resizeTerminal(args: ChatTerminalResizeArgs): { ok: true; cols: number; rows: number } {
+      if (!args) throw new Error("terminal.resize requires terminalId, ptyId, or an active chat terminal.");
+      const ptyId = cleanOptionalId(args.ptyId);
+      let live: [string, PtyEntry] | null = null;
+      if (ptyId) {
+        const candidate = ptys.get(ptyId);
+        if (candidate && !candidate.disposed) live = [ptyId, candidate];
+      } else {
+        const terminalId = resolveTerminalId(args);
+        if (terminalId) live = liveEntryBySessionId(terminalId);
+      }
+      if (!live) throw new Error("No running terminal matched the requested resize target.");
+      const [liveId, entry] = live;
+      const safe = clampDims(args.cols, args.rows);
+      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) {
+        return { ok: true, cols: safe.cols, rows: safe.rows };
+      }
+      try {
+        entry.pty.resize(safe.cols, safe.rows);
+        entry.lastResizeCols = safe.cols;
+        entry.lastResizeRows = safe.rows;
+        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        return { ok: true, cols: safe.cols, rows: safe.rows };
+      } catch (err) {
+        logger.warn("pty.terminal_resize_failed", { ptyId: liveId, err: String(err) });
+        throw err;
+      }
     },
 
     signalTerminal(args: ChatTerminalSignalArgs): { ok: true } {
@@ -2487,6 +3119,7 @@ export function createPtyService({
         entry.pty.resize(safe.cols, safe.rows);
         entry.lastResizeCols = safe.cols;
         entry.lastResizeRows = safe.rows;
+        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
       } catch (err) {
         logger.warn("pty.resize_failed", { ptyId, err: String(err) });
       }
@@ -2533,6 +3166,7 @@ export function createPtyService({
         entry.pty.resize(safe.cols, safe.rows);
         entry.lastResizeCols = safe.cols;
         entry.lastResizeRows = safe.rows;
+        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
@@ -2651,7 +3285,7 @@ export function createPtyService({
     disposeAll(): void {
       for (const ptyId of [...ptys.keys()]) {
         try {
-          this.dispose({ ptyId });
+          service.dispose({ ptyId });
         } catch {
           // ignore
         }
@@ -2663,7 +3297,7 @@ export function createPtyService({
       for (const [ptyId, entry] of [...ptys.entries()]) {
         if (entry.laneId !== laneId) continue;
         try {
-          this.dispose({ ptyId });
+          service.dispose({ ptyId });
           disposed += 1;
         } catch {
           // ignore individual failures; teardown should never block
@@ -2695,4 +3329,5 @@ export function createPtyService({
       };
     }
   };
+  return service;
 }

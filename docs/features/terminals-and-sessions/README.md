@@ -3,7 +3,7 @@
 PTY-backed terminal sessions plus agent chat sessions, both tracked through a
 single `terminal_sessions` row and surfaced in the Work view, lane panels, and
 the Sessions sidebar. The session model is the backbone for transcripts,
-deltas, lane association, and resume flows.
+deltas, lane association, and provider continuation metadata.
 
 PTYs are owned by the **active ADE runtime** for the window's project
 binding. Local-bound windows spawn PTYs through the local ADE daemon
@@ -38,13 +38,13 @@ desktop fallback IPC path.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
-  state, AI auto-titles, tool-type routing, resume backfill, and
+  state, AI auto-titles, tool-type routing, continuation-target backfill, and
   session-id based write/resize entry points used by mobile sync
   terminal control. ~1,500 lines. Branch rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
-  layer for `terminal_sessions` rows. CRUD, resume metadata normalization,
+  layer for `terminal_sessions` rows. CRUD, continuation metadata normalization,
   `reattach`, `reconcileStaleRunningSessions`. ~580 lines. Branch rewrite.
 - `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
   session persistence tests.
@@ -64,11 +64,24 @@ Shared types and IPC:
 
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
-  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`, plus
-  the chat-terminal envelopes (`ChatTerminalSession`, `ChatTerminalListArgs`,
-  `ChatTerminalReadArgs` / `ChatTerminalReadResult`, `ChatTerminalWriteArgs`,
-  `ChatTerminalSignalArgs`, `ChatTerminalActiveForChatArgs`) used by the
-  `ade.terminal.*` IPC surface and the `terminal` ADE action domain.
+  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`,
+  `PtySendToSessionArgs` / `PtySendToSessionResult` (the
+  send-or-continue surface), the rich `ChatTerminalSession` /
+  `ChatTerminalListArgs` / `ChatTerminalReadArgs` /
+  `ChatTerminalReadResult` / `ChatTerminalWriteArgs` /
+  `ChatTerminalResizeArgs` / `ChatTerminalSignalArgs` /
+  `ChatTerminalActiveForChatArgs` envelopes, plus the
+  buffer-snapshot DTOs (`TerminalSnapshotCell`, `TerminalSnapshotRow`,
+  `TerminalSerializedSnapshot`, `ChatTerminalPreviewArgs`,
+  `ChatTerminalPreviewResult`) used by the `ade.terminal.*` IPC
+  surface and the `terminal` ADE action domain.
+- `apps/desktop/src/main/services/probeLocalhostPort.ts` — tiny shared
+  helper (`probeLocalhostPort(port, timeoutMs)`) that performs a single
+  127.0.0.1 TCP probe with a default 150 ms timeout. Used by the
+  in-chat localhost detector (so the work-log "Open in ADE" chip only
+  appears once the dev server is actually accepting connections) and
+  by the lane runtime health checks. Exposed to the renderer as
+  `ade.localhost.probePort`.
 - `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
   envelopes (`terminal_subscribe`, `terminal_unsubscribe`,
   `terminal_data`, `terminal_exit`, `terminal_input`, `terminal_resize`)
@@ -83,12 +96,16 @@ Shared types and IPC:
   `ProcessRestartPolicy`. `ProcessActionArgs` and
   `GetProcessLogTailArgs` accept an optional `runId`.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
-  `ade.pty.*`, `ade.processes.*`, plus the chat-scoped
-  `ade.terminal.*` family (`list`, `read`, `write`, `signal`,
-  `activeForChat`) and the lane-tied `ade.macosVm.*` family
+  `ade.pty.*` (including `ade.pty.sendToSession` — the send-or-continue
+  channel that writes into a live agent CLI runtime or starts the
+  provider continuation internally), `ade.processes.*`, plus the
+  chat-scoped `ade.terminal.*` family (`list`, `read`, `preview` —
+  serialized xterm snapshot for the TUI / mobile renderers, `write`,
+  `signal`, `activeForChat`), the lane-tied `ade.macosVm.*` family
   (`getStatus`, `provision`, `start`, `stop`, `delete`,
   `getAgentGuide`, `getSharePolicy`, `focusWindow`,
-  `captureScreenshot`, `selectPoint`, `click`, `typeText`, event push).
+  `captureScreenshot`, `selectPoint`, `click`, `typeText`, event push),
+  and the localhost-probe helper `ade.localhost.probePort`.
 
 Preload bridge:
 
@@ -130,19 +147,27 @@ Renderer surfaces:
   visible: false }` and stopping any inspect mode). The browser tab is
   not lane-scoped — the built-in browser is a single shared instance
   across the app — but it still flows selections to the active chat
-  through the same dispatch path as the other tool tabs. When the
-  active Work session is a chat (`isChatToolType`), the sidebar can
-  attach iOS / App Control / browser selections, draft text, and file
-  refs to that chat by dispatching the
+  through the same dispatch path as the other tool tabs. The active
+  Work session picks the sidebar's insertion target
+  (`WorkSidebarContextTarget`): chat sessions get the legacy
   `ade:agent-chat:add-attachment` / `add-ios-context` /
   `add-app-control-context` / `add-builtin-browser-context` /
-  `add-macos-vm-context` / `insert-draft` window events the matching
-  `AgentChatPane` listens to. Non-chat sessions disable attachment with
-  a banner; lane mismatches between the Work lane and an existing App
-  Control / iOS Simulator session also disable attachment with a warning.
-  The tab strip must stay reachable when the Work pane is narrow:
-  labels collapse to accessible icon buttons while preserving stable
-  hit targets and tooltips.
+  `add-macos-vm-context` / `insert-draft` events, while tracked agent
+  CLI PTYs (Claude / Codex / Cursor / OpenCode / Droid) receive the
+  same iOS / App Control / browser / macOS VM / attachment / draft
+  payloads formatted into prompt text by
+  `apps/desktop/src/renderer/lib/visualContextFormatting.ts` and
+  written into the PTY through `window.ade.pty.write` as a
+  bracketed-paste envelope. After each PTY insertion the sidebar
+  dispatches `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
+  (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the
+  matching `TerminalView` can briefly highlight the new content. When
+  no chat or tracked agent CLI session is open, attachment is disabled
+  with a banner; lane mismatches between the Work lane and an existing
+  App Control / iOS Simulator session also disable attachment with a
+  warning. The tab strip must stay reachable when the Work pane is
+  narrow: labels collapse to accessible icon buttons while preserving
+  stable hit targets and tooltips.
 - `apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` —
   Work sidebar panel for the active lane's macOS VM. It shows provider
   readiness, provisioning/start/stop/delete controls, sanitized share
@@ -163,7 +188,23 @@ Renderer surfaces:
   card also reports its multi-select state via `isMultiSelected`.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
-  `PaneTilingLayout`; the seed tree comes from `buildWorkSessionTilingTree`.
+  `PaneTilingLayout`; the seed tree comes from
+  `buildWorkSessionTilingTree`. Also hosts the chat-like continuation
+  composer for ended tracked agent CLI sessions: when a Claude / Codex /
+  Cursor / OpenCode / Droid PTY has exited, the surface keeps the
+  transcript and renders a model / permission / slash-aware composer
+  whose send button calls `ade.pty.sendToSession`. The handler writes
+  into a live runtime when one is still attached, or starts a fresh
+  provider continuation internally and binds it back to the same
+  durable session id.
+- `apps/desktop/src/renderer/components/terminals/WorkCliSessionHeader.tsx`
+  — small chat-style header rendered above tracked agent CLI terminals
+  (and their tabs). Shows the provider logo, primary title, status dot,
+  insertion-target label, info / overflow / stop-runtime buttons, and
+  the shared `ChatGitToolbar`. Replaces the older "terminal-only" tab
+  chrome on agent CLI sessions and reuses `formatToolTypeLabel` /
+  `primarySessionLabel` / `sessionStatusBucket` so chat and CLI rows
+  read consistently.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
@@ -285,8 +326,9 @@ iOS Work surfaces:
 - `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
   `WorkRootComponents.swift` — mobile Work list, filters, grouped
-  session rows, and live-count/status pills, plus the resume flow that
-  re-uses `work.startCliSession` for ended PTY rows. The earlier
+  session rows, and live-count/status pills. Agent CLI continuation is
+  driven by sending text to the durable session, not a standalone
+  row action. The earlier
   in-list activity feed is gone — running chats surface through the
   session list and the live-count chip.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
@@ -356,7 +398,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 
 1. **Create** — `ptyService.create()` resolves the lane worktree via
    `resolveLaneLaunchContext`, allocates `ptyId` and `sessionId`
-   (or reuses an existing ID on resume), opens a transcript stream,
+   (or reuses an existing ID when continuing an ended session), opens a transcript stream,
    spawns the shell or direct command, and inserts a
    `terminal_sessions` row through `sessionService.create()`.
 
@@ -367,7 +409,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 
 3. **Tag** — the tool type is inferred or passed by the renderer.
    Claude/Codex sessions also get a best-effort `--session-id` extraction
-   so resume works after the CLI itself assigns an ID.
+   so continuation works after the CLI itself assigns an ID.
 
 4. **Auto-title** — after 6 seconds (`PTY_AI_TITLE_DEBOUNCE_MS`) the
    service may summarize the early output into a short title via the AI
@@ -375,7 +417,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    user line (`tryCliUserTitleFromWrite`) because the TUI hides useful
    text in the alternate screen.
 
-5. **End** — on PTY exit, `sessionService.end()` finalizes `endedAt`,
+5. **Runtime exit** — on PTY exit, `sessionService.end()` finalizes `endedAt`,
    `exitCode`, and `status`. The transcript stream is flushed, then:
    - `backfillResumeTargetFromTranscriptBestEffort` tries to recover a
      Claude/Codex session UUID from transcript output or from Claude/Codex
@@ -386,10 +428,10 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    - `sessionDeltaService` can compute file-level git deltas using
      `headShaStart`/`headShaEnd`.
 
-6. **Reattach** — `sessionService.reattach()` reuses an existing session
-   row when a user clicks "resume" and the PTY service opens the
-   transcript in append mode. This keeps identity, lane association, and
-   transcript history intact.
+6. **Continue** — `work.sendToSession` reuses an existing session row
+   when the user sends text to an ended agent CLI session and the PTY
+   service opens the transcript in append mode. This keeps identity,
+   lane association, and transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
    orphaned `running` rows as `disposed`. The service still accepts an
@@ -451,20 +493,23 @@ PTY:
 | Channel | Purpose |
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Writes into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and then writes the user's text. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |
 | `ade.pty.data` (event) | stream stdout/stderr to the renderer |
 | `ade.pty.exit` (event) | final exit code |
 
-Chat-owned terminals (`ade.terminal.*` — used by the chat terminal drawer, the App Control panel, and the headless `ade terminal` / `ade app-control` CLI commands):
+Chat-owned terminals (`ade.terminal.*` — used by the chat terminal drawer, the App Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
 
 | Channel | Purpose |
 |---|---|
-| `ade.terminal.list` | list `ChatTerminalSession[]` filtered by `chatSessionId` and/or `laneId`. |
-| `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by `chatSessionId` (resolves to the chat's currently active terminal). Returns `{ terminalId, data, nextSince }` for incremental polling. |
-| `ade.terminal.write` | write bytes to a chat-owned terminal (by `terminalId`, `ptyId`, or `chatSessionId`). |
-| `ade.terminal.signal` | deliver `SIGINT` / `SIGTERM` / `SIGKILL` to the resolved chat terminal. |
+| `ade.terminal.list` | list `ChatTerminalSession[]` (filterable by `chatSessionId` and/or `laneId`). Rich rows: `toolType`, `goal`, `resumeCommand`, `resumeMetadata`, `lastOutputPreview`, `summary`, status / runtime state. Chat-toolType sessions are filtered out so the surface only lists shells and tracked agent CLI terminals. |
+| `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by `chatSessionId`. Returns `{ terminalId, data, nextSince }` for incremental polling. |
+| `ade.terminal.preview` | serialized buffer snapshot for the TUI/mobile renderers. Each live PTY mirrors output into an `@xterm/headless` Terminal + `SerializeAddon` and debounce-writes a JSON file under `.ade/cache/terminal-snapshots/`. The preview call flushes the in-flight write, reads the snapshot (`TerminalSerializedSnapshot` with serialized scrollback, visible-row cells, cursor / viewport / buffer-type metadata), and falls back to a transcript tail when no snapshot exists yet. |
+| `ade.terminal.write` | write bytes to a terminal (by `terminalId`, `ptyId`, or `chatSessionId`). |
+| `ade.terminal.resize` | resize the live PTY (cols, rows) by `terminalId`, `ptyId`, or `chatSessionId`. Clamps dims and rebroadcasts the new size to the snapshot mirror. |
+| `ade.terminal.signal` | deliver `SIGINT` / `SIGTERM` / `SIGKILL` to the resolved terminal. |
 | `ade.terminal.activeForChat` | resolve the active `ChatTerminalSession` for a given `chatSessionId`. |
 
 `ptyService` keeps two in-memory maps to back this surface:

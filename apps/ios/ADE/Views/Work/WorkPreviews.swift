@@ -530,9 +530,8 @@ private struct WorkPreviewSessionListScreen: View {
             onArchive: { _ in },
             onPin: { _ in },
             onRename: { _ in },
-            onEnd: { _ in },
+            onStopRuntime: { _ in },
             onDelete: { _ in },
-            onResume: { _ in },
             onCopyId: { _ in },
             onGoToLane: { _ in }
           )
@@ -615,9 +614,8 @@ private struct WorkRootPreviewHarness: View {
                   onArchive: { _ in },
                   onPin: { _ in },
                   onRename: { _ in },
-                  onEnd: { _ in },
+                  onStopRuntime: { _ in },
                   onDelete: { _ in },
-                  onResume: { _ in },
                   onCopyId: { _ in },
                   onGoToLane: { _ in }
                 )

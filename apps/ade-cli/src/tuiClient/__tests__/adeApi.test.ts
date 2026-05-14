@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, sendChatMessage, steerChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, sendChatMessage, signalTerminal, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -342,6 +342,27 @@ describe("listPrsByLane", () => {
     ]);
 
     expect(calls).toEqual([{ domain: "pr", action: "listPrsByLane", args: {} }]);
+  });
+});
+
+describe("signalTerminal", () => {
+  it("routes terminal signals through the terminal action domain", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+      },
+    } as unknown as AdeCodeConnection;
+
+    await signalTerminal(connection, "terminal-1", "SIGTERM");
+
+    expect(calls).toEqual([
+      {
+        domain: "terminal",
+        action: "signal",
+        args: { terminalId: "terminal-1", signal: "SIGTERM" },
+      },
+    ]);
   });
 });
 

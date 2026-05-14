@@ -162,52 +162,6 @@ const REVIEW_RULE_OVERLAYS: ReviewRuleOverlayDefinition[] = [
       evidenceMode: "cross_boundary",
     },
   },
-  {
-    id: "mcp-dual-path",
-    label: "MCP dual path",
-    description: "ADE MCP changes should keep the headless server path and the desktop socket-backed proxy path in sync.",
-    pathPatterns: [
-      "apps/mcp-server/**",
-      "apps/desktop/src/main/adeMcpProxy.ts",
-      "apps/desktop/src/main/adeMcpProxyUtils.ts",
-      "apps/desktop/src/main/services/runtime/adeMcpLaunch.ts",
-    ],
-    rolloutExpectations: [
-      "Check both headless MCP mode and the desktop socket-backed launch/proxy path.",
-      "Treat one-sided MCP changes as incomplete rollout unless the other path is intentionally unaffected and the diff proves it.",
-    ],
-    companionFamilies: [
-      {
-        id: "mcp-server",
-        label: "headless MCP server",
-        pathPatterns: ["apps/mcp-server/**"],
-      },
-      {
-        id: "desktop-mcp",
-        label: "desktop MCP proxy/runtime",
-        pathPatterns: [
-          "apps/desktop/src/main/adeMcpProxy.ts",
-          "apps/desktop/src/main/adeMcpProxyUtils.ts",
-          "apps/desktop/src/main/services/runtime/adeMcpLaunch.ts",
-        ],
-      },
-    ],
-    promptGuidance: {
-      "diff-risk": [
-        "Treat MCP edits as transport or protocol changes that can break ADE-native tool execution.",
-      ],
-      "cross-file-impact": [
-        "Before concluding there is no issue, explicitly consider both headless MCP behavior and the desktop socket-backed proxy path.",
-      ],
-      "checks-and-tests": [
-        "Prefer evidence from existing MCP-adjacent validation instead of generic 'add tests' guidance.",
-      ],
-    },
-    adjudicationPolicy: {
-      evidenceMode: "cross_boundary",
-      requireDualPathConsideration: true,
-    },
-  },
 ];
 
 export function getReviewRuleOverlayDefinitions(): ReviewRuleOverlayDefinition[] {

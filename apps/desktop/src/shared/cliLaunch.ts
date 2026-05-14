@@ -120,6 +120,12 @@ export function buildTrackedCliStartupCommand(args: {
   permissionMode: AgentChatPermissionMode;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
+  /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
+  model?: string | null;
+  /** Optional reasoning effort for fresh launches when the runtime supports it. */
+  reasoningEffort?: string | null;
+  /** Optional user prompt to submit with the fresh launch. */
+  initialPrompt?: string | null;
 }): string {
   return buildTrackedCliLaunchCommand(args).startupCommand;
 }
@@ -129,8 +135,15 @@ export function buildTrackedCliLaunchCommand(args: {
   permissionMode: AgentChatPermissionMode;
   /** Pre-assigned session ID for Claude CLI (enables reliable resume). */
   sessionId?: string;
+  /** Optional runtime model for fresh launches. Continuation commands intentionally ignore it. */
+  model?: string | null;
+  /** Optional reasoning effort for fresh launches when the runtime supports it. */
+  reasoningEffort?: string | null;
+  /** Optional user prompt to submit with the fresh launch. */
+  initialPrompt?: string | null;
 }): TrackedCliLaunchCommand {
   validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
+  const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -138,8 +151,19 @@ export function buildTrackedCliLaunchCommand(args: {
     if (args.sessionId) {
       commandArgs.push("--session-id", args.sessionId);
     }
+    const model = resolveClaudeCliModelForLaunch(args.model);
+    if (model) {
+      commandArgs.push("--model", model);
+    }
+    const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
+    if (reasoningEffort) {
+      commandArgs.push("--effort", reasoningEffort);
+    }
     commandArgs.push("--append-system-prompt", ADE_CLI_AGENT_GUIDANCE);
     commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
+    if (initialPrompt) {
+      commandArgs.push(initialPrompt);
+    }
     return {
       command: "claude",
       args: commandArgs,
@@ -150,8 +174,10 @@ export function buildTrackedCliLaunchCommand(args: {
   if (args.provider === "codex") {
     const commandArgs: string[] = [
       "--no-alt-screen",
+      ...modelToCliFlag(args.model),
+      ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
-      workTabCliPreamblePrompt(),
+      workTabCliPrompt(initialPrompt),
     ];
     return {
       command: "codex",
@@ -161,10 +187,11 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "cursor") {
-    const prompt = workTabCliPreamblePrompt();
-    const commandArgs = [...permissionModeToCursorFlags(args.permissionMode), prompt];
+    const prompt = workTabCliPrompt(initialPrompt);
+    const commandArgs = [...permissionModeToCursorFlags(args.permissionMode), ...modelToCliFlag(args.model), prompt];
     const startupCommand = buildCursorPrecreatedChatCommand({
       permissionMode: args.permissionMode,
+      model: args.model,
       prompt,
     });
     return {
@@ -174,16 +201,23 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "droid") {
-    const prompt = workTabCliPreamblePrompt();
+    const prompt = workTabCliPrompt(initialPrompt);
     return {
-      args: [...permissionModeToDroidExecFlags(args.permissionMode), prompt],
-      startupCommand: buildDroidCommandLine({ permissionMode: args.permissionMode, prompt }),
+      command: "droid",
+      args: ["exec", ...modelToCliFlag(args.model), ...droidReasoningEffortFlags(args.reasoningEffort), ...permissionModeToDroidExecFlags(args.permissionMode), prompt],
+      startupCommand: buildDroidExecCommandLine({
+        permissionMode: args.permissionMode,
+        model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        prompt,
+      }),
     };
   }
 
   const opencode = buildOpenCodeCommandParts({
     permissionMode: args.permissionMode,
-    prompt: workTabCliPreamblePrompt(),
+    model: args.model,
+    prompt: workTabCliPrompt(initialPrompt),
   });
   return {
     command: "opencode",
@@ -193,9 +227,87 @@ export function buildTrackedCliLaunchCommand(args: {
   };
 }
 
+function normalizeInitialPrompt(value: string | null | undefined): string | null {
+  const prompt = String(value ?? "").trim();
+  return prompt.length ? prompt : null;
+}
+
+function normalizeCliFlagValue(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function modelToCliFlag(model: string | null | undefined): string[] {
+  const normalized = normalizeCliFlagValue(model);
+  return normalized ? ["--model", normalized] : [];
+}
+
+function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort);
+  return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
+}
+
+function droidReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort);
+  return effort ? ["--reasoning-effort", effort] : [];
+}
+
+function workTabCliPrompt(initialPrompt: string | null): string {
+  const preamble = workTabCliPreamblePrompt();
+  if (!initialPrompt) return preamble;
+  return [
+    preamble,
+    "",
+    "User prompt:",
+    initialPrompt,
+  ].join("\n");
+}
+
+export function resolveClaudeCliModelForLaunch(model: string | null | undefined): string | null {
+  const raw = String(model ?? "").trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase();
+  const known: Record<string, string> = {
+    opus: "opus",
+    "opus-4-7": "opus",
+    "claude-opus-4-7": "opus",
+    "anthropic/claude-opus-4-7": "opus",
+    "anthropic/claude-opus-4-7-api": "opus",
+    "opus[1m]": "opus[1m]",
+    "opus-1m": "opus[1m]",
+    "opus-4-7-1m": "opus[1m]",
+    "claude-opus-4-7[1m]": "opus[1m]",
+    "claude-opus-4-7-1m": "opus[1m]",
+    "anthropic/claude-opus-4-7-1m": "opus[1m]",
+    sonnet: "sonnet",
+    "sonnet-4-6": "sonnet",
+    "sonnet-4-5": "sonnet",
+    "claude-sonnet-4-6": "sonnet",
+    "claude-sonnet-4-5": "sonnet",
+    "claude-sonnet-4-5-20241022": "sonnet",
+    "anthropic/claude-sonnet-4-6": "sonnet",
+    "anthropic/claude-sonnet-4-6-api": "sonnet",
+    haiku: "haiku",
+    "haiku-4-5": "haiku",
+    "claude-haiku-4-5": "haiku",
+    "claude-haiku-4-5-20251001": "haiku",
+    "anthropic/claude-haiku-4-5": "haiku",
+    "anthropic/claude-haiku-4-5-api": "haiku",
+  };
+  const mapped = known[normalized];
+  if (mapped) return mapped;
+  const hasOpus1mToken = normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
+  if (normalized.includes("opus") && hasOpus1mToken) return "opus[1m]";
+  if (normalized.includes("sonnet")) return "sonnet";
+  if (normalized.includes("opus")) return "opus";
+  if (normalized.includes("haiku")) return "haiku";
+  return raw;
+}
+
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
   if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
+  if (permissionMode === "auto") return ["--permission-mode", "auto"];
   if (permissionMode === "default") return ["--permission-mode", "default"];
   return ["--permission-mode", "plan"];
 }
@@ -253,13 +365,31 @@ function buildDroidCommandLine(args: {
   ].join(" && ");
 }
 
+function buildDroidExecCommandLine(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  prompt: string;
+}): string {
+  return commandArrayToLine([
+    "droid",
+    "exec",
+    ...modelToCliFlag(args.model),
+    ...droidReasoningEffortFlags(args.reasoningEffort),
+    ...permissionModeToDroidExecFlags(args.permissionMode),
+    args.prompt,
+  ]);
+}
+
 function buildCursorPrecreatedChatCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
   prompt: string;
 }): string {
   const commandArgs = [
     "cursor-agent",
     ...permissionModeToCursorFlags(args.permissionMode),
+    ...modelToCliFlag(args.model),
     "--resume",
     "$ADE_CURSOR_CHAT_ID",
     args.prompt,
@@ -269,7 +399,7 @@ function buildCursorPrecreatedChatCommand(args: {
   return [
     "ADE_CURSOR_CHAT_ID=\"$(cursor-agent create-chat)\"",
     "[ -n \"$ADE_CURSOR_CHAT_ID\" ] || { echo \"[ADE] cursor-agent create-chat returned no chat id\" >&2; exit 1; }",
-    "printf %s\\\\n \"[ADE] Resume with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
+    "printf %s\\\\n \"[ADE] Continue with cursor-agent --resume ${ADE_CURSOR_CHAT_ID}\"",
     command,
   ].join(" && ");
 }
@@ -300,11 +430,13 @@ function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | 
 
 function buildOpenCodeCommandParts(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
   prompt?: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
 }): { args: string[]; startupCommand: string; env?: Record<string, string> } {
   const commandArgs = [...permissionModeToOpenCodeArgs(args.permissionMode)];
+  commandArgs.push(...modelToCliFlag(args.model));
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
@@ -319,26 +451,44 @@ function buildOpenCodeCommandParts(args: {
   };
 }
 
-export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): string {
-  validateLaunchProfilePermissionMode(metadata.provider, metadata.launch.permissionMode);
+export function buildTrackedCliResumeCommand(
+  metadata: TerminalResumeMetadata,
+  overrides: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null } = {},
+): string {
+  const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
+  validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
   const targetId = sanitizeTrackedCliResumeTargetId(metadata.targetId) ?? "";
   if (metadata.provider === "claude") {
-    const parts = ["claude", ...permissionModeToClaudeFlag(metadata.launch.permissionMode)];
+    const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
+    const model = resolveClaudeCliModelForLaunch(overrides.model);
+    if (model) parts.push("--model", model);
+    const reasoningEffort = normalizeCliFlagValue(overrides.reasoningEffort);
+    if (reasoningEffort) parts.push("--effort", reasoningEffort);
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     return commandArrayToLine(parts);
   }
 
   if (metadata.provider === "codex") {
-    const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(metadata.launch.permissionMode)];
+    const parts = [
+      "codex",
+      "--no-alt-screen",
+      ...modelToCliFlag(overrides.model),
+      ...codexReasoningEffortFlags(overrides.reasoningEffort),
+      ...permissionModeToCodexFlags(permissionMode),
+    ];
     parts.push("resume");
     if (targetId) parts.push(targetId);
     return commandArrayToLine(parts);
   }
 
   if (metadata.provider === "cursor") {
-    const parts = ["cursor-agent", ...permissionModeToCursorFlags(metadata.launch.permissionMode)];
+    const parts = [
+      "cursor-agent",
+      ...permissionModeToCursorFlags(permissionMode),
+      ...modelToCliFlag(overrides.model),
+    ];
     if (targetId) {
       parts.push("--resume", targetId);
     } else {
@@ -349,13 +499,14 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata): 
 
   if (metadata.provider === "droid") {
     return buildDroidCommandLine({
-      permissionMode: metadata.launch.permissionMode,
+      permissionMode,
       resumeTarget: targetId || null,
     });
   }
 
   const opencode = buildOpenCodeCommandParts({
-    permissionMode: metadata.launch.permissionMode,
+    permissionMode,
+    model: overrides.model,
     resumeTarget: targetId || null,
     continueLast: !targetId,
   });

@@ -17,6 +17,17 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
+  it("routes /feedback to the ADE Code right pane", () => {
+    const parsed = parseCommand("/feedback");
+    expect(parsed?.spec?.name).toBe("/feedback");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/feed")).toContainEqual(expect.objectContaining({
+      name: "/feedback",
+      source: "ade",
+      description: "Submit ADE feedback to GitHub issues",
+    }));
+  });
+
   it("routes runtime commands to chat", () => {
     const parsed = parseCommand("/ship now", [
       { name: "/ship", description: "Ship it", source: "sdk" },
@@ -35,13 +46,20 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
   });
 
-  it("lets runtime commands override single-word ADE built-ins on exact name", () => {
+  it("keeps single-word ADE pane commands local on exact name", () => {
     const parsed = parseCommand("/status please", [
       { name: "/status", description: "Runtime status", source: "sdk" },
     ]);
-    expect(parsed?.spec).toBeNull();
-    expect(parsed?.userCommand?.name).toBe("/status");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
+    expect(parsed?.spec?.name).toBe("/status");
+    expect(parsed?.userCommand).toBeNull();
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+
+    const feedback = parseCommand("/feedback", [
+      { name: "/feedback", description: "Runtime feedback", source: "sdk" },
+    ]);
+    expect(feedback?.spec?.name).toBe("/feedback");
+    expect(feedback?.userCommand).toBeNull();
+    expect(feedback ? commandPlacement(feedback) : null).toBe("right");
   });
 
   it("keeps provider login as an ADE-code terminal command", () => {
@@ -130,7 +148,7 @@ describe("commands", () => {
     ]);
   });
 
-  it("filters Claude-only ADE commands outside Claude chats", () => {
+  it("filters provider-specific ADE commands outside supported chats", () => {
     expect(paletteCommands("/context", [], { provider: "codex" })).not.toContainEqual(
       expect.objectContaining({ name: "/context" }),
     );
@@ -149,7 +167,7 @@ describe("commands", () => {
     expect(paletteCommands("/output-style", [], { provider: "claude" })).toContainEqual(
       expect.objectContaining({ name: "/output-style" }),
     );
-    expect(paletteCommands("/mcp", [], { provider: "claude" })).toContainEqual(
+    expect(paletteCommands("/mcp", [], { provider: "claude" })).not.toContainEqual(
       expect.objectContaining({ name: "/mcp" }),
     );
     expect(paletteCommands("/plugin", [], { provider: "claude" })).toContainEqual(
@@ -225,6 +243,22 @@ describe("commands", () => {
   it("drops the legacy /resume builtin", () => {
     const rows = paletteCommands("/resume", []);
     expect(rows.find((row) => row.name === "/resume" && row.source === "ade")).toBeUndefined();
+  });
+
+  it("registers /subagents as a right-pane builtin", () => {
+    const parsed = parseCommand("/subagents");
+    expect(parsed?.spec?.name).toBe("/subagents");
+    expect(parsed?.spec?.placement).toBe("right");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+  });
+
+  it("surfaces /subagents in the palette and not /effort or /plan", () => {
+    const subagentRows = paletteCommands("subagents");
+    expect(subagentRows.some((row) => row.name === "/subagents")).toBe(true);
+
+    const allRows = paletteCommands("");
+    expect(allRows.some((row) => row.name === "/effort" && row.source === "ade")).toBe(false);
+    expect(allRows.some((row) => row.name === "/plan" && row.source === "ade")).toBe(false);
   });
 });
 

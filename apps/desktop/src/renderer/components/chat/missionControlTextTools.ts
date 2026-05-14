@@ -60,8 +60,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 export function normalizeMissionControlToolName(value: string): string {
   let normalized = value.trim();
-  normalized = normalized.replace(/^mcp__ade__/i, "");
-  normalized = normalized.replace(/^mcp[_:.]ade[_:.]/i, "");
   normalized = normalized.replace(/^ade[_:.]/i, "");
   return normalized.trim();
 }

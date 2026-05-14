@@ -457,9 +457,8 @@ struct WorkSessionListRow: View {
   let onArchive: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
   let onRename: (TerminalSessionSummary) -> Void
-  let onEnd: (TerminalSessionSummary) -> Void
+  let onStopRuntime: (TerminalSessionSummary) -> Void
   let onDelete: (TerminalSessionSummary) -> Void
-  let onResume: (TerminalSessionSummary) -> Void
   let onCopyId: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
 
@@ -522,17 +521,14 @@ struct WorkSessionListRow: View {
       Button(isArchived ? "Restore from archive" : "Archive") {
         onArchive(session)
       }
-      if shouldShowEndAction {
-        Button("Close session", role: .destructive) {
-          onEnd(session)
+      if shouldShowStopRuntimeAction {
+        Button("Stop runtime", role: .destructive) {
+          onStopRuntime(session)
         }
-      } else if shouldShowDeleteAction {
+      }
+      if shouldShowDeleteAction {
         Button("Delete chat", role: .destructive) {
           onDelete(session)
-        }
-      } else if shouldShowResumeAction {
-        Button("Resume") {
-          onResume(session)
         }
       }
       Button("Copy session ID") {
@@ -548,20 +544,13 @@ struct WorkSessionListRow: View {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
   }
 
-  private var shouldShowEndAction: Bool {
-    if isChatSession(session) {
-      return status == "active" || status == "awaiting-input" || status == "idle"
-    }
+  private var shouldShowStopRuntimeAction: Bool {
+    guard !isChatSession(session) else { return false }
     return status == "active" || status == "awaiting-input"
   }
 
   private var shouldShowDeleteAction: Bool {
-    isChatSession(session) && status == "ended"
-  }
-
-  private var shouldShowResumeAction: Bool {
-    guard !isChatSession(session) else { return false }
-    return (status == "idle" || status == "ended") && terminalSessionHasResumeTarget(session)
+    isChatSession(session)
   }
 }
 

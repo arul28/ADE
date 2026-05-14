@@ -18,6 +18,7 @@ import type {
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { BufferedEvent } from "../eventBuffer";
 
 export type RuntimeMode = "attached" | "embedded";
 
@@ -52,6 +53,10 @@ export type AdeCodeConnection = {
   action<T = unknown>(domain: string, action: string, args?: Record<string, unknown>): Promise<T>;
   actionList<T = unknown>(domain: string, action: string, argsList: unknown[]): Promise<T>;
   onChatEvent(callback: (event: AgentChatEventEnvelope) => void): () => void;
+  subscribeRuntimeEvents(
+    args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number },
+    callback: (event: BufferedEvent) => void,
+  ): Promise<() => void>;
   close(): Promise<void>;
 };
 
@@ -138,8 +143,6 @@ export type RightPaneContent =
     }
   | { kind: "details"; title: string; body: string }
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
-  | { kind: "models"; models: AgentChatModelInfo[]; activeModelId: string | null }
-  | { kind: "effort"; efforts: string[]; activeEffort: string | null }
   | { kind: "subagents"; tab: SubagentPaneTab; snapshots: SubagentSnapshot[]; provider: AdeCodeProvider }
   | {
       kind: "new-chat-setup";
@@ -148,17 +151,9 @@ export type RightPaneContent =
       rows: SetupPaneRow[];
     }
   | {
-      kind: "model-setup";
-      rows: SetupPaneRow[];
-      providerRows: ProviderReadinessRow[];
-      activeProvider: AdeCodeProvider;
-      checkedAt: string | null;
-      desktopAttached: boolean;
-    }
-  | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "pr-open";
+      command: "new-lane" | "rename" | "pr-open" | "feedback";
       fields: Array<{
         name: string;
         label: string;

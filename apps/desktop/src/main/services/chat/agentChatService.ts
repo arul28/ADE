@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -27,7 +28,6 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
-import { buildClaudeMcpServers } from "./claudeMcpServers";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -90,10 +90,6 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
-  AgentChatClaudeMcpReconnectArgs,
-  AgentChatClaudeMcpServerStatus,
-  AgentChatClaudeMcpStatusArgs,
-  AgentChatClaudeMcpToggleArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
@@ -222,6 +218,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { stripAnsi } from "../../utils/ansiStrip";
 import type { createMemoryService, Memory } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -380,6 +377,9 @@ type PersistedChatState = {
   sdkSessionId?: string;
   forkFromSdkSessionId?: string;
   providerSessionId?: string;
+  claudeBackgroundJobShort?: string;
+  claudeBackgroundResumeSessionId?: string;
+  claudeBackgroundLogText?: string;
   /** Cursor SDK agent/run ids for resume across app restarts. */
   cursorSdkAgentProtocolVersion?: number;
   cursorSdkAgentId?: string;
@@ -558,7 +558,6 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/goal", description: "Set, show, pause, resume, budget, or clear the thread goal.", source: "local", argumentHint: "[pause|resume|clear|budget <tokens>|<objective>]" },
   { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
-  { name: "/mcp", description: "List configured MCP tools.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
   { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
   { name: "/plan", description: "Switch to plan mode and optionally send a prompt.", source: "local", argumentHint: "[prompt]" },
@@ -593,7 +592,6 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
   { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
   { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
-  { name: "/mcp", description: "Manage MCP server connections and OAuth authentication.", source: "sdk" },
   { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
   { name: "/model", description: "Select or change the AI model.", source: "sdk", argumentHint: "[model]" },
   { name: "/output-style", description: "List or select the active Claude output style.", source: "sdk", argumentHint: "[style]" },
@@ -629,7 +627,12 @@ function slashCommandKey(value: string): string {
 }
 
 function isDispatchableClaudeSdkSlashCommand(command: { name: string }): boolean {
-  return command.name !== "/login";
+  const key = slashCommandKey(command.name);
+  return key !== "/login" && key !== "/mcp";
+}
+
+function isVisibleCodexSlashCommand(command: { name: string }): boolean {
+  return slashCommandKey(command.name) !== "/mcp";
 }
 
 type PendingOpenCodeApproval = {
@@ -1117,6 +1120,269 @@ function uniqueNonEmpty(values: Array<string | null | undefined>, limit = values
   return result;
 }
 
+type ClaudeBackgroundJobState = {
+  state?: string;
+  detail?: string;
+  tempo?: string;
+  output?: unknown;
+  intent?: string;
+  sessionId?: string;
+  resumeSessionId?: string;
+  daemonShort?: string;
+  cwd?: string;
+  updatedAt?: string;
+  linkScanPath?: string;
+};
+
+type ClaudeDaemonRequest = {
+  proto?: number;
+  op: string;
+  short?: string;
+  text?: string;
+};
+
+type ClaudeDaemonResponse = {
+  ok?: boolean;
+  op?: string;
+  jobs?: Array<Record<string, unknown>>;
+  error?: string;
+  code?: string;
+  short?: string;
+  alive?: boolean;
+  present?: boolean;
+};
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function claudeConfigDir(): string {
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  return configured?.length ? configured : path.join(os.homedir(), ".claude");
+}
+
+function claudeBackgroundJobStatePath(short: string): string {
+  return path.join(claudeConfigDir(), "jobs", short, "state.json");
+}
+
+function readClaudeBackgroundJobState(short: string | null | undefined): ClaudeBackgroundJobState | null {
+  const normalizedShort = trimLine(short);
+  if (!normalizedShort) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(claudeBackgroundJobStatePath(normalizedShort), "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as ClaudeBackgroundJobState;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeClaudeBackgroundShort(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return /^[A-Za-z0-9_-]{4,64}$/.test(trimmed) ? trimmed : null;
+}
+
+function parseClaudeBackgroundShort(text: string): string | null {
+  const cleaned = stripAnsi(text);
+  const backgrounded = cleaned.match(/backgrounded\s*[·•]\s*([A-Za-z0-9_-]{4,64})/i);
+  if (backgrounded?.[1]) return backgrounded[1];
+  const attach = cleaned.match(/\bclaude\s+attach\s+([A-Za-z0-9_-]{4,64})\b/i);
+  return attach?.[1] ?? null;
+}
+
+function claudeBackgroundStateIsTerminal(state: ClaudeBackgroundJobState | null): boolean {
+  const normalized = state?.state?.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized === "done"
+    || normalized === "completed"
+    || normalized === "failed"
+    || normalized === "error"
+    || normalized === "errored"
+    || normalized === "stopped"
+    || normalized === "killed"
+    || normalized === "crashed";
+}
+
+function claudeBackgroundStateSucceeded(state: ClaudeBackgroundJobState | null): boolean {
+  const normalized = state?.state?.trim().toLowerCase();
+  return normalized === "done" || normalized === "completed";
+}
+
+function extractClaudeBackgroundStateText(state: ClaudeBackgroundJobState | null): string {
+  const transcriptText = extractClaudeBackgroundTranscriptText(state);
+  if (transcriptText) return transcriptText;
+  const output = state?.output;
+  if (typeof output === "string" && output.trim().length) return output.trim();
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    for (const key of ["summary", "result", "message", "text"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length) return value.trim();
+    }
+  }
+  return typeof state?.detail === "string" ? state.detail.trim() : "";
+}
+
+function sanitizeClaudeBackgroundLog(value: string): string {
+  return stripAnsi(value)
+    .replace(/\u001b[78]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+function readFileTailUtf8(filePath: string, maxBytes = 512 * 1024): string {
+  const stat = fs.statSync(filePath);
+  const start = Math.max(0, stat.size - maxBytes);
+  const length = stat.size - start;
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, start);
+    const raw = buffer.toString("utf8");
+    if (start === 0) return raw;
+    const firstNewline = raw.indexOf("\n");
+    return firstNewline >= 0 ? raw.slice(firstNewline + 1) : raw;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function claudeMessageContentText(content: unknown): string | null {
+  if (typeof content === "string") return content.trim() || null;
+  if (!Array.isArray(content)) return null;
+  const parts = content
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const record = part as Record<string, unknown>;
+      if (record.type !== "text") return "";
+      return typeof record.text === "string" ? record.text : "";
+    })
+    .filter((part) => part.trim().length > 0);
+  return parts.length ? parts.join("\n").trim() : null;
+}
+
+function extractClaudeBackgroundTranscriptText(state: ClaudeBackgroundJobState | null): string {
+  const rawPath = trimLine(state?.linkScanPath);
+  if (!rawPath) return "";
+  const resolvedPath = path.resolve(rawPath);
+  const configRoot = path.resolve(claudeConfigDir());
+  if (!resolvedPath.startsWith(`${configRoot}${path.sep}`)) return "";
+  if (!fs.existsSync(resolvedPath)) return "";
+  try {
+    const text = readFileTailUtf8(resolvedPath);
+    let latest = "";
+    for (const line of text.split(/\n+/)) {
+      if (!line.trim()) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object") continue;
+      const record = parsed as Record<string, unknown>;
+      if (record.type !== "assistant") continue;
+      const message = record.message && typeof record.message === "object"
+        ? record.message as Record<string, unknown>
+        : null;
+      if (message?.role !== "assistant") continue;
+      const contentText = claudeMessageContentText(message.content);
+      if (contentText) latest = contentText;
+    }
+    return latest.trim();
+  } catch {
+    return "";
+  }
+}
+
+function claudeDaemonBaseDir(): string | null {
+  try {
+    const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+    return path.join(os.tmpdir(), `cc-daemon-${uid}`);
+  } catch {
+    return null;
+  }
+}
+
+async function sendClaudeDaemonRequest(
+  socketPath: string,
+  request: ClaudeDaemonRequest,
+  timeoutMs = 2_500,
+): Promise<ClaudeDaemonResponse> {
+  return await new Promise<ClaudeDaemonResponse>((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let buffer = "";
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.destroy(); } catch { /* ignore */ }
+      fn();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error("Claude daemon request timed out.")));
+    }, timeoutMs);
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ proto: 1, ...request })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      const raw = (newline >= 0 ? buffer.slice(0, newline) : buffer).trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw) as ClaudeDaemonResponse;
+        finish(() => resolve(parsed));
+      } catch {
+        // Wait for more bytes.
+      }
+    });
+    socket.on("end", () => {
+      const raw = buffer.trim();
+      if (!raw) {
+        finish(() => reject(new Error("Claude daemon closed without a response.")));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(raw) as ClaudeDaemonResponse;
+        finish(() => resolve(parsed));
+      } catch (error) {
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+      }
+    });
+    socket.on("error", (error) => {
+      finish(() => reject(error));
+    });
+  });
+}
+
+async function resolveClaudeDaemonControlSocket(): Promise<string | null> {
+  const baseDir = claudeDaemonBaseDir();
+  if (!baseDir || !fs.existsSync(baseDir)) return null;
+  let entries;
+  try {
+    entries = fs.readdirSync(baseDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const socketPath = path.join(baseDir, entry.name, "control.sock");
+    if (!fs.existsSync(socketPath)) continue;
+    try {
+      const pong = await sendClaudeDaemonRequest(socketPath, { op: "ping" });
+      if (pong.ok === true) return socketPath;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -1180,6 +1446,9 @@ type ManagedChatSession = {
   eventSequence: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
+  claudeBackgroundJobShort: string | null;
+  claudeBackgroundResumeSessionId: string | null;
+  claudeBackgroundLogText: string;
 };
 
 type AgentChatTranscriptEntry = {
@@ -1412,7 +1681,6 @@ const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = 
 
 const QUIET_CODEX_NOTIFICATION_METHODS = new Set([
   "item/commandExecution/terminalInteraction",
-  "mcpServer/startupStatus/updated",
   "remoteControl/status/changed",
   "thread/archived",
   "thread/started",
@@ -4942,8 +5210,6 @@ export function createAgentChatService(args: {
         updateChatSession: updateSession,
         sendChatMessage: sendMessage,
         interruptChat: interrupt,
-        resumeChat: resumeSession,
-        disposeChat: dispose,
         sessionService,
         ensureCtoSession: async ({ laneId: requestedLaneId, modelId, reasoningEffort, reuseExisting }) =>
           ensureIdentitySession({
@@ -4975,10 +5241,6 @@ export function createAgentChatService(args: {
   const getClaudeQueryControl = (
     sessionQuery: ClaudeQuery | null | undefined,
     ): {
-      setMcpServers?: ClaudeQuery["setMcpServers"];
-      mcpServerStatus?: ClaudeQuery["mcpServerStatus"];
-      reconnectMcpServer?: ClaudeQuery["reconnectMcpServer"];
-      toggleMcpServer?: ClaudeQuery["toggleMcpServer"];
       setPermissionMode?: (mode: AgentChatClaudePermissionMode) => Promise<void>;
       applyFlagSettings?: ClaudeQuery["applyFlagSettings"];
       reloadPlugins?: ClaudeQuery["reloadPlugins"];
@@ -4988,10 +5250,6 @@ export function createAgentChatService(args: {
       interrupt?: () => Promise<void>;
   } => {
     return {
-      setMcpServers: typeof sessionQuery?.setMcpServers === "function" ? sessionQuery.setMcpServers.bind(sessionQuery) : undefined,
-      mcpServerStatus: typeof sessionQuery?.mcpServerStatus === "function" ? sessionQuery.mcpServerStatus.bind(sessionQuery) : undefined,
-      reconnectMcpServer: typeof sessionQuery?.reconnectMcpServer === "function" ? sessionQuery.reconnectMcpServer.bind(sessionQuery) : undefined,
-      toggleMcpServer: typeof sessionQuery?.toggleMcpServer === "function" ? sessionQuery.toggleMcpServer.bind(sessionQuery) : undefined,
         setPermissionMode: typeof sessionQuery?.setPermissionMode === "function"
           ? sessionQuery.setPermissionMode.bind(sessionQuery) as (mode: AgentChatClaudePermissionMode) => Promise<void>
           : undefined,
@@ -5837,6 +6095,11 @@ export function createAgentChatService(args: {
 
     sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
     managed.manuallyNamed = false;
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      title,
+      manuallyNamed: false,
+    });
 
     // Sync ADE-generated titles to Codex so the app-server and ADE agree.
     if (options.syncToRuntime !== false && managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
@@ -5860,12 +6123,20 @@ export function createAgentChatService(args: {
     if (!title) return null;
 
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
-    if (currentTitle?.trim() !== title) {
+    const titleChanged = currentTitle?.trim() !== title;
+    if (titleChanged) {
       sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
     }
     managed.manuallyNamed = false;
     managed.runtimeTitleAdopted = true;
     managed.autoTitleStage = "initial";
+    if (titleChanged) {
+      emitTransientChatEnvelope(managed.session.id, {
+        type: "session_meta_updated",
+        title,
+        manuallyNamed: false,
+      });
+    }
     logger.info("agent_chat.runtime_title_adopted", {
       sessionId: managed.session.id,
       provider: managed.session.provider,
@@ -6234,7 +6505,10 @@ export function createAgentChatService(args: {
     const prompt = String(args.prompt ?? "").trim();
     const requestedModelId = String(args.modelId ?? "").trim();
     const sourceLaneId = String(args.laneId ?? "").trim();
-    const fallback = () => fallbackLaneNameFromPrompt(prompt);
+    const explicitFallback = typeof args.fallbackName === "string"
+      ? normalizeSuggestedLaneName(args.fallbackName)
+      : null;
+    const fallback = () => explicitFallback ?? fallbackLaneNameFromPrompt(prompt);
 
     if (!prompt.length) {
       return fallback();
@@ -6257,6 +6531,7 @@ export function createAgentChatService(args: {
       if (!availableModels.length) return fallback();
 
       const config = resolveChatConfig();
+      if (explicitFallback && config.titleGenerationEnabled === false) return fallback();
       const preferredModelId =
         [
           requestedModelId,
@@ -6282,7 +6557,7 @@ export function createAgentChatService(args: {
         title: "ADE lane name from prompt",
         modelDescriptor: descriptor,
         system: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
-        prompt: `User message to parallelize across models:\n${prompt.slice(0, 2000)}`,
+        prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
         projectConfig: projectConfigService.get().effective,
       });
       return normalizeSuggestedLaneName(result.text) ?? fallback();
@@ -6569,6 +6844,13 @@ export function createAgentChatService(args: {
     if (!managed.runtime && !managed.runtimeInvalidated) {
       try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
     }
+    const claudeBackgroundResumeSessionId = managed.session.provider === "claude"
+      ? managed.claudeBackgroundResumeSessionId
+        ?? (managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null)
+        ?? prevPersisted?.claudeBackgroundResumeSessionId
+        ?? prevPersisted?.sdkSessionId
+        ?? null
+      : null;
     const payload: PersistedChatState = {
       version: 2,
       sessionId: managed.session.id,
@@ -6604,8 +6886,10 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "droid" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
-      ...(managed.runtime?.kind === "claude"
-        ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
+      ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
+        ? { sdkSessionId: claudeBackgroundResumeSessionId }
+        : managed.runtime?.kind === "claude"
+          ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
       ...(managed.runtime?.kind === "claude" && managed.runtime.forkFromSdkSessionId
         ? { forkFromSdkSessionId: managed.runtime.forkFromSdkSessionId }
@@ -6626,6 +6910,15 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "opencode"
         ? { providerSessionId: managed.runtime.handle.sessionId }
         : managed.session.provider === "opencode" && prevPersisted?.providerSessionId ? { providerSessionId: prevPersisted.providerSessionId } : {}),
+      ...(managed.session.provider === "claude" && managed.claudeBackgroundJobShort
+        ? { claudeBackgroundJobShort: managed.claudeBackgroundJobShort }
+        : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundJobShort ? { claudeBackgroundJobShort: prevPersisted.claudeBackgroundJobShort } : {}),
+      ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
+        ? { claudeBackgroundResumeSessionId }
+        : {}),
+      ...(managed.session.provider === "claude" && managed.claudeBackgroundLogText
+        ? { claudeBackgroundLogText: managed.claudeBackgroundLogText.slice(-64_000) }
+        : managed.session.provider === "claude" && prevPersisted?.claudeBackgroundLogText ? { claudeBackgroundLogText: prevPersisted.claudeBackgroundLogText.slice(-64_000) } : {}),
       ...(managed.runtime?.kind === "cursor" && managed.runtime.sdkAgentId
         ? {
             cursorSdkAgentProtocolVersion: CURSOR_SDK_AGENT_PROTOCOL_VERSION,
@@ -6771,6 +7064,19 @@ export function createAgentChatService(args: {
       const providerSessionId = typeof record.providerSessionId === "string" && record.providerSessionId.trim().length
         ? record.providerSessionId.trim()
         : undefined;
+      const claudeBackgroundJobShort = provider === "claude"
+        ? normalizeClaudeBackgroundShort(record.claudeBackgroundJobShort)
+        : null;
+      const claudeBackgroundResumeSessionId = provider === "claude"
+        ? (
+            typeof record.claudeBackgroundResumeSessionId === "string" && record.claudeBackgroundResumeSessionId.trim().length
+              ? record.claudeBackgroundResumeSessionId.trim()
+              : sdkSessionId
+          )
+        : undefined;
+      const claudeBackgroundLogText = provider === "claude" && typeof record.claudeBackgroundLogText === "string"
+        ? record.claudeBackgroundLogText.slice(-64_000)
+        : undefined;
       const cursorSdkAgentProtocolVersion = typeof record.cursorSdkAgentProtocolVersion === "number"
         ? record.cursorSdkAgentProtocolVersion
         : undefined;
@@ -6852,6 +7158,9 @@ export function createAgentChatService(args: {
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
+        ...(claudeBackgroundJobShort ? { claudeBackgroundJobShort } : {}),
+        ...(claudeBackgroundResumeSessionId ? { claudeBackgroundResumeSessionId } : {}),
+        ...(claudeBackgroundLogText ? { claudeBackgroundLogText } : {}),
         ...(cursorSdkAgentProtocolVersion ? { cursorSdkAgentProtocolVersion } : {}),
         ...(cursorSdkAgentId ? { cursorSdkAgentId } : {}),
         ...(cursorSdkRunId ? { cursorSdkRunId } : {}),
@@ -7154,6 +7463,31 @@ export function createAgentChatService(args: {
     const canonical = buildCanonicalAgentChatRuntimeEvent(event);
     if (canonical) {
       commitChatEvent(managed, canonical);
+    }
+  };
+
+  /**
+   * Push a transient envelope to renderer subscribers without persisting it
+   * to the transcript or session preview. Used for purely UI-state patches
+   * (e.g. session title changes) that the renderer applies to its local
+   * `sessions[]` array — there's no value in replaying them on reload.
+   */
+  const emitTransientChatEnvelope = (sessionId: string, event: AgentChatEvent): void => {
+    const envelope: AgentChatEventEnvelope = {
+      sessionId,
+      timestamp: nowIso(),
+      event,
+    };
+    onEvent?.(envelope);
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_subscriber_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   };
 
@@ -7892,6 +8226,9 @@ export function createAgentChatService(args: {
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      claudeBackgroundJobShort: persisted?.claudeBackgroundJobShort ?? null,
+      claudeBackgroundResumeSessionId: persisted?.claudeBackgroundResumeSessionId ?? persisted?.sdkSessionId ?? null,
+      claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
     };
     managed.todoItems = readLatestTranscriptTodoItems(managed);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
@@ -9679,6 +10016,488 @@ export function createAgentChatService(args: {
     }
   };
 
+  type ClaudeBackgroundCliResult = {
+    exitCode: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  };
+
+  const runClaudeBackgroundCliCommand = async (
+    managed: ManagedChatSession,
+    cliArgs: string[],
+    timeoutMs = 45_000,
+  ): Promise<ClaudeBackgroundCliResult> => {
+    const env = buildAgentRuntimeEnv(managed);
+    const resolved = resolveClaudeCodeExecutable({ env });
+    const invocation = resolveCliSpawnInvocation(resolved.path, cliArgs, env);
+    logger.debug("agent_chat.claude_background_cli_spawn", {
+      sessionId: managed.session.id,
+      source: resolved.source,
+      path: resolved.path,
+      argCount: cliArgs.length,
+    });
+    return await new Promise<ClaudeBackgroundCliResult>((resolve, reject) => {
+      const child = spawn(invocation.command, invocation.args, {
+        cwd: managed.laneWorktreePath,
+        env,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        terminateProcessTree(child, "SIGTERM");
+        setTimeout(() => terminateProcessTree(child, "SIGKILL"), 2_000).unref?.();
+        settled = true;
+        reject(new Error("Claude background command timed out."));
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+      child.stderr?.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("close", (exitCode, signal) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ exitCode, signal, stdout, stderr });
+      });
+    });
+  };
+
+  const buildClaudeBackgroundSystemPrompt = (managed: ManagedChatSession): string => {
+    resolveManagedClaudeOutputStyle(managed);
+    const projectSlashCommands = (() => {
+      try {
+        return discoverClaudeSlashCommands(managed.laneWorktreePath).filter(isDispatchableClaudeSdkSlashCommand);
+      } catch {
+        return [];
+      }
+    })();
+    const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
+    const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
+    const slashCommandsSection = projectSlashCommands.length
+      ? [
+          "",
+          "## Project slash commands and skills",
+          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` (slash commands) and `.claude/skills/<name>/SKILL.md` (skills) at every ancestor directory plus `~/.claude/`. Claude Code itself may discover some of these, but ADE also tells you about the full project-visible set here.",
+          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE may pre-expand the file's body and substitute `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not necessarily the literal `/<name>`.",
+          "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence, read the file at the path below and follow it.",
+          "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies, read its SKILL.md file and follow it as if it had been invoked.",
+          ...(projectCommandFiles.length ? [
+            "",
+            "Commands (file-backed prompts):",
+            ...projectCommandFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name}: ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
+          ...(projectSkillFiles.length ? [
+            "",
+            "Skills (autonomously usable when relevant):",
+            ...projectSkillFiles.map((cmd) => {
+              const desc = cmd.description.trim();
+              const head = desc.length ? `- ${cmd.name}: ${desc}` : `- ${cmd.name}`;
+              return `${head}\n  file: ${cmd.filePath}`;
+            }),
+          ] : []),
+        ]
+      : [];
+
+    return [
+      "## Runtime Environment",
+      "**Runtime:** ADE Work chat is hosting you through the Claude Code CLI background-session supervisor. The user sees an ADE lane chat, not your terminal.",
+      "**Lifecycle:** Keep working in the background when useful. ADE will keep the transcript and session pointer, and later user messages may arrive by Agent View reply or by resuming your saved conversation.",
+      "**UI contract:** Do not ask the user to run `claude attach`, `claude logs`, or a resume command. ADE owns those mechanics.",
+      "",
+      "## ADE Workspace",
+      `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
+      "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
+      "",
+      "## ADE Memory",
+      "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
+      "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
+      "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
+      "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
+      "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
+      ...slashCommandsSection,
+      "",
+      ADE_CLI_AGENT_GUIDANCE,
+    ].join("\n");
+  };
+
+  const buildClaudeBackgroundArgs = (
+    managed: ManagedChatSession,
+    promptText: string,
+    resumeSessionId: string | null,
+  ): string[] => {
+    const permissionMode = resolveClaudeTurnPermissionMode(managed);
+    const model = resolveClaudeCliModel(managed.session.model);
+    const rowTitle = sessionService.get(managed.session.id)?.title?.trim();
+    const cliArgs = [
+      "--bg",
+      "--model",
+      model,
+      "--permission-mode",
+      permissionMode,
+      "--append-system-prompt",
+      buildClaudeBackgroundSystemPrompt(managed),
+    ];
+    if (rowTitle) {
+      cliArgs.push("--name", rowTitle);
+    }
+    if (resumeSessionId) {
+      cliArgs.push("--resume", resumeSessionId);
+    }
+    const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
+    const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
+    if (claudeSupportsReasoning) {
+      const effort = managed.session.reasoningEffort;
+      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") {
+        cliArgs.push("--effort", effort);
+      }
+    }
+    cliArgs.push(promptText);
+    return cliArgs;
+  };
+
+  const rememberClaudeBackgroundJob = (
+    managed: ManagedChatSession,
+    short: string,
+    state: ClaudeBackgroundJobState | null,
+  ): void => {
+    const normalizedShort = normalizeClaudeBackgroundShort(short);
+    if (!normalizedShort) return;
+    const resumeSessionId = trimLine(state?.resumeSessionId)
+      ?? trimLine(state?.sessionId)
+      ?? managed.claudeBackgroundResumeSessionId;
+    managed.claudeBackgroundJobShort = normalizedShort;
+    if (resumeSessionId) {
+      managed.claudeBackgroundResumeSessionId = resumeSessionId;
+      mirrorClaudeSessionPointer(managed, resumeSessionId);
+    }
+    sessionService.setResumeCommand(managed.session.id, resumeSessionId
+      ? `claude --resume ${resumeSessionId}`
+      : `claude attach ${normalizedShort}`);
+    persistChatState(managed);
+  };
+
+  const getLiveClaudeBackgroundSocket = async (
+    short: string | null | undefined,
+  ): Promise<string | null> => {
+    const normalizedShort = normalizeClaudeBackgroundShort(short);
+    if (!normalizedShort) return null;
+    const socketPath = await resolveClaudeDaemonControlSocket();
+    if (!socketPath) return null;
+    try {
+      const response = await sendClaudeDaemonRequest(socketPath, { op: "has", short: normalizedShort });
+      if (response.ok === true && (response.alive === true || response.present === true)) return socketPath;
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const dispatchClaudeBackgroundPrompt = async (
+    managed: ManagedChatSession,
+    promptText: string,
+  ): Promise<{ short: string; state: ClaudeBackgroundJobState | null; dispatchedBy: "reply" | "spawn" }> => {
+    const existingShort = managed.claudeBackgroundJobShort;
+    const socketPath = await getLiveClaudeBackgroundSocket(existingShort);
+    if (socketPath && existingShort) {
+      let response: ClaudeDaemonResponse;
+      try {
+        response = await sendClaudeDaemonRequest(socketPath, {
+          op: "reply",
+          short: existingShort,
+          text: promptText,
+        });
+      } catch (error) {
+        response = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (response.ok === true) {
+        const state = readClaudeBackgroundJobState(existingShort);
+        rememberClaudeBackgroundJob(managed, existingShort, state);
+        return { short: existingShort, state, dispatchedBy: "reply" };
+      }
+      logger.warn("agent_chat.claude_background_reply_failed", {
+        sessionId: managed.session.id,
+        short: existingShort,
+        error: response.error ?? response.code ?? "unknown",
+      });
+    }
+
+    const existingState = readClaudeBackgroundJobState(existingShort);
+    const resumeSessionId = trimLine(existingState?.resumeSessionId)
+      ?? trimLine(existingState?.sessionId)
+      ?? managed.claudeBackgroundResumeSessionId
+      ?? readPersistedState(managed.session.id)?.claudeBackgroundResumeSessionId
+      ?? readPersistedState(managed.session.id)?.sdkSessionId
+      ?? null;
+    const result = await runClaudeBackgroundCliCommand(
+      managed,
+      buildClaudeBackgroundArgs(managed, promptText, resumeSessionId),
+      60_000,
+    );
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (result.exitCode !== 0) {
+      throw new Error(sanitizeClaudeBackgroundLog(output) || `Claude background session exited with code ${result.exitCode}.`);
+    }
+    const short = parseClaudeBackgroundShort(output);
+    if (!short) {
+      throw new Error(`Claude background session did not report a job id.\n${sanitizeClaudeBackgroundLog(output)}`);
+    }
+    const state = readClaudeBackgroundJobState(short);
+    rememberClaudeBackgroundJob(managed, short, state);
+    return { short, state, dispatchedBy: "spawn" };
+  };
+
+  const buildClaudeBackgroundPromptText = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText: string;
+      attachments: AgentChatFileRef[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
+      providerSlashCommand?: boolean;
+    },
+  ): Promise<string> => {
+    const providerSlashCommand = args.providerSlashCommand === true;
+    const autoMemoryPlan = providerSlashCommand
+      ? null
+      : await buildAutoMemoryTurnPlan(managed, args.userText, args.attachments);
+    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
+    if (autoMemoryNotice) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "memory",
+        message: autoMemoryNotice.message,
+        detail: autoMemoryNotice.detail,
+      });
+    }
+
+    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    if (reconstructionContext.length) {
+      managed.pendingReconstructionContext = null;
+      persistChatState(managed);
+    }
+    const attachmentText = args.resolvedAttachments.length
+      ? [
+          "ADE attached files/images for this turn:",
+          ...args.resolvedAttachments.map((attachment) => {
+            const pathText = attachment._resolvedPath || attachment.path;
+            const label = path.basename(pathText) || pathText;
+            return `- ${label}: ${pathText}`;
+          }),
+        ].join("\n")
+      : null;
+    return [
+      reconstructionContext.length
+        ? [
+            "System context (identity reconstruction, do not echo verbatim):",
+            reconstructionContext,
+          ].join("\n")
+        : null,
+      autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
+      attachmentText,
+      args.promptText,
+    ].filter((section): section is string => Boolean(section)).join("\n\n");
+  };
+
+  const monitorClaudeBackgroundJob = async (
+    managed: ManagedChatSession,
+    short: string,
+    turnId: string,
+  ): Promise<{ status: "completed" | "interrupted" | "failed"; assistantText: string; state: ClaudeBackgroundJobState | null }> => {
+    const start = Date.now();
+    const maxDurationMs = 6 * 60 * 60 * 1_000;
+    let assistantText = "";
+    let lastState = readClaudeBackgroundJobState(short);
+    let lastDetail = "";
+    let emittedStateText = "";
+    const emitStateText = (state: ClaudeBackgroundJobState | null): void => {
+      const stateText = extractClaudeBackgroundStateText(state);
+      if (!stateText.length || stateText === emittedStateText) return;
+      emittedStateText = stateText;
+      assistantText += stateText;
+      emitChatEvent(managed, { type: "text", text: stateText, turnId });
+      persistChatState(managed);
+    };
+
+    while (Date.now() - start < maxDurationMs) {
+      lastState = readClaudeBackgroundJobState(short);
+      if (lastState) {
+        rememberClaudeBackgroundJob(managed, short, lastState);
+      }
+      const detail = lastState?.detail?.trim() ?? "";
+      if (detail && detail !== lastDetail && !claudeBackgroundStateIsTerminal(lastState)) {
+        lastDetail = detail;
+        emitChatEvent(managed, {
+          type: "activity",
+          activity: "working",
+          detail,
+          turnId,
+        });
+      }
+      const normalizedState = lastState?.state?.trim().toLowerCase() ?? "";
+      const waitingForUser = normalizedState === "needs_input"
+        || normalizedState === "blocked"
+        || normalizedState === "idle";
+      if (claudeBackgroundStateIsTerminal(lastState) || waitingForUser) {
+        await sleepMs(500);
+        lastState = readClaudeBackgroundJobState(short) ?? lastState;
+        emitStateText(lastState);
+        if (waitingForUser || claudeBackgroundStateSucceeded(lastState)) {
+          return { status: "completed", assistantText, state: lastState };
+        }
+        if (normalizedState === "stopped" || normalizedState === "killed") {
+          return { status: "interrupted", assistantText, state: lastState };
+        }
+        return { status: "failed", assistantText, state: lastState };
+      }
+      await sleepMs(1_500);
+    }
+    return { status: "failed", assistantText, state: lastState };
+  };
+
+  const runClaudeBackgroundTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      resolvedAttachments?: ResolvedAgentChatFileRef[];
+      laneDirectiveKey?: string | null;
+      providerSlashCommand?: boolean;
+      forceClaudeUserMessage?: boolean;
+      onDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    if (managed.closed) {
+      logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: "Session is disposed" });
+      throw new Error("Session is disposed");
+    }
+    if (hasLivePendingInput(managed)) {
+      logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: PENDING_INPUT_SEND_BLOCKED_MESSAGE });
+      throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+    }
+    if (managed.session.status === "active") {
+      logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: "Turn already active" });
+      throw new Error("Turn already active");
+    }
+
+    const turnId = randomUUID();
+    const userMessageId = randomUUID();
+    setSessionActive(managed);
+    const attachments = args.attachments ?? [];
+    const contextAttachments = args.contextAttachments ?? [];
+    const resolvedAttachments = args.resolvedAttachments ?? attachments.map((attachment) => ({
+      ...attachment,
+      _resolvedPath: attachment.path,
+      _rootPath: managed.laneWorktreePath,
+    }));
+    const displayText = args.displayText?.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+    emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments,
+      contextAttachments,
+      turnId,
+      messageId: userMessageId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+    });
+
+    const doneModel = resolveClaudeTurnModelPayload(managed.session, [resolveClaudeCliModel(managed.session.model)]);
+    try {
+      const promptText = await buildClaudeBackgroundPromptText(managed, {
+        promptText: args.promptText,
+        userText,
+        attachments,
+        resolvedAttachments,
+        providerSlashCommand: args.providerSlashCommand,
+      });
+      const dispatched = await dispatchClaudeBackgroundPrompt(managed, promptText);
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: dispatched.dispatchedBy === "reply"
+          ? `Sent to Claude background session ${dispatched.short}.`
+          : `Started Claude background session ${dispatched.short}.`,
+        turnId,
+      });
+      const result = await monitorClaudeBackgroundJob(managed, dispatched.short, turnId);
+      markSessionIdleWithFreshCache(managed);
+      if (result.status === "completed") {
+        reportProviderRuntimeReady("claude");
+      } else {
+        reportProviderRuntimeFailure("claude", result.state?.detail ?? result.state?.state ?? result.status);
+      }
+      if (result.assistantText.trim().length > 0) {
+        appendWorkerActivityToCto(managed, {
+          activityType: "chat_turn",
+          summary: result.assistantText,
+        });
+      }
+      const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+      if (endSha) {
+        sessionService.setHeadShaEnd(managed.session.id, endSha);
+      }
+      void emitTurnDiffSummaryIfChanged(managed, turnId);
+      emitChatEvent(managed, { type: "status", turnStatus: result.status, turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: result.status,
+        ...doneModel,
+      });
+      persistChatState(managed);
+    } catch (error) {
+      markSessionIdleWithFreshCache(managed);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      reportProviderRuntimeFailure("claude", errorMessage);
+      emitChatEvent(managed, {
+        type: "error",
+        message: errorMessage,
+        turnId,
+      });
+      emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+      emitChatEvent(managed, {
+        type: "done",
+        turnId,
+        status: "failed",
+        ...doneModel,
+      });
+      appendWorkerActivityToCto(managed, {
+        activityType: "chat_turn",
+        summary: `Turn failed: ${errorMessage}`,
+      });
+      persistChatState(managed);
+    }
+  };
+
   // ── Streaming turn for OpenCode runtime ──
 
   const runTurn = async (
@@ -9697,8 +10516,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
-    if (runtimeKind === "claude") {
-      return runClaudeTurn(managed, args);
+    if (runtimeKind === "claude" || managed.session.provider === "claude") {
+      return runClaudeBackgroundTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
@@ -10848,6 +11667,85 @@ export function createAgentChatService(args: {
     runtime.activeSubagents.clear();
   };
 
+  type CodexCollabAgentState = {
+    threadId: string;
+    status: string;
+    summary: string;
+  };
+
+  const normalizeCodexCollabToolName = (value: unknown): string => {
+    const raw = typeof value === "string" ? value.trim() : "";
+    const compact = raw.replace(/[_-]/g, "").toLowerCase();
+    if (compact === "spawnagent") return "spawn_agent";
+    if (compact === "sendinput") return "send_input";
+    if (compact === "resumeagent") return "resume_agent";
+    if (compact === "closeagent") return "close_agent";
+    if (compact === "wait") return "wait";
+    return raw;
+  };
+
+  const readStringList = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((entry) => {
+      if (typeof entry !== "string") return [];
+      const trimmed = entry.trim();
+      return trimmed.length ? [trimmed] : [];
+    });
+  };
+
+  const readCodexCollabReceiverIds = (item: Record<string, unknown>): string[] => {
+    const receiverIds = readStringList(item.receiverThreadIds);
+    if (receiverIds.length) return receiverIds;
+    const snakeReceiverIds = readStringList(item.receiver_thread_ids);
+    if (snakeReceiverIds.length) return snakeReceiverIds;
+    const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId.trim() : "";
+    if (newThreadId.length) return [newThreadId];
+    return [];
+  };
+
+  const normalizeCodexCollabAgentStates = (value: unknown): CodexCollabAgentState[] => {
+    if (Array.isArray(value)) {
+      return value.flatMap((entry) => {
+        const record = asRecord(entry);
+        if (!record) return [];
+        const threadId = typeof record.threadId === "string"
+          ? record.threadId.trim()
+          : typeof record.thread_id === "string"
+            ? record.thread_id.trim()
+            : "";
+        if (!threadId.length) return [];
+        return [{
+          threadId,
+          status: String(record.status ?? "completed"),
+          summary: String(record.summary ?? record.result ?? record.message ?? ""),
+        }];
+      });
+    }
+
+    const record = asRecord(value);
+    if (!record) return [];
+    return Object.entries(record).flatMap(([threadId, state]) => {
+      const normalizedThreadId = threadId.trim();
+      if (!normalizedThreadId.length) return [];
+      const stateRecord = asRecord(state);
+      return [{
+        threadId: normalizedThreadId,
+        status: String(stateRecord?.status ?? "completed"),
+        summary: String(stateRecord?.summary ?? stateRecord?.result ?? stateRecord?.message ?? ""),
+      }];
+    });
+  };
+
+  const mapCodexCollabAgentStatus = (value: unknown): "completed" | "failed" | "stopped" | null => {
+    const normalized = String(value ?? "").replace(/[_-]/g, "").toLowerCase();
+    if (normalized === "completed") return "completed";
+    if (normalized === "failed" || normalized === "errored") return "failed";
+    if (normalized === "stopped" || normalized === "interrupted" || normalized === "shutdown" || normalized === "notfound") {
+      return "stopped";
+    }
+    return null;
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -11061,81 +11959,102 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // collabToolCall items → subagent events (Codex parallel agents)
-    if (itemType === "collabToolCall") {
-      const tool = String(item.tool ?? "");
+    // collabAgentToolCall items → subagent events (Codex parallel agents).
+    // Keep the legacy collabToolCall branch for older app-server builds/tests.
+    if (itemType === "collabAgentToolCall" || itemType === "collabToolCall") {
+      const tool = normalizeCodexCollabToolName(item.tool);
       const prompt = typeof item.prompt === "string" ? item.prompt : "";
-      const agentsStates = Array.isArray(item.agentsStates) ? item.agentsStates : [];
-      const newThreadId = typeof item.newThreadId === "string" ? item.newThreadId : null;
+      const receiverIds = readCodexCollabReceiverIds(item);
+      const agentsStates = normalizeCodexCollabAgentStates(item.agentsStates ?? item.agents_states);
 
       if (tool === "spawn_agent" && eventKind === "started") {
-        const taskId = newThreadId ?? itemId;
-        runtime.activeSubagents.set(taskId, {
-          taskId,
-          description: prompt.slice(0, 120) || "Parallel agent",
-          background: isBackgroundTask(item as Record<string, unknown>),
-        });
+        const taskIds = receiverIds.length ? receiverIds : [itemId];
         emitChatEvent(managed, {
           type: "activity",
           activity: "spawning_agent",
           detail: prompt.slice(0, 80) || "Spawning parallel agent",
           turnId,
         });
-        emitChatEvent(managed, {
-          type: "subagent_started",
-          taskId,
-          description: prompt.slice(0, 120) || "Parallel agent",
-          background: isBackgroundTask(item as Record<string, unknown>),
-          turnId,
-        });
+        for (const taskId of taskIds) {
+          runtime.activeSubagents.set(taskId, {
+            taskId,
+            description: prompt.slice(0, 120) || "Parallel agent",
+            background: isBackgroundTask(item as Record<string, unknown>),
+          });
+          emitChatEvent(managed, {
+            type: "subagent_started",
+            taskId,
+            description: prompt.slice(0, 120) || "Parallel agent",
+            background: isBackgroundTask(item as Record<string, unknown>),
+            turnId,
+          });
+        }
+      }
+
+      if (tool === "spawn_agent" && eventKind === "completed") {
+        const spawnStatus = mapCodexCollabAgentStatus(item.status);
+        if (spawnStatus === "failed") {
+          for (const taskId of receiverIds.length ? receiverIds : [itemId]) {
+            runtime.activeSubagents.delete(taskId);
+            emitChatEvent(managed, {
+              type: "subagent_result",
+              taskId,
+              status: "failed",
+              summary: String(item.error ?? item.result ?? "Agent spawn failed"),
+              turnId,
+            });
+          }
+        }
       }
 
       if ((tool === "send_input" || tool === "resume_agent") && eventKind === "completed") {
-        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
-        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
-        emitChatEvent(managed, {
-          type: "subagent_progress",
-          taskId: targetId,
-          summary: prompt || "Agent received input",
-          turnId,
-        });
+        const targetIds = receiverIds.length ? receiverIds : [itemId];
+        for (const targetId of targetIds) {
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId: targetId,
+            summary: prompt || "Agent received input",
+            turnId,
+          });
+        }
       }
 
       if (tool === "wait" && eventKind === "completed") {
         for (const agentState of agentsStates) {
-          if (!agentState || typeof agentState !== "object") continue;
-          const state = agentState as Record<string, unknown>;
-          const agentThreadId = typeof state.threadId === "string" ? state.threadId : itemId;
-          const summary = typeof state.summary === "string" ? state.summary
-            : typeof state.result === "string" ? state.result
-            : "";
-          const rawStatus = String(state.status ?? "completed");
-          const subagentStatus: "completed" | "failed" | "stopped" =
-            rawStatus === "failed" ? "failed"
-            : rawStatus === "stopped" ? "stopped"
-            : "completed";
+          const agentThreadId = agentState.threadId || itemId;
+          const subagentStatus = mapCodexCollabAgentStatus(agentState.status);
+          if (!subagentStatus) {
+            emitChatEvent(managed, {
+              type: "subagent_progress",
+              taskId: agentThreadId,
+              summary: agentState.summary || "Agent is still working",
+              turnId,
+            });
+            continue;
+          }
           runtime.activeSubagents.delete(agentThreadId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId: agentThreadId,
             status: subagentStatus,
-            summary,
+            summary: agentState.summary,
             turnId,
           });
         }
       }
 
       if (tool === "close_agent" && eventKind === "completed") {
-        const receiverIds = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
-        const targetId = typeof receiverIds[0] === "string" ? receiverIds[0] : itemId;
-        runtime.activeSubagents.delete(targetId);
-        emitChatEvent(managed, {
-          type: "subagent_result",
-          taskId: targetId,
-          status: "stopped",
-          summary: "Agent closed",
-          turnId,
-        });
+        const targetIds = receiverIds.length ? receiverIds : [itemId];
+        for (const targetId of targetIds) {
+          runtime.activeSubagents.delete(targetId);
+          emitChatEvent(managed, {
+            type: "subagent_result",
+            taskId: targetId,
+            status: "stopped",
+            summary: "Agent closed",
+            turnId,
+          });
+        }
       }
 
       return;
@@ -12582,24 +13501,20 @@ export function createAgentChatService(args: {
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     const pluginPaths = discoverClaudePluginPaths(managed.laneWorktreePath);
-    const mcpServers = lightweight
-      ? {}
-      : buildClaudeMcpServers({
-          projectRoot,
-          workspaceRoot: managed.laneWorktreePath,
-          sessionId: managed.session.id,
-          laneId: managed.session.laneId,
-        });
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
       pathToClaudeCodeExecutable: claudeExecutable.path,
+      managedSettings: {
+        allowedMcpServers: [],
+        allowManagedMcpServersOnly: true,
+        strictPluginOnlyCustomization: ["mcp"],
+      },
       settings: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
-      ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
@@ -12975,7 +13890,7 @@ export function createAgentChatService(args: {
     ]);
 
     if (runtime.kind === "claude") {
-      await runClaudeTurn(managed, {
+      await runClaudeBackgroundTurn(managed, {
         promptText,
         displayText: trimmed,
         attachments: nextSteer.attachments,
@@ -13319,6 +14234,9 @@ export function createAgentChatService(args: {
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      claudeBackgroundJobShort: null,
+      claudeBackgroundResumeSessionId: null,
+      claudeBackgroundLogText: "",
     };
 
     let runtime: CodexRuntime | null = null;
@@ -13763,6 +14681,9 @@ export function createAgentChatService(args: {
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
+      claudeBackgroundJobShort: null,
+      claudeBackgroundResumeSessionId: null,
+      claudeBackgroundLogText: "",
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
@@ -13791,13 +14712,6 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
 
-    if (effectiveProvider === "claude") {
-      ensureClaudeSessionRuntime(managed);
-      prewarmClaudeQuery(managed);
-    }
-
-    // Eager pre-warm: spawn the Claude runtime so it's ready by the time the
-    // user sends their first message (the ~30s cold-start runs in background).
     persistChatState(managed);
     return managed.session;
   };
@@ -13833,10 +14747,14 @@ export function createAgentChatService(args: {
     if (handoffMode === "fork" && (managed.session.provider !== "claude" || targetProvider !== "claude")) {
       throw new Error("Full-history fork is only available when handing off from Claude to Claude.");
     }
-    const sourceClaudeRuntime = handoffMode === "fork" ? ensureClaudeSessionRuntime(managed) : null;
-    const sourceSdkSessionId = sourceClaudeRuntime?.sdkSessionId ?? null;
+    const sourceSdkSessionId = handoffMode === "fork"
+      ? managed.claudeBackgroundResumeSessionId
+        ?? readPersistedState(managed.session.id)?.claudeBackgroundResumeSessionId
+        ?? readPersistedState(managed.session.id)?.sdkSessionId
+        ?? null
+      : null;
     if (handoffMode === "fork" && !sourceSdkSessionId) {
-      throw new Error("Full-history fork requires a Claude SDK session id. Send a Claude message first, then try Fork again.");
+      throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
     const targetModel = targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id;
     const targetReasoningEffort = pickHandoffReasoningEffort(
@@ -13892,13 +14810,8 @@ export function createAgentChatService(args: {
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
     if (handoffMode === "fork") {
-      if (createdManaged.runtime?.kind !== "claude") {
-        throw new Error("Full-history fork can only target Claude chats.");
-      }
-      resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
-      createdManaged.runtime.sdkSessionId = randomUUID();
-      createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId ?? null;
-      prewarmClaudeQuery(createdManaged);
+      createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
+      mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
     }
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
@@ -17232,8 +18145,7 @@ export function createAgentChatService(args: {
       managed.session.reasoningEffort = nextClaudeEffort;
     }
 
-    ensureClaudeSessionRuntime(managed);
-    await runClaudeTurn(managed, {
+    await runClaudeBackgroundTurn(managed, {
       promptText,
       userText: submittedText,
       displayText: visibleText,
@@ -17590,7 +18502,6 @@ export function createAgentChatService(args: {
       return { steerId, queued: false };
     }
 
-    const runtime = ensureClaudeSessionRuntime(managed);
     const preparedSteer = prepareSendMessage({
       sessionId,
       text: trimmed,
@@ -17601,6 +18512,11 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
+    if (managed.session.provider === "claude") {
+      await executePreparedSendMessage(preparedSteer);
+      return { steerId, queued: false };
+    }
+    const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
       enqueueSteerOrDrop(
         managed,
@@ -17941,6 +18857,22 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (managed.session.provider === "claude") {
+      const short = managed.claudeBackgroundJobShort;
+      if (short) {
+        await runClaudeBackgroundCliCommand(managed, ["stop", short], 15_000).catch((error) => {
+          logger.warn("agent_chat.claude_background_stop_failed", {
+            sessionId,
+            short,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      markSessionIdleWithFreshCache(managed);
+      persistChatState(managed);
+      return;
+    }
+
     const runtime = ensureClaudeSessionRuntime(managed);
     // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
     if (runtime.interrupted) return;
@@ -18124,14 +19056,12 @@ export function createAgentChatService(args: {
         if (managed.session.provider === "opencode") {
           throw new Error(`Unable to resume OpenCode runtime for model '${managed.session.model}'.`);
         }
-        // Fallthrough to Claude — SDK manages history via sdkSessionId.
-        ensureClaudeSessionRuntime(managed);
+        // Fallthrough to Claude — background jobs own process lifecycle.
         resolveClaudeTurnPermissionMode(managed);
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
-      // Claude — SDK manages history via sdkSessionId.
-      ensureClaudeSessionRuntime(managed);
+      // Claude — background jobs own process lifecycle.
       resolveClaudeTurnPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
@@ -18165,6 +19095,15 @@ export function createAgentChatService(args: {
             ? DEFAULT_DROID_DESCRIPTOR?.id
           : undefined);
     const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
+    const claudeBackgroundJobShort = provider === "claude"
+      ? liveManaged?.claudeBackgroundJobShort ?? persisted?.claudeBackgroundJobShort ?? null
+      : null;
+    const claudeBackgroundResumeSessionId = provider === "claude"
+      ? liveManaged?.claudeBackgroundResumeSessionId
+        ?? persisted?.claudeBackgroundResumeSessionId
+        ?? persisted?.sdkSessionId
+        ?? null
+      : null;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -18184,6 +19123,8 @@ export function createAgentChatService(args: {
         ...(liveSession?.claudeOutputStyle || persisted?.claudeOutputStyle
           ? { claudeOutputStyle: liveSession?.claudeOutputStyle ?? persisted?.claudeOutputStyle }
           : {}),
+        ...(claudeBackgroundJobShort ? { claudeBackgroundJobShort } : {}),
+        ...(claudeBackgroundResumeSessionId ? { claudeBackgroundResumeSessionId } : {}),
         ...(liveSession?.codexApprovalPolicy || persisted?.codexApprovalPolicy
         ? { codexApprovalPolicy: liveSession?.codexApprovalPolicy ?? persisted?.codexApprovalPolicy }
         : {}),
@@ -19336,24 +20277,8 @@ export function createAgentChatService(args: {
               : null;
       }
 
-      // Pre-warm the Claude query when the user selects an Anthropic model.
-      // This gives natural warmup time while the user types their message.
-      if (modelChanged && nextProvider === "claude") {
-        ensureClaudeSessionRuntime(managed);
-        prewarmClaudeQuery(managed);
-      }
-
-      // If a query is alive and model changed, notify SDK.
-      if (managed.runtime?.kind === "claude" && managed.runtime.query && modelId) {
-        const newCliModel = resolveClaudeCliModel(managed.session.model);
-        if (newCliModel && typeof managed.runtime.query.setModel === "function") {
-          try {
-            await managed.runtime.query.setModel(newCliModel);
-          } catch (err) {
-            logger.warn("agent_chat.claude_set_model_failed", { sessionId: managed.session.id, error: String(err) });
-          }
-        }
-      }
+      // Claude Code background sessions pick up model changes on the next
+      // background spawn/reply; there is no ADE-owned SDK query to pre-warm.
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
@@ -19517,10 +20442,11 @@ export function createAgentChatService(args: {
     if (title !== undefined) {
       const normalizedTitle = String(title ?? "").trim();
       const hasExplicitTitle = normalizedTitle.length > 0;
+      const effectiveTitle = hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider);
       sessionService.updateMeta({
         sessionId,
         manuallyNamed: manuallyNamed ?? false,
-        title: hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider),
+        title: effectiveTitle,
       });
       if (manuallyNamed !== undefined) {
         managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
@@ -19530,6 +20456,11 @@ export function createAgentChatService(args: {
         managed.manuallyNamed = false;
       }
       managed.runtimeTitleAdopted = false;
+      emitTransientChatEnvelope(sessionId, {
+        type: "session_meta_updated",
+        title: effectiveTitle,
+        manuallyNamed: managed.manuallyNamed,
+      });
       if (managed.session.provider === "claude" && managed.runtime?.kind === "claude" && managed.runtime.sdkSessionId && hasExplicitTitle) {
         await renameClaudeSession(managed.runtime.sdkSessionId, normalizedTitle, { dir: managed.laneWorktreePath }).catch((error) => {
           logger.warn("agent_chat.claude_rename_session_failed", {
@@ -19625,21 +20556,9 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // Warmup should never rewrite the live session model. It's only allowed to
-    // prime the currently-selected Claude runtime when the backend session is
-    // already aligned with the requested model and fully idle.
-    if (managed.session.provider !== "claude") return;
-    if (managed.session.modelId !== descriptor.id) return;
-    if (managed.session.status === "active") return;
-    if (managed.runtime && managed.runtime.kind !== "claude") return;
-    if (managed.runtime?.kind === "claude" && managed.runtime.busy) return;
-
-    // Only prewarm if the session is idle (not mid-turn) and not already warmed
-    if (managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) return;
-
-    // Ensure a Claude runtime exists and kick off pre-warming
-    ensureClaudeSessionRuntime(managed);
-    prewarmClaudeQuery(managed);
+    // Claude Code background jobs are owned by the Claude supervisor and wake on
+    // dispatch; ADE no longer prewarms an Agent SDK query for Claude sessions.
+    return;
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
@@ -19712,18 +20631,22 @@ export function createAgentChatService(args: {
     // Codex SDK commands
     if (provider === "codex") {
       const rt = managed?.runtime?.kind === "codex" ? managed.runtime : null;
-      const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? []).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath).map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-        name: cmd.name,
-        description: cmd.description,
-        argumentHint: cmd.argumentHint,
-        source: "sdk" as const,
-      }));
+      const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? [])
+        .filter(isVisibleCodexSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
+        .filter(isVisibleCodexSlashCommand)
+        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
       const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
         .filter(isDispatchableClaudeSdkSlashCommand)
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
@@ -19961,71 +20884,7 @@ export function createAgentChatService(args: {
           tokens: Number.isFinite(file.tokens) ? Math.max(0, file.tokens) : 0,
         }))
         .filter((file) => typeof file.path === "string" && file.path.trim().length > 0),
-      mcpTools: (Array.isArray(usage.mcpTools) ? usage.mcpTools : [])
-        .map((tool) => ({
-          name: tool.name,
-          serverName: tool.serverName,
-          tokens: Number.isFinite(tool.tokens) ? Math.max(0, tool.tokens) : 0,
-          ...(tool.isLoaded === true ? { isLoaded: true } : {}),
-        }))
-        .filter((tool) => typeof tool.name === "string" && tool.name.trim().length > 0 && typeof tool.serverName === "string"),
     };
-  };
-
-  const normalizeClaudeMcpServerStatuses = (
-    statuses: Awaited<ReturnType<ClaudeQuery["mcpServerStatus"]>>,
-  ): AgentChatClaudeMcpServerStatus[] => {
-    if (!Array.isArray(statuses)) return [];
-    return statuses
-        .map((status): AgentChatClaudeMcpServerStatus | null => {
-          const record = status && typeof status === "object" ? status as Record<string, unknown> : null;
-          if (!record) return null;
-          const name = typeof record?.name === "string" ? record.name.trim() : "";
-          if (!name.length) return null;
-        const config = record.config && typeof record.config === "object"
-          ? record.config as Record<string, unknown>
-          : null;
-        const tools = Array.isArray(record.tools)
-            ? record.tools
-                .map((tool): NonNullable<AgentChatClaudeMcpServerStatus["tools"]>[number] | null => {
-                  const toolRecord = tool && typeof tool === "object" ? tool as Record<string, unknown> : null;
-                  if (!toolRecord) return null;
-                  const toolName = typeof toolRecord?.name === "string" ? toolRecord.name.trim() : "";
-                if (!toolName.length) return null;
-                const annotations = toolRecord.annotations && typeof toolRecord.annotations === "object"
-                  ? toolRecord.annotations as Record<string, unknown>
-                  : null;
-                return {
-                  name: toolName,
-                  ...(typeof toolRecord.description === "string" && toolRecord.description.trim().length
-                    ? { description: toolRecord.description.trim() }
-                    : {}),
-                  ...(typeof annotations?.readOnly === "boolean" ? { readOnly: annotations.readOnly } : {}),
-                  ...(typeof annotations?.destructive === "boolean" ? { destructive: annotations.destructive } : {}),
-                  ...(typeof annotations?.openWorld === "boolean" ? { openWorld: annotations.openWorld } : {}),
-                };
-              })
-              .filter((tool): tool is NonNullable<AgentChatClaudeMcpServerStatus["tools"]>[number] => Boolean(tool))
-          : undefined;
-        return {
-          name,
-          status: typeof record?.status === "string" && record.status.trim().length ? record.status.trim() as AgentChatClaudeMcpServerStatus["status"] : "pending",
-          ...(typeof record?.error === "string" && record.error.trim().length ? { error: record.error.trim() } : {}),
-          ...(typeof record?.scope === "string" && record.scope.trim().length ? { scope: record.scope.trim() } : {}),
-          ...(config
-            ? {
-                config: {
-                  ...(typeof config.type === "string" && config.type.trim().length ? { type: config.type.trim() } : {}),
-                  ...(typeof config.command === "string" && config.command.trim().length ? { command: config.command.trim() } : {}),
-                  ...(Array.isArray(config.args) ? { args: config.args.filter((arg): arg is string => typeof arg === "string") } : {}),
-                  ...(typeof config.url === "string" && config.url.trim().length ? { url: config.url.trim() } : {}),
-                },
-              }
-            : {}),
-          ...(tools?.length ? { tools } : {}),
-        };
-      })
-      .filter((status): status is AgentChatClaudeMcpServerStatus => Boolean(status));
   };
 
   const normalizeClaudeRewindFilesResult = (
@@ -20054,42 +20913,6 @@ export function createAgentChatService(args: {
       const sessionQuery = ensureClaudeQuery(managed, runtime);
       return sessionQuery;
     };
-
-  const getClaudeMcpStatus = async ({ sessionId }: AgentChatClaudeMcpStatusArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const managed = ensureManagedSession(sessionId);
-    const sessionQuery = await getClaudeControlQuery(managed, "/mcp");
-    const control = getClaudeQueryControl(sessionQuery);
-    if (!control.mcpServerStatus) {
-      throw new Error("Claude MCP status is not supported by this SDK version.");
-    }
-    return normalizeClaudeMcpServerStatuses(await control.mcpServerStatus());
-  };
-
-  const reconnectClaudeMcpServer = async ({ sessionId, serverName }: AgentChatClaudeMcpReconnectArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const name = String(serverName ?? "").trim();
-    if (!name.length) throw new Error("MCP server name is required.");
-    const managed = ensureManagedSession(sessionId);
-    const sessionQuery = await getClaudeControlQuery(managed, "/mcp reconnect");
-    const control = getClaudeQueryControl(sessionQuery);
-    if (!control.reconnectMcpServer) {
-      throw new Error("Claude MCP reconnect is not supported by this SDK version.");
-    }
-    await control.reconnectMcpServer(name);
-    return getClaudeMcpStatus({ sessionId });
-  };
-
-  const toggleClaudeMcpServer = async ({ sessionId, serverName, enabled }: AgentChatClaudeMcpToggleArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const name = String(serverName ?? "").trim();
-    if (!name.length) throw new Error("MCP server name is required.");
-    const managed = ensureManagedSession(sessionId);
-    const sessionQuery = await getClaudeControlQuery(managed, "/mcp toggle");
-    const control = getClaudeQueryControl(sessionQuery);
-    if (!control.toggleMcpServer) {
-      throw new Error("Claude MCP toggle is not supported by this SDK version.");
-    }
-    await control.toggleMcpServer(name, Boolean(enabled));
-    return getClaudeMcpStatus({ sessionId });
-  };
 
   const listClaudePlugins = (args: AgentChatClaudePluginsArgs = {}): AgentChatClaudePlugin[] => {
     const { cwd } = resolveClaudeOutputStyleCwd(args);
@@ -20148,7 +20971,6 @@ export function createAgentChatService(args: {
       plugins,
       commands,
       agents,
-      mcpServers: normalizeClaudeMcpServerStatuses(result.mcpServers),
       errorCount: Number.isFinite(result.error_count) ? Math.max(0, result.error_count) : 0,
     };
   };
@@ -20629,9 +21451,6 @@ export function createAgentChatService(args: {
     getAvailableModels,
     getModelCatalog,
     getSlashCommands,
-    getClaudeMcpStatus,
-    reconnectClaudeMcpServer,
-    toggleClaudeMcpServer,
     listClaudePlugins,
     reloadClaudePlugins,
     listClaudeOutputStyles,

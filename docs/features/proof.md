@@ -4,7 +4,7 @@
 
 Proof in ADE is **intentional**, not auto-captured. The agent does computer use however it wants — `claude`'s `computer_use`, the `codex` shell, a scripted browser, whatever. ADE does not wrap, proxy, or observe those tools. When the agent (or the user) decides that a moment deserves evidence, the agent runs the `ade proof` CLI. That single command is the entire interface.
 
-The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an artifact broker, an auto-observer, and an MCP delivery path. All of that is gone. What stays is a tiny CLI, a single SQLite table, and a drawer in the UI.
+The old system sat upstream of the agent and tried to normalize every backend. It carried a readiness model, a policy surface (`off`/`auto`/`enabled`), per-phase coverage requirements, an artifact broker, an auto-observer, and a separate tool-delivery path. All of that is gone. What stays is a tiny CLI, a single SQLite table, and a drawer in the UI.
 
 The result: one interface for all models, no backend matrix, no coverage math. A proof set is a handful of captioned screenshots a reviewer can skim in under a minute.
 

@@ -620,7 +620,7 @@ duplicate. Project list dedup runs as a final pass
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by host capability, and a setup-hint card surfaced when the host returns "AI commit messages are off". |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), tap-to-resume on ended PTY rows, session pinning, live chat-event push from the host (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; the CLI mode submits `work.startCliSession` with the chosen provider, permission mode, and an optional opening message that the host types into the spawned PTY for non-shell providers. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and the live-count chip. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the host (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; the CLI mode submits `work.startCliSession` with the chosen provider, permission mode, and an optional opening message that the host types into the spawned PTY for non-shell providers. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and the live-count chip. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
@@ -743,7 +743,7 @@ reflected in the phone's UI on the next descriptor read.
 | Project home + machine project switching | Implemented |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
-| Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), tap-to-resume on ended PTY rows |
+| Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | Missions tab | Planned |
@@ -851,13 +851,11 @@ reflected in the phone's UI on the next descriptor read.
   `apps/desktop/src/shared/cliLaunch.ts`. Adding a sixth provider
   means updating both the host registry and the phone's
   `workCliProviderOptions` together.
-- **Tap-to-resume on a PTY row also goes through `work.startCliSession`.**
-  `WorkRootScreen+Actions` derives the provider from
-  `resumeMetadata.provider` (falling back to the row's `toolType`
-  prefix, with `shell` as the final fallback) and sends
-  `resumeSessionId: session.id`. The host rebuilds the resume command
-  line from the saved metadata or `resumeCommand` so the new PTY
-  attaches to the same agent thread the original session left behind.
+- **Continuing an ended agent CLI row goes through `work.sendToSession`.**
+  The phone keeps the transcript visible, collects the user's next
+  message, and sends it with the durable `sessionId`. The host writes
+  to a live PTY when present, or starts the provider continuation
+  internally and attaches the new PTY to the same session row.
 - **`WorkTerminalEmulatorView` drives a monospaced grid, not a free
   text view.** The viewport reported back to the host is in (cols,
   rows) inferred from the rendered glyph cell, not pixel dimensions.

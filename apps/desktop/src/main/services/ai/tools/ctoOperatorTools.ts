@@ -161,8 +161,6 @@ export interface CtoOperatorToolDeps {
   }) => string[];
   sendChatMessage: (args: AgentChatSendArgs) => Promise<void>;
   interruptChat: (args: AgentChatInterruptArgs) => Promise<void>;
-  resumeChat: (args: { sessionId: string }) => Promise<AgentChatSession>;
-  disposeChat: (args: { sessionId: string }) => Promise<void>;
   ensureCtoSession: (args: {
     laneId: string;
     modelId?: string | null;
@@ -855,46 +853,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ sessionId }) => {
       try {
         await deps.interruptChat({ sessionId });
-        return { success: true, sessionId };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.resumeChat = tool({
-    description: "Resume a previously ended ADE chat session so it can continue work.",
-    inputSchema: z.object({
-      sessionId: z.string().trim().min(1),
-    }),
-    execute: async ({ sessionId }) => {
-      try {
-        const session = await deps.resumeChat({ sessionId });
-        return {
-          success: true,
-          sessionId: session.id,
-          laneId: session.laneId,
-          status: session.status,
-          ...buildNavigationPayload(buildNavigationSuggestion({
-            surface: "work",
-            laneId: session.laneId,
-            sessionId: session.id,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.endChat = tool({
-    description: "End and archive an ADE chat session.",
-    inputSchema: z.object({
-      sessionId: z.string().trim().min(1),
-    }),
-    execute: async ({ sessionId }) => {
-      try {
-        await deps.disposeChat({ sessionId });
         return { success: true, sessionId };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };

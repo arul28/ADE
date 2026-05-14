@@ -214,6 +214,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "initEnv",
     "listAutoRebaseStatuses",
     "list",
+    "listDeleteProgress",
     "listSnapshots",
     "listRebaseSuggestions",
     "listTemplates",
@@ -412,14 +413,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createSession",
     "deleteSession",
     "dispatchSteer",
-    "dispose",
     "editSteer",
     "ensureAgentIdentitySession",
     "ensureCtoSession",
     "getAvailableModels",
     "getClaudeSessionInfo",
     "getClaudeSessionMessages",
-    "getClaudeMcpStatus",
     "getChatEventHistory",
     "getContextUsage",
     "listClaudeOutputStyles",
@@ -438,14 +437,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "fileSearch",
     "handoffSession",
     "respondToInput",
-    "reconnectClaudeMcpServer",
     "reloadClaudePlugins",
     "rewindFiles",
-    "resumeSession",
     "saveTempAttachment",
     "sendMessage",
     "setClaudeOutputStyle",
-    "toggleClaudeMcpServer",
     "setParallelLaunchState",
     "steer",
     "suggestLaneNameFromPrompt",
@@ -769,8 +765,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stopGroup",
     "stopStack",
   ],
-  pty: ["create", "dispose", "resize", "write"],
-  terminal: ["list", "read", "write", "signal", "activeForChat"],
+  pty: ["create", "dispose", "resize", "sendToSession", "write"],
+  terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
@@ -2600,7 +2596,9 @@ function buildGraphStateDomainService(runtime: AdeRuntime): GraphStateService | 
 type TerminalDomainService = {
   list(args?: unknown): unknown;
   read(args?: unknown): Promise<unknown>;
+  preview(args?: unknown): Promise<unknown>;
   write(args?: unknown): unknown;
+  resize(args?: unknown): unknown;
   signal(args?: unknown): unknown;
   activeForChat(args?: unknown): unknown;
 };
@@ -3497,8 +3495,14 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
     read(args) {
       return runtime.ptyService.readTerminal(args as Parameters<typeof runtime.ptyService.readTerminal>[0]);
     },
+    preview(args) {
+      return runtime.ptyService.previewTerminal(args as Parameters<typeof runtime.ptyService.previewTerminal>[0]);
+    },
     write(args) {
       return runtime.ptyService.writeTerminal(args as Parameters<typeof runtime.ptyService.writeTerminal>[0]);
+    },
+    resize(args) {
+      return runtime.ptyService.resizeTerminal(args as Parameters<typeof runtime.ptyService.resizeTerminal>[0]);
     },
     signal(args) {
       return runtime.ptyService.signalTerminal(args as Parameters<typeof runtime.ptyService.signalTerminal>[0]);

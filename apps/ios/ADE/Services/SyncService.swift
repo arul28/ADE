@@ -3177,8 +3177,7 @@ final class SyncService: ObservableObject {
     title: String? = nil,
     initialInput: String? = nil,
     cols: Int? = nil,
-    rows: Int? = nil,
-    resumeSessionId: String? = nil
+    rows: Int? = nil
   ) async throws -> StartCliSessionResult {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -3199,14 +3198,11 @@ final class SyncService: ObservableObject {
     if let rows, rows > 0 {
       args["rows"] = rows
     }
-    if let resumeSessionId, !resumeSessionId.isEmpty {
-      args["resumeSessionId"] = resumeSessionId
-    }
     return try await sendDecodableCommand(action: "work.startCliSession", args: args, as: StartCliSessionResult.self)
   }
 
-  func closeWorkSession(sessionId: String) async throws {
-    _ = try await sendCommand(action: "work.closeSession", args: ["sessionId": sessionId])
+  func stopWorkRuntime(sessionId: String) async throws {
+    _ = try await sendCommand(action: "work.stopRuntime", args: ["sessionId": sessionId])
   }
 
   func createLane(
@@ -3830,14 +3826,6 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func resumeChatSession(sessionId: String) async throws -> AgentChatSession {
-    try await sendDecodableChatCommand(
-      action: "chat.resume",
-      payload: AgentChatResumeRequest(sessionId: sessionId),
-      as: AgentChatSession.self
-    )
-  }
-
   func updateChatSession(
     sessionId: String,
     title: String? = nil,
@@ -3882,20 +3870,16 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func disposeChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.dispose", payload: AgentChatDisposeRequest(sessionId: sessionId))
-  }
-
   func archiveChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.archive", payload: AgentChatDisposeRequest(sessionId: sessionId))
+    _ = try await sendChatCommand(action: "chat.archive", payload: AgentChatSessionIdRequest(sessionId: sessionId))
   }
 
   func unarchiveChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.unarchive", payload: AgentChatDisposeRequest(sessionId: sessionId))
+    _ = try await sendChatCommand(action: "chat.unarchive", payload: AgentChatSessionIdRequest(sessionId: sessionId))
   }
 
   func deleteChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.delete", payload: AgentChatDisposeRequest(sessionId: sessionId))
+    _ = try await sendChatCommand(action: "chat.delete", payload: AgentChatSessionIdRequest(sessionId: sessionId))
   }
 
   func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {

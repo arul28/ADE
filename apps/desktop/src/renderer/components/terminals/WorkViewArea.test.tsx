@@ -2,8 +2,8 @@
 
 import { useState, type ReactNode } from "react";
 import type * as ReactNamespace from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { collectLeafIds } from "../ui/paneTreeOps";
 import { FloatingPane } from "../ui/FloatingPane";
@@ -18,6 +18,16 @@ const chatPaneLifecycle = vi.hoisted(() => ({
 vi.mock("./TerminalView", () => ({
   TerminalView: ({ sessionId, isActive }: { sessionId: string; isActive: boolean }) => (
     <div data-testid="terminal-view" data-session-id={sessionId} data-active={String(isActive)} />
+  ),
+}));
+
+vi.mock("./WorkCliSessionHeader", () => ({
+  WorkCliSessionHeader: ({
+    session,
+  }: {
+    session: TerminalSessionSummary;
+  }) => (
+    <div data-testid="work-cli-session-header" data-session-id={session.id} />
   ),
 }));
 
@@ -88,12 +98,60 @@ let latestPaneTilingLayoutProps: {
   tree: unknown;
   panes: Record<string, { children: ReactNode; onPaneMouseDown?: () => void }>;
 } | null = null;
+const terminalPreviewMock = vi.fn();
+const slashCommandsMock = vi.fn();
+const modelsMock = vi.fn();
+const sendToSessionMock = vi.fn();
 
 beforeEach(() => {
   latestPaneTilingLayoutProps = null;
   chatPaneLifecycle.mounts.clear();
   chatPaneLifecycle.unmounts.clear();
+  terminalPreviewMock.mockReset();
+  terminalPreviewMock.mockResolvedValue({
+    terminalId: "session-1",
+    source: "empty",
+    snapshot: null,
+    transcript: null,
+    capturedAt: "2026-04-06T12:10:00.000Z",
+  });
+  slashCommandsMock.mockReset();
+  slashCommandsMock.mockResolvedValue([]);
+  modelsMock.mockReset();
+  modelsMock.mockImplementation(({ provider }: { provider: string }) => {
+    if (provider === "codex") {
+      return Promise.resolve([
+        { id: "gpt-5.4", displayName: "GPT-5.4", isDefault: true },
+        { id: "gpt-5.3-codex", displayName: "GPT-5.3 Codex", isDefault: false },
+      ]);
+    }
+    return Promise.resolve([
+      { id: "sonnet", displayName: "Claude Sonnet 4.6", isDefault: true },
+      { id: "haiku", displayName: "Claude Haiku 4.5", isDefault: false },
+    ]);
+  });
+  sendToSessionMock.mockReset();
+  sendToSessionMock.mockResolvedValue({ sessionId: "session-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false });
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    value: {
+      agentChat: {
+        models: modelsMock,
+        slashCommands: slashCommandsMock,
+      },
+      pty: {
+        sendToSession: sendToSessionMock,
+      },
+      terminal: {
+        preview: terminalPreviewMock,
+      },
+    },
+  });
   vi.mocked(isChatToolType).mockReturnValue(false);
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 vi.mock("./ToolLogos", () => ({
@@ -165,10 +223,55 @@ function makeChatSession(id: string): TerminalSessionSummary {
 }
 
 describe("WorkViewArea", () => {
+  it("shows only Chat and CLI start modes on the empty Work surface", () => {
+    render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[]}
+        visibleSessions={[]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[]}
+        activeItemId={null}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Chat" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "CLI" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Shell" })).toBeNull();
+  });
+
   it("shows the draft surface when no tab is active, even if tabs are open", () => {
     const session = makeSession();
 
-    render(
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -337,7 +440,7 @@ describe("WorkViewArea", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
 
-    render(
+    const view = render(
       <WorkViewArea
         gridLayoutId="work:grid:test"
         lanes={[{
@@ -377,6 +480,272 @@ describe("WorkViewArea", () => {
     );
 
     expect(screen.getAllByTestId("terminal-view")).toHaveLength(2);
+  });
+
+  it("adds the CLI session header above agent PTY sessions", () => {
+    const session = { ...makeRunningSession("session-1", "pty-1"), toolType: "claude" as const };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    const header = within(view.container).getByTestId("work-cli-session-header");
+    const terminals = within(view.container).getAllByTestId("terminal-view");
+    expect(header.getAttribute("data-session-id")).toBe("session-1");
+    expect(terminals.map((terminal) => terminal.getAttribute("data-session-id"))).toContain("session-1");
+  });
+
+  it("shows the transcript for closed agent CLI sessions instead of the generic ended card", async () => {
+    terminalPreviewMock.mockResolvedValueOnce({
+      terminalId: "session-1",
+      source: "snapshot",
+      transcript: "\u001b7older output\rfinal answer\nResume this session with:\nclaude --resume abc123\n",
+      capturedAt: "2026-04-06T12:10:00.000Z",
+      snapshot: {
+        version: 1,
+        terminalId: "session-1",
+        cols: 24,
+        rows: 2,
+        capturedAt: "2026-04-06T12:10:00.000Z",
+        status: "completed",
+        runtimeState: "exited",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [{
+          text: "Resume this session with:",
+          wrapped: false,
+          cells: "Resume this session with:".split("").map((text) => ({
+            text,
+            fg: 2,
+            bg: null,
+            fgMode: "palette" as const,
+            bgMode: "default" as const,
+          })),
+        }],
+      },
+    });
+    const session = {
+      ...makeSession(),
+      toolType: "claude" as const,
+      resumeCommand: "claude --resume abc123",
+      resumeMetadata: {
+        provider: "claude" as const,
+        targetKind: "session" as const,
+        targetId: "abc123",
+        launch: { permissionMode: "default" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByText(/older output/)).toBeTruthy();
+    expect(local.getByText(/final answer/)).toBeTruthy();
+    expect(local.queryByText("Resume this session with:")).toBeNull();
+    expect(local.getByLabelText("Continue Claude Code session")).toBeTruthy();
+    expect(local.getByRole("button", { name: "Select model" })).toBeTruthy();
+    expect(local.getByLabelText("Reasoning effort")).toBeTruthy();
+    expect(local.getByLabelText("Claude Code permission mode")).toBeTruthy();
+    expect(local.queryByText("Resume")).toBeNull();
+    expect(local.getAllByTestId("work-cli-session-header").some((header) => header.getAttribute("data-session-id") === "session-1")).toBe(true);
+    expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
+    expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-1", maxBytes: 160_000 });
+    expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
+    expect(modelsMock).toHaveBeenCalledWith({ provider: "claude" });
+  });
+
+  it("submits continuation text for ended agent CLI sessions", async () => {
+    const onContinue = vi.fn().mockResolvedValue(undefined);
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "plan" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[{
+          id: "lane-1",
+          name: "Lane 1",
+          laneType: "worktree",
+          baseRef: "main",
+          branchRef: "lane-1",
+          worktreePath: "/tmp/lane-1",
+          parentLaneId: null,
+          childCount: 0,
+          stackDepth: 0,
+          parentStatus: null,
+          isEditProtected: false,
+          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+          color: null,
+          icon: null,
+          tags: [],
+          createdAt: "2026-04-06T12:00:00.000Z",
+        }]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+        onContinueCliSession={onContinue}
+      />,
+    );
+
+    const textarea = await within(view.container).findByLabelText("Continue Codex session");
+    await waitFor(() => {
+      expect(within(view.container).getByRole("button", { name: "Select model" })).toBeTruthy();
+      expect((within(view.container).getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("high");
+    });
+    fireEvent.change(textarea, { target: { value: "fix the test" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "fix the test", {
+      model: "gpt-5.4",
+      permissionMode: "plan",
+      reasoningEffort: "high",
+    }));
+    expect((textarea as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("shows provider-specific slash command suggestions in the continuation composer", async () => {
+    slashCommandsMock.mockResolvedValue([
+      { name: "/status", description: "Show status", source: "sdk" },
+    ]);
+    const session = {
+      ...makeSession(),
+      toolType: "claude" as const,
+      resumeCommand: "claude --resume abc123",
+      resumeMetadata: {
+        provider: "claude" as const,
+        targetKind: "session" as const,
+        targetId: "abc123",
+        launch: { permissionMode: "default" as const },
+      },
+    };
+
+    render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+
+    await waitFor(() => expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" }));
+    const textareas = await screen.findAllByLabelText("Continue Claude Code session");
+    const textarea = textareas.at(-1);
+    expect(textarea).toBeTruthy();
+    fireEvent.focus(textarea!);
+    fireEvent.change(textarea!, { target: { value: "/st", selectionStart: 3 } });
+
+    expect(await screen.findByText("/status")).toBeTruthy();
   });
 
   it("keeps the grid tiling tree stable when refreshed session objects keep the same ids", () => {

@@ -26,7 +26,7 @@ for vendored runtimes without changing the union.
 
 | Provider | Runtime | Adapter location |
 |---|---|---|
-| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, upfront MCP servers, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
+| `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
 | `codex` | `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter); config via `codexAppServerConfig.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`. |
@@ -283,8 +283,8 @@ on the Claude Agent SDK:
    service pins the source `sdkSessionId` as the new session's
    `forkFromSdkSessionId` and starts the next `query()` with
    `options.forkSession = true`. The SDK forks the SDK session graph
-   server-side so the new chat keeps the full conversation, MCP state,
-   and tool history without a summary round-trip. `forkFromSdkSessionId`
+   server-side so the new chat keeps the full conversation and tool history
+   without a summary round-trip. `forkFromSdkSessionId`
    is persisted through `PersistedChatState` and re-applied on resume so
    forked descendants survive app restart.
 2. **Brief (cross-runtime).** When the target leaves the Claude family

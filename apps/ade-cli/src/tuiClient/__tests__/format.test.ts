@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { latestExpandableFailureId, parseAssistantMarkdown, renderChatLines, renderObject } from "../format";
+import { latestExpandableFailureId, parseAssistantMarkdown, parseInlineRuns, renderChatLines, renderObject } from "../format";
 
 describe("renderChatLines", () => {
   it("parses assistant markdown into stable blocks", () => {
-    expect(parseAssistantMarkdown([
+    const blocks = parseAssistantMarkdown([
       "# Heading",
       "",
       "Paragraph text",
@@ -15,14 +15,116 @@ describe("renderChatLines", () => {
       "```sh",
       "npm test",
       "```",
-    ].join("\n"))).toEqual([
+    ].join("\n"));
+    expect(blocks).toEqual([
       { kind: "heading", level: 1, text: "Heading" },
       { kind: "paragraph", text: "Paragraph text" },
       { kind: "bullet", text: "Bullet" },
       { kind: "numbered", number: "1", text: "Numbered" },
       { kind: "quote", text: "Quote" },
-      { kind: "code", language: "sh", lines: ["npm test"] },
+      expect.objectContaining({ kind: "code", language: "sh", lines: ["npm test"] }),
     ]);
+    const code = blocks[5];
+    expect(code?.kind).toBe("code");
+    if (code?.kind === "code") {
+      // sh is aliased → bash, so highlighting populates per-line tokens.
+      expect(code.tokens).toBeDefined();
+      expect(code.tokens?.length).toBe(1);
+      expect(code.tokens?.[0]?.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("parses fenced code without language as raw lines and no tokens", () => {
+    const blocks = parseAssistantMarkdown(["```", "plain line 1", "plain line 2", "```"].join("\n"));
+    expect(blocks).toEqual([
+      { kind: "code", lines: ["plain line 1", "plain line 2"] },
+    ]);
+    const code = blocks[0];
+    if (code?.kind === "code") {
+      expect(code.language).toBeUndefined();
+      expect(code.tokens).toBeUndefined();
+    }
+  });
+
+  it("parses multi-line typescript code block with per-line token arrays", () => {
+    const blocks = parseAssistantMarkdown([
+      "```ts",
+      "const x = 1;",
+      "const y = \"two\";",
+      "```",
+    ].join("\n"));
+    expect(blocks).toHaveLength(1);
+    const block = blocks[0];
+    expect(block?.kind).toBe("code");
+    if (block?.kind === "code") {
+      expect(block.lines).toEqual(["const x = 1;", "const y = \"two\";"]);
+      expect(block.tokens).toBeDefined();
+      expect(block.tokens?.length).toBe(2);
+      // At least one keyword token (`const`) must be tagged.
+      const allTokens = block.tokens?.flat() ?? [];
+      expect(allTokens.some((t) => t.category === "keyword")).toBe(true);
+      expect(allTokens.some((t) => t.category === "string")).toBe(true);
+    }
+  });
+
+  it("parses GFM tables", () => {
+    const blocks = parseAssistantMarkdown([
+      "| Name | Status |",
+      "|------|--------|",
+      "| Alice | OK |",
+      "| Bob   | Bad |",
+    ].join("\n"));
+    expect(blocks).toEqual([
+      { kind: "table", headers: ["Name", "Status"], rows: [["Alice", "OK"], ["Bob", "Bad"]] },
+    ]);
+  });
+
+  it("parses thematic break (hr)", () => {
+    expect(parseAssistantMarkdown("paragraph\n\n---\n\nafter")).toEqual([
+      { kind: "paragraph", text: "paragraph" },
+      { kind: "hr" },
+      { kind: "paragraph", text: "after" },
+    ]);
+  });
+
+  it("parses numbered list with explicit starting number", () => {
+    expect(parseAssistantMarkdown(["3. Three", "4. Four"].join("\n"))).toEqual([
+      { kind: "numbered", number: "3", text: "Three" },
+      { kind: "numbered", number: "4", text: "Four" },
+    ]);
+  });
+
+  it("parses task list checkboxes into bullets", () => {
+    const blocks = parseAssistantMarkdown(["- [ ] Open", "- [x] Done"].join("\n"));
+    expect(blocks).toEqual([
+      { kind: "bullet", text: "[ ] Open" },
+      { kind: "bullet", text: "[x] Done" },
+    ]);
+  });
+
+  it("parses inline markdown into bold/italic/code/link runs", () => {
+    const runs = parseInlineRuns("Hello **bold** and *italic* and `code` plus [the docs](https://x)");
+    // First plain text, then bold, then plain, then italic, then plain, then code, then plain, then link.
+    expect(runs.map((r) => ({ text: r.text, bold: !!r.bold, italic: !!r.italic, code: !!r.code, link: !!r.link })))
+      .toEqual([
+        { text: "Hello ", bold: false, italic: false, code: false, link: false },
+        { text: "bold", bold: true, italic: false, code: false, link: false },
+        { text: " and ", bold: false, italic: false, code: false, link: false },
+        { text: "italic", bold: false, italic: true, code: false, link: false },
+        { text: " and ", bold: false, italic: false, code: false, link: false },
+        { text: "code", bold: false, italic: false, code: true, link: false },
+        { text: " plus ", bold: false, italic: false, code: false, link: false },
+        { text: "the docs", bold: false, italic: false, code: false, link: true },
+      ]);
+  });
+
+  it("parses nested bold-italic correctly (marked handles nesting)", () => {
+    const runs = parseInlineRuns("**bold _both_ rest**");
+    // First "bold ", then "both" with bold+italic, then " rest" with bold.
+    expect(runs).toHaveLength(3);
+    expect(runs[0]).toMatchObject({ text: "bold ", bold: true });
+    expect(runs[1]).toMatchObject({ text: "both", bold: true, italic: true });
+    expect(runs[2]).toMatchObject({ text: " rest", bold: true });
   });
 
   it("renders compact chat turns without speaker metadata spam", () => {

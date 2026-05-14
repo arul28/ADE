@@ -7,7 +7,7 @@ struct WorkSelectionActionBar: View {
   let archivableCount: Int
   let restorableCount: Int
   let busy: Bool
-  let onClose: () -> Void
+  let onStopRuntime: () -> Void
   let onArchive: () -> Void
   let onRestore: () -> Void
   let onDelete: () -> Void
@@ -24,9 +24,9 @@ struct WorkSelectionActionBar: View {
       if runningCount > 0 {
         actionButton(
           systemImage: "stop.circle",
-          label: "Close \(runningCount)",
+          label: "Stop \(runningCount)",
           tint: ADEColor.warning,
-          action: onClose
+          action: onStopRuntime
         )
       }
       if archivableCount > 0 {

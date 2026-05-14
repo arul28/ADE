@@ -107,7 +107,7 @@ downstream code always sees a normalized command even for old rows.
 - The `manuallyNamed` flag suppresses auto-title regeneration. Any
   rename from the renderer sets it to `true`; AI auto-title code
   refuses to overwrite when it is set.
-- Resume metadata is stored as a JSON blob. `normalizeResumeMetadata`
+- Continuation metadata is stored as a JSON blob. `normalizeResumeMetadata`
   accepts both the current `{ provider, targetKind, targetId, launch }`
   shape and legacy fields (`target`, `permissionMode` at the top level).
 
@@ -137,6 +137,17 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   `lastRuntimeSignalPreview`
 - AI title: `aiTitleTimer`, `cliUserTitleLineBuffer`,
   `cliUserTitleCommitted`
+- buffer snapshot mirror: `terminalSnapshot` — for tracked PTYs only;
+  an `@xterm/headless` Terminal + `SerializeAddon` that mirrors PTY
+  output so the renderer-less surfaces (TUI `TerminalPane`, mobile
+  Work tab, `ade terminal preview`) can render a real xterm buffer
+  snapshot without subscribing to the live data stream. Writes are
+  debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500`) and flushed to
+  `.ade/cache/terminal-snapshots/<sessionId>.json` as a
+  `TerminalSerializedSnapshot` (version 1: cols / rows / cursor /
+  viewport / buffer-type / serialized scrollback + per-cell visible
+  rows). Flushed on PTY exit, on resize, and on every
+  `terminal.preview` call.
 - teardown: `disposed`, `createdAt`, `cleanupPaths`
 
 ### Create flow (`create(args)`)
@@ -221,16 +232,60 @@ the same session with `terminal_subscribe`; unsubscribed
 mobile terminal control tied to the visible Work surface instead of
 making a bare session id sufficient to drive a shell.
 
+### Send-or-continue (`sendToSession`)
+
+`ptyService.sendToSession({ sessionId, text, cols?, rows?, model?,
+reasoningEffort?, permissionMode? })` is the single entry point for
+"send this text to a Work CLI session, starting the provider
+continuation if needed." It collapses the legacy resume / reattach /
+write paths into one call:
+
+1. If a live PTY is currently attached, write `text + \r` through
+   `writeBySessionId` and return `{ ptyId, sessionId, pid, resumed:
+   false, reusedExistingRuntime: true }`.
+2. Otherwise require a tracked agent CLI row (Claude, Codex, Cursor,
+   OpenCode, Droid; chats and shells are rejected with a clear error).
+   Resolve the provider from `resumeMetadata.provider`, fall back to
+   `providerFromTool(toolType)`.
+3. Rebuild the resume command via
+   `buildTrackedCliResumeCommand(metadata, overrides)` — runtime
+   `model` / `reasoningEffort` / `permissionMode` overrides flow into
+   the command line so the continuation honours the user's current
+   model picker.
+4. De-duplicate concurrent sends through `resumeRuntimeFlights` (one
+   in-flight continuation per session id) so rapid sends do not spawn
+   parallel PTYs against the same row.
+5. Spawn the continuation through `service.create({ sessionId, ... })`
+   in the same row, write `text + \r`, and return the new
+   `{ ptyId, sessionId, pid, session, resumed: true,
+   reusedExistingRuntime: false }`. Claude continuations also schedule
+   a 1.2 s confirmation `\r` (`CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS`)
+   to dismiss the SDK's initial prompt confirmation step.
+
+The renderer's Work continuation composer, the iOS Work tab's
+"continue" path (`work.sendToSession` remote command), and the TUI's
+`send_to_session` JSON-RPC tool all go through this single function.
+
 ### AI-driven titles
 
-Two paths, both gated by `sessionIntelligence.titles.enabled` and the
-presence of an AI integration service in non-guest mode:
+Three paths, all gated by `sessionIntelligence.titles.enabled` and the
+presence of an AI integration service in non-guest mode (except the
+Claude runtime-title capture, which is free):
 
 - **Output snippet title** (shell, run-shell, cursor, aider, continue):
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of
   ANSI-stripped early output to `aiIntegrationService.summarizeTerminal`
   with a "max 80 chars, plain text" prompt.
-- **CLI user title** (claude, codex, cursor-cli, droid, opencode):
+- **Claude runtime-storage title** (claude, claude-orchestrated):
+  `scheduleClaudeRuntimeTitleCaptureBestEffort` polls Claude's local
+  JSONL at `~/.claude/projects/<escaped-cwd>/<session>.jsonl` for an
+  `ai-title` or `custom-title` record using
+  `CLAUDE_TITLE_POLL_DELAYS_MS = [1s, 2.5s, 5s, 12s, 30s, 60s]`. The
+  ADE prompt summarizer is intentionally skipped for Claude so that
+  Claude Code's own generated title wins when it arrives, with
+  `adoptClaudeRuntimeTitle` honouring the `manuallyNamed` flag and
+  refusing to overwrite a user rename.
+- **CLI user title** (codex, cursor-cli, droid, opencode):
   `tryCliUserTitleFromWrite` listens to PTY *writes* (keyboard input)
   and commits the first submitted prompt line (3 to 180 chars). This
   avoids the alt-screen noise that every interactive agent TUI hides
@@ -240,18 +295,19 @@ presence of an AI integration service in non-guest mode:
   `isCliPlaceholderTitle`), a deterministic fallback title is committed
   immediately from the seed via `deterministicCliTitleFromSeed` (strips
   filler lead-ins like "ok"/"please", clips to 72 chars on a clause or
-  word boundary, sentence-cases). The AI title call still runs after
-  and overwrites with the model's output if it succeeds, but the user
-  no longer stares at "Claude" while the model is thinking. AI title
-  calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since slower local models
-  were timing out at the prior 8 s budget.
+  word boundary, strips natural-language `/`-prefixes that are not
+  provider slash commands, sentence-cases). The AI title call still
+  runs after and overwrites with the model's output if it succeeds, but
+  the user no longer stares at "Codex" while the model is thinking. AI
+  title calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since slower local
+  models were timing out at the prior 8 s budget.
 
 At session close, when `refreshOnComplete` is enabled, the transcript
 tail (last 2000 chars) is re-summarized into a final title through the
 same service. Failure logs a warn and moves on — the title contract
 never fails the session.
 
-### Resume metadata backfill
+### Continuation metadata backfill
 
 Internal worker `tryBackfillResumeTarget` runs after a transcript is
 finalized at close time, and also on demand via

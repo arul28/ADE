@@ -1,5 +1,5 @@
 import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
-import type { TerminalSessionSummary } from "./sessions";
+import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -504,7 +504,8 @@ export type SyncStartCliSessionArgs = {
   initialInput?: string | null;
   cols?: number;
   rows?: number;
-  resumeSessionId?: string | null;
+  model?: string | null;
+  modelId?: string | null;
 };
 
 export type SyncStartCliSessionResult = {
@@ -512,6 +513,15 @@ export type SyncStartCliSessionResult = {
   ptyId: string | null;
   session: TerminalSessionSummary | null;
 };
+
+export type SyncSendToSessionArgs = {
+  sessionId: string;
+  text: string;
+  cols?: number | null;
+  rows?: number | null;
+};
+
+export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
@@ -552,7 +562,8 @@ export type SyncRemoteCommandAction =
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.startCliSession"
-  | "work.closeSession"
+  | "work.sendToSession"
+  | "work.stopRuntime"
   | "processes.listDefinitions"
   | "processes.listRuntime"
   | "processes.start"
@@ -571,10 +582,8 @@ export type SyncRemoteCommandAction =
   | "chat.cancelDispatchedSteer"
   | "chat.approve"
   | "chat.respondToInput"
-  | "chat.resume"
   | "chat.restart"
   | "chat.updateSession"
-  | "chat.dispose"
   | "chat.archive"
   | "chat.unarchive"
   | "chat.delete"

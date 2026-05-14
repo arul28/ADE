@@ -670,7 +670,7 @@ export function ChatBuiltInBrowserPanel({
     item: BuiltInBrowserContextItem,
     options: { force?: boolean; auto?: boolean; label?: string } = {},
   ): Promise<BuiltInBrowserContextItem | null> => {
-    if (!onAddContext) throw new Error("Chat context is not available in this panel.");
+    if (!onAddContext) throw new Error("Context insertion is not available in this panel.");
     if (!options.force && autoAttachedContextIdsRef.current.has(item.id)) return null;
 
     let attachmentPath = typeof item.metadata?.attachmentPath === "string" ? item.metadata.attachmentPath : null;
@@ -708,11 +708,11 @@ export function ChatBuiltInBrowserPanel({
     setAttachmentAck(options.label ?? (isCapture ? "Browser capture attached." : "Browser context attached."));
     let messageText: string;
     if (options.auto) {
-      messageText = "Attached browser inspect context to chat.";
+      messageText = "Inserted browser inspect context.";
     } else if (isCapture) {
-      messageText = "Attached browser capture to chat with page context.";
+      messageText = "Inserted browser capture with page context.";
     } else {
-      messageText = "Attached the selected browser element to chat.";
+      messageText = "Inserted the selected browser element context.";
     }
     setMessage({ tone: "info", text: messageText });
     return contextItem;
@@ -1279,7 +1279,7 @@ export function ChatBuiltInBrowserPanel({
 
   const handleAttachScreenshot = useCallback(() => {
     void runBusy("screenshot", async () => {
-      if (!onAddContext) throw new Error("Chat context is not available in this panel.");
+      if (!onAddContext) throw new Error("Context insertion is not available in this panel.");
       if (captureModeRef.current) {
         restoreLiveBrowserView();
         setMessage({ tone: "info", text: "Browser screenshot capture cancelled." });
@@ -1310,7 +1310,7 @@ export function ChatBuiltInBrowserPanel({
 
   const addBrowserCaptureContext = useCallback(async (frame: BrowserFrame) => {
     if (!captureBase) return;
-    if (!onAddContext) throw new Error("Chat context is not available in this panel.");
+    if (!onAddContext) throw new Error("Context insertion is not available in this panel.");
     const crop = await cropBrowserScreenshot(captureBase, frame);
     if (!crop) throw new Error("Could not crop browser screenshot.");
 
@@ -1652,7 +1652,7 @@ export function ChatBuiltInBrowserPanel({
                 ? "border-amber-300/25 bg-amber-500/12 text-amber-100/85 hover:bg-amber-500/18"
                 : "border-white/[0.08] bg-white/[0.035] text-fg/72 hover:bg-white/[0.07] hover:text-fg/85",
             )}
-            title={onAddContext ? "Drag a browser region into chat context" : "Chat context is unavailable here"}
+            title={onAddContext ? "Drag a browser region into context" : "Context insertion is unavailable here"}
           >
             {busy === "screenshot" ? <SpinnerGap size={12} className="animate-spin" /> : <ImageSquare size={12} />}
             {captureBase ? "Cancel screenshot" : "Screenshot"}
@@ -1663,7 +1663,7 @@ export function ChatBuiltInBrowserPanel({
               disabled={Boolean(busy) || !apiAvailable || !onAddContext}
               onClick={handleAttachSelection}
               className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.035] px-2.5 text-[11px] font-medium text-fg/72 transition-colors hover:bg-white/[0.07] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-45"
-              title="Attach the selected browser element as chat context"
+              title="Insert the selected browser element as context"
             >
               {busy === "select" ? <SpinnerGap size={12} className="animate-spin" /> : <Selection size={12} />}
               Attach

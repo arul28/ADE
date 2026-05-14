@@ -89,7 +89,8 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
   createAutomationSecretService: vi.fn(() => ({})),
 }));
 
-import { createHeadlessLinearServices } from "./headlessLinearServices";
+import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
 
 function createDeps() {
   return {
@@ -424,6 +425,31 @@ describe("headlessLinearServices", () => {
         clientId: expect.any(String),
         clientSecret: null,
       });
+    } finally {
+      services.dispose();
+      if (previousAdeHome == null) {
+        delete process.env.ADE_HOME;
+      } else {
+        process.env.ADE_HOME = previousAdeHome;
+      }
+    }
+  });
+
+  it("reads Linear and GitHub credentials from the shared machine store", () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-shared-credentials-"));
+    const credentialStore = new EncryptedFileCredentialStore();
+    credentialStore.setSync("linear.token.v1", "lin_shared_token");
+    credentialStore.setSync("github.token.v1", "ghp_shared_token");
+
+    const services = createHeadlessLinearServices(createDeps());
+    try {
+      expect(services.linearCredentialService.getTokenOrThrow()).toBe("lin_shared_token");
+      const githubService = createHeadlessGitHubService(
+        "/tmp/ade-project",
+        { debug() {}, info() {}, warn() {}, error() {} } as any,
+      );
+      expect(githubService.getTokenOrThrow()).toBe("ghp_shared_token");
     } finally {
       services.dispose();
       if (previousAdeHome == null) {

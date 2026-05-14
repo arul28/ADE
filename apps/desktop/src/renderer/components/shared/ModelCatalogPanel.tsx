@@ -359,15 +359,15 @@ export function ModelCatalogPanel({
   );
 
   const fullTree = useMemo(
-    () => buildProviderGroupBlocks(selectorModels, modelOrder, opencodeProviders),
-    [selectorModels, modelOrder, opencodeProviders],
+    () => buildProviderGroupBlocks(selectorModels, modelOrder, opencodeProviders, catalogMode !== "available-only"),
+    [selectorModels, modelOrder, opencodeProviders, catalogMode],
   );
 
   const isSearchMode = query.trim().length > 0;
   const searchTree = useMemo(() => {
     const filtered = selectorModels.filter((m) => matchesQuery(m, query));
-    return buildProviderGroupBlocks(filtered, modelOrder, opencodeProviders);
-  }, [selectorModels, query, modelOrder, opencodeProviders]);
+    return buildProviderGroupBlocks(filtered, modelOrder, opencodeProviders, catalogMode !== "available-only");
+  }, [selectorModels, query, modelOrder, opencodeProviders, catalogMode]);
 
   const groupModelCounts = useMemo(() => {
     const map = new Map<ProviderGroupKey, number>();

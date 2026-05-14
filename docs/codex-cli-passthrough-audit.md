@@ -35,13 +35,12 @@ Reference: <https://developers.openai.com/codex/cli/slash-commands>
 | `/compact` | sdk | yes (`thread/compact/start`) | Direct wire call; emits `codex_context_compaction`. | Keep — works end-to-end. |
 | `/copy` | sdk | — | Codex CLI copies the latest output to its TUI buffer. In ADE there is no such buffer; the request is silently dropped. | Dead-listed for ADE. Either implement `/copy` locally (mirror of TUI `Ctrl+O`) or remove from palette. |
 | `/diff` | sdk | — | Codex CLI prints a git diff to stdout. ADE has a richer git pane elsewhere; Codex emits text the renderer displays as an assistant message. | Keep (the textual diff still reads). Consider routing to ADE's diff viewer in a follow-up. |
-| `/exit` | sdk | — | Tells Codex CLI to exit. In ADE this terminates the app-server process, which the runtime then auto-restarts — surprising side-effect. | Remove from palette (ADE has `/end` and `/quit` for this). |
+| `/exit` | sdk | — | Tells Codex CLI to exit. In ADE this terminates the app-server process, which the runtime then auto-restarts — surprising side-effect. | Remove from palette (ADE owns `/quit`; session continuation happens by sending the next message). |
 | `/experimental` | sdk | — | Codex toggles experimental flags. Works in ADE. | Keep. |
 | `/feedback` | sdk | — | Codex queues logs for upload. Works through the SDK. | Keep. |
 | `/init` | sdk | — | Generates an `AGENTS.md` scaffold via Codex. Works. | Keep. |
 | `/goal` | sdk | yes (`thread/goal/*`) | Local handler covers `set`, `clear`, `status`, `budget`, `pause`/`resume`. | Keep — works end-to-end. |
 | `/logout` | sdk | — | Forwarded. Codex clears credentials. | Keep. |
-| `/mcp` | sdk | — | Codex lists configured MCP servers as text. ADE has no MCP browser yet, so the text reply is the entire UX. | Keep but note the limitation; MCP UI is on the roadmap. |
 | `/mention` | sdk | — | Codex CLI's mention UI is keyboard-driven; in ADE we have `@`-mentions in the composer that fulfill this need without `/mention`. | Remove from palette to avoid duplicating the composer affordance. |
 | `/model` | sdk | shadowed by `/model` in ADE Code (right pane) | ADE owns model selection via right pane; the Codex SDK reply is redundant text. | Remove the Codex `/model` palette entry (ADE owns model selection). |
 | `/fast` | sdk | yes | Local handler. | Keep. |
@@ -72,7 +71,7 @@ they aren't.
 
 | Command | Notes |
 |---|---|
-| `/agents`, `/hooks`, `/mcp`, `/permissions`, `/ide`, `/statusline` | Claude Agent SDK owns these; ADE forwards. UX is text-only, no modal. Same "dead UI" pattern as Codex's `/apps`. Worth noting but the immediate Tier-A scope keeps them. |
+| `/agents`, `/hooks`, `/permissions`, `/ide`, `/statusline` | Claude Agent SDK owns these; ADE forwards. UX is text-only, no modal. Same "dead UI" pattern as Codex's `/apps`. Worth noting but the immediate Tier-A scope keeps them. |
 | `/keymap`, `/vim` | Not in either registry. The task description listed them as ADE-advertised but they aren't. No action needed. |
 | `/clear`, `/compact`, `/copy`, `/diff`, `/feedback`, `/init`, `/model`, `/quit`, `/review`, `/status`, `/title`, `/resume` | Same observations as the Codex versions — works end-to-end via the SDK, modulo the same TUI-only caveats. |
 | `/skills`, `/security-review`, `/simplify`, `/tasks`, `/theme`, `/usage` | Claude-specific surfaces; out of scope for this audit. |
@@ -90,8 +89,7 @@ behavior change in this PR — just delete the rows from
   consumer.
 - `/mention`, `/new` — duplicate ADE's own composer and `/new chat` flows.
 - `/statusline`, `/title` — TUI-only configuration; no effect inside ADE.
-- `/exit` — destructive side effect on ADE's runtime; ADE owns `/end` and
-  `/quit`.
+- `/exit` — destructive side effect on ADE's runtime; ADE owns `/quit`.
 
 Optional but nice: deduplicate `/model`, `/status`, `/quit`, `/clear` once the
 desktop renderer adopts the same shadow-list rules ADE Code's TUI already uses.

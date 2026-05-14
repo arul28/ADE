@@ -692,7 +692,7 @@ export function ChatAppControlPanel({
         throw new Error("The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot before attaching context.");
       }
       if (!onAddContext) {
-        throw new Error("Chat attachments are not available in this panel.");
+      throw new Error("Context insertion is not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
         projectRoot,
@@ -733,7 +733,7 @@ export function ChatAppControlPanel({
           throw new Error(`Could not attach screenshot crop: ${errorMessage(error)}`);
         }
       } else if (screenshotDataUrl && !onAddAttachment) {
-        throw new Error("Chat attachments are not available in this panel.");
+        throw new Error("Context insertion is not available in this panel.");
       }
       const contextItem = {
         ...result.item,
@@ -746,7 +746,7 @@ export function ChatAppControlPanel({
       try {
         onAddContext(contextItem);
       } catch (error) {
-        throw new Error(`Could not attach App Control context to chat: ${errorMessage(error)}`);
+        throw new Error(`Could not insert App Control context: ${errorMessage(error)}`);
       }
       setSelectedContextItem(contextItem);
       setSelectedPoint({ x, y });
@@ -762,7 +762,7 @@ export function ChatAppControlPanel({
       setAttachmentAck(attachedLabel);
       setMessage({
         tone: "info",
-        text: `Attached ${attachedLabel} to chat.`,
+        text: `Inserted ${attachedLabel} context.`,
       });
     },
     [onAddAttachment, onAddContext, projectRoot, screenshotBlank, snapshot],
@@ -1030,7 +1030,7 @@ export function ChatAppControlPanel({
               type="button"
               onClick={requestDebugHelp}
               className="ml-auto inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.03] px-2 text-[10px] font-medium text-muted-fg/65 transition-colors hover:text-fg/85"
-              title="Insert a chat draft asking the agent to wire CDP debug flags into this app"
+              title="Insert a draft asking the agent to wire CDP debug flags into this app"
             >
               <Wrench size={11} />
               Help wire CDP
@@ -1395,7 +1395,7 @@ export function ChatAppControlPanel({
           ) : (
             <div className="text-[11px] text-muted-fg/55">
               {sessionConnected
-                ? "Click an element to attach its source context to chat."
+                ? "Click an element to insert its source context."
                 : "Launch or connect to inspect elements."}
             </div>
           )}
@@ -1435,7 +1435,7 @@ export function ChatAppControlPanel({
                   : "border-white/[0.07] bg-white/[0.03] text-muted-fg/60",
               )}
             >
-              {attachmentAck ? `Attached ${attachmentAck} to chat` : "Inspect mode attaches clicks to chat"}
+              {attachmentAck ? `Inserted ${attachmentAck} context` : "Inspect mode inserts clicked element context"}
             </div>
             <button
               type="button"

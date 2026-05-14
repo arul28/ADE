@@ -924,7 +924,6 @@ describe("preload OAuth bridge", () => {
     await bridge.lanes.create({ name: "Remote lane" });
     await bridge.agentChat.create({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
     await bridge.agentChat.send({ sessionId: "chat-1", text: "hello" });
-    await bridge.agentChat.resume({ sessionId: "chat-1" });
     await bridge.git.commit({ laneId: "lane-1", message: "checkpoint" });
     await bridge.git.push({ laneId: "lane-1" });
     await bridge.prs.createFromLane({ laneId: "lane-1", title: "Remote PR", body: "Proof" });
@@ -936,7 +935,6 @@ describe("preload OAuth bridge", () => {
       "lane.create",
       "chat.createSession",
       "chat.sendMessage",
-      "chat.resumeSession",
       "git.commit",
       "git.push",
       "pr.createFromLane",

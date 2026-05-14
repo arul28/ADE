@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Archive, ArrowCounterClockwise, CaretDown, CaretRight, DownloadSimple, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
@@ -11,6 +11,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
+import { isChatToolType } from "../../lib/sessions";
 
 const STATUS_FILTER_OPTIONS: Array<{ value: WorkStatusFilter; label: string; description: string }> = [
   { value: "all", label: "All", description: "Show sessions in every state." },
@@ -168,13 +169,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection,
   onBulkClose,
   onBulkDelete,
-  onBulkArchive,
-  onBulkRestore,
-  onBulkExport,
-  archivableCount = 0,
-  restorableCount = 0,
-  onResume,
-  resumingSessionId,
   onInfoClick,
   onContextMenu,
   sessionListOrganization,
@@ -205,13 +199,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
-  onBulkArchive?: () => void;
-  onBulkRestore?: () => void;
-  onBulkExport?: () => void;
-  archivableCount?: number;
-  restorableCount?: number;
-  onResume: (session: TerminalSessionSummary) => void;
-  resumingSessionId: string | null;
   onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   sessionListOrganization: WorkSessionListOrganization;
@@ -281,7 +268,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     () => allSessions.filter((session) => selectedSessionIds?.has(session.id)),
     [allSessions, selectedSessionIds],
   );
-  const selectedRunningCount = selectedSessions.filter((session) => session.status === "running").length;
+  const selectedRunningCount = selectedSessions.filter((session) => session.status === "running" && !isChatToolType(session.toolType)).length;
   const selectedEndedCount = selectedSessions.length - selectedRunningCount;
   const laneById = useMemo(() => {
     const map = new Map<string, LaneSummary>();
@@ -383,13 +370,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
-        onResume={() => onResume(session)}
         onInfoClick={(e) => onInfoClick(session, e)}
         onContextMenu={(e) => {
           e.preventDefault();
           onContextMenu(session, e);
         }}
-        resumingSessionId={resumingSessionId}
         compact={options?.compact}
       />
     );
@@ -713,50 +698,14 @@ export const SessionListPane = React.memo(function SessionListPane({
               {selectedCount} selected
             </span>
             {selectedRunningCount > 0 ? (
-              <SmartTooltip content={{ label: "Close selected", description: "Terminate selected running sessions." }}>
+              <SmartTooltip content={{ label: "Stop runtimes", description: "Terminate selected running CLI and shell processes." }}>
                 <button
                   type="button"
                   className="inline-flex h-6 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 text-[10px] font-medium text-amber-200"
                   onClick={onBulkClose}
                 >
                   <Square size={10} />
-                  Close {selectedRunningCount}
-                </button>
-              </SmartTooltip>
-            ) : null}
-            {archivableCount > 0 ? (
-              <SmartTooltip content={{ label: "Archive selected", description: "Hide selected chats from the default view. Terminal sessions are skipped." }}>
-                <button
-                  type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
-                  onClick={onBulkArchive}
-                >
-                  <Archive size={10} />
-                  Archive {archivableCount}
-                </button>
-              </SmartTooltip>
-            ) : null}
-            {restorableCount > 0 ? (
-              <SmartTooltip content={{ label: "Restore selected", description: "Return selected archived chats to the active list." }}>
-                <button
-                  type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
-                  onClick={onBulkRestore}
-                >
-                  <ArrowCounterClockwise size={10} />
-                  Restore {restorableCount}
-                </button>
-              </SmartTooltip>
-            ) : null}
-            {selectedCount > 0 ? (
-              <SmartTooltip content={{ label: "Export bundle", description: "Download a markdown file with metadata for the selected sessions." }}>
-                <button
-                  type="button"
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
-                  onClick={onBulkExport}
-                >
-                  <DownloadSimple size={10} />
-                  Export
+                  Stop {selectedRunningCount}
                 </button>
               </SmartTooltip>
             ) : null}

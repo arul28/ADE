@@ -1,8 +1,18 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { ChatView, computeChatScrollMaxOffset, renderChatTranscriptPlainText } from "../components/ChatView";
+import {
+  ChatView,
+  computeChatScrollMaxOffset,
+  renderChatTranscriptPlainText,
+  selectedTextFromVisibleChatRows,
+} from "../components/ChatView";
 import { buildSubagentTranscriptEvents } from "../subagentPane";
+import {
+  parseAssistantMarkdown,
+  parseInlineRuns,
+  type AssistantMarkdownBlock,
+} from "../format";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 
 const session: AgentChatSessionSummary = {
@@ -24,7 +34,7 @@ function stripAnsi(value: string): string {
 
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean } = {},
 ): string {
   const result = render(
     <ChatView
@@ -34,6 +44,7 @@ function renderEvents(
       projectName="ADE"
       laneName="Primary"
       streaming={options.streaming}
+      interrupted={options.interrupted}
       maxRows={options.maxRows}
       scrollOffsetRows={options.scrollOffsetRows}
       width={options.width}
@@ -47,6 +58,13 @@ function transcriptLines(frame: string): string[] {
 }
 
 describe("ChatView", () => {
+  it("copies only the selected chat row columns", () => {
+    expect(selectedTextFromVisibleChatRows(
+      ["alpha bravo", "charlie delta", "echo"],
+      { startRow: 0, startColumn: 6, endRow: 1, endColumn: 6 },
+    )).toBe("bravo\ncharlie");
+  });
+
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
     const frame = renderEvents([]);
     // Hero card uses a bordered box
@@ -113,6 +131,21 @@ describe("ChatView", () => {
 
     expect(frame).toContain("I found the issue.");
     expect(frame).toContain("model working");
+  });
+
+  it("shows interrupted state where the working indicator normally appears", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "stop this", turnId: "turn-active" },
+      },
+    ], { interrupted: true, width: 80 });
+
+    expect(frame).toContain("stop this");
+    expect(frame).toContain("Interrupted · chat to continue");
+    expect(frame).not.toContain("model working");
   });
 
   it("renders context compaction as an explicit active state", () => {
@@ -412,7 +445,7 @@ describe("ChatView", () => {
     expect(transcriptLines(frame).at(-1)).toContain("↓ newer messages");
   });
 
-  it("renders single command in a work block with bash header and command arg", () => {
+  it("renders single command in a tool-calls-group with shell label and command", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -421,12 +454,12 @@ describe("ChatView", () => {
         event: { type: "command", command: "git branch", cwd: "/repo", output: "main", itemId: "cmd-1", status: "completed", exitCode: 0, durationMs: 12 },
       },
     ], { width: 100 });
-    expect(frame).toMatch(/▸\s+working/);
-    expect(frame).toMatch(/✓ bash/);
+    expect(frame).toMatch(/▸\s+Tool calls \(1\)/);
+    expect(frame).toContain("shell");
     expect(frame).toContain("git branch");
   });
 
-  it("groups consecutive tool calls into a live work block with counter and last tool row", () => {
+  it("splits consecutive tool-calls and file_changes into typed groups within one turn", () => {
     const turnId = "turn-live";
     const events: AgentChatEventEnvelope[] = [
       {
@@ -449,9 +482,12 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    expect(frame).toMatch(/working · 3 tools so far/);
-    // Newest tool (typecheck) is on top of the live list.
+    // Two tool-calls-groups (one before the file_change, one after) plus the files group.
+    expect(frame).toContain("Tool calls (1)");
+    expect(frame).toContain("1 file changed");
+    expect(frame).toContain("npm test");
     expect(frame).toContain("npm run typecheck");
+    expect(frame).toContain("auth.ts");
   });
 
   it("keeps subagent lifecycle and child tool chatter out of the center transcript", () => {
@@ -534,7 +570,7 @@ describe("ChatView", () => {
       },
     ], { width: 100 });
 
-    expect(frame).toContain("working · 1 tool so far");
+    expect(frame).toContain("Tool calls (1)");
     expect(frame).toContain("spawn_agent");
     expect(frame).toContain("Explore renderer");
     expect(frame).not.toContain("child launch spam");
@@ -605,7 +641,7 @@ describe("ChatView", () => {
     expect(transcriptBody).not.toContain("unrelated agent result");
   });
 
-  it("collapses work block on done with failed tool surfaced alongside last ok", () => {
+  it("collapses tool-calls-group on done with failed and ok summary", () => {
     const turnId = "turn-done";
     const events: AgentChatEventEnvelope[] = [
       {
@@ -640,13 +676,44 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    expect(frame).toMatch(/▸\s+4 tools/);
+    expect(frame).toMatch(/▸\s+Tool calls \(4\)/);
     expect(frame).toMatch(/3 ok/);
     expect(frame).toMatch(/1 failed/);
-    // Failed tool surfaced.
+    // Most recent shell commands visible.
     expect(frame).toContain("npm test");
-    // Last successful tool also surfaced.
     expect(frame).toContain("echo two");
+    expect(frame).not.toContain("8.3s");
+  });
+
+  it("hides missing and zero tool durations while preserving valid per-call durations", () => {
+    const turnId = "turn-durations";
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "command", command: "instant", cwd: "/repo", output: "", itemId: "c1", status: "completed", exitCode: 0, durationMs: 0, turnId },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "command", command: "measured", cwd: "/repo", output: "", itemId: "c2", status: "completed", exitCode: 0, durationMs: 12, turnId },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:24:00.000Z",
+        sequence: 3,
+        event: { type: "done", turnId, status: "completed" },
+      },
+    ];
+
+    const frame = renderEvents(events, { width: 100 });
+    expect(frame).toContain("instant");
+    expect(frame).toContain("measured");
+    expect(frame).toContain("12ms");
+    expect(frame).not.toContain("0ms");
+    expect(frame).not.toContain("24m");
   });
 
   it("hides reasoning-only events from the quiet transcript", () => {
@@ -711,6 +778,238 @@ describe("ChatView", () => {
     expect(text).toContain("copied");
     expect(text).not.toContain("Codex");
     expect(text).not.toContain("gpt");
+  });
+
+  it("caps tool-calls-group at 3 visible entries with a + N more affordance", () => {
+    const turnId = "turn-many";
+    const events: AgentChatEventEnvelope[] = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: {
+        type: "command",
+        command: `cmd-${index + 1}`,
+        cwd: "/repo",
+        output: "",
+        itemId: `c${index + 1}`,
+        status: "completed",
+        exitCode: 0,
+        durationMs: 100,
+        turnId,
+      },
+    }));
+    const frame = renderEvents(events, { width: 120 });
+    expect(frame).toContain("Tool calls (12)");
+    expect(frame).toContain("+ 9 more");
+    // Most recent 3 visible (cmd-12, cmd-11, cmd-10); older ones in the "+N more" tail.
+    expect(frame).toContain("cmd-12");
+    expect(frame).toContain("cmd-10");
+    expect(frame).not.toContain("cmd-5");
+  });
+
+  it("strips the /bin/zsh -lc launcher wrapper from shell commands", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "command",
+          command: "/bin/zsh -lc \"git status --short\"",
+          cwd: "/repo",
+          output: "",
+          itemId: "c1",
+          status: "completed",
+          exitCode: 0,
+          durationMs: 12,
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "command",
+          command: "/bin/bash -c 'npm test'",
+          cwd: "/repo",
+          output: "",
+          itemId: "c2",
+          status: "completed",
+          exitCode: 0,
+          durationMs: 1500,
+        },
+      },
+    ];
+    const frame = renderEvents(events, { width: 120 });
+    expect(frame).toContain("git status --short");
+    expect(frame).toContain("npm test");
+    // Launcher prefix is gone.
+    expect(frame).not.toContain("/bin/zsh -lc");
+    expect(frame).not.toContain("/bin/bash -c");
+  });
+
+  it("renders files-changed-group with typed badges per extension", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/Component.tsx", diff: "+a\n+b\n-c", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "file_change", path: "src/legacy.js", diff: "", kind: "delete", itemId: "f2", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "file_change", path: "docs/notes.md", diff: "+line1", kind: "create", itemId: "f3", status: "completed", turnId: "t1" },
+      },
+    ];
+    const frame = renderEvents(events, { width: 120 });
+    expect(frame).toContain("3 files changed");
+    expect(frame).toContain("TSX");
+    expect(frame).toContain("JS");
+    expect(frame).toContain("MD");
+    expect(frame).toContain("Component.tsx");
+    expect(frame).toContain("Deleted");
+  });
+
+  it("renders fenced code with highlight.js-derived per-line tokens", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "Here's a snippet:\n\n```ts\nconst x = 1;\nconst y = \"hi\";\n```" },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    // Code-fence border
+    expect(frame).toMatch(/┌.*ts/);
+    expect(frame).toContain("const x = 1;");
+    expect(frame).toContain('const y = "hi";');
+    // Closing border
+    expect(frame).toContain("└");
+  });
+
+  it("preserves inline-code markers when flattening list-item / paragraph text", () => {
+    // Regression guard: flattenInlineTokensToText used to drop backticks when
+    // reconstructing bullet text, so downstream re-tokenization saw plain text
+    // and the inline-code violet styling never fired. Verify the parsed
+    // AssistantMarkdownBlock text still contains the backticks so the renderer
+    // can re-detect codespans.
+    const blocks = parseAssistantMarkdown(
+      "What changed:\n- Split `LaneRuntimeBar` refresh work\n- Updated `cli.ts` parity\n\nAlso ran `npm test`.",
+    );
+    const bullets = blocks.filter((b) => b.kind === "bullet") as Array<Extract<AssistantMarkdownBlock, { kind: "bullet" }>>;
+    expect(bullets).toHaveLength(2);
+    expect(bullets[0]!.text).toContain("`LaneRuntimeBar`");
+    expect(bullets[1]!.text).toContain("`cli.ts`");
+    const trailingParagraph = [...blocks].reverse().find((b) => b.kind === "paragraph") as Extract<AssistantMarkdownBlock, { kind: "paragraph" }> | undefined;
+    expect(trailingParagraph?.text).toContain("`npm test`");
+
+    // And confirm parseInlineRuns produces a run with code: true for those.
+    const runs = parseInlineRuns(bullets[0]!.text);
+    expect(runs.some((r) => r.code && r.text === "LaneRuntimeBar")).toBe(true);
+  });
+
+  it("does not render the left vertical rail bar on assistant lines", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "plain assistant text" },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    expect(frame).toContain("plain assistant text");
+    // The rail prefix was "▎ " on every assistant line; assert it's gone.
+    expect(frame).not.toMatch(/▎\s+plain assistant/);
+  });
+
+  it("adds a single blank line between bullets for readability", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "What changed:\n- First item\n- Second item\n- Third item" },
+      },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    const lines = transcriptLines(frame).map((line) => line.trimEnd());
+    const bulletLines = lines.filter((line) => line.trim().startsWith("•"));
+    expect(bulletLines.length).toBe(3);
+    // Each consecutive bullet should sit two lines apart (one blank between).
+    const indices = bulletLines.map((bullet) => lines.indexOf(bullet));
+    for (let i = 1; i < indices.length; i += 1) {
+      expect(indices[i]! - indices[i - 1]!).toBe(2);
+    }
+  });
+
+  it("shows the \"↓ N new messages\" pill when scrolled up and new events arrived", () => {
+    // 200 user/assistant alternating events generates enough rows to overflow the
+    // 10-row viewport at width=80, so the offset path in sliceRows fires.
+    const events = Array.from({ length: 200 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: index % 2 === 0
+        ? { type: "user_message", text: `user row ${String(index + 1).padStart(3, "0")}` }
+        : { type: "text", text: `assistant row ${String(index + 1).padStart(3, "0")}` },
+    }));
+    const maxRows = 10;
+    const maxOffset = computeChatScrollMaxOffset({
+      events,
+      notices: [],
+      activeSession: session,
+      maxRows,
+      width: 80,
+    });
+    expect(maxOffset).toBeGreaterThan(50);
+    const result = render(
+      <ChatView
+        events={events}
+        notices={[]}
+        activeSession={session}
+        projectName="ADE"
+        laneName="Primary"
+        maxRows={maxRows}
+        scrollOffsetRows={maxOffset}
+        unseenMessageCount={4}
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toMatch(/↓ 4 new messages/);
+    expect(frame).toContain("press End");
+  });
+
+  it("falls back to the generic \"↓ newer messages\" indicator when no unseen count is supplied", () => {
+    const events = Array.from({ length: 200 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: index % 2 === 0
+        ? { type: "user_message", text: `user row ${String(index + 1).padStart(3, "0")}` }
+        : { type: "text", text: `assistant row ${String(index + 1).padStart(3, "0")}` },
+    }));
+    const maxRows = 10;
+    const maxOffset = computeChatScrollMaxOffset({
+      events,
+      notices: [],
+      activeSession: session,
+      maxRows,
+      width: 80,
+    });
+    const frame = renderEvents(events, { maxRows, scrollOffsetRows: maxOffset, width: 80 });
+    expect(frame).toContain("↓ newer messages");
+    expect(frame).not.toMatch(/↓ \d+ new/);
   });
 
   it("omits scroll affordances from copied transcript text", () => {
