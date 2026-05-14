@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLaneActionClearedSearch,
   githubPrMatchesCurrentBranch,
   laneHasAncestor,
   lanePrMatchesCurrentBranch,
@@ -11,6 +12,7 @@ import {
   selectGithubLanePrTag,
   selectLaneTabPrTag,
   selectLanePrTag,
+  shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
 import { shouldMountGitActionsPane } from "./LanesPage";
@@ -168,6 +170,25 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
       availableLaneIds: ["lane-a"],
       consumedSignature: null,
     })).toBeNull();
+  });
+
+  it("does not apply laneIds while an action deep link is being handled", () => {
+    expect(shouldApplyLaneIdsDeepLink({
+      action: "batch",
+      laneIdsRaw: "lane-a,lane-b",
+    })).toBe(false);
+  });
+
+  it("applies laneIds when no action deep link is present", () => {
+    expect(shouldApplyLaneIdsDeepLink({
+      action: null,
+      laneIdsRaw: "lane-a,lane-b",
+    })).toBe(true);
+  });
+
+  it("scrubs action lane params while preserving unrelated query params", () => {
+    expect(buildLaneActionClearedSearch("?action=batch&laneId=lane-a&laneIds=lane-a,lane-b&inspectorTab=work"))
+      .toBe("?inspectorTab=work");
   });
 });
 

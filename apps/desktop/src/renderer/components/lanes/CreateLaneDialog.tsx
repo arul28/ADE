@@ -153,6 +153,14 @@ export function CreateLaneDialog({
   const allBranches = createBranches;
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
   const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
+  const usedColorOwners = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const candidate of lanes) {
+      if (candidate.archivedAt || !candidate.color) continue;
+      map.set(candidate.color.toLowerCase(), candidate.name);
+    }
+    return map;
+  }, [lanes]);
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
@@ -282,6 +290,7 @@ export function CreateLaneDialog({
                 value={selectedColor}
                 onChange={setSelectedColor}
                 usedColors={usedColors}
+                usedColorOwners={usedColorOwners}
                 swatchSize={20}
               />
             </div>
