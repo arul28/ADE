@@ -14,7 +14,8 @@ import {
   CheckCircle,
   X,
   Minus,
-  TreeStructure
+  TreeStructure,
+  Info
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type {
@@ -25,7 +26,14 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import { LaneDialogShell } from "./LaneDialogShell";
-import { SECTION_CLASS_NAME, LABEL_CLASS_NAME, INPUT_CLASS_NAME } from "./laneDialogTokens";
+import {
+  SECTION_CLASS_NAME,
+  SECTION_ACCENT_CLASS_NAME,
+  SECTION_HERO_CLASS_NAME,
+  LABEL_CLASS_NAME,
+  INPUT_CLASS_NAME,
+  SELECT_CLASS_NAME
+} from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, laneColorName } from "./laneColorPalette";
 
@@ -42,6 +50,12 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   pack_dir_remove: "Cleaning pack folder",
   database_cleanup: "Updating database"
 };
+
+const SHELL_DESCRIPTION_BATCH =
+  "Archive or delete the selected lanes. Stack position, color, and adopt are only available when you manage one lane at a time.";
+
+const SHELL_DESCRIPTION_SINGLE =
+  "Review lane details, then use the sections below. Stack and appearance only change this lane; archive and delete are separate flows with their own confirmations.";
 
 export function ManageLaneDialog({
   open,
@@ -178,22 +192,73 @@ export function ManageLaneDialog({
       onOpenChange={onOpenChange}
       title={isBatch ? `Manage ${lanes.length} Lanes` : "Manage Lane"}
       icon={GitBranch}
-      widthClassName="w-[min(680px,calc(100vw-24px))]"
+      description={lanes.length === 0 ? undefined : allPrimary ? undefined : isBatch ? SHELL_DESCRIPTION_BATCH : SHELL_DESCRIPTION_SINGLE}
+      widthClassName="w-[calc(100vw-1rem)] max-w-[720px] sm:max-w-[min(720px,calc(100vw-2rem))]"
       busy={laneActionBusy}
     >
       {lanes.length === 0 ? (
         <div className="py-4 text-sm text-muted-fg">Select a lane first.</div>
       ) : allPrimary ? (
-        <div className="py-4 text-sm text-muted-fg">Primary lane cannot be archived or deleted.</div>
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-3 text-sm text-muted-fg">
+          Primary lane cannot be archived or deleted. Close this dialog or pick another lane.
+        </div>
       ) : (
-        <div className="max-h-[65vh] space-y-3 overflow-auto" data-tour="lanes.manageDialog">
+        <div className="space-y-4" data-tour="lanes.manageDialog">
+          {!isBatch ? (
+            <section
+              className={`${SECTION_ACCENT_CLASS_NAME} border-violet-500/15 bg-gradient-to-br from-violet-500/[0.08] via-accent/[0.04] to-transparent`}
+              aria-label="What you can do in this dialog"
+            >
+              <div className="flex items-start gap-2.5">
+                <Info size={16} className="mt-0.5 shrink-0 text-accent" />
+                <div className="min-w-0">
+                  <div className={LABEL_CLASS_NAME}>What each section does</div>
+                  <ul className="mt-2 list-none space-y-2 text-xs leading-snug text-muted-fg/90">
+                    <li>
+                      <span className="font-semibold text-fg/90">Stack position</span>
+                      {" — "}
+                      Change which lane is above you in the stack and optionally which branch name to stack onto. Applying updates ADE and runs{" "}
+                      <span className="font-mono text-fg/75">git rebase</span> in this worktree (blocked while dirty or mid-rebase).
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg/90">Appearance</span>
+                      {" — "}
+                      Lane color for tabs and lists only; does not change branches or git state.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg/90">Archive</span>
+                      {" — "}
+                      Hides the lane from ADE; worktree and branches stay on disk until you delete them elsewhere.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg/90">Delete</span>
+                      {" — "}
+                      Destructive: remove worktree folder and optionally local and/or remote branches, with typed confirmation when risk is high.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className={SECTION_CLASS_NAME}>
+              <div className={LABEL_CLASS_NAME}>Batch mode</div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-fg/85">
+                You are managing {lanes.length} lanes together. Only <strong className="text-fg/90">archive</strong> and{" "}
+                <strong className="text-fg/90">delete</strong> apply to the whole selection. Open Manage Lane on one lane for stack position, color, or adopt.
+              </p>
+            </section>
+          )}
+
           {/* Lane info */}
-          <section data-tour="lanes.manageDialog.laneInfo" className={SECTION_CLASS_NAME}>
+          <section
+            data-tour="lanes.manageDialog.laneInfo"
+            className={isBatch ? SECTION_CLASS_NAME : SECTION_HERO_CLASS_NAME}
+          >
             <span className={LABEL_CLASS_NAME}>{isBatch ? "Selected lanes" : "Lane"}</span>
             {isBatch ? (
-              <div className="mt-2 max-h-[120px] space-y-1.5 overflow-auto">
+              <div className="mt-2 max-h-[min(28vh,200px)] space-y-1.5 overflow-y-auto pr-1">
                 {lanes.map((lane) => (
-                  <div key={lane.id} className="flex items-center gap-2 text-xs">
+                  <div key={lane.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                     <GitBranch size={11} className="shrink-0 text-muted-fg/60" />
                     <span className="font-semibold text-fg">{lane.name}</span>
                     <span className="truncate text-muted-fg/60">{lane.branchRef}</span>
@@ -205,13 +270,19 @@ export function ManageLaneDialog({
               </div>
             ) : (
               <div className="mt-2">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-sm font-semibold text-fg">{lanes[0].name}</span>
-                  <span className="rounded-md bg-white/[0.06] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">{lanes[0].laneType}</span>
+                  <span className="rounded-md border border-white/[0.06] bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
+                    {lanes[0].laneType}
+                  </span>
                 </div>
-                <div className="mt-1.5 space-y-0.5 text-xs text-muted-fg/60">
-                  <div>Branch: <span className="text-fg/80">{lanes[0].branchRef}</span></div>
-                  <div className="truncate">Path: <span className="text-fg/80">{lanes[0].worktreePath}</span></div>
+                <div className="mt-2 space-y-1 text-xs text-muted-fg/70">
+                  <div>
+                    Branch: <span className="font-mono text-fg/85">{lanes[0].branchRef}</span>
+                  </div>
+                  <div className="break-all">
+                    Path: <span className="text-fg/80">{lanes[0].worktreePath}</span>
+                  </div>
                 </div>
               </div>
             )}
@@ -219,18 +290,19 @@ export function ManageLaneDialog({
 
           {/* Adopt attached — single lane only */}
           {!isBatch && isAttached && (
-            <section className="rounded-xl border border-blue-400/15 bg-blue-400/[0.04] p-4 shadow-card">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-semibold text-blue-300">
-                    <ArrowSquareOut size={15} />
-                    Move to ADE-Managed Worktree
+            <section className="rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-500/[0.1] via-sky-500/[0.03] to-white/[0.02] p-4 shadow-card">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-sky-200">
+                    <ArrowSquareOut size={15} className="shrink-0" />
+                    Move to ADE-managed worktree
                   </div>
-                  <div className="mt-1 text-xs text-blue-300/70">
-                    Move this attached worktree into <span className="font-mono text-blue-200/80">.ade/worktrees</span> for full lifecycle management.
+                  <div className="mt-1.5 text-xs leading-relaxed text-sky-100/75">
+                    Copies registration into <span className="font-mono text-sky-100/90">.ade/worktrees</span> so ADE can manage lifecycle
+                    (open, env, delete) the same way as other lanes. Does not rewrite git history.
                   </div>
                 </div>
-                <Button size="sm" variant="outline" data-tour="lanes.manageDialog.adopt" disabled={laneActionBusy} onClick={onAdoptAttached}>
+                <Button size="sm" variant="outline" className="shrink-0 border-sky-400/25 text-sky-100" data-tour="lanes.manageDialog.adopt" disabled={laneActionBusy} onClick={onAdoptAttached}>
                   Move
                 </Button>
               </div>
@@ -253,30 +325,33 @@ export function ManageLaneDialog({
 
           {/* Archive */}
           <section className={SECTION_CLASS_NAME}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-semibold text-fg">
-                  <Archive size={15} className="text-accent" />
+                  <Archive size={15} className="shrink-0 text-accent" />
                   Archive
                 </div>
-                <div className="mt-1 text-xs text-muted-fg/60">
+                <div className="mt-1.5 text-xs leading-relaxed text-muted-fg/75">
                   {isBatch
-                    ? `Hide ${lanes.length} lanes from ADE without deleting worktrees or branches.`
-                    : "Hide from ADE without deleting worktree or branches."}
+                    ? `Hides all ${lanes.length} lanes from ADE. Worktrees and branches stay on disk until you delete them with the section below or outside ADE.`
+                    : "Hides this lane from ADE lists and the stack view. Worktrees and branches stay on disk until you delete them here or outside ADE."}
                 </div>
               </div>
-              <Button size="sm" variant="outline" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy} onClick={onArchive}>
+              <Button size="sm" variant="outline" className="shrink-0" data-tour="lanes.manageDialog.archive" disabled={laneActionBusy} onClick={onArchive}>
                 {isBatch ? `Archive ${lanes.length}` : "Archive"}
               </Button>
             </div>
           </section>
 
           {/* Delete */}
-          <section className="rounded-xl border border-red-500/15 bg-red-500/[0.04] p-4 shadow-card">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-red-400">
-              <Trash size={15} />
-              {hasAttached && !isBatch ? "Detach / Delete" : "Delete"}
+          <section className="rounded-xl border border-red-500/20 bg-gradient-to-br from-red-500/[0.07] to-white/[0.02] p-4 shadow-card">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-red-300">
+              <Trash size={15} className="shrink-0" />
+              {hasAttached && !isBatch ? "Detach / delete" : "Delete"}
             </div>
+            <p className="mb-3 text-xs leading-relaxed text-red-100/50">
+              ADE stops processes, terminals, and watchers on this lane, then removes the worktree folder and optionally deletes branches locally and/or on the remote you name. This cannot be undone from ADE.
+            </p>
 
             {hasAnyDirty && (
               <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
@@ -619,8 +694,11 @@ function AppearanceSection({
         <Palette size={15} className="text-accent" />
         Appearance
       </div>
-      <div className="mt-1 mb-2 text-xs text-muted-fg/60">
-        {currentName ? `Color: ${currentName}` : "Pick a color to identify this lane across the app."}
+      <div className="mt-1.5 text-xs leading-relaxed text-muted-fg/70">
+        Pick a color for this lane in tabs, the stack strip, and headers. This is visual only and does not rename branches or run git.
+      </div>
+      <div className="mt-2 mb-2 text-xs text-muted-fg/55">
+        {currentName ? `Current: ${currentName}` : "No color set yet."}
       </div>
       <LaneColorPicker
         value={lane.color}
@@ -737,41 +815,41 @@ function StackPositionSection({
   };
 
   return (
-    <section className={SECTION_CLASS_NAME} data-tour="lanes.manageDialog.stack">
+    <section className={SECTION_ACCENT_CLASS_NAME} data-tour="lanes.manageDialog.stack">
       <div className="flex items-center gap-2 text-sm font-semibold text-fg">
         <TreeStructure size={15} className="text-accent" />
         Stack position
       </div>
-      <div className="mt-1 mb-3 text-xs text-muted-fg/60">
-        Parent lane is where this lane sits in the stack (primary counts as the root). Base branch is the ref ADE uses for ahead/behind. Leave it blank to use the parent lane's current branch.
+      <div className="mt-1.5 text-xs leading-relaxed text-muted-fg/75">
+        Parent lane is where this lane sits in the stack (primary is the root). Base branch is the ref ADE uses for ahead/behind. Leave it blank to use the parent lane's current branch.
       </div>
 
-      <div className="mb-3 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-xs text-muted-fg/80">
-        <span className="font-medium text-fg/90">Runs git rebase.</span> When you apply, ADE updates stack metadata then runs{" "}
-        <span className="font-mono text-fg/75">git rebase</span> in this lane's worktree onto the resolved base commit. If rebase fails, ADE aborts the rebase and restores the previous parent and base branch; the error appears below.
+      <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 px-3 py-2.5 text-xs leading-relaxed text-muted-fg/85">
+        <span className="font-semibold text-amber-200/95">Runs git rebase.</span> When you apply, ADE updates stack metadata then runs{" "}
+        <span className="font-mono text-fg/80">git rebase</span> in this lane's worktree onto the resolved base commit. If rebase fails, ADE aborts the rebase and restores the previous parent and base branch; the error appears below.
       </div>
 
       {!primaryLane ? (
-        <div className="text-xs text-amber-300/90">No primary lane found; stack changes may be limited.</div>
+        <div className="mt-3 text-xs text-amber-300/90">No primary lane found; stack changes may be limited.</div>
       ) : null}
 
       {lane.status.dirty ? (
-        <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
           <WarningCircle size={14} className="shrink-0" />
           Commit or stash changes before changing stack position.
         </div>
       ) : null}
 
       {lane.status.rebaseInProgress ? (
-        <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
+        <div className="mt-2 flex items-center gap-2 rounded-lg border border-amber-500/15 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-300">
           <WarningCircle size={14} className="shrink-0" />
           Finish or abort the in-progress rebase before changing stack position.
         </div>
       ) : null}
 
-      <span className={LABEL_CLASS_NAME}>Parent lane</span>
+      <span className={`${LABEL_CLASS_NAME} mt-4 block`}>Parent lane</span>
       <select
-        className={`${INPUT_CLASS_NAME} mt-1.5`}
+        className={SELECT_CLASS_NAME}
         value={stackParentId}
         disabled={busy || disabled || candidates.length === 0}
         onChange={(e) => {
