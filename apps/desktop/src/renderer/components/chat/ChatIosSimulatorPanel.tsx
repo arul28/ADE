@@ -1132,7 +1132,7 @@ export function ChatIosSimulatorPanel({
     }
     return {
       title: "Ready to render Xcode previews",
-      detail: "Choose a preview target, render it, then use Capture area to drag exact preview context into chat.",
+      detail: "Choose a preview target, render it, then use Capture area to drag exact preview context into the active session.",
     };
   }, [previewCapability, previewTargets.length]);
   const emptyStateFileLabel = useMemo(() => {
@@ -1245,7 +1245,7 @@ export function ChatIosSimulatorPanel({
   const takeOver = useCallback(async () => {
     const stopped = await shutdownSimulator(true);
     if (!stopped) return;
-    setMessage("Reconnecting simulator to this chat...");
+    setMessage("Reconnecting simulator to this session...");
     void launchRef.current?.();
   }, [shutdownSimulator]);
 
@@ -2259,7 +2259,7 @@ export function ChatIosSimulatorPanel({
 
   const selectElementAt = useCallback(async (x: number, y: number, element: IosScreenElement | null) => {
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     setBusy(true);
@@ -2283,7 +2283,7 @@ export function ChatIosSimulatorPanel({
       const contextMessage = result.source === "coordinate-fallback"
         ? "Added coordinate fallback. No accessibility or ADE inspector element was found at that point."
         : `Added ${result.source} element context.`;
-      setMessage(`${contextMessage} Chat now uses simulator inspect context.`);
+      setMessage(`${contextMessage} Simulator inspect context inserted.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2363,7 +2363,7 @@ export function ChatIosSimulatorPanel({
   const addSimulatorCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!snapshot?.screenshot.dataUrl) return;
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     const capture = await attachSimulatorCapture(frame).catch(() => null);
@@ -2413,7 +2413,7 @@ export function ChatIosSimulatorPanel({
       selectedAt: new Date().toISOString(),
     });
     setMessage(capture?.path
-      ? "Captured simulator screenshot region and attached it to chat with screen context."
+      ? "Captured simulator screenshot region and inserted it with screen context."
       : "Added simulator screenshot region context.");
   }, [attachSimulatorCapture, onAddContext, snapshot]);
 
@@ -2539,7 +2539,7 @@ export function ChatIosSimulatorPanel({
   const addPreviewCaptureContext = useCallback(async (frame: PreviewCrop["frame"]) => {
     if (!previewImage || !selectedPreviewTarget || !previewResult?.dataUrl) return;
     if (!onAddContext) {
-      setMessage("Chat attachments are not available in this panel.");
+      setMessage("Context insertion is not available in this panel.");
       return;
     }
     const capture = await attachPreviewCapture(frame).catch(() => null);
@@ -2582,7 +2582,7 @@ export function ChatIosSimulatorPanel({
       selectedAt: new Date().toISOString(),
     });
     setMessage(capture?.path
-      ? "Captured preview area and attached it to chat with Swift source context."
+      ? "Captured preview area and inserted it with Swift source context."
       : "Added preview capture context with Swift source context.");
   }, [attachPreviewCapture, onAddContext, previewImage, previewResult, selectedPreviewTarget]);
 
@@ -2810,7 +2810,7 @@ export function ChatIosSimulatorPanel({
     if (previewResult?.error) {
       previewModeHint = previewResult.error;
     } else if (previewCaptureActive) {
-      previewModeHint = "Drag a region on the preview to attach an exact crop to chat.";
+      previewModeHint = "Drag a region on the preview to insert an exact crop as context.";
     } else if (previewResult?.ok) {
       previewModeHint = `Preview rendered from ${previewResult.target.sourceFilePath} at ${new Date(previewResult.renderedAt).toLocaleTimeString()}.`;
     } else if (previewTargets.length) {
@@ -2847,7 +2847,7 @@ export function ChatIosSimulatorPanel({
       ? "Drag a region on the simulator snapshot to attach a screenshot crop and screen context."
       : selectedElement
       ? `Selected ${selectedSourceLabel}: ${elementLabel(selectedElement)}. Click another outline to swap, or Alt-click to select a parent.`
-      : "Click a UI element outline to attach it as chat context. Alt-click to select a larger container.";
+      : "Click a UI element outline to insert it as context. Alt-click to select a larger container.";
   }
   const simulatorWindowWarning = mode === "interact"
     && liveVisualKind === "window"
@@ -3074,7 +3074,7 @@ export function ChatIosSimulatorPanel({
                     {simulatorWindowModeEnabled ? "ADE stream" : "Real iOS window"}
                   </div>
                   {simulatorWindowModeEnabled
-                    ? "Switches this chat back to ADE's built-in stream. Your app keeps running; only the live view changes."
+                    ? "Switches this session back to ADE's built-in stream. Your app keeps running; only the live view changes."
                     : "Opens Apple's iOS Simulator window and mirrors it into ADE. Useful when you want to compare against the real simulator. Resets for the next iOS session."}
                 </div>
               </div>
@@ -3310,7 +3310,7 @@ export function ChatIosSimulatorPanel({
               Set up iOS prerequisites
             </div>
             <div className="font-sans text-[11px] leading-5 text-muted-fg/65">
-              Install the missing tools below to launch a simulator from this chat.
+              Install the missing tools below to launch a simulator from this session.
             </div>
             <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto pr-1">
               {[...missingRequiredTools, ...missingOptionalTools].map((tool) => {
@@ -3391,7 +3391,7 @@ export function ChatIosSimulatorPanel({
                 type="button"
                 className="inline-flex h-5 shrink-0 items-center gap-1 rounded border border-amber-300/22 bg-amber-400/15 px-1.5 font-sans text-[10px] font-medium text-amber-50/90 transition-colors hover:bg-amber-400/22"
                 onClick={() => void draftPreviewAgentHelp()}
-                title="Draft this request for an agent in the chat composer"
+                title="Insert this request into the active session input"
               >
                 Ask agent
               </button>
@@ -3726,7 +3726,7 @@ export function ChatIosSimulatorPanel({
                   }}
                   onPointerDown={(event) => event.stopPropagation()}
                   disabled={!snapshot?.screenshot.dataUrl || ownedByOtherChat}
-                  title="Drag a screenshot region to attach it to chat with simulator context"
+                  title="Drag a screenshot region to insert it with simulator context"
                 >
                   <ImageSquare size={11} />
                   Screenshot

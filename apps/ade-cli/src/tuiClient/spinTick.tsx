@@ -6,13 +6,14 @@ const DOT_FRAMES = [".  ", ".. ", "...", "   "] as const;
 
 const SpinTickContext = createContext(0);
 
-export function SpinTickProvider({ children }: { children: React.ReactNode }) {
+export function SpinTickProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    if (!active) return;
     const id = setInterval(() => setTick((t) => (t + 1) % 1000), 100);
     return () => clearInterval(id);
-  }, []);
+  }, [active]);
 
   return (
     <SpinTickContext.Provider value={tick}>

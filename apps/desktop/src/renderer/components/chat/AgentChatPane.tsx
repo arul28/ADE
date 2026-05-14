@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Lightning, Plus, TreeStructure } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, Lightning, Plus, Terminal, TreeStructure } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -38,11 +38,11 @@ import {
   type LaneLinearIssue,
   type AiSettingsStatus,
   type MacosVmContextItem,
-  type MacosVmStatus,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
 import {
+  buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
   mergeChatContextAttachments,
   removeChatContextAttachment,
@@ -57,8 +57,10 @@ import {
   getLocalProviderDefaultEndpoint,
   getModelById,
   getModelDescriptorForPermissionMode,
+  getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
   parseLocalProviderFromModelId,
+  resolveCliProviderForModel,
   resolveProviderGroupForModel,
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
@@ -104,11 +106,38 @@ import { useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { LaneCombobox } from "../terminals/LaneCombobox";
+import {
+  buildTrackedCliLaunchCommand,
+  LAUNCH_PROFILE_TITLE,
+  type CliProvider,
+  type LaunchProfile,
+} from "../terminals/cliLaunch";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
+import {
+  buildAutomaticMacosVmContextForPrompt,
+  createAppControlContextInstanceId,
+  createBuiltInBrowserContextInstanceId,
+  createIosContextInstanceId,
+  createMacosVmContextInstanceId,
+  formatAppControlContextChipsForDisplay,
+  formatAppControlContextForPrompt,
+  formatBuiltInBrowserContextChipsForDisplay,
+  formatBuiltInBrowserContextForPrompt,
+  formatIosElementContextChipsForDisplay,
+  formatIosElementContextForPrompt,
+  formatMacosVmContextChipsForDisplay,
+  formatMacosVmContextForPrompt,
+  getAppControlContextAttachmentPath,
+  getBuiltInBrowserContextAttachmentPath,
+  getIosContextAttachmentPath,
+  iosContextSurface,
+  normalizeBuiltInBrowserContextItem,
+  stripDataUrlPrefix,
+} from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
@@ -116,467 +145,13 @@ const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? value.map(asRecord).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length ? value.trim() : null;
-}
-
-function numberOrNull(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function frameFromUnknown(value: unknown): BuiltInBrowserContextItem["frame"] | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  const x = numberOrNull(record.x);
-  const y = numberOrNull(record.y);
-  const width = numberOrNull(record.width);
-  const height = numberOrNull(record.height);
-  if (x == null || y == null || width == null || height == null) return null;
-  return { x, y, width, height };
-}
-
-function iosContextLabel(item: IosElementContextItem): string {
-  const metadata = item.metadata ?? {};
-  const label = typeof metadata.label === "string" && metadata.label.trim()
-    ? metadata.label.trim()
-    : null;
-  const role = typeof metadata.role === "string" && metadata.role.trim()
-    ? metadata.role.trim()
-    : null;
-  return label ?? item.componentId ?? role ?? "iOS simulator element";
-}
-
-function iosContextSurface(item: IosElementContextItem): "simulator" | "xcode-preview" {
-  const source = typeof item.metadata?.screenElementSource === "string" ? item.metadata.screenElementSource : "";
-  return item.metadata?.contextSurface === "xcode-preview" || source.startsWith("xcode-preview")
-    ? "xcode-preview"
-    : "simulator";
-}
-
-function formatIosElementContextChipsForDisplay(items: IosElementContextItem[]): string {
-  if (!items.length) return "";
-  return items.map((item) => `\`${iosContextLabel(item)}\``).join(" ");
-}
-
-function formatIosElementContextForPrompt(items: IosElementContextItem[]): string {
-  if (!items.length) return "";
-  const rows = items.map((item, index) => {
-    const metadata = item.metadata ?? {};
-    const sourceConfidence = typeof metadata.sourceConfidence === "string"
-      ? metadata.sourceConfidence
-      : item.sourceFile ? "exact" : "none";
-    let source: string;
-    if (item.sourceFile) {
-      source = `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`;
-    } else if (sourceConfidence === "candidate") {
-      source = "no exact source; ranked candidates below";
-    } else {
-      source = "no source match";
-    }
-    const frame = item.frame
-      ? `x=${item.frame.x}, y=${item.frame.y}, w=${item.frame.width}, h=${item.frame.height}`
-      : "unknown frame";
-    const attachmentPath = getIosContextAttachmentPath(item);
-    const sourceCandidates = asRecordArray(metadata.sourceCandidates ?? metadata.sourceMatches)
-      .slice(0, 3)
-      .map((candidate) => ({
-        sourceFile: candidate.sourceFile,
-        sourceLine: candidate.sourceLine,
-        confidence: candidate.confidence,
-        reason: candidate.reason,
-        snippet: typeof candidate.snippet === "string" ? candidate.snippet : undefined,
-      }));
-    const nearbyElements = asRecordArray(metadata.nearbyElements)
-      .slice(0, 8)
-      .map((element) => ({
-        label: element.label,
-        value: element.value,
-        role: element.role,
-        elementType: element.elementType,
-        identifier: element.identifier,
-        componentId: element.componentId,
-        source: element.source,
-        relation: element.relation,
-        screenshotFrame: element.screenshotFrame,
-      }));
-    const packet = {
-      contextId: item.id,
-      visualAttachmentPath: attachmentPath,
-      selectedAt: item.selectedAt,
-      selectedElement: metadata.selectedElement ?? {
-        componentId: item.componentId,
-        accessibilityIdentifier: item.accessibilityIdentifier ?? null,
-        label: metadata.label,
-        value: metadata.value,
-        role: metadata.role,
-        elementType: metadata.elementType,
-        screenshotFrame: frame,
-      },
-      screen: metadata.screen,
-      sourceConfidence,
-      exactSource: item.sourceFile ? {
-        sourceFile: item.sourceFile,
-        sourceLine: item.sourceLine,
-        snippet: typeof metadata.sourceSnippet === "string" ? metadata.sourceSnippet : null,
-      } : null,
-      sourceCandidates,
-      nearbyElements,
-    };
-    const snippet = typeof metadata.sourceSnippet === "string" && metadata.sourceSnippet.trim().length
-      ? `\nExact source snippet:\n${metadata.sourceSnippet}`
-      : "";
-    return `${index + 1}. ${iosContextLabel(item)} (${source}, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}${snippet}`;
-  });
-  return [
-    "iOS visual inspect context attached by the user.",
-    "Each packet came from the user clicking a UI element in the real iOS Simulator, dragging a simulator screenshot region, or dragging a capture area in an Xcode SwiftUI preview. Image attachments/crops are visual evidence for the same packet and use the same screenshot coordinate space.",
-    "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
-    "When the packet surface is xcode-preview, treat it as fast fixture/mock-data feedback rather than live app state. Keep SwiftUI changes previewable with nearby #Preview definitions and deterministic mock fixtures.",
-    ...rows,
-    "",
-  ].join("\n");
-}
-
-function getIosContextAttachmentPath(item: IosElementContextItem): string | null {
-  const value = item.metadata?.attachmentPath;
-  return typeof value === "string" && value.length ? value : null;
-}
-
-function createIosContextInstanceId(item: IosElementContextItem): string {
-  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${item.id}::${suffix}`;
-}
-
-function appControlContextLabel(item: AppControlContextItem): string {
-  const metadata = item.metadata ?? {};
-  for (const value of [metadata.label, metadata.value, item.componentId, metadata.role, metadata.tagName]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "App Control element";
-}
-
-function formatAppControlContextChipsForDisplay(items: AppControlContextItem[]): string {
-  if (!items.length) return "";
-  return items.map((item) => `\`${appControlContextLabel(item)}\``).join(" ");
-}
-
-function getAppControlContextAttachmentPath(item: AppControlContextItem): string | null {
-  const value = item.metadata?.attachmentPath;
-  return typeof value === "string" && value.length ? value : null;
-}
-
-function createAppControlContextInstanceId(item: AppControlContextItem): string {
-  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${item.id}::${suffix}`;
-}
-
-function formatAppControlContextForPrompt(items: AppControlContextItem[]): string {
-  if (!items.length) return "";
-  const rows = items.map((item, index) => {
-    const metadata = item.metadata ?? {};
-    const sourceConfidence = typeof metadata.sourceConfidence === "string"
-      ? metadata.sourceConfidence
-      : item.sourceFile ? "exact" : "none";
-    const frame = item.frame
-      ? `x=${item.frame.x}, y=${item.frame.y}, w=${item.frame.width}, h=${item.frame.height}`
-      : "unknown frame";
-    const attachmentPath = getAppControlContextAttachmentPath(item);
-    const sourceCandidates = asRecordArray(metadata.sourceCandidates)
-      .slice(0, 5)
-      .map((candidate) => ({
-        sourceFile: candidate.sourceFile,
-        sourceLine: candidate.sourceLine,
-        confidence: candidate.confidence,
-        reason: candidate.reason,
-        snippet: typeof candidate.snippet === "string" ? candidate.snippet : undefined,
-      }));
-    const nearbyElements = asRecordArray(metadata.nearbyElements).slice(0, 8);
-    const packet = {
-      contextId: item.id,
-      appKind: item.appKind,
-      provider: item.provider,
-      visualAttachmentPath: attachmentPath,
-      selectedAt: item.selectedAt,
-      selectedElement: metadata.selectedElement ?? {
-        componentId: item.componentId,
-        label: metadata.label,
-        value: metadata.value,
-        role: metadata.role,
-        tagName: metadata.tagName,
-        selector: metadata.selector,
-        testId: metadata.testId,
-        screenshotFrame: frame,
-      },
-      screen: metadata.screen,
-      url: metadata.url,
-      title: metadata.title,
-      sourceConfidence,
-      exactSource: item.sourceFile ? {
-        sourceFile: item.sourceFile,
-        sourceLine: item.sourceLine,
-        snippet: typeof metadata.sourceSnippet === "string" ? metadata.sourceSnippet : null,
-      } : null,
-      sourceCandidates,
-      nearbyElements,
-    };
-    const source = item.sourceFile
-      ? `${item.sourceFile}${item.sourceLine ? `:${item.sourceLine}` : ""}`
-      : sourceConfidence === "candidate" ? "no exact source; ranked candidates below" : "no source match";
-    const snippet = typeof metadata.sourceSnippet === "string" && metadata.sourceSnippet.trim().length
-      ? `\nBest source snippet:\n${metadata.sourceSnippet}`
-      : "";
-    return `${index + 1}. ${appControlContextLabel(item)} (${source}, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}${snippet}`;
-  });
-  return [
-    "App Control visual inspect context attached by the user.",
-    "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments/crops are visual evidence for the same packet and use screenshot pixel coordinates.",
-    "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, nearbyElements, console/browser context, and exact source when available.",
-    ...rows,
-    "",
-  ].join("\n");
-}
-
-function macosVmContextLabel(item: MacosVmContextItem): string {
-  return item.vmName || "macOS VM";
-}
-
-function formatMacosVmContextChipsForDisplay(items: MacosVmContextItem[]): string {
-  if (!items.length) return "";
-  return items.map((item) => `\`${macosVmContextLabel(item)}\``).join(" ");
-}
-
-function createMacosVmContextInstanceId(item: MacosVmContextItem): string {
-  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${item.id}::${suffix}`;
-}
-
-function getMacosVmContextAttachmentPath(item: MacosVmContextItem): string | null {
-  const value = item.metadata?.screenshotPath ?? item.metadata?.attachmentPath;
-  return typeof value === "string" && value.length ? value : null;
-}
-
-function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): string {
-  if (!items.length) return "";
-  const rows = items.map((item, index) => {
-    const metadata = item.metadata ?? {};
-    const attachmentPath = getMacosVmContextAttachmentPath(item);
-    const packet = {
-      contextId: item.id,
-      provider: item.provider,
-      state: item.state,
-      visualAttachmentPath: attachmentPath,
-      laneId: item.laneId,
-      laneName: item.laneName,
-      vmName: item.vmName,
-      hostLanePath: item.hostLanePath,
-      guestLanePath: item.guestLanePath,
-      runCommand: item.runCommand,
-      sshCommand: item.sshCommand,
-      vncUrl: item.vncUrl,
-      windowTitleQuery: item.windowTitleQuery,
-      selectedAt: item.selectedAt,
-      selectedPoint: metadata.selectedPoint,
-      screenshotPath: metadata.screenshotPath,
-      metadata,
-    };
-    return `${index + 1}. ${macosVmContextLabel(item)} (${item.state}, lane=${item.laneName})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
-  });
-  return [
-    "macOS VM target context attached by the user.",
-    "Use this VM for isolated GUI validation tied to the active lane. The host lane path is shared into the guest with VirtioFS, so edits in the mounted folder stay synced between host and guest. When visualAttachmentPath or selectedPoint is present, treat it as screenshot-backed VM context.",
-    "For GUI computer use, prefer ADE macos-vm screenshot/click/type tools; they use headless VNC when available and only fall back to a visible Lume/VNC/macOS VM window. Do not target the host ADE window unless the user asks to switch back.",
-    "For shell commands inside the guest, use sshCommand when present or configure SSH/in-guest agent access, then work from guestLanePath.",
-    "Keep secrets out of the VM; ADE blocks lane roots that contain .ade/secrets from being mounted.",
-    ...rows,
-    "",
-  ].join("\n");
-}
-
-function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: string): string {
-  if (!status.supported || !status.activeProvider.available) return "";
-  const vm = status.laneVm;
-  const state = vm?.state ?? "not_created";
-  const guestPath = vm?.guestSharedPath ?? "/Volumes/My Shared Files";
-  const hostPath = vm?.laneRoot ?? "current ADE lane worktree";
-  const lines = [
-    "ADE macOS VM capability for this lane (automatic context).",
-    "Use this capability only when the user asks to use the ADE VM, needs isolated macOS GUI validation, or asks for VM-backed computer use. Query fresh state before acting; do not assume this snapshot is current.",
-    `- Lane id: ${laneId}`,
-    `- Provider: ${status.activeProvider.kind}${status.activeProvider.version ? ` ${status.activeProvider.version}` : ""}`,
-    vm
-      ? `- Current lane VM: ${vm.name} (${state})`
-      : "- Current lane VM: not provisioned yet",
-    `- Host lane path: ${hostPath}`,
-    `- Guest lane path: ${guestPath}`,
-    vm?.sharedDirectory ? `- Shared directory mounted into the VM: ${vm.sharedDirectory}` : null,
-    vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
-    vm?.vncUrl ? `- Sanitized VNC URL: ${vm.vncUrl}` : "- Sanitized VNC URL: available after the VM is running",
-    "- ADE RPC tools: macos_vm_status, macos_vm_start, macos_vm_focus, macos_vm_screenshot, macos_vm_select, macos_vm_click, macos_vm_type.",
-    `- ADE CLI examples: ade macos-vm status --lane ${laneId} --text; ade macos-vm start --lane ${laneId} --create --no-display; ade macos-vm screenshot --lane ${laneId} --text.`,
-    "- GUI control goes through ADE's direct headless VNC bridge when available, then falls back to a visible VM viewer. Do not target the host ADE window when the task is to control the lane VM.",
-    state === "running"
-      ? "- The VM is currently running; prefer macos_vm_screenshot first, then click/type/select against the VM."
-      : "- The VM is not running; start it only if the user asked for VM use or the task clearly needs isolated macOS GUI validation.",
-    vm?.metadata?.shareMode === "sanitized-mirror"
-      ? "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git."
-      : "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
-    "",
-  ];
-  return lines.filter((line): line is string => Boolean(line)).join("\n");
-}
-
-async function buildAutomaticMacosVmContextForPrompt(laneId: string): Promise<string> {
-  const api = window.ade?.macosVm;
-  if (!api?.getStatus) return "";
-  try {
-    const status = await api.getStatus({ laneId });
-    return formatAutomaticMacosVmContextForPrompt(status, laneId);
-  } catch {
-    return "";
-  }
-}
-
-function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserContextItem | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  const metadata = asRecord(record.metadata) ?? {};
-  const pixelFrameCandidate = frameFromUnknown(record.pixelFrame);
-  const frame = frameFromUnknown(record.frame) ?? pixelFrameCandidate ?? frameFromUnknown(record.bounds) ?? {
-    x: 0,
-    y: 0,
-    width: 0,
-    height: 0,
-  };
-  const pixelFrame = pixelFrameCandidate ?? frame;
-  const componentId = stringOrNull(record.componentId)
-    ?? stringOrNull(metadata.selector)
-    ?? stringOrNull(metadata.testId)
-    ?? stringOrNull(metadata.tagName)
-    ?? "browser-element";
-  const kind = stringOrNull(record.kind) === "built_in_browser_capture" ? "built_in_browser_capture" : "built_in_browser_element";
-  return {
-    kind,
-    id: stringOrNull(record.id) ?? `built-in-browser:${Date.now().toString(36)}`,
-    provider: "cdp",
-    componentId,
-    url: stringOrNull(record.url),
-    title: stringOrNull(record.title),
-    sourceFile: stringOrNull(record.sourceFile),
-    sourceLine: numberOrNull(record.sourceLine),
-    frame,
-    pixelFrame,
-    metadata,
-    screenshotDataUrl: stringOrNull(record.screenshotDataUrl) ?? stringOrNull(record.dataUrl),
-    selectedAt: stringOrNull(record.selectedAt) ?? new Date().toISOString(),
-  };
-}
-
-function builtInBrowserContextLabel(item: BuiltInBrowserContextItem): string {
-  const metadata = item.metadata ?? {};
-  if (item.kind === "built_in_browser_capture") {
-    const selectedElement = asRecord(metadata.selectedElement);
-    const selectedLabel = stringOrNull(selectedElement?.label);
-    return selectedLabel ? `Browser capture: ${selectedLabel}` : "Browser screenshot capture";
-  }
-  for (const value of [
-    metadata.label,
-    metadata.text,
-    metadata.value,
-    item.componentId,
-    metadata.selector,
-    metadata.role,
-    metadata.tagName,
-  ]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "Browser element";
-}
-
-function formatBuiltInBrowserContextChipsForDisplay(items: BuiltInBrowserContextItem[]): string {
-  if (!items.length) return "";
-  return items.map((item) => `\`${builtInBrowserContextLabel(item)}\``).join(" ");
-}
-
-function getBuiltInBrowserContextAttachmentPath(item: BuiltInBrowserContextItem): string | null {
-  const value = item.metadata?.attachmentPath;
-  return typeof value === "string" && value.length ? value : null;
-}
-
-function createBuiltInBrowserContextInstanceId(item: BuiltInBrowserContextItem): string {
-  const suffix = typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  return `${item.id}::${suffix}`;
-}
-
-function stripDataUrlPrefix(dataUrl: string): string {
-  const comma = dataUrl.indexOf(",");
-  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-}
-
-function formatBuiltInBrowserContextForPrompt(items: BuiltInBrowserContextItem[]): string {
-  if (!items.length) return "";
-  const rows = items.map((item, index) => {
-    const metadata = item.metadata ?? {};
-    const frame = item.frame
-      ? `x=${item.frame.x}, y=${item.frame.y}, w=${item.frame.width}, h=${item.frame.height}`
-      : "unknown frame";
-    const attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
-    const packet = {
-      contextId: item.id,
-      provider: item.provider,
-      visualAttachmentPath: attachmentPath,
-      selectedAt: item.selectedAt,
-      url: item.url ?? metadata.url ?? null,
-      title: item.title ?? metadata.title ?? null,
-      selectedElement: metadata.selectedElement ?? {
-        componentId: item.componentId,
-        label: metadata.label,
-        value: metadata.value,
-        role: metadata.role,
-        tagName: metadata.tagName,
-        selector: metadata.selector,
-        testId: metadata.testId,
-        screenshotFrame: frame,
-      },
-      attributes: metadata.attributes,
-      href: metadata.href,
-      inputType: metadata.inputType,
-      disabled: metadata.disabled,
-      checked: metadata.checked,
-      viewport: metadata.viewport,
-      scroll: metadata.scroll,
-      captureFrame: metadata.captureFrame,
-      crop: metadata.crop,
-      centerPoint: metadata.centerPoint,
-      source: metadata.source,
-      sourceConfidence: metadata.sourceConfidence,
-      selectionExplanation: metadata.selectionExplanation,
-    };
-    return `${index + 1}. ${builtInBrowserContextLabel(item)} (global browser, frame=${frame})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
-  });
-  return [
-    "Built-in browser visual and DOM context attached by the user.",
-    "Each packet came from ADE's global built-in browser, which is not lane-scoped. Image attachments/crops are visual evidence for the same page area and use browser viewport coordinates.",
-    "Use selectors, ARIA labels, attributes, text, URL/title, and the screenshot together. Do not assume the selected page belongs to the current lane unless the URL or user message says so.",
-    ...rows,
-    "",
-  ].join("\n");
-}
+const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
+const AUTO_CREATE_LANE_OPTION = {
+  id: AUTO_CREATE_LANE_OPTION_ID,
+  name: "Auto-create lane",
+  color: null,
+  branchRef: null,
+};
 
 const LEGACY_PROVIDER_KEY = "ade.chat.lastProvider";
 const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
@@ -586,6 +161,56 @@ const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
+
+type DraftLaunchSnapshot = {
+  text: string;
+  draft: string;
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
+  iosContextItems: IosElementContextItem[];
+  appControlContextItems: AppControlContextItem[];
+  builtInBrowserContextItems: BuiltInBrowserContextItem[];
+  macosVmContextItems: MacosVmContextItem[];
+  visualContextPrefix: string;
+  visualContextDisplayChips: string;
+  isLiteralSlashCommand: boolean;
+};
+
+type PreparedDraftLaunch = DraftLaunchSnapshot & {
+  finalText: string;
+  finalDisplayText: string;
+  selectedAttachments: AgentChatFileRef[];
+  selectedContextAttachments: AgentChatContextAttachment[];
+};
+
+type BackgroundLaunchNotice = {
+  laneId: string;
+  laneName: string;
+  sessionId: string;
+};
+
+function createTemporaryAutoLaneName(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    "chat",
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
+    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
+  ].join("-");
+}
+
+function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
+  if (snapshot.text.length) return snapshot.text;
+  const imageCount = snapshot.attachments.filter((attachment) => attachment.type === "image").length;
+  const fileCount = snapshot.attachments.filter((attachment) => attachment.type === "file").length;
+  const issueCount = snapshot.contextAttachments.filter((attachment) => attachment.type === "linear_issue").length;
+  const parts = [
+    "New chat task",
+    imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
+    fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : null,
+    issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
+  ].filter(Boolean);
+  return parts.join(" - ");
+}
 
 type AiStatusSnapshot = AiSettingsStatus & {
   runtimeConnections?: Record<string, AiRuntimeConnectionStatus>;
@@ -936,6 +561,66 @@ function legacyPermissionModeToDroidPermissionMode(
   return undefined;
 }
 
+function cliPermissionModeFromNativeControls(provider: CliProvider, controls: NativeControlState): AgentChatPermissionMode {
+  if (provider === "cursor") {
+    const modeId = controls.cursorModeId?.trim().toLowerCase() ?? "";
+    if (modeId.includes("full") || modeId.includes("auto")) return "full-auto";
+    if (modeId.includes("plan")) return "plan";
+    if (modeId.includes("ask")) return "edit";
+    return "default";
+  }
+  return summarizeNativeControls(provider, controls).permissionMode ?? "default";
+}
+
+function formatWorkCliAttachmentManifest(attachments: AgentChatFileRef[]): string {
+  if (!attachments.length) return "";
+  return [
+    "Attached files and images:",
+    ...attachments.map((attachment, index) => {
+      if (attachment.type === "image-url") {
+        return `${index + 1}. Image URL: ${attachment.url}`;
+      }
+      return `${index + 1}. ${attachment.type === "image" ? "Image file" : "File"}: ${attachment.path}`;
+    }),
+  ].join("\n");
+}
+
+function buildWorkCliInitialPrompt(args: {
+  text: string;
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
+}): string {
+  return [
+    formatWorkCliAttachmentManifest(args.attachments),
+    buildChatContextAttachmentPrompt(args.contextAttachments),
+    args.text.trim(),
+  ].filter((part) => part.trim().length > 0).join("\n\n");
+}
+
+function workCliTitleFromPrompt(seed: string, fallback: string): string {
+  const cleaned = seed
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return fallback;
+  const withoutSlash = cleaned.startsWith("/") && !isProviderSlashCommandInput(cleaned)
+    ? cleaned.slice(1).trim()
+    : cleaned;
+  const clipped = withoutSlash.length > 56
+    ? withoutSlash.slice(0, 56).replace(/\s+\S*$/u, "").trim()
+    : withoutSlash;
+  const title = (clipped || withoutSlash).replace(/[.?!,:;]+$/u, "").trim();
+  return title ? title.charAt(0).toUpperCase() + title.slice(1) : fallback;
+}
+
+function createClaudeSessionIdForCliLaunch(): string | undefined {
+  try {
+    return globalThis.crypto?.randomUUID?.();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Build a fallback CursorModeSnapshot when the Cursor SDK runtime hasn't
  * reported its own snapshot yet.
@@ -1184,6 +869,58 @@ function stableSessionDelayOffset(sessionId: string): number {
 
 function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
   return `${entry.timestamp}#${entry.event.type}#${JSON.stringify(entry.event)}`;
+}
+
+function userMessageVisibleText(event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>): string {
+  const displayText = event.displayText?.trim();
+  return displayText?.length ? displayText : event.text.trim();
+}
+
+function attachmentMatchKey(attachment: AgentChatFileRef): string {
+  return attachment.type === "image-url"
+    ? `${attachment.type}:${attachment.path}:${attachment.url}`
+    : `${attachment.type}:${attachment.path}`;
+}
+
+function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): string {
+  return `${attachment.type}:${attachment.issue.id}`;
+}
+
+function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string): string[] {
+  return (items ?? []).map(readKey).sort((left, right) => left.localeCompare(right));
+}
+
+function matchKeyLists(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+export function isMatchingOptimisticUserMessage(
+  committed: AgentChatEventEnvelope,
+  optimistic: AgentChatEventEnvelope,
+): boolean {
+  if (committed.sessionId !== optimistic.sessionId) return false;
+  if (committed.event.type !== "user_message" || optimistic.event.type !== "user_message") return false;
+  if (committed.event.steerId || optimistic.event.steerId) return false;
+  if (userMessageVisibleText(committed.event) !== userMessageVisibleText(optimistic.event)) return false;
+
+  return (
+    matchKeyLists(
+      sortedMatchKeys(committed.event.attachments, attachmentMatchKey),
+      sortedMatchKeys(optimistic.event.attachments, attachmentMatchKey),
+    )
+    && matchKeyLists(
+      sortedMatchKeys(committed.event.contextAttachments, contextAttachmentMatchKey),
+      sortedMatchKeys(optimistic.event.contextAttachments, contextAttachmentMatchKey),
+    )
+  );
+}
+
+function hasMatchingCommittedUserMessage(
+  events: AgentChatEventEnvelope[],
+  optimistic: AgentChatEventEnvelope,
+): boolean {
+  return events.some((event) => isMatchingOptimisticUserMessage(event, optimistic));
 }
 
 export function mergeChatHistorySnapshot(
@@ -1629,6 +1366,9 @@ export function AgentChatPane({
   initialLinearIssueContext = null,
   onInitialLinearIssueContextConsumed,
   onSessionCreated,
+  workDraftKind = "chat",
+  onLaunchCliSession,
+  onOpenShellSession,
   availableLanes,
   onLaneChange,
 }: {
@@ -1658,8 +1398,20 @@ export function AgentChatPane({
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
+  workDraftKind?: "chat" | "cli";
+  onLaunchCliSession?: (args: {
+    laneId: string;
+    profile: LaunchProfile;
+    title?: string;
+    startupCommand?: string;
+    command?: string;
+    args?: string[];
+    env?: Record<string, string>;
+    tracked?: boolean;
+  }) => Promise<unknown>;
+  onOpenShellSession?: (laneId: string) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
-  availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null }>;
+  availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
@@ -1706,6 +1458,17 @@ export function AgentChatPane({
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
+  const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
+  const [backgroundLaunchBusy, setBackgroundLaunchBusy] = useState(false);
+  const [backgroundLaunchNotice, setBackgroundLaunchNotice] = useState<BackgroundLaunchNotice | null>(null);
+  const isWorkCliLaunchDraft =
+    !lockSessionId
+    && !initialSessionId
+    && forceDraft
+    && embeddedWorkLayout
+    && workDraftKind === "cli"
+    && selectedSessionId == null
+    && Boolean(onLaunchCliSession);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
@@ -1774,10 +1537,10 @@ export function AgentChatPane({
   const [draft, setDraft] = useState("");
   const draftsPerSessionRef = useRef<Map<string | null, string>>(new Map());
   const [busy, setBusy] = useState(false);
+  const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [closingChatSessionId, setClosingChatSessionId] = useState<string | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const [proofDrawerOpen, setProofDrawerOpen] = useState(
@@ -1897,6 +1660,14 @@ export function AgentChatPane({
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
   const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (workDraftKind === "cli" && parallelChatMode) {
+      setParallelChatMode(false);
+      setParallelModelSlots([]);
+      setParallelConfiguringIndex(null);
+    }
+  }, [parallelChatMode, workDraftKind]);
   const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
@@ -2071,7 +1842,11 @@ export function AgentChatPane({
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
-    const baseEvents = optimisticOutgoingMessage && optimisticOutgoingMessage.sessionId === selectedSessionId
+    const shouldRenderOptimistic =
+      optimisticOutgoingMessage
+      && optimisticOutgoingMessage.sessionId === selectedSessionId
+      && !hasMatchingCommittedUserMessage(selectedEvents, optimisticOutgoingMessage.envelope);
+    const baseEvents = shouldRenderOptimistic
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
     const renderableEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
@@ -2136,7 +1911,10 @@ export function AgentChatPane({
     return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
-  const selectedSubagentPaneAvailable = selectedSession?.provider === "claude" && selectedSubagentSnapshots.length > 0;
+  // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
+  // events for delegation and collabToolCall items (spawn_agent, etc.) just
+  // like Claude. Gate on whether we actually have snapshots to display.
+  const selectedSubagentPaneAvailable = selectedSubagentSnapshots.length > 0;
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
@@ -2165,30 +1943,32 @@ export function AgentChatPane({
       setError(controlError instanceof Error ? controlError.message : String(controlError));
     }
   }, [turnActiveBySession]);
-  const subagentAutoOpenRef = useRef<{ sessionId: string | null; count: number }>({ sessionId: null, count: 0 });
+  // Per-session memo of which sessions have already triggered the auto-open
+  // affordance, so the panel doesn't keep re-opening every time a new subagent
+  // appears. We only slide it in on the *first* spawn within a session.
+  const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!selectedSessionId || selectedSession?.provider !== "claude") {
-      subagentAutoOpenRef.current = { sessionId: selectedSessionId ?? null, count: 0 };
+    if (!selectedSessionId) {
       if (subagentPaneOpen) setSubagentPaneOpen(false);
       return;
     }
-    const previous = subagentAutoOpenRef.current.sessionId === selectedSessionId
-      ? subagentAutoOpenRef.current.count
-      : selectedSubagentSnapshots.length;
-    if (
-      subagentAutoOpenRef.current.sessionId === selectedSessionId
-      && selectedSubagentSnapshots.length > previous
-      && !subagentPaneOpen
-    ) {
+    if (selectedSubagentSnapshots.length === 0) {
+      if (subagentPaneOpen) setSubagentPaneOpen(false);
+      return;
+    }
+    if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
+      return;
+    }
+    subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+    if (!subagentPaneOpen) {
       setProofDrawerOpen(false);
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
       setCursorCloudPaneOpen(false);
       setSubagentPaneOpen(true);
     }
-    subagentAutoOpenRef.current = { sessionId: selectedSessionId, count: selectedSubagentSnapshots.length };
-  }, [selectedSession?.provider, selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen]);
+  }, [selectedSessionId, selectedSubagentSnapshots.length, subagentPaneOpen]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -3585,6 +3365,7 @@ export function AgentChatPane({
     setPromptSuggestion(null);
     setHandoffOpen(false);
     setHandoffBusy(false);
+    optimisticOutgoingMessageRef.current = null;
     setOptimisticOutgoingMessage(null);
     // Also clear when the active lane changes — otherwise issue context staged
     // in draft mode would persist after switching lanes.
@@ -3593,6 +3374,25 @@ export function AgentChatPane({
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
   }, [optimisticOutgoingMessage]);
+
+  // Update the ref synchronously alongside the state setter so the chat event
+  // handler at the top of this component can immediately observe the optimistic
+  // envelope. If we rely on the useEffect above, the dedup branch may run with
+  // a stale (null) ref when the backend's real `user_message` envelope arrives
+  // in the same microtask as the send IPC resolving — producing a duplicate
+  // bubble that only clears on tab unmount.
+  const setOptimisticOutgoingMessageSynced = useCallback((next: { sessionId: string; envelope: AgentChatEventEnvelope } | null) => {
+    optimisticOutgoingMessageRef.current = next;
+    setOptimisticOutgoingMessage(next);
+  }, []);
+
+  useEffect(() => {
+    const optimistic = optimisticOutgoingMessageRef.current;
+    if (!optimistic) return;
+    const committedEvents = eventsBySession[optimistic.sessionId] ?? [];
+    if (!hasMatchingCommittedUserMessage(committedEvents, optimistic.envelope)) return;
+    setOptimisticOutgoingMessageSynced(null);
+  }, [eventsBySession, setOptimisticOutgoingMessageSynced]);
 
   // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
@@ -3647,6 +3447,10 @@ export function AgentChatPane({
       const sessionEvents = next === eventsBySessionRef.current
         ? (eventsBySessionRef.current[sessionId] ?? [])
         : (next[sessionId] ?? []);
+      const envelopeKey = chatEventDedupKey(envelope);
+      if (sessionEvents.some((event) => chatEventDedupKey(event) === envelopeKey)) {
+        continue;
+      }
       const updated = trimChatEventHistory(
         [...sessionEvents, envelope],
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
@@ -3710,10 +3514,13 @@ export function AgentChatPane({
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
+      const optimistic = optimisticOutgoingMessageRef.current;
       if (
-        optimisticOutgoingMessageRef.current?.sessionId === envelope.sessionId
+        optimistic?.sessionId === envelope.sessionId
         && envelope.event.type === "user_message"
+        && isMatchingOptimisticUserMessage(envelope, optimistic.envelope)
       ) {
+        optimisticOutgoingMessageRef.current = null;
         setOptimisticOutgoingMessage(null);
       }
       const acceptsEvent =
@@ -3721,6 +3528,17 @@ export function AgentChatPane({
         || optimisticSessionIdsRef.current.has(envelope.sessionId)
         || pendingSelectedSessionIdRef.current === envelope.sessionId;
       if (!acceptsEvent) return;
+
+      // session_meta_updated is a UI-state-only patch — don't queue it as a
+      // chat event since it doesn't represent transcript content.
+      if (envelope.event.type === "session_meta_updated") {
+        const meta = envelope.event;
+        if (typeof meta.title === "string" && meta.title.length > 0) {
+          patchSessionSummary(envelope.sessionId, { title: meta.title });
+        }
+        return;
+      }
+
       pendingEventQueueRef.current.push(envelope);
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
@@ -4201,13 +4019,24 @@ export function AgentChatPane({
     if (!onSessionCreated) return;
     void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
   }, [onSessionCreated]);
-
-  const createSession = useCallback(async (): Promise<string | null> => {
-    if (createSessionPromiseRef.current) {
-      return createSessionPromiseRef.current;
+  const draftLaunchTargetIsAutoCreate = draftLaunchTargetId === AUTO_CREATE_LANE_OPTION_ID;
+  const launchShellForDraftLane = useCallback(async () => {
+    if (!laneId || draftLaunchTargetIsAutoCreate || !onOpenShellSession || shellLaunchBusy) return;
+    setShellLaunchBusy(true);
+    setError(null);
+    try {
+      await onOpenShellSession(laneId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShellLaunchBusy(false);
     }
-    if (!laneId) return null;
-    const createPromise = (async () => {
+  }, [draftLaunchTargetIsAutoCreate, laneId, onOpenShellSession, shellLaunchBusy]);
+
+  const createSessionForLane = useCallback(async (
+    targetLaneId: string,
+    options: { select?: boolean; notify?: boolean } = {},
+  ): Promise<AgentChatSession> => {
       const desc = getModelById(modelId);
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
@@ -4226,7 +4055,7 @@ export function AgentChatPane({
           }
         : buildNativeControlPayload(provider);
       const created = await window.ade.agentChat.create({
-        laneId,
+        laneId: targetLaneId,
         provider,
         model,
         modelId,
@@ -4238,16 +4067,18 @@ export function AgentChatPane({
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
-      pendingSelectedSessionIdRef.current = created.id;
-      draftSelectionLockedRef.current = false;
       touchSession(created.id);
-      setSelectedSessionId(created.id);
+      if (options.select) {
+        pendingSelectedSessionIdRef.current = created.id;
+        draftSelectionLockedRef.current = false;
+        setSelectedSessionId(created.id);
+      }
       // Only rebind the iOS simulator to a freshly created chat when the user
       // has opened the simulator drawer for THIS chat. The eager-create path
       // would otherwise steal ownership from a chat that is currently using
       // the simulator (e.g. switching to a new lane creates a new session
       // before any user gesture occurs).
-      if (iosSimulatorOpen) {
+      if (options.select && iosSimulatorOpen && targetLaneId === laneId) {
         try {
           void window.ade.iosSimulator
             ?.attachToChatSession?.({ chatSessionId: created.id })
@@ -4258,12 +4089,22 @@ export function AgentChatPane({
         window.ade.agentChat.warmupModel({
           sessionId: created.id,
           modelId,
-        }).then(() => refreshSessions()).catch(() => { /* warmup is best-effort */ });
+        }).then(() => {
+          if (targetLaneId === laneId) void refreshSessions();
+        }).catch(() => { /* warmup is best-effort */ });
       }
-      notifySessionCreated(created);
-      void refreshSessions().catch(() => {});
-      return created.id;
-    })();
+      if (options.notify) notifySessionCreated(created);
+      if (targetLaneId === laneId) void refreshSessions().catch(() => {});
+      return created;
+  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+
+  const createSession = useCallback(async (): Promise<string | null> => {
+    if (createSessionPromiseRef.current) {
+      return createSessionPromiseRef.current;
+    }
+    if (!laneId) return null;
+    const createPromise = createSessionForLane(laneId, { select: true, notify: true })
+      .then((created) => created.id);
     createSessionPromiseRef.current = createPromise;
     try {
       return await createPromise;
@@ -4272,7 +4113,225 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [createSessionForLane, laneId]);
+
+  const buildDraftLaunchSnapshotForCurrentState = useCallback((): DraftLaunchSnapshot | null => {
+    const text = draft.trim();
+    const iosContextSnapshot = [...iosElementContextItems];
+    const appControlContextSnapshot = [...appControlContextItems];
+    const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
+    const macosVmContextSnapshot = [...macosVmContextItems];
+    const contextAttachmentsSnapshot = [...contextAttachments];
+    const visualContextPrefix = [
+      formatIosElementContextForPrompt(iosContextSnapshot),
+      formatAppControlContextForPrompt(appControlContextSnapshot),
+      formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot),
+      formatMacosVmContextForPrompt(macosVmContextSnapshot),
+    ].filter(Boolean).join("\n");
+    const visualContextDisplayChips = [
+      formatIosElementContextChipsForDisplay(iosContextSnapshot),
+      formatAppControlContextChipsForDisplay(appControlContextSnapshot),
+      formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot),
+      formatMacosVmContextChipsForDisplay(macosVmContextSnapshot),
+    ].filter(Boolean).join(" ");
+    if (
+      !text.length
+      && !visualContextPrefix.length
+      && !contextAttachmentsSnapshot.length
+      && !(isWorkCliLaunchDraft && attachments.length)
+    ) {
+      return null;
+    }
+    return {
+      text,
+      draft,
+      attachments: [...attachments],
+      contextAttachments: contextAttachmentsSnapshot,
+      iosContextItems: iosContextSnapshot,
+      appControlContextItems: appControlContextSnapshot,
+      builtInBrowserContextItems: builtInBrowserContextSnapshot,
+      macosVmContextItems: macosVmContextSnapshot,
+      visualContextPrefix,
+      visualContextDisplayChips,
+      isLiteralSlashCommand: isProviderSlashCommandInput(text),
+    };
+  }, [
+    appControlContextItems,
+    attachments,
+    builtInBrowserContextItems,
+    contextAttachments,
+    draft,
+    iosElementContextItems,
+    isWorkCliLaunchDraft,
+    macosVmContextItems,
+  ]);
+
+  const prepareDraftLaunchForSend = useCallback(async (
+    snapshot: DraftLaunchSnapshot,
+    targetLaneId: string,
+  ): Promise<PreparedDraftLaunch> => {
+    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId);
+    const finalTextPrefix = [automaticMacosVmContextPrefix, snapshot.visualContextPrefix].filter(Boolean).join("\n");
+    let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
+    if (!finalText.trim().length && snapshot.contextAttachments.length) {
+      finalText = "Use the attached issue context.";
+    }
+    const finalDisplayText = snapshot.visualContextDisplayChips
+      ? snapshot.text.length
+        ? `${snapshot.visualContextDisplayChips} ${snapshot.text}`
+        : snapshot.visualContextDisplayChips
+      : snapshot.text.length
+        ? snapshot.text
+        : "Attached issue context";
+    return {
+      ...snapshot,
+      finalText,
+      finalDisplayText,
+      selectedAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.attachments,
+      selectedContextAttachments: snapshot.isLiteralSlashCommand ? [] : snapshot.contextAttachments,
+    };
+  }, []);
+
+  const restoreDraftLaunchSnapshot = useCallback((snapshot: DraftLaunchSnapshot) => {
+    setDraft((current) => (current.trim().length ? current : snapshot.draft));
+    setAttachments((current) => (current.length ? current : snapshot.attachments));
+    setContextAttachments((current) => (current.length ? current : snapshot.contextAttachments));
+    setIosElementContextItems((current) => (current.length ? current : snapshot.iosContextItems));
+    setAppControlContextItems((current) => (current.length ? current : snapshot.appControlContextItems));
+    setBuiltInBrowserContextItems((current) => (current.length ? current : snapshot.builtInBrowserContextItems));
+    setMacosVmContextItems((current) => (current.length ? current : snapshot.macosVmContextItems));
+  }, []);
+
+  const openLaunchedDraftChat = useCallback((launch: BackgroundLaunchNotice) => {
+    setBackgroundLaunchNotice(null);
+    if (projectRoot) {
+      setWorkViewState(projectRoot, (prev) => ({
+        ...prev,
+        openItemIds: prev.openItemIds.includes(launch.sessionId)
+          ? prev.openItemIds
+          : [...prev.openItemIds, launch.sessionId],
+      }));
+      setLaneWorkViewState(projectRoot, launch.laneId, (prev) => ({
+        ...prev,
+        openItemIds: prev.openItemIds.includes(launch.sessionId)
+          ? prev.openItemIds
+          : [...prev.openItemIds, launch.sessionId],
+        activeItemId: launch.sessionId,
+        selectedItemId: launch.sessionId,
+        draftKind: "chat",
+        viewMode: "tabs",
+      }));
+    }
+    navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
+  }, [navigate, projectRoot, setLaneWorkViewState, setWorkViewState]);
+
+  const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<{ laneId: string; laneName: string }> => {
+    if (draftLaunchTargetIsAutoCreate) {
+      if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
+      const primaryLane = availableLanes?.find((candidate) => candidate.laneType === "primary")
+        ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
+        ?? null;
+      if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
+      const fallbackName = createTemporaryAutoLaneName();
+      const laneName = await window.ade.agentChat.suggestLaneName({
+        laneId: primaryLane.id,
+        prompt: buildDraftLaunchNamingSeed(snapshot),
+        modelId,
+        fallbackName,
+      });
+      const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
+      await refreshLanesStore();
+      return { laneId: createdLane.id, laneName: createdLane.name };
+    }
+    if (!laneId) throw new Error("Select a lane before launching chat.");
+    const laneName = availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId;
+    return { laneId, laneName };
+  }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, modelId, refreshLanesStore]);
+
+  const launchDraftChat = useCallback(async (mode: "foreground" | "background") => {
+    if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) return;
+    if (selectedSessionId || workDraftKind !== "chat" || !modelId) return;
+    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    if (!snapshot) return;
+
+    submitInFlightRef.current = true;
+    if (mode === "background") setBackgroundLaunchBusy(true);
+    else setBusy(true);
+    setPromptSuggestion(null);
+    setError(null);
+    setBackgroundLaunchNotice(null);
+    setDraft("");
+    setAttachments([]);
+    setContextAttachments([]);
+    setIosElementContextItems([]);
+    setAppControlContextItems([]);
+    setBuiltInBrowserContextItems([]);
+    setMacosVmContextItems([]);
+    draftSelectionLockedRef.current = mode === "background";
+
+    try {
+      const targetLane = await resolveDraftLaunchLane(snapshot);
+      const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
+      const created = await createSessionForLane(targetLane.laneId, {
+        select: false,
+        notify: mode === "foreground",
+      });
+      touchSession(created.id);
+      await window.ade.agentChat.send({
+        sessionId: created.id,
+        text: prepared.finalText,
+        displayText: prepared.finalDisplayText || "Selected visual app context",
+        attachments: prepared.selectedAttachments,
+        contextAttachments: prepared.selectedContextAttachments,
+        reasoningEffort,
+        executionMode,
+        interactionMode: created.provider === "claude" ? interactionMode : null,
+        ...(created.provider === "cursor" ? { runtime: "local" as const } : {}),
+      });
+      invalidateSessionListCache();
+      if (targetLane.laneId === laneId) {
+        void refreshSessions().catch(() => {});
+      }
+      const launch = {
+        laneId: targetLane.laneId,
+        laneName: targetLane.laneName,
+        sessionId: created.id,
+      };
+      if (mode === "foreground") {
+        openLaunchedDraftChat(launch);
+      } else {
+        setSelectedSessionId(null);
+        setBackgroundLaunchNotice(launch);
+      }
+    } catch (launchError) {
+      restoreDraftLaunchSnapshot(snapshot);
+      const message = launchError instanceof Error ? launchError.message : String(launchError);
+      setError(message);
+    } finally {
+      submitInFlightRef.current = false;
+      setBusy(false);
+      setBackgroundLaunchBusy(false);
+    }
+  }, [
+    backgroundLaunchBusy,
+    buildDraftLaunchSnapshotForCurrentState,
+    busy,
+    createSessionForLane,
+    executionMode,
+    interactionMode,
+    laneId,
+    modelId,
+    openLaunchedDraftChat,
+    parallelLaunchBusy,
+    prepareDraftLaunchForSend,
+    reasoningEffort,
+    refreshSessions,
+    resolveDraftLaunchLane,
+    restoreDraftLaunchSnapshot,
+    selectedSessionId,
+    touchSession,
+    workDraftKind,
+  ]);
 
   const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
@@ -4326,26 +4385,8 @@ export function AgentChatPane({
     selectedSessionId,
   ]);
 
-  const handleEndSelectedChat = useCallback(() => {
-    if (!selectedSessionId || !selectedSession || selectedSession.status === "ended") return;
-    setError(null);
-    setClosingChatSessionId(selectedSessionId);
-    void window.ade.agentChat.dispose({ sessionId: selectedSessionId })
-      .then(async () => {
-        invalidateSessionListCache();
-        await refreshSessions().catch(() => {});
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(`End chat failed: ${message}`);
-      })
-      .finally(() => {
-        setClosingChatSessionId((current) => (current === selectedSessionId ? null : current));
-      });
-  }, [refreshSessions, selectedSession, selectedSessionId]);
-
   const handleDeleteSelectedChat = useCallback(() => {
-    if (!selectedSessionId || !selectedSession || selectedSession.status !== "ended") return;
+    if (!selectedSessionId || !selectedSession) return;
     const label = chatSessionTitle(selectedSession).trim() || "this chat";
     const confirmed = window.confirm(
       `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
@@ -4650,6 +4691,11 @@ export function AgentChatPane({
       return;
     }
 
+    if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      await launchDraftChat("foreground");
+      return;
+    }
+
     if (!modelId) return;
     const text = draft.trim();
     const iosContextSnapshot = [...iosElementContextItems];
@@ -4667,7 +4713,10 @@ export function AgentChatPane({
     const macosVmContextDisplayChips = formatMacosVmContextChipsForDisplay(macosVmContextSnapshot);
     const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix, macosVmContextPrefix].filter(Boolean).join("\n");
     const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips, macosVmContextDisplayChips].filter(Boolean).join(" ");
-    if ((!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length) || !laneId) return;
+    if (
+      (!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length && !(isWorkCliLaunchDraft && attachments.length))
+      || !laneId
+    ) return;
     const pendingNativeControlUpdate = pendingNativeControlUpdateRef.current;
     if (selectedSessionId && pendingNativeControlUpdate?.sessionId === selectedSessionId) {
       try {
@@ -4684,11 +4733,11 @@ export function AgentChatPane({
         return;
       }
     }
-	    if (
-	      text === "/context"
-	      && selectedSessionId
-	      && sessionProvider === "claude"
-	      && !attachments.length
+    if (
+      text === "/context"
+      && selectedSessionId
+      && sessionProvider === "claude"
+      && !attachments.length
       && !contextAttachmentsSnapshot.length
       && !visualContextPrefix.length
     ) {
@@ -4704,38 +4753,38 @@ export function AgentChatPane({
         setError(contextError instanceof Error ? contextError.message : String(contextError));
       } finally {
         setBusy(false);
-	      }
-	      return;
-	    }
-	    if (
-	      /^\/output-style(?:\s+[\s\S]+)?$/i.test(text)
-	      && selectedSessionId
-	      && sessionProvider === "claude"
-	      && !attachments.length
-	      && !contextAttachmentsSnapshot.length
-	      && !visualContextPrefix.length
-	    ) {
-	      setBusy(true);
-	      setError(null);
-	      setDraft("");
-	      draftsPerSessionRef.current.delete(selectedSessionId);
-	      try {
-	        touchSession(selectedSessionId);
-	        await window.ade.agentChat.send({
-	          sessionId: selectedSessionId,
-	          text,
-	          displayText: text,
-	        });
-	        void refreshSessions().catch(() => {});
-	      } catch (outputStyleError) {
-	        setDraft((current) => (current.trim().length ? current : draft));
-	        setError(outputStyleError instanceof Error ? outputStyleError.message : String(outputStyleError));
-	      } finally {
-	        setBusy(false);
-	      }
-	      return;
-	    }
-	    const draftSnapshot = draft;
+      }
+      return;
+    }
+    if (
+      /^\/output-style(?:\s+[\s\S]+)?$/i.test(text)
+      && selectedSessionId
+      && sessionProvider === "claude"
+      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      setBusy(true);
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      try {
+        touchSession(selectedSessionId);
+        await window.ade.agentChat.send({
+          sessionId: selectedSessionId,
+          text,
+          displayText: text,
+        });
+        void refreshSessions().catch(() => {});
+      } catch (outputStyleError) {
+        setDraft((current) => (current.trim().length ? current : draft));
+        setError(outputStyleError instanceof Error ? outputStyleError.message : String(outputStyleError));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
 
@@ -4746,6 +4795,38 @@ export function AgentChatPane({
     draftsPerSessionRef.current.delete(selectedSessionId);
     setAttachments([]);
     setContextAttachments([]);
+
+    // Show the optimistic bubble immediately when we already have a session.
+    // Awaiting the macOS VM IPC and any session-create roundtrip before this
+    // setter delays the bubble by hundreds of ms on a typical send.
+    const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
+    const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
+    const optimisticDisplayText = visualContextDisplayChips
+      ? text.length
+        ? `${visualContextDisplayChips} ${text}`
+        : visualContextDisplayChips
+      : text.length
+        ? text
+        : contextAttachmentsSnapshot.length
+          ? "Attached issue context"
+          : text;
+    if (selectedSessionId && !turnActiveBySession[selectedSessionId]) {
+      setOptimisticOutgoingMessageSynced({
+        sessionId: selectedSessionId,
+        envelope: {
+          sessionId: selectedSessionId,
+          timestamp: new Date().toISOString(),
+          event: {
+            type: "user_message",
+            text: optimisticDisplayText,
+            ...(selectedAttachmentsForOptimistic.length ? { attachments: selectedAttachmentsForOptimistic } : {}),
+            ...(selectedContextAttachmentsForOptimistic.length ? { contextAttachments: selectedContextAttachmentsForOptimistic } : {}),
+            deliveryState: "queued",
+          },
+        },
+      });
+    }
+
     try {
       const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId);
       let justCreatedSession = false;
@@ -4786,13 +4867,51 @@ export function AgentChatPane({
         },
       });
 
+      if (isWorkCliLaunchDraft && onLaunchCliSession) {
+        const desc = getModelById(modelId);
+        if (!desc) throw new Error("Select a model before launching a CLI session.");
+        const provider = resolveCliProviderForModel(desc) ?? "opencode";
+        const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
+        const permissionMode = cliPermissionModeFromNativeControls(provider, currentNativeControls);
+        const cliPrompt = buildWorkCliInitialPrompt({
+          text: finalText,
+          attachments: selectedAttachments,
+          contextAttachments: selectedContextAttachments,
+        });
+        if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
+        const sessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
+        const launch = buildTrackedCliLaunchCommand({
+          provider,
+          permissionMode,
+          ...(sessionId ? { sessionId } : {}),
+          model: runtimeModel,
+          reasoningEffort,
+          initialPrompt: cliPrompt,
+        });
+        await onLaunchCliSession({
+          laneId,
+          profile: provider,
+          title: workCliTitleFromPrompt(text || finalDisplayText || finalText, LAUNCH_PROFILE_TITLE[provider]),
+          startupCommand: launch.startupCommand,
+          ...(launch.command !== undefined ? { command: launch.command } : {}),
+          args: launch.args,
+          ...(launch.env ? { env: launch.env } : {}),
+          tracked: true,
+        });
+        setIosElementContextItems([]);
+        setAppControlContextItems([]);
+        setBuiltInBrowserContextItems([]);
+        setMacosVmContextItems([]);
+        return;
+      }
+
       if (sessionId && !turnActive && (
         selectedModelChanged
         || selectedCodexFastModeChanged
         || hasComputerUseSelectionChanged
         || shouldPromoteLightSession
       )) {
-        setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
+        setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
         const desc = getModelById(modelId);
         const provider = resolveChatRuntimeProvider(desc);
         await window.ade.agentChat.updateSession({
@@ -4810,7 +4929,7 @@ export function AgentChatPane({
           throw new Error("Unable to create chat session.");
         }
         justCreatedSession = true;
-        setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
+        setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
       }
       if (!sessionId) {
         throw new Error("Unable to create chat session.");
@@ -4825,7 +4944,7 @@ export function AgentChatPane({
       });
 
       if (turnActiveBySession[sessionId]) {
-        setOptimisticOutgoingMessage(null);
+        setOptimisticOutgoingMessageSynced(null);
         await window.ade.agentChat.steer({
           sessionId,
           text: finalText,
@@ -4834,7 +4953,7 @@ export function AgentChatPane({
         });
       } else {
         try {
-          setOptimisticOutgoingMessage({ sessionId, envelope: optimisticEnvelope(sessionId) });
+          setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
           await window.ade.agentChat.send({
             sessionId,
             text: finalText,
@@ -4882,7 +5001,7 @@ export function AgentChatPane({
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setMacosVmContextItems((current) => (current.length ? current : macosVmContextSnapshot));
-      setOptimisticOutgoingMessage(null);
+      setOptimisticOutgoingMessageSynced(null);
       setError(message);
       if (
         /ade chat could not authenticate/i.test(message)
@@ -4901,12 +5020,15 @@ export function AgentChatPane({
     busy,
     codexFastMode,
     createSession,
+    currentNativeControls,
     contextAttachments,
     draft,
+    draftLaunchTargetIsAutoCreate,
     executionMode,
     hasComputerUseSelectionChanged,
     interactionMode,
     laneId,
+    launchDraftChat,
     launchModeEditable,
     modelId,
     patchSessionSummary,
@@ -4931,6 +5053,7 @@ export function AgentChatPane({
     embeddedWorkLayout,
     projectRoot,
     navigate,
+    onLaunchCliSession,
     buildNativeControlPayloadForSlot,
     refreshLanesStore,
     persistParallelLaunchState,
@@ -4940,6 +5063,7 @@ export function AgentChatPane({
     appControlContextItems,
     builtInBrowserContextItems,
     macosVmContextItems,
+    workDraftKind,
   ]);
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
@@ -5245,6 +5369,37 @@ export function AgentChatPane({
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
+
+  const embedDraft = embeddedWorkLayout && forceDraft;
+  const compactShell = embedDraft || layoutVariant === "grid-tile";
+  const isEmptyState = !selectedSessionId;
+  const showDraftLaunchControls =
+    showWorkspaceChrome
+    && selectedSessionId == null
+    && !lockSessionId
+    && !initialSessionId
+    && workDraftKind === "chat";
+  const draftLaneSelectorLanes = useMemo(
+    () => showDraftLaunchControls && availableLanes
+      ? [AUTO_CREATE_LANE_OPTION, ...availableLanes]
+      : (availableLanes ?? []),
+    [availableLanes, showDraftLaunchControls],
+  );
+  const draftLaneSelectorValue = draftLaunchTargetIsAutoCreate ? AUTO_CREATE_LANE_OPTION_ID : (laneId ?? "");
+  const handleDraftLaneSelectionChange = useCallback((nextLaneId: string) => {
+    if (nextLaneId === AUTO_CREATE_LANE_OPTION_ID) {
+      setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
+      return;
+    }
+    setDraftLaunchTargetId(null);
+    onLaneChange?.(nextLaneId);
+  }, [onLaneChange]);
+
+  useEffect(() => {
+    if (!showDraftLaunchControls && draftLaunchTargetId) {
+      setDraftLaunchTargetId(null);
+    }
+  }, [draftLaunchTargetId, showDraftLaunchControls]);
 
   if (!laneId) {
     return (
@@ -5825,17 +5980,7 @@ export function AgentChatPane({
               ) : null}
             </div>
           ) : null}
-          {!lockedSingleSessionMode && selectedSessionId && selectedSession?.status !== "ended" ? (
-            <button
-              type="button"
-              className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={handleEndSelectedChat}
-              disabled={closingChatSessionId === selectedSessionId || deletingChatSessionId === selectedSessionId}
-            >
-              {closingChatSessionId === selectedSessionId ? "Ending..." : "End chat"}
-            </button>
-          ) : null}
-          {!lockedSingleSessionMode && selectedSessionId && selectedSession?.status === "ended" ? (
+          {!lockedSingleSessionMode && selectedSessionId ? (
             <button
               type="button"
               className="inline-flex items-center rounded-md border border-red-500/20 px-2 py-0.5 font-sans text-[10px] font-medium text-red-200/70 transition-colors hover:border-red-500/30 hover:text-red-100 disabled:cursor-not-allowed disabled:opacity-40"
@@ -5965,10 +6110,6 @@ export function AgentChatPane({
     </div>
   );
 
-  const embedDraft = embeddedWorkLayout && forceDraft;
-  const compactShell = embedDraft || layoutVariant === "grid-tile";
-  const isEmptyState = !selectedSessionId;
-
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
@@ -5985,6 +6126,7 @@ export function AgentChatPane({
             draft={draft}
             attachments={attachments}
             contextAttachments={contextAttachments}
+            allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}
             pendingInput={pendingInput?.request ?? null}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
@@ -6125,6 +6267,11 @@ export function AgentChatPane({
             onSubmit={() => {
               void submit();
             }}
+            onSubmitInBackground={showDraftLaunchControls ? () => {
+              void launchDraftChat("background");
+            } : undefined}
+            backgroundLaunchBusy={backgroundLaunchBusy}
+            backgroundLaunchLabel={draftLaunchTargetIsAutoCreate ? "Auto-create" : "Background"}
             onInterrupt={() => {
               void interrupt();
             }}
@@ -6166,7 +6313,7 @@ export function AgentChatPane({
             } : undefined}
             sessionId={selectedSessionId}
             showParallelChatToggle={Boolean(
-              embeddedWorkLayout && forceDraft && !lockSessionId && !initialSessionId && selectedSessionId == null,
+              embeddedWorkLayout && forceDraft && workDraftKind === "chat" && !lockSessionId && !initialSessionId && selectedSessionId == null,
             )}
             showIosSimulatorToggle={laneToolsVisible && iosSimulatorAvailable}
             iosSimulatorOpen={iosSimulatorOpen}
@@ -6325,8 +6472,22 @@ export function AgentChatPane({
     <div
       data-chat-appearance-root
       style={chatAppearanceRootStyle}
-      className={compactShell ? "min-w-0 w-full" : undefined}
+      className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
+      {backgroundLaunchNotice ? (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-300/20 bg-emerald-500/[0.08] px-3 py-2 font-sans text-[11px] text-emerald-100/90">
+          <span className="min-w-0 truncate">
+            Launched in {backgroundLaunchNotice.laneName}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
+            onClick={() => openLaunchedDraftChat(backgroundLaunchNotice)}
+          >
+            Open
+          </button>
+        </div>
+      ) : null}
       {composerElement}
     </div>
   );
@@ -6513,7 +6674,7 @@ export function AgentChatPane({
                     {selectedTodoItems.length ? (
                       <ChatTasksPanel items={selectedTodoItems} />
                     ) : null}
-                    {selectedSession?.provider === "claude" && selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
+                    {selectedSubagentSnapshots.length && !effectiveSubagentPaneOpen ? (
                       <ChatSubagentsPanel
                         snapshots={selectedSubagentSnapshots}
                         events={selectedEvents}
@@ -6593,18 +6754,38 @@ export function AgentChatPane({
                         </h2>
 
                         {/* Lane selector pill */}
-                        {showWorkspaceChrome && availableLanes && availableLanes.length > 0 && onLaneChange ? (
+                        {showWorkspaceChrome && draftLaneSelectorLanes.length > 0 && onLaneChange ? (
                           <motion.div
                             className="flex justify-center"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
-                            <LaneCombobox
-                              lanes={availableLanes}
-                              value={laneId ?? ""}
-                              onChange={onLaneChange}
-                              variant="pill"
-                              aria-label="Select lane"
-                            />
+                            <div className="inline-flex items-center gap-2">
+                              <LaneCombobox
+                                lanes={draftLaneSelectorLanes}
+                                value={draftLaneSelectorValue}
+                                onChange={handleDraftLaneSelectionChange}
+                                variant="pill"
+                                aria-label="Select lane"
+                              />
+                              {onOpenShellSession ? (
+                                <SmartTooltip
+                                  content={{
+                                    label: "Open shell",
+                                    description: "Launch a new shell in the selected lane.",
+                                  }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                    disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                    aria-label="Open shell in selected lane"
+                                    onClick={() => void launchShellForDraftLane()}
+                                  >
+                                    <Terminal size={14} weight="regular" />
+                                  </button>
+                                </SmartTooltip>
+                              ) : null}
+                            </div>
                           </motion.div>
                         ) : showWorkspaceChrome && laneDisplayLabel ? (
                           <motion.div

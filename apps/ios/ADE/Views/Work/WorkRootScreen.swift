@@ -47,7 +47,7 @@ struct WorkRootScreen: View {
   @AppStorage("ade.work.statusFilter") private var selectedStatusRawValue = WorkSessionStatusFilter.all.rawValue
   @State var renameTarget: TerminalSessionSummary?
   @State var renameText = ""
-  @State var endTarget: TerminalSessionSummary?
+  @State var stopRuntimeTarget: TerminalSessionSummary?
   @State var optimisticSessions: [String: TerminalSessionSummary] = [:]
   @State var refreshFeedbackToken = 0
   @State var selectedSessionTransitionId: String?
@@ -323,9 +323,8 @@ struct WorkRootScreen: View {
                     onArchive: toggleArchive,
                     onPin: togglePin,
                     onRename: beginRename,
-                    onEnd: { session in endTarget = session },
+                    onStopRuntime: { session in stopRuntimeTarget = session },
                     onDelete: deleteChatSession,
-                    onResume: resumeSession,
                     onCopyId: copySessionId,
                     onGoToLane: goToLane
                   )
@@ -385,7 +384,7 @@ struct WorkRootScreen: View {
             archivableCount: bulkSelectedArchivableCount,
             restorableCount: bulkSelectedRestorableCount,
             busy: bulkBusy,
-            onClose: { Task { await performBulkClose() } },
+            onStopRuntime: { Task { await performBulkStopRuntime() } },
             onArchive: { Task { await performBulkArchive() } },
             onRestore: { Task { await performBulkRestore() } },
             onDelete: { bulkDeleteConfirmPresented = true },
@@ -522,17 +521,15 @@ struct WorkRootScreen: View {
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
-      .alert("End session?", isPresented: endPresentedBinding, presenting: endTarget) { session in
+      .alert("Stop runtime?", isPresented: stopRuntimePresentedBinding, presenting: stopRuntimeTarget) { session in
         Button("Cancel", role: .cancel) {
-          endTarget = nil
+          stopRuntimeTarget = nil
         }
-        Button("Close", role: .destructive) {
-          Task { await endSession(session) }
+        Button("Stop", role: .destructive) {
+          Task { await stopRuntime(session) }
         }
       } message: { session in
-        Text(isChatSession(session)
-          ? "ADE will ask the machine to stop this chat and keep the transcript available for review."
-          : "ADE will stop streaming new terminal output for this session.")
+        Text("ADE will stop the running process. The saved session stays available unless you delete it.")
       }
       }
     }
@@ -550,12 +547,12 @@ struct WorkRootScreen: View {
     )
   }
 
-  var endPresentedBinding: Binding<Bool> {
+  var stopRuntimePresentedBinding: Binding<Bool> {
     Binding(
-      get: { endTarget != nil },
+      get: { stopRuntimeTarget != nil },
       set: { presented in
         if !presented {
-          endTarget = nil
+          stopRuntimeTarget = nil
         }
       }
     )

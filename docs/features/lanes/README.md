@@ -387,6 +387,7 @@ Lane management (selected):
 | `ade.lanes.delete.risk` | `(args: { laneId }) => LaneDeleteRisk` — preflight read for the manage dialog: dirty state, unpushed commit count, remote-branch existence, active processes/PTYs/watchers, env-init flag. |
 | `ade.lanes.delete.cancel` | `(args: { laneId }) => { cancelled, reason? }` — cooperative cancel during the early teardown steps. After `git_worktree_remove` starts the lane is unrecoverable and cancel is a no-op. |
 | `ade.lanes.delete.event` (push) | `LaneDeleteEvent` carrying `LaneDeleteProgress` — `steps[]` with per-step status (`pending` / `running` / `completed` / `failed` / `skipped`) plus `overallStatus` (`running` / `completed` / `failed` / `cancelled`) and `cancellable`. |
+| `ade.lanes.delete.progress.list` | replay of the in-memory `LaneDeleteProgress` map. Active deletes plus a `LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60s` window of recently completed ones so a window that mounts mid-delete (or mounts immediately after one finished) can repaint the progress strip and the lane tab overlay without missing the live event stream. |
 | `ade.lanes.getStackChain` | `(args: { laneId: string }) => StackChainItem[]` |
 | `ade.lanes.rebaseStart` / `.rebaseAbort` / `.rebaseRollback` / `.rebasePush` | rebase run lifecycle |
 | `ade.lanes.listRebaseSuggestions` / `.dismissRebaseSuggestion` / `.deferRebaseSuggestion` | rebase suggestion lifecycle |
@@ -422,8 +423,9 @@ open lanes; primary lanes render with a home icon.
   preserve the previous git status in store.
 - `LaneRuntimeBar` (Run page) renders lane runtime state: health dot,
   proxy/preview status, OAuth callback URL, active processes. It
-  parallelizes six IPC calls and debounces via an in-flight sequence
-  counter to ignore out-of-order responses.
+  keeps health/process refreshes separate from routing/port/OAuth
+  refreshes, with independent sequence counters to ignore out-of-order
+  responses.
 - Multi-lane deep links can pass `laneIds=<id,id,...>` and
   `inspectorTab=<tab>`. `LanesPage` waits until all referenced lanes
   exist before consuming the link, selects the first lane, opens the

@@ -1,4 +1,3 @@
-import path from "node:path";
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -14,12 +13,22 @@ import { workEventItemId, workEventParentItemId } from "./workEventIds";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
-export type WorkTool = {
+export type ToolCallEntry = {
   itemId: string;
   tool: string;
   arg: string;
   status: WorkToolStatus;
   durationMs?: number;
+};
+
+export type FileChangeEntry = {
+  itemId: string;
+  path: string;
+  kind: string;
+  status: WorkToolStatus;
+  additions: number;
+  deletions: number;
+  deleted?: boolean;
 };
 
 export type PlanStep = {
@@ -35,7 +44,8 @@ export type PendingSteer = {
 export type AggregatedBlock =
   | { kind: "user-bubble"; id: string; line: RenderedChatLine }
   | { kind: "assistant-text"; id: string; line: RenderedChatLine; precededByHeavy?: boolean }
-  | { kind: "work-block"; id: string; turnId: string | null; tools: WorkTool[]; live: boolean; durationMs?: number }
+  | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
+  | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "memory"; id: string; turnId: string | null; live: boolean; hitCount?: number; text?: string }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
@@ -53,6 +63,14 @@ function safeMs(value: string): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function validDurationMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function workItemKey(turnId: string | null, itemId: string): string {
+  return `${turnId ?? ""}:${itemId}`;
+}
+
 function singleArg(value: unknown, max = 60): string {
   const text = (() => {
     if (typeof value === "string") return value;
@@ -65,20 +83,24 @@ function singleArg(value: unknown, max = 60): string {
   return (text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-function diffStats(diff: string): string {
+function diffStats(diff: string): { additions: number; deletions: number } {
   const lines = diff.split(/\r?\n/);
-  let adds = 0;
-  let dels = 0;
+  let additions = 0;
+  let deletions = 0;
   for (const line of lines) {
-    if (/^\+[^+]/.test(line)) adds += 1;
-    else if (/^-[^-]/.test(line)) dels += 1;
+    if (/^\+[^+]/.test(line)) additions += 1;
+    else if (/^-[^-]/.test(line)) deletions += 1;
   }
-  return `+${adds} −${dels}`;
+  return { additions, deletions };
 }
 
-function appendTool(block: Extract<AggregatedBlock, { kind: "work-block" }>, event: AgentChatEvent, envelope: AgentChatEventEnvelope): void {
+function appendToolCallEvent(
+  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
+  durationMs?: number,
+): void {
   if (event.type === "tool_call") {
-    block.tools.push({
+    block.entries.push({
       itemId: event.itemId,
       tool: event.tool,
       arg: singleArg(event.args),
@@ -86,55 +108,83 @@ function appendTool(block: Extract<AggregatedBlock, { kind: "work-block" }>, eve
     });
     return;
   }
-  if (event.type === "tool_result") {
-    const existing = block.tools.find((tool) => tool.itemId === event.itemId);
-    const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
-    if (existing) {
-      existing.status = status;
-      return;
-    }
-    block.tools.push({
-      itemId: event.itemId,
-      tool: event.tool,
-      arg: singleArg(event.result),
-      status,
-    });
+  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
+  if (existing) {
+    existing.status = status;
+    if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  if (event.type === "command") {
-    const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
-    const status: WorkToolStatus = event.status === "running" ? "running" : failed ? "failed" : "ok";
-    const existing = block.tools.find((tool) => tool.itemId === event.itemId);
-    if (existing) {
-      existing.status = status;
-      if (typeof event.durationMs === "number") existing.durationMs = event.durationMs;
-      existing.arg = event.command;
-      return;
-    }
-    block.tools.push({
-      itemId: event.itemId,
-      tool: "bash",
-      arg: event.command,
-      status,
-      durationMs: event.durationMs ?? undefined,
-    });
+  block.entries.push({
+    itemId: event.itemId,
+    tool: event.tool,
+    arg: singleArg(event.result),
+    status,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  });
+}
+
+function appendFileChangeEvent(
+  block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
+  event: Extract<AgentChatEvent, { type: "file_change" }>,
+): void {
+  const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
+  const { additions, deletions } = diffStats(event.diff);
+  const deleted = event.kind === "delete" || (additions === 0 && deletions === 0 && event.diff.length === 0);
+  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  if (existing) {
+    existing.status = status;
+    existing.path = event.path;
+    existing.kind = event.kind;
+    existing.additions = additions;
+    existing.deletions = deletions;
+    if (deleted) existing.deleted = true;
     return;
   }
-  if (event.type === "file_change") {
-    const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
-    const stats = diffStats(event.diff);
-    const arg = `${path.basename(event.path)} ${stats}`;
-    const existing = block.tools.find((tool) => tool.itemId === event.itemId);
-    if (existing) {
-      existing.status = status;
-      existing.arg = arg;
-      return;
-    }
-    block.tools.push({ itemId: event.itemId, tool: "edit", arg, status });
+  const entry: FileChangeEntry = {
+    itemId: event.itemId,
+    path: event.path,
+    kind: event.kind,
+    status,
+    additions,
+    deletions,
+  };
+  if (deleted) entry.deleted = true;
+  block.entries.push(entry);
+}
+
+// Most shell commands arrive wrapped in a launcher (`/bin/zsh -lc "actual"`,
+// `bash -c 'actual'`, `sh -c "actual"`). Strip it so the user sees the actual
+// command in the tool list — the launcher prefix is pure noise in every entry.
+function stripShellLauncher(command: string): string {
+  const match = /^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-[\w]*c\s+(['"])([\s\S]*)\1\s*$/.exec(command);
+  if (match && typeof match[2] === "string") return match[2];
+  return command;
+}
+
+function appendCommandAsTool(
+  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  event: Extract<AgentChatEvent, { type: "command" }>,
+  derivedDurationMs?: number,
+): void {
+  const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
+  const status: WorkToolStatus = event.status === "running" ? "running" : failed ? "failed" : "ok";
+  const durationMs = validDurationMs(event.durationMs) ?? validDurationMs(derivedDurationMs);
+  const cleanCommand = stripShellLauncher(event.command);
+  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  if (existing) {
+    existing.status = status;
+    existing.arg = cleanCommand;
+    if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  // Unknown — ignore.
-  void envelope;
+  block.entries.push({
+    itemId: event.itemId,
+    tool: "shell",
+    arg: cleanCommand,
+    status,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+  });
 }
 
 function isExpandedFailureEvent(event: AgentChatEvent): boolean {
@@ -165,6 +215,24 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
     return candidate as Extract<AggregatedBlock, { kind: K }>;
   }
   return null;
+}
+
+function isLiveTurnBlock(
+  block: AggregatedBlock,
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "plan" | "compaction" }> {
+  return block.kind === "tool-calls-group"
+    || block.kind === "files-changed-group"
+    || block.kind === "plan"
+    || block.kind === "compaction";
+}
+
+function finishTurnBlocks(blocks: AggregatedBlock[], turnId: string | null): void {
+  for (const block of blocks) {
+    const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
+    if (blockTurn === turnId && isLiveTurnBlock(block)) {
+      block.live = false;
+    }
+  }
 }
 
 // Event types that have already contributed to aggregate-level blocks or are
@@ -278,7 +346,6 @@ export function aggregateChatBlocks(args: {
   for (const line of lines) linesById.set(line.id, line);
 
   const blocks: AggregatedBlock[] = [];
-  const turnStart = new Map<string, number>();
   const pendingSteerIds = new Set(derivePendingSteers(args.events).map((steer) => steer.steerId));
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
@@ -324,6 +391,7 @@ export function aggregateChatBlocks(args: {
     if (!line) return;
     blocks.push({ kind, id, line } as AggregatedBlock);
   };
+  const workItemStartedAt = new Map<string, number>();
 
   for (const entry of timeline) {
     if (entry.kind === "notice") {
@@ -340,7 +408,6 @@ export function aggregateChatBlocks(args: {
     const event = envelope.event;
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
-    if (turnId && !turnStart.has(turnId)) turnStart.set(turnId, entry.timestamp);
 
     if (isSubagentTimelineEvent(event)) {
       continue;
@@ -373,15 +440,45 @@ export function aggregateChatBlocks(args: {
       if (isSubagentChildWorkEvent(event, subagentParentItemIds, subagentChildItemIds)) {
         continue;
       }
-      const last = blocks[blocks.length - 1];
-      let workBlock: Extract<AggregatedBlock, { kind: "work-block" }>;
-      if (last && last.kind === "work-block" && last.turnId === turnId) {
-        workBlock = last;
-      } else {
-        workBlock = { kind: "work-block", id, turnId, tools: [], live: true };
-        blocks.push(workBlock);
+      if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command") {
+        const last = blocks[blocks.length - 1];
+        let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+        if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
+          group = last;
+        } else {
+          group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
+          blocks.push(group);
+        }
+        if (event.type === "command") {
+          const key = workItemKey(turnId, event.itemId);
+          const startedAt = workItemStartedAt.get(key);
+          const derivedDurationMs = event.status === "running" || startedAt === undefined
+            ? undefined
+            : entry.timestamp - startedAt;
+          if (!workItemStartedAt.has(key)) workItemStartedAt.set(key, entry.timestamp);
+          appendCommandAsTool(group, event, derivedDurationMs);
+        } else {
+          const key = workItemKey(turnId, event.itemId);
+          if (event.type === "tool_call" && !workItemStartedAt.has(key)) {
+            workItemStartedAt.set(key, entry.timestamp);
+          }
+          const startedAt = workItemStartedAt.get(key);
+          const derivedDurationMs = event.type === "tool_result" && event.status !== "running" && startedAt !== undefined
+            ? entry.timestamp - startedAt
+            : undefined;
+          appendToolCallEvent(group, event, validDurationMs(derivedDurationMs));
+        }
+      } else if (event.type === "file_change") {
+        const last = blocks[blocks.length - 1];
+        let group: Extract<AggregatedBlock, { kind: "files-changed-group" }>;
+        if (last && last.kind === "files-changed-group" && last.turnId === turnId) {
+          group = last;
+        } else {
+          group = { kind: "files-changed-group", id, turnId, entries: [], live: true };
+          blocks.push(group);
+        }
+        appendFileChangeEvent(group, event);
       }
-      appendTool(workBlock, event, envelope);
       if ((args.expandedLineIds?.has(id) ?? false) && isExpandedFailureEvent(event)) {
         passthrough(id, "error");
       }
@@ -475,19 +572,8 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "status") {
-      const startMs = turnId ? turnStart.get(turnId) : undefined;
-      const durationMs = startMs !== undefined ? entry.timestamp - startMs : undefined;
       if (event.turnStatus !== "started") {
-        for (const block of blocks) {
-          const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
-          if (blockTurn !== turnId) continue;
-          if (block.kind === "work-block" || block.kind === "plan" || block.kind === "compaction") {
-            block.live = false;
-            if (durationMs !== undefined && block.kind === "work-block") {
-              block.durationMs = block.durationMs ?? durationMs;
-            }
-          }
-        }
+        finishTurnBlocks(blocks, turnId);
       }
       if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
         passthrough(id, "error");
@@ -495,18 +581,7 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "done") {
-      const startMs = turnId ? turnStart.get(turnId) : undefined;
-      const durationMs = startMs !== undefined ? entry.timestamp - startMs : undefined;
-      for (const block of blocks) {
-        const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
-        if (blockTurn !== turnId) continue;
-        if (block.kind === "work-block" || block.kind === "plan" || block.kind === "compaction") {
-          block.live = false;
-          if (durationMs !== undefined && block.kind === "work-block") {
-            block.durationMs = block.durationMs ?? durationMs;
-          }
-        }
-      }
+      finishTurnBlocks(blocks, turnId);
       continue;
     }
     if (SILENCED_EVENT_TYPES.has(event.type)) {
@@ -523,12 +598,12 @@ export function aggregateChatBlocks(args: {
     });
   }
 
-  // Mark assistant-text blocks that follow a heavy work block for top spacing.
+  // Mark assistant-text blocks that follow a heavy group block for top spacing.
   for (let index = 1; index < blocks.length; index += 1) {
     const current = blocks[index]!;
     if (current.kind !== "assistant-text") continue;
     const prev = blocks[index - 1]!;
-    if (prev.kind === "work-block") {
+    if (prev.kind === "tool-calls-group" || prev.kind === "files-changed-group") {
       current.precededByHeavy = true;
     }
   }

@@ -1074,13 +1074,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "chat",
-    action: "resumeSession",
-    label: "Resume chat session",
-    description: "Resume a previously ended or idled chat session.",
-    params: [{ name: "sessionId", type: "string", required: true }],
-  },
-  {
-    domain: "chat",
     action: "deleteSession",
     label: "Delete chat session",
     description: "Permanently delete a chat session and its transcript.",
@@ -1159,41 +1152,13 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       { name: "includeSystemMessages", type: "boolean" },
     ],
   },
-	  {
-	    domain: "chat",
-	    action: "getContextUsage",
-	    label: "Get context usage",
-	    description: "Return Claude context usage for a chat session.",
-	    params: [{ name: "sessionId", type: "string", required: true }],
-	  },
-	  {
-	    domain: "chat",
-	    action: "getClaudeMcpStatus",
-	    label: "Get Claude MCP status",
-	    description: "Return MCP server connection status for a Claude chat session.",
-	    params: [{ name: "sessionId", type: "string", required: true }],
-	  },
-	  {
-	    domain: "chat",
-	    action: "reconnectClaudeMcpServer",
-	    label: "Reconnect Claude MCP server",
-	    description: "Reconnect one MCP server in a Claude chat session.",
-	    params: [
-	      { name: "sessionId", type: "string", required: true },
-	      { name: "serverName", type: "string", required: true },
-	    ],
-	  },
-	  {
-	    domain: "chat",
-	    action: "toggleClaudeMcpServer",
-	    label: "Toggle Claude MCP server",
-	    description: "Enable or disable one MCP server in a Claude chat session.",
-	    params: [
-	      { name: "sessionId", type: "string", required: true },
-	      { name: "serverName", type: "string", required: true },
-	      { name: "enabled", type: "boolean", required: true },
-	    ],
-	  },
+		  {
+		    domain: "chat",
+		    action: "getContextUsage",
+		    label: "Get context usage",
+		    description: "Return Claude context usage for a chat session.",
+		    params: [{ name: "sessionId", type: "string", required: true }],
+		  },
 	  {
 	    domain: "chat",
 	    action: "listClaudePlugins",
@@ -1204,13 +1169,13 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
 	      { name: "laneId", type: "string", placeholder: "{{trigger.lane.id}}" },
 	    ],
 	  },
-	  {
-	    domain: "chat",
-	    action: "reloadClaudePlugins",
-	    label: "Reload Claude plugins",
-	    description: "Reload Claude plugin commands, agents, hooks, and MCP servers for a chat session.",
-	    params: [{ name: "sessionId", type: "string", required: true }],
-	  },
+		  {
+		    domain: "chat",
+		    action: "reloadClaudePlugins",
+		    label: "Reload Claude plugins",
+		    description: "Reload Claude plugin commands, agents, and hooks for a chat session.",
+		    params: [{ name: "sessionId", type: "string", required: true }],
+		  },
 	  {
 	    domain: "chat",
 	    action: "listClaudeOutputStyles",

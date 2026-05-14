@@ -2,14 +2,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-export function isAdeMcpNamedPipePath(socketPath: string): boolean {
+export function isAdeRuntimeNamedPipePath(socketPath: string): boolean {
   const p = socketPath.trim();
   if (!p) return false;
   const lower = p.toLowerCase();
   return lower.startsWith("\\\\.\\pipe\\") || lower.startsWith("//./pipe/");
 }
 
-export function resolveAdeMcpIpcPath(projectRoot: string): string {
+export function resolveAdeRuntimeIpcPath(projectRoot: string): string {
   if (process.platform === "win32") {
     // Use `realpathSync.native` when available so the hash input reflects the
     // filesystem's canonical casing. Windows *can* expose case-sensitive

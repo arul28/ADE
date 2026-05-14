@@ -114,7 +114,7 @@ export type TerminalAttentionIndicator = "none" | "running-active" | "running-ne
 export type WorkViewMode = "tabs" | "grid";
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser" | "macos-vm";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
-export type WorkDraftKind = "chat" | "cli" | "shell";
+export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
   | "all-lanes-by-status"
@@ -126,6 +126,7 @@ export type WorkProjectViewState = {
   selectedItemId: string | null;
   viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
+  draftLaneId: string | null;
   laneFilter: string;
   statusFilter: WorkStatusFilter;
   search: string;
@@ -180,6 +181,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     selectedItemId: null,
     viewMode: "tabs",
     draftKind: "chat",
+    draftLaneId: null,
     laneFilter: "all",
     statusFilter: "all",
     search: "",
@@ -229,10 +231,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     activeItemId: normalizeOptionalString(candidate.activeItemId),
     selectedItemId: normalizeOptionalString(candidate.selectedItemId),
     viewMode: candidate.viewMode === "grid" ? "grid" : "tabs",
-    draftKind:
-      candidate.draftKind === "cli" || candidate.draftKind === "shell"
-        ? candidate.draftKind
-        : "chat",
+    draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
+    draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     statusFilter:
       candidate.statusFilter === "running"

@@ -8,6 +8,7 @@ extension WorkRootScreen {
 
   var bulkSelectedRunningCount: Int {
     bulkSelectedSessions.filter { session in
+      guard !isChatSession(session) else { return false }
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       return status == "active" || status == "awaiting-input" || status == "idle"
     }.count
@@ -15,7 +16,7 @@ extension WorkRootScreen {
 
   var bulkSelectedDeletableCount: Int {
     bulkSelectedSessions.filter { session in
-      isChatSession(session) && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) == "ended"
+      isChatSession(session)
     }.count
   }
 
@@ -60,8 +61,9 @@ extension WorkRootScreen {
   }
 
   @MainActor
-  func performBulkClose() async {
+  func performBulkStopRuntime() async {
     let targets = bulkSelectedSessions.filter { session in
+      guard !isChatSession(session) else { return false }
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
       return status == "active" || status == "awaiting-input" || status == "idle"
     }
@@ -73,11 +75,7 @@ extension WorkRootScreen {
       for session in targets {
         group.addTask {
           do {
-            if isChatSession(session) {
-              try await syncService.disposeChatSession(sessionId: session.id)
-            } else {
-              try await syncService.closeWorkSession(sessionId: session.id)
-            }
+            try await syncService.stopWorkRuntime(sessionId: session.id)
             return true
           } catch {
             return false
@@ -90,7 +88,7 @@ extension WorkRootScreen {
     }
     await reload(refreshRemote: true)
     if failed > 0 {
-      bulkActionErrorMessage = "Close failed for \(failed) selected session\(failed == 1 ? "" : "s")."
+      bulkActionErrorMessage = "Stop failed for \(failed) selected runtime\(failed == 1 ? "" : "s")."
     }
     exitSelectionMode()
   }
@@ -168,7 +166,7 @@ extension WorkRootScreen {
   @MainActor
   func performBulkDelete() async {
     let targets = bulkSelectedSessions.filter { session in
-      isChatSession(session) && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) == "ended"
+      isChatSession(session)
     }
     guard !targets.isEmpty else { return }
     bulkBusy = true

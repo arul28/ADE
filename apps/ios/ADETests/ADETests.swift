@@ -1373,11 +1373,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(steer["sessionId"] as? String, "session-1")
     XCTAssertEqual(steer["text"] as? String, "Keep going")
 
-    let resume = try jsonDictionary(from: AgentChatResumeRequest(sessionId: "session-1"))
-    XCTAssertEqual(resume["sessionId"] as? String, "session-1")
-
-    let dispose = try jsonDictionary(from: AgentChatDisposeRequest(sessionId: "session-1"))
-    XCTAssertEqual(dispose["sessionId"] as? String, "session-1")
+    let sessionId = try jsonDictionary(from: AgentChatSessionIdRequest(sessionId: "session-1"))
+    XCTAssertEqual(sessionId["sessionId"] as? String, "session-1")
 
     let approve = try jsonDictionary(from: AgentChatApproveRequest(
       sessionId: "session-1",

@@ -654,6 +654,19 @@ function isActiveProcess(p: ProcessRuntime): boolean {
   return p.status === "starting" || p.status === "running" || p.status === "degraded" || p.status === "stopping";
 }
 
+const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
+
+function cloneLaneDeleteProgress(progress: LaneDeleteProgress): LaneDeleteProgress {
+  return {
+    ...progress,
+    steps: progress.steps.map((step) => ({ ...step })),
+  };
+}
+
+function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
+  return progress.overallStatus !== "running";
+}
+
 export type LaneDeleteTeardownDeps = {
   processService?: {
     listRuntime: (laneId: string) => ProcessRuntime[];
@@ -1884,10 +1897,24 @@ export function createLaneService({
     return false;
   };
 
+  const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+
+  const pruneDeleteProgressHistory = (now = Date.now()): void => {
+    for (const [laneId, progress] of deleteProgressByLaneId.entries()) {
+      if (!isTerminalLaneDeleteProgress(progress)) continue;
+      const completedAtMs = progress.completedAt ? Date.parse(progress.completedAt) : Number.NaN;
+      if (!Number.isFinite(completedAtMs) || now - completedAtMs >= LANE_DELETE_PROGRESS_HISTORY_TTL_MS) {
+        deleteProgressByLaneId.delete(laneId);
+      }
+    }
+  };
+
   const broadcastDeleteEvent = (progress: LaneDeleteProgress): void => {
+    pruneDeleteProgressHistory();
+    deleteProgressByLaneId.set(progress.laneId, cloneLaneDeleteProgress(progress));
     if (!onDeleteEvent) return;
     try {
-      onDeleteEvent({ type: "lane-delete", progress: { ...progress, steps: progress.steps.map((s) => ({ ...s })) } });
+      onDeleteEvent({ type: "lane-delete", progress: cloneLaneDeleteProgress(progress) });
     } catch (err) {
       logger.warn("lane.delete.broadcast_failed", { laneId: progress.laneId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -3514,6 +3541,13 @@ export function createLaneService({
       invalidateLaneListCache();
     },
 
+    listDeleteProgress(): LaneDeleteProgress[] {
+      pruneDeleteProgressHistory();
+      return Array.from(deleteProgressByLaneId.values())
+        .filter((progress) => progress.overallStatus === "running" || progress.overallStatus === "completed" || progress.overallStatus === "completed_with_warnings")
+        .map(cloneLaneDeleteProgress);
+    },
+
     async delete(
       args: DeleteLaneArgs,
       runtimeOpts?: { teardownEnv?: () => Promise<void> }
@@ -3527,6 +3561,9 @@ export function createLaneService({
       } = args;
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+        throw new Error(`Lane delete is already running: ${laneId}`);
+      }
       if (row.lane_type === "primary") {
         throw new Error("Primary lane cannot be deleted");
       }

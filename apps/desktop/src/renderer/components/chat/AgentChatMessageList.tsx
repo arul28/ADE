@@ -2499,11 +2499,9 @@ function renderEvent(
             );
           })}
         </div>
-        {(usage.memoryFiles?.length || usage.mcpTools?.length) ? (
+        {usage.memoryFiles?.length ? (
           <div className="mt-3 border-t border-cyan-100/10 pt-2 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/40">
             {usage.memoryFiles?.length ? <span>{usage.memoryFiles.length} memory file{usage.memoryFiles.length === 1 ? "" : "s"}</span> : null}
-            {usage.memoryFiles?.length && usage.mcpTools?.length ? <span> · </span> : null}
-            {usage.mcpTools?.length ? <span>{usage.mcpTools.length} MCP tool{usage.mcpTools.length === 1 ? "" : "s"}</span> : null}
           </div>
         ) : null}
       </div>

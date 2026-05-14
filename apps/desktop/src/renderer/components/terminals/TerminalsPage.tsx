@@ -4,14 +4,13 @@ import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTil
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
-import { WorkSidebar } from "./WorkSidebar";
+import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
-import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatPermissionMode, AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { formatSessionBundleMarkdown, triggerBrowserDownload } from "../../lib/transcriptExport";
 import { useAppStore } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import {
@@ -42,6 +41,10 @@ function dispatchWorkSidebarBrowserResizeEvent(type: "start" | "end"): void {
       ? ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT
       : ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ));
+}
+
+function isPtyContextInsertableToolType(toolType: TerminalSessionSummary["toolType"]): boolean {
+  return toolType === "claude";
 }
 
 async function allSettledWithConcurrency<T>(
@@ -261,21 +264,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleBulkCloseSelected = useCallback(() => {
-    const running = selectedSessions.filter((session) => session.status === "running");
+    const running = selectedSessions.filter((session) => session.status === "running" && !isChatToolType(session.toolType));
     if (!running.length) return;
     const confirmed = window.confirm(
-      `Close ${running.length} running session${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI, shell, or chat process for each selected running session.`,
+      `Stop ${running.length} running runtime${running.length === 1 ? "" : "s"}?\n\nThis terminates the underlying CLI or shell process for each selected running session. Saved transcripts stay in ADE.`,
     );
     if (!confirmed) return;
 
     setSessionActionError(null);
     void Promise.allSettled(
       running.map((session) => {
-        if (isChatToolType(session.toolType)) {
-          return work.closeChatSession(session.id);
-        }
         if (session.ptyId) {
-          return work.closeSession(session.ptyId, session.id);
+          return work.stopRuntime(session.ptyId, session.id);
         }
         return Promise.resolve();
       }),
@@ -283,7 +283,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       .then((results) => {
         const failed = results.filter((result) => result.status === "rejected").length;
         if (failed > 0) {
-          setSessionActionError(`Close failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          setSessionActionError(`Stop failed for ${failed} selected runtime${failed === 1 ? "" : "s"}.`);
           window.setTimeout(() => setSessionActionError(null), 6000);
         }
         setSelectedSessionIds(new Set());
@@ -293,7 +293,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Close failed: ${message}`);
+        setSessionActionError(`Stop failed: ${message}`);
         window.setTimeout(() => setSessionActionError(null), 6000);
       });
   }, [selectedSessions, work]);
@@ -351,90 +351,34 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       });
   }, [selectedSessions, work]);
 
-  const selectedArchivableChats = useMemo(
-    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && !session.archivedAt),
-    [selectedSessions],
-  );
-  const selectedRestorableChats = useMemo(
-    () => selectedSessions.filter((session) => isChatToolType(session.toolType) && Boolean(session.archivedAt)),
-    [selectedSessions],
-  );
-
-  const handleBulkArchiveSelected = useCallback(() => {
-    const targets = selectedArchivableChats;
-    if (!targets.length) return;
-    const confirmed = window.confirm(
-      `Archive ${targets.length} chat${targets.length === 1 ? "" : "s"}?\n\nArchived chats are hidden from the default view but can be restored later. Terminal sessions in your selection are skipped.`,
-    );
-    if (!confirmed) return;
-    setSessionActionError(null);
-    void Promise.allSettled(
-      targets.map((session) => window.ade.agentChat.archive({ sessionId: session.id })),
-    )
-      .then(async (results) => {
-        const failed = results.filter((result) => result.status === "rejected").length;
-        setSelectedSessionIds(new Set());
-        setSelectionAnchorId(null);
-        invalidateSessionListCache();
-        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
-          console.error("[TerminalsPage] refresh after bulk archive failed", { err });
+  const handleContinueCliSession = useCallback(
+    async (session: TerminalSessionSummary, text: string, options?: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null }) => {
+      setSessionActionError(null);
+      try {
+        const result = await window.ade.pty.sendToSession({
+          sessionId: session.id,
+          text,
+          cols: 100,
+          rows: 30,
+          ...(options?.model ? { model: options.model } : {}),
+          ...(options?.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+          ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
         });
-        if (failed > 0) {
-          setSessionActionError(`Archive failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
-          window.setTimeout(() => setSessionActionError(null), 6000);
-        }
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Archive failed: ${message}`);
-        window.setTimeout(() => setSessionActionError(null), 6000);
-      });
-  }, [selectedArchivableChats, work]);
-
-  const handleBulkRestoreSelected = useCallback(() => {
-    const targets = selectedRestorableChats;
-    if (!targets.length) return;
-    setSessionActionError(null);
-    void Promise.allSettled(
-      targets.map((session) => window.ade.agentChat.unarchive({ sessionId: session.id })),
-    )
-      .then(async (results) => {
-        const failed = results.filter((result) => result.status === "rejected").length;
-        setSelectedSessionIds(new Set());
-        setSelectionAnchorId(null);
         invalidateSessionListCache();
-        await work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
-          console.error("[TerminalsPage] refresh after bulk restore failed", { err });
-        });
-        if (failed > 0) {
-          setSessionActionError(`Restore failed for ${failed} chat${failed === 1 ? "" : "s"}.`);
-          window.setTimeout(() => setSessionActionError(null), 6000);
+        try {
+          await work.refresh({ showLoading: false, force: true });
+        } catch {
+          // Best-effort after reattach; the PTY events will also refresh state.
         }
-      })
-      .catch((err: unknown) => {
+        work.selectLane(session.laneId);
+        work.focusSession(result.sessionId);
+        work.setActiveItemId(result.sessionId);
+      } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Restore failed: ${message}`);
+        setSessionActionError(`Send failed: ${message}`);
         window.setTimeout(() => setSessionActionError(null), 6000);
-      });
-  }, [selectedRestorableChats, work]);
-
-  const handleBulkExportSelected = useCallback(() => {
-    if (!selectedSessions.length) return;
-    setSessionActionError(null);
-    try {
-      const markdown = formatSessionBundleMarkdown(selectedSessions);
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      triggerBrowserDownload(`ade-sessions-${stamp}.md`, markdown);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setSessionActionError(`Export failed: ${message}`);
-      window.setTimeout(() => setSessionActionError(null), 6000);
-    }
-  }, [selectedSessions]);
-
-  const handleResumeSession = useCallback(
-    (session: TerminalSessionSummary) => {
-      void work.resumeSession(session).catch(() => {});
+        throw err;
+      }
     },
     [work],
   );
@@ -450,15 +394,39 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     return sortedLanes.find((lane) => lane.laneType === "primary")?.id ?? sortedLanes[0]?.id ?? null;
   }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes]);
 
-  const activeIsChat = Boolean(activeWorkSession && isChatToolType(activeWorkSession.toolType));
-  const attachChatSessionId = activeIsChat ? activeWorkSession!.id : null;
-  let attachDisabledReason: string | null;
+  const contextTarget = useMemo<WorkSidebarContextTarget | null>(() => {
+    if (!activeWorkSession || activeWorkSession.laneId !== activeLaneId) return null;
+    if (isChatToolType(activeWorkSession.toolType)) {
+      return { kind: "chat", sessionId: activeWorkSession.id };
+    }
+    if (
+      activeWorkSession.status === "running"
+      && activeWorkSession.ptyId
+      && isPtyContextInsertableToolType(activeWorkSession.toolType)
+    ) {
+      return {
+        kind: "pty",
+        sessionId: activeWorkSession.id,
+        ptyId: activeWorkSession.ptyId,
+        toolType: activeWorkSession.toolType,
+      };
+    }
+    return null;
+  }, [activeLaneId, activeWorkSession]);
+
+  let contextDisabledReason: string | null;
   if (!activeWorkSession) {
-    attachDisabledReason = "Start an ADE chat before attaching tool context.";
-  } else if (!activeIsChat) {
-    attachDisabledReason = `Context attachment only works in ADE chat sessions. This ${formatToolTypeLabel(activeWorkSession.toolType)} session can still use the lane tools, but selections are not attached to chat.`;
+    contextDisabledReason = "Open a chat or agent CLI session in this lane to insert tool context.";
+  } else if (activeWorkSession.laneId !== activeLaneId) {
+    contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
+  } else if (activeWorkSession.toolType === "shell" || activeWorkSession.toolType === "run-shell") {
+    contextDisabledReason = "Shell sessions can use the lane tools, but context insertion targets chats or agent CLI sessions.";
+  } else if (!contextTarget && activeWorkSession.ptyId && activeWorkSession.status !== "running") {
+    contextDisabledReason = `Continue this ${formatToolTypeLabel(activeWorkSession.toolType)} session before inserting tool context.`;
+  } else if (!contextTarget) {
+    contextDisabledReason = `This ${formatToolTypeLabel(activeWorkSession.toolType)} session can use the lane tools, but it cannot receive inserted context.`;
   } else {
-    attachDisabledReason = null;
+    contextDisabledReason = null;
   }
 
   const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
@@ -487,6 +455,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [work]);
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
+  }, [work]);
+  const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
+    if (!session.ptyId) return;
+    work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
+      console.error("[TerminalsPage] Failed to stop CLI session from header", {
+        sessionId: session.id,
+        ptyId: session.ptyId,
+        err,
+      });
+    });
   }, [work]);
   const handleWorkSidebarResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -552,16 +530,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         activeItemId={work.activeItemId}
         viewMode={work.viewMode}
         draftKind={work.draftKind}
+        draftLaneId={work.draftLaneId}
         setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
         onOpenChatSession={handleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
+        onDraftLaneChange={work.setDraftLaneId}
         onShowDraftKind={work.showDraftKind}
         onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
-        onResumeSession={handleResumeSession}
+        onContinueCliSession={handleContinueCliSession}
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
         onExpandSessionsPane={expandSessionsPane}
         sessionsPaneListCount={work.filtered.length}
@@ -569,6 +549,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessionsListLoading={work.loading}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
+        onInfoClick={handleInfoClick}
+        onStopRunningSession={handleStopRunningSession}
         onReorderLaneSessions={work.reorderLaneSessions}
         onOpenSessionInTabsView={(sessionId) => {
           work.setViewMode("tabs");
@@ -589,6 +571,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.activeItemId,
       work.viewMode,
       work.draftKind,
+      work.draftLaneId,
+      work.setDraftLaneId,
       work.showDraftKind,
       work.setViewMode,
       work.setActiveItemId,
@@ -604,8 +588,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       expandSessionsPane,
       toggleWorkSidebar,
       handleOpenChatSession,
-      handleResumeSession,
+      handleContinueCliSession,
       handleContextMenu,
+      handleInfoClick,
+      handleStopRunningSession,
       work.reorderLaneSessions,
       work.openSessionTab,
       work.selectLane,
@@ -643,8 +629,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 tab={work.workSidebarTab}
                 onTabChange={work.setWorkSidebarTab}
                 onClose={closeWorkSidebar}
-                attachChatSessionId={attachChatSessionId}
-                attachDisabledReason={attachDisabledReason}
+                contextTarget={contextTarget}
+                contextDisabledReason={contextDisabledReason}
               />
             </div>
           </>
@@ -655,8 +641,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       activeLaneId,
       activeWorkSession,
       active,
-      attachChatSessionId,
-      attachDisabledReason,
+      contextTarget,
+      contextDisabledReason,
       handleWorkSidebarResizeMouseDown,
       closeWorkSidebar,
       sortedLanes,
@@ -731,13 +717,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             }}
             onBulkClose={handleBulkCloseSelected}
             onBulkDelete={handleBulkDeleteSelected}
-            onBulkArchive={handleBulkArchiveSelected}
-            onBulkRestore={handleBulkRestoreSelected}
-            onBulkExport={handleBulkExportSelected}
-            archivableCount={selectedArchivableChats.length}
-            restorableCount={selectedRestorableChats.length}
-            onResume={(s) => work.resumeSession(s).catch(() => {})}
-            resumingSessionId={work.resumingSessionId}
             onInfoClick={handleInfoClick}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
@@ -770,11 +749,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       selectedSessionIds,
       handleBulkCloseSelected,
       handleBulkDeleteSelected,
-      handleBulkArchiveSelected,
-      handleBulkRestoreSelected,
-      handleBulkExportSelected,
-      selectedArchivableChats,
-      selectedRestorableChats,
       handleInfoClick,
       handleContextMenu,
       sessionsHeaderActions,
@@ -809,13 +783,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <SessionContextMenu
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
-        onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
-        onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
+        onStopRuntime={({ ptyId, sessionId }) => work.stopRuntime(ptyId, sessionId).catch(() => {})}
         onDeleteChat={handleDeleteChat}
         onDeleteSession={handleDeleteSession}
         deletingSessionId={deletingSessionId}
-        onResume={handleResumeSession}
-        onCopyResumeCommand={(cmd) => navigator.clipboard.writeText(cmd).catch(() => {})}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onCopySessionDeepLink={(session) => {
@@ -848,16 +819,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       <SessionInfoPopover
         popover={infoPopover}
         onClose={() => setInfoPopover(null)}
-        onCloseSession={({ ptyId, sessionId }) => work.closeSession(ptyId, sessionId).catch(() => {})}
-        onEndChat={(id) => work.closeChatSession(id).catch(() => {})}
+        onStopRuntime={({ ptyId, sessionId }) => work.stopRuntime(ptyId, sessionId).catch(() => {})}
         onDeleteChat={handleDeleteChat}
         onDeleteSession={handleDeleteSession}
-        onResume={handleResumeSession}
         onGoToLane={handleGoToLane}
         closingPtyIds={work.closingPtyIds}
-        closingChatSessionId={work.closingChatSessionId}
         deletingSessionId={deletingSessionId}
-        resumingSessionId={work.resumingSessionId}
       />
     </div>
   );

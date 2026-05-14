@@ -6,7 +6,7 @@ import { FooterControls } from "../components/FooterControls";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 function stripAnsi(text: string): string {
-  return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  return text.replace(/\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -78,14 +78,9 @@ describe("Header", () => {
 });
 
 describe("FooterControls", () => {
-  it("labels the right pane as info and keeps fast with model mode info", () => {
+  it("renders the flat picker cells with provider, model, permission, and fast indicator", () => {
     const result = render(
       <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
         provider="codex"
         modelDisplay="GPT-5.5"
         permissionLabel="full-auto"
@@ -94,127 +89,98 @@ describe("FooterControls", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("info");
     expect(frame).toContain("GPT-5.5");
     expect(frame).toContain("fast");
     expect(frame).toContain("full-auto");
-    expect(frame).not.toContain("setup");
   });
 
-  it("shows chat scroll controls when the transcript is focused", () => {
+  it("renders the resting hint strip with lanes/info/subagents/cmds/help", () => {
     const result = render(
       <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        activePane="chat"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
+        provider="codex"
+        modelDisplay="GPT-5.5"
+        permissionLabel="default"
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("scroll");
-    expect(frame).toContain("Tab lanes");
-    expect(frame).not.toContain("↑↓ lanes");
-  });
-
-  it("shows the clamped chat scroll position in the footer", () => {
-    const result = render(
-      <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        activePane="chat"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
-        chatScrollOffset={999}
-        chatScrollMaxOffset={42}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("42/42");
-  });
-
-  it("surfaces staged steer state in the footer", () => {
-    const result = render(
-      <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        activePane="chat"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
-        pendingSteerCount={2}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("staged 2");
-    expect(frame).toContain("/steer");
-  });
-
-  it("shows an agents pane toggle when the active chat has subagent history", () => {
-    const result = render(
-      <FooterControls
-        drawerOpen={false}
-        rightOpen={false}
-        activePane="chat"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
-        liveAgentCount={2}
-        rightPaneShowsAgents={true}
-        agentsAvailable={true}
-        agentsOpen={true}
-        agentsFocused={true}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("agents");
+    expect(frame).toContain("^o");
+    expect(frame).toContain("lanes");
+    expect(frame).toContain("^p");
+    expect(frame).toContain("info");
     expect(frame).toContain("^a");
-    expect(frame.indexOf("agents")).toBeLessThan(frame.indexOf("lanes"));
-    expect(frame.indexOf("lanes")).toBeLessThan(frame.indexOf("info"));
-    expect(frame).not.toContain("● 2 agents");
+    expect(frame).toContain("subagents");
+    expect(frame).toContain("cmds");
+    expect(frame).toContain("help");
   });
 
-  it("shows lane navigation controls when the drawer lane list is focused", () => {
+  it("renders a focus indicator and cell hints when the inline row is focused", () => {
     const result = render(
       <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        activePane="drawer"
-        drawerMode="lanes"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
+        provider="codex"
+        modelDisplay="GPT-5.5"
+        reasoningEffort="medium"
+        permissionLabel="default"
+        inlineRowFocused
+        inlineRowCell="model"
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("↑↓ lanes");
-    expect(frame).toContain("↵ open");
-    expect(frame).not.toContain("scroll");
+    expect(frame).toContain("▸");
+    // The focused cell is wrapped in brackets.
+    expect(frame).toContain("[GPT-5.5]");
+    // Focused row shows up/cells/cycle hints instead of the resting strip.
+    expect(frame).toContain("prompt");
+    expect(frame).toContain("cells");
+    expect(frame).toContain("cycle");
+    expect(frame).not.toContain("^o lanes");
   });
 
-  it("shows chat list controls when drawer chats are focused", () => {
+  it("renders reasoning and permission picker cells", () => {
     const result = render(
       <FooterControls
-        drawerOpen={true}
-        rightOpen={true}
-        activePane="drawer"
-        drawerMode="chats"
-        drawerFocused={false}
-        detailsFocused={false}
-        footerControlActive={false}
+        provider="claude"
+        modelDisplay="claude-opus"
+        reasoningEffort="high"
+        permissionLabel="acceptEdits"
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("↑↓ chats");
-    expect(frame).toContain("Esc lanes");
-    expect(frame).not.toContain("scroll");
+    expect(frame).toContain("claude-opus");
+    expect(frame).toContain("high");
+    expect(frame).toContain("acceptEdits");
+  });
+
+  it("renders the subagents button when visible and counts agents", () => {
+    const result = render(
+      <FooterControls
+        provider="claude"
+        modelDisplay="claude-opus"
+        permissionLabel="default"
+        liveAgentCount={2}
+        subagentsButtonVisible
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("2 subagents");
+  });
+
+  it("renders the approval prompt hints when an approval is active", () => {
+    const result = render(
+      <FooterControls
+        provider="codex"
+        modelDisplay="GPT-5.5"
+        permissionLabel="default"
+        approvalActive
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("approve");
+    expect(frame).toContain("deny");
+    expect(frame).not.toContain("^o lanes");
   });
 });

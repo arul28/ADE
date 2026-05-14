@@ -85,8 +85,6 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
         showingDraft={false}
         onShowDraftKind={vi.fn()}
         onSelectSession={vi.fn()}
-        onResume={vi.fn()}
-        resumingSessionId={null}
         onInfoClick={vi.fn()}
         onContextMenu={vi.fn()}
         sessionListOrganization="by-lane"
@@ -236,12 +234,9 @@ describe("SessionListPane", () => {
     );
   });
 
-  it("renders bulk action footer counts and wires archive, restore, export, and clear handlers", () => {
+  it("renders bulk action footer with runtime stop, session delete, and clear handlers", () => {
     const onBulkClose = vi.fn();
     const onBulkDelete = vi.fn();
-    const onBulkArchive = vi.fn();
-    const onBulkRestore = vi.fn();
-    const onBulkExport = vi.fn();
     const onClearSelection = vi.fn();
     const running = makeSession({
       id: "session-running",
@@ -288,27 +283,19 @@ describe("SessionListPane", () => {
       sessionsGroupedByLane: new Map([[running.laneId, [running, archivable, restorable, terminalEnded]]]),
       onBulkClose,
       onBulkDelete,
-      onBulkArchive,
-      onBulkRestore,
-      onBulkExport,
       onClearSelection,
-      archivableCount: 1,
-      restorableCount: 1,
     });
 
     expect(screen.getByText("4 selected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^archive \d+$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^restore \d+$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^export$/i })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /close 1/i }));
-    fireEvent.click(screen.getByRole("button", { name: /archive 1/i }));
-    fireEvent.click(screen.getByRole("button", { name: /restore 1/i }));
-    fireEvent.click(screen.getByRole("button", { name: /export/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stop 1/i }));
     fireEvent.click(screen.getByRole("button", { name: /delete 3/i }));
     fireEvent.click(screen.getByRole("button", { name: /clear selected sessions/i }));
 
     expect(onBulkClose).toHaveBeenCalledTimes(1);
-    expect(onBulkArchive).toHaveBeenCalledTimes(1);
-    expect(onBulkRestore).toHaveBeenCalledTimes(1);
-    expect(onBulkExport).toHaveBeenCalledTimes(1);
     expect(onBulkDelete).toHaveBeenCalledTimes(1);
     expect(onClearSelection).toHaveBeenCalledTimes(1);
   });

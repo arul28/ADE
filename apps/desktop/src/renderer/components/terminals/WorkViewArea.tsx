@@ -1,4 +1,5 @@
-import { useMemo, useCallback, useEffect, useRef, useState } from "react";
+import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
@@ -6,7 +7,6 @@ import {
   CaretRight,
   Chats,
   Check,
-  Clipboard,
   Code,
   Columns,
   Crosshair,
@@ -15,28 +15,46 @@ import {
   GitBranch,
   GridFour,
   List,
-  Play,
   Plus,
+  PaperPlaneTilt,
   Rows,
   SidebarSimple,
-  Terminal,
+  SpinnerGap,
   X,
 } from "@phosphor-icons/react";
-import type { AgentChatSession, LaneLinearIssue, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  AgentChatModelInfo,
+  AgentChatPermissionMode,
+  AgentChatSession,
+  AgentChatSlashCommand,
+  ChatTerminalPreviewResult,
+  LaneLinearIssue,
+  LaneSummary,
+  TerminalResumeProvider,
+  TerminalSessionSummary,
+  TerminalSnapshotCell,
+  TerminalSnapshotRow,
+} from "../../../shared/types";
+import { getRuntimeModelRefForDescriptor, resolveModelDescriptorForProvider } from "../../../shared/modelRegistry";
 import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { LaneChip } from "./LaneChip";
 import { AgentChatPane } from "../chat/AgentChatPane";
+import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
+import { ChatComposerShell } from "../chat/ChatComposerShell";
+import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { isChatToolType, primarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
+import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
+import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionStatusBucket, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
-import { resolveTrackedCliResumeCommand, type LaunchProfile } from "./cliLaunch";
+import { launchProfileForTerminalSession, type LaunchProfile } from "./cliLaunch";
 import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 
@@ -60,6 +78,758 @@ function isRunningPtySession(
   );
 }
 
+function isAgentCliSession(session: TerminalSessionSummary): boolean {
+  return Boolean(
+    session.toolType
+    && session.toolType !== "shell"
+    && session.toolType !== "run-shell"
+    && !isChatToolType(session.toolType),
+  );
+}
+
+function stoppedBySignal(exitCode: number | null | undefined): boolean {
+  return exitCode === 130 || exitCode === 143;
+}
+
+function terminalExitLabel(exitCode: number | null | undefined): string | null {
+  if (exitCode == null || exitCode === 0) return null;
+  return stoppedBySignal(exitCode) ? "Stopped" : `Exit ${exitCode}`;
+}
+
+function stripTerminalControls(value: string): string {
+  return stripTerminalLabelControls(value).replace(/\r(?!\n)/g, "\n");
+}
+
+const XTERM_16_COLORS = [
+  "#000000",
+  "#cd3131",
+  "#0dbc79",
+  "#e5e510",
+  "#2472c8",
+  "#bc3fbc",
+  "#11a8cd",
+  "#e5e5e5",
+  "#666666",
+  "#f14c4c",
+  "#23d18b",
+  "#f5f543",
+  "#3b8eea",
+  "#d670d6",
+  "#29b8db",
+  "#ffffff",
+] as const;
+
+function rgbColor(value: number | null | undefined): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const safe = Math.max(0, Math.min(0xffffff, Math.floor(value)));
+  return `#${safe.toString(16).padStart(6, "0")}`;
+}
+
+function paletteColor(value: number | null | undefined): string | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const index = Math.max(0, Math.min(255, Math.floor(value)));
+  if (index < XTERM_16_COLORS.length) return XTERM_16_COLORS[index];
+  if (index >= 16 && index <= 231) {
+    const offset = index - 16;
+    const r = Math.floor(offset / 36);
+    const g = Math.floor((offset % 36) / 6);
+    const b = offset % 6;
+    const channel = (part: number) => part === 0 ? 0 : 55 + part * 40;
+    return rgbColor((channel(r) << 16) + (channel(g) << 8) + channel(b));
+  }
+  const gray = 8 + (index - 232) * 10;
+  return rgbColor((gray << 16) + (gray << 8) + gray);
+}
+
+function cellColor(mode: "default" | "palette" | "rgb", value: number | null): string | undefined {
+  if (mode === "rgb") return rgbColor(value);
+  if (mode === "palette") return paletteColor(value);
+  return undefined;
+}
+
+function styleForSnapshotCell(cell: TerminalSnapshotCell): CSSProperties {
+  let color = cellColor(cell.fgMode, cell.fg);
+  let backgroundColor = cellColor(cell.bgMode, cell.bg);
+  if (cell.inverse) {
+    const nextColor = backgroundColor;
+    backgroundColor = color;
+    color = nextColor;
+  }
+  return {
+    ...(color ? { color } : {}),
+    ...(backgroundColor ? { backgroundColor } : {}),
+    ...(cell.bold ? { fontWeight: 700 } : {}),
+    ...(cell.dim ? { opacity: 0.65 } : {}),
+    ...(cell.italic ? { fontStyle: "italic" } : {}),
+    ...(cell.underline || cell.strikethrough
+      ? { textDecoration: [cell.underline ? "underline" : "", cell.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") }
+      : {}),
+  };
+}
+
+function styleKey(style: CSSProperties): string {
+  return [
+    style.color ?? "",
+    style.backgroundColor ?? "",
+    style.fontWeight ?? "",
+    style.opacity ?? "",
+    style.fontStyle ?? "",
+    style.textDecoration ?? "",
+  ].join("|");
+}
+
+function stableKeyHash(value: string): string {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function withStableDuplicateKeys<T>(
+  items: T[],
+  fingerprint: (item: T) => string,
+): Array<{ item: T; key: string }> {
+  const counts = new Map<string, number>();
+  return items.map((item) => {
+    const base = stableKeyHash(fingerprint(item));
+    const count = counts.get(base) ?? 0;
+    counts.set(base, count + 1);
+    return { item, key: count ? `${base}:${count}` : base };
+  });
+}
+
+function isTrimmedBlankCell(cell: TerminalSnapshotCell | undefined): boolean {
+  return Boolean(
+    cell
+    && (cell.text || " ") === " "
+    && cell.bgMode === "default"
+    && !cell.inverse,
+  );
+}
+
+function snapshotRuns(row: TerminalSnapshotRow): Array<{ text: string; style: CSSProperties }> {
+  let cells = row.cells;
+  let end = cells.length;
+  while (end > 1 && isTrimmedBlankCell(cells[end - 1])) end -= 1;
+  cells = cells.slice(0, end);
+
+  const runs: Array<{ text: string; style: CSSProperties }> = [];
+  for (const cell of cells) {
+    const text = cell.text || " ";
+    const style = styleForSnapshotCell(cell);
+    const last = runs[runs.length - 1];
+    if (last && styleKey(last.style) === styleKey(style)) {
+      last.text += text;
+    } else {
+      runs.push({ text, style });
+    }
+  }
+  if (!runs.length) return [{ text: row.text || " ", style: {} }];
+  return runs;
+}
+
+function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
+  const renderedRows = useMemo(() => withStableDuplicateKeys(rows, (row) => [
+    row.text,
+    row.wrapped ? "wrapped" : "plain",
+    ...row.cells.map((cell) => [
+      cell.text,
+      cell.fg,
+      cell.bg,
+      cell.fgMode,
+      cell.bgMode,
+      cell.bold ? "bold" : "",
+      cell.dim ? "dim" : "",
+      cell.italic ? "italic" : "",
+      cell.underline ? "underline" : "",
+      cell.inverse ? "inverse" : "",
+      cell.strikethrough ? "strikethrough" : "",
+    ].join("\u0001")),
+  ].join("\u0002")).map(({ item: row, key }) => ({
+    key,
+    runs: withStableDuplicateKeys(snapshotRuns(row), (run) => `${run.text}\u0001${styleKey(run.style)}`),
+  })), [rows]);
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+      {renderedRows.map((row) => (
+        <div key={row.key} className="min-h-[1.25em] whitespace-pre">
+          {row.runs.map(({ item: run, key }) => (
+            <span key={key} style={run.style}>
+              {run.text}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type CommandMenuAnchor = { top: number; left: number; bottom: number };
+
+function getCommandMenuAnchor(element: HTMLElement | null): CommandMenuAnchor | null {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, bottom: rect.bottom, left: rect.left + 16 };
+}
+
+function continuationProviderForSession(session: TerminalSessionSummary): TerminalResumeProvider | null {
+  const profile = launchProfileForTerminalSession(session);
+  return profile && profile !== "shell" ? profile : null;
+}
+
+function canContinueAgentCliSession(session: TerminalSessionSummary): boolean {
+  return Boolean(session.tracked && continuationProviderForSession(session) && (session.resumeMetadata || session.resumeCommand));
+}
+
+function continuationProviderLabel(provider: TerminalResumeProvider | null): string {
+  if (provider === "claude") return "Claude Code";
+  if (provider === "codex") return "Codex";
+  if (provider === "cursor") return "Cursor Agent";
+  if (provider === "droid") return "Droid";
+  if (provider === "opencode") return "OpenCode";
+  return "agent CLI";
+}
+
+function continuationSupportsModelSelection(
+  provider: TerminalResumeProvider | null,
+): provider is "claude" | "codex" {
+  return provider === "claude" || provider === "codex";
+}
+
+function canonicalContinuationModelId(provider: "claude" | "codex" | null, modelId: string): string {
+  if (!provider) return modelId;
+  return resolveModelDescriptorForProvider(modelId, provider)?.id ?? modelId;
+}
+
+function defaultContinuationModel(models: AgentChatModelInfo[], provider: "claude" | "codex" | null): string {
+  const modelId = models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? "";
+  return canonicalContinuationModelId(provider, modelId);
+}
+
+type WorkCliContinuationOptions = {
+  model?: string | null;
+  reasoningEffort?: string | null;
+  permissionMode?: AgentChatPermissionMode | null;
+};
+
+function continuationPermissionFamily(provider: TerminalResumeProvider | null): string | null {
+  if (provider === "claude") return "anthropic";
+  if (provider === "codex") return "openai";
+  if (provider === "cursor") return "cursor";
+  if (provider === "droid") return "factory";
+  if (provider === "opencode") return "opencode";
+  return null;
+}
+
+function continuationPermissionOptions(provider: TerminalResumeProvider | null): PermissionOption[] {
+  const family = continuationPermissionFamily(provider);
+  return family ? getPermissionOptions({ family, isCliWrapped: true }) : [];
+}
+
+function defaultContinuationPermissionMode(session: TerminalSessionSummary): AgentChatPermissionMode {
+  const raw = session.resumeMetadata?.launch?.permissionMode ?? session.resumeMetadata?.permissionMode ?? "default";
+  const options = continuationPermissionOptions(continuationProviderForSession(session));
+  return options.some((option) => option.value === raw)
+    ? raw
+    : options[0]?.value ?? "default";
+}
+
+function defaultContinuationReasoningEffort(tiers: readonly string[] | null | undefined): string | null {
+  if (!tiers?.length) return null;
+  for (const preferred of ["high", "medium", "low"]) {
+    if (tiers.includes(preferred)) return preferred;
+  }
+  return tiers[0] ?? null;
+}
+
+function runtimeModelForContinuation(provider: "claude" | "codex", modelId: string): string {
+  const descriptor = resolveModelDescriptorForProvider(modelId, provider);
+  return descriptor ? getRuntimeModelRefForDescriptor(descriptor, provider) : modelId;
+}
+
+function permissionSafetyDotClass(option: PermissionOption): string {
+  if (option.safety === "safe") return "bg-emerald-400/80";
+  if (option.safety === "semi-auto") return "bg-amber-400/80";
+  if (option.safety === "full-auto" || option.safety === "danger") return "bg-red-400/80";
+  return "bg-violet-400/80";
+}
+
+function WorkCliPermissionPicker({
+  provider,
+  value,
+  onChange,
+  disabled,
+}: {
+  provider: TerminalResumeProvider | null;
+  value: AgentChatPermissionMode;
+  onChange: (mode: AgentChatPermissionMode) => void;
+  disabled?: boolean;
+}) {
+  const options = useMemo(() => continuationPermissionOptions(provider), [provider]);
+  const selected = options.find((option) => option.value === value) ?? options[0] ?? null;
+  const providerLabel = continuationProviderLabel(provider);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
+  const [open, setOpen] = useState(false);
+  const updatePanelStyle = useCallback(() => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const viewportPadding = 8;
+    const panelWidth = Math.min(352, Math.max(240, window.innerWidth - viewportPadding * 2));
+    const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const availableAbove = rect.top - viewportPadding;
+    const openAbove = availableBelow < 180 && availableAbove > availableBelow;
+    const maxHeight = Math.max(160, Math.min(360, (openAbove ? availableAbove : availableBelow) - 6));
+    const left = Math.min(
+      Math.max(viewportPadding, rect.right - panelWidth),
+      Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding),
+    );
+    const top = openAbove
+      ? Math.max(viewportPadding, rect.top - maxHeight - 6)
+      : Math.max(viewportPadding, Math.min(window.innerHeight - viewportPadding - maxHeight, rect.bottom + 6));
+    setPanelStyle({ top, left, width: panelWidth, maxHeight });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePanelStyle();
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      const panels = document.querySelectorAll("[data-cli-permission-picker-panel='true']");
+      for (const panel of panels) {
+        if (panel.contains(target)) return;
+      }
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updatePanelStyle);
+    window.addEventListener("scroll", updatePanelStyle, true);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updatePanelStyle);
+      window.removeEventListener("scroll", updatePanelStyle, true);
+    };
+  }, [open, updatePanelStyle]);
+
+  useEffect(() => {
+    if (disabled && open) setOpen(false);
+  }, [disabled, open]);
+
+  if (!selected) return null;
+
+  const panel = createPortal(
+    <AnimatePresence>
+      {open ? (
+        <motion.div
+          key="cli-permission-picker"
+          data-cli-permission-picker-panel="true"
+          className="fixed z-[82] overflow-y-auto rounded-xl border border-white/[0.10] bg-popover/95 p-1 shadow-2xl shadow-black/35 backdrop-blur-xl"
+          style={panelStyle ?? undefined}
+          initial={{ opacity: 0, y: 6, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 6, scale: 0.98 }}
+          transition={{ duration: 0.14 }}
+        >
+          {options.map((option) => {
+            const optionColors = safetyColors(option.safety);
+            const active = option.value === selected.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={cn(
+                  "flex w-full items-start gap-2 rounded-lg border-l-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
+                  optionColors.border,
+                  active && optionColors.activeBg,
+                )}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/[0.10] bg-white/[0.03]">
+                  {active ? <Check size={10} weight="bold" className="text-accent" /> : null}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate text-[11px] font-semibold text-fg/85">{option.label}</span>
+                    <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-[0.08em]", optionColors.badge)}>
+                      {option.safety.replace("-", " ")}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-muted-fg/65">{option.shortDesc}</span>
+                </span>
+              </button>
+            );
+          })}
+        </motion.div>
+      ) : null}
+    </AnimatePresence>,
+    document.body,
+  );
+
+  return (
+    <div ref={containerRef} className="relative min-w-0 shrink-0">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          if (!disabled) {
+            if (!open) updatePanelStyle();
+            setOpen((current) => !current);
+          }
+        }}
+        className={cn(
+          "inline-flex h-8 min-h-8 max-w-[11rem] items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 text-[10px] font-medium text-fg/70 transition-colors hover:bg-white/[0.05]",
+          open && "bg-white/[0.06]",
+          disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
+        )}
+        aria-label={`${providerLabel} permission mode`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Permission mode: ${selected.label}`}
+      >
+        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", permissionSafetyDotClass(selected))} />
+        <span className="min-w-0 truncate">{selected.label}</span>
+        <CaretDown size={10} weight="bold" className="shrink-0 text-muted-fg/45" />
+      </button>
+      {panel}
+    </div>
+  );
+}
+
+function WorkCliContinuationComposer({
+  session,
+  onContinue,
+}: {
+  session: TerminalSessionSummary;
+  onContinue?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+}) {
+  const provider = continuationProviderForSession(session);
+  const providerLabel = continuationProviderLabel(provider);
+  const modelProvider = continuationSupportsModelSelection(provider) ? provider : null;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
+  const [draft, setDraft] = useState("");
+  const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
+  const [models, setModels] = useState<AgentChatModelInfo[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<string | null>(null);
+  const [selectedPermissionMode, setSelectedPermissionMode] = useState<AgentChatPermissionMode>(() => defaultContinuationPermissionMode(session));
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "slash"; query: string; cursorIndex: number } | null>(null);
+  const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
+  const [sending, setSending] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const defaultPermissionMode = defaultContinuationPermissionMode(session);
+  const availableModelIds = useMemo(
+    () => models.map((model) => canonicalContinuationModelId(modelProvider, model.id)),
+    [modelProvider, models],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setSlashCommands([]);
+    if (!provider) return () => {
+      cancelled = true;
+    };
+    void window.ade.agentChat.slashCommands({ laneId: session.laneId, provider })
+      .then((commands) => {
+        if (!cancelled) {
+          setSlashCommands(commands.filter((command) => command.source !== "local"));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSlashCommands([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, session.laneId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModels([]);
+    setSelectedModel("");
+    setSelectedReasoningEffort(null);
+    if (!modelProvider) return () => {
+      cancelled = true;
+    };
+    setModelsLoading(true);
+    void window.ade.agentChat.models({ provider: modelProvider })
+      .then((rows) => {
+        if (cancelled) return;
+        setModels(rows);
+        setSelectedModel((current) => (
+          current && rows.some((model) => canonicalContinuationModelId(modelProvider, model.id) === current)
+            ? current
+            : defaultContinuationModel(rows, modelProvider)
+        ));
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setModels([]);
+          setSelectedModel("");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modelProvider]);
+
+  useEffect(() => {
+    setSelectedPermissionMode(defaultPermissionMode);
+  }, [defaultPermissionMode, session.id]);
+
+  useEffect(() => {
+    if (!modelProvider || !selectedModel) {
+      setSelectedReasoningEffort(null);
+      return;
+    }
+    const descriptor = resolveModelDescriptorForProvider(selectedModel, modelProvider);
+    const tiers = descriptor?.reasoningTiers ?? [];
+    setSelectedReasoningEffort((current) => (
+      current && tiers.includes(current)
+        ? current
+        : defaultContinuationReasoningEffort(tiers)
+    ));
+  }, [modelProvider, selectedModel]);
+
+  const updateDraft = useCallback((next: string, element: HTMLTextAreaElement | null) => {
+    setDraft(next);
+    setSubmitError(null);
+    if (next.startsWith("/") && !next.slice(1).includes("\n")) {
+      const afterSlash = next.slice(1);
+      if (!/\s/.test(afterSlash)) {
+        const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
+        setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
+        const anchor = getCommandMenuAnchor(element);
+        if (anchor) setCommandMenuAnchor(anchor);
+        return;
+      }
+    }
+    setCommandMenuTrigger(null);
+  }, []);
+
+  const handleCommandSelect = useCallback((item: ChatCommandMenuItem) => {
+    if (item.type !== "command") return;
+    const command = slashCommands.find((candidate) => candidate.name.replace(/^\//, "") === item.name);
+    const argumentHint = command?.argumentHint ? ` ${command.argumentHint}` : "";
+    const next = `/${item.name}${argumentHint} `;
+    setDraft(next);
+    setCommandMenuTrigger(null);
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+  }, [slashCommands]);
+
+  const submit = useCallback(async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setSubmitError(null);
+    try {
+      const options: WorkCliContinuationOptions = {
+        permissionMode: selectedPermissionMode,
+      };
+      if (modelProvider && selectedModel) {
+        options.model = runtimeModelForContinuation(modelProvider, selectedModel);
+      }
+      if (selectedReasoningEffort) {
+        options.reasoningEffort = selectedReasoningEffort;
+      }
+      await onContinue?.(session, text, options);
+      setDraft("");
+      setCommandMenuTrigger(null);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSending(false);
+    }
+  }, [draft, modelProvider, onContinue, selectedModel, selectedPermissionMode, selectedReasoningEffort, sending, session]);
+
+  return (
+    <div className="shrink-0">
+      <ChatComposerShell
+        mode="standard"
+        className="rounded-lg border border-white/[0.08] bg-white/[0.025]"
+        footer={(
+          <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] text-muted-fg/55">
+            <div className="min-w-0 shrink truncate px-1">
+              <span className="font-medium text-fg/70">{providerLabel}</span>
+            </div>
+            {modelProvider ? (
+              <ProviderModelSelector
+                value={selectedModel}
+                disabled={sending || modelsLoading || models.length === 0}
+                onChange={setSelectedModel}
+                availableModelIds={availableModelIds}
+                catalogMode="available-only"
+                filter={(model) => (
+                  modelProvider === "claude"
+                    ? model.family === "anthropic" && model.isCliWrapped
+                    : model.family === "openai" && model.isCliWrapped
+                )}
+                compactToolbar
+                showReasoning
+                reasoningEffort={selectedReasoningEffort}
+                onReasoningEffortChange={setSelectedReasoningEffort}
+              />
+            ) : null}
+            <WorkCliPermissionPicker
+              provider={provider}
+              value={selectedPermissionMode}
+              onChange={setSelectedPermissionMode}
+              disabled={sending}
+            />
+            <button
+              type="button"
+              disabled={sending || !draft.trim()}
+              onClick={() => void submit()}
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {sending ? <SpinnerGap size={12} className="animate-spin" /> : <PaperPlaneTilt size={12} weight="fill" />}
+              Send
+            </button>
+          </div>
+        )}
+      >
+        <ChatCommandMenu
+          ref={commandMenuRef}
+          trigger={commandMenuTrigger}
+          slashCommands={slashCommands.map((command) => ({
+            name: command.name.replace(/^\//, ""),
+            description: command.description,
+            argumentHint: command.argumentHint,
+            source: command.source,
+          }))}
+          sessionId={null}
+          anchor={commandMenuAnchor}
+          onSelect={handleCommandSelect}
+          onClose={() => setCommandMenuTrigger(null)}
+        />
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          rows={1}
+          disabled={sending}
+          onChange={(event) => updateDraft(event.currentTarget.value, event.currentTarget)}
+          onKeyDown={(event) => {
+            if (commandMenuTrigger && handleCommandMenuKeyDown(event, commandMenuRef, () => setCommandMenuTrigger(null))) {
+              return;
+            }
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              void submit();
+            }
+          }}
+          className="block max-h-32 min-h-[3rem] w-full resize-none bg-transparent px-3 py-2.5 text-[13px] leading-relaxed text-fg/88 outline-none placeholder:text-muted-fg/35 disabled:cursor-not-allowed disabled:opacity-60"
+          placeholder={`Type to continue this ${providerLabel} session...`}
+          aria-label={`Continue ${providerLabel} session`}
+        />
+      </ChatComposerShell>
+      {submitError ? (
+        <div className="mt-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-300">
+          {submitError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ClosedCliSessionSurface({
+  session,
+  layoutVariant,
+  onInfoClick,
+  onContextMenu,
+  onContinue,
+}: {
+  session: TerminalSessionSummary;
+  layoutVariant: "standard" | "grid-tile";
+  onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onContinue?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
+}) {
+  const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const label = primarySessionLabel(session);
+  const showComposer = canContinueAgentCliSession(session);
+  const exitLabel = terminalExitLabel(session.exitCode);
+  const endedTime = session.endedAt
+    ? new Date(session.endedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreview(null);
+    setError(null);
+    void window.ade.terminal.preview({ terminalId: session.id, maxBytes: 160_000 })
+      .then((result) => {
+        if (!cancelled) setPreview(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id, session.endedAt, session.status]);
+
+  const snapshotRows = preview?.snapshot?.visibleRows ?? [];
+  const useSnapshotPreview = snapshotRows.length > 0 && (
+    preview?.session?.status === "running"
+    || !preview?.transcript
+  );
+  const transcriptText = stripTerminalControls(preview?.transcript ?? "").trimEnd()
+    || session.lastOutputPreview
+    || session.summary
+    || "No transcript was captured for this session.";
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-card">
+      <WorkCliSessionHeader
+        session={session}
+        compact={layoutVariant === "grid-tile"}
+        onInfoClick={onInfoClick}
+        onContextMenu={onContextMenu}
+      />
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
+          <div className="min-w-0">
+            <div className="truncate text-[12px] font-medium text-fg/85">{label}</div>
+            <div className="mt-0.5 text-[10px] text-muted-fg/55">
+              {endedTime ? `Ended ${endedTime}` : "Session ended"}
+              {exitLabel ? ` · ${exitLabel}` : ""}
+            </div>
+          </div>
+        </div>
+        {error ? (
+          <div className="shrink-0 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-[11px] text-red-300">
+            {error}
+          </div>
+        ) : null}
+        {useSnapshotPreview ? (
+          <TerminalSnapshotTranscript rows={snapshotRows} />
+        ) : (
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
+            {transcriptText}
+          </pre>
+        )}
+        {showComposer ? <WorkCliContinuationComposer session={session} onContinue={onContinue} /> : null}
+      </div>
+    </div>
+  );
+}
+
 function SessionSurface({
   session,
   isActive,
@@ -67,8 +837,12 @@ function SessionSurface({
   shouldAutofocus = false,
   layoutVariant = "standard",
   terminalVisible = isActive,
+  onInfoClick,
+  onContextMenu,
+  onStopRunningSession,
+  stopping = false,
   onOpenChatSession,
-  onResume,
+  onContinueCliSession,
 }: {
   session: TerminalSessionSummary;
   isActive: boolean;
@@ -76,8 +850,12 @@ function SessionSurface({
   shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   terminalVisible?: boolean;
+  onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onStopRunningSession?: (session: TerminalSessionSummary) => void;
+  stopping?: boolean;
   onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
-  onResume?: (session: TerminalSessionSummary) => void;
+  onContinueCliSession?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -99,6 +877,28 @@ function SessionSurface({
     );
   }
   if (isRunningPtySession(session)) {
+    if (isAgentCliSession(session)) {
+      return (
+        <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+          <WorkCliSessionHeader
+            session={session}
+            compact={layoutVariant === "grid-tile"}
+            stopping={stopping}
+            onInfoClick={onInfoClick}
+            onContextMenu={onContextMenu}
+            onStopRunningSession={onStopRunningSession}
+          />
+          <TerminalView
+            key={session.id}
+            ptyId={session.ptyId}
+            sessionId={session.id}
+            isActive={surfaceActive}
+            isVisible={pageActive && terminalVisible}
+            className="min-h-0 w-full flex-1"
+          />
+        </div>
+      );
+    }
     return (
       <TerminalView
         key={session.id}
@@ -111,7 +911,18 @@ function SessionSurface({
     );
   }
 
-  const resumeCommand = resolveTrackedCliResumeCommand(session);
+  if (isAgentCliSession(session)) {
+    return (
+      <ClosedCliSessionSurface
+        session={session}
+        layoutVariant={layoutVariant}
+        onInfoClick={onInfoClick}
+        onContextMenu={onContextMenu}
+        onContinue={onContinueCliSession}
+      />
+    );
+  }
+
   const label = primarySessionLabel(session);
   const toolLabel = session.toolType ? formatToolTypeLabel(session.toolType) : null;
   const rawSummary = session.summary?.trim() || session.goal?.trim() || null;
@@ -120,6 +931,7 @@ function SessionSurface({
   const endedTime = session.endedAt
     ? new Date(session.endedAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
     : null;
+  const exitLabel = terminalExitLabel(session.exitCode);
 
   return (
     <div
@@ -140,10 +952,10 @@ function SessionSurface({
               {toolLabel && <span>{toolLabel}</span>}
               {toolLabel && endedTime && <span>·</span>}
               {endedTime && <span>Ended {endedTime}</span>}
-              {session.exitCode != null && session.exitCode !== 0 && (
+              {exitLabel && (
                 <>
                   <span>·</span>
-                  <span className="text-red-400">Exit {session.exitCode}</span>
+                  <span className={stoppedBySignal(session.exitCode) ? "text-amber-300" : "text-red-400"}>{exitLabel}</span>
                 </>
               )}
             </div>
@@ -162,74 +974,7 @@ function SessionSurface({
           <span className="font-mono">{session.id}</span>
         </div>
 
-        {/* Resume command */}
-        {resumeCommand && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Resume command</span>
-            <ResumeCommandBlock command={resumeCommand} />
-          </div>
-        )}
-
-        {/* Resume button */}
-        {resumeCommand && onResume && (
-          <button
-            type="button"
-            onClick={() => onResume(session)}
-            className="ade-work-new-chat-btn flex items-center justify-center gap-2 px-4 py-2 text-[12px] font-medium"
-            style={{ cursor: "pointer" }}
-          >
-            <Play size={14} weight="fill" />
-            Resume session
-          </button>
-        )}
       </div>
-    </div>
-  );
-}
-
-function ResumeCommandBlock({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  const copyTimeoutRef = useRef<number | null>(null);
-  const copy = useCallback(async () => {
-    if (copyTimeoutRef.current != null) {
-      window.clearTimeout(copyTimeoutRef.current);
-      copyTimeoutRef.current = null;
-    }
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      copyTimeoutRef.current = window.setTimeout(() => {
-        copyTimeoutRef.current = null;
-        setCopied(false);
-      }, 1500);
-    } catch (err) {
-      console.warn("[WorkViewArea] Failed to copy resume command:", err);
-    }
-  }, [command]);
-
-  useEffect(() => {
-    return () => {
-      if (copyTimeoutRef.current != null) {
-        window.clearTimeout(copyTimeoutRef.current);
-        copyTimeoutRef.current = null;
-      }
-    };
-  }, []);
-
-  return (
-    <div
-      className="ade-chat-recessed group relative flex items-center rounded-md px-3 py-2 font-mono text-[11px] text-fg/80"
-    >
-      <span className="flex-1 select-all break-all">{command}</span>
-      <button
-        type="button"
-        onClick={copy}
-        className="ml-2 shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-        style={{ cursor: "pointer", background: "none", border: "none", color: "var(--color-muted-fg)" }}
-        title="Copy to clipboard"
-      >
-        {copied ? <span className="text-[10px] text-green-400">Copied</span> : <Clipboard size={14} />}
-      </button>
     </div>
   );
 }
@@ -242,7 +987,6 @@ const MODE_OPTIONS: Array<{
 }> = [
   { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane.", Icon: Chats },
   { kind: "cli", label: "CLI", description: "Start a tracked agent CLI session.", Icon: Code },
-  { kind: "shell", label: "Shell", description: "Open a plain terminal shell in this lane's worktree.", Icon: Terminal },
 ];
 
 type SessionsPaneExpandAffordanceProps = {
@@ -405,7 +1149,7 @@ function WorkSidebarToggle({
     <SmartTooltip
       content={{
         label: open ? "Hide ADE tools pane" : "Open ADE tools pane",
-        description: "Keep Git, Files, iOS Simulator, App Control, and Browser context beside this chat.",
+        description: "Keep Git, Files, iOS Simulator, App Control, Browser, and macOS VM context beside this Work session.",
       }}
     >
       <button
@@ -536,7 +1280,7 @@ function WorkTab({
         <button
           type="button"
           data-close-tab-session-id={session.id}
-          title={isBusy ? "Closing..." : "Close tab"}
+          title={isBusy ? "Removing..." : "Remove from Work view"}
           className="inline-flex items-center justify-center opacity-0 group-hover/tab:opacity-100 transition-opacity"
           style={{
             width: 14,
@@ -579,12 +1323,14 @@ export function WorkViewArea({
   activeItemId,
   viewMode,
   draftKind,
-  onResumeSession,
+  draftLaneId = null,
+  onContinueCliSession,
   setViewMode,
   onSelectItem,
   onCloseItem,
   onOpenChatSession,
   onLaunchPtySession,
+  onDraftLaneChange,
   onShowDraftKind,
   onToggleTabGroupCollapsed,
   closingPtyIds,
@@ -601,6 +1347,8 @@ export function WorkViewArea({
   onReorderLaneSessions,
   onOpenSessionInTabsView,
   onGoToLane,
+  onInfoClick,
+  onStopRunningSession,
 }: {
   pageActive?: boolean;
   gridLayoutId: string;
@@ -612,6 +1360,7 @@ export function WorkViewArea({
   activeItemId: string | null;
   viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
+  draftLaneId?: string | null;
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
@@ -626,11 +1375,12 @@ export function WorkViewArea({
     env?: Record<string, string>;
     tracked?: boolean;
   }) => Promise<unknown>;
+  onDraftLaneChange?: (laneId: string) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   onToggleTabGroupCollapsed?: (groupId: string) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
-  onResumeSession?: (session: TerminalSessionSummary) => void;
+  onContinueCliSession?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
   onReorderLaneSessions?: (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => void;
   onOpenSessionInTabsView?: (sessionId: string) => void;
   onGoToLane?: (laneId: string) => void;
@@ -644,6 +1394,8 @@ export function WorkViewArea({
   onToggleWorkSidebar?: () => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;
+  onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onStopRunningSession?: (session: TerminalSessionSummary) => void;
 }) {
   const expandSessionsProps: SessionsPaneExpandAffordanceProps = {
     show: Boolean(sessionsPaneCollapsed && onExpandSessionsPane),
@@ -761,7 +1513,7 @@ export function WorkViewArea({
               type="button"
               onClick={() => onCloseItem(session.id)}
               onMouseDown={(e) => e.stopPropagation()}
-              title={isBusy ? "Closing..." : "Close"}
+              title={isBusy ? "Removing..." : "Remove from Work view"}
               disabled={isBusy}
               className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/50 transition-colors hover:text-fg"
               style={{
@@ -786,14 +1538,34 @@ export function WorkViewArea({
               shouldAutofocus={isActive}
               terminalVisible
               layoutVariant="grid-tile"
+              onInfoClick={onInfoClick}
+              onContextMenu={onContextMenu}
+              onStopRunningSession={onStopRunningSession}
+              stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
               onOpenChatSession={onOpenChatSession}
-              onResume={onResumeSession}
+              onContinueCliSession={onContinueCliSession}
             />
           </div>
         ),
       } satisfies PaneConfig];
     }),
-  ), [activeItemId, closingPtyIds, handleContextMenu, laneColorById, onCloseItem, onGoToLane, onOpenChatSession, onOpenSessionInTabsView, onResumeSession, onSelectItem, pageActive, visibleSessions]);
+  ), [
+    activeItemId,
+    closingPtyIds,
+    handleContextMenu,
+    laneColorById,
+    onCloseItem,
+    onContextMenu,
+    onGoToLane,
+    onInfoClick,
+    onOpenChatSession,
+    onOpenSessionInTabsView,
+    onContinueCliSession,
+    onSelectItem,
+    onStopRunningSession,
+    pageActive,
+    visibleSessions,
+  ]);
   const resolvedTabGroups = tabGroups ?? [];
   const hasGroupedTabs = resolvedTabGroups.length > 0;
   const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
@@ -883,9 +1655,11 @@ export function WorkViewArea({
             <div className="min-h-0 flex-1">
               <WorkStartSurface
                 draftKind={draftKind}
+                draftLaneId={draftLaneId}
                 lanes={lanes}
                 onOpenChatSession={onOpenChatSession}
                 onLaunchPtySession={onLaunchPtySession}
+                onDraftLaneChange={onDraftLaneChange}
                 initialLinearIssueContext={initialLinearIssueContext}
                 onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
               />
@@ -909,7 +1683,6 @@ export function WorkViewArea({
     <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
       {visibleSessions.map((session) => {
         const isActive = activeSession?.id === session.id;
-        const runningTerminalSession = isRunningPtySession(session) ? session : null;
 
         return (
           <div
@@ -917,25 +1690,18 @@ export function WorkViewArea({
             className="absolute inset-0"
             hidden={!isActive}
           >
-            {runningTerminalSession ? (
-              <TerminalView
-                key={runningTerminalSession.id}
-                ptyId={runningTerminalSession.ptyId}
-                sessionId={runningTerminalSession.id}
-                isActive={pageActive && isActive}
-                isVisible={pageActive && isActive}
-                className="h-full w-full"
-              />
-            ) : (
-              <SessionSurface
-                session={session}
-                isActive={isActive}
-                pageActive={pageActive}
-                terminalVisible={isActive}
-                onOpenChatSession={onOpenChatSession}
-                onResume={onResumeSession}
-              />
-            )}
+            <SessionSurface
+              session={session}
+              isActive={isActive}
+              pageActive={pageActive}
+              terminalVisible={isActive}
+              onInfoClick={onInfoClick}
+              onContextMenu={onContextMenu}
+              onStopRunningSession={onStopRunningSession}
+              stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
+              onOpenChatSession={onOpenChatSession}
+              onContinueCliSession={onContinueCliSession}
+            />
           </div>
         );
       })}
@@ -948,9 +1714,11 @@ export function WorkViewArea({
           <div className="min-h-0 flex-1">
             <WorkStartSurface
               draftKind={draftKind}
+              draftLaneId={draftLaneId}
               lanes={lanes}
               onOpenChatSession={onOpenChatSession}
               onLaunchPtySession={onLaunchPtySession}
+              onDraftLaneChange={onDraftLaneChange}
               initialLinearIssueContext={initialLinearIssueContext}
               onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
             />

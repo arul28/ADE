@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isAdeMcpNamedPipePath, resolveAdeMcpIpcPath } from "./adeMcpIpc";
+import { isAdeRuntimeNamedPipePath, resolveAdeRuntimeIpcPath } from "./adeRuntimeIpc";
 
 const originalPlatform = process.platform;
 
@@ -18,25 +18,25 @@ afterEach(() => {
   setPlatform(originalPlatform);
 });
 
-describe("resolveAdeMcpIpcPath", () => {
+describe("resolveAdeRuntimeIpcPath", () => {
   it("uses a named pipe on Windows", () => {
     setPlatform("win32");
     const root = "C:\\Projects\\MyRepo";
-    const resolved = resolveAdeMcpIpcPath(root);
+    const resolved = resolveAdeRuntimeIpcPath(root);
     expect(resolved.toLowerCase()).toMatch(/^\\\\\.\\pipe\\ade-/);
-    expect(isAdeMcpNamedPipePath(resolved)).toBe(true);
+    expect(isAdeRuntimeNamedPipePath(resolved)).toBe(true);
   });
 
   it("uses a stable pipe name for the same project root", () => {
     setPlatform("win32");
     const root = path.resolve("/workspace/project");
-    expect(resolveAdeMcpIpcPath(root)).toBe(resolveAdeMcpIpcPath(root));
+    expect(resolveAdeRuntimeIpcPath(root)).toBe(resolveAdeRuntimeIpcPath(root));
   });
 
   it("uses .ade/ade.sock on Unix", () => {
     setPlatform("linux");
     const root = "/workspace/project";
-    expect(resolveAdeMcpIpcPath(root)).toBe(path.join(root, ".ade", "ade.sock"));
+    expect(resolveAdeRuntimeIpcPath(root)).toBe(path.join(root, ".ade", "ade.sock"));
   });
 
   it("uses realpath canonical casing for the pipe id on Windows", () => {
@@ -50,8 +50,8 @@ describe("resolveAdeMcpIpcPath", () => {
       if (raw.toLowerCase() === "c:\\repo") return "C:\\Repo";
       throw new Error(`unexpected path: ${raw}`);
     });
-    const a = resolveAdeMcpIpcPath("C:\\Repo");
-    const b = resolveAdeMcpIpcPath("c:\\repo");
+    const a = resolveAdeRuntimeIpcPath("C:\\Repo");
+    const b = resolveAdeRuntimeIpcPath("c:\\repo");
     expect(a).toBe(b);
     const id = createHash("sha256").update(path.win32.resolve("C:\\Repo")).digest("hex").slice(0, 24);
     expect(a).toBe(`\\\\.\\pipe\\ade-${id}`);
@@ -67,7 +67,7 @@ describe("resolveAdeMcpIpcPath", () => {
       if (raw === "C:\\Work\\repo") return "C:\\Work\\repo";
       throw new Error(`unexpected path: ${raw}`);
     });
-    expect(resolveAdeMcpIpcPath("C:\\Work\\Repo")).not.toBe(resolveAdeMcpIpcPath("C:\\Work\\repo"));
+    expect(resolveAdeRuntimeIpcPath("C:\\Work\\Repo")).not.toBe(resolveAdeRuntimeIpcPath("C:\\Work\\repo"));
   });
 
   it("canonicalizes Windows path separators and dot segments before hashing", () => {
@@ -79,7 +79,7 @@ describe("resolveAdeMcpIpcPath", () => {
       if (normalized.toLowerCase() === "c:\\repo") return "C:\\Repo";
       throw new Error(`unexpected path: ${raw}`);
     });
-    expect(resolveAdeMcpIpcPath("C:/Repo/child/..")).toBe(resolveAdeMcpIpcPath("c:\\repo"));
+    expect(resolveAdeRuntimeIpcPath("C:/Repo/child/..")).toBe(resolveAdeRuntimeIpcPath("c:\\repo"));
   });
 
   it("uses native realpath on Windows when available before hashing", () => {
@@ -91,6 +91,6 @@ describe("resolveAdeMcpIpcPath", () => {
       throw new Error("unexpected path");
     });
 
-    expect(resolveAdeMcpIpcPath("C:\\Alias")).toBe(resolveAdeMcpIpcPath("C:\\Canonical"));
+    expect(resolveAdeRuntimeIpcPath("C:\\Alias")).toBe(resolveAdeRuntimeIpcPath("C:\\Canonical"));
   });
 });

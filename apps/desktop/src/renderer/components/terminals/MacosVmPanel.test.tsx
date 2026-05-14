@@ -34,6 +34,16 @@ const vmRecord: MacosVmRecord = {
   metadata: {},
 };
 
+const laneTwoVmRecord: MacosVmRecord = {
+  ...vmRecord,
+  id: "vm-2",
+  name: "ade-lane-two",
+  laneId: "lane-2",
+  laneName: "Lane two",
+  laneRoot: "/tmp/lane-two",
+  sharedDirectory: "/tmp/lane-two",
+};
+
 const status: MacosVmStatus = {
   platform: "darwin",
   arch: "arm64",
@@ -56,7 +66,7 @@ const status: MacosVmStatus = {
     },
   ],
   laneVm: vmRecord,
-  vms: [vmRecord],
+  vms: [vmRecord, laneTwoVmRecord],
   docs: {
     appleVirtualization: "https://example.com/apple-virtualization",
     appleSharedDirectories: "https://example.com/shared-directories",
@@ -182,5 +192,32 @@ describe("MacosVmPanel", () => {
 
     expect((screen.getByPlaceholderText("Text") as HTMLInputElement).value).toBe("hello vm");
     expect(api.typeText).not.toHaveBeenCalled();
+  });
+
+  it("warns and blocks point selection when a VM screenshot belongs to another lane", async () => {
+    const api = installMacosVmApi();
+    const { rerender } = render(
+      <MacosVmPanel
+        laneId="lane-1"
+        laneRoot="/tmp/lane-one"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(api.getStatus).toHaveBeenCalledWith({ laneId: "lane-1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Screenshot" }));
+    const image = await screen.findByAltText("macOS VM screenshot") as HTMLImageElement;
+
+    rerender(
+      <MacosVmPanel
+        laneId="lane-2"
+        laneRoot="/tmp/lane-two"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/This macOS VM screenshot is from Lane one, not Lane two/)).toBeTruthy();
+    fireEvent.click(image, { clientX: 50, clientY: 25 });
+    expect(api.selectPoint).not.toHaveBeenCalled();
   });
 });

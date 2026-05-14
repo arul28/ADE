@@ -21,7 +21,7 @@ These are the foundations that should stay merged from this lane (see also `docs
 
 | Area | What shipped |
 | --- | --- |
-| **CLI ↔ desktop IPC** | Windows named-pipe path next to the Unix socket model (`adeMcpIpc.*`). |
+| **CLI ↔ desktop IPC** | Windows named-pipe path next to the Unix socket model (`adeRuntimeIpc.*`). |
 | **Child processes** | `processExecution` — `cmd`/`bat` via `ComSpec`, `windowsVerbatimArguments`, `taskkill` for trees. Both `resolveWindowsCmdInvocation` (argv form) and `resolveWindowsCmdLineInvocation` (pre-built command-string form) wrap a single outer `cmd.exe /d /s /c "…"` so embedded `&&` chains don't break out of quoting. Long-running children that previously called `child.kill("SIGKILL")` (git, automation runs) now route through `terminateProcessTree` so taskkill cleans up Windows process groups. |
 | **PATH for CLIs** | `augmentProcessPathWithShellAndKnownCliDirs` has an explicit `win32` path (no POSIX `sh -ic`). |
 | **PTY** | `ptyService` picks `powershell.exe` / `cmd.exe` on Windows. |

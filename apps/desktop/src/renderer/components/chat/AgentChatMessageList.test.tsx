@@ -122,6 +122,10 @@ beforeEach(() => {
       ...(originalAde?.terminal ?? {}),
       activeForChat: vi.fn().mockResolvedValue(null),
     },
+    localhost: {
+      ...(originalAde?.localhost ?? {}),
+      probePort: vi.fn().mockResolvedValue(true),
+    },
   } as any;
 });
 
@@ -218,7 +222,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open http://localhost:5173/ in ADE browser" }));
+    const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
+    fireEvent.click(openButton);
 
     await waitFor(() => {
       expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
@@ -273,9 +278,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "session-1", onInsertDraft });
 
-    fireEvent.click(screen.getByRole("button", {
+    const logsButton = await screen.findByRole("button", {
       name: "Open terminal logs or ask the agent to run this server in the chat terminal",
-    }));
+    });
+    fireEvent.click(logsButton);
 
     await waitFor(() => {
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket terminal read"));

@@ -298,7 +298,10 @@ function createMockSessionService() {
   } as any;
 }
 
-function createMockProjectConfigService() {
+function createMockProjectConfigService(options: { titleGenerationEnabled?: boolean } = {}) {
+  const sessionIntelligence = typeof options.titleGenerationEnabled === "boolean"
+    ? { titles: { enabled: options.titleGenerationEnabled } }
+    : {};
   return {
     get: vi.fn(() => ({
       effective: {
@@ -308,7 +311,7 @@ function createMockProjectConfigService() {
             inProcess: { mode: "edit" },
           },
           chat: {},
-          sessionIntelligence: {},
+          sessionIntelligence,
         },
       },
     })),
@@ -387,11 +390,11 @@ function createMockIssueInventoryService() {
   } as any;
 }
 
-function createService() {
+function createService(options: { titleGenerationEnabled?: boolean } = {}) {
   const logger = createLogger();
   const laneService = createMockLaneService();
   const sessionService = createMockSessionService();
-  const projectConfigService = createMockProjectConfigService();
+  const projectConfigService = createMockProjectConfigService(options);
   const issueInventoryService = createMockIssueInventoryService();
   const transcriptsDir = path.join(tmpRoot, "transcripts");
   fs.mkdirSync(transcriptsDir, { recursive: true });
@@ -544,6 +547,28 @@ describe("suggestLaneNameFromPrompt", () => {
       "agent_chat.suggest_lane_name_failed",
       expect.objectContaining({ error: "API rate limited" }),
     );
+  });
+
+  it("uses the explicit fallback name when title generation is disabled", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+      text: "Login Bug Fix",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const { service } = createService({ titleGenerationEnabled: false });
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix the authentication login failure in the dashboard",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("chat-20260514-010203");
+    expect(runOpenCodeTextPrompt).not.toHaveBeenCalled();
   });
 
   it("uses AI-generated name when the model runtime succeeds", async () => {

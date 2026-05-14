@@ -48,6 +48,18 @@ describe("keybindings", () => {
     expect(dispatchKeybinding(diagnostics.bindings, "Help", "", { upArrow: true })).toBeUndefined();
   });
 
+  it("dispatches the background chat launch shortcut", () => {
+    const diagnostics = validateClaudeKeybindingsConfig({
+      bindings: [
+        { context: "Chat", bindings: { "cmd+return": "chat:launchBackground" } },
+      ],
+    });
+
+    expect(diagnostics.bindingCount).toBe(1);
+    expect(diagnostics.warnings).toEqual([]);
+    expect(dispatchKeybinding(diagnostics.bindings, "Chat", "", { meta: true, return: true })).toBe("chat:launchBackground");
+  });
+
   it("dispatches documented multi-key chords", () => {
     const diagnostics = validateClaudeKeybindingsConfig({
       bindings: [

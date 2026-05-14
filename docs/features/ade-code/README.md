@@ -17,15 +17,25 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
 | `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream (e.g. `derivePendingSteers`) consumed by the composer and right-pane steer view. |
+| `apps/ade-cli/src/tuiClient/drawerSelection.ts` | Pure selectors for the lane / chat drawer (active row, expanded groups, keyboard navigation). |
+| `apps/ade-cli/src/tuiClient/eventDedup.ts` | Reserves and syncs chat-event dedupe keys so replayed runtime events do not render twice. |
+| `apps/ade-cli/src/tuiClient/feedback.ts` | Builds the multi-field `/feedback` form. Validates required fields, packs the `FeedbackDraftInput` envelope, and adds project / lane / runtime context before submission. |
+| `apps/ade-cli/src/tuiClient/heartbeat.ts` | Maintains the `startTuiHeartbeat` loop that tells the runtime the terminal client is still attached. |
+| `apps/ade-cli/src/tuiClient/highlightCache.ts` | Pre-registers highlight.js languages (TypeScript, JavaScript, Python, Rust, Go, Swift, Bash, JSON, YAML, Markdown, XML, CSS, SQL) and caches token streams so chat code fences render once instead of being re-highlighted on every redraw. |
+| `apps/ade-cli/src/tuiClient/imageTargets.ts` | Finds the latest openable Codex image result / viewed image target for terminal open actions. |
 | `apps/ade-cli/src/tuiClient/laneTree.ts` | Stack-graph ordering for the lane drawer (`sortLanesForStackGraph`). |
+| `apps/ade-cli/src/tuiClient/pendingInput.ts` | Derives pending tool approvals and answer prompts from the chat event stream. |
+| `apps/ade-cli/src/tuiClient/planMode.ts` | Provider-agnostic plan-mode detector (`isPlanMode(modelState)`) plus `hasFirstUserMessage` event scan. Decides whether the composer should display the plan-mode badge and gate destructive tools. |
 | `apps/ade-cli/src/tuiClient/spinTick.tsx` | Shared monotonic spinner tick provider (`SpinTickProvider`) so every animated glyph in the TUI ticks in lockstep. |
+| `apps/ade-cli/src/tuiClient/subagentPane.ts` | Builds the right-pane Subagents/Teammates snapshot view from `subagent_*` and teammate envelopes (`subagentSnapshotsFromEvents`). |
+| `apps/ade-cli/src/tuiClient/workEventIds.ts` | Stable Work-tab identity helpers used by the TUI to thread `ade.work-*` event ids through the renderer without re-deriving them per frame. |
 | `apps/ade-cli/src/tuiClient/state.ts` | Persists terminal-client state under `~/.ade/`: the last selected chat per lane (`lastChatByLane`) plus the most recently active lane (`lastLaneId`), used to restore lane focus across launches. |
 | `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens. Mirrors the Claude Design wireframe terminal palette 1:1: surfaces, text levels, brand violets, status (`running`/`attention`/`idle`/`failed`/`primary`), executor brand colors (Claude/Codex/Cursor/OpenCode/Droid + Shell + Copilot), plus helper exports `laneStatusColor`, `agentStatusColor`, `agentStatusGlyph`, and per-provider `glyph` + `wordmark`. |
 | `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (exports `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText` for `/copy`), `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`. |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (exports `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText` for `/copy`), `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink). |
 | `apps/ade-cli/src/tuiClient/keybindings/index.ts` | Verbatim `~/.claude/keybindings.json` reader and TUI action dispatcher (chord support, vim namespace, clipboard-image paste hooks). Resolves `defaultKeybindingsPath()`, parses the Claude keybindings schema, and maps key sequences onto TUI actions. |
 | `apps/ade-cli/src/tuiClient/statusline/index.ts` | Claude-compatible status line config reader and runner. Reads the `~/.claude/statusline.json` contract, executes the configured status command, and exposes the rendered lines to `ModelStatus`. |
-| `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeMcpServerStatus`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
+| `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
 | `apps/desktop/src/shared/modelRegistry.ts` | Default model selection for new sessions (`getDefaultModelDescriptor`). |
 | `apps/desktop/src/shared/adeLayout.ts` | Resolves project-scoped `.ade` paths. |
 
@@ -81,7 +91,7 @@ Heartbeats are kept alive with `startTuiHeartbeat` so the runtime knows the chat
 
 ## Slash commands
 
-`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. The TUI also discovers project command files and Codex prompts before a chat exists, then refreshes against server-provided `AgentChatSlashCommand`s from the active runtime via `getSlashCommands`. Provider/runtime commands win over same-named built-ins except for local terminal controls such as `/login`, `/quit`, `/clear`, and `/end`.
+`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. The TUI also discovers project command files and Codex prompts before a chat exists, then refreshes against server-provided `AgentChatSlashCommand`s from the active runtime via `getSlashCommands`. Provider/runtime commands win over same-named built-ins except for local terminal controls such as `/login`, `/quit`, and `/clear`.
 
 Inline (acts on chat or shell):
 
@@ -91,7 +101,6 @@ Inline (acts on chat or shell):
 | `/push` | Push the active lane branch. |
 | `/clear` | Clear the local TUI transcript view. |
 | `/copy` | Copy the visible chat transcript (rendered through `renderChatTranscriptPlainText`) to the system clipboard. |
-| `/end` | End the active chat runtime. |
 | `/open` | Hand the current ADE context off to desktop via `app/navigate`. |
 | `/quit` | Exit `ade code`. |
 | `/remember <fact>` | Write a durable ADE memory entry. |
@@ -113,7 +122,6 @@ Right pane (open the contextual drawer):
 | `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |
 | `/agents` | List Claude agents from user/project config (Claude only). |
 | `/skills` | List Claude skills from user/project config (Claude only). |
-| `/mcp` | Show Claude MCP server status (Claude only). |
 | `/context` | Show Claude context usage breakdown (Claude only). |
 | `/init` | Generate AGENTS.md and Claude pointer files (Claude only). |
 | `/status` | Project, lane, runtime state summary. |
@@ -124,11 +132,11 @@ Right pane (open the contextual drawer):
 | `/memory [query]`, `/forget` | Search and manage ADE memory. |
 | `/chats` | Sessions in the active lane. |
 | `/switch [lane\|chat]` | Switcher palette. |
-| `/resume` | Resume the active ended chat. |
 | `/help` | Keymap and command help. |
 | `/keybindings` | Show Claude-compatible keybinding config diagnostics. |
 | `/statusline` | Show Claude-compatible status line config. |
 | `/doctor` | Show ADE Code and Claude-compat diagnostics. |
+| `/feedback` | Multi-field feedback form (category / summary / details / expected / actual / environment / additional context) wired to `feedback.submit` via the `feedback.ts` form builder. |
 | `/model`, `/effort` | Model and reasoning-effort pickers. |
 | `/system` | System and runtime details. |
 | `/ade <domain.action> [json]` | Run an allowlisted ADE action; shows result in RightPane. |
@@ -193,7 +201,7 @@ After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli
 - **Clipboard image paste.** Cross-platform clipboard-image paste is wired into the composer (Linux via `xclip`/`wl-paste`, macOS via `pngpaste`/AppleScript, Windows via PowerShell), so pasting a screenshot uploads it as a Claude attachment alongside text.
 - **`auto` permission mode.** The Claude permission picker accepts `auto` (mapped onto the SDK `permissionMode: "auto"`) in addition to `default`, `plan`, `acceptEdits`, and `bypassPermissions`.
 - **Subagent panel.** The right pane's subagent surface is re-keyed on `agentId` + `parentToolUseId` and split across two tabs — Subagents and Teammates. Background runs render inline within the Subagents tab via a per-row `background` flag rather than a separate tab. Snapshots are reconstructed live from `subagent_*` envelopes (and `teammate.idle` / `task.completed` for teammates) via `subagentSnapshotsFromEvents()`. Each snapshot carries `parentToolUseId`, `turnId`, `startedAt`, `endedAt`, and a derived `durationMs` so rows can show elapsed time even when the runtime did not report `usage.durationMs`. The footer exposes an explicit Agents pane toggle (via `pane:agents` keybinding) when at least one teammate/subagent row exists; absent that, the count surfaces as an inline chip.
-- **Context, MCP, output styles, plugins.** `/context`, `/mcp`, `/output-style`, and `/plugin` call `chat.getContextUsage`, `chat.getClaudeMcpStatus`, `chat.listClaudeOutputStyles` / `chat.setClaudeOutputStyle`, and `chat.listClaudePlugins` / `chat.reloadClaudePlugins` against the same Claude SDK runtime the desktop chat uses.
+- **Context, output styles, plugins.** `/context`, `/output-style`, and `/plugin` call `chat.getContextUsage`, `chat.listClaudeOutputStyles` / `chat.setClaudeOutputStyle`, and `chat.listClaudePlugins` / `chat.reloadClaudePlugins` against the same Claude SDK runtime the desktop chat uses.
 
 ## Chat setup
 

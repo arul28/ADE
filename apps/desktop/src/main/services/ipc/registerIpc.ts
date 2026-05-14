@@ -241,16 +241,11 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
-  AgentChatClaudeMcpReconnectArgs,
-  AgentChatClaudeMcpServerStatus,
-  AgentChatClaudeMcpStatusArgs,
-  AgentChatClaudeMcpToggleArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudePermissionMode,
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
-  AgentChatDisposeArgs,
   AgentChatGetSummaryArgs,
   AgentChatEventEnvelope,
   AgentChatHandoffArgs,
@@ -263,7 +258,6 @@ import type {
   AgentChatParallelLaunchStateArgs,
   AgentChatPermissionMode,
   AgentChatRespondToInputArgs,
-  AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSuggestLaneNameArgs,
@@ -341,8 +335,11 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtySendToSessionArgs,
+  PtySendToSessionResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
+  ChatTerminalPreviewArgs,
   ChatTerminalReadArgs,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
@@ -718,6 +715,7 @@ import {
   spawnInNewTerminalWindow,
 } from "../chat/codexCliLauncher";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
+import { probeLocalhostPort } from "../probeLocalhostPort";
 
 export type AppContext = {
   db: AdeDb;
@@ -2013,6 +2011,7 @@ export function registerIpc({
     [IPC.appControlTypeText]: new Set(["text"]),
     [IPC.appControlDispatchKey]: new Set(["text", "unmodifiedText", "key", "code"]),
     [IPC.terminalWrite]: new Set(["data"]),
+    [IPC.ptySendToSession]: new Set(["text"]),
     [IPC.ptyWrite]: new Set(["data"]),
     [IPC.builtInBrowserNavigate]: new Set(["url"]),
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
@@ -3065,6 +3064,15 @@ export function registerIpc({
     };
   };
 
+  const parseTerminalPreviewArgs = (value: unknown): ChatTerminalPreviewArgs => {
+    const record = terminalRecord(value);
+    return {
+      terminalId: optionalTerminalString(record, "terminalId", 128),
+      chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+      maxBytes: optionalTerminalNumber(record, "maxBytes", 1, 8 * 1024 * 1024),
+    };
+  };
+
   const parseTerminalWriteArgs = (value: unknown): ChatTerminalWriteArgs => {
     const record = terminalRecord(value);
     const data = optionalTerminalString(record, "data", 100_000, false);
@@ -3209,6 +3217,13 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
+
+  ipcMain.handle(
+    IPC.localhostProbePort,
+    async (_event, args: { port: number }): Promise<boolean> => {
+      return probeLocalhostPort(args?.port);
+    },
+  );
 
   ipcMain.on(
     IPC.appLogDebugEvent,
@@ -5712,6 +5727,11 @@ export function registerIpc({
     return ctx.laneService.cancelDelete(arg.laneId);
   });
 
+  ipcMain.handle(IPC.lanesListDeleteProgress, async () => {
+    const ctx = getCtx();
+    return ctx.laneService.listDeleteProgress();
+  });
+
   ipcMain.handle(IPC.lanesGetDeleteRisk, async (_event, arg: { laneId: string }) => {
     const ctx = getCtx();
     return await ctx.laneService.getDeleteRisk(arg.laneId);
@@ -6160,6 +6180,9 @@ export function registerIpc({
       prompt: record.prompt.trim(),
       modelId: record.modelId.trim(),
       laneId: record.laneId.trim(),
+      ...(typeof record.fallbackName === "string" && record.fallbackName.trim().length
+        ? { fallbackName: record.fallbackName.trim() }
+        : {}),
     };
   };
 
@@ -6531,11 +6554,6 @@ export function registerIpc({
     await ctx.agentChatService.interrupt(arg);
   });
 
-  ipcMain.handle(IPC.agentChatResume, async (_event, arg: AgentChatResumeArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
-    return await ctx.agentChatService.resumeSession(arg);
-  });
-
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.approveToolUse(arg);
@@ -6549,11 +6567,6 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatModels, async (_event, arg: AgentChatModelsArgs): Promise<AgentChatModelInfo[]> => {
     const ctx = getCtx();
     return await ctx.agentChatService.getAvailableModels(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatDispose, async (_event, arg: AgentChatDisposeArgs): Promise<void> => {
-    const ctx = getCtx();
-    await ctx.agentChatService.dispose(arg);
   });
 
   ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
@@ -6584,21 +6597,6 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {
     const ctx = getCtx();
     return ctx.agentChatService.getSlashCommands(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatClaudeMcpStatus, async (_event, arg: AgentChatClaudeMcpStatusArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const ctx = getCtx();
-    return ctx.agentChatService.getClaudeMcpStatus(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatClaudeMcpReconnect, async (_event, arg: AgentChatClaudeMcpReconnectArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const ctx = getCtx();
-    return ctx.agentChatService.reconnectClaudeMcpServer(arg);
-  });
-
-  ipcMain.handle(IPC.agentChatClaudeMcpToggle, async (_event, arg: AgentChatClaudeMcpToggleArgs): Promise<AgentChatClaudeMcpServerStatus[]> => {
-    const ctx = getCtx();
-    return ctx.agentChatService.toggleClaudeMcpServer(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
@@ -7419,6 +7417,11 @@ export function registerIpc({
     return await ctx.ptyService.create(arg);
   });
 
+  ipcMain.handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
+    const ctx = getCtx();
+    return await ctx.ptyService.sendToSession(arg);
+  });
+
   ipcMain.handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
     const ctx = getCtx();
     ctx.ptyService.write(arg);
@@ -7440,6 +7443,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.terminalRead, async (_event, arg) =>
     getCtx().ptyService.readTerminal(parseTerminalReadArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalPreview, async (_event, arg) =>
+    getCtx().ptyService.previewTerminal(parseTerminalPreviewArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalWrite, async (_event, arg) =>

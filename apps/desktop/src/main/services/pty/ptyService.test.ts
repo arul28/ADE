@@ -97,8 +97,17 @@ const mocks = vi.hoisted(() => {
       };
       return stream;
     }),
+    readFileSync: vi.fn((p: string) => {
+      if (!fileContents.has(p)) {
+        const error = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return fileContents.get(p) ?? "";
+    }),
     unlinkSync: vi.fn(),
     writeFileSync: vi.fn(),
+    renameSync: vi.fn(),
     randomUUID: vi.fn(() => "uuid-" + Math.random().toString(36).slice(2, 10)),
     runGit: vi.fn(async () => ({ exitCode: 0, stdout: "abc123\n", stderr: "" })),
     stripAnsi: vi.fn((t: string) => t),
@@ -124,8 +133,10 @@ vi.mock("node:fs", () => ({
     closeSync: mocks.closeSync,
     chmodSync: mocks.chmodSync,
     createWriteStream: mocks.createWriteStream,
+    readFileSync: mocks.readFileSync,
     unlinkSync: mocks.unlinkSync,
     writeFileSync: mocks.writeFileSync,
+    renameSync: mocks.renameSync,
   },
   existsSync: mocks.existsSync,
   lstatSync: mocks.lstatSync,
@@ -138,8 +149,10 @@ vi.mock("node:fs", () => ({
   closeSync: mocks.closeSync,
   chmodSync: mocks.chmodSync,
   createWriteStream: mocks.createWriteStream,
+  readFileSync: mocks.readFileSync,
   unlinkSync: mocks.unlinkSync,
   writeFileSync: mocks.writeFileSync,
+  renameSync: mocks.renameSync,
 }));
 
 vi.mock("node:crypto", () => ({
@@ -1168,6 +1181,150 @@ describe("ptyService", () => {
       );
     });
 
+    it("sendToSession writes to a live PTY without spawning another runtime", async () => {
+      const { service, mockPty, loadPty } = createHarness();
+      const created = await service.create({
+        sessionId: "session-live-send",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex",
+      });
+      (mockPty.write as unknown as { mockClear(): void }).mockClear();
+      loadPty.mockClear();
+
+      const result = await service.sendToSession({
+        sessionId: created.sessionId,
+        text: "keep going",
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        sessionId: "session-live-send",
+        ptyId: created.ptyId,
+        resumed: false,
+        reusedExistingRuntime: true,
+      }));
+      expect(mockPty.write).toHaveBeenCalledWith("keep going\r");
+      expect(loadPty).not.toHaveBeenCalled();
+    });
+
+    it("sendToSession resumes an ended tracked CLI session and writes the message", async () => {
+      const { service, sessionService, mockPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-ended-send",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-ended-send.log",
+        toolType: "codex",
+        resumeCommand: "codex resume thread-ended",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-ended",
+          launch: { permissionMode: "plan" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-ended-send",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const result = await service.sendToSession({
+        sessionId: "session-ended-send",
+        text: "fix failing tests",
+        cols: 120,
+        rows: 40,
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        permissionMode: "plan",
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        sessionId: "session-ended-send",
+        resumed: true,
+        reusedExistingRuntime: false,
+      }));
+      expect(sessionService.reattach).toHaveBeenCalledWith({
+        sessionId: "session-ended-send",
+        ptyId: expect.any(String),
+        startedAt: expect.any(String),
+      });
+      expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended\r");
+      expect(mockPty.write).toHaveBeenCalledWith("fix failing tests\r");
+    });
+
+    it("sendToSession single-flights concurrent resumes for the same session", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-concurrent-send",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-concurrent-send.log",
+        toolType: "codex",
+        resumeCommand: "codex resume thread-concurrent",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-concurrent",
+          launch: { permissionMode: "default" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-concurrent-send",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      const [first, second] = await Promise.all([
+        service.sendToSession({ sessionId: "session-concurrent-send", text: "first" }),
+        service.sendToSession({ sessionId: "session-concurrent-send", text: "second" }),
+      ]);
+
+      expect(first.ptyId).toBe(second.ptyId);
+      expect(loadPty).toHaveBeenCalledTimes(1);
+      expect(mockPty.write).toHaveBeenCalledWith("first\r");
+      expect(mockPty.write).toHaveBeenCalledWith("second\r");
+    });
+
+    it("sendToSession rejects ended shell sessions", async () => {
+      const { service, sessionService } = createHarness();
+      sessionService.create({
+        sessionId: "session-shell-ended",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Shell",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-shell-ended.log",
+        toolType: "shell",
+        resumeCommand: null,
+        resumeMetadata: null,
+      });
+      sessionService.end({
+        sessionId: "session-shell-ended",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await expect(service.sendToSession({
+        sessionId: "session-shell-ended",
+        text: "hello",
+      })).rejects.toThrow(/not an agent CLI session/i);
+    });
+
     it("rejects reattaching a session into the wrong lane", async () => {
       const { service, sessionService } = createHarness();
       sessionService.create({
@@ -1306,7 +1463,6 @@ describe("ptyService", () => {
     });
 
     it.each([
-      ["claude", "Claude session"],
       ["codex", "Codex session"],
       ["cursor-cli", "Cursor Agent CLI"],
       ["droid", "Factory Droid CLI"],
@@ -1406,6 +1562,100 @@ describe("ptyService", () => {
 
       expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
       expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("drops accidental leading slash markers from natural-language Claude titles", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Claude Code",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "/this is a test\r" });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("This is a test");
+      expect(sessionService.get(createdSessionId)?.goal).toBe("/this is a test");
+    });
+
+    it("adopts Claude Code runtime ai-title from local session storage", async () => {
+      vi.useFakeTimers();
+      try {
+        const claudeSessionId = "123e4567-e89b-12d3-a456-426614174000";
+        const claudeFilePath = path.join(
+          os.homedir(),
+          ".claude",
+          "projects",
+          "-tmp-test-worktree",
+          `${claudeSessionId}.jsonl`,
+        );
+        mocks.fileContents.set(claudeFilePath, "");
+
+        const { service, sessionService } = createHarness();
+        const { ptyId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          startupCommand: `claude --session-id ${claudeSessionId} --append-system-prompt guidance`,
+        });
+
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        expect(createdSessionId).toBeTruthy();
+
+        service.write({ ptyId, data: "/this is a test\r" });
+        expect(sessionService.get(createdSessionId)?.title).toBe("This is a test");
+
+        const runtimeTitle = JSON.stringify({
+          type: "ai-title",
+          sessionId: claudeSessionId,
+          aiTitle: "Test session setup",
+        });
+        mocks.fileContents.set(claudeFilePath, `${runtimeTitle}\n`);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+
+        expect(sessionService.get(createdSessionId)?.title).toBe("Test session setup");
+        expect(sessionService.updateMeta).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionId: createdSessionId,
+            title: "Test session setup",
+            manuallyNamed: false,
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not call ADE AI title generation for Claude CLI sessions", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "ADE generated title" })),
+      };
+      const { service, sessionService } = createHarness({ aiIntegrationService });
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Claude Code",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(createdSessionId).toBeTruthy();
+
+      service.write({ ptyId, data: "Fix the flaky login tests\r" });
+      await Promise.resolve();
+
+      expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
     it("treats legacy slash-command CLI titles as placeholders", async () => {
@@ -1922,6 +2172,15 @@ describe("ptyService", () => {
       );
     });
 
+    it("marks signal-terminated sessions as disposed instead of failed", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+      mockPty._emitter.emit("exit", { exitCode: 143 });
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId, exitCode: 143, status: "disposed" }),
+      );
+    });
+
     it("marks session as completed when exit code is null", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
@@ -2015,8 +2274,8 @@ describe("ptyService", () => {
     it("backfills Codex storage resume targets during session-list hydration", async () => {
       // The session-list path is how older sessions (whose transcripts no
       // longer contain an explicit resume command) get their resume target
-      // backfilled. The same storage fallback also runs from resume-launch so
-      // pressing Resume does not fall through to Codex's picker.
+      // backfilled. The same storage fallback also runs from continuation
+      // launch so Codex does not fall through to the picker.
       vi.useFakeTimers();
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
@@ -2098,6 +2357,54 @@ describe("ptyService", () => {
         await vi.advanceTimersByTimeAsync(1);
         await service.ensureResumeTargets(["session-missing"]);
         expect(sessionService.readTranscriptTail).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("captures Claude runtime titles for sessions that already have a resume target", async () => {
+      vi.useFakeTimers();
+      try {
+        const claudeSessionId = "5647da1e-10de-4089-bce2-00b9c2552bfc";
+        const filePath = path.join(
+          os.homedir(),
+          ".claude",
+          "projects",
+          "-tmp-worktree",
+          `${claudeSessionId}.jsonl`,
+        );
+        mocks.fileContents.set(filePath, `${JSON.stringify({
+          type: "ai-title",
+          sessionId: claudeSessionId,
+          aiTitle: "Patched exit works",
+        })}\n`);
+
+        const { service, sessionService } = createHarness();
+        sessionService.create({
+          sessionId: "session-claude-existing",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Say exactly: patched exit works",
+          startedAt: "2026-04-15T21:30:00.000Z",
+          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-existing.log",
+          toolType: "claude",
+          resumeMetadata: {
+            provider: "claude",
+            targetKind: "session",
+            targetId: claudeSessionId,
+            launch: { permissionMode: "default" },
+          },
+        });
+
+        await service.ensureResumeTargets(["session-claude-existing"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+          sessionId: "session-claude-existing",
+          title: "Patched exit works",
+          manuallyNamed: false,
+        }));
       } finally {
         vi.useRealTimers();
       }
@@ -2342,6 +2649,34 @@ describe("ptyService", () => {
       expect(list[0]?.active).toBe(true);
     });
 
+    it("listTerminals excludes persisted agent chat transcript rows", async () => {
+      const { service, sessionService } = createChatHarness();
+
+      const terminal = await service.create({
+        laneId: "lane-1",
+        title: "Claude Code",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+      sessionService.create({
+        sessionId: "chat-row",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude Chat",
+        startedAt: new Date().toISOString(),
+        transcriptPath: "/tmp/chat-row.jsonl",
+        toolType: "claude-chat",
+      });
+
+      const ids = service.listTerminals({ laneId: "lane-1" }).map((session) => session.terminalId);
+
+      expect(ids).toContain(terminal.sessionId);
+      expect(ids).not.toContain("chat-row");
+      await expect(service.previewTerminal({ terminalId: "chat-row" })).rejects.toThrow("not a terminal");
+    });
+
     it("readTerminal returns transcript bytes from `since` and reports nextSince", async () => {
       const { service, sessionService } = createChatHarness();
       const created = await service.create({
@@ -2377,6 +2712,30 @@ describe("ptyService", () => {
       );
     });
 
+    it("previewTerminal returns a transcript fallback without resuming the terminal", async () => {
+      const { service, sessionService } = createChatHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Preview",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-preview",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("raw transcript");
+
+      const preview = await service.previewTerminal({ terminalId: created.sessionId, maxBytes: 4096 });
+
+      expect(preview.terminalId).toBe(created.sessionId);
+      expect(preview.source).toBe("transcript");
+      expect(preview.transcript).toBe("raw transcript");
+      expect(preview.snapshot).toBeNull();
+      expect(sessionService.readTranscriptTail).toHaveBeenCalledWith(
+        expect.stringContaining("/tmp/transcripts/"),
+        4096,
+        { raw: true, alignToLineBoundary: true },
+      );
+    });
+
     it("writeTerminal routes data via the active chat terminal and the underlying PTY", async () => {
       const { service, mockPty } = createChatHarness();
       await service.create({
@@ -2390,6 +2749,22 @@ describe("ptyService", () => {
       const result = service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
       expect(result).toEqual({ ok: true });
       expect(mockPty.write).toHaveBeenCalledWith("y\n");
+    });
+
+    it("resizeTerminal resizes the active chat terminal", async () => {
+      const { service, mockPty } = createChatHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Resize",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-resize",
+      });
+
+      const result = service.resizeTerminal({ chatSessionId: "chat-resize", cols: 120, rows: 30 });
+
+      expect(result).toEqual({ ok: true, cols: 120, rows: 30 });
+      expect(mockPty.resize).toHaveBeenCalledWith(120, 30);
     });
 
     it("signalTerminal sends ^C for SIGINT and forwards SIGTERM to pty.kill", async () => {

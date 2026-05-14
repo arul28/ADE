@@ -7,6 +7,12 @@ import type {
   TerminalRuntimeState,
   TerminalToolType,
 } from "../../shared/types";
+import {
+  codexReasoningEffortFlags,
+  modelToCliFlag,
+  normalizeCliFlagValue,
+  resolveClaudeCliModelForLaunch,
+} from "../../shared/cliLaunch";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
@@ -69,6 +75,7 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
   if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
+  if (permissionMode === "auto") return ["--permission-mode", "auto"];
   if (permissionMode === "default") return ["--permission-mode", "default"];
   return ["--permission-mode", "plan"];
 }
@@ -137,8 +144,9 @@ function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | 
 function buildOpenCodeResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   targetId: string | null;
+  model?: string | null;
 }): string {
-  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode)];
+  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode), ...modelToCliFlag(args.model)];
   if (args.targetId) {
     commandArgs.push("--session", args.targetId);
   } else {
@@ -154,6 +162,7 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
   if (provider === "claude") {
     if (normalized.includes("--dangerously-skip-permissions")) return "full-auto";
     if (normalized.includes("--permission-mode acceptedits")) return "edit";
+    if (normalized.includes("--permission-mode auto")) return "auto";
     if (normalized.includes("--permission-mode default")) return "default";
     if (normalized.includes("--permission-mode plan")) return "plan";
     return undefined;
@@ -231,6 +240,8 @@ export function parseTrackedCliLaunchConfig(
       claudePermissionMode = "bypassPermissions";
     } else if (effectivePermissionMode === "edit") {
       claudePermissionMode = "acceptEdits";
+    } else if (effectivePermissionMode === "auto" || effectivePermissionMode === "plan") {
+      claudePermissionMode = effectivePermissionMode;
     } else {
       claudePermissionMode = "default";
     }
@@ -351,28 +362,41 @@ export function parseTrackedCliResumeCommand(
   return { provider, targetId: target };
 }
 
-export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | null | undefined): string | null {
+export function buildTrackedCliResumeCommand(
+  metadata: TerminalResumeMetadata | null | undefined,
+  overrides: { model?: string | null; reasoningEffort?: string | null; permissionMode?: AgentChatPermissionMode | null } = {},
+): string | null {
   if (!metadata) return null;
   const provider = metadata.provider;
-  const permissionMode = metadata.launch.permissionMode ?? null;
+  const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode ?? null;
   const targetId = sanitizeResumeTargetId(metadata.targetId) ?? "";
 
   if (provider === "claude") {
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
+    const model = resolveClaudeCliModelForLaunch(overrides.model);
+    if (model) parts.push("--model", model);
+    const reasoningEffort = normalizeCliFlagValue(overrides.reasoningEffort);
+    if (reasoningEffort) parts.push("--effort", reasoningEffort);
     parts.push("--resume");
     if (targetId.length) parts.push(targetId);
     return commandArrayToLine(parts);
   }
 
   if (provider === "codex") {
-    const parts = ["codex", "--no-alt-screen", ...permissionModeToCodexFlags(permissionMode)];
+    const parts = [
+      "codex",
+      "--no-alt-screen",
+      ...modelToCliFlag(overrides.model),
+      ...codexReasoningEffortFlags(overrides.reasoningEffort),
+      ...permissionModeToCodexFlags(permissionMode),
+    ];
     parts.push("resume");
     if (targetId.length) parts.push(targetId);
     return commandArrayToLine(parts);
   }
 
   if (provider === "cursor") {
-    const parts = ["cursor-agent", ...permissionModeToCursorFlags(permissionMode)];
+    const parts = ["cursor-agent", ...permissionModeToCursorFlags(permissionMode), ...modelToCliFlag(overrides.model)];
     if (targetId.length) {
       parts.push("--resume", targetId);
     } else {
@@ -385,7 +409,7 @@ export function buildTrackedCliResumeCommand(metadata: TerminalResumeMetadata | 
     return buildDroidCommandLine({ permissionMode, resumeTarget: targetId || null });
   }
 
-  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null });
+  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model: overrides.model });
 }
 
 function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {

@@ -1151,13 +1151,6 @@ export class CoordinatorAgent {
       ownerKey: `coordinator:${this.deps.runId}`,
       leaseKind: "shared",
       logger: this.deps.logger,
-      adeMcp: {
-        projectRoot: this.deps.projectRoot,
-        workspaceRoot: this.deps.workspaceRoot,
-        missionId: this.deps.missionId,
-        runId: this.deps.runId,
-        role: "orchestrator",
-      },
     });
     const registeredHandle = this.openCodeHandle;
     registeredHandle.setEvictionHandler((reason) => {
@@ -1632,7 +1625,7 @@ export class CoordinatorAgent {
       "PLANNING STARTUP REQUIRED:",
       "Your next response must use ADE mission-control tools. Do not answer with text only.",
       "Call get_project_context first, then call spawn_worker exactly once to launch a read-only planning worker.",
-      "If the tools are exposed with ADE/MCP prefixes, use the available prefixed names such as ade_get_project_context and ade_spawn_worker.",
+      "Use the mission-control tool names directly or with an ade_ prefix, such as get_project_context and spawn_worker.",
       `${modelInstruction} The worker prompt must include the full mission goal, the planning phase instructions, and clear instructions to discover the plan, avoid file edits, and return the plan through report_result.`,
       "Do not call native OpenCode repo/search/shell/web/planner tools before the planner is spawned.",
       "",
@@ -3497,7 +3490,7 @@ export class CoordinatorAgent {
         "Your previous response did not create the required planning worker.",
         "Your next response must use ADE mission-control tools only.",
         "Call get_project_context first, then call spawn_worker exactly once to launch the read-only planning worker.",
-        "If tools are exposed with ADE/MCP prefixes, use ade_get_project_context and ade_spawn_worker.",
+        "Use get_project_context and spawn_worker directly, or with an ade_ prefix if ADE asks for one.",
         "Do not answer with text, do not use native OpenCode tools, and do not do coordinator-side analysis before the planner is running.",
       ].join("\n"));
       return "retry_scheduled";
@@ -3910,8 +3903,8 @@ export class CoordinatorAgent {
       planningPhaseSection = `\n## Planning Startup Contract (hard gate)
 The first coordinator turn of a mission whose first phase is Planning must create the planner through ADE mission-control tools:
 - Do not reply with text only on the first turn.
-- First call get_project_context, using the ADE/MCP-prefixed equivalent if that is how the tool is exposed.
-- Then call spawn_worker exactly once, using the ADE/MCP-prefixed equivalent if needed.
+- First call get_project_context, using the ade_ prefix only if ADE asks for it.
+- Then call spawn_worker exactly once, using the ade_ prefix only if needed.
 - The planning worker must be read-only, must receive the full mission goal and planning phase instructions, and must return the plan through report_result.
 - Do not call native OpenCode repo/search/shell/web/planner tools before the planner exists. Runtime pauses the run on those startup violations.
 

@@ -16,7 +16,7 @@ import type {
 import { getModelById } from "../../../shared/modelRegistry";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { useAppStore } from "../../state/appStore";
-import { AgentChatPane } from "./AgentChatPane";
+import { AgentChatPane, isMatchingOptimisticUserMessage } from "./AgentChatPane";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof import("react");
@@ -792,6 +792,70 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("matches a recovered committed user message to the optimistic first bubble", () => {
+    type UserMessageEvent = Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+    const optimistic: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-24T05:57:45.700Z",
+      event: {
+        type: "user_message",
+        text: "Pearl UI audit handoff",
+        attachments: [{ path: "docs/audit.md", type: "file" }],
+        deliveryState: "queued",
+      },
+    };
+    const committedUserEvent: UserMessageEvent = {
+      type: "user_message",
+      text: "Full handoff prompt with all implementation details.",
+      displayText: "Pearl UI audit handoff",
+      attachments: [{ path: "docs/audit.md", type: "file" }],
+    };
+    const committed: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-24T05:57:46.000Z",
+      event: committedUserEvent,
+    };
+
+    expect(isMatchingOptimisticUserMessage(committed, optimistic)).toBe(true);
+    expect(isMatchingOptimisticUserMessage({
+      ...committed,
+      event: { ...committedUserEvent, steerId: "steer-1", deliveryState: "delivered" },
+    }, optimistic)).toBe(false);
+    expect(isMatchingOptimisticUserMessage({
+      ...committed,
+      event: { ...committedUserEvent, attachments: [{ path: "docs/other.md", type: "file" }] },
+    }, optimistic)).toBe(false);
+  });
+
+  it("renders a duplicated live Codex user_message envelope only once", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [session],
+    });
+
+    renderPane(session);
+
+    await screen.findByRole("textbox");
+    const envelope: AgentChatEventEnvelope = {
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T05:57:46.000Z",
+      sequence: 1,
+      event: {
+        type: "user_message",
+        text: "Render this Codex message once.",
+      },
+    };
+
+    act(() => {
+      emitChatEvent(envelope);
+      emitChatEvent(envelope);
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Render this Codex message once.")).toHaveLength(1);
+    });
+  });
+
   it("keeps the draft cleared after steer succeeds even if session refresh fails", async () => {
     const session = buildSession("session-1");
     const { steer } = installAdeMocks({
@@ -1561,6 +1625,49 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Ship the instant route fix.",
       }));
     });
+  });
+
+  it("launches a tracked CLI session from the Work draft composer instead of creating an ADE chat", async () => {
+    const { send, create } = installAdeMocks({ sessions: [] });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Run the unified CLI launch." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Run the unified CLI launch",
+        command: "codex",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain("ADE session guidance");
+    expect(launchArgs.startupCommand).toContain("Run the unified CLI launch.");
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("keeps immediate agent events for a freshly created chat before session refresh catches up", async () => {

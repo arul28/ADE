@@ -1804,11 +1804,7 @@ struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
 }
 
-struct AgentChatResumeRequest: Codable, Equatable {
-  var sessionId: String
-}
-
-struct AgentChatDisposeRequest: Codable, Equatable {
+struct AgentChatSessionIdRequest: Codable, Equatable {
   var sessionId: String
 }
 

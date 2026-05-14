@@ -282,7 +282,6 @@ import type {
   AgentChatCodexOpenInCliResult,
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
-  AgentChatDisposeArgs,
   AgentChatEventEnvelope,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -294,7 +293,6 @@ import type {
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
   AgentChatRespondToInputArgs,
-  AgentChatResumeArgs,
   AgentChatSendArgs,
   AgentChatSetParallelLaunchStateArgs,
   AgentChatSlashCommand,
@@ -304,10 +302,6 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatClaudePlugin,
   AgentChatClaudePluginsArgs,
-  AgentChatClaudeMcpReconnectArgs,
-  AgentChatClaudeMcpServerStatus,
-  AgentChatClaudeMcpStatusArgs,
-  AgentChatClaudeMcpToggleArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
   AgentChatClaudeSessionInfo,
@@ -381,6 +375,8 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtySendToSessionArgs,
+  PtySendToSessionResult,
   PtyDataEvent,
   PtyExitEvent,
   RiskMatrixEntry,
@@ -466,6 +462,7 @@ import type {
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
   LaneDeleteEvent,
+  LaneDeleteProgress,
   LaneDeleteRisk,
   LaneEnvInitProgress,
   LaneEnvInitEvent,
@@ -743,6 +740,8 @@ import type {
   RemoteRuntimeTargetInput,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
+  ChatTerminalPreviewArgs,
+  ChatTerminalPreviewResult,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
   ChatTerminalSession,
@@ -4320,6 +4319,10 @@ contextBridge.exposeInMainWorld("ade", {
         { arg: args.laneId },
         () => ipcRenderer.invoke(IPC.lanesDeleteCancel, args),
       ),
+    listDeleteProgress: async (): Promise<LaneDeleteProgress[]> =>
+      callProjectRuntimeActionOr("lane", "listDeleteProgress", {}, () =>
+        ipcRenderer.invoke(IPC.lanesListDeleteProgress),
+      ),
     getDeleteRisk: async (args: { laneId: string }): Promise<LaneDeleteRisk> =>
       callProjectRuntimeActionOr(
         "lane",
@@ -4946,19 +4949,6 @@ contextBridge.exposeInMainWorld("ade", {
         await ipcRenderer.invoke(IPC.agentChatInterrupt, args);
       agentChatSummaryCache.clear();
     },
-    resume: async (args: AgentChatResumeArgs): Promise<AgentChatSession> => {
-      agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
-        "chat",
-        "resumeSession",
-        { args },
-      );
-      const session = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.agentChatResume, args);
-      agentChatSummaryCache.clear();
-      return session as AgentChatSession;
-    },
     approve: async (args: AgentChatApproveArgs): Promise<void> => {
       agentChatSummaryCache.clear();
       const runtime = await callProjectRuntimeActionIfBound<void>(
@@ -4992,17 +4982,6 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModels, args);
-    },
-    dispose: async (args: AgentChatDisposeArgs): Promise<void> => {
-      agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "chat",
-        "dispose",
-        { args },
-      );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.agentChatDispose, args);
-      agentChatSummaryCache.clear();
     },
     archive: async (args: AgentChatArchiveArgs): Promise<void> => {
       agentChatSummaryCache.clear();
@@ -5071,24 +5050,6 @@ contextBridge.exposeInMainWorld("ade", {
       }
       return ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
     },
-    getClaudeMcpStatus: async (
-      args: AgentChatClaudeMcpStatusArgs,
-    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
-      callProjectRuntimeActionOr("chat", "getClaudeMcpStatus", { args }, () =>
-        ipcRenderer.invoke(IPC.agentChatClaudeMcpStatus, args),
-      ),
-    reconnectClaudeMcpServer: async (
-      args: AgentChatClaudeMcpReconnectArgs,
-    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
-      callProjectRuntimeActionOr("chat", "reconnectClaudeMcpServer", { args }, () =>
-        ipcRenderer.invoke(IPC.agentChatClaudeMcpReconnect, args),
-      ),
-    toggleClaudeMcpServer: async (
-      args: AgentChatClaudeMcpToggleArgs,
-    ): Promise<AgentChatClaudeMcpServerStatus[]> =>
-      callProjectRuntimeActionOr("chat", "toggleClaudeMcpServer", { args }, () =>
-        ipcRenderer.invoke(IPC.agentChatClaudeMcpToggle, args),
-      ),
     listClaudePlugins: async (
       args: AgentChatClaudePluginsArgs = {},
     ): Promise<AgentChatClaudePlugin[]> =>
@@ -5779,6 +5740,19 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.terminalRead, args);
     },
+    preview: async (
+      args: ChatTerminalPreviewArgs = {},
+    ): Promise<ChatTerminalPreviewResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ChatTerminalPreviewResult>(
+          "terminal",
+          "preview",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalPreview, args);
+    },
     write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> => {
       const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
         "terminal",
@@ -5813,6 +5787,10 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.terminalActiveForChat, args);
     },
   },
+  localhost: {
+    probePort: async (port: number): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.localhostProbePort, { port }),
+  },
   pty: {
     create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => {
       const runtime = await callProjectRuntimeActionIfBound<PtyCreateResult>(
@@ -5823,6 +5801,19 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.ptyCreate, args);
+    },
+    sendToSession: async (
+      args: PtySendToSessionArgs,
+    ): Promise<PtySendToSessionResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<PtySendToSessionResult>(
+          "pty",
+          "sendToSession",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.ptySendToSession, args);
     },
     write: async (arg: { ptyId: string; data: string }): Promise<void> => {
       const runtime = await callProjectRuntimeActionIfBound<void>(

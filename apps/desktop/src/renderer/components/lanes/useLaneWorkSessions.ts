@@ -18,6 +18,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   selectedItemId: null,
   viewMode: "tabs",
   draftKind: "chat",
+  draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
   search: "",
@@ -453,7 +454,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...prev,
         activeItemId: nextActive,
         selectedItemId: nextSelected,
-        draftKind: nextLaneOpen.length === 0 ? "chat" : prev.draftKind,
+        draftKind: prev.draftKind,
       };
     });
   }, [laneOpenItemIds, projectRoot, setWorkViewState, setViewState]);

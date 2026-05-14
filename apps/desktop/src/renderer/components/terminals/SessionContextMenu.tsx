@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { isChatToolType } from "../../lib/sessions";
-import { resolveTrackedCliResumeCommand } from "./cliLaunch";
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
@@ -12,13 +11,10 @@ export type SessionContextMenuState = {
 type SessionContextMenuProps = {
   menu: SessionContextMenuState;
   onClose: () => void;
-  onCloseSession: (args: { ptyId: string; sessionId: string }) => void;
-  onEndChat: (sessionId: string) => void;
+  onStopRuntime: (args: { ptyId: string; sessionId: string }) => void;
   onDeleteChat: (session: TerminalSessionSummary) => void;
   onDeleteSession: (session: TerminalSessionSummary) => void;
   deletingSessionId: string | null;
-  onResume: (session: TerminalSessionSummary) => void;
-  onCopyResumeCommand: (command: string) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
   onCopySessionId: (id: string) => void;
   onRename: (session: TerminalSessionSummary, newTitle: string) => void;
@@ -30,13 +26,10 @@ type SessionContextMenuProps = {
 export function SessionContextMenu({
   menu,
   onClose,
-  onCloseSession,
-  onEndChat,
+  onStopRuntime,
   onDeleteChat,
   onDeleteSession,
   deletingSessionId,
-  onResume,
-  onCopyResumeCommand,
   onGoToLane,
   onCopySessionId,
   onRename,
@@ -103,8 +96,6 @@ export function SessionContextMenu({
       : { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
-  const resumeCommand = resolveTrackedCliResumeCommand(session);
-  const canResume = !isRunning && Boolean(resumeCommand);
 
   const commitRename = () => {
     if (finalizedRef.current) return;
@@ -159,22 +150,13 @@ export function SessionContextMenu({
         {isRunning && session.ptyId && !isChat ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onCloseSession({ ptyId: session.ptyId!, sessionId: session.id }); onClose(); }}
+            onClick={() => { onStopRuntime({ ptyId: session.ptyId!, sessionId: session.id }); onClose(); }}
           >
-            Close terminal
+            Stop runtime
           </button>
         ) : null}
 
-        {isRunning && isChat ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onEndChat(session.id); onClose(); }}
-          >
-            End chat
-          </button>
-        ) : null}
-
-        {!isRunning && isChat ? (
+        {isChat ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
             disabled={deletingSessionId === session.id}
@@ -191,24 +173,6 @@ export function SessionContextMenu({
             onClick={() => { onDeleteSession(session); onClose(); }}
           >
             {deletingSessionId === session.id ? "Deleting..." : "Delete session"}
-          </button>
-        ) : null}
-
-        {canResume ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onResume(session); onClose(); }}
-          >
-            Resume
-          </button>
-        ) : null}
-
-        {resumeCommand ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onCopyResumeCommand(resumeCommand); onClose(); }}
-          >
-            Copy resume command
           </button>
         ) : null}
 

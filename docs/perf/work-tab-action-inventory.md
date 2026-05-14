@@ -84,24 +84,21 @@ Coverage states:
 | work.sessions.select.range | Shift-select a range | measured | `SessionCard.tsx` |
 | work.sessions.select.multi | Cmd/Ctrl multi-select | measured | `SessionCard.tsx` |
 | work.sessions.details | Open session details popover | measured | `SessionCard.tsx` |
-| work.sessions.details.copy-resume | Copy resume command from details popover | external-skip | `SessionInfoPopover.tsx` |
-| work.sessions.details.resume | Resume session from details popover | sandbox-only | `SessionInfoPopover.tsx` |
-| work.sessions.details.close-terminal | Close terminal from details popover | prompt-only | `SessionInfoPopover.tsx` |
-| work.sessions.details.end-chat | End chat from details popover | prompt-only | `SessionInfoPopover.tsx` |
-| work.sessions.details.delete | Delete ended session/chat from details popover | prompt-only | `SessionInfoPopover.tsx` |
-| work.sessions.resume-card | Resume ended session from card | sandbox-only | `SessionCard.tsx` |
+| work.sessions.details.stop-runtime | Stop runtime from details popover | prompt-only | `SessionInfoPopover.tsx` |
+| work.sessions.details.delete | Delete session/chat from details popover | prompt-only | `SessionInfoPopover.tsx` |
 | work.sessions.stale-warning | Hover/read stale running warning | measured | `SessionCard.tsx` |
+| work.sessions.cli-continuation.show | Ended tracked CLI shows transcript plus continuation composer | fixture-needed | `WorkViewArea.tsx` |
+| work.sessions.cli-continuation.slash | Continuation composer shows provider-specific slash commands | fixture-needed | `WorkViewArea.tsx` |
+| work.sessions.cli-continuation.send | Send from continuation composer attaches a runtime to the same session | fixture-needed | `WorkViewArea.tsx` |
+| work.sessions.cli-continuation.duplicate-send | Rapid sends do not spawn duplicate CLI runtimes | fixture-needed | `ptyService.ts` |
 | work.sessions.context.open | Open session context menu | measured | `SessionContextMenu.tsx` |
 | work.sessions.context.rename | Rename session prompt/input | measured | `SessionContextMenu.tsx` |
-| work.sessions.context.close-pty | Close PTY session | prompt-only | `SessionContextMenu.tsx` |
-| work.sessions.context.end-chat | End active chat | prompt-only | `SessionContextMenu.tsx` |
+| work.sessions.context.stop-runtime | Stop PTY runtime | prompt-only | `SessionContextMenu.tsx` |
 | work.sessions.context.delete-chat | Delete chat | prompt-only | `SessionContextMenu.tsx` |
 | work.sessions.context.delete-terminal | Delete terminal session | prompt-only | `SessionContextMenu.tsx` |
-| work.sessions.context.resume | Resume ended session | sandbox-only | `SessionContextMenu.tsx` |
-| work.sessions.context.copy-resume | Copy resume command | external-skip | `SessionContextMenu.tsx` |
 | work.sessions.context.go-lane | Go to lane | measured | `SessionContextMenu.tsx` |
 | work.sessions.context.copy-id | Copy session ID | external-skip | `SessionContextMenu.tsx` |
-| work.sessions.bulk.close | Close selected running sessions | prompt-only | `SessionListPane.tsx` |
+| work.sessions.bulk.stop-runtimes | Stop selected running CLI/shell runtimes | prompt-only | `SessionListPane.tsx` |
 | work.sessions.bulk.archive | Archive selected chats | prompt-only | `SessionListPane.tsx` |
 | work.sessions.bulk.restore | Restore selected archived chats | measured | `SessionListPane.tsx` |
 | work.sessions.bulk.export | Export selected session bundle | external-skip | `SessionListPane.tsx` |

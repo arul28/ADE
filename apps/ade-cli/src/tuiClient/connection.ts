@@ -7,6 +7,7 @@ import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
+import type { BufferedEvent } from "../eventBuffer";
 
 type RpcResponseEnvelope<T> =
   | T
@@ -41,6 +42,10 @@ type EmbeddedRuntime = {
     subscribeToEvents?: (
       callback: (event: AgentChatEventEnvelope) => void,
     ) => () => void;
+  };
+  eventBuffer?: {
+    drain?: (cursor: number, limit?: number) => { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+    subscribe?: (listener: (event: BufferedEvent) => void) => () => void;
   };
 };
 
@@ -204,6 +209,29 @@ function createAdeActionHelpers(request: AdeRpcRequest): AdeActionHelpers {
   };
 }
 
+function isBufferedEvent(value: unknown): value is BufferedEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Partial<BufferedEvent>;
+  return (
+    typeof event.id === "number" &&
+    typeof event.timestamp === "string" &&
+    typeof event.category === "string" &&
+    Boolean(event.payload) &&
+    typeof event.payload === "object" &&
+    !Array.isArray(event.payload)
+  );
+}
+
+type RuntimeEventNotification = {
+  subscriptionId?: string;
+  event?: unknown;
+};
+
+type PendingRuntimeEvent = {
+  subscriptionId?: string;
+  event: BufferedEvent;
+};
+
 async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
   const result = await request<InitializeResult>("ade/initialize", {
     protocolVersion: "2025-06-18",
@@ -358,6 +386,42 @@ async function connectAttachedSocket(args: {
         attachedClient.onNotification("chat/event", (params) =>
           callback(params as AgentChatEventEnvelope),
         ),
+      subscribeRuntimeEvents: async (subscriptionArgs, callback) => {
+        let subscriptionId: string | null = null;
+        const pending: PendingRuntimeEvent[] = [];
+        const stopNotification = attachedClient.onNotification("runtime/event", (params) => {
+          const payload = params as RuntimeEventNotification;
+          if (!isBufferedEvent(payload.event)) return;
+          if (!subscriptionId) {
+            pending.push({ subscriptionId: payload.subscriptionId, event: payload.event });
+            return;
+          }
+          if (payload.subscriptionId === subscriptionId) callback(payload.event);
+        });
+        try {
+          const response = await request<{ subscriptionId: string }>("runtimeEvents.subscribe", {
+            category: subscriptionArgs.category ?? "runtime",
+            cursor: subscriptionArgs.cursor ?? 0,
+            limit: subscriptionArgs.limit ?? 100,
+          });
+          subscriptionId = response.subscriptionId;
+          for (const payload of pending) {
+            if (payload.subscriptionId === subscriptionId) {
+              callback(payload.event);
+            }
+          }
+          pending.length = 0;
+          return () => {
+            stopNotification();
+            if (subscriptionId) {
+              request("runtimeEvents.unsubscribe", { subscriptionId }).catch(() => {});
+            }
+          };
+        } catch (error) {
+          stopNotification();
+          throw error;
+        }
+      },
       close: async () => attachedClient.close(),
     };
   } catch (error) {
@@ -527,6 +591,22 @@ export async function connectToAde(args: {
     request,
     ...createAdeActionHelpers(request),
     onChatEvent: (callback) => chatEvents(callback),
+    subscribeRuntimeEvents: async (subscriptionArgs, callback) => {
+      const category = subscriptionArgs.category ?? "runtime";
+      const eventBuffer = runtime.eventBuffer;
+      if (!eventBuffer) return () => {};
+      const shouldForward = (event: BufferedEvent) => !category || event.category === category;
+      const replay = typeof eventBuffer.drain === "function"
+        ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
+        : { events: [] };
+      for (const event of replay.events) {
+        if (shouldForward(event)) callback(event);
+      }
+      if (typeof eventBuffer.subscribe !== "function") return () => {};
+      return eventBuffer.subscribe((event) => {
+        if (shouldForward(event)) callback(event);
+      });
+    },
     close: async () => {
       handler.dispose();
       runtime.dispose();

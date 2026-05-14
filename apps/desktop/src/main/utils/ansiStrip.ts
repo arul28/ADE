@@ -4,7 +4,7 @@
 const OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g; // ESC ] ... BEL or ST (ESC \)
 const CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g; // ESC [ ... cmd
 const CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g; // ESC ( B / ESC ) 0 etc
-const TWO_CHAR_ESC_REGEX = /\u001b[@-Z\\-_]/g; // ESC followed by a single byte
+const TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g; // ESC followed by a single byte
 
 function applyBackspaces(text: string): string {
   if (!text.includes("\b")) return text;

@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAdeRpcRequestHandler, _resetGlobalAskUserRateLimit, resolveComputerUseOwners } from "./adeRpcServer";
+import {
+  CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS,
+  createAdeRpcRequestHandler,
+  _resetGlobalAskUserRateLimit,
+  resolveComputerUseOwners,
+} from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
@@ -318,6 +323,14 @@ function createRuntime() {
     },
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
+      sendToSession: vi.fn(async () => ({
+        ptyId: "pty-1",
+        sessionId: "session-1",
+        pid: 123,
+        session: null,
+        resumed: false,
+        reusedExistingRuntime: true,
+      })),
       dispose: vi.fn(),
       writeBySessionId: vi.fn((sessionId: string, data: string): boolean => {
         void sessionId;
@@ -1337,6 +1350,7 @@ describe("adeRpcServer", () => {
         "record_environment",
         "run_tests",
         "start_cli_session",
+        "send_to_session",
         "get_lane_status",
         "list_lanes",
         "commit_changes",
@@ -2433,6 +2447,116 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("preserves wide start_cli_session terminal dimensions", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      cols: 999,
+      rows: 999,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cols: 400,
+        rows: 200,
+      }),
+    );
+  });
+
+  it("passes selected models to fresh Claude Code terminal launches", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "claude",
+      title: "Claude Code",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "default",
+      model: "anthropic/claude-opus-4-7-1m",
+      cols: 90,
+      rows: 24,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        title: "Claude Code",
+        toolType: "claude",
+        startupCommand: expect.stringContaining("--model"),
+      }),
+    );
+    const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
+    expect(createCall.startupCommand).toContain("opus[1m]");
+    expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-7-1m");
+  });
+
+  it("confirms Claude Code initial input after startup", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = createRuntime();
+      fixture.runtime.sessionService.get.mockReturnValue({
+        id: "session-1",
+        laneId: "lane-1",
+        ptyId: "pty-1",
+        tracked: true,
+        toolType: "claude",
+        title: "Claude Code",
+        status: "running",
+        resumeCommand: null,
+        resumeMetadata: null,
+      });
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+      await initialize(handler, { role: "orchestrator" });
+      const response = await callTool(handler, "start_cli_session", {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "default",
+        initialInput: "hello?",
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledTimes(1);
+      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenNthCalledWith(1, "session-1", "hello?\r");
+
+      await vi.advanceTimersByTimeAsync(CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
+
+      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledTimes(2);
+      expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenNthCalledWith(2, "session-1", "\r");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves the initial input write error if cleanup fails", async () => {
     const fixture = createRuntime();
     fixture.runtime.ptyService.writeBySessionId.mockReturnValueOnce(false);
@@ -2475,106 +2599,25 @@ describe("adeRpcServer", () => {
     expect(createCall.toolType).toBe("claude");
   });
 
-  it("resumes start_cli_session from stored terminal metadata", async () => {
+  it("sends to an existing CLI session through the durable session continuation path", async () => {
     const fixture = createRuntime();
-    fixture.runtime.sessionService.get.mockReturnValue({
-      id: "session-existing",
-      laneId: "lane-1",
-      ptyId: "pty-existing",
-      tracked: true,
-      toolType: "codex",
-      title: "Codex",
-      status: "exited",
-      resumeCommand: "codex resume picker",
-      resumeMetadata: {
-        provider: "codex",
-        targetKind: "thread",
-        targetId: "thread-77",
-        launch: { permissionMode: "edit" },
-      },
-    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     await initialize(handler, { role: "orchestrator" });
-    const response = await callTool(handler, "start_cli_session", {
-      laneId: "lane-1",
-      provider: "codex",
-      resumeSessionId: "session-existing",
+    const response = await callTool(handler, "send_to_session", {
+      sessionId: "session-existing",
+      text: "continue here",
+      cols: 999,
+      rows: 999,
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-existing",
-        startupCommand: "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-77",
-      }),
-    );
-  });
-
-  it("sanitizes start_cli_session resume target ids before building commands", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "orchestrator" });
-    const response = await callTool(handler, "start_cli_session", {
-      laneId: "lane-1",
-      provider: "codex",
-      resumeTargetId: "thread-1\n--danger",
+    expect(fixture.runtime.ptyService.sendToSession).toHaveBeenCalledWith({
+      sessionId: "session-existing",
+      text: "continue here",
+      cols: 400,
+      rows: 200,
     });
-
-    expect(response?.isError).toBeUndefined();
-    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
-    expect(createCall.startupCommand).toContain("thread-1 --danger");
-    expect(createCall.startupCommand).not.toContain("\n");
-  });
-
-  it("rejects start_cli_session resume when the session id is missing", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.sessionService.get.mockReturnValue(null);
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "orchestrator" });
-    const response = await callTool(handler, "start_cli_session", {
-      laneId: "lane-1",
-      provider: "codex",
-      resumeSessionId: "missing-session",
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("missing-session");
-    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
-  });
-
-  it("rejects start_cli_session resume for a different provider", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.sessionService.get.mockReturnValue({
-      id: "session-existing",
-      laneId: "lane-1",
-      ptyId: "pty-existing",
-      tracked: true,
-      toolType: "claude",
-      title: "Claude",
-      status: "exited",
-      resumeCommand: "claude --resume old",
-      resumeMetadata: {
-        provider: "claude",
-        targetKind: "session",
-        targetId: "old",
-        launch: { permissionMode: "default" },
-      },
-    });
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "orchestrator" });
-    const response = await callTool(handler, "start_cli_session", {
-      laneId: "lane-1",
-      provider: "codex",
-      resumeSessionId: "session-existing",
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("belongs to claude, not codex");
-    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
   it("rejects invalid start_cli_session permission modes", async () => {

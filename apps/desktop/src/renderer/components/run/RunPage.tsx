@@ -148,7 +148,6 @@ function normalizeCwdForConfig(
   projectRoot: string | null,
 ): string | undefined {
   const normalized = normalizeRelativePath(cwd);
-  if (normalized === ".") return undefined;
   return projectRelativeFromAbsolute(projectRoot, normalized) ?? normalized;
 }
 

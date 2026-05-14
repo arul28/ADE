@@ -65,6 +65,10 @@ describe("terminalSessionSignals", () => {
       permissionMode: "default",
       claudePermissionMode: "default",
     });
+    expect(parseTrackedCliLaunchConfig("claude --permission-mode auto", "claude")).toEqual({
+      permissionMode: "auto",
+      claudePermissionMode: "auto",
+    });
     expect(parseTrackedCliLaunchConfig("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted", "codex")).toEqual({
       permissionMode: "edit",
       codexApprovalPolicy: "untrusted",
@@ -117,6 +121,26 @@ describe("terminalSessionSignals", () => {
       targetId: "ses_1",
       launch: { permissionMode: "full-auto" },
     })).toBe("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_1");
+  });
+
+  it("applies resume-time model, reasoning, and permission overrides", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default" },
+    }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto" })).toBe(
+      "claude --permission-mode auto --model haiku --effort low --resume claude-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit" },
+    }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-99",
+    );
   });
 
   it("parses codex --full-auto as default permission mode", () => {

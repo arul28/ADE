@@ -2,9 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type {
   AdeCodeProvider,
-  ProviderReadinessRow,
   RightPaneContent,
-  SetupPaneRow,
   SubagentSnapshot,
 } from "../types";
 import { theme } from "../theme";
@@ -18,8 +16,6 @@ import { buildSubagentPaneRows, type SubagentPaneRow, type SubagentPaneSection }
 const DEFAULT_PANE_WIDTH = 38;
 const LANE_LABEL_WIDTH = 10;
 const LANE_FILE_PREVIEW_ROWS = 5;
-const MODEL_LABEL_WIDTH = 14;
-const PROVIDER_ORDER: AdeCodeProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
 // ---------------------------------------------------------------------------
 // Actions for the lane-details pane (5 rows · wireframe)
@@ -40,7 +36,7 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
 
 // ---------------------------------------------------------------------------
 // Tiny atom helpers (inline replacements for Chip / Rail / SectionLG / Kbd /
-// ActionRow / Exec / ModelRow / ProvTab from the wireframe primitives)
+// ActionRow / Exec from the wireframe primitives)
 // ---------------------------------------------------------------------------
 
 function Chip({
@@ -70,28 +66,6 @@ function SectionHead({ title, hint }: { title: string; hint?: string }) {
   return (
     <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
       <Text bold color={theme.color.t3}>{title}</Text>
-      {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
-    </Box>
-  );
-}
-
-function ModelSectionHead({
-  title,
-  hint,
-  width,
-  marginTop = 1,
-}: {
-  title: string;
-  hint?: string;
-  width: number;
-  marginTop?: number;
-}) {
-  const hintWidth = hint ? hint.length + 1 : 0;
-  const lineWidth = Math.max(2, width - title.length - hintWidth - 3);
-  return (
-    <Box flexDirection="row" marginTop={marginTop}>
-      <Text bold color={theme.color.violet}>{title}</Text>
-      <Text color={theme.color.borderSoft}> {"─".repeat(lineWidth)} </Text>
       {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
     </Box>
   );
@@ -393,212 +367,6 @@ function LaneDetailsPane({
 }
 
 // ---------------------------------------------------------------------------
-// Model-setup renderer (wireframe ModelFinal)
-// ---------------------------------------------------------------------------
-
-function ProviderTabStrip({
-  providerRows,
-  activeProvider,
-  width,
-}: {
-  providerRows: ProviderReadinessRow[];
-  activeProvider: AdeCodeProvider;
-  width: number;
-}) {
-  const rowsByProvider = new Map(providerRows.map((row) => [row.provider, row]));
-  const orderedRows = [
-    rowsByProvider.get(activeProvider),
-    ...PROVIDER_ORDER.filter((provider) => provider !== activeProvider).map((provider) => rowsByProvider.get(provider)),
-    ...providerRows.filter((row) => !PROVIDER_ORDER.includes(row.provider) && row.provider !== activeProvider),
-  ].filter((row): row is ProviderReadinessRow => Boolean(row));
-
-  return (
-    <Box flexDirection="column">
-      <ModelSectionHead title="PROVIDER" hint="← →" width={width} marginTop={0} />
-      <Box flexDirection="row" flexWrap="wrap">
-        {orderedRows.map((row) => {
-          const brand = theme.provider(row.provider);
-          const isActive = row.provider === activeProvider;
-          const statusColor = row.status === "ready"
-            ? theme.color.running
-            : row.status === "unknown"
-              ? theme.color.attention
-              : theme.color.t4;
-          return (
-            <Box key={row.provider} marginRight={1}>
-              <Text color={isActive ? theme.color.violet : theme.color.borderSoft}>[</Text>
-              <Text color={statusColor}>●</Text>
-              <Text color={isActive ? theme.color.violet : theme.color.t2} bold={isActive}>
-                {" "}{brand.wordmark}
-              </Text>
-              <Text color={isActive ? theme.color.violet : theme.color.borderSoft}>]</Text>
-            </Box>
-          );
-        })}
-      </Box>
-      <Box flexDirection="row">
-        <Text color={theme.color.running}>● </Text>
-        <Text color={theme.color.t3}>ready · </Text>
-        <Text color={theme.color.violet}>● </Text>
-        <Text color={theme.color.t3}>active · </Text>
-        <Text color={theme.color.attention}>● </Text>
-        <Text color={theme.color.t3}>needs login</Text>
-      </Box>
-    </Box>
-  );
-}
-
-function ModelRow({
-  row,
-  selected,
-  width,
-}: {
-  row: SetupPaneRow;
-  selected: boolean;
-  width: number;
-}) {
-  const rail = selected ? <Text color={theme.color.violet}>{theme.rail}</Text> : <Text> </Text>;
-  const detail = row.detail?.replace(/,\s*/g, " · ") ?? "";
-  const valueWidth = Math.max(8, width - MODEL_LABEL_WIDTH - detail.length - 6);
-  return (
-    <Box flexDirection="row" justifyContent="space-between">
-      <Box flexDirection="row">
-        {rail}
-        <Text color={selected ? theme.color.violet : theme.color.t3}>
-          {" "}{row.label.padEnd(MODEL_LABEL_WIDTH)}
-        </Text>
-        <Text
-          color={!selected && row.disabled ? theme.color.t4 : theme.color.t1}
-          bold={selected}
-        >
-          {endTruncate(row.value, valueWidth)}
-        </Text>
-      </Box>
-      {detail ? (
-        <Text color={selected ? theme.color.t3 : theme.color.t4} dimColor={!selected}>
-          {endTruncate(detail, Math.max(6, width - MODEL_LABEL_WIDTH - valueWidth - 4))}
-        </Text>
-      ) : null}
-    </Box>
-  );
-}
-
-function ActiveProviderStatus({ row }: { row: ProviderReadinessRow }) {
-  const modelCount = row.modelCount > 0 ? `${row.modelCount} available` : "none discovered";
-  const statusLabel = ((): string => {
-    if (row.status === "ready") return "ready";
-    if (row.status === "unknown") return "needs attention";
-    return "needs login";
-  })();
-  const statusColor = ((): string => {
-    if (row.status === "ready") return theme.color.running;
-    if (row.status === "unknown") return theme.color.attention;
-    return theme.color.error;
-  })();
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        <Text color={statusColor}>● </Text>
-        <Text color={theme.color.t2}>auth</Text>
-        <Text color={theme.color.t4}> · </Text>
-        <Text color={theme.color.t2}>{statusLabel}</Text>
-      </Box>
-      <Box flexDirection="row">
-        <Text color={theme.color.running}>● </Text>
-        <Text color={theme.color.t2}>models</Text>
-        <Text color={theme.color.t4}> · </Text>
-        <Text color={theme.color.t2}>{modelCount}</Text>
-      </Box>
-      <Box flexDirection="row">
-        <Text color={statusColor}>● </Text>
-        <Text color={theme.color.t2}>runtime</Text>
-        <Text color={theme.color.t4}> · </Text>
-        <Text color={theme.color.t3}>{tailTruncate(row.detail, 48)}</Text>
-      </Box>
-    </Box>
-  );
-}
-
-function ModelSetupPane({
-  content,
-  selectedIndex,
-  width,
-}: {
-  content: Extract<RightPaneContent, { kind: "model-setup" }>;
-  selectedIndex: number;
-  width: number;
-}) {
-  const contentWidth = Math.max(30, width - 2);
-  const cyclableRows = content.rows.filter((row) => row.cyclable === true);
-  const actionRows = content.rows.filter((row) => row.cyclable !== true);
-  const activeProviderRow =
-    content.providerRows.find((row) => row.provider === content.activeProvider) ?? null;
-
-  return (
-    <Box flexDirection="column">
-      {/* Provider tab strip */}
-      <ProviderTabStrip
-        providerRows={content.providerRows}
-        activeProvider={content.activeProvider}
-        width={contentWidth}
-      />
-
-      {/* MODEL section */}
-      <ModelSectionHead title="MODEL" hint="↑↓ · ← → · ↵" width={contentWidth} />
-      {cyclableRows.map((row) => {
-        const absoluteIndex = content.rows.indexOf(row);
-        return (
-          <ModelRow
-            key={`${row.kind}:${row.label}`}
-            row={row}
-            selected={absoluteIndex === selectedIndex}
-            width={contentWidth}
-          />
-        );
-      })}
-
-      {/* RUN section (actions like Refresh / Open settings / Login) */}
-      {actionRows.length ? (
-        <>
-          <ModelSectionHead title="RUN" width={contentWidth} />
-          {actionRows.map((row) => {
-            const absoluteIndex = content.rows.indexOf(row);
-            const selected = absoluteIndex === selectedIndex;
-            const glyph = ((): string => {
-              if (row.kind === "refresh-status") return "↻";
-              if (row.kind === "open-settings") return "↗";
-              return "→";
-            })();
-            return (
-              <ActionRow
-                key={`${row.kind}:${row.label}`}
-                k={glyph}
-                label={row.label}
-                detail={row.detail}
-                selected={selected}
-              />
-            );
-          })}
-        </>
-      ) : null}
-
-      {/* STATUS · <PROVIDER> */}
-      <ModelSectionHead title={`STATUS · ${theme.provider(content.activeProvider).label.toUpperCase()}`} width={contentWidth} />
-      {activeProviderRow ? (
-        <ActiveProviderStatus row={activeProviderRow} />
-      ) : null}
-
-      <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>
-          ← → provider · ↑↓ field · ↵ apply · l login
-          {content.checkedAt ? `  · ${content.checkedAt.slice(11, 19)}` : ""}
-        </Text>
-      </Box>
-    </Box>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Agents pane (Subagents · Teammates) — htop process table, runtime-adaptive
 // ---------------------------------------------------------------------------
 
@@ -749,6 +517,17 @@ function SubagentsPane({
     );
   }
 
+  if (content.snapshots.length === 0) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={theme.color.t3} dimColor>No subagents yet.</Text>
+        <Text color={theme.color.t4} dimColor>
+          Subagents and teammates spawned by the active chat appear here.
+        </Text>
+      </Box>
+    );
+  }
+
   const rows = buildSubagentPaneRows(content);
   const snapshots = rows.filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
   const subagentsCount = subagentSectionCount(rows, "subagents") + subagentSectionCount(rows, "recent");
@@ -846,20 +625,21 @@ function SubagentsPane({
 }
 
 // ---------------------------------------------------------------------------
-// Other content modes (status, list, details, diff, models, effort, form,
-// new-chat-setup, help, empty) — kept compact, refreshed to use theme tokens.
+// Other content modes (status, list, details, diff, form, new-chat-setup,
+// help, empty) — kept compact, refreshed to use theme tokens.
 // ---------------------------------------------------------------------------
 
 function HelpPane() {
   return (
     <Box flexDirection="column">
+      <Text color={theme.color.t3} dimColor>↓ from prompt enters the model row; ↑ returns</Text>
+      <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
+      <Text color={theme.color.t3} dimColor>/model focuses the model row · /subagents opens the agents pane</Text>
       <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info</Text>
-      <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus</Text>
-      <Text color={theme.color.t3} dimColor>esc closes the active side pane</Text>
+      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles subagents</Text>
+      <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
       <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
       <Text color={theme.color.t3} dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
-      <Text color={theme.color.t3} dimColor>/ade status forces ADE's TUI command when a runtime owns /status</Text>
     </Box>
   );
 }
@@ -874,8 +654,6 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string } 
       return {
         title: `${endTruncate(content.lane.name.toUpperCase(), 22)} · ${content.worktreeAvailable === false ? "MISSING" : "FOCUSED"}`,
       };
-    case "model-setup":
-      return { title: "SETUP · MODEL", hint: new Date().toISOString().slice(11, 19) };
     case "new-chat-setup":
       return { title: "NEW CHAT" };
     case "subagents":
@@ -890,10 +668,6 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string } 
       return { title: content.title.toUpperCase() };
     case "details":
       return { title: content.title.toUpperCase() };
-    case "models":
-      return { title: "MODEL" };
-    case "effort":
-      return { title: "EFFORT" };
     case "form":
       return { title: content.title.toUpperCase() };
     default:
@@ -930,7 +704,7 @@ export function RightPane({
       flexDirection="column"
       borderStyle="single"
       borderColor={focused ? theme.color.borderFocused : theme.color.border}
-      paddingX={content.kind === "model-setup" ? 0 : 1}
+      paddingX={1}
     >
       {/* Pane header */}
       <Box flexDirection="row" justifyContent="space-between">
@@ -996,45 +770,12 @@ export function RightPane({
         </Box>
       ) : null}
 
-      {content.kind === "models" ? (
-        <Box flexDirection="column">
-          {content.models.map((model, index) => (
-            <Text
-              key={model.id}
-              color={(model.modelId ?? model.id) === content.activeModelId ? theme.color.violet : undefined}
-            >
-              {index === selectedIndex ? theme.rail : " "}{" "}
-              {(model.modelId ?? model.id) === content.activeModelId ? "●" : "○"} {model.displayName}
-            </Text>
-          ))}
-          <Text color={theme.color.t4} dimColor>arrows move · enter applies</Text>
-        </Box>
-      ) : null}
-
-      {content.kind === "effort" ? (
-        <Box flexDirection="column">
-          {content.efforts.map((effort, index) => (
-            <Text
-              key={effort}
-              color={effort === content.activeEffort ? theme.color.violet : undefined}
-            >
-              {index === selectedIndex ? theme.rail : " "} {effort === content.activeEffort ? "●" : "○"} {effort}
-            </Text>
-          ))}
-          <Text color={theme.color.t4} dimColor>arrows move · enter applies</Text>
-        </Box>
-      ) : null}
-
       {content.kind === "lane-details" ? (
         <LaneDetailsPane content={content} width={paneWidth} />
       ) : null}
 
       {content.kind === "subagents" ? (
         <SubagentsPane content={content} selectedIndex={selectedIndex} width={paneWidth} />
-      ) : null}
-
-      {content.kind === "model-setup" ? (
-        <ModelSetupPane content={content} selectedIndex={selectedIndex} width={paneWidth} />
       ) : null}
 
       {content.kind === "new-chat-setup" ? (
@@ -1058,7 +799,7 @@ export function RightPane({
               );
             })}
           </Box>
-          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ prompt</Text>
+          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background</Text>
         </Box>
       ) : null}
 
@@ -1066,13 +807,17 @@ export function RightPane({
         <Box flexDirection="column">
           {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
+            const displayValue = endTruncate(
+              (value || field.placeholder || "").replace(/\s+/g, " "),
+              Math.max(8, paneWidth - field.label.length - 8),
+            );
             return (
               <Text
                 key={field.name}
                 color={index === activeFormField ? theme.color.violet : undefined}
               >
                 {index === activeFormField ? theme.rail : " "} {field.label}
-                {field.required ? " *" : ""}: {value || field.placeholder || ""}
+                {field.required ? " *" : ""}: {displayValue}
               </Text>
             );
           })}

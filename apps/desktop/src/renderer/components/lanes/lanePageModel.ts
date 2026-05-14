@@ -288,3 +288,24 @@ export function resolveLaneDeleteStartSelection(args: {
     pinnedLaneIds,
   };
 }
+
+export function resolveVisibleLaneIds(args: {
+  activeLaneIds: string[];
+  existingLaneIds: Iterable<string>;
+  filteredLaneIds: Iterable<string>;
+  selectableFilteredLaneIds: Iterable<string>;
+  deletingLaneIds: Iterable<string>;
+}): string[] {
+  const existing = new Set(args.existingLaneIds);
+  const deleting = new Set(args.deletingLaneIds);
+  const selectableFiltered = new Set(args.selectableFilteredLaneIds);
+  const filteredLaneIds = Array.from(args.filteredLaneIds);
+  const allowDeleteFallbackPane =
+    selectableFiltered.size === 0 && filteredLaneIds.some((laneId) => deleting.has(laneId));
+
+  return args.activeLaneIds.filter((laneId) => (
+    existing.has(laneId)
+    && !deleting.has(laneId)
+    && (selectableFiltered.has(laneId) || allowDeleteFallbackPane)
+  ));
+}
