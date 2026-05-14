@@ -1026,6 +1026,8 @@ export function AgentChatComposer({
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
+  const previousImagePreviewUrlsRef = useRef<Record<string, string>>({});
+  const previousPendingImageAttachmentsRef = useRef<ChatAttachmentPendingImage[]>([]);
   const previousAttachmentPathsRef = useRef<Set<string>>(new Set());
   const clipboardImagePasteHandledRef = useRef(0);
   const clipboardImagePasteFallbackTimerRef = useRef<number | null>(null);
@@ -1099,23 +1101,14 @@ export function AgentChatComposer({
       clipboardImagePasteFallbackTimerRef.current = null;
     }
     clipboardImagePasteFallbackAttachedRef.current = false;
+    for (const attachment of pendingImageAttachments) {
+      cancelledPendingImageAttachmentsRef.current.add(attachment.id);
+    }
     setPendingImageAttachments((current) => {
       if (!current.length) return current;
-      for (const attachment of current) {
-        cancelledPendingImageAttachmentsRef.current.add(attachment.id);
-        if (
-          attachment.previewUrl
-          && objectPreviewUrlsRef.current.has(attachment.previewUrl)
-          && typeof URL !== "undefined"
-          && typeof URL.revokeObjectURL === "function"
-        ) {
-          URL.revokeObjectURL(attachment.previewUrl);
-          objectPreviewUrlsRef.current.delete(attachment.previewUrl);
-        }
-      }
       return [];
     });
-  }, [composerInputLocked]);
+  }, [composerInputLocked, pendingImageAttachments]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -1126,7 +1119,7 @@ export function AgentChatComposer({
     [sdkSlashCommands, onClearEvents],
   );
 
-  const releasePreviewUrl = useCallback((url: string | null | undefined) => {
+  const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
     if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
       URL.revokeObjectURL(url);
@@ -1139,21 +1132,18 @@ export function AgentChatComposer({
     setImagePreviewUrls((current) => {
       const previous = current[path];
       if (previous === url) return current;
-      if (previous) releasePreviewUrl(previous);
       return { ...current, [path]: url };
     });
-  }, [releasePreviewUrl]);
+  }, []);
 
   const clearPreviewForPath = useCallback((path: string) => {
     setImagePreviewUrls((current) => {
-      const previous = current[path];
-      if (!previous) return current;
-      releasePreviewUrl(previous);
+      if (!current[path]) return current;
       const next = { ...current };
       delete next[path];
       return next;
     });
-  }, [releasePreviewUrl]);
+  }, []);
 
   const createObjectPreviewUrl = useCallback((file: File): string | null => {
     if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") return null;
@@ -1178,20 +1168,16 @@ export function AgentChatComposer({
 
   const dropPendingImageAttachment = useCallback((
     id: string,
-    options: { markCancelled?: boolean; revokePreview?: boolean } = {},
+    options: { markCancelled?: boolean } = {},
   ) => {
     if (options.markCancelled) cancelledPendingImageAttachmentsRef.current.add(id);
     setPendingImageAttachments((current) => {
-      const pending = current.find((entry) => entry.id === id);
-      if (pending?.previewUrl && options.revokePreview !== false) {
-        releasePreviewUrl(pending.previewUrl);
-      }
       return current.filter((entry) => entry.id !== id);
     });
-  }, [releasePreviewUrl]);
+  }, []);
 
   const removePendingImageAttachment = useCallback((id: string) => {
-    dropPendingImageAttachment(id, { markCancelled: true, revokePreview: true });
+    dropPendingImageAttachment(id, { markCancelled: true });
   }, [dropPendingImageAttachment]);
 
   const handleRemoveAttachment = useCallback((path: string) => {
@@ -1200,20 +1186,41 @@ export function AgentChatComposer({
   }, [clearPreviewForPath, onRemoveAttachment]);
 
   useEffect(() => {
+    const previous = previousImagePreviewUrlsRef.current;
+    for (const [path, previousUrl] of Object.entries(previous)) {
+      if (imagePreviewUrls[path] !== previousUrl) {
+        revokePreviewUrl(previousUrl);
+      }
+    }
+    previousImagePreviewUrlsRef.current = imagePreviewUrls;
+  }, [imagePreviewUrls, revokePreviewUrl]);
+
+  useEffect(() => {
+    const currentPendingIds = new Set(pendingImageAttachments.map((attachment) => attachment.id));
+    const storedPreviewUrls = new Set(Object.values(imagePreviewUrls));
+    for (const attachment of previousPendingImageAttachmentsRef.current) {
+      const pendingPreviewUrl = attachment.previewUrl ?? null;
+      if (!currentPendingIds.has(attachment.id) && (!pendingPreviewUrl || !storedPreviewUrls.has(pendingPreviewUrl))) {
+        revokePreviewUrl(attachment.previewUrl);
+      }
+    }
+    previousPendingImageAttachmentsRef.current = pendingImageAttachments;
+  }, [imagePreviewUrls, pendingImageAttachments, revokePreviewUrl]);
+
+  useEffect(() => {
     const currentPaths = new Set(attachments.map((attachment) => attachment.path));
     const previousPaths = previousAttachmentPathsRef.current;
     setImagePreviewUrls((current) => {
       let next = current;
-      for (const [path, url] of Object.entries(current)) {
+      for (const path of Object.keys(current)) {
         if (!previousPaths.has(path) || currentPaths.has(path)) continue;
-        releasePreviewUrl(url);
         if (next === current) next = { ...current };
         delete next[path];
       }
       return next;
     });
     previousAttachmentPathsRef.current = currentPaths;
-  }, [attachments, releasePreviewUrl]);
+  }, [attachments]);
 
   /* ── Attachment picker effects ── */
   useEffect(() => {
@@ -1319,17 +1326,17 @@ export function AgentChatComposer({
             continue;
           }
           const attachmentType = inferAttachmentType(tempPath, file.type);
-          const storedPreview = Boolean(pendingImage?.previewUrl && attachmentType === "image");
-          if (pendingImage?.previewUrl && storedPreview) {
-            rememberPreviewUrl(tempPath, pendingImage.previewUrl);
+          const pendingPreviewUrl = pendingImage?.previewUrl ?? null;
+          if (attachmentType === "image" && pendingPreviewUrl) {
+            rememberPreviewUrl(tempPath, pendingPreviewUrl);
           }
           onAddAttachment({ path: tempPath, type: attachmentType });
           if (pendingImage) {
-            dropPendingImageAttachment(pendingImage.id, { revokePreview: !storedPreview });
+            dropPendingImageAttachment(pendingImage.id);
           }
           addedInBatch += 1;
         } catch {
-          if (pendingImage) dropPendingImageAttachment(pendingImage.id, { revokePreview: true });
+          if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
         }
       }
@@ -1362,7 +1369,7 @@ export function AgentChatComposer({
             };
           })();
       if (!payload) {
-        dropPendingImageAttachment(pendingImage.id, { revokePreview: true });
+        dropPendingImageAttachment(pendingImage.id);
         return;
       }
       if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
@@ -1371,9 +1378,9 @@ export function AgentChatComposer({
       }
       if (payload.previewDataUrl) rememberPreviewUrl(payload.path, payload.previewDataUrl);
       onAddAttachment({ path: payload.path, type: inferAttachmentType(payload.path, payload.mimeType) });
-      dropPendingImageAttachment(pendingImage.id, { revokePreview: false });
+      dropPendingImageAttachment(pendingImage.id);
     } catch {
-      dropPendingImageAttachment(pendingImage.id, { revokePreview: true });
+      dropPendingImageAttachment(pendingImage.id);
       setAttachError("Unable to attach clipboard image.");
     } finally {
       fileAddInProgressRef.current = false;
