@@ -650,7 +650,7 @@ export function FilesPage({
   const activeTabPreviewKind = getFilePreviewKind(activeTab);
   const activeTabIsText = isTextTab(activeTab);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
-  const liveWatchEnabled = openTabs.length > 0;
+  const liveWatchEnabled = Boolean(workspaceId);
 
   useEffect(() => {
     if (!activeWorkspace?.rootPath) return;

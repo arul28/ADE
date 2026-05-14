@@ -410,6 +410,16 @@ describe("FilesPage", () => {
     });
   });
 
+  it("starts the workspace watcher even before a file is opened", async () => {
+    renderFilesPage({ preferPrimaryWorkspace: true });
+
+    await waitForFilesWatcherStartup();
+    expect((window.ade.files.watchChanges as any).mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: "primary",
+      includeIgnored: true,
+    });
+  });
+
   it("filters loaded tree paths locally and keeps content search explicit", async () => {
     renderFilesPage({
       openFilePath: ".ade/notes/project.md",
