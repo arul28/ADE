@@ -102,7 +102,7 @@ function PRsPageInner() {
   const handleRefresh = React.useCallback(async () => {
     await Promise.all([
       refresh(),
-      refreshLanes().catch(() => {}),
+      refreshLanes({ includeStatus: false, includeSnapshots: false }).catch(() => {}),
     ]);
     setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
