@@ -323,6 +323,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     const cursor = readCursor(params.cursor);
     const limit = readLimit(params.limit);
+    const replay = params.replay !== false;
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const shouldForward = (event: BufferedEvent): boolean =>
@@ -337,15 +338,17 @@ export function createMultiProjectRpcRequestHandler(
       unsubscribe,
     });
 
-    const replay = scope.runtime.eventBuffer.drain(cursor, limit);
-    for (const event of replay.events) {
+    const replayResult = replay
+      ? scope.runtime.eventBuffer.drain(cursor, limit)
+      : { events: [], nextCursor: cursor, hasMore: false };
+    for (const event of replayResult.events) {
       if (shouldForward(event))
         emitRuntimeEvent(subscriptionId, projectId, event);
     }
     return {
       subscriptionId,
-      nextCursor: replay.nextCursor,
-      hasMore: replay.hasMore,
+      nextCursor: replayResult.nextCursor,
+      hasMore: replayResult.hasMore,
     };
   };
 

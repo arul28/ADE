@@ -276,7 +276,7 @@ describe("connectToAde embedded mode", () => {
         { timeout: 1000 },
       );
       expect(requests.find((request) => request.method === "runtimeEvents.subscribe")?.params)
-        .toMatchObject({ projectId: "project-daemon", category: "runtime" });
+        .toMatchObject({ projectId: "project-daemon", category: "runtime", replay: false });
 
       const envelope = {
         sessionId: "chat-1",

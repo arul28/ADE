@@ -54,7 +54,7 @@ export type AdeCodeConnection = {
   actionList<T = unknown>(domain: string, action: string, argsList: unknown[]): Promise<T>;
   onChatEvent(callback: (event: AgentChatEventEnvelope) => void): () => void;
   subscribeRuntimeEvents(
-    args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number },
+    args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number; replay?: boolean },
     callback: (event: BufferedEvent) => void,
   ): Promise<() => void>;
   close(): Promise<void>;

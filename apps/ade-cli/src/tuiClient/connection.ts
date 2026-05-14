@@ -421,6 +421,7 @@ async function connectAttachedSocket(args: {
           category: "runtime",
           cursor: 0,
           limit: 100,
+          replay: false,
         }).then((response) => {
           if (disposed) {
             request("runtimeEvents.unsubscribe", { subscriptionId: response.subscriptionId }).catch(() => {});
@@ -461,6 +462,7 @@ async function connectAttachedSocket(args: {
             category: subscriptionArgs.category ?? "runtime",
             cursor: subscriptionArgs.cursor ?? 0,
             limit: subscriptionArgs.limit ?? 100,
+            replay: subscriptionArgs.replay,
           });
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
@@ -654,7 +656,7 @@ export async function connectToAde(args: {
       const eventBuffer = runtime.eventBuffer;
       if (!eventBuffer) return () => {};
       const shouldForward = (event: BufferedEvent) => !category || event.category === category;
-      const replay = typeof eventBuffer.drain === "function"
+      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
         ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
         : { events: [] };
       for (const event of replay.events) {

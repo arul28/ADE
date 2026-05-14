@@ -3360,7 +3360,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!connection) return;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
-    void connection.subscribeRuntimeEvents({ category: "runtime", cursor: 0, limit: 50 }, (event) => {
+    void connection.subscribeRuntimeEvents({ category: "runtime", cursor: 0, limit: 50, replay: false }, (event) => {
       const payload = event.payload as { type?: unknown; event?: unknown };
       const terminalEvent = payload.event as { sessionId?: unknown; data?: unknown } | undefined;
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;

@@ -426,4 +426,73 @@ describe("multi-project RPC server", () => {
 
     handler.dispose();
   });
+
+  it("can subscribe to project runtime events without replaying buffered history", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const eventBuffer = createEventBuffer();
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:00.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "old.ts" } },
+    });
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime: {
+          eventBuffer,
+          dispose: vi.fn(),
+        },
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    const notify = vi.fn();
+    handler.setNotifier(notify);
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    const subscribed = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "runtimeEvents.subscribe",
+      params: {
+        projectId: added.projectId,
+        category: "runtime",
+        replay: false,
+      },
+    }) as { subscriptionId: string; hasMore: boolean; nextCursor: number };
+
+    expect(subscribed.hasMore).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+
+    eventBuffer.push({
+      timestamp: "2026-05-10T00:00:01.000Z",
+      category: "runtime",
+      payload: { type: "file_change", event: { path: "new.ts" } },
+    });
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("runtime/event", expect.objectContaining({
+      subscriptionId: subscribed.subscriptionId,
+      event: expect.objectContaining({
+        payload: { type: "file_change", event: { path: "new.ts" } },
+      }),
+    }));
+
+    handler.dispose();
+  });
 });
