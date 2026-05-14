@@ -1668,6 +1668,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const eventCountRef = useRef<number>(0);
   const eventDedupKeysRef = useRef<Set<string>>(new Set());
   const eventDedupKeyOrderRef = useRef<string[]>([]);
+  const refreshGenerationRef = useRef(0);
   const chatScrollOffsetRowsRef = useRef(0);
   const chatScrollMaxOffsetRef = useRef(0);
   const lastSeenAtBottomEventCountRef = useRef(0);
@@ -2995,6 +2996,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const refreshState = useCallback(async () => {
     const conn = connectionRef.current;
     if (!conn) return;
+    const generation = refreshGenerationRef.current + 1;
+    refreshGenerationRef.current = generation;
+    const isCurrentRefresh = () =>
+      refreshGenerationRef.current === generation && connectionRef.current === conn;
     const nextLanes = await listLanes(conn);
     const nextSessions = await listChatSessions(conn);
     const nextTerminalSessions = await listTerminalSessions(conn).catch(() => []);
@@ -3029,6 +3034,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     let nextEvents: AgentChatEventEnvelope[] = [];
     if (nextSessionId && !nextTerminalSession) {
       const history = await getChatHistory(conn, nextSessionId);
+      if (!isCurrentRefresh()) return;
       setCurrentGoal(latestGoal(history.events));
       nextEvents = clearedAt
         ? history.events.filter((event) => event.timestamp > clearedAt)
@@ -3060,6 +3066,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         ? { laneId: nextLaneId, provider: nextProvider }
         : null;
     const remoteCommands = commandArgs ? await getSlashCommands(conn, commandArgs).catch(() => []) : [];
+    if (!isCurrentRefresh()) return;
     const projectCommands = discoverProjectSlashCommands(nextLane?.worktreePath || project.workspaceRoot);
     const nextCommands = remoteCommands.length ? remoteCommands : projectCommands;
     const provider = normalizeProvider(nextProvider);
