@@ -185,6 +185,19 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("ADE session guidance");
     });
 
+    it("uses the selected lane worktree to seed skill roots", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        laneWorktreePath: "/repo/.ade/worktrees/chat-lane",
+      });
+
+      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]?.startsWith(
+        "/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills",
+      )).toBe(true);
+    });
+
     it("submits the first user prompt without dropping ADE guidance, model, or reasoning effort", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "codex",

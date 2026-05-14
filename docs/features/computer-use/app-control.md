@@ -88,7 +88,7 @@ The companion **chat terminal** surface lives at `ade.terminal.*` and shares the
 
 `apps/ade-cli/src/bootstrap.ts` constructs an `AppControlService` for headless mode using the same `resolveLaneId` strategy as the desktop main process.
 
-The agent guidance string in `apps/desktop/src/shared/adeCliGuidance.ts` (`ADE_CLI_AGENT_GUIDANCE` + `ADE_CLI_INLINE_GUIDANCE`) tells agents to prefer desktop socket mode, how to launch by reusing a Run-tab process command + cwd, and how to read scrollback via `app-control logs` or fall back to `terminal read --chat-session "$ADE_CHAT_SESSION_ID"`.
+The agent guidance built by `apps/desktop/src/shared/adeCliGuidance.ts` tells agents to use socket-backed ADE CLI surfaces when live desktop state matters, to rely on the relevant bundled ADE skill for detailed App Control steps, and to register proof artifacts through `ade proof ...` after captures.
 
 ### Action registry
 

@@ -215,7 +215,8 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
+import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -1599,6 +1600,7 @@ const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 40_000;
 const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
 const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
+  "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
   "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git.",
   "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
 ] as const;
@@ -3544,6 +3546,10 @@ function toHarnessPermissionMode(
   return "edit";
 }
 
+function buildAdeGuidanceForLane(laneWorktreePath: string): string {
+  return buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+}
+
 function buildCodexDeveloperInstructions(args: {
   laneWorktreePath: string;
   session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
@@ -3558,6 +3564,7 @@ function buildCodexDeveloperInstructions(args: {
     permissionMode: toHarnessPermissionMode(args.session.permissionMode),
     interactive: true,
     runtime: "codex-app-server",
+    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
   });
 }
 
@@ -10243,7 +10250,7 @@ export function createAgentChatService(args: {
       "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
       ...slashCommandsSection,
       "",
-      ADE_CLI_AGENT_GUIDANCE,
+      buildAdeGuidanceForLane(managed.laneWorktreePath),
     ].join("\n");
   };
 
@@ -13739,7 +13746,7 @@ export function createAgentChatService(args: {
           "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           ...slashCommandsSection,
           "",
-          ADE_CLI_AGENT_GUIDANCE,
+          buildAdeGuidanceForLane(managed.laneWorktreePath),
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -15116,7 +15123,7 @@ export function createAgentChatService(args: {
     const laneDirectiveKey = executionContext.laneDirectiveKey;
     const shouldInjectLaneDirective = laneDirectiveKey != null && managed.lastLaneDirectiveKey !== laneDirectiveKey;
     // Guidance injection is capability-based, not session-state-based:
-    // Claude sessions receive ADE_CLI_AGENT_GUIDANCE in their persistent system
+    // Claude sessions receive lane-scoped ADE guidance in their persistent system
     // prompt, and native Codex app-server sessions receive ADE guidance through
     // developerInstructions/collaborationMode settings. Providers without a
     // trusted instruction channel still need the guidance in the user prompt,
@@ -15166,7 +15173,7 @@ export function createAgentChatService(args: {
             : null,
           buildExecutionModeDirective(executionMode, managed.session.provider),
           buildClaudeInteractionModeDirective(managed.session.interactionMode, managed.session.provider),
-          shouldInjectGuidance ? ADE_CLI_AGENT_GUIDANCE : null,
+          shouldInjectGuidance ? buildAdeGuidanceForLane(managed.laneWorktreePath) : null,
           buildComputerUseDirective(
             computerUseArtifactBrokerRef?.getBackendStatus() ?? null,
           ),

@@ -62,10 +62,10 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state |
+| `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
 | `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs, convergence runtime state) |
 | `prsRouteState.ts` | URL ↔ page state mapping |
-| `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation |
+| `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. A `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Unified repo + external PR browser with label filters, CI badges, review indicators |
 | `tabs/QueueTab.tsx` | Merge queue UI. Hosts the "Automate Merging" entry point that opens `QueueAutomateMergingModal` with the queue's eligible members (everything that has not landed yet). |

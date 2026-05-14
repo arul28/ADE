@@ -333,7 +333,8 @@ export function LanesPage() {
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
-  const [deleteProgressByLaneId, setDeleteProgressByLaneId] = useState<Record<string, LaneDeleteProgress>>({});
+  const deleteProgressByLaneId = useAppStore((s) => s.laneDeleteProgressByLaneId);
+  const setDeleteProgressByLaneId = useAppStore((s) => s.setLaneDeleteProgressByLaneId);
   const laneDeleteWarningMessagesRef = useRef<Map<string, string>>(new Map());
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
   const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
@@ -369,6 +370,7 @@ export function LanesPage() {
   const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
   const laneDeleteRefreshTimerRef = useRef<number | null>(null);
   const hydratedLaneDeleteProgressProjectRef = useRef<string | null>(null);
+  const deleteProgressProjectRootRef = useRef<string | null>(project?.rootPath ?? null);
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
   // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
   // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
@@ -409,6 +411,9 @@ export function LanesPage() {
   }, []);
 
   useEffect(() => {
+    const projectRoot = project?.rootPath ?? null;
+    const previousProjectRoot = deleteProgressProjectRootRef.current;
+    deleteProgressProjectRootRef.current = projectRoot;
     hydratedLaneDeleteProgressProjectRef.current = null;
     completedLaneDeleteRefreshesRef.current.clear();
     pendingLaneDeleteRefreshIdsRef.current.clear();
@@ -416,8 +421,10 @@ export function LanesPage() {
       window.clearTimeout(laneDeleteRefreshTimerRef.current);
       laneDeleteRefreshTimerRef.current = null;
     }
-    setDeleteProgressByLaneId({});
-  }, [project?.rootPath]);
+    if (previousProjectRoot !== projectRoot) {
+      setDeleteProgressByLaneId({});
+    }
+  }, [project?.rootPath, setDeleteProgressByLaneId]);
 
   const laneSnapshotByLaneId = useMemo(
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
@@ -787,6 +794,15 @@ export function LanesPage() {
     }, LANE_DELETE_REFRESH_DEBOUNCE_MS);
   }, [refreshLanes]);
 
+  const queueLaneDeleteRefresh = useCallback((laneIds: string[]) => {
+    for (const laneId of laneIds) {
+      if (laneId) pendingLaneDeleteRefreshIdsRef.current.add(laneId);
+    }
+    if (pendingLaneDeleteRefreshIdsRef.current.size > 0) {
+      scheduleLaneDeleteRefresh();
+    }
+  }, [scheduleLaneDeleteRefresh]);
+
   /* ---- Effects ---- */
 
   // Mirror high-churn values into refs so the IPC subscription below doesn't
@@ -843,11 +859,10 @@ export function LanesPage() {
         const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
         setLaneActionError((current) => remainingWarnings ?? (current && /\bdelet(?:e|ed|ing)\b/i.test(current) ? null : current));
       }
-      pendingLaneDeleteRefreshIdsRef.current.add(laneId);
-      scheduleLaneDeleteRefresh();
+      queueLaneDeleteRefresh([laneId]);
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, scheduleLaneDeleteRefresh, selectLane]);
+  }, [clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -1064,7 +1079,7 @@ export function LanesPage() {
       }
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
-  }, [lanesById]);
+  }, [lanesById, setDeleteProgressByLaneId]);
 
   useEffect(() => {
     const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId));
@@ -1410,41 +1425,63 @@ export function LanesPage() {
 
   useEffect(() => {
     const projectRoot = project?.rootPath ?? null;
-    if (!projectRoot || !window.ade.lanes.listDeleteProgress) return;
+    if (!projectRoot) return;
     if (hydratedLaneDeleteProgressProjectRef.current === projectRoot) return;
     hydratedLaneDeleteProgressProjectRef.current = projectRoot;
     let cancelled = false;
+    const getStoredActiveLaneIds = () => Object.values(useAppStore.getState().laneDeleteProgressByLaneId)
+      .filter(isLaneDeleteProgressActive)
+      .map((progress) => progress.laneId);
+    const recoverStoredActiveLaneDeletes = () => {
+      const storedActiveLaneIds = getStoredActiveLaneIds();
+      if (storedActiveLaneIds.length === 0) return;
+      moveAwayFromDeletingLanes(storedActiveLaneIds);
+      queueLaneDeleteRefresh(storedActiveLaneIds);
+    };
+    if (!window.ade.lanes.listDeleteProgress) {
+      recoverStoredActiveLaneDeletes();
+      return;
+    }
     void window.ade.lanes.listDeleteProgress()
       .then((progresses) => {
         if (cancelled) return;
-        const activeProgresses = progresses.filter(isLaneDeleteProgressActive);
-        if (activeProgresses.length === 0) return;
-        const laneIds = activeProgresses.map((progress) => progress.laneId);
-        setDeleteProgressByLaneId((prev) => {
-          const next = { ...prev };
-          for (const progress of activeProgresses) {
-            next[progress.laneId] = progress;
-          }
-          return next;
-        });
+        const activeProgresses = (Array.isArray(progresses) ? progresses : []).filter(isLaneDeleteProgressActive);
+        const activeProgressLaneIds = new Set(activeProgresses.map((progress) => progress.laneId));
+        const storedActiveLaneIds = getStoredActiveLaneIds();
+        const laneIdsWithoutBackendProgress = storedActiveLaneIds.filter((laneId) => !activeProgressLaneIds.has(laneId));
+        const laneIds = mergeUnique(
+          activeProgresses.map((progress) => progress.laneId),
+          laneIdsWithoutBackendProgress,
+        );
+        if (laneIds.length === 0) return;
+        if (activeProgresses.length > 0) {
+          setDeleteProgressByLaneId((prev) => {
+            const next = { ...prev };
+            for (const progress of activeProgresses) {
+              next[progress.laneId] = progress;
+            }
+            return next;
+          });
+        }
         moveAwayFromDeletingLanes(laneIds);
+        const refreshLaneIds = [...laneIdsWithoutBackendProgress];
         for (const progress of activeProgresses) {
           if (progress.overallStatus !== "completed" && progress.overallStatus !== "completed_with_warnings") continue;
           if (completedLaneDeleteRefreshesRef.current.has(progress.laneId)) continue;
           completedLaneDeleteRefreshesRef.current.add(progress.laneId);
-          pendingLaneDeleteRefreshIdsRef.current.add(progress.laneId);
+          refreshLaneIds.push(progress.laneId);
         }
-        if (pendingLaneDeleteRefreshIdsRef.current.size > 0) {
-          scheduleLaneDeleteRefresh();
-        }
+        queueLaneDeleteRefresh(refreshLaneIds);
       })
       .catch((error) => {
+        if (cancelled) return;
+        recoverStoredActiveLaneDeletes();
         console.debug("Failed to hydrate lane delete progress:", error);
       });
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath, moveAwayFromDeletingLanes, scheduleLaneDeleteRefresh]);
+  }, [project?.rootPath, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
   const deleteManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];

@@ -310,6 +310,12 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("## User-Facing Progress");
     expect(result).toContain("## Mission");
   });
+
+  it("uses the active cwd when describing ADE skill roots", () => {
+    const result = buildCodingAgentSystemPrompt({ cwd: "/repo/.ade/worktrees/chat-lane" });
+
+    expect(result).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
+  });
 });
 
 describe("composeSystemPrompt", () => {

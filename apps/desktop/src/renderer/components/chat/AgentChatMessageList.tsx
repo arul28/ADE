@@ -3701,6 +3701,7 @@ export function AgentChatMessageList({
   // coalesce every source (ResizeObserver, stick-flip effect, jump button)
   // into at most one scrollTop assignment per frame.
   const scrollRafRef = useRef<number | null>(null);
+  const scrollFollowFramesRef = useRef(0);
   // Each programmatic scroll write increments this counter; the matching
   // scroll event then decrements it and skips stick-state updates. Keeps
   // user gestures as the only thing that toggles auto-follow off.
@@ -3837,26 +3838,37 @@ export function AgentChatMessageList({
   // - A ResizeObserver on the content wrapper picks up every size change —
   //   new rows appearing *and* streaming tokens extending existing rows —
   //   without the old MutationObserver's characterData firehose.
-  const scrollToBottomSoon = useCallback(() => {
+  const scrollToBottomSoon = useCallback((followUpFrames = 1) => {
+    scrollFollowFramesRef.current = Math.max(scrollFollowFramesRef.current, followUpFrames);
     if (scrollRafRef.current !== null) return;
-    scrollRafRef.current = requestAnimationFrame(() => {
+    const run = () => {
       scrollRafRef.current = null;
       const el = scrollRef.current;
-      if (!el || !stickToBottomRef.current) return;
-      const target = el.scrollHeight - el.clientHeight;
-      if (target <= 0) return;
-      const before = el.scrollTop;
-      if (Math.abs(before - target) < 1) return;
-      el.scrollTop = target;
-      // Only register a pending programmatic scroll event if the assignment
-      // actually moved the element. Otherwise (clamped to the same value,
-      // hidden element, etc.) no scroll event will fire and the counter
-      // would stay positive forever, misclassifying the next real user
-      // scroll as programmatic.
-      if (el.scrollTop !== before) {
-        programmaticScrollCountRef.current += 1;
+      if (!el || !stickToBottomRef.current) {
+        scrollFollowFramesRef.current = 0;
+        return;
       }
-    });
+      const target = Math.max(0, el.scrollHeight - el.clientHeight);
+      const before = el.scrollTop;
+      if (Math.abs(before - target) >= 1) {
+        el.scrollTop = target;
+        setScrollTop(el.scrollTop);
+        // Only register a pending programmatic scroll event if the assignment
+        // actually moved the element. Otherwise (clamped to the same value,
+        // hidden element, etc.) no scroll event will fire and the counter
+        // would stay positive forever, misclassifying the next real user
+        // scroll as programmatic.
+        if (el.scrollTop !== before) {
+          programmaticScrollCountRef.current += 1;
+        }
+      }
+      const remaining = scrollFollowFramesRef.current;
+      if (remaining > 0) {
+        scrollFollowFramesRef.current = remaining - 1;
+        scrollRafRef.current = requestAnimationFrame(run);
+      }
+    };
+    scrollRafRef.current = requestAnimationFrame(run);
   }, []);
 
   useEffect(() => () => {
@@ -3864,6 +3876,7 @@ export function AgentChatMessageList({
       cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
     }
+    scrollFollowFramesRef.current = 0;
   }, []);
 
   // When the user re-enters the sticky zone (or on first mount), snap to bottom.
@@ -3884,7 +3897,7 @@ export function AgentChatMessageList({
       return;
     }
     const ro = new ResizeObserver(() => {
-      if (stickToBottomRef.current) scrollToBottomSoon();
+      if (stickToBottomRef.current) scrollToBottomSoon(2);
     });
     ro.observe(wrapper);
     return () => ro.disconnect();
@@ -3945,14 +3958,18 @@ export function AgentChatMessageList({
       }
       // Debounce measurement tick updates to batch rapid height changes
       // into a single re-render instead of one per row.
-      if (!measureFlushTimer.current) {
-        measureFlushTimer.current = setTimeout(() => {
-          measureFlushTimer.current = null;
-          setMeasurementTick((value) => value + 1);
-        }, 80);
+      const isFollowingBottom = stickToBottomRef.current;
+      if (measureFlushTimer.current) {
+        if (!isFollowingBottom) return;
+        clearTimeout(measureFlushTimer.current);
       }
+      measureFlushTimer.current = setTimeout(() => {
+        measureFlushTimer.current = null;
+        setMeasurementTick((value) => value + 1);
+        if (isFollowingBottom) scrollToBottomSoon(2);
+      }, isFollowingBottom ? 16 : 80);
     }
-  }, [rowHeight, shouldVirtualize, timelineRowGapPx]);
+  }, [rowHeight, scrollToBottomSoon, shouldVirtualize, timelineRowGapPx]);
 
   // Compute the visible window of rows when virtualization is active.
   // measurementTick forces recomputation when row heights are measured so
@@ -3972,6 +3989,10 @@ export function AgentChatMessageList({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
+
+  useLayoutEffect(() => {
+    if (stickToBottomRef.current) scrollToBottomSoon(2);
+  }, [containerHeight, groupedRows.length, measurementTick, scrollToBottomSoon, shouldVirtualize, totalHeight]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;

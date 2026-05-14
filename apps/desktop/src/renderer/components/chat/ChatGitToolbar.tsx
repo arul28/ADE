@@ -276,9 +276,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     if (linkedPr) {
       navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
     } else {
-      navigate("/prs");
+      const params = new URLSearchParams({
+        tab: "normal",
+        create: "1",
+        sourceLaneId: laneId,
+        target: "primary",
+      });
+      navigate(`/prs?${params.toString()}`);
     }
-  }, [linkedPr, navigate]);
+  }, [laneId, linkedPr, navigate]);
 
   // Reset menu state when the linked PR identity changes (lane switch, PR
   // unlinked) so stale data from another PR doesn't show.

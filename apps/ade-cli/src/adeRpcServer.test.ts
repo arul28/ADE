@@ -2435,6 +2435,9 @@ describe("adeRpcServer", () => {
         rows: 24,
         command: "codex",
         startupCommand: expect.stringContaining("codex --no-alt-screen"),
+        env: expect.objectContaining({
+          ADE_AGENT_SKILLS_DIRS: expect.stringContaining(path.join("lane-1", "apps", "desktop", "resources", "agent-skills")),
+        }),
       }),
     );
     expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledWith("session-1", "fix failing tests\r");
