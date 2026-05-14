@@ -238,7 +238,6 @@ import {
   openCodeEventStream,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeModelSelection,
-  runOpenCodeTextPrompt,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodeSessionHandle,
@@ -6530,7 +6529,12 @@ export function createAgentChatService(args: {
     const explicitFallback = typeof args.fallbackName === "string"
       ? normalizeSuggestedLaneName(args.fallbackName)
       : null;
-    const fallback = () => explicitFallback ?? fallbackLaneNameFromPrompt(prompt);
+    const promptFallback = fallbackLaneNameFromPrompt(prompt);
+    const fallback = () => (
+      promptFallback !== "parallel-task"
+        ? promptFallback
+        : explicitFallback ?? promptFallback
+    );
 
     if (!prompt.length) {
       return fallback();
@@ -6548,43 +6552,53 @@ export function createAgentChatService(args: {
     }
 
     try {
+      const config = resolveChatConfig();
+      if (config.titleGenerationEnabled === false) return fallback();
+
       const auth = await detectAuth();
       const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
       if (!availableModels.length) return fallback();
+      const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
+      const candidateModelIds = [
+        requestedModelId,
+        config.titleModelId,
+        DEFAULT_AUTO_TITLE_MODEL_ID,
+        "anthropic/claude-haiku-4-5",
+        "openai/gpt-5.4-mini",
+        "openai/gpt-5.2",
+        "openai/gpt-5.4",
+        availableModels[0]?.id,
+      ].reduce<string[]>((acc, candidate) => {
+        const modelId = typeof candidate === "string" ? candidate.trim() : "";
+        if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
+        return [...acc, modelId];
+      }, []);
 
-      const config = resolveChatConfig();
-      if (explicitFallback && config.titleGenerationEnabled === false) return fallback();
-      const preferredModelId =
-        [
-          requestedModelId,
-          config.titleModelId,
-          DEFAULT_AUTO_TITLE_MODEL_ID,
-          "anthropic/claude-haiku-4-5",
-          "openai/gpt-5.4-mini",
-          "openai/gpt-5.2",
-          "openai/gpt-5.4",
-          availableModels[0]?.id,
-        ].find((candidate) => {
-          const modelId = typeof candidate === "string" ? candidate.trim() : "";
-          return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
-        }) ?? null;
+      for (const candidateModelId of candidateModelIds) {
+        const descriptor = getModelById(candidateModelId);
+        if (!descriptor) continue;
+        try {
+          const result = await runSessionIntelligencePrompt({
+            cwd,
+            modelId: descriptor.id,
+            systemPrompt: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+            prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
+            taskType: "session_title",
+          });
+          const normalized = normalizeSuggestedLaneName(result.text);
+          if (normalized) return normalized;
+        } catch (error) {
+          logger.warn("agent_chat.suggest_lane_name_failed", {
+            modelId: candidateModelId,
+            requestedModelId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
-      if (!preferredModelId) return fallback();
-
-      const descriptor = getModelById(preferredModelId);
-      if (!descriptor) return fallback();
-
-      const result = await runOpenCodeTextPrompt({
-        directory: cwd,
-        title: "ADE lane name from prompt",
-        modelDescriptor: descriptor,
-        system: LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
-        prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
-        projectConfig: projectConfigService.get().effective,
-      });
-      return normalizeSuggestedLaneName(result.text) ?? fallback();
+      return fallback();
     } catch (error) {
-      logger.warn("agent_chat.suggest_lane_name_failed", {
+      logger.warn("agent_chat.suggest_lane_name_unavailable", {
         modelId: requestedModelId,
         error: error instanceof Error ? error.message : String(error),
       });

@@ -40,7 +40,7 @@ import type { WorkDraftKind, WorkViewMode } from "../../state/appStore";
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { LaneChip } from "./LaneChip";
-import { AgentChatPane } from "../chat/AgentChatPane";
+import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ProviderModelSelector } from "../shared/ProviderModelSelector";
@@ -854,7 +854,7 @@ function SessionSurface({
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   stopping?: boolean;
-  onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
+  onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onContinueCliSession?: (session: TerminalSessionSummary, text: string, options?: WorkCliContinuationOptions) => Promise<void> | void;
 }) {
   const isChat = isChatToolType(session.toolType);
@@ -1364,7 +1364,7 @@ export function WorkViewArea({
   setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
-  onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
+  onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: LaunchProfile;

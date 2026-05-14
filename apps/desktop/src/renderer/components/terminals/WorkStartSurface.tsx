@@ -5,14 +5,14 @@ import {
 import type { AgentChatSession, LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
-import { AgentChatPane } from "../chat/AgentChatPane";
+import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { LaunchProfile } from "./cliLaunch";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
   draftLaneId?: string | null;
   lanes: LaneSummary[];
-  onOpenChatSession: (session: AgentChatSession) => void | Promise<void>;
+  onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: {
     laneId: string;
     profile: LaunchProfile;

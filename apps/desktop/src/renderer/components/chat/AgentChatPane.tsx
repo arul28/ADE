@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Lightning, Plus, Terminal, TreeStructure } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -189,14 +189,10 @@ type BackgroundLaunchNotice = {
   sessionId: string;
 };
 
-function createTemporaryAutoLaneName(date = new Date()): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return [
-    "chat",
-    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
-    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
-  ].join("-");
-}
+export type AgentChatSessionCreatedOptions = {
+  activate?: boolean;
+  source?: "chat" | "draft-launch" | "handoff";
+};
 
 function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
   if (snapshot.text.length) return snapshot.text;
@@ -1397,7 +1393,7 @@ export function AgentChatPane({
   shouldAutofocusComposer?: boolean;
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;
-  onSessionCreated?: (session: AgentChatSession) => void | Promise<void>;
+  onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   workDraftKind?: "chat" | "cli";
   onLaunchCliSession?: (args: {
     laneId: string;
@@ -4015,9 +4011,12 @@ export function AgentChatPane({
       setOpenCodePermissionMode(targetOpenCodeMode);
     }
   }, [initialNativeControls.opencodePermissionMode]);
-  const notifySessionCreated = useCallback((session: AgentChatSession) => {
+  const notifySessionCreated = useCallback((session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
     if (!onSessionCreated) return;
-    void Promise.resolve(onSessionCreated(session)).catch((err) => { console.error("notifySessionCreated failed:", err); });
+    const result = options === undefined
+      ? onSessionCreated(session)
+      : onSessionCreated(session, options);
+    void Promise.resolve(result).catch((err) => { console.error("notifySessionCreated failed:", err); });
   }, [onSessionCreated]);
   const draftLaunchTargetIsAutoCreate = draftLaunchTargetId === AUTO_CREATE_LANE_OPTION_ID;
   const launchShellForDraftLane = useCallback(async () => {
@@ -4035,7 +4034,7 @@ export function AgentChatPane({
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
-    options: { select?: boolean; notify?: boolean } = {},
+    options: { select?: boolean; notify?: boolean; notifyOptions?: AgentChatSessionCreatedOptions } = {},
   ): Promise<AgentChatSession> => {
       const desc = getModelById(modelId);
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
@@ -4093,7 +4092,7 @@ export function AgentChatPane({
           if (targetLaneId === laneId) void refreshSessions();
         }).catch(() => { /* warmup is best-effort */ });
       }
-      if (options.notify) notifySessionCreated(created);
+      if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
   }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
@@ -4210,6 +4209,10 @@ export function AgentChatPane({
         openItemIds: prev.openItemIds.includes(launch.sessionId)
           ? prev.openItemIds
           : [...prev.openItemIds, launch.sessionId],
+        activeItemId: launch.sessionId,
+        selectedItemId: launch.sessionId,
+        draftKind: "chat",
+        viewMode: "tabs",
       }));
       setLaneWorkViewState(projectRoot, launch.laneId, (prev) => ({
         ...prev,
@@ -4222,8 +4225,12 @@ export function AgentChatPane({
         viewMode: "tabs",
       }));
     }
+    if (embeddedWorkLayout) {
+      navigate(`/work?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}`);
+      return;
+    }
     navigate(`/lanes?laneId=${encodeURIComponent(launch.laneId)}&sessionId=${encodeURIComponent(launch.sessionId)}&focus=single`);
-  }, [navigate, projectRoot, setLaneWorkViewState, setWorkViewState]);
+  }, [embeddedWorkLayout, navigate, projectRoot, setLaneWorkViewState, setWorkViewState]);
 
   const resolveDraftLaunchLane = useCallback(async (snapshot: DraftLaunchSnapshot): Promise<{ laneId: string; laneName: string }> => {
     if (draftLaunchTargetIsAutoCreate) {
@@ -4232,12 +4239,10 @@ export function AgentChatPane({
         ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
         ?? null;
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
-      const fallbackName = createTemporaryAutoLaneName();
       const laneName = await window.ade.agentChat.suggestLaneName({
         laneId: primaryLane.id,
         prompt: buildDraftLaunchNamingSeed(snapshot),
         modelId,
-        fallbackName,
       });
       const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
       await refreshLanesStore();
@@ -4274,7 +4279,11 @@ export function AgentChatPane({
       const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
       const created = await createSessionForLane(targetLane.laneId, {
         select: false,
-        notify: mode === "foreground",
+        notify: true,
+        notifyOptions: {
+          activate: mode === "foreground",
+          source: "draft-launch",
+        },
       });
       touchSession(created.id);
       await window.ade.agentChat.send({
@@ -6479,13 +6488,23 @@ export function AgentChatPane({
           <span className="min-w-0 truncate">
             Launched in {backgroundLaunchNotice.laneName}
           </span>
-          <button
-            type="button"
-            className="shrink-0 rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
-            onClick={() => openLaunchedDraftChat(backgroundLaunchNotice)}
-          >
-            Open
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
+              onClick={() => openLaunchedDraftChat(backgroundLaunchNotice)}
+            >
+              Open
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss launched chat notice"
+              className="grid h-5 w-5 place-items-center rounded-md text-emerald-50/70 transition-colors hover:bg-emerald-300/[0.12] hover:text-emerald-50"
+              onClick={() => setBackgroundLaunchNotice(null)}
+            >
+              <X size={12} weight="bold" aria-hidden />
+            </button>
+          </div>
         </div>
       ) : null}
       {composerElement}

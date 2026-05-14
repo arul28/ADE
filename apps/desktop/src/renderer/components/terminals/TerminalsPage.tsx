@@ -8,6 +8,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import type { AgentChatPermissionMode, AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
@@ -160,14 +161,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const handleOpenChatSession = useCallback(
-    (session: AgentChatSession) => {
+    (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      work.selectLane(session.laneId);
       work.upsertOptimisticChatSession(session);
-      work.focusSession(session.id);
-      work.openSessionTab(session.id);
+      if (options?.activate !== false) {
+        work.selectLane(session.laneId);
+        work.focusSession(session.id);
+        work.openSessionTab(session.id);
+      }
       void work.refresh({ showLoading: false, force: true }).catch((err: unknown) => {
         console.error("[TerminalsPage] refresh after opening chat session failed", {
           sessionId: session.id,

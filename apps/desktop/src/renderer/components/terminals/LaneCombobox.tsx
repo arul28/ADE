@@ -167,7 +167,9 @@ export function LaneCombobox({
   useEffect(() => {
     if (!open || !listRef.current) return;
     const el = listRef.current.children[highlightedIndex] as HTMLElement | undefined;
-    el?.scrollIntoView({ block: "nearest" });
+    if (typeof el?.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest" });
+    }
   }, [open, highlightedIndex]);
 
   // Position popover below trigger
