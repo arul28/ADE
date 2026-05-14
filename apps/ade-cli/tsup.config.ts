@@ -84,7 +84,7 @@ export default defineConfig([
         "const require = __adeCreateRequire(import.meta.url);",
         "const __filename = __adeFileURLToPath(import.meta.url);",
         "const __dirname = __adeDirname(__filename);",
-      ].join(" "),
+      ].join("\n"),
     },
     outExtension: () => ({
       js: ".mjs"

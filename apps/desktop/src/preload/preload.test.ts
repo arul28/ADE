@@ -2105,14 +2105,31 @@ describe("preload OAuth bridge", () => {
       sessionId: "session-1",
       reason: "meta-updated",
     };
+    const sessionDelta = {
+      sessionId: "session-1",
+      laneId: "lane-1",
+      startedAt: "2026-05-10T12:00:00.000Z",
+      endedAt: null,
+      headShaStart: null,
+      headShaEnd: null,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      touchedFiles: [],
+      failureLines: [],
+      computedAt: "2026-05-10T12:00:00.000Z",
+    };
     const prEvent = {
       type: "prs-updated",
       polledAt: "2026-05-10T12:00:00.000Z",
       prs: [],
     };
-    const invoke = vi.fn(async (channel: string) => {
+    const invoke = vi.fn(async (channel: string, arg?: { sessionId?: string }) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.sessionsGetDelta) {
+        return { ...sessionDelta, computedAt: `${sessionDelta.computedAt}:${arg?.sessionId ?? "unknown"}` };
       }
       return undefined;
     });
@@ -2145,6 +2162,9 @@ describe("preload OAuth bridge", () => {
     const unsubscribeSessionB = bridge.sessions.onChanged(sessionCallbackB);
     const unsubscribePrA = bridge.prs.onEvent(prCallbackA);
     const unsubscribePrB = bridge.prs.onEvent(prCallbackB);
+    const cachedDelta = await bridge.sessions.getDelta("session-1");
+    expect(cachedDelta.computedAt).toBe("2026-05-10T12:00:00.000Z:session-1");
+    invoke.mockClear();
 
     const sessionListeners = on.mock.calls.filter(([channel]) => channel === IPC.sessionsChanged);
     const prListeners = on.mock.calls.filter(([channel]) => channel === IPC.prsEvent);
@@ -2155,11 +2175,13 @@ describe("preload OAuth bridge", () => {
     const prListener = prListeners[0]![1];
     sessionListener({}, sessionEvent);
     prListener({}, prEvent);
+    await bridge.sessions.getDelta("session-1");
 
     expect(sessionCallbackA).toHaveBeenCalledWith(sessionEvent);
     expect(sessionCallbackB).toHaveBeenCalledWith(sessionEvent);
     expect(prCallbackA).toHaveBeenCalledWith(prEvent);
     expect(prCallbackB).toHaveBeenCalledWith(prEvent);
+    expect(invoke).toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
 
     unsubscribeSessionA();
     unsubscribePrA();

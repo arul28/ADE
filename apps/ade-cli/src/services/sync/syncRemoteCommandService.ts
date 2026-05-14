@@ -1451,9 +1451,16 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
   return null;
 }
 
-async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
+async function resolveLaneOverlayContext(
+  args: SyncRemoteCommandServiceArgs,
+  laneId: string,
+  options: { includeArchived?: boolean } = {},
+) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  const lanes = await args.laneService.list({ includeStatus: false });
+  const lanes = await args.laneService.list({
+    includeStatus: false,
+    ...(options.includeArchived === true ? { includeArchived: true } : {}),
+  });
   const lane = lanes.find((entry) => entry.id === laneId);
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
@@ -1476,7 +1483,7 @@ async function deleteLaneWithRuntimeCleanup(
 ): Promise<{ ok: true }> {
   const deleteArgs = parseDeleteLaneArgs(payload);
   const envContext = args.laneEnvironmentService
-    ? await resolveLaneOverlayContext(args, deleteArgs.laneId).catch((error: unknown) => {
+    ? await resolveLaneOverlayContext(args, deleteArgs.laneId, { includeArchived: true }).catch((error: unknown) => {
         args.logger.warn("sync_remote.lane_env_cleanup.pre_delete_context_failed", {
           laneId: deleteArgs.laneId,
           err: String(error),

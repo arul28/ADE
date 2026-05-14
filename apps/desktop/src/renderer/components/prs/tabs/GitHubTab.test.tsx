@@ -265,6 +265,27 @@ describe("GitHubTab", () => {
     });
   });
 
+  it("uses the GitHub read-only detail when a linked PR has no local project id yet", async () => {
+    mockUsePrs.mockReturnValue({
+      prs: [],
+      mergeContextByPrId: {},
+      detailStatus: null,
+      detailChecks: [],
+      detailReviews: [],
+      detailComments: [],
+      detailBusy: false,
+      loading: true,
+      setViewerLogin: vi.fn(),
+    });
+
+    renderTab({ selectedPrId: "pr-open" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).not.toBeNull();
+    });
+    expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
+  });
+
   it("shows a running CI indicator for PR cards with pending checks", async () => {
     renderTab();
 

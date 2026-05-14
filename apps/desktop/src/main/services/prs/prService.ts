@@ -1046,6 +1046,7 @@ export function createPrService({
   const invalidateGithubSnapshotCache = (): void => {
     cachedGithubSnapshot = null;
     cachedGithubSnapshotAt = 0;
+    githubSnapshotCacheEpoch += 1;
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4976,6 +4977,7 @@ export function createPrService({
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
+  let githubSnapshotCacheEpoch = 0;
   let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot> } | null = null;
 
   const publishGithubSnapshot = (
@@ -5112,13 +5114,14 @@ export function createPrService({
     const force = options?.force === true;
     const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
       const staleFallback = cachedGithubSnapshot;
+      const requestEpoch = githubSnapshotCacheEpoch;
       let inFlight!: { request: Promise<GitHubPrSnapshot> };
       const request = getGithubSnapshotUncached()
         .then((snapshot) => {
           const capturedAt = Date.now();
           const canPublishSnapshot =
             githubSnapshotInFlight === inFlight
-            || cachedGithubSnapshot === null;
+            && requestEpoch === githubSnapshotCacheEpoch;
           if (canPublishSnapshot) {
             publishGithubSnapshot(snapshot, capturedAt);
           }

@@ -856,6 +856,7 @@ describe("createSyncRemoteCommandService", () => {
         deleteBranch: false,
       }));
 
+      expect(laneService.list).toHaveBeenCalledWith({ includeStatus: false, includeArchived: true });
       expect(laneService.delete).toHaveBeenCalledWith(
         { laneId: "lane-1", force: true, deleteBranch: false, deleteRemoteBranch: undefined },
         { teardownEnv: expect.any(Function) },

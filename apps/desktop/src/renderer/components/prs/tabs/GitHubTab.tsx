@@ -758,10 +758,12 @@ export function GitHubTab({
       if (!selectedItem?.linkedPrId) return null;
       const linked = prs.find((pr) => pr.id === selectedItem.linkedPrId);
       if (linked) return linked;
+      const fallbackProjectId = prs[0]?.projectId;
+      if (!fallbackProjectId) return null;
       return {
         id: selectedItem.linkedPrId,
         laneId: selectedItem.linkedLaneId ?? "",
-        projectId: prs[0]?.projectId ?? "",
+        projectId: fallbackProjectId,
         repoOwner: selectedItem.repoOwner,
         repoName: selectedItem.repoName,
         githubPrNumber: selectedItem.githubPrNumber,

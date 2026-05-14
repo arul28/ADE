@@ -401,7 +401,7 @@ describe("AgentChatPane companion drawers", () => {
 
     await screen.findByRole("textbox");
 
-    expect(screen.queryByTitle("Open terminal")).toBeNull();
+    expect(screen.queryByRole("button", { name: /open terminal/i })).toBeNull();
     expect(globalThis.window.ade.terminal.list).not.toHaveBeenCalled();
     expect(globalThis.window.ade.appControl.getStatus).not.toHaveBeenCalled();
   });

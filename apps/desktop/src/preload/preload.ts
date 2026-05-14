@@ -1391,6 +1391,7 @@ const remoteReviewEventCallbacks = new Set<
 function createLocalIpcEventSubscription<T>(
   channel: string,
   logLabel: string,
+  beforeEmit?: () => void,
 ): (cb: (payload: T) => void) => () => void {
   const callbacks = new Set<(payload: T) => void>();
   let listener: ((_event: Electron.IpcRendererEvent, payload: T) => void) | null = null;
@@ -1399,6 +1400,7 @@ function createLocalIpcEventSubscription<T>(
     callbacks.add(cb);
     if (!listener) {
       listener = (_event: Electron.IpcRendererEvent, payload: T) => {
+        beforeEmit?.();
         for (const callback of [...callbacks]) {
           try {
             callback(payload);
@@ -1423,6 +1425,7 @@ const subscribeLocalSessionChangedEvents =
   createLocalIpcEventSubscription<TerminalSessionChangedEvent>(
     IPC.sessionsChanged,
     "session changed",
+    () => sessionDeltaCache.clear(),
   );
 const subscribeLocalPrEvents = createLocalIpcEventSubscription<PrEventPayload>(
   IPC.prsEvent,
