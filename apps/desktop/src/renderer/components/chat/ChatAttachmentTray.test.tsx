@@ -79,6 +79,42 @@ describe("ChatAttachmentTray", () => {
     expect(screen.getByRole("dialog", { name: "screenshot.png" })).toBeTruthy();
   });
 
+  it("renders seeded image previews without reading the file back", () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/tmp/pasted-image.png", type: "image" }]}
+        imagePreviewUrls={{ "/tmp/pasted-image.png": "blob:ade-paste-preview" }}
+        mode="standard"
+      />,
+    );
+
+    expect(screen.getByAltText("pasted-image.png").getAttribute("src")).toBe("blob:ade-paste-preview");
+    expect(getImageDataUrl).not.toHaveBeenCalled();
+  });
+
+  it("renders pending image attachments with cancellable previews", () => {
+    const onRemovePendingImageAttachment = vi.fn();
+
+    render(
+      <ChatAttachmentTray
+        attachments={[]}
+        pendingImageAttachments={[{
+          id: "pending-1",
+          name: "clipboard.png",
+          previewUrl: "blob:ade-pending-preview",
+        }]}
+        mode="standard"
+        onRemovePendingImageAttachment={onRemovePendingImageAttachment}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Attaching clipboard.png" })).toBeTruthy();
+    expect(screen.getByAltText("clipboard.png preview").getAttribute("src")).toBe("blob:ade-pending-preview");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel clipboard.png" }));
+    expect(onRemovePendingImageAttachment).toHaveBeenCalledWith("pending-1");
+  });
+
   it("copies and removes image attachments from the preview controls", async () => {
     const onRemove = vi.fn();
 

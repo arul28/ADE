@@ -2833,6 +2833,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       writeClipboardText: resolvedArg(undefined),
       hasClipboardImage: resolved(false),
       readClipboardImage: resolved(null),
+      saveClipboardImageAttachment: resolved(null),
       getImageDataUrl: resolvedArg({ dataUrl: "" }),
       writeClipboardImage: resolvedArg(undefined),
       openPath: resolvedArg(undefined),

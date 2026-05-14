@@ -778,6 +778,11 @@ declare global {
           filename: string;
           mimeType: string;
         } | null>;
+        saveClipboardImageAttachment: () => Promise<{
+          path: string;
+          mimeType: string;
+          previewDataUrl: string | null;
+        } | null>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         writeClipboardImage: (path: string) => Promise<void>;
         openPathInEditor: (args: {

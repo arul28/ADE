@@ -986,6 +986,112 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it("uses the native clipboard attachment IPC for macOS Cmd+V fallback when available", async () => {
+    const originalPlatform = navigator.platform;
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    const saveClipboardImageAttachment = vi.fn().mockResolvedValue({
+      path: "/tmp/ade-native-clipboard.png",
+      mimeType: "image/png",
+      previewDataUrl: "data:image/png;base64,preview",
+    });
+    const readClipboardImage = vi.fn();
+    const saveTempAttachment = vi.fn();
+    (window as any).ade = {
+      app: { saveClipboardImageAttachment, readClipboardImage },
+      agentChat: { saveTempAttachment },
+    };
+
+    try {
+      const props = renderComposer({
+        turnActive: false,
+        draft: "",
+      });
+
+      fireEvent.keyDown(screen.getByPlaceholderText("Type to vibecode..."), {
+        key: "v",
+        metaKey: true,
+      });
+
+      await waitFor(() => expect(saveClipboardImageAttachment).toHaveBeenCalledTimes(1));
+      expect(readClipboardImage).not.toHaveBeenCalled();
+      expect(saveTempAttachment).not.toHaveBeenCalled();
+      expect(props.onAddAttachment).toHaveBeenCalledWith({
+        path: "/tmp/ade-native-clipboard.png",
+        type: "image",
+      });
+    } finally {
+      Object.defineProperty(navigator, "platform", {
+        configurable: true,
+        value: originalPlatform,
+      });
+    }
+  });
+
+  it("shows a pasted image preview while the temp attachment is still saving", async () => {
+    const createObjectURL = vi.fn().mockReturnValue("blob:ade-paste-preview");
+    const revokeObjectURL = vi.fn();
+    const previousCreateObjectURL = URL.createObjectURL;
+    const previousRevokeObjectURL = URL.revokeObjectURL;
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+
+    let resolveSave: (value: { path: string }) => void = () => {};
+    const saveTempAttachment = vi.fn(() => new Promise<{ path: string }>((resolve) => {
+      resolveSave = resolve;
+    }));
+    (window as any).ade = {
+      app: {},
+      agentChat: { saveTempAttachment },
+    };
+
+    try {
+      const props = renderComposer({
+        turnActive: false,
+        draft: "",
+      });
+      const file = new File([new Uint8Array([1, 2, 3])], "paste.png", { type: "image/png" });
+      Object.defineProperty(file, "arrayBuffer", {
+        configurable: true,
+        value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+      });
+      const clipboardData = {
+        files: [file],
+        items: [],
+        getData: vi.fn(() => ""),
+      };
+
+      fireEvent.paste(screen.getByPlaceholderText("Type to vibecode..."), { clipboardData });
+
+      expect(await screen.findByRole("status", { name: "Attaching paste.png" })).toBeTruthy();
+      expect(screen.getByAltText("paste.png preview").getAttribute("src")).toBe("blob:ade-paste-preview");
+      expect(createObjectURL).toHaveBeenCalledWith(file);
+
+      resolveSave({ path: "/tmp/ade-paste.png" });
+      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+        path: "/tmp/ade-paste.png",
+        type: "image",
+      }));
+    } finally {
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: previousCreateObjectURL,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: previousRevokeObjectURL,
+      });
+    }
+  });
+
   it("clears the drop highlight when a URL drop is rejected", async () => {
     const props = renderComposer({
       turnActive: false,

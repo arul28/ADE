@@ -970,7 +970,7 @@ async function getTurnFileDiffFromGit(
   };
 }
 
-function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): { path: string } {
+async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; filename?: string }): Promise<{ path: string }> {
   const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
   if (typeof arg.data !== "string") {
     throw new Error("Temporary attachment data is required.");
@@ -983,11 +983,11 @@ function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: string; 
     throw new Error("Temporary attachments must be 10 MB or smaller.");
   }
   const baseDir = path.join(projectRoot, ".ade", "attachments");
-  fs.mkdirSync(baseDir, { recursive: true });
+  await fs.promises.mkdir(baseDir, { recursive: true });
   const filename = typeof arg.filename === "string" ? arg.filename : "";
   const ext = path.extname(filename) || ".png";
   const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-  fs.writeFileSync(destPath, content);
+  await fs.promises.writeFile(destPath, content);
   return { path: destPath };
 }
 

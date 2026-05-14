@@ -14,6 +14,12 @@ function attachmentName(path: string): string {
   return segments.pop() || path;
 }
 
+export type ChatAttachmentPendingImage = {
+  id: string;
+  name: string;
+  previewUrl?: string | null;
+};
+
 function LinearIssueContextChip({
   attachment,
   onRemove,
@@ -84,13 +90,15 @@ function LinearIssueContextChip({
 function ImageAttachmentPreview({
   attachment,
   toneClassName,
+  initialPreviewUrl,
   onRemove,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
+  initialPreviewUrl?: string | null;
   onRemove?: (path: string) => void;
 }) {
-  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [dataUrl, setDataUrl] = useState<string | null>(initialPreviewUrl ?? null);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
@@ -98,8 +106,13 @@ function ImageAttachmentPreview({
 
   useEffect(() => {
     let cancelled = false;
-    setDataUrl(null);
+    setDataUrl(initialPreviewUrl ?? null);
     setPreviewFailed(false);
+    if (initialPreviewUrl) {
+      return () => {
+        cancelled = true;
+      };
+    }
     if (!window.ade?.app?.getImageDataUrl) {
       setPreviewFailed(true);
       return;
@@ -114,7 +127,7 @@ function ImageAttachmentPreview({
     return () => {
       cancelled = true;
     };
-  }, [attachment.path]);
+  }, [attachment.path, initialPreviewUrl]);
 
   useEffect(() => {
     if (copyState === "idle") return;
@@ -209,6 +222,55 @@ function ImageAttachmentPreview({
         />
       ) : null}
     </>
+  );
+}
+
+function PendingImageAttachmentPreview({
+  attachment,
+  toneClassName,
+  onRemove,
+}: {
+  attachment: ChatAttachmentPendingImage;
+  toneClassName: string;
+  onRemove?: (id: string) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors",
+        toneClassName,
+      )}
+      title={`Attaching ${attachment.name}`}
+      aria-label={`Attaching ${attachment.name}`}
+      role="status"
+    >
+      {attachment.previewUrl ? (
+        <img
+          src={attachment.previewUrl}
+          alt={`${attachment.name} preview`}
+          className="h-full w-full object-cover opacity-80"
+          draggable={false}
+        />
+      ) : (
+        <span className="flex h-full w-full items-center justify-center bg-black/18 text-current/60">
+          <Image size={18} weight="bold" />
+        </span>
+      )}
+      <span className="pointer-events-none absolute inset-x-1 bottom-1 truncate rounded bg-black/65 px-1 py-0.5 text-center text-[8px] text-white/75">
+        Saving
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="absolute right-1 top-1 inline-flex h-5 w-5 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
+          title={`Cancel ${attachment.name}`}
+          aria-label={`Cancel ${attachment.name}`}
+          onClick={() => onRemove(attachment.id)}
+        >
+          <X size={11} weight="bold" />
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -366,19 +428,25 @@ function ImageLightbox({
 export function ChatAttachmentTray({
   attachments,
   contextAttachments = [],
+  pendingImageAttachments = [],
+  imagePreviewUrls = {},
   mode,
   onRemove,
   onRemoveContext,
+  onRemovePendingImageAttachment,
   className,
 }: {
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  pendingImageAttachments?: ChatAttachmentPendingImage[];
+  imagePreviewUrls?: Record<string, string | undefined>;
   mode: ChatSurfaceMode;
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
+  onRemovePendingImageAttachment?: (id: string) => void;
   className?: string;
 }) {
-  if (!attachments.length && !contextAttachments.length) return null;
+  if (!attachments.length && !contextAttachments.length && !pendingImageAttachments.length) return null;
 
   let chipTone: string;
   switch (mode) {
@@ -403,6 +471,14 @@ export function ChatAttachmentTray({
           key={chatContextAttachmentKey(attachment)}
           attachment={attachment}
           onRemove={onRemoveContext}
+        />
+      ))}
+      {pendingImageAttachments.map((attachment) => (
+        <PendingImageAttachmentPreview
+          key={attachment.id}
+          attachment={attachment}
+          toneClassName={chipTone}
+          onRemove={onRemovePendingImageAttachment}
         />
       ))}
       {attachments.map((attachment) => {
@@ -432,6 +508,7 @@ export function ChatAttachmentTray({
               key={attachment.path}
               attachment={attachment}
               toneClassName={chipTone}
+              initialPreviewUrl={imagePreviewUrls[attachment.path]}
               onRemove={onRemove}
             />
           );
