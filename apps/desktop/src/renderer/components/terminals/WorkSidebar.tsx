@@ -268,7 +268,8 @@ export function WorkSidebar({
     }
     return null;
   }
-  const contextDisabledReason = resolveLaneMismatchReason() ?? targetDisabledReason;
+  const laneMismatchReason = resolveLaneMismatchReason();
+  const contextDisabledReason = laneMismatchReason ?? targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
 
@@ -487,6 +488,7 @@ export function WorkSidebar({
         sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
+        controlDisabledReason={laneMismatchReason}
         onAddAttachment={canInsertContext ? addAttachment : undefined}
         onAddContext={canInsertContext ? addIosContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}
@@ -496,6 +498,7 @@ export function WorkSidebar({
         sessionId={panelSessionId}
         laneId={laneId}
         projectRoot={laneRoot}
+        controlDisabledReason={laneMismatchReason}
         onAddAttachment={canInsertContext ? addAttachment : undefined}
         onAddContext={canInsertContext ? addAppControlContext : undefined}
         onInsertDraft={canInsertContext ? insertDraft : undefined}

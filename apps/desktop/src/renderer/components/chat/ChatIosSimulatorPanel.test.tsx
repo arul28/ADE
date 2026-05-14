@@ -587,6 +587,34 @@ describe("ChatIosSimulatorPanel", () => {
     expect(screen.getByPlaceholderText("Type into the active simulator app")).toBeTruthy();
   });
 
+  it("keeps another-lane simulator sessions read-only", async () => {
+    const { api } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        laneId="lane-2"
+        projectRoot="/tmp/project"
+        controlDisabledReason="This iOS Simulator view is attached to Lane 1, not Lane 2."
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const launchButton = await screen.findByRole("button", { name: "Launch" }) as HTMLButtonElement;
+    expect(launchButton.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect(screen.queryByPlaceholderText("Type into the active simulator app")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const refreshButton = await screen.findByTitle("Refresh inspector snapshot") as HTMLButtonElement;
+    expect(refreshButton.disabled).toBe(true);
+
+    expect(api.launch).not.toHaveBeenCalled();
+    expect(api.shutdown).not.toHaveBeenCalled();
+    expect(api.typeText).not.toHaveBeenCalled();
+    expect(api.tap).not.toHaveBeenCalled();
+  });
+
   it("selects an inspected simulator element and opens Preview Lab for its matching target", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     vi.stubGlobal("Image", class {

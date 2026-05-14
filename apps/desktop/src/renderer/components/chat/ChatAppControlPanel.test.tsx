@@ -237,6 +237,33 @@ describe("ChatAppControlPanel", () => {
     expect(api.appControl.listTargets.mock.calls.length).toBeGreaterThan(targetRefreshCalls);
   });
 
+  it("keeps another-lane connected session read-only", async () => {
+    const api = installAdeMock({ status: connectedStatus, targetList: targets });
+
+    render(
+      <ChatAppControlPanel
+        sessionId="chat-connected"
+        laneId="lane-2"
+        projectRoot="/repo"
+        controlDisabledReason="This App Control view is attached to Lane 1, not Lane 2."
+      />,
+    );
+
+    const targetSelect = await screen.findByLabelText("Switch the controlled window") as HTMLSelectElement;
+    expect(targetSelect.disabled).toBe(true);
+    expect(screen.queryByLabelText("Stop App Control session")).toBeNull();
+    expect((screen.getByTitle("Re-capture screenshot and DOM snapshot") as HTMLButtonElement).disabled).toBe(true);
+
+    const typeInput = screen.getByLabelText("Text to type into the focused app element") as HTMLInputElement;
+    fireEvent.change(typeInput, { target: { value: "wrong lane" } });
+    expect((screen.getByLabelText("Type into focused app element") as HTMLButtonElement).disabled).toBe(true);
+
+    expect(api.appControl.stop).not.toHaveBeenCalled();
+    expect(api.appControl.attachToTarget).not.toHaveBeenCalled();
+    expect(api.appControl.typeText).not.toHaveBeenCalled();
+    expect(api.appControl.click).not.toHaveBeenCalled();
+  });
+
   it("hovers, attaches, and re-attaches an inspected app element", async () => {
     const api = installAdeMock({ status: connectedStatus, targetList: targets });
     const onAddContext = vi.fn();
