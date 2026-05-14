@@ -165,7 +165,7 @@ const LABEL_CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const LABEL_CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
 const LABEL_TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
 
-function stripTerminalLabelControls(raw: string): string {
+export function stripTerminalLabelControls(raw: string): string {
   return raw
     .replace(LABEL_OSC_REGEX, "")
     .replace(LABEL_CSI_REGEX, "")

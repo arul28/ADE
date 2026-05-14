@@ -162,6 +162,12 @@ vi.mock("../../lib/sessions", () => ({
   isChatToolType: vi.fn(() => false),
   primarySessionLabel: vi.fn((session: TerminalSessionSummary) => session.title),
   secondarySessionLabel: vi.fn(() => null),
+  stripTerminalLabelControls: vi.fn((raw: string) => raw
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b[\(\)][0-9A-Za-z]/g, "")
+    .replace(/\u001b(?:[@-Z\\-_]|[0-9=>])/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")),
   truncateSessionLabel: vi.fn((label: string) => label),
   formatToolTypeLabel: vi.fn((toolType: string | null | undefined) => toolType ?? "Tool"),
   chatToolTypeForProvider: vi.fn(() => "opencode-chat"),
@@ -698,6 +704,62 @@ describe("WorkViewArea", () => {
       reasoningEffort: "high",
     }));
     expect((textarea as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("keeps a changed continuation permission when session metadata is refreshed with the same values", async () => {
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "plan" as const },
+      },
+    };
+    const renderView = (nextSession: typeof session) => (
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[nextSession]}
+        visibleSessions={[nextSession]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[nextSession.id]}
+        activeItemId={nextSession.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />
+    );
+
+    const view = render(renderView(session));
+    const local = within(view.container);
+
+    const picker = await local.findByLabelText("Codex permission mode");
+    expect(picker.textContent).toContain("Plan mode");
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByText("Full access"));
+    expect(local.getByLabelText("Codex permission mode").textContent).toContain("Full access");
+
+    const refreshedSession = {
+      ...session,
+      title: "Updated title",
+      resumeMetadata: {
+        ...session.resumeMetadata,
+        launch: { ...session.resumeMetadata.launch },
+      },
+    };
+    view.rerender(renderView(refreshedSession));
+
+    expect(local.getByLabelText("Codex permission mode").textContent).toContain("Full access");
   });
 
   it("shows provider-specific slash command suggestions in the continuation composer", async () => {

@@ -47,7 +47,7 @@ import { ProviderModelSelector } from "../shared/ProviderModelSelector";
 import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
-import { isChatToolType, primarySessionLabel, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
 import { sessionStatusBucket, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -97,12 +97,7 @@ function terminalExitLabel(exitCode: number | null | undefined): string | null {
 }
 
 function stripTerminalControls(value: string): string {
-  return value
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[()][0-2AB]/g, "")
-    .replace(/\x1b(?:[@-Z\\-_]|[0-9=>])/g, "")
-    .replace(/\r(?!\n)/g, "\n");
+  return stripTerminalLabelControls(value).replace(/\r(?!\n)/g, "\n");
 }
 
 const XTERM_16_COLORS = [
@@ -183,6 +178,27 @@ function styleKey(style: CSSProperties): string {
   ].join("|");
 }
 
+function stableKeyHash(value: string): string {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function withStableDuplicateKeys<T>(
+  items: T[],
+  fingerprint: (item: T) => string,
+): Array<{ item: T; key: string }> {
+  const counts = new Map<string, number>();
+  return items.map((item) => {
+    const base = stableKeyHash(fingerprint(item));
+    const count = counts.get(base) ?? 0;
+    counts.set(base, count + 1);
+    return { item, key: count ? `${base}:${count}` : base };
+  });
+}
+
 function isTrimmedBlankCell(cell: TerminalSnapshotCell | undefined): boolean {
   return Boolean(
     cell
@@ -214,12 +230,33 @@ function snapshotRuns(row: TerminalSnapshotRow): Array<{ text: string; style: CS
 }
 
 function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
+  const renderedRows = useMemo(() => withStableDuplicateKeys(rows, (row) => [
+    row.text,
+    row.wrapped ? "wrapped" : "plain",
+    ...row.cells.map((cell) => [
+      cell.text,
+      cell.fg,
+      cell.bg,
+      cell.fgMode,
+      cell.bgMode,
+      cell.bold ? "bold" : "",
+      cell.dim ? "dim" : "",
+      cell.italic ? "italic" : "",
+      cell.underline ? "underline" : "",
+      cell.inverse ? "inverse" : "",
+      cell.strikethrough ? "strikethrough" : "",
+    ].join("\u0001")),
+  ].join("\u0002")).map(({ item: row, key }) => ({
+    key,
+    runs: withStableDuplicateKeys(snapshotRuns(row), (run) => `${run.text}\u0001${styleKey(run.style)}`),
+  })), [rows]);
+
   return (
     <div className="min-h-0 flex-1 overflow-auto rounded-md border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-fg/75">
-      {rows.map((row, rowIndex) => (
-        <div key={rowIndex} className="min-h-[1.25em] whitespace-pre">
-          {snapshotRuns(row).map((run, runIndex) => (
-            <span key={`${rowIndex}:${runIndex}`} style={run.style}>
+      {renderedRows.map((row) => (
+        <div key={row.key} className="min-h-[1.25em] whitespace-pre">
+          {row.runs.map(({ item: run, key }) => (
+            <span key={key} style={run.style}>
               {run.text}
             </span>
           ))}
@@ -334,10 +371,30 @@ function WorkCliPermissionPicker({
   const selected = options.find((option) => option.value === value) ?? options[0] ?? null;
   const providerLabel = continuationProviderLabel(provider);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
   const [open, setOpen] = useState(false);
+  const updatePanelStyle = useCallback(() => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const viewportPadding = 8;
+    const panelWidth = Math.min(352, Math.max(240, window.innerWidth - viewportPadding * 2));
+    const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const availableAbove = rect.top - viewportPadding;
+    const openAbove = availableBelow < 180 && availableAbove > availableBelow;
+    const maxHeight = Math.max(160, Math.min(360, (openAbove ? availableAbove : availableBelow) - 6));
+    const left = Math.min(
+      Math.max(viewportPadding, rect.right - panelWidth),
+      Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding),
+    );
+    const top = openAbove
+      ? Math.max(viewportPadding, rect.top - maxHeight - 6)
+      : Math.max(viewportPadding, Math.min(window.innerHeight - viewportPadding - maxHeight, rect.bottom + 6));
+    setPanelStyle({ top, left, width: panelWidth, maxHeight });
+  }, []);
 
   useEffect(() => {
     if (!open) return;
+    updatePanelStyle();
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (containerRef.current?.contains(target)) return;
@@ -352,11 +409,15 @@ function WorkCliPermissionPicker({
     };
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", updatePanelStyle);
+    window.addEventListener("scroll", updatePanelStyle, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", updatePanelStyle);
+      window.removeEventListener("scroll", updatePanelStyle, true);
     };
-  }, [open]);
+  }, [open, updatePanelStyle]);
 
   useEffect(() => {
     if (disabled && open) setOpen(false);
@@ -370,7 +431,8 @@ function WorkCliPermissionPicker({
         <motion.div
           key="cli-permission-picker"
           data-cli-permission-picker-panel="true"
-          className="fixed bottom-24 right-5 z-[82] w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-white/[0.10] bg-popover/95 p-1 shadow-2xl shadow-black/35 backdrop-blur-xl"
+          className="fixed z-[82] overflow-y-auto rounded-xl border border-white/[0.10] bg-popover/95 p-1 shadow-2xl shadow-black/35 backdrop-blur-xl"
+          style={panelStyle ?? undefined}
           initial={{ opacity: 0, y: 6, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 6, scale: 0.98 }}
@@ -420,7 +482,10 @@ function WorkCliPermissionPicker({
         type="button"
         disabled={disabled}
         onClick={() => {
-          if (!disabled) setOpen((current) => !current);
+          if (!disabled) {
+            if (!open) updatePanelStyle();
+            setOpen((current) => !current);
+          }
         }}
         className={cn(
           "inline-flex h-8 min-h-8 max-w-[11rem] items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 text-[10px] font-medium text-fg/70 transition-colors hover:bg-white/[0.05]",
@@ -464,6 +529,7 @@ function WorkCliContinuationComposer({
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const defaultPermissionMode = defaultContinuationPermissionMode(session);
   const availableModelIds = useMemo(
     () => models.map((model) => canonicalContinuationModelId(modelProvider, model.id)),
     [modelProvider, models],
@@ -523,8 +589,8 @@ function WorkCliContinuationComposer({
   }, [modelProvider]);
 
   useEffect(() => {
-    setSelectedPermissionMode(defaultContinuationPermissionMode(session));
-  }, [session.id, session.resumeMetadata, session.toolType]);
+    setSelectedPermissionMode(defaultPermissionMode);
+  }, [defaultPermissionMode, session.id]);
 
   useEffect(() => {
     if (!modelProvider || !selectedModel) {
