@@ -8,6 +8,7 @@ import {
   withCodexNoAltScreen,
 } from "./cliLaunch";
 import { ADE_CLI_AGENT_GUIDANCE, ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
 
 describe("withCodexNoAltScreen", () => {
@@ -105,7 +106,9 @@ describe("buildTrackedCliStartupCommand", () => {
       ]));
       expect(launch.startupCommand).toContain("--append-system-prompt");
       expect(launch.startupCommand).toContain(ADE_CLI_AGENT_GUIDANCE.split("\n")[0]!);
+      expect(launch.startupCommand).toContain("ADE_AGENT_SKILLS_DIRS");
       expect(launch.startupCommand).toContain("clean up old, stale, or finished processes");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
     it("keeps Claude Code in interactive TUI mode", () => {
@@ -176,7 +179,9 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args.at(-1)).toContain("ADE session guidance");
       expect(ADE_CLI_INLINE_GUIDANCE).toContain("default control plane");
       expect(launch.args.at(-1)).toContain("default control plane");
+      expect(launch.args.at(-1)).toContain("ADE_AGENT_SKILLS_DIRS");
       expect(launch.args.at(-1)).toContain("clean up old, stale, or finished processes");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
       expect(launch.startupCommand).toContain("ADE session guidance");
     });
 
@@ -237,6 +242,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.command).toBe("opencode");
       expect(launch.args).toEqual(expect.arrayContaining(["--model", "github-copilot/gpt-5.4", "--prompt"]));
       expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBe("{\"permission\":\"allow\"}");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
       expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode");
       expect(launch.startupCommand).toContain("Use OpenCode.");
     });

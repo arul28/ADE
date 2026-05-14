@@ -42,6 +42,10 @@ CONTENTS_DIR=$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd || true)
 APP_EXE="$CONTENTS_DIR/MacOS/ADE"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
+if [ -z "${ADE_AGENT_SKILLS_DIRS:-}" ] && [ -d "$RESOURCES_DIR/agent-skills" ]; then
+  export ADE_AGENT_SKILLS_DIRS="$RESOURCES_DIR/agent-skills"
+fi
+
 if [ ! -x "$APP_EXE" ] && [ -d "$CONTENTS_DIR/MacOS" ]; then
   for CANDIDATE in "$CONTENTS_DIR"/MacOS/*; do
     if [ -x "$CANDIDATE" ] && [ ! -d "$CANDIDATE" ]; then

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/adeCli";
+import { ADE_AGENT_SKILLS_DIRS_ENV, joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../../shared/agentSkillRoots";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import {
@@ -63,6 +64,27 @@ function isExecutable(filePath: string | null | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+function pathExistsDirectory(dir: string | null | undefined): boolean {
+  if (!dir) return false;
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function prependAgentSkillsRoot(existing: string | undefined, root: string | null): string | undefined {
+  if (!root || !pathExistsDirectory(root)) return existing;
+  return joinAdeAgentSkillRoots([root, ...splitAdeAgentSkillRoots(existing)]);
+}
+
+function resolveBundledAgentSkillsRoot(args: CreateAdeCliServiceArgs): string | null {
+  const packagedRoot = args.resourcesPath ? path.join(args.resourcesPath, "agent-skills") : null;
+  if (pathExistsDirectory(packagedRoot)) return packagedRoot;
+  const devRoot = args.devRepoRoot ? path.join(args.devRepoRoot, "apps", "desktop", "resources", "agent-skills") : null;
+  return pathExistsDirectory(devRoot) ? devRoot : null;
 }
 
 function normalizePackageChannel(value: unknown): "alpha" | "beta" | null {
@@ -516,6 +538,7 @@ function statusMessage(args: {
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const commandName = resolveCommandName(args);
   const resolved = resolveCliPaths(args, commandName);
+  const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
   const envSnapshot = args.env ?? process.env;
   const hostPathSnapshot = getPathEnvValue(envSnapshot);
 
@@ -525,6 +548,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (nextPath) setPathEnvValue(next, nextPath);
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
+    next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
     return next;
   };
 
@@ -534,6 +558,7 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (nextPath) setPathEnvValue(process.env, nextPath);
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
+    if (next[ADE_AGENT_SKILLS_DIRS_ENV]) process.env[ADE_AGENT_SKILLS_DIRS_ENV] = next[ADE_AGENT_SKILLS_DIRS_ENV];
   };
 
   const getStatus = async (): Promise<AdeCliStatus> => {

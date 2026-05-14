@@ -68,6 +68,7 @@ import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syn
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
+import { ADE_AGENT_SKILLS_DIRS_ENV, joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../desktop/src/shared/agentSkillRoots";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -308,6 +309,37 @@ function prependPathDir(env: NodeJS.ProcessEnv, dir: string): void {
   setPathEnvValue(env, currentPath ? `${dir}${delimiter}${currentPath}` : dir);
 }
 
+function pathExistsDirectory(dir: string | null | undefined): boolean {
+  if (!dir) return false;
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function prependAgentSkillsRoot(existing: string | undefined, root: string | null): string | undefined {
+  if (!root || !pathExistsDirectory(root)) return existing;
+  return joinAdeAgentSkillRoots([root, ...splitAdeAgentSkillRoots(existing)]);
+}
+
+function inferAgentSkillsRootForCliEntry(cliEntry: string | null): string | null {
+  const candidates: string[] = [];
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (resourcesPath) candidates.push(path.join(resourcesPath, "agent-skills"));
+  if (cliEntry) {
+    const cliDir = path.dirname(cliEntry);
+    candidates.push(path.resolve(cliDir, "..", "agent-skills"));
+    candidates.push(path.resolve(cliDir, "..", "..", "desktop", "resources", "agent-skills"));
+    candidates.push(path.resolve(cliDir, "..", "..", "..", "apps", "desktop", "resources", "agent-skills"));
+  }
+  candidates.push(path.resolve(process.cwd(), "apps", "desktop", "resources", "agent-skills"));
+  for (const candidate of candidates) {
+    if (pathExistsDirectory(candidate)) return candidate;
+  }
+  return null;
+}
+
 function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
@@ -329,6 +361,10 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
       delete next.ADE_CLI_ENTRY_PATH;
     }
   }
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(
+    next[ADE_AGENT_SKILLS_DIRS_ENV],
+    inferAgentSkillsRootForCliEntry(cliEntry),
+  );
   return next;
 }
 

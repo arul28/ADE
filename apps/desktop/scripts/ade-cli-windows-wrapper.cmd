@@ -7,6 +7,7 @@ if "%CLI_JS%"=="" set "CLI_JS=%SCRIPT_DIR%..\cli.cjs"
 
 set "RESOURCES_DIR=%SCRIPT_DIR%..\.."
 set "APP_EXE=%RESOURCES_DIR%\..\ADE.exe"
+if not defined ADE_AGENT_SKILLS_DIRS if exist "%RESOURCES_DIR%\agent-skills" set "ADE_AGENT_SKILLS_DIRS=%RESOURCES_DIR%\agent-skills"
 set "NODE_PATH_VALUE=%RESOURCES_DIR%\app.asar.unpacked\node_modules;%RESOURCES_DIR%\app.asar\node_modules"
 if defined NODE_PATH (
   if defined NODE_PATH_VALUE (

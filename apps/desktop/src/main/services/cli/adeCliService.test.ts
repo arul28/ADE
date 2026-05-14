@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdeCliService } from "./adeCliService";
+import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 
 const tmpRoots: string[] = [];
 const originalPlatform = process.platform;
@@ -61,6 +62,8 @@ describe("createAdeCliService", () => {
     writeExecutable(packagedCommandPath);
     writeExecutable(path.join(resourcesPath, "ade-cli", "install-path.sh"));
     fs.writeFileSync(path.join(resourcesPath, "ade-cli", "cli.cjs"), "console.log('ade')\n");
+    fs.mkdirSync(path.join(resourcesPath, "agent-skills", "ade-cli-control-plane"), { recursive: true });
+    fs.writeFileSync(path.join(resourcesPath, "agent-skills", "ade-cli-control-plane", "SKILL.md"), "# ADE CLI\n");
 
     const service = createAdeCliService({
       isPackaged: true,
@@ -78,6 +81,7 @@ describe("createAdeCliService", () => {
       cliJsPath: path.join(resourcesPath, "ade-cli", "cli.cjs"),
     });
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
+    expect(service.agentEnv({ PATH: "/usr/bin:/bin" })[ADE_AGENT_SKILLS_DIRS_ENV]).toBe(path.join(resourcesPath, "agent-skills"));
   });
 
   it("uses channel-specific packaged CLI commands and install targets", async () => {

@@ -14,6 +14,7 @@ import {
 } from "../../../desktop/src/shared/modelRegistry";
 import { resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { CURSOR_AVAILABLE_MODE_IDS, CURSOR_MODE_LABELS } from "../../../desktop/src/shared/cursorModes";
+import { getAdeAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -793,6 +794,8 @@ function listClaudeCompatMarkdownEntries(workspaceRoot: string, kind: "agents" |
         { label: "project", dir: path.join(workspaceRoot, ".claude", "skills") },
         { label: "ADE", dir: path.join(workspaceRoot, ".ade", "skills") },
         { label: "user", dir: claudeHomePath("skills") },
+        ...getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true })
+          .map((dir) => ({ label: "bundled", dir })),
       ];
   const rows: string[] = [];
   for (const root of roots) {

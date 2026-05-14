@@ -4,7 +4,8 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "./types";
-import { ADE_CLI_AGENT_GUIDANCE, ADE_CLI_INLINE_GUIDANCE } from "./adeCliGuidance";
+import { ADE_AGENT_SKILLS_DIRS_ENV, getAdeAgentSkillRootsForPrompt, joinAdeAgentSkillRoots } from "./agentSkillRoots";
+import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
 import { commandArrayToLine, quoteShellArg } from "./shell";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
@@ -111,8 +112,20 @@ function workTabCliPreamblePrompt(): string {
   return [
     "ADE session guidance. Treat this as operating guidance for the CLI session, keep it in mind for future user messages, and wait for the user's next instruction before taking action.",
     "",
-    ADE_CLI_INLINE_GUIDANCE,
+    buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt()),
   ].join("\n");
+}
+
+function adeAgentSkillEnv(): Record<string, string> | null {
+  const roots = getAdeAgentSkillRootsForPrompt();
+  const value = joinAdeAgentSkillRoots(roots);
+  return value ? { [ADE_AGENT_SKILLS_DIRS_ENV]: value } : null;
+}
+
+function withAdeAgentSkillEnv(env?: Record<string, string>): Record<string, string> | undefined {
+  const skillsEnv = adeAgentSkillEnv();
+  if (!skillsEnv) return env;
+  return { ...skillsEnv, ...(env ?? {}) };
 }
 
 export function buildTrackedCliStartupCommand(args: {
@@ -144,6 +157,7 @@ export function buildTrackedCliLaunchCommand(args: {
 }): TrackedCliLaunchCommand {
   validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
+  const agentSkillEnv = withAdeAgentSkillEnv();
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
@@ -159,7 +173,7 @@ export function buildTrackedCliLaunchCommand(args: {
     if (reasoningEffort) {
       commandArgs.push("--effort", reasoningEffort);
     }
-    commandArgs.push("--append-system-prompt", ADE_CLI_AGENT_GUIDANCE);
+    commandArgs.push("--append-system-prompt", buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt()));
     commandArgs.push(...permissionModeToClaudeFlag(args.permissionMode));
     if (initialPrompt) {
       commandArgs.push(initialPrompt);
@@ -168,6 +182,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "claude",
       args: commandArgs,
       startupCommand: commandArrayToLine(["claude", ...commandArgs]),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
@@ -183,6 +198,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "codex",
       args: commandArgs,
       startupCommand: commandArrayToLine(["codex", ...commandArgs]),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
@@ -197,6 +213,7 @@ export function buildTrackedCliLaunchCommand(args: {
     return {
       args: commandArgs,
       startupCommand,
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
@@ -211,6 +228,7 @@ export function buildTrackedCliLaunchCommand(args: {
         reasoningEffort: args.reasoningEffort,
         prompt,
       }),
+      ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
 
@@ -219,11 +237,12 @@ export function buildTrackedCliLaunchCommand(args: {
     model: args.model,
     prompt: workTabCliPrompt(initialPrompt),
   });
+  const opencodeEnv = withAdeAgentSkillEnv(opencode.env);
   return {
     command: "opencode",
     args: opencode.args,
     startupCommand: opencode.startupCommand,
-    ...(opencode.env ? { env: opencode.env } : {}),
+    ...(opencodeEnv ? { env: opencodeEnv } : {}),
   };
 }
 
