@@ -7,7 +7,17 @@ import {
   type ClaudeStartupProbeResult,
 } from "./packagedRuntimeSmokeShared";
 
-const PTY_PROBE_TIMEOUT_MS = process.platform === "win32" ? 15_000 : 4_000;
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const PTY_PROBE_TIMEOUT_MS = positiveIntegerEnv(
+  "ADE_PACKAGED_PTY_PROBE_TIMEOUT_MS",
+  process.platform === "win32" ? 15_000 : 4_000,
+);
 const CLAUDE_PROBE_TIMEOUT_MS = 20_000;
 
 async function probePty(): Promise<{ ok: true; output: string }> {
@@ -16,7 +26,7 @@ async function probePty(): Promise<{ ok: true; output: string }> {
     let output = "";
     const shellSpec =
       process.platform === "win32"
-        ? { file: "powershell.exe", args: ["-NoProfile", "-Command", 'Write-Output "ADE_PTY_OK"'] }
+        ? { file: "cmd.exe", args: ["/d", "/s", "/c", "echo ADE_PTY_OK"] }
         : { file: "/bin/sh", args: ["-lc", 'printf "ADE_PTY_OK\\n"'] };
     const term = pty.spawn(shellSpec.file, shellSpec.args, {
       name: "xterm-256color",
@@ -32,7 +42,7 @@ async function probePty(): Promise<{ ok: true; output: string }> {
       } catch {
         // ignore best-effort cleanup
       }
-      reject(new Error(`PTY probe timed out after ${PTY_PROBE_TIMEOUT_MS}ms`));
+      reject(new Error(`PTY probe timed out after ${PTY_PROBE_TIMEOUT_MS}ms using ${shellSpec.file}`));
     }, PTY_PROBE_TIMEOUT_MS);
 
     term.onData((chunk) => {

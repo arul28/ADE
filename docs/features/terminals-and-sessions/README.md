@@ -130,6 +130,11 @@ Renderer surfaces:
   entry surface with `PaneTilingLayout` (sessions list + work view).
   Owns the multi-select state (`selectedSessionIds`, shift/ctrl anchor,
   bulk close and bulk delete handlers) that the sidebar forwards into.
+  It consumes `AgentChatPane` session-created options from
+  `WorkStartSurface` / `WorkViewArea`: foreground Work chat launches
+  select the lane, focus the session, and open the session tab, while
+  background launches upsert the optimistic chat session and refresh the
+  list without stealing focus.
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
@@ -214,7 +219,11 @@ Renderer surfaces:
   `primarySessionLabel` / `sessionStatusBucket` so chat and CLI rows
   read consistently.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
-  empty-state "start new chat / terminal" surface.
+  empty-state "start new chat / terminal" surface. It mounts
+  `AgentChatPane` in embedded draft mode and forwards
+  `onSessionCreated(session, options)` so foreground draft launches can
+  open in Work while background launches stay quiet and surface their
+  dismissible launch notice inside the pane.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters.

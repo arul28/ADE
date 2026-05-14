@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@opencode-ai/sdk", () => ({
@@ -298,9 +297,12 @@ function createMockSessionService() {
   } as any;
 }
 
-function createMockProjectConfigService(options: { titleGenerationEnabled?: boolean } = {}) {
-  const sessionIntelligence = typeof options.titleGenerationEnabled === "boolean"
-    ? { titles: { enabled: options.titleGenerationEnabled } }
+function createMockProjectConfigService(options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {}) {
+  const titleOptions: Record<string, unknown> = {};
+  if (typeof options.titleGenerationEnabled === "boolean") titleOptions.enabled = options.titleGenerationEnabled;
+  if (options.titleModelId) titleOptions.modelId = options.titleModelId;
+  const sessionIntelligence = Object.keys(titleOptions).length
+    ? { titles: titleOptions }
     : {};
   return {
     get: vi.fn(() => ({
@@ -390,7 +392,7 @@ function createMockIssueInventoryService() {
   } as any;
 }
 
-function createService(options: { titleGenerationEnabled?: boolean } = {}) {
+function createService(options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {}) {
   const logger = createLogger();
   const laneService = createMockLaneService();
   const sessionService = createMockSessionService();
@@ -408,6 +410,7 @@ function createService(options: { titleGenerationEnabled?: boolean } = {}) {
     getSettings: vi.fn(() => ({})),
     updateSettings: vi.fn(),
     getMode: vi.fn(() => "subscription"),
+    summarizeTerminal: vi.fn(async () => ({ text: "Parallel Task" })),
   };
 
   const service = createAgentChatService({
@@ -424,7 +427,7 @@ function createService(options: { titleGenerationEnabled?: boolean } = {}) {
     getDirtyFileTextForPath: () => undefined,
   });
 
-  return { service, logger };
+  return { service, logger, aiIntegrationService };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +440,6 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tmpRoot, ".ade", "transcripts", "chat"), { recursive: true });
   mockState.sessions.clear();
   mockState.uuidCounter = 0;
-  vi.mocked(runOpenCodeTextPrompt).mockReset();
   vi.mocked(detectAllAuth).mockResolvedValue([]);
 });
 
@@ -531,9 +533,9 @@ describe("suggestLaneNameFromPrompt", () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(runOpenCodeTextPrompt).mockRejectedValue(new Error("API rate limited"));
 
-    const { service, logger } = createService();
+    const { service, logger, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockRejectedValue(new Error("API rate limited"));
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Write a test suite",
       modelId: "anthropic/claude-haiku-4-5",
@@ -549,17 +551,12 @@ describe("suggestLaneNameFromPrompt", () => {
     );
   });
 
-  it("uses the explicit fallback name when title generation is disabled", async () => {
+  it("keeps the prompt fallback readable while adding the temporary suffix when title generation is disabled", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
-      text: "Login Bug Fix",
-      inputTokens: 10,
-      outputTokens: 5,
-    } as any);
 
-    const { service } = createService({ titleGenerationEnabled: false });
+    const { service, aiIntegrationService } = createService({ titleGenerationEnabled: false });
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix the authentication login failure in the dashboard",
       modelId: "anthropic/claude-haiku-4-5",
@@ -567,21 +564,33 @@ describe("suggestLaneNameFromPrompt", () => {
       fallbackName: "chat-20260514-010203",
     });
 
+    expect(result).toBe("fix-the-authentication-login-20260514-010203");
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
+  it("uses the explicit fallback directly when the prompt fallback is generic", async () => {
+    const { service } = createService();
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "!!!",
+      modelId: "anthropic/claude-haiku-4-5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
     expect(result).toBe("chat-20260514-010203");
-    expect(runOpenCodeTextPrompt).not.toHaveBeenCalled();
   });
 
   it("uses AI-generated name when the model runtime succeeds", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+    const { service, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
       text: "Login Bug Fix",
       inputTokens: 10,
       outputTokens: 5,
     } as any);
 
-    const { service } = createService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix the authentication login failure in the dashboard",
       modelId: "anthropic/claude-haiku-4-5",
@@ -592,17 +601,48 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result).toBe("login-bug-fix");
   });
 
+  it("retries the configured title model when the requested Codex model cannot name the lane", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createService({ titleModelId: "openai/gpt-5.4-mini" });
+    vi.mocked(aiIntegrationService.summarizeTerminal)
+      .mockRejectedValueOnce(new Error("GPT-5.5 unavailable for title task"))
+      .mockResolvedValueOnce({
+        text: "Auto Create Lane Fix",
+        inputTokens: 10,
+        outputTokens: 5,
+      } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix auto create lane routing and naming",
+      modelId: "openai/gpt-5.5",
+      laneId: "lane-1",
+      fallbackName: "chat-20260514-010203",
+    });
+
+    expect(result).toBe("auto-create-lane-fix");
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.5",
+      taskType: "session_title",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+      taskType: "session_title",
+    }));
+  });
+
   it("normalizes AI-generated name: strips special chars and lowercases", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+    const { service, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
       text: "JWT Auth Refactor!",
       inputTokens: 10,
       outputTokens: 5,
     } as any);
 
-    const { service } = createService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Refactor auth to use JWT",
       modelId: "anthropic/claude-haiku-4-5",
@@ -618,13 +658,13 @@ describe("suggestLaneNameFromPrompt", () => {
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
     const longName = "a".repeat(70);
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+    const { service, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
       text: longName,
       inputTokens: 10,
       outputTokens: 5,
     } as any);
 
-    const { service } = createService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Do a very long task",
       modelId: "anthropic/claude-haiku-4-5",
@@ -638,13 +678,13 @@ describe("suggestLaneNameFromPrompt", () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+    const { service, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
       text: `${"a".repeat(55)}- tail`,
       inputTokens: 10,
       outputTokens: 5,
     } as any);
 
-    const { service } = createService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Trim the generated lane name",
       modelId: "anthropic/claude-haiku-4-5",
@@ -659,13 +699,13 @@ describe("suggestLaneNameFromPrompt", () => {
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
     // Return only emoji/special chars that sanitizeAutoTitle will strip
-    vi.mocked(runOpenCodeTextPrompt).mockResolvedValue({
+    const { service, aiIntegrationService } = createService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValue({
       text: "!!!",
       inputTokens: 10,
       outputTokens: 5,
     } as any);
 
-    const { service } = createService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Something useful",
       modelId: "anthropic/claude-haiku-4-5",
