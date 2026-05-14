@@ -129,9 +129,9 @@ async function runPortProbe(port: number): Promise<boolean> {
   if (typeof probe !== "function") return false;
   const promise = (async () => {
     try {
-      const result = await probe(port);
-      portProbeCache.set(port, { alive: Boolean(result), checkedAtMs: Date.now() });
-      return Boolean(result);
+      const alive = Boolean(await probe(port));
+      portProbeCache.set(port, { alive, checkedAtMs: Date.now() });
+      return alive;
     } catch {
       portProbeCache.set(port, { alive: false, checkedAtMs: Date.now() });
       return false;
@@ -148,14 +148,14 @@ function useLiveLocalhostUrls(urls: ChatLocalhostUrl[]): ChatLocalhostUrl[] {
   useEffect(() => {
     let cancelled = false;
     const now = Date.now();
-    const portsToProbe: number[] = [];
+    const portsToProbe = new Set<number>();
     for (const url of urls) {
       if (url.port === null) continue;
       const cached = portProbeCache.get(url.port);
-      if (!cached || !isCacheEntryFresh(cached, now)) portsToProbe.push(url.port);
+      if (!cached || !isCacheEntryFresh(cached, now)) portsToProbe.add(url.port);
     }
-    if (portsToProbe.length === 0) return;
-    void Promise.all(portsToProbe.map((port) => runPortProbe(port))).then(() => {
+    if (portsToProbe.size === 0) return;
+    void Promise.all(Array.from(portsToProbe, (port) => runPortProbe(port))).then(() => {
       if (!cancelled) setTick((value) => value + 1);
     });
     return () => {

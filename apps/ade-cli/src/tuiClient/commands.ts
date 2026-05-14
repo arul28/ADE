@@ -74,6 +74,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/ade", description: "Run an ADE action or force a TUI command", placement: "right", argumentHint: "<domain.action|command> [json]" },
 ];
 
+// ADE-owned local controls must dispatch in the TUI even if the active runtime
+// exposes a user slash command with the same single-token name.
 const ADE_LOCAL_SINGLE_WORD_COMMANDS = new Set(
   BUILTIN_COMMANDS
     .filter((command) => command.placement !== "chat" && !command.name.includes(" "))
@@ -89,13 +91,6 @@ const ADE_OWNED_CLAUDE_PARITY_COMMANDS = new Set([
   "/insights",
   "/fast",
   "/goal",
-]);
-
-// Commands ADE *must* dispatch locally — never let a runtime/SDK or user command
-// hijack these. /model and /subagents open right-side panes.
-const ADE_PARSER_OVERRIDE = new Set([
-  "/model",
-  "/subagents",
 ]);
 
 export type ParsedCommand = {
@@ -138,8 +133,7 @@ export function parseCommand(input: string, userCommands: AgentChatSlashCommand[
   const exactUserCommand = userCommands.find((command) => slashCommandKey(command.name) === firstKey) ?? null;
   const adeOwnedOverride = candidates.find((command) => {
     const key = slashCommandKey(command.name);
-    return key === firstKey
-      && (ADE_LOCAL_SINGLE_WORD_COMMANDS.has(key) || ADE_PARSER_OVERRIDE.has(key));
+    return key === firstKey && ADE_LOCAL_SINGLE_WORD_COMMANDS.has(key);
   });
   if (adeOwnedOverride) {
     return {
@@ -232,7 +226,6 @@ export function paletteCommands(
     const key = slashCommandKey(command.name);
     if (ADE_LOCAL_SINGLE_WORD_COMMANDS.has(key)) continue;
     if (ADE_OWNED_CLAUDE_PARITY_COMMANDS.has(key)) continue;
-    if (ADE_PARSER_OVERRIDE.has(key)) continue;
     byName.set(key, command);
   }
   const merged = [...byName.values()];

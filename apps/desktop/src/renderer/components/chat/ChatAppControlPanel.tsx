@@ -692,7 +692,7 @@ export function ChatAppControlPanel({
         throw new Error("The renderer is attached but the screenshot is blank. Open the app window or menu bar item, then refresh the snapshot before attaching context.");
       }
       if (!onAddContext) {
-      throw new Error("Context insertion is not available in this panel.");
+        throw new Error("Context insertion is not available in this panel.");
       }
       const result = await window.ade.appControl.selectPoint({
         projectRoot,

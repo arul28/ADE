@@ -72,6 +72,21 @@ export async function listChatSessions(
   return await connection.actionList<AgentChatSessionSummary[]>("chat", "listSessions", argsList);
 }
 
+const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
+  "codex-chat",
+  "claude-chat",
+  "opencode-chat",
+  "cursor",
+  "droid-chat",
+]);
+
+const RESUMABLE_TERMINAL_TOOL_TYPES = new Set([
+  "claude",
+  "claude-orchestrated",
+  "codex",
+  "codex-orchestrated",
+]);
+
 export async function listTerminalSessions(
   connection: AdeCodeConnection,
   laneId?: string | null,
@@ -81,19 +96,9 @@ export async function listTerminalSessions(
     limit: 200,
   });
   return sessions.filter((session) => {
-    if (
-      session.toolType === "codex-chat"
-      || session.toolType === "claude-chat"
-      || session.toolType === "opencode-chat"
-      || session.toolType === "cursor"
-      || session.toolType === "droid-chat"
-    ) {
-      return false;
-    }
-    return session.toolType === "claude"
-      || session.toolType === "claude-orchestrated"
-      || session.toolType === "codex"
-      || session.toolType === "codex-orchestrated"
+    const toolType = session.toolType ?? "";
+    if (CHAT_BACKED_TERMINAL_TOOL_TYPES.has(toolType)) return false;
+    return RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)
       || session.resumeMetadata?.provider === "claude"
       || session.resumeMetadata?.provider === "codex";
   });

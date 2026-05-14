@@ -13,14 +13,6 @@ import { workEventItemId, workEventParentItemId } from "./workEventIds";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
-export type WorkTool = {
-  itemId: string;
-  tool: string;
-  arg: string;
-  status: WorkToolStatus;
-  durationMs?: number;
-};
-
 export type ToolCallEntry = {
   itemId: string;
   tool: string;
@@ -223,6 +215,24 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
     return candidate as Extract<AggregatedBlock, { kind: K }>;
   }
   return null;
+}
+
+function isLiveTurnBlock(
+  block: AggregatedBlock,
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "plan" | "compaction" }> {
+  return block.kind === "tool-calls-group"
+    || block.kind === "files-changed-group"
+    || block.kind === "plan"
+    || block.kind === "compaction";
+}
+
+function finishTurnBlocks(blocks: AggregatedBlock[], turnId: string | null): void {
+  for (const block of blocks) {
+    const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
+    if (blockTurn === turnId && isLiveTurnBlock(block)) {
+      block.live = false;
+    }
+  }
 }
 
 // Event types that have already contributed to aggregate-level blocks or are
@@ -563,18 +573,7 @@ export function aggregateChatBlocks(args: {
     }
     if (event.type === "status") {
       if (event.turnStatus !== "started") {
-        for (const block of blocks) {
-          const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
-          if (blockTurn !== turnId) continue;
-          if (
-            block.kind === "tool-calls-group"
-            || block.kind === "files-changed-group"
-            || block.kind === "plan"
-            || block.kind === "compaction"
-          ) {
-            block.live = false;
-          }
-        }
+        finishTurnBlocks(blocks, turnId);
       }
       if (event.turnStatus === "failed" || event.turnStatus === "interrupted") {
         passthrough(id, "error");
@@ -582,18 +581,7 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "done") {
-      for (const block of blocks) {
-        const blockTurn = (block as { turnId?: string | null }).turnId ?? null;
-        if (blockTurn !== turnId) continue;
-        if (
-          block.kind === "tool-calls-group"
-          || block.kind === "files-changed-group"
-          || block.kind === "plan"
-          || block.kind === "compaction"
-        ) {
-          block.live = false;
-        }
-      }
+      finishTurnBlocks(blocks, turnId);
       continue;
     }
     if (SILENCED_EVENT_TYPES.has(event.type)) {

@@ -458,16 +458,6 @@ function padCells(cells: string[], width: number): string[] {
   return out;
 }
 
-function shouldSpaceMarkdownBlocks(
-  prev: AssistantMarkdownBlock["kind"],
-  next: AssistantMarkdownBlock["kind"],
-): boolean {
-  // Headings packed flush to the heading they precede is fine, but everything
-  // else (bullets, numbered items, paragraphs) gets a single blank line above
-  // for breathing room — matches the desktop's line-height rhythm.
-  return true;
-}
-
 const HIGHLIGHT_COLOR: Record<NonNullable<HighlightedToken["category"]>, string> = {
   keyword: theme.color.codeKeyword,
   string: theme.color.codeString,
@@ -495,7 +485,7 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
   let prevKind: AssistantMarkdownBlock["kind"] | null = null;
 
   for (const block of blocks) {
-    if (prevKind && shouldSpaceMarkdownBlocks(prevKind, block.kind)) {
+    if (prevKind) {
       rows.push(spacerRow(`${id}:md-spacer:${rows.length}`, "assistant"));
     }
     if (block.kind === "heading") {
@@ -648,11 +638,10 @@ function moreLineRow(blockId: string, remaining: number): RenderedChatRow {
   };
 }
 
-function visibleEntries<T>(entries: T[], live: boolean): { shown: T[]; remaining: number } {
+function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   if (entries.length <= GROUP_VISIBLE_CAP) return { shown: entries, remaining: 0 };
-  // When live, prefer the most recent N; when done, prefer the most recent N as well
-  // (the user wants "most recent x show"). Drop the oldest ones into the "+N more" tail.
-  const shown = live ? entries.slice(-GROUP_VISIBLE_CAP) : entries.slice(-GROUP_VISIBLE_CAP);
+  // Prefer the most recent entries; older ones collapse into the "+N more" tail.
+  const shown = entries.slice(-GROUP_VISIBLE_CAP);
   return { shown, remaining: entries.length - shown.length };
 }
 
@@ -674,7 +663,7 @@ function toolCallsGroupRows(
     rail: null,
   });
 
-  const { shown, remaining } = visibleEntries(block.entries, block.live);
+  const { shown, remaining } = visibleEntries(block.entries);
   for (const entry of shown) {
     const glyph = statusGlyph(entry.status, spinFrame);
     const dur = formatDurationMs(entry.durationMs);
@@ -717,7 +706,6 @@ function filesChangedGroupRows(
   const out: RenderedChatRow[] = [];
   const total = block.entries.length;
   const failed = block.entries.filter((entry) => entry.status === "failed").length;
-  const ok = total - failed;
   const label = total === 1 ? "file changed" : "files changed";
 
   out.push({
@@ -741,10 +729,9 @@ function filesChangedGroupRows(
     ],
     rail: null,
   });
-  void ok;
 
   const pathWidth = Math.max(20, width - 18);
-  const { shown, remaining } = visibleEntries(block.entries, block.live);
+  const { shown, remaining } = visibleEntries(block.entries);
   for (const entry of shown) {
     const badge = fileBadgeFor(entry);
     const glyph = statusGlyph(entry.status, spinFrame);

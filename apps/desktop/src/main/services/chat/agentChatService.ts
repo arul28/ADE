@@ -6844,12 +6844,15 @@ export function createAgentChatService(args: {
     if (!managed.runtime && !managed.runtimeInvalidated) {
       try { prevPersisted = readPersistedState(managed.session.id); } catch { /* ignore */ }
     }
+    const liveClaudeSdkSessionId = managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null;
     const claudeBackgroundResumeSessionId = managed.session.provider === "claude"
       ? managed.claudeBackgroundResumeSessionId
-        ?? (managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null)
         ?? prevPersisted?.claudeBackgroundResumeSessionId
         ?? prevPersisted?.sdkSessionId
         ?? null
+      : null;
+    const claudePersistedSdkSessionId = managed.session.provider === "claude"
+      ? liveClaudeSdkSessionId ?? claudeBackgroundResumeSessionId
       : null;
     const payload: PersistedChatState = {
       version: 2,
@@ -6886,8 +6889,8 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "droid" && managed.runtime.acpSessionId
         ? { acpSessionId: managed.runtime.acpSessionId }
         : {}),
-      ...(managed.session.provider === "claude" && claudeBackgroundResumeSessionId
-        ? { sdkSessionId: claudeBackgroundResumeSessionId }
+      ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
+        ? { sdkSessionId: claudePersistedSdkSessionId }
         : managed.runtime?.kind === "claude"
           ? { sdkSessionId: managed.runtime.sdkSessionId ?? undefined }
         : prevPersisted?.sdkSessionId ? { sdkSessionId: prevPersisted.sdkSessionId } : {}),
@@ -10371,7 +10374,7 @@ export function createAgentChatService(args: {
     return { status: "failed", assistantText, state: lastState };
   };
 
-  const runClaudeBackgroundTurn = async (
+  const _runClaudeBackgroundTurn = async (
     managed: ManagedChatSession,
     args: {
       promptText: string;
@@ -10516,8 +10519,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
-    if (runtimeKind === "claude" || managed.session.provider === "claude") {
-      return runClaudeBackgroundTurn(managed, args);
+    if (runtimeKind === "claude") {
+      return runClaudeTurn(managed, args);
     }
     if (runtimeKind !== "opencode") {
       throw new Error(`Streaming runtime is not available for session '${managed.session.id}'.`);
@@ -13890,7 +13893,7 @@ export function createAgentChatService(args: {
     ]);
 
     if (runtime.kind === "claude") {
-      await runClaudeBackgroundTurn(managed, {
+      await runClaudeTurn(managed, {
         promptText,
         displayText: trimmed,
         attachments: nextSteer.attachments,
@@ -14712,6 +14715,11 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaStart(sessionId, headStart);
     }
 
+    if (effectiveProvider === "claude") {
+      ensureClaudeSessionRuntime(managed);
+      prewarmClaudeQuery(managed);
+    }
+
     persistChatState(managed);
     return managed.session;
   };
@@ -14747,12 +14755,8 @@ export function createAgentChatService(args: {
     if (handoffMode === "fork" && (managed.session.provider !== "claude" || targetProvider !== "claude")) {
       throw new Error("Full-history fork is only available when handing off from Claude to Claude.");
     }
-    const sourceSdkSessionId = handoffMode === "fork"
-      ? managed.claudeBackgroundResumeSessionId
-        ?? readPersistedState(managed.session.id)?.claudeBackgroundResumeSessionId
-        ?? readPersistedState(managed.session.id)?.sdkSessionId
-        ?? null
-      : null;
+    const sourceClaudeRuntime = handoffMode === "fork" ? ensureClaudeSessionRuntime(managed) : null;
+    const sourceSdkSessionId = sourceClaudeRuntime?.sdkSessionId ?? null;
     if (handoffMode === "fork" && !sourceSdkSessionId) {
       throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
@@ -14810,8 +14814,13 @@ export function createAgentChatService(args: {
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
     if (handoffMode === "fork") {
-      createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
-      mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
+      if (createdManaged.runtime?.kind !== "claude") {
+        throw new Error("Full-history fork can only target Claude chats.");
+      }
+      resetClaudeQuerySession(createdManaged, createdManaged.runtime, "session_reset", { clearSdkSessionId: true });
+      createdManaged.runtime.sdkSessionId = randomUUID();
+      createdManaged.runtime.forkFromSdkSessionId = sourceSdkSessionId ?? null;
+      prewarmClaudeQuery(createdManaged);
     }
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
@@ -18145,7 +18154,8 @@ export function createAgentChatService(args: {
       managed.session.reasoningEffort = nextClaudeEffort;
     }
 
-    await runClaudeBackgroundTurn(managed, {
+    ensureClaudeSessionRuntime(managed);
+    await runClaudeTurn(managed, {
       promptText,
       userText: submittedText,
       displayText: visibleText,
@@ -18512,10 +18522,6 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
-    if (managed.session.provider === "claude") {
-      await executePreparedSendMessage(preparedSteer);
-      return { steerId, queued: false };
-    }
     const runtime = ensureClaudeSessionRuntime(managed);
     if (runtime.busy) {
       enqueueSteerOrDrop(
@@ -18857,22 +18863,6 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.session.provider === "claude") {
-      const short = managed.claudeBackgroundJobShort;
-      if (short) {
-        await runClaudeBackgroundCliCommand(managed, ["stop", short], 15_000).catch((error) => {
-          logger.warn("agent_chat.claude_background_stop_failed", {
-            sessionId,
-            short,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
-      markSessionIdleWithFreshCache(managed);
-      persistChatState(managed);
-      return;
-    }
-
     const runtime = ensureClaudeSessionRuntime(managed);
     // Idempotency guard: skip if already interrupted (e.g. rapid cancel clicks)
     if (runtime.interrupted) return;
@@ -19056,12 +19046,14 @@ export function createAgentChatService(args: {
         if (managed.session.provider === "opencode") {
           throw new Error(`Unable to resume OpenCode runtime for model '${managed.session.model}'.`);
         }
-        // Fallthrough to Claude — background jobs own process lifecycle.
+        // Fallthrough to Claude — SDK manages history via sdkSessionId.
+        ensureClaudeSessionRuntime(managed);
         resolveClaudeTurnPermissionMode(managed);
         sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
       }
     } else {
-      // Claude — background jobs own process lifecycle.
+      // Claude — SDK manages history via sdkSessionId.
+      ensureClaudeSessionRuntime(managed);
       resolveClaudeTurnPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:claude:${sessionId}`);
     }
@@ -20277,8 +20269,24 @@ export function createAgentChatService(args: {
               : null;
       }
 
-      // Claude Code background sessions pick up model changes on the next
-      // background spawn/reply; there is no ADE-owned SDK query to pre-warm.
+      // Pre-warm the Claude query when the user selects an Anthropic model.
+      // This gives natural warmup time while the user types their message.
+      if (modelChanged && nextProvider === "claude") {
+        ensureClaudeSessionRuntime(managed);
+        prewarmClaudeQuery(managed);
+      }
+
+      // If a query is alive and model changed, notify SDK.
+      if (managed.runtime?.kind === "claude" && managed.runtime.query && modelId) {
+        const newCliModel = resolveClaudeCliModel(managed.session.model);
+        if (newCliModel && typeof managed.runtime.query.setModel === "function") {
+          try {
+            await managed.runtime.query.setModel(newCliModel);
+          } catch (err) {
+            logger.warn("agent_chat.claude_set_model_failed", { sessionId: managed.session.id, error: String(err) });
+          }
+        }
+      }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
@@ -20556,9 +20564,12 @@ export function createAgentChatService(args: {
       return;
     }
 
-    // Claude Code background jobs are owned by the Claude supervisor and wake on
-    // dispatch; ADE no longer prewarms an Agent SDK query for Claude sessions.
-    return;
+    // Only prewarm if the session is idle (not mid-turn) and not already warmed
+    if (managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) return;
+
+    // Ensure a Claude runtime exists and kick off pre-warming
+    ensureClaudeSessionRuntime(managed);
+    prewarmClaudeQuery(managed);
   };
 
   const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {

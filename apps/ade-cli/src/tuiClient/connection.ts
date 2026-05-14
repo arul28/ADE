@@ -224,7 +224,12 @@ function isBufferedEvent(value: unknown): value is BufferedEvent {
 
 type RuntimeEventNotification = {
   subscriptionId?: string;
-  event?: BufferedEvent;
+  event?: unknown;
+};
+
+type PendingRuntimeEvent = {
+  subscriptionId?: string;
+  event: BufferedEvent;
 };
 
 async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
@@ -383,12 +388,12 @@ async function connectAttachedSocket(args: {
         ),
       subscribeRuntimeEvents: async (subscriptionArgs, callback) => {
         let subscriptionId: string | null = null;
-        const pending: RuntimeEventNotification[] = [];
+        const pending: PendingRuntimeEvent[] = [];
         const stopNotification = attachedClient.onNotification("runtime/event", (params) => {
           const payload = params as RuntimeEventNotification;
           if (!isBufferedEvent(payload.event)) return;
           if (!subscriptionId) {
-            pending.push(payload);
+            pending.push({ subscriptionId: payload.subscriptionId, event: payload.event });
             return;
           }
           if (payload.subscriptionId === subscriptionId) callback(payload.event);
@@ -401,7 +406,7 @@ async function connectAttachedSocket(args: {
           });
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
-            if (payload.subscriptionId === subscriptionId && isBufferedEvent(payload.event)) {
+            if (payload.subscriptionId === subscriptionId) {
               callback(payload.event);
             }
           }

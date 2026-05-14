@@ -20,12 +20,11 @@ const VISIBLE_ROWS = 5;
 export const SLASH_PALETTE_ROWS = VISIBLE_ROWS + 3;
 const DEFAULT_PALETTE_WIDTH = 88;
 const MAX_PALETTE_WIDTH = 104;
-const MIN_PALETTE_WIDTH = 56;
 
 function clampPaletteWidth(width?: number): number {
   const available = Number.isFinite(width) ? Math.floor(width ?? DEFAULT_PALETTE_WIDTH) : DEFAULT_PALETTE_WIDTH;
   const safeAvailable = Math.max(1, available - 2);
-  return Math.max(Math.min(MIN_PALETTE_WIDTH, safeAvailable), Math.min(MAX_PALETTE_WIDTH, safeAvailable));
+  return Math.min(MAX_PALETTE_WIDTH, safeAvailable);
 }
 
 const PROVIDER_LABELS: Record<AgentChatProvider, string> = {

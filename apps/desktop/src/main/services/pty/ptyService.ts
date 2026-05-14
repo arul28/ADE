@@ -43,6 +43,7 @@ import type {
   TerminalToolType
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { withCodexNoAltScreen } from "../../../shared/cliLaunch";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
@@ -378,15 +379,6 @@ function quotePosixShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function withCodexNoAltScreen(command: string): string {
-  const trimmed = command.trim();
-  if (!/^codex(?:\s|$)/.test(trimmed)) return trimmed;
-  if (/(?:^|\s)--no-alt-screen(?:\s|$)/.test(trimmed)) return trimmed;
-  return trimmed === "codex"
-    ? "codex --no-alt-screen"
-    : trimmed.replace(/^codex\b/, "codex --no-alt-screen");
-}
-
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
   if (process.platform === "win32") return null;
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
@@ -448,7 +440,7 @@ function buildInitialResumeMetadata(args: {
   startupCommand: string;
 }): TerminalResumeMetadata | null {
   const parsedLaunch = parseTrackedCliLaunchConfig(args.startupCommand, args.toolType);
-  const isClaude = args.toolType === "claude" || args.toolType === "claude-orchestrated";
+  const isClaude = isClaudeTrackedCliToolType(args.toolType);
   const isCodex = args.toolType === "codex" || args.toolType === "codex-orchestrated";
   const isCursor = args.toolType === "cursor-cli";
   const isDroid = args.toolType === "droid";
@@ -497,6 +489,10 @@ function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "c
     || toolType === "opencode"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated";
+}
+
+function isClaudeTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "claude" | "claude-orchestrated" {
+  return toolType === "claude" || toolType === "claude-orchestrated";
 }
 
 function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
@@ -586,12 +582,9 @@ export function createPtyService({
     return path.join(terminalSnapshotDir, `${safeName}.json`);
   };
 
-  const colorMode = (cell: { isFgDefault(): boolean; isFgPalette(): boolean; isFgRGB(): boolean }, channel: "fg"): TerminalSnapshotCell["fgMode"] => {
-    if (channel === "fg") {
-      if (cell.isFgRGB()) return "rgb";
-      if (cell.isFgPalette()) return "palette";
-      return "default";
-    }
+  const fgColorMode = (cell: { isFgPalette(): boolean; isFgRGB(): boolean }): TerminalSnapshotCell["fgMode"] => {
+    if (cell.isFgRGB()) return "rgb";
+    if (cell.isFgPalette()) return "palette";
     return "default";
   };
 
@@ -607,7 +600,7 @@ export function createPtyService({
     if (!cell || cell.getWidth() === 0 || cell.isInvisible()) {
       return { text: " ", fg: null, bg: null, fgMode: "default", bgMode: "default" };
     }
-    const fgMode = colorMode(cell, "fg");
+    const fgMode = fgColorMode(cell);
     const bgMode = bgColorMode(cell);
     return {
       text: cell.getChars() || " ",
@@ -627,6 +620,7 @@ export function createPtyService({
   const visibleRowsFromTerminal = (terminal: HeadlessTerminalInstance): TerminalSnapshotRow[] => {
     const buffer = terminal.buffer.active;
     const start = Math.max(0, buffer.viewportY);
+    const reusable = buffer.getNullCell() as unknown as TerminalCellLike;
     const rows: TerminalSnapshotRow[] = [];
     for (let y = 0; y < terminal.rows; y += 1) {
       const line = buffer.getLine(start + y);
@@ -634,7 +628,6 @@ export function createPtyService({
         rows.push({ cells: [], text: "", wrapped: false });
         continue;
       }
-      const reusable = buffer.getNullCell() as unknown as TerminalCellLike;
       const cells: TerminalSnapshotCell[] = [];
       for (let x = 0; x < terminal.cols; x += 1) {
         cells.push(snapshotCellFromXtermCell(line.getCell(x, reusable) as unknown as TerminalCellLike | undefined));
@@ -826,7 +819,7 @@ export function createPtyService({
       // Claude Code writes its own generated `ai-title` into local session
       // storage. Keep ADE's prompt summarizer out of this path so that native
       // Claude names win when they arrive.
-      if (entry.toolTypeHint === "claude" || entry.toolTypeHint === "claude-orchestrated") return;
+      if (isClaudeTrackedCliToolType(entry.toolTypeHint)) return;
       if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
       if (!isTitleGenerationEnabled()) return;
 
@@ -1010,7 +1003,7 @@ export function createPtyService({
         const titleCaptureCwd = summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath;
         if (
           summaryTargetId
-          && (summaryToolType === "claude" || summaryToolType === "claude-orchestrated")
+          && isClaudeTrackedCliToolType(summaryToolType)
           && titleCaptureCwd
         ) {
           scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, summaryTargetId, titleCaptureCwd);
@@ -1603,7 +1596,7 @@ export function createPtyService({
     const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
     if (existingTargetId) {
       const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
-      if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
+      if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
         scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, existingTargetId, cwd);
       }
       return true;
@@ -1630,7 +1623,7 @@ export function createPtyService({
     // Strategy 2: Read the session/thread ID from the CLI's local storage
     const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
 
-    if ((effectiveToolType === "claude" || effectiveToolType === "claude-orchestrated") && cwd) {
+    if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
       const claudeSession = resolveClaudeSessionFromStorage(cwd);
       if (claudeSession) {
         const resumeCmd = `claude --resume ${claudeSession.id}`;
@@ -2690,7 +2683,7 @@ export function createPtyService({
       ) {
         scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
       }
-      if ((toolTypeHint === "claude" || toolTypeHint === "claude-orchestrated") && cwd) {
+      if (isClaudeTrackedCliToolType(toolTypeHint) && cwd) {
         scheduleClaudeRuntimeTitleCaptureBestEffort(
           sessionId,
           initialResumeMetadata?.provider === "claude" ? initialResumeMetadata.targetId : null,

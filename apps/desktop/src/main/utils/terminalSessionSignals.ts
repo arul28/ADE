@@ -7,7 +7,12 @@ import type {
   TerminalRuntimeState,
   TerminalToolType,
 } from "../../shared/types";
-import { resolveClaudeCliModelForLaunch } from "../../shared/cliLaunch";
+import {
+  codexReasoningEffortFlags,
+  modelToCliFlag,
+  normalizeCliFlagValue,
+  resolveClaudeCliModelForLaunch,
+} from "../../shared/cliLaunch";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
 const RESUME_BACKTICK_REGEX = /`([^`\r\n]*(?:claude|codex|cursor-agent|droid|opencode)\s+[^`\r\n]*(?:--resume|-r|resume|--continue|-c|--session|-s)[^`\r\n]*)`/gi;
@@ -21,21 +26,6 @@ function shellQuote(value: string): string {
 
 function commandArrayToLine(parts: string[]): string {
   return parts.map(shellQuote).join(" ");
-}
-
-function normalizeCliFlagValue(value: string | null | undefined): string | null {
-  const trimmed = String(value ?? "").trim();
-  return trimmed.length ? trimmed : null;
-}
-
-function modelToCliFlag(model: string | null | undefined): string[] {
-  const normalized = normalizeCliFlagValue(model);
-  return normalized ? ["--model", normalized] : [];
-}
-
-function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
-  const effort = normalizeCliFlagValue(reasoningEffort);
-  return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
 }
 
 export function sanitizeResumeTargetId(value: string | null | undefined): string | null {

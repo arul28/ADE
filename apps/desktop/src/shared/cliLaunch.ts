@@ -232,17 +232,17 @@ function normalizeInitialPrompt(value: string | null | undefined): string | null
   return prompt.length ? prompt : null;
 }
 
-function normalizeCliFlagValue(value: string | null | undefined): string | null {
+export function normalizeCliFlagValue(value: string | null | undefined): string | null {
   const trimmed = String(value ?? "").trim();
   return trimmed.length ? trimmed : null;
 }
 
-function modelToCliFlag(model: string | null | undefined): string[] {
+export function modelToCliFlag(model: string | null | undefined): string[] {
   const normalized = normalizeCliFlagValue(model);
   return normalized ? ["--model", normalized] : [];
 }
 
-function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
+export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
 }

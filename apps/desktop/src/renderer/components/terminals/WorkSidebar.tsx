@@ -315,53 +315,71 @@ export function WorkSidebar({
     action(target);
   }, []);
 
+  const insertContext = useCallback(<T,>(
+    eventName: string,
+    key: string,
+    value: T,
+    kind: WorkPtyContextInsertKind,
+    formatForPty: (value: T) => string | null,
+  ) => {
+    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
+      if (target.kind === "chat") {
+        dispatchAgentChatEvent(eventName, target.sessionId, key, value);
+        return;
+      }
+      const text = formatForPty(value);
+      if (text) insertIntoPty(target, text, kind);
+    });
+  }, [insertIntoPty, withContextTarget]);
+
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:add-attachment", target.sessionId, "attachment", attachment);
-        return;
-      }
-      insertIntoPty(target, formatAttachmentForPty(attachment), "attachment");
-    });
-  }, [insertIntoPty, withContextTarget]);
+    insertContext(
+      "ade:agent-chat:add-attachment",
+      "attachment",
+      attachment,
+      "attachment",
+      formatAttachmentForPty,
+    );
+  }, [insertContext]);
   const addIosContext = useCallback((item: IosElementContextItem) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:add-ios-context", target.sessionId, "item", item);
-        return;
-      }
-      insertIntoPty(target, formatIosElementContextForPrompt([item]), "ios");
-    });
-  }, [insertIntoPty, withContextTarget]);
+    insertContext(
+      "ade:agent-chat:add-ios-context",
+      "item",
+      item,
+      "ios",
+      (value) => formatIosElementContextForPrompt([value]),
+    );
+  }, [insertContext]);
   const addAppControlContext = useCallback((item: AppControlContextItem) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:add-app-control-context", target.sessionId, "item", item);
-        return;
-      }
-      insertIntoPty(target, formatAppControlContextForPrompt([item]), "app-control");
-    });
-  }, [insertIntoPty, withContextTarget]);
+    insertContext(
+      "ade:agent-chat:add-app-control-context",
+      "item",
+      item,
+      "app-control",
+      (value) => formatAppControlContextForPrompt([value]),
+    );
+  }, [insertContext]);
   const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:add-macos-vm-context", target.sessionId, "item", item);
-        return;
-      }
-      insertIntoPty(target, formatMacosVmContextForPrompt([item]), "macos-vm");
-    });
-  }, [insertIntoPty, withContextTarget]);
+    insertContext(
+      "ade:agent-chat:add-macos-vm-context",
+      "item",
+      item,
+      "macos-vm",
+      (value) => formatMacosVmContextForPrompt([value]),
+    );
+  }, [insertContext]);
   const addBuiltInBrowserContext = useCallback((item: unknown) => {
-    withContextTarget(NO_CONTEXT_TARGET_ERROR, (target) => {
-      if (target.kind === "chat") {
-        dispatchAgentChatEvent("ade:agent-chat:add-builtin-browser-context", target.sessionId, "item", item);
-        return;
-      }
-      const browserItem = normalizeBuiltInBrowserContextItem(item);
-      if (!browserItem) return;
-      insertIntoPty(target, formatBuiltInBrowserContextForPrompt([browserItem]), "browser");
-    });
-  }, [insertIntoPty, withContextTarget]);
+    insertContext(
+      "ade:agent-chat:add-builtin-browser-context",
+      "item",
+      item,
+      "browser",
+      (value) => {
+        const browserItem = normalizeBuiltInBrowserContextItem(value);
+        return browserItem ? formatBuiltInBrowserContextForPrompt([browserItem]) : null;
+      },
+    );
+  }, [insertContext]);
   const insertDraft = useCallback((text: string) => {
     withContextTarget("Open a chat or agent CLI session in this lane before inserting draft text.", (target) => {
       if (target.kind === "chat") {

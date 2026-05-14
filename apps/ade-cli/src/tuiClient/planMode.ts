@@ -2,16 +2,20 @@ import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/c
 import type { AdeCodeModelState } from "./types";
 
 export function isPlanMode(modelState: AdeCodeModelState): boolean {
-  if (modelState.provider === "claude") {
-    return modelState.claudePermissionMode === "plan" || modelState.interactionMode === "plan";
+  switch (modelState.provider) {
+    case "claude":
+      return modelState.claudePermissionMode === "plan" || modelState.interactionMode === "plan";
+    case "codex":
+      return modelState.codexApprovalPolicy === "on-request" && modelState.codexSandbox === "read-only";
+    case "opencode":
+      return modelState.opencodePermissionMode === "plan";
+    case "droid":
+      return modelState.droidPermissionMode === "read-only";
+    case "cursor":
+      return modelState.cursorModeId === "plan";
+    default:
+      return false;
   }
-  if (modelState.provider === "codex") {
-    return modelState.codexApprovalPolicy === "on-request" && modelState.codexSandbox === "read-only";
-  }
-  if (modelState.provider === "opencode") return modelState.opencodePermissionMode === "plan";
-  if (modelState.provider === "droid") return modelState.droidPermissionMode === "read-only";
-  if (modelState.provider === "cursor") return modelState.cursorModeId === "plan";
-  return false;
 }
 
 export function hasFirstUserMessage(events: AgentChatEventEnvelope[]): boolean {
