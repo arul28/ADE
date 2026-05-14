@@ -52,6 +52,7 @@ function resetStore() {
     laneSnapshots: [],
     lanes: [],
     lanesLoading: false,
+    laneDeleteProgressByLaneId: {},
     selectedLaneId: null,
     focusedSessionId: null,
     theme: "dark",
@@ -252,6 +253,43 @@ describe("appStore", () => {
       const lanes = [{ id: "lane-1", name: "test" }] as any[];
       useAppStore.getState().setLanes(lanes);
       expect(useAppStore.getState().lanes).toBe(lanes);
+    });
+
+    it("keeps lane delete progress in app state across local updates", () => {
+      const progress = {
+        laneId: "lane-1",
+        steps: [],
+        startedAt: "2026-05-14T00:00:00.000Z",
+        overallStatus: "running",
+        cancellable: false,
+      } as any;
+
+      useAppStore.getState().setLaneDeleteProgressByLaneId({ [progress.laneId]: progress });
+      useAppStore.getState().setLaneDeleteProgressByLaneId((prev) => ({
+        ...prev,
+        "lane-2": { ...progress, laneId: "lane-2" },
+      }));
+
+      expect(Object.keys(useAppStore.getState().laneDeleteProgressByLaneId).sort()).toEqual(["lane-1", "lane-2"]);
+    });
+
+    it("clears lane delete progress only when the project root changes", () => {
+      const progress = {
+        laneId: "lane-1",
+        steps: [],
+        startedAt: "2026-05-14T00:00:00.000Z",
+        overallStatus: "running",
+        cancellable: false,
+      } as any;
+      const projectA = { rootPath: "/repo/a", displayName: "A", baseRef: "main" } as any;
+
+      useAppStore.getState().setProject(projectA);
+      useAppStore.getState().setLaneDeleteProgressByLaneId({ [progress.laneId]: progress });
+      useAppStore.getState().setProject({ ...projectA, displayName: "A renamed" });
+      expect(useAppStore.getState().laneDeleteProgressByLaneId).toEqual({ [progress.laneId]: progress });
+
+      useAppStore.getState().setProject({ rootPath: "/repo/b", displayName: "B", baseRef: "main" } as any);
+      expect(useAppStore.getState().laneDeleteProgressByLaneId).toEqual({});
     });
 
     it("refreshLanes hydrates lane snapshots and derives lanes", async () => {
