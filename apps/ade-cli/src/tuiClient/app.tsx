@@ -209,6 +209,21 @@ type AdeCodeAppProps = {
   socketPath?: string | null;
 };
 
+type RefreshStateOptions = {
+  hydrateHistory?: boolean;
+};
+
+export function shouldHydrateRefreshHistory(args: {
+  hydrateHistory?: boolean;
+  currentSessionId: string | null;
+  loadedSessionId: string | null;
+  nextSessionId: string;
+}): boolean {
+  return args.hydrateHistory !== false
+    || args.currentSessionId !== args.nextSessionId
+    || args.loadedSessionId !== args.nextSessionId;
+}
+
 function initialModelState(): AdeCodeModelState {
   const descriptor = getDefaultModelDescriptor("codex");
   return {
@@ -2242,6 +2257,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [activeTerminalSession]);
 
   useEffect(() => {
+    eventCountRef.current = events.length;
+    if (!activeSessionId || activeTerminalSession) return;
+    const fallbackContext = activeSession?.modelId
+      ? getModelById(activeSession.modelId)?.contextWindow ?? null
+      : null;
+    const stats = latestTokenStats(events, fallbackContext);
+    setCurrentGoal(latestGoal(events));
+    setContextPercent(stats.percent);
+    setTokenSummary(formatTokenSummary(stats));
+    setStatusLineStats(stats);
+  }, [activeSession?.modelId, activeSessionId, activeTerminalSession, events]);
+
+  useEffect(() => {
     terminalSessionsRef.current = terminalSessions;
   }, [terminalSessions]);
 
@@ -2855,6 +2883,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     lastUserOpenedPaneRef.current = null;
     eventDedupKeysRef.current.clear();
     eventDedupKeyOrderRef.current = [];
+    eventCountRef.current = 0;
     setEvents([]);
     setClearedAt(null);
     chatDraftRef.current = "";
@@ -2993,7 +3022,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     };
   }, [activeMentionRange, displaySessions, lanes, selectedMentions]);
 
-  const refreshState = useCallback(async () => {
+  const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;
     if (!conn) return;
     const generation = refreshGenerationRef.current + 1;
@@ -3031,23 +3060,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (previewMode) {
       newChatPreviewLaneIdRef.current = nextLaneId;
     }
-    let nextEvents: AgentChatEventEnvelope[] = [];
+    let nextEvents: AgentChatEventEnvelope[] | null = null;
     if (nextSessionId && !nextTerminalSession) {
-      const history = await getChatHistory(conn, nextSessionId);
-      if (!isCurrentRefresh()) return;
-      setCurrentGoal(latestGoal(history.events));
-      nextEvents = clearedAt
-        ? history.events.filter((event) => event.timestamp > clearedAt)
-        : history.events;
-      const activeModelId = nextSession?.modelId ?? null;
-      const fallbackContext = activeModelId ? getModelById(activeModelId)?.contextWindow ?? null : null;
-      const stats = latestTokenStats(history.events, fallbackContext);
-      setContextPercent(stats.percent);
-      setTokenSummary(formatTokenSummary(stats));
-      setStatusLineStats(stats);
+      const shouldHydrateHistory = shouldHydrateRefreshHistory({
+        hydrateHistory: options.hydrateHistory,
+        currentSessionId: activeSessionIdRef.current,
+        loadedSessionId: loadedSessionIdRef.current,
+        nextSessionId,
+      });
+      if (shouldHydrateHistory) {
+        const history = await getChatHistory(conn, nextSessionId);
+        if (!isCurrentRefresh()) return;
+        setCurrentGoal(latestGoal(history.events));
+        nextEvents = clearedAt
+          ? history.events.filter((event) => event.timestamp > clearedAt)
+          : history.events;
+        const activeModelId = nextSession?.modelId ?? null;
+        const fallbackContext = activeModelId ? getModelById(activeModelId)?.contextWindow ?? null : null;
+        const stats = latestTokenStats(history.events, fallbackContext);
+        setContextPercent(stats.percent);
+        setTokenSummary(formatTokenSummary(stats));
+        setStatusLineStats(stats);
+        eventCountRef.current = history.events.length;
+        loadedSessionIdRef.current = nextSessionId;
+      }
       setStreaming(nextSession?.status === "active");
       if (nextSession?.status === "active") setInterrupted(false);
-      eventCountRef.current = history.events.length;
     } else {
       setContextPercent(null);
       setTokenSummary(null);
@@ -3056,6 +3094,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setStreaming(false);
       setInterrupted(false);
       eventCountRef.current = 0;
+      loadedSessionIdRef.current = null;
+      nextEvents = [];
     }
     const configSession = nextTerminalSession ? null : nextSession ?? (!draftSeededFromHistoryRef.current ? seedSession : null);
     const nextProvider = terminalSessionProvider(nextTerminalSession) ?? configSession?.provider ?? modelState.provider ?? "codex";
@@ -3088,8 +3128,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
     selectActiveLaneId(nextLaneId);
     selectActiveSessionId(nextSessionId);
-    eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
-    setEvents(nextEvents);
+    if (nextEvents !== null) {
+      eventDedupKeyOrderRef.current = syncTuiEventDedupKeys(eventDedupKeysRef.current, nextEvents);
+      setEvents(nextEvents);
+    }
     setSlashCommands(nextCommands);
     setModels(nextModels);
     if (launchToNewChatPreview) {
@@ -3267,6 +3309,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         selectActiveSessionId(null);
         eventDedupKeysRef.current.clear();
         eventDedupKeyOrderRef.current = [];
+        eventCountRef.current = 0;
         setEvents([]);
         await refreshState();
       } catch (err) {
@@ -3303,16 +3346,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!connection) return;
     return connection.onChatEvent((envelope) => {
       if (envelope.sessionId !== activeSessionIdRef.current) {
-        void refreshState().catch(() => undefined);
+        void refreshState({ hydrateHistory: false }).catch(() => undefined);
         return;
       }
       if (clearedAt && envelope.timestamp <= clearedAt) return;
       const event = envelope.event as Record<string, unknown>;
-      if (event.type === "codex_goal_updated") {
-        setCurrentGoal((event as { goal?: CodexThreadGoal | null }).goal ?? null);
-      } else if (event.type === "codex_goal_cleared") {
-        setCurrentGoal(null);
-      }
       const reservedKey = reserveTuiEventDedupKey(envelope, eventDedupKeysRef.current);
       if (reservedKey !== null) {
         setEvents((prev) => {
@@ -3324,6 +3362,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             reservedKey,
           );
           eventDedupKeyOrderRef.current = next.eventKeys;
+          eventCountRef.current = next.events.length;
           return next.events;
         });
       }
@@ -3380,7 +3419,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (payload.type === "pty_exit") {
-        void refreshState().catch(() => undefined);
+        void refreshState({ hydrateHistory: false }).catch(() => undefined);
       }
     }).then((stop) => {
       if (disposed) {
@@ -3401,8 +3440,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (loadedSessionIdRef.current === activeSessionId) return;
-    loadedSessionIdRef.current = activeSessionId;
-    void refreshState().catch((err) => {
+    void refreshState({ hydrateHistory: true }).catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
   }, [activeSessionId, connection, refreshState]);
@@ -3415,7 +3453,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!connection) return;
     const intervalMs = chatRefreshPollActive ? 1_000 : 15_000;
     const timer = setInterval(() => {
-      void refreshState().catch((err) => {
+      void refreshState({ hydrateHistory: false }).catch((err) => {
         setError(err instanceof Error ? err.message : String(err));
       });
     }, intervalMs);
@@ -4380,6 +4418,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
       eventDedupKeyOrderRef.current = [];
+      eventCountRef.current = 0;
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
@@ -5287,6 +5326,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
       eventDedupKeyOrderRef.current = [];
+      eventCountRef.current = 0;
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Cleared local transcript view.", "success");
@@ -5842,6 +5882,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setClearedAt(new Date().toISOString());
       eventDedupKeysRef.current.clear();
       eventDedupKeyOrderRef.current = [];
+      eventCountRef.current = 0;
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Viewport cleared. Durable chat history is unchanged.", "info");
