@@ -130,6 +130,7 @@ export type AdeRuntimeSyncOptions = {
   enabled?: boolean;
   hostStartupEnabled?: boolean;
   hostDiscoveryEnabled?: boolean;
+  initializeInBackground?: boolean;
   forceHostRole?: boolean;
   runtimeKind?: SyncRuntimeKind;
   appVersion?: string;
@@ -1081,12 +1082,19 @@ export async function createAdeRuntime(args: {
   }
 
   if (syncService) {
-    try {
-      await syncService.initialize();
-    } catch (error) {
-      logger.warn("sync.runtime_initialize_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    const initializeSyncService = async () => {
+      try {
+        await syncService.initialize();
+      } catch (error) {
+        logger.warn("sync.runtime_initialize_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    if (resolvedArgs.syncRuntime?.initializeInBackground === true) {
+      void initializeSyncService();
+    } else {
+      await initializeSyncService();
     }
   }
 

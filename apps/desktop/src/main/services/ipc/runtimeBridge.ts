@@ -692,6 +692,11 @@ export function registerRuntimeBridge({
               onEnded,
             ),
         );
+        return {
+          events: [],
+          nextCursor: arg?.request?.cursor ?? 0,
+          hasMore: false,
+        };
       }
       return await localRuntimeConnectionPool.streamEventsForRoot(
         rootPath,

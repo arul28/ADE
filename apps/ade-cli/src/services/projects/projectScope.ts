@@ -153,6 +153,7 @@ export class ProjectScopeRegistry {
       ...base,
       enabled: true,
       registryProjectId: projectId,
+      initializeInBackground: true,
       hostStartupEnabled: isHost ? base.hostStartupEnabled ?? true : false,
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,

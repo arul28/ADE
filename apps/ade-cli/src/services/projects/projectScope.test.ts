@@ -69,6 +69,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
+        initializeInBackground: true,
         runtimeKind: "daemon",
       },
     });
@@ -78,6 +79,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: false,
         hostDiscoveryEnabled: false,
+        initializeInBackground: true,
         runtimeKind: "daemon",
       },
     });
@@ -131,6 +133,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
+        initializeInBackground: true,
       },
     });
 
@@ -168,6 +171,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
+        initializeInBackground: true,
       },
     });
 
