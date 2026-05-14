@@ -859,11 +859,10 @@ export function LanesPage() {
         const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
         setLaneActionError((current) => remainingWarnings ?? (current && /\bdelet(?:e|ed|ing)\b/i.test(current) ? null : current));
       }
-      pendingLaneDeleteRefreshIdsRef.current.add(laneId);
-      scheduleLaneDeleteRefresh();
+      queueLaneDeleteRefresh([laneId]);
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, scheduleLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
+  }, [clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
 
   useEffect(() => {
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
@@ -1433,12 +1432,14 @@ export function LanesPage() {
     const getStoredActiveLaneIds = () => Object.values(useAppStore.getState().laneDeleteProgressByLaneId)
       .filter(isLaneDeleteProgressActive)
       .map((progress) => progress.laneId);
-    if (!window.ade.lanes.listDeleteProgress) {
+    const recoverStoredActiveLaneDeletes = () => {
       const storedActiveLaneIds = getStoredActiveLaneIds();
-      if (storedActiveLaneIds.length > 0) {
-        moveAwayFromDeletingLanes(storedActiveLaneIds);
-        queueLaneDeleteRefresh(storedActiveLaneIds);
-      }
+      if (storedActiveLaneIds.length === 0) return;
+      moveAwayFromDeletingLanes(storedActiveLaneIds);
+      queueLaneDeleteRefresh(storedActiveLaneIds);
+    };
+    if (!window.ade.lanes.listDeleteProgress) {
+      recoverStoredActiveLaneDeletes();
       return;
     }
     void window.ade.lanes.listDeleteProgress()
@@ -1463,21 +1464,18 @@ export function LanesPage() {
           });
         }
         moveAwayFromDeletingLanes(laneIds);
+        const refreshLaneIds = [...laneIdsWithoutBackendProgress];
         for (const progress of activeProgresses) {
           if (progress.overallStatus !== "completed" && progress.overallStatus !== "completed_with_warnings") continue;
           if (completedLaneDeleteRefreshesRef.current.has(progress.laneId)) continue;
           completedLaneDeleteRefreshesRef.current.add(progress.laneId);
-          queueLaneDeleteRefresh([progress.laneId]);
+          refreshLaneIds.push(progress.laneId);
         }
-        queueLaneDeleteRefresh(laneIdsWithoutBackendProgress);
+        queueLaneDeleteRefresh(refreshLaneIds);
       })
       .catch((error) => {
         if (cancelled) return;
-        const storedActiveLaneIds = getStoredActiveLaneIds();
-        if (storedActiveLaneIds.length > 0) {
-          moveAwayFromDeletingLanes(storedActiveLaneIds);
-          queueLaneDeleteRefresh(storedActiveLaneIds);
-        }
+        recoverStoredActiveLaneDeletes();
         console.debug("Failed to hydrate lane delete progress:", error);
       });
     return () => {

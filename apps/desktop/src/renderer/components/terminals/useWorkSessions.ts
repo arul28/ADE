@@ -44,8 +44,23 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   pinnedSessionIds: [],
 };
 
+const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
+const EMPTY_STRING_ARRAY: string[] = [];
+const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
+
 type WorkTabGroupKind = "lane" | "status" | "time";
 type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt" | "color">;
+
+function compareSessionsByStartedAtDesc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
+  return new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime();
+}
+
+function upsertSessionByStartedAt(
+  sessions: readonly TerminalSessionSummary[],
+  session: TerminalSessionSummary,
+): TerminalSessionSummary[] {
+  return [session, ...sessions.filter((entry) => entry.id !== session.id)].sort(compareSessionsByStartedAtDesc);
+}
 
 export type WorkTabGroup = {
   id: string;
@@ -80,41 +95,6 @@ function getStatusBucketLabel(bucket: ReturnType<typeof sessionStatusBucket>): s
   return "Ended";
 }
 
-function getTabGroupId(
-  organization: WorkSessionListOrganization,
-  session: TerminalSessionSummary,
-  lanes: WorkTabGroupLane[],
-): { id: string; label: string; kind: WorkTabGroupKind } {
-  if (organization === "by-lane") {
-    const lane = lanes.find((entry) => entry.id === session.laneId);
-    return {
-      id: `lane:${session.laneId}`,
-      label: lane?.name ?? session.laneName,
-      kind: "lane",
-    };
-  }
-  if (organization === "by-time") {
-    const bucket = bucketByTime(session);
-    return {
-      id: `time:${bucket}`,
-      label: bucket === "today" ? "Today" : bucket === "yesterday" ? "Yesterday" : "Older",
-      kind: "time",
-    };
-  }
-
-  const bucket = sessionStatusBucket({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-  });
-  return {
-    id: `status:${bucket}`,
-    label: getStatusBucketLabel(bucket),
-    kind: "status",
-  };
-}
-
 export function buildWorkTabGroupModel(args: {
   sessions: TerminalSessionSummary[];
   lanes: WorkTabGroupLane[];
@@ -123,9 +103,7 @@ export function buildWorkTabGroupModel(args: {
   laneSessionOrder?: Record<string, string[]>;
   pinnedSessionIds?: string[];
 }): WorkTabGroupModel {
-  const orderedSessions = [...args.sessions].sort((left, right) => (
-    new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
-  ));
+  const orderedSessions = [...args.sessions].sort(compareSessionsByStartedAtDesc);
   const collapseSet = new Set(args.collapsedGroupIds);
   const pinnedSet = new Set(args.pinnedSessionIds ?? []);
   const laneOrderMap = args.laneSessionOrder ?? {};
@@ -327,6 +305,11 @@ type QueuedRefresh = {
   };
 };
 
+type PendingOptimisticSession = {
+  session: TerminalSessionSummary;
+  createdAtMs: number;
+};
+
 type UseWorkSessionsOptions = {
   active?: boolean;
 };
@@ -347,6 +330,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
+  const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const appliedQuerySessionIdRef = useRef<string | null>(null);
@@ -388,15 +372,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
     projectViewState.sessionListOrganization ?? "by-lane";
-  const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? [];
-  const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? [];
-  const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? [];
+  const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? EMPTY_STRING_ARRAY;
+  const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? EMPTY_STRING_ARRAY;
+  const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? EMPTY_STRING_ARRAY;
   const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
   const workSidebarTab = projectViewState.workSidebarTab ?? "git";
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
-  const laneSessionOrder = projectViewState.laneSessionOrder ?? {};
-  const pinnedSessionIds = projectViewState.pinnedSessionIds ?? [];
+  const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
+  const pinnedSessionIds = projectViewState.pinnedSessionIds ?? EMPTY_STRING_ARRAY;
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
@@ -750,6 +734,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }
+      const pending = pendingOptimisticSessionsRef.current;
+      if (pending.size > 0) {
+        const now = Date.now();
+        const seen = new Set(rows.map((session) => session.id));
+        for (const [sessionId, entry] of [...pending.entries()]) {
+          if (seen.has(sessionId)) {
+            pending.delete(sessionId);
+            continue;
+          }
+          if (now - entry.createdAtMs > OPTIMISTIC_PTY_SESSION_TTL_MS) {
+            pending.delete(sessionId);
+            continue;
+          }
+          rows.push(entry.session);
+          seen.add(sessionId);
+        }
+        rows.sort(compareSessionsByStartedAtDesc);
+      }
       setSessions(rows);
       hasLoadedOnceRef.current = true;
     } finally {
@@ -770,13 +772,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       session,
       laneName,
     });
-    setSessions((prev) => {
-      const next = [optimistic, ...prev.filter((entry) => entry.id !== session.id)];
-      next.sort((left, right) => (
-        new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
-      ));
-      return next;
-    });
+    setSessions((prev) => upsertSessionByStartedAt(prev, optimistic));
   }, [lanes]);
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
@@ -801,6 +797,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
+    pendingOptimisticSessionsRef.current.clear();
   }, [projectRoot]);
 
   useEffect(() => {
@@ -1213,6 +1210,38 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
         ...launchFields,
       });
+      const startedAt = new Date().toISOString();
+      const optimisticSession: TerminalSessionSummary = {
+        id: result.sessionId,
+        laneId: args.laneId,
+        laneName: lanes.find((lane) => lane.id === args.laneId)?.name ?? args.laneId,
+        ptyId: result.ptyId,
+        tracked: args.tracked ?? true,
+        pinned: false,
+        manuallyNamed: false,
+        goal: null,
+        toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
+        title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
+        status: "running",
+        startedAt,
+        endedAt: null,
+        archivedAt: null,
+        exitCode: null,
+        transcriptPath: "",
+        headShaStart: null,
+        headShaEnd: null,
+        lastOutputPreview: null,
+        summary: null,
+        runtimeState: "running",
+        resumeCommand: null,
+        resumeMetadata: null,
+        chatSessionId: null,
+      };
+      pendingOptimisticSessionsRef.current.set(result.sessionId, {
+        session: optimisticSession,
+        createdAtMs: Date.now(),
+      });
+      setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
       selectLane(args.laneId);
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
@@ -1229,7 +1258,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       openSessionTab(result.sessionId);
       return result;
     },
-    [focusSession, openSessionTab, refresh, selectLane],
+    [focusSession, lanes, openSessionTab, refresh, selectLane],
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {

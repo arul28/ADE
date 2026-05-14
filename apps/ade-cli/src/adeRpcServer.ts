@@ -31,7 +31,12 @@ import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
-import { ADE_CLI_INLINE_GUIDANCE } from "../../desktop/src/shared/adeCliGuidance";
+import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  getAdeAgentSkillRootsForPrompt,
+  joinAdeAgentSkillRoots,
+} from "../../desktop/src/shared/agentSkillRoots";
 import {
   getPrIssueResolutionAvailability,
   isActionablePrIssueComment,
@@ -2981,6 +2986,10 @@ function resolveLaneWorktreePath(runtime: AdeRuntime, laneId: string | null | un
   return null;
 }
 
+function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
+  return buildAdeCliInlineGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath ?? undefined }));
+}
+
 function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext): string | null {
   const runId = asOptionalTrimmedString(callerCtx.runId);
   if (!runId) return null;
@@ -5106,10 +5115,11 @@ async function runTool(args: {
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
     const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
+    const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
 
     const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
       if (!isCliProvider(provider)) return {};
-      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model });
+      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model, laneWorktreePath });
     })();
 
     const created = await ptyService.create({
@@ -6812,7 +6822,7 @@ async function runTool(args: {
     });
 
     const promptSegments: string[] = [];
-    promptSegments.push(ADE_CLI_INLINE_GUIDANCE);
+    promptSegments.push(buildAdeInlineGuidanceForLane(laneWorktreePath));
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
         `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`
@@ -6881,6 +6891,8 @@ async function runTool(args: {
     // command remains a display/resume preview only; the actual launch uses
     // command/args/env so it works on Windows without POSIX inline assignment.
     const workerEnv: Record<string, string> = {};
+    const skillRootsEnv = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
+    if (skillRootsEnv) workerEnv[ADE_AGENT_SKILLS_DIRS_ENV] = skillRootsEnv;
     const envPrefixParts: string[] = [];
     const addWorkerEnv = (key: string, value: string | null | undefined) => {
       if (!value) return;

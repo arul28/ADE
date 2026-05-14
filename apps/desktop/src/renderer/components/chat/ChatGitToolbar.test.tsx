@@ -110,6 +110,16 @@ describe("ChatGitToolbar", () => {
     expect(screen.getByTestId("location").textContent).toBe("/lanes/lane-1");
   });
 
+  it("opens the PR creation handoff when the current lane has no linked PR", async () => {
+    renderToolbar();
+
+    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/prs?tab=normal&create=1&sourceLaneId=lane-1&target=primary",
+    );
+  });
+
   it("opens the Run menu from the chat Git toolbar without starting commands", async () => {
     renderToolbar();
 

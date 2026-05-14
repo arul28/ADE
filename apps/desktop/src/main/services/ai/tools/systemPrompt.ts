@@ -1,4 +1,5 @@
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../../shared/adeCliGuidance";
+import { buildAdeCliAgentGuidance } from "../../../../shared/adeCliGuidance";
+import { getAdeAgentSkillRootsForPrompt } from "../../../../shared/agentSkillRoots";
 
 type HarnessMode = "chat" | "coding" | "planning";
 type HarnessPermissionMode = "plan" | "edit" | "full-auto";
@@ -82,6 +83,7 @@ export function buildCodingAgentSystemPrompt(args: {
   toolNames?: string[];
   interactive?: boolean;
   runtime?: AdeRuntimeKind;
+  adeSkillRoots?: readonly string[];
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -103,6 +105,7 @@ export function buildCodingAgentSystemPrompt(args: {
   const hasTodoTools = toolNames.includes("TodoWrite") || toolNames.includes("TodoRead");
   const hasWorkflowTools = hasCreateLane || hasCreatePr || hasCaptureScreenshot || hasReportCompletion;
   const guardedLocalReadOnly = permissionMode === "plan";
+  const adeSkillRoots = args.adeSkillRoots ?? getAdeAgentSkillRootsForPrompt({ cwd: args.cwd });
   const PR_ISSUE_TOOL_NAMES = new Set([
     "prGetChecks",
     "prGetReviewComments",
@@ -181,7 +184,7 @@ export function buildCodingAgentSystemPrompt(args: {
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
-    ADE_CLI_AGENT_GUIDANCE,
+    buildAdeCliAgentGuidance(adeSkillRoots),
     ...(hasMemoryTools
       ? [
           "",

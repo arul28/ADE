@@ -10,7 +10,7 @@ filtering before exposing the final list.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, and the executor. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, the executor, and lane-scoped ADE guidance / skill-root env for worker CLI launches. |
 | `apps/ade-cli/src/bootstrap.ts` | Builds `AdeRuntime` from desktop services for headless CLI execution. |
 | `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, and socket/headless client wiring. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
@@ -19,7 +19,8 @@ filtering before exposing the final list.
 | `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator tool set for the mission orchestrator. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
-| `apps/desktop/src/shared/adeCliGuidance.ts` | `ADE_CLI_AGENT_GUIDANCE` + `ADE_CLI_INLINE_GUIDANCE` strings injected into agent system prompts. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), to use bundled ADE skills, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
+| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves lane-aware ADE Agent Skills roots, formats the prompt line, and joins roots for `ADE_AGENT_SKILLS_DIRS`. |
 
 ## Two-path tool dispatch
 
@@ -230,10 +231,16 @@ prompts should prefer documented commands such as `ade lanes list`,
 
 ### Agent-prompt fallbacks for missing `ade` on PATH
 
-`apps/desktop/src/shared/adeCliGuidance.ts` is the canonical text the
-chat / agent system prompt embeds whenever a session has CLI access.
-It tells the agent that `ade` *should* be available, and gives it an
-ordered fallback chain when `command -v ade` fails:
+`apps/desktop/src/shared/adeCliGuidance.ts` builds the canonical text
+the chat / agent system prompt embeds whenever a session has CLI
+access. Callers pass skill roots from `agentSkillRoots.ts`, usually
+using the active lane worktree as `cwd`, so a lane-local
+`apps/desktop/resources/agent-skills` root appears before inherited
+environment or packaged app roots. The same root list is joined into
+`ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions.
+
+The guidance tells the agent that `ade` *should* be available, and
+gives it an ordered fallback chain when `command -v ade` fails:
 
 1. try `${ADE_CLI_PATH:-}` (set by managed shells when the launcher
    path is known up front),
@@ -242,14 +249,15 @@ ordered fallback chain when `command -v ade` fails:
 3. and as a last resort, in an ADE source checkout, `node
    apps/ade-cli/dist/cli.cjs ...` after confirming the file exists.
 
-The wording explicitly tells agents to try `ade doctor`, typed
+The wording explicitly tells agents to use the relevant ADE skill
+instead of long prompt guidance, to try `ade doctor`, typed
 `ade ... --text` commands, and `ade actions list --text` /
 `ade actions run ...` *before* claiming an ADE task is blocked. It also
 tells agents that any process they start is their responsibility: track
 it, and clean up old, stale, or finished processes before leaving the
-task. The two exports (`ADE_CLI_AGENT_GUIDANCE` for full system-prompt
-builds, `ADE_CLI_INLINE_GUIDANCE` for inline mentions) keep this
-guidance consistent across surfaces.
+task. `buildAdeCliAgentGuidance()` and `buildAdeCliInlineGuidance()`
+currently share the same compact guidance body so system prompts,
+worker launches, and inline Work-tab preambles stay aligned.
 
 ## Fragile and tricky wiring
 

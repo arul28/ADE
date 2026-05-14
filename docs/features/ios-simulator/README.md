@@ -56,7 +56,7 @@ remote-localhost connection.
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Mounts `ChatIosSimulatorPanel` behind a header toggle (`iosSimulatorAvailable`), brokers the screenshot-attachment + context-item flow into the composer, and gates the toggle on `iosSimulatorStatus.supported`. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Renders `IosElementContextItem[]` as inline composer chips: switches to a contenteditable rich-input variant when the user has attached one or more iOS elements, serialises chip nodes back into the prompt on submit, and pairs each element with its captured screenshot when one was added in the same gesture. |
 | `apps/desktop/src/renderer/components/chat/ChatAttachmentTray.tsx` | Includes iOS-element instance handling: `createIosContextInstanceId`, `getIosContextAttachmentPath`, and `formatIosElementContextForPrompt` (the prompt-side serialisation). |
-| `apps/desktop/src/shared/adeCliGuidance.ts` | Mentions `ade ios-sim` so prompts know the surface exists. |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | Points agents at bundled ADE skills and socket-backed live surfaces; the iOS simulator workflow is covered by the `ade-ios-simulator` skill and the `ade ios-sim` CLI group. |
 | `apps/ade-cli/src/cli.ts` | `ade ios-sim` (aliased `ade ios`, `ade simulator`) subcommand: status / devices / apps / launch / shutdown / actions / screenshot / snapshot / inspector / inspect / preview-status / previews / preview-render / preview-open / window-start / live-start / preview-start / stream-status / stream-stop / select / tap / drag / swipe / type, with focused `ade help ios-sim <subcommand>` pages for agent discovery. `live-start` requests the `auto` backend so the service picks `iosurface-indigo` first when available, then falls back through window/idb/simctl paths; `--backend` accepts every explicit backend value. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | The Swift side: the `.adeInspectable("componentId", ...)` view modifier and the `.adeInspectorHost()` host modifier that publish per-frame element snapshots (component id, source file/line, accessibility identifier, point + pixel frames) into `Documents/ade-inspector-elements.json` inside the running app's data container. DEBUG-only — release builds compile to a no-op. |
 
@@ -447,9 +447,9 @@ chip attached.
   added on top usually mask a real failure (missing shared scheme,
   build error, wrong project root) instead of fixing it. Re-list with
   `ade --socket ios-sim apps --text` and read the formatted xcodebuild
-  failure first — `ADE_CLI_AGENT_GUIDANCE` and the `ade ios-sim`
-  troubleshooting block both call this out so agents don't reach for
-  the wrong fix.
+  failure first — the bundled `ade-ios-simulator` skill and the
+  `ade ios-sim` troubleshooting block both call this out so agents
+  don't reach for the wrong fix.
 - **Screenshot pairing window.** `AgentChatPane` tracks the most
   recent attachment via `latestAttachmentRef` and only stamps an
   `attachmentPath` onto the iOS element if the attachment was added

@@ -43,6 +43,14 @@ describe("shouldRefreshSessionListForChatEvent", () => {
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "user_message", text: "ship it" }))).toBe(true);
   });
 
+  it("refreshes when runtime-native title metadata changes", () => {
+    expect(shouldRefreshSessionListForChatEvent(makeEnvelope({
+      type: "session_meta_updated",
+      title: "Runtime Naming Investigation",
+      manuallyNamed: false,
+    }))).toBe(true);
+  });
+
   it("ignores noisy intermediate events", () => {
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "status", turnStatus: "completed" }))).toBe(false);
     expect(shouldRefreshSessionListForChatEvent(makeEnvelope({ type: "text", text: "hello" }))).toBe(false);

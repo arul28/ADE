@@ -84,6 +84,7 @@ Two helpers summarise a parsed stream:
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Mission step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, memory notices, file persistence hints. |
+| `session_meta_updated` | Runtime-native session metadata update (title / manual-name state). The renderer treats it as a local-touch event so Work lists and grid tiles refresh when a provider renames a session. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Mission orchestrator delegation contract updates. |

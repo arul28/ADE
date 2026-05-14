@@ -24,6 +24,10 @@ import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
 type CreateMode = "normal" | "queue" | "integration";
+export type CreatePrModalInitialValues = {
+  sourceLaneId?: string | null;
+  target?: "primary" | null;
+};
 
 /** Alias mapping from old `C` tokens to centralized COLORS. */
 const C = {
@@ -504,10 +508,12 @@ export function CreatePrModal({
   open,
   onOpenChange,
   onCreated,
+  initialValues = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated?: (created: PrSummary[]) => void | Promise<void>;
+  initialValues?: CreatePrModalInitialValues | null;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -820,6 +826,42 @@ export function CreatePrModal({
       return current;
     });
   }, [knownPrs, lanes, open, primaryLane?.branchRef, selectedNormalLane]);
+
+  const appliedInitialValuesKeyRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!open) {
+      appliedInitialValuesKeyRef.current = null;
+      return;
+    }
+
+    const sourceLaneId = initialValues?.sourceLaneId?.trim() ?? "";
+    const target = initialValues?.target ?? null;
+    const key = `${sourceLaneId}:${target ?? ""}`;
+    if (!sourceLaneId && !target) return;
+    if (appliedInitialValuesKeyRef.current === key) return;
+
+    const sourceLane = sourceLaneId
+      ? lanes.find((lane) => lane.id === sourceLaneId && lane.laneType !== "primary") ?? null
+      : null;
+    if (sourceLaneId && !sourceLane && lanes.length === 0) return;
+    appliedInitialValuesKeyRef.current = key;
+
+    setMode("normal");
+    setNumericStep(1);
+    setExecError(null);
+    setResults(null);
+    setQueueErrors([]);
+    setIntegrationResult(null);
+    setProposal(null);
+
+    if (sourceLane) {
+      setNormalLaneId(sourceLane.id);
+    }
+    if (target === "primary") {
+      normalBaseBranchDefaultRef.current = "";
+      setNormalBaseBranch(branchNameFromRef(primaryLane?.branchRef ?? "main") || "main");
+    }
+  }, [initialValues, lanes, open, primaryLane?.branchRef]);
 
   const handleSimulate = async () => {
     if (integrationSources.length === 0) return;

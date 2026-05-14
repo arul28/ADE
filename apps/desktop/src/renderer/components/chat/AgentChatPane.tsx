@@ -1897,6 +1897,11 @@ export function AgentChatPane({
     const lane = lanes.find((entry) => entry.id === scopedLaneId);
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot, selectedSession?.laneId]);
+  const activeLaneWorktreePath = useMemo(() => {
+    if (!laneId) return projectRoot;
+    const lane = lanes.find((entry) => entry.id === laneId);
+    return lane?.worktreePath ?? projectRoot;
+  }, [laneId, lanes, projectRoot]);
 
   const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
@@ -3430,6 +3435,39 @@ export function AgentChatPane({
   }, [isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
+    if (!isTileVisible || !selectedSessionId) return undefined;
+    const shouldRecoverLiveTranscript =
+      turnActive
+      || selectedSession?.status === "active"
+      || selectedSessionAwaitingInput;
+    if (!shouldRecoverLiveTranscript) return undefined;
+
+    let disposed = false;
+    const offset = stableSessionDelayOffset(selectedSessionId);
+    const initialDelayMs = isTileActive ? 900 : 1200 + (offset % 500);
+    const intervalMs = isTileActive ? 2200 : 2800 + (offset % 700);
+    const recover = () => {
+      if (disposed) return;
+      void loadHistory(selectedSessionId, { force: true });
+    };
+    const initialTimer = window.setTimeout(recover, initialDelayMs);
+    const intervalTimer = window.setInterval(recover, intervalMs);
+    return () => {
+      disposed = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalTimer);
+    };
+  }, [
+    isTileActive,
+    isTileVisible,
+    loadHistory,
+    selectedSession?.status,
+    selectedSessionAwaitingInput,
+    selectedSessionId,
+    turnActive,
+  ]);
+
+  useEffect(() => {
     if (!isTileActive) {
       setComputerUseSnapshot(null);
       return;
@@ -3641,9 +3679,15 @@ export function AgentChatPane({
         });
       }
 
-      // "done" events must flush immediately so turnActive clears and the
-      // spinner stops.  Other events can use the debounced 16ms schedule.
-      if (envelope.event.type === "done") {
+      // User messages and lifecycle edges must flush immediately so the
+      // optimistic bubble cannot disappear behind the 16ms debounce and
+      // visible grid tiles show fresh activity without requiring focus.
+      if (
+        envelope.event.type === "done"
+        || envelope.event.type === "user_message"
+        || envelope.event.type === "status"
+        || (layoutVariant === "grid-tile" && isTileVisible)
+      ) {
         if (eventFlushTimerRef.current != null) {
           window.clearTimeout(eventFlushTimerRef.current);
           eventFlushTimerRef.current = null;
@@ -3712,7 +3756,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -4255,7 +4299,9 @@ export function AgentChatPane({
     snapshot: DraftLaunchSnapshot,
     targetLaneId: string,
   ): Promise<PreparedDraftLaunch> => {
-    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId);
+    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId, {
+      promptText: snapshot.text,
+    });
     const finalTextPrefix = [automaticMacosVmContextPrefix, snapshot.visualContextPrefix].filter(Boolean).join("\n");
     let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
     if (!finalText.trim().length && snapshot.contextAttachments.length) {
@@ -4913,7 +4959,9 @@ export function AgentChatPane({
     }
 
     try {
-      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId);
+      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId, {
+        promptText: text,
+      });
       let justCreatedSession = false;
       const finalTextPrefix = [automaticMacosVmContextPrefix, visualContextPrefix].filter(Boolean).join("\n");
       let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
@@ -4972,6 +5020,7 @@ export function AgentChatPane({
           model: runtimeModel,
           reasoningEffort,
           initialPrompt: cliPrompt,
+          laneWorktreePath: activeLaneWorktreePath,
         });
         await onLaunchCliSession({
           laneId,
@@ -5137,6 +5186,7 @@ export function AgentChatPane({
     forceDraft,
     embeddedWorkLayout,
     projectRoot,
+    activeLaneWorktreePath,
     navigate,
     onLaunchCliSession,
     buildNativeControlPayloadForSlot,

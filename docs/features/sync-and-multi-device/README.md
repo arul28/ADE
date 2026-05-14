@@ -166,7 +166,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `SyncRemoteCommandDescriptor` with a **scope** label of
   `"runtime"` or `"project"`. The host rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a
-  matching `projectId` (see *Scope enforcement* below).
+  matching `projectId` (see *Scope enforcement* below). Mobile /
+  controller CLI launches resolve the target lane worktree before
+  building provider argv/env so ADE Agent Skills roots stay lane-aware.
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
   `sync_cluster_state` singleton.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes

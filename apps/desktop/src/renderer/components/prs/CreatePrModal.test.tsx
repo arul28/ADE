@@ -238,6 +238,22 @@ describe("CreatePrModal queue workflow", () => {
     );
   });
 
+  it("prefills a single PR from the requested lane into the primary branch", async () => {
+    renderWithRouter(
+      <CreatePrModal
+        open
+        onOpenChange={vi.fn()}
+        initialValues={{ sourceLaneId: "lane-2", target: "primary" }}
+      />,
+    );
+
+    const sourceSelect = document.querySelector('[data-tour="prs.createModal.source"]') as HTMLSelectElement | null;
+    const targetInput = document.querySelector('[data-tour="prs.createModal.base"]') as HTMLInputElement | null;
+
+    await waitFor(() => expect(sourceSelect?.value).toBe("lane-2"));
+    expect(targetInput?.value).toBe("main");
+  });
+
   it("defaults single-PR title and body from a linked Linear issue", async () => {
     const user = userEvent.setup();
     renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);

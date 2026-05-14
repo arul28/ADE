@@ -223,6 +223,10 @@ A handful have more logic:
   — the same module the desktop Work tab uses — so the host owns the
   startup-command shape and a phone cannot smuggle in a free-form
   shell command (the `shell` provider takes no startup payload at all).
+  The host resolves the requested lane worktree before building that
+  launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
+  the lane's bundled `agent-skills` root instead of whichever project
+  root the daemon process happened to start from.
   Claude launches mint a pre-assigned `--session-id` upfront via
   `randomUUID()` so continuation works as soon as the row exists.
   After `ptyService.create` returns, any `initialInput`

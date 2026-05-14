@@ -75,6 +75,16 @@ function resetStore() {
   });
 }
 
+function makeLaneDeleteProgress(laneId: string) {
+  return {
+    laneId,
+    steps: [],
+    startedAt: "2026-05-14T00:00:00.000Z",
+    overallStatus: "running",
+    cancellable: false,
+  } as any;
+}
+
 describe("appStore", () => {
   beforeEach(() => {
     mockStorage.clear();
@@ -256,31 +266,19 @@ describe("appStore", () => {
     });
 
     it("keeps lane delete progress in app state across local updates", () => {
-      const progress = {
-        laneId: "lane-1",
-        steps: [],
-        startedAt: "2026-05-14T00:00:00.000Z",
-        overallStatus: "running",
-        cancellable: false,
-      } as any;
+      const progress = makeLaneDeleteProgress("lane-1");
 
       useAppStore.getState().setLaneDeleteProgressByLaneId({ [progress.laneId]: progress });
       useAppStore.getState().setLaneDeleteProgressByLaneId((prev) => ({
         ...prev,
-        "lane-2": { ...progress, laneId: "lane-2" },
+        "lane-2": makeLaneDeleteProgress("lane-2"),
       }));
 
       expect(Object.keys(useAppStore.getState().laneDeleteProgressByLaneId).sort()).toEqual(["lane-1", "lane-2"]);
     });
 
     it("clears lane delete progress only when the project root changes", () => {
-      const progress = {
-        laneId: "lane-1",
-        steps: [],
-        startedAt: "2026-05-14T00:00:00.000Z",
-        overallStatus: "running",
-        cancellable: false,
-      } as any;
+      const progress = makeLaneDeleteProgress("lane-1");
       const projectA = { rootPath: "/repo/a", displayName: "A", baseRef: "main" } as any;
 
       useAppStore.getState().setProject(projectA);
