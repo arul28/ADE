@@ -135,6 +135,7 @@ function installAdeMocks(options?: {
   sendError?: Error;
   steerError?: Error;
   listError?: Error;
+  createError?: Error;
   handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean };
   sessions?: AgentChatSessionSummary[];
   includeClaudeModel?: boolean;
@@ -154,16 +155,18 @@ function installAdeMocks(options?: {
     session: buildCreatedSession("handoff-session-1"),
     usedFallbackSummary: false,
   });
-  const create = vi.fn().mockImplementation(async (args: Record<string, unknown> = {}) => {
-    const overrides: Partial<AgentChatSession> = {
-      laneId: typeof args.laneId === "string" ? args.laneId : "lane-1",
-      reasoningEffort: (args.reasoningEffort as string | null | undefined) ?? "xhigh",
-    };
-    if (typeof args.provider === "string") overrides.provider = args.provider as AgentChatSession["provider"];
-    if (typeof args.model === "string") overrides.model = args.model;
-    if (typeof args.modelId === "string") overrides.modelId = args.modelId;
-    return buildCreatedSession("created-session", overrides);
-  });
+  const create = options?.createError
+    ? vi.fn().mockRejectedValue(options.createError)
+    : vi.fn().mockImplementation(async (args: Record<string, unknown> = {}) => {
+        const overrides: Partial<AgentChatSession> = {
+          laneId: typeof args.laneId === "string" ? args.laneId : "lane-1",
+          reasoningEffort: (args.reasoningEffort as string | null | undefined) ?? "xhigh",
+        };
+        if (typeof args.provider === "string") overrides.provider = args.provider as AgentChatSession["provider"];
+        if (typeof args.model === "string") overrides.model = args.model;
+        if (typeof args.modelId === "string") overrides.modelId = args.modelId;
+        return buildCreatedSession("created-session", overrides);
+      });
   const createLane = vi.fn().mockResolvedValue({
     id: "lane-created",
     name: "auto-created-lane",
@@ -1888,6 +1891,45 @@ describe("AgentChatPane submit recovery", () => {
       }));
       expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" });
       expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true });
+      expect(onSessionCreated).not.toHaveBeenCalled();
+    });
+  });
+
+  it("deletes an auto-created draft lane when session creation fails", async () => {
+    const onSessionCreated = vi.fn();
+    const { send, createLane, suggestLaneName, deleteChat, deleteLane } = installAdeMocks({
+      sessions: [],
+      createError: new Error("create failed"),
+    });
+    suggestLaneName.mockResolvedValue("session-create-fails");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "session-create-fails",
+      laneType: "worktree",
+      branchRef: "refs/heads/session-create-fails",
+      worktreePath: "/tmp/project-under-test/session-create-fails",
+      parentLaneId: "lane-primary",
+    });
+
+    renderAutoCreateDraftPane({ onSessionCreated });
+
+    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "This session create will fail." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true });
+      expect(deleteChat).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
       expect(onSessionCreated).not.toHaveBeenCalled();
     });
   });

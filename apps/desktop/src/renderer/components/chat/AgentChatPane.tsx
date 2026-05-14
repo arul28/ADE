@@ -4258,7 +4258,9 @@ export function AgentChatPane({
         fallbackName: createTemporaryAutoLaneName(),
       });
       const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
-      await refreshLanesStore();
+      await refreshLanesStore().catch((refreshError: unknown) => {
+        console.warn("draft chat launch lane refresh failed", refreshError);
+      });
       return { laneId: createdLane.id, laneName: createdLane.name };
     }
     if (!laneId) throw new Error("Select a lane before launching chat.");
@@ -4287,44 +4289,26 @@ export function AgentChatPane({
     setMacosVmContextItems([]);
     draftSelectionLockedRef.current = mode === "background";
 
+    let targetLane: { laneId: string; laneName: string } | null = null;
+    let createdSession: AgentChatSession | null = null;
+
     try {
-      const targetLane = await resolveDraftLaunchLane(snapshot);
+      targetLane = await resolveDraftLaunchLane(snapshot);
       const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
-      const created = await createSessionForLane(targetLane.laneId, { select: false });
-      touchSession(created.id);
-      try {
-        await window.ade.agentChat.send({
-          sessionId: created.id,
-          text: prepared.finalText,
-          displayText: prepared.finalDisplayText || "Selected visual app context",
-          attachments: prepared.selectedAttachments,
-          contextAttachments: prepared.selectedContextAttachments,
-          reasoningEffort,
-          executionMode,
-          interactionMode: created.provider === "claude" ? interactionMode : null,
-          ...(created.provider === "cursor" ? { runtime: "local" as const } : {}),
-        });
-      } catch (sendError) {
-        await window.ade.agentChat.delete({ sessionId: created.id }).catch((cleanupError: unknown) => {
-          console.warn("draft chat launch session cleanup failed", cleanupError);
-        });
-        loadedHistoryRef.current.delete(created.id);
-        localTouchBySessionRef.current.delete(created.id);
-        optimisticSessionIdsRef.current.delete(created.id);
-        knownSessionIdsRef.current.delete(created.id);
-        invalidateSessionListCache();
-        if (targetLane.laneId === laneId) {
-          await refreshSessions().catch(() => undefined);
-        }
-        if (draftLaunchTargetIsAutoCreate) {
-          await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }).catch((cleanupError: unknown) => {
-            console.warn("draft chat launch lane cleanup failed", cleanupError);
-          });
-          await refreshLanesStore().catch(() => undefined);
-        }
-        throw sendError;
-      }
-      notifySessionCreated(created, { activate: false, source: "draft-launch" });
+      createdSession = await createSessionForLane(targetLane.laneId, { select: false });
+      touchSession(createdSession.id);
+      await window.ade.agentChat.send({
+        sessionId: createdSession.id,
+        text: prepared.finalText,
+        displayText: prepared.finalDisplayText || "Selected visual app context",
+        attachments: prepared.selectedAttachments,
+        contextAttachments: prepared.selectedContextAttachments,
+        reasoningEffort,
+        executionMode,
+        interactionMode: createdSession.provider === "claude" ? interactionMode : null,
+        ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
+      });
+      notifySessionCreated(createdSession, { activate: false, source: "draft-launch" });
       invalidateSessionListCache();
       if (targetLane.laneId === laneId) {
         void refreshSessions().catch(() => {});
@@ -4332,7 +4316,7 @@ export function AgentChatPane({
       const launch = {
         laneId: targetLane.laneId,
         laneName: targetLane.laneName,
-        sessionId: created.id,
+        sessionId: createdSession.id,
       };
       if (mode === "foreground") {
         openLaunchedDraftChat(launch);
@@ -4341,6 +4325,25 @@ export function AgentChatPane({
         setBackgroundLaunchNotice(launch);
       }
     } catch (launchError) {
+      if (createdSession) {
+        await window.ade.agentChat.delete({ sessionId: createdSession.id }).catch((cleanupError: unknown) => {
+          console.warn("draft chat launch session cleanup failed", cleanupError);
+        });
+        loadedHistoryRef.current.delete(createdSession.id);
+        localTouchBySessionRef.current.delete(createdSession.id);
+        optimisticSessionIdsRef.current.delete(createdSession.id);
+        knownSessionIdsRef.current.delete(createdSession.id);
+        invalidateSessionListCache();
+        if (targetLane?.laneId === laneId) {
+          await refreshSessions().catch(() => undefined);
+        }
+      }
+      if (draftLaunchTargetIsAutoCreate && targetLane) {
+        await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }).catch((cleanupError: unknown) => {
+          console.warn("draft chat launch lane cleanup failed", cleanupError);
+        });
+        await refreshLanesStore().catch(() => undefined);
+      }
       restoreDraftLaunchSnapshot(snapshot);
       const message = launchError instanceof Error ? launchError.message : String(launchError);
       setError(message);
