@@ -521,6 +521,7 @@ export function WorkSidebar({
     contextDisabledReason,
     insertDraft,
     laneId,
+    laneMismatchReason,
     laneRoot,
     navigate,
     selectedCommit,
