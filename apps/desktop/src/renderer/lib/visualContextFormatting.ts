@@ -319,7 +319,7 @@ function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: s
 export function shouldAttachAutomaticMacosVmContext(promptText: string): boolean {
   const text = promptText.toLowerCase();
   return /\b(ade\s+)?mac\s*os\s+vm\b/.test(text)
-    || /\b(ade\s+)?vm\b/.test(text)
+    || /\bade\s+vm\b/.test(text)
     || /\bisolated\s+mac(?:os)?\s+gui\b/.test(text)
     || /\blane[-\s]?tied\s+mac(?:os)?\s+vm\b/.test(text)
     || /\blume\b/.test(text);

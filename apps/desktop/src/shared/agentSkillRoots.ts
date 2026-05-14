@@ -58,6 +58,7 @@ export function getAdeAgentSkillRootCandidates(options: {
 
   const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
   if (cwd) {
+    // Prefer the active lane worktree before inherited app roots.
     addPath(roots, seen, joinPath(cwd, "apps", "desktop", "resources", "agent-skills"));
     addPath(roots, seen, joinPath(cwd, "resources", "agent-skills"));
   }

@@ -4084,6 +4084,7 @@ describe("aiOrchestratorService", () => {
   });
 
   it("recovers running attempts with tracked sessions that go silent", async () => {
+    vi.useRealTimers();
     const fixture = await createFixture({
       aiIntegrationService: createStagnationRecoveryAiIntegrationService()
     });
