@@ -7,7 +7,7 @@ for edit, diff, and conflict modes.
 
 Path: `apps/desktop/src/renderer/components/files/FilesPage.tsx`
 
-A single large component (~2,720 lines), parameterized by optional
+A single large component (~2,840 lines), parameterized by optional
 `preferredLaneId` (selects a lane worktree as the default workspace)
 and `embedded` (compact chrome for the Work sidebar mount). It owns:
 
@@ -29,8 +29,7 @@ and `embedded` (compact chrome for the Work sidebar mount). It owns:
 Per-tab state (kept in renderer memory, not persisted):
 
 - relative path, workspace ID
-- Monaco model and view state (scroll position, selection, folded
-  ranges)
+- file content, dirty state, and the active Monaco model key
 - dirty flag (`isDirty`)
 - external change indicator (`externallyChangedAt`)
 - mode (`edit` | `diff` | `conflict`)
@@ -138,6 +137,11 @@ Protection rails:
   the main-process boundary on the fallback path) and the tab displays
   the error.
 
+The page keeps one Monaco editor instance alive while the edit host is
+mounted. Opening another text file swaps the editor to a new Monaco
+model for that path/language and disposes the previous active model;
+it does not recreate the whole editor on every file switch.
+
 ## Diff mode
 
 `FilesPage` mounts `AdeDiffViewer` for diff tabs. Payloads come from
@@ -240,9 +244,10 @@ Registered through the global keybinding service
 
 ## Gotchas
 
-- **Monaco model leaks.** Every opened tab creates a Monaco model; the
-  page disposes them on tab close and on workspace switch. Rapid
-  workspace switches can leak models if the close path throws.
+- **Monaco model lifecycle.** The Files page keeps one active Monaco
+  model for edit mode and disposes it when switching files, leaving
+  edit content in React tab state. Any new per-tab model caching needs
+  an explicit disposal path on tab close and workspace switch.
 - **External change + dirty tab.** A file modified on disk with
   unsaved edits surfaces a "file changed on disk" banner. The user
   must explicitly choose "Reload" (discards edits) or "Keep editing"

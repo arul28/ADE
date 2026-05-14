@@ -11,6 +11,7 @@ describe("preload OAuth bridge", () => {
     vi.resetModules();
     vi.doUnmock("electron");
     delete process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON;
+    delete process.env.ADE_LOCAL_RUNTIME_FALLBACK;
     delete (globalThis as any).__adeBridge;
   });
 
@@ -369,6 +370,550 @@ describe("preload OAuth bridge", () => {
       IPC.localRuntimeCallAction,
       expect.anything(),
     );
+  });
+
+  it("falls back to in-process IPC when a local runtime action times out", async () => {
+    process.env.ADE_LOCAL_RUNTIME_FALLBACK = "1";
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const lanes = [{ id: "lane-1", name: "Main" }];
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error(
+          "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms (callId=286)",
+        );
+      }
+      if (channel === IPC.lanesList) return lanes;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.lanes.list()).resolves.toEqual(lanes);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "lane", action: "list", args: {} },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
+  });
+
+  it("uses in-process file IPC when no local runtime binding exists", async () => {
+    const workspaces = [{ id: "primary", label: "Primary", rootPath: "/repo" }];
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding: null };
+      }
+      if (channel === IPC.filesListWorkspaces) return workspaces;
+      if (channel === IPC.filesWatchChanges) return undefined;
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error("files should not call the local runtime daemon");
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
+    await expect(bridge.files.watchChanges({ workspaceId: "primary" })).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.filesListWorkspaces, {});
+    expect(invoke).toHaveBeenCalledWith(IPC.filesWatchChanges, { workspaceId: "primary" });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes local project file operations through the local runtime when bound", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const workspaces = [{ id: "primary", label: "Primary", rootPath: "/repo" }];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        return {
+          domain: "file",
+          action: "listWorkspaces",
+          result: workspaces,
+          statusHints: {},
+        };
+      }
+      if (channel === IPC.filesListWorkspaces) {
+        throw new Error("runtime-bound files should not use in-process IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
+  });
+
+  it("does not fall through to in-process file IPC when a bound local runtime file call fails", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const runtimeError = new Error(
+      "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms",
+    );
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw runtimeError;
+      }
+      if (channel === IPC.filesListWorkspaces) {
+        throw new Error("runtime-bound files should not fall through to missing in-process IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.files.listWorkspaces()).rejects.toThrow("ade.localRuntime.callAction");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
+  });
+
+  it("keeps remote runtime routing for remote project file operations", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/repo",
+      displayName: "Project",
+    };
+    const workspaces = [{ id: "primary", label: "Primary", rootPath: "/remote/repo" }];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return {
+          domain: "file",
+          action: "listWorkspaces",
+          result: workspaces,
+          statusHints: {},
+        };
+      }
+      if (channel === IPC.filesListWorkspaces) {
+        throw new Error("remote files should not use in-process IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
+  });
+
+  it("backs off local runtime event polling after a safe local stream timeout", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const binding = {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: "/repo",
+        displayName: "Project",
+      };
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          throw new Error("Timed out waiting for remote ADE service method ade/actions/call.");
+        }
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const unsubscribe = bridge.project.onStateEvent(vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+
+      const streamCallCount = () =>
+        invoke.mock.calls.filter(([channel]) => channel === IPC.localRuntimeStreamEvents).length;
+      expect(streamCallCount()).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        "Local ADE service event polling failed; backing off while the local service recovers.",
+        expect.any(Error),
+      );
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(streamCallCount()).toBe(1);
+
+      unsubscribe();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears local runtime event polling backoff when the project binding changes", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const localBinding = {
+        kind: "local",
+        key: "local:/repo",
+        rootPath: "/repo",
+        displayName: "Project",
+      };
+      const remoteBinding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/repo",
+        displayName: "Project",
+      };
+      let binding: typeof localBinding | typeof remoteBinding = localBinding;
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+        }
+        if (channel === IPC.localRuntimeStreamEvents) {
+          throw new Error("Timed out waiting for remote ADE service method ade/actions/call.");
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return { events: [], nextCursor: 0, hasMore: false };
+        }
+        throw new Error(`unexpected IPC: ${channel}`);
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const unsubscribeState = bridge.project.onStateEvent(vi.fn());
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+
+      const localStreamCallCount = () =>
+        invoke.mock.calls.filter(([channel]) => channel === IPC.localRuntimeStreamEvents).length;
+      const remoteStreamCallCount = () =>
+        invoke.mock.calls.filter(([channel]) => channel === IPC.remoteRuntimeStreamEvents).length;
+      expect(localStreamCallCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(localStreamCallCount()).toBe(1);
+      expect(remoteStreamCallCount()).toBe(0);
+
+      const bindingListener = on.mock.calls.find(([channel]) => channel === IPC.appProjectBindingChanged)?.[1];
+      expect(typeof bindingListener).toBe("function");
+      binding = remoteBinding;
+      bindingListener({}, remoteBinding);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(remoteStreamCallCount()).toBe(1);
+
+      unsubscribeBinding();
+      unsubscribeState();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses desktop usage IPC directly for local project usage reads", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const snapshot = {
+      windows: [],
+      pacing: {
+        status: "on-track",
+        projectedWeeklyPercent: 0,
+        weekElapsedPercent: 0,
+        expectedPercent: 0,
+        deltaPercent: 0,
+        etaHours: null,
+        willLastToReset: true,
+        resetsInHours: 0,
+      },
+      pacingByProvider: {},
+      costs: [],
+      extraUsage: [],
+      dailyUsage7d: {},
+      lastPolledAt: "2026-05-14T14:00:00.000Z",
+      errors: [],
+    };
+    const refreshed = { ...snapshot, lastPolledAt: "2026-05-14T14:01:00.000Z" };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.usageGetSnapshot) return snapshot;
+      if (channel === IPC.usageRefresh) return refreshed;
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error("usage should not call the local runtime daemon");
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.usage.getSnapshot()).resolves.toEqual(snapshot);
+    await expect(bridge.usage.refresh()).resolves.toEqual(refreshed);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.usageGetSnapshot);
+    expect(invoke).toHaveBeenCalledWith(IPC.usageRefresh);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes usage reads through a remote project runtime when bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const snapshot = {
+      windows: [],
+      pacing: {
+        status: "on-track",
+        projectedWeeklyPercent: 0,
+        weekElapsedPercent: 0,
+        expectedPercent: 0,
+        deltaPercent: 0,
+        etaHours: null,
+        willLastToReset: true,
+        resetsInHours: 0,
+      },
+      pacingByProvider: {},
+      costs: [],
+      extraUsage: [],
+      dailyUsage7d: {},
+      lastPolledAt: "2026-05-14T14:00:00.000Z",
+      errors: [],
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        return { ok: true, domain: request?.domain, action: request?.action, result: snapshot, statusHints: {} };
+      }
+      if (channel === IPC.usageGetSnapshot || channel === IPC.usageRefresh) {
+        throw new Error("remote usage should not call desktop usage IPC");
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.usage.getSnapshot()).resolves.toEqual(snapshot);
+    await expect(bridge.usage.refresh()).resolves.toEqual(snapshot);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "usage", action: "getUsageSnapshot" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "usage", action: "forceRefresh" },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageGetSnapshot);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.usageRefresh);
   });
 
   it("routes project local-data cleanup through a remote project runtime when bound", async () => {

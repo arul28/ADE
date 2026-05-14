@@ -12,6 +12,21 @@ type PendingRequest = {
 };
 
 const MAX_RPC_BUFFER_CHARS = 16 * 1024 * 1024;
+const MAX_RPC_TIMEOUT_MS = 2_147_483_647;
+
+type RuntimeRpcCallOptions = {
+  timeoutMs?: number;
+};
+
+function normalizeRuntimeRpcTimeoutMs(value: number): number {
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_RPC_TIMEOUT_MS) {
+    throw new Error(
+      `Runtime RPC timeout must be a finite positive number no greater than ${MAX_RPC_TIMEOUT_MS}.`,
+    );
+  }
+  return Math.ceil(timeoutMs);
+}
 
 export class RuntimeRpcClient {
   private nextId = 1;
@@ -45,7 +60,11 @@ export class RuntimeRpcClient {
     });
   }
 
-  call(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  call(
+    method: string,
+    params?: Record<string, unknown>,
+    options: RuntimeRpcCallOptions = {},
+  ): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId++;
     const payload: JsonRpcRequest = {
@@ -54,11 +73,17 @@ export class RuntimeRpcClient {
       method,
       ...(params ? { params } : {}),
     };
+    let timeoutMs: number;
+    try {
+      timeoutMs = normalizeRuntimeRpcTimeoutMs(options.timeoutMs ?? this.timeoutMs);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Timed out waiting for remote ADE service method ${method}.`));
-      }, this.timeoutMs);
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         this.transport.write(`${JSON.stringify(payload)}\n`);

@@ -576,15 +576,19 @@ describe("local runtime connection pool", () => {
       category: "runtime",
     });
 
-    expect(call).toHaveBeenCalledWith("ade/actions/call", {
-      projectId: "project-1",
-      name: "stream_events",
-      arguments: {
-        cursor: 7,
-        limit: 2,
-        category: "runtime",
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "stream_events",
+        arguments: {
+          cursor: 7,
+          limit: 2,
+          category: "runtime",
+        },
       },
-    });
+      { timeoutMs: 2_000 },
+    );
     expect(result).toEqual({
       events: [
         {
@@ -597,6 +601,58 @@ describe("local runtime connection pool", () => {
       nextCursor: 13,
       hasMore: true,
     });
+  });
+
+  it("bounds local runtime file actions so UI file calls cannot hit the desktop IPC timeout", async () => {
+    const call = vi.fn().mockResolvedValue({
+      domain: "file",
+      action: "listWorkspaces",
+      result: [],
+      statusHints: {},
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "file",
+      action: "listWorkspaces",
+      args: {},
+    })).resolves.toMatchObject({
+      result: [],
+      statusHints: {},
+    });
+
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "run_ade_action",
+        arguments: {
+          domain: "file",
+          action: "listWorkspaces",
+          args: {},
+        },
+      },
+      { timeoutMs: 8_000 },
+    );
   });
 
   it("routes local sync calls through the project-scoped runtime RPC", async () => {

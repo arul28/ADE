@@ -119,7 +119,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 | Directory | Role |
 |-----------|------|
 | `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local runtime daemon when needed, and runs the legacy in-process services that have not yet been migrated to the runtime. Entry: `main.ts`. |
-| `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); when `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip the daemon/event pump and use guarded in-process IPC fallbacks. |
+| `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); file APIs are strict once a local/remote runtime is bound, while usage/budget reads only route to runtime for remote-bound windows. When `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip the daemon/event pump and use guarded in-process IPC fallbacks. |
 | `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
 | `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and other DTOs. Imported by both desktop and `apps/ade-cli`. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
 | `apps/desktop/src/generated/` | Build-time generated code (e.g., bootstrap SQL snapshots). |
@@ -130,7 +130,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 
 **Runtime binding pools.**
 
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, and best-effort installs the background service in packaged builds. `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` is a development/diagnostic escape hatch: preload does not pump local runtime events or issue local runtime actions, and main-process sync IPC returns a standalone unavailable snapshot or no-ops lane-presence updates instead of spawning the daemon.
+- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, applies short per-call timeouts for project registration / file actions / event polling, and best-effort installs the background service in packaged builds. `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` is a development/diagnostic escape hatch: preload does not pump local runtime events or issue local runtime actions, and main-process sync IPC returns a standalone unavailable snapshot or no-ops lane-presence updates instead of spawning the daemon.
 - `apps/desktop/src/main/services/remoteRuntime/` — SSH-bound runtime pool. `remoteTargetRegistry.ts` stores saved machines under `~/.ade/secrets/remote-machines.json`; `sshTransport.ts` handles ssh-agent / key based transport; `remoteBootstrap.ts` does first-connect runtime upload + version negotiation against the bundled `ade-<platform-arch>` binary; `remoteConnectionPool.ts` keeps the per-window remote runtime binding alive with reconnect / eviction; `runtimeRpcClient.ts` is the JSON-RPC client; `runtimeDiscovery.ts` discovers reachable runtimes on the network.
 
 Build outputs (configured in `apps/desktop/tsup.config.ts`):
@@ -352,7 +352,7 @@ Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/age
 
 ### 5.1 Typed preload
 
-`apps/desktop/src/preload/preload.ts` (~2,590 lines) exposes ~550 methods on `window.ade`:
+`apps/desktop/src/preload/preload.ts` (~8,545 lines) exposes ~550 methods on `window.ade`:
 
 - `contextBridge.exposeInMainWorld("ade", { ... })` — the only cross-isolated-world surface.
 - Methods are typed via TypeScript imports from `apps/desktop/src/shared/types/`.
@@ -470,7 +470,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `keybindings/` | `keybindingsService.ts` | User keybindings read/write. |
 | `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `autoRebaseService.ts`, `rebaseSuggestionService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, auto-rebase, suggestions, OAuth redirect, diagnostics. |
 | `logging/` | `logger.ts` | File-backed structured logger. |
-| `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, and installs the background service best-effort in packaged builds. |
+| `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions with per-call timeouts where needed, polls runtime events, and installs the background service best-effort in packaged builds. |
 | `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts` | Lane-tied macOS VM lifecycle and GUI control. Uses Lume, stores VM records in `.ade/cache`, stores VNC credentials in `.ade/secrets`, mounts direct lane roots when safe, otherwise keeps a sanitized rsync mirror, and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. |
 | `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |

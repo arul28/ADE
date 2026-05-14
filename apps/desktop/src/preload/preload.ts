@@ -1076,6 +1076,8 @@ function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
     /\b(ECONNREFUSED|ECONNRESET|EPIPE|ENOENT|ETIMEDOUT)\b/i.test(message) ||
     /Local runtime daemon is not available/i.test(message) ||
     /ADE service connection (?:closed|failed)/i.test(message) ||
+    /IPC handler for 'ade\.localRuntime\.(?:callAction|callSync|streamEvents)' timed out/i.test(message) ||
+    /Timed out waiting for remote ADE service method /i.test(message) ||
     /Timed out connecting to ADE service socket/i.test(message) ||
     /Unsupported database value/i.test(message) ||
     /UNIQUE constraint failed: process_definitions\.id/i.test(message) ||
@@ -1094,6 +1096,8 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   if (previousKey !== nextKey) {
     projectBindingGeneration += 1;
     resetRemoteRuntimeEventDedup(nextKey);
+    resetLocalRuntimeEventPollingSuppression();
+    clearPendingRemoteRuntimeEventPoll();
   }
   if (
     binding?.kind === "remote" ||
@@ -1184,6 +1188,20 @@ async function callLocalProjectActionIfBound<T>(
   }
 }
 
+async function callLocalProjectActionStrictIfBound<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): Promise<{ handled: true; result: T } | { handled: false }> {
+  if (localRuntimeDaemonDisabled) return { handled: false };
+  const binding = await getLocalProjectBinding();
+  if (!binding) return { handled: false };
+  const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+    request: { domain, action, ...request },
+  })) as RemoteRuntimeActionResult;
+  return { handled: true, result: response.result as T };
+}
+
 async function callProjectRuntimeActionIfBound<T>(
   domain: string,
   action: string,
@@ -1210,6 +1228,39 @@ async function callProjectRuntimeActionOr<T>(
     request,
   );
   return runtime.handled ? runtime.result : local();
+}
+
+async function callRemoteProjectRuntimeActionOr<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  const remote = await callRemoteProjectActionIfBound<T>(
+    domain,
+    action,
+    request,
+  );
+  return remote.handled ? remote.result : local();
+}
+
+async function callProjectFileRuntimeActionOr<T>(
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  const remote = await callRemoteProjectActionIfBound<T>(
+    "file",
+    action,
+    request,
+  );
+  if (remote.handled) return remote.result;
+  const localRuntime = await callLocalProjectActionStrictIfBound<T>(
+    "file",
+    action,
+    request,
+  );
+  return localRuntime.handled ? localRuntime.result : local();
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -1336,6 +1387,30 @@ let remoteRuntimeEventGeneration = -1;
 let remoteRuntimeEventStartedAtMs = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
+let localRuntimeEventSuppressedUntilMs = 0;
+let localRuntimeEventSuppressionLogged = false;
+
+function suppressLocalRuntimeEventPolling(): void {
+  localRuntimeEventSuppressedUntilMs = Math.max(
+    localRuntimeEventSuppressedUntilMs,
+    Date.now() + 30_000,
+  );
+}
+
+function resetLocalRuntimeEventPollingSuppression(): void {
+  localRuntimeEventSuppressedUntilMs = 0;
+  localRuntimeEventSuppressionLogged = false;
+}
+
+function clearPendingRemoteRuntimeEventPoll(): void {
+  if (!remoteRuntimeEventTimer) return;
+  clearTimeout(remoteRuntimeEventTimer);
+  remoteRuntimeEventTimer = null;
+}
+
+function localRuntimeEventSuppressionDelayMs(): number {
+  return Math.max(0, localRuntimeEventSuppressedUntilMs - Date.now());
+}
 
 function resetRemoteRuntimeEventDedup(bindingKey: string | null): void {
   remoteRuntimeSeenEventBindingKey = bindingKey;
@@ -1412,6 +1487,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
   let nextDelayMs: number | null = null;
+  let pollingLocalRuntime = false;
   try {
     const binding = await getProjectRuntimeBinding();
     if (
@@ -1424,7 +1500,17 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventGeneration = projectBindingGeneration;
       remoteRuntimeEventStartedAtMs = 0;
       resetRemoteRuntimeEventDedup(null);
+      resetLocalRuntimeEventPollingSuppression();
       return;
+    }
+    pollingLocalRuntime = binding.kind === "local";
+    if (pollingLocalRuntime) {
+      const suppressionDelayMs = localRuntimeEventSuppressionDelayMs();
+      if (suppressionDelayMs > 0) {
+        nextDelayMs = Math.max(1_000, suppressionDelayMs);
+        return;
+      }
+      localRuntimeEventSuppressionLogged = false;
     }
 
     if (
@@ -1472,7 +1558,18 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
     nextDelayMs = batch.hasMore ? 50 : 750;
   } catch (error) {
-    console.warn("Remote ADE service event polling failed", error);
+    if (pollingLocalRuntime && isSafeLocalRuntimeFallbackError(error)) {
+      suppressLocalRuntimeEventPolling();
+      if (!localRuntimeEventSuppressionLogged) {
+        localRuntimeEventSuppressionLogged = true;
+        console.warn(
+          "Local ADE service event polling failed; backing off while the local service recovers.",
+          error,
+        );
+      }
+    } else {
+      console.warn("Remote ADE service event polling failed", error);
+    }
     nextDelayMs = 2_000;
   } finally {
     remoteRuntimeEventInFlight = false;
@@ -3349,11 +3446,11 @@ contextBridge.exposeInMainWorld("ade", {
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
+      callRemoteProjectRuntimeActionOr("usage", "getUsageSnapshot", {}, () =>
         ipcRenderer.invoke(IPC.usageGetSnapshot),
       ),
     refresh: async (): Promise<UsageSnapshot | null> =>
-      callProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
+      callRemoteProjectRuntimeActionOr("usage", "forceRefresh", {}, () =>
         ipcRenderer.invoke(IPC.usageRefresh),
       ),
     checkBudget: async (args: {
@@ -3361,7 +3458,7 @@ contextBridge.exposeInMainWorld("ade", {
       scopeId?: string;
       provider: BudgetCapProvider;
     }): Promise<BudgetCheckResult> =>
-      callProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
+      callRemoteProjectRuntimeActionOr("budget", "checkBudget", { args }, () =>
         ipcRenderer.invoke(IPC.usageCheckBudget, args),
       ),
     getCumulativeUsage: async (args: {
@@ -3373,17 +3470,17 @@ contextBridge.exposeInMainWorld("ade", {
       totalCostUsd: number;
       weekKey: string;
     }> =>
-      callProjectRuntimeActionOr("budget", "getCumulativeUsage", { args }, () =>
+      callRemoteProjectRuntimeActionOr("budget", "getCumulativeUsage", { args }, () =>
         ipcRenderer.invoke(IPC.usageGetCumulativeUsage, args),
       ),
     getBudgetConfig: async (): Promise<BudgetCapConfig> =>
-      callProjectRuntimeActionOr("budget", "getConfig", {}, () =>
+      callRemoteProjectRuntimeActionOr("budget", "getConfig", {}, () =>
         ipcRenderer.invoke(IPC.usageGetBudgetConfig),
       ),
     saveBudgetConfig: async (
       config: BudgetCapConfig,
     ): Promise<BudgetCapConfig> =>
-      callProjectRuntimeActionOr(
+      callRemoteProjectRuntimeActionOr(
         "budget",
         "updateConfig",
         { args: config },
@@ -5898,124 +5995,101 @@ contextBridge.exposeInMainWorld("ade", {
   },
   files: {
     writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "writeTextAtomic",
         { args },
+        () => ipcRenderer.invoke(IPC.filesWriteTextAtomic, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.filesWriteTextAtomic, args);
     },
     listWorkspaces: async (
       args: FilesListWorkspacesArgs = {},
     ): Promise<FilesWorkspace[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<FilesWorkspace[]>(
-        "file",
+      return callProjectFileRuntimeActionOr<FilesWorkspace[]>(
         "listWorkspaces",
         { args },
+        () => ipcRenderer.invoke(IPC.filesListWorkspaces, args),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.filesListWorkspaces, args);
     },
     listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<FileTreeNode[]>(
-        "file",
+      return callProjectFileRuntimeActionOr<FileTreeNode[]>(
         "listTree",
         { args },
+        () => ipcRenderer.invoke(IPC.filesListTree, args),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.filesListTree, args);
     },
     readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
-      const runtime = await callProjectRuntimeActionIfBound<FileContent>(
-        "file",
+      return callProjectFileRuntimeActionOr<FileContent>(
         "readFile",
         { args },
+        () => ipcRenderer.invoke(IPC.filesReadFile, args),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.filesReadFile, args);
     },
     writeText: async (args: FilesWriteTextArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "writeWorkspaceText",
         { args },
+        () => ipcRenderer.invoke(IPC.filesWriteText, args),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesWriteText, args);
     },
     createFile: async (args: FilesCreateFileArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "createFile",
         { args },
+        () => ipcRenderer.invoke(IPC.filesCreateFile, args),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesCreateFile, args);
     },
     createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "createDirectory",
         { args },
+        () => ipcRenderer.invoke(IPC.filesCreateDirectory, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.filesCreateDirectory, args);
     },
     rename: async (args: FilesRenameArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "rename",
         { args },
+        () => ipcRenderer.invoke(IPC.filesRename, args),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesRename, args);
     },
     delete: async (args: FilesDeleteArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "deletePath",
         { args },
+        () => ipcRenderer.invoke(IPC.filesDelete, args),
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.filesDelete, args);
     },
     watchChanges: async (args: FilesWatchArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "watchWorkspace",
         { args },
+        () => ipcRenderer.invoke(IPC.filesWatchChanges, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.filesWatchChanges, args);
     },
     stopWatching: async (args: FilesWatchArgs): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "file",
+      await callProjectFileRuntimeActionOr<void>(
         "stopWatching",
         { args },
+        () => ipcRenderer.invoke(IPC.filesStopWatching, args),
       );
-      if (!runtime.handled)
-        await ipcRenderer.invoke(IPC.filesStopWatching, args);
     },
     quickOpen: async (
       args: FilesQuickOpenArgs,
     ): Promise<FilesQuickOpenItem[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<
-        FilesQuickOpenItem[]
-      >("file", "quickOpen", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.filesQuickOpen, args);
+      return callProjectFileRuntimeActionOr<FilesQuickOpenItem[]>(
+        "quickOpen",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesQuickOpen, args),
+      );
     },
     searchText: async (
       args: FilesSearchTextArgs,
     ): Promise<FilesSearchTextMatch[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<
-        FilesSearchTextMatch[]
-      >("file", "searchText", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.filesSearchText, args);
+      return callProjectFileRuntimeActionOr<FilesSearchTextMatch[]>(
+        "searchText",
+        { args },
+        () => ipcRenderer.invoke(IPC.filesSearchText, args),
+      );
     },
     onChange: (cb: (ev: FileChangeEvent) => void) => {
       const unsubscribeRuntime = subscribeRemoteFileChangeEvents(cb);

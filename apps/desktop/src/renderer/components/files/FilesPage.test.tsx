@@ -276,6 +276,9 @@ describe("FilesPage", () => {
     resetStore();
     latestMockEditor = null;
     createdMockEditors = [];
+    vi.mocked(monacoEditor.create).mockClear();
+    vi.mocked(monacoEditor.createModel).mockClear();
+    vi.mocked(monacoEditor.setTheme).mockClear();
     adeDiffViewerMock.getModifiedValue.mockClear();
     adeDiffViewerMock.revealLineInCenter.mockClear();
     changeListener = null;
@@ -486,6 +489,45 @@ describe("FilesPage", () => {
     await waitFor(() => {
       expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("src/index.ts");
     });
+  });
+
+  it("keeps one editor instance and swaps models when opening another text file", async () => {
+    currentTree = [
+      {
+        name: "src",
+        path: "src",
+        type: "directory",
+        children: [
+          {
+            name: "index.ts",
+            path: "src/index.ts",
+            type: "file",
+          },
+          {
+            name: "main.ts",
+            path: "src/main.ts",
+            type: "file",
+          },
+        ],
+      },
+    ];
+
+    renderFilesPage({
+      openFilePath: "src/index.ts",
+      preferPrimaryWorkspace: true,
+    });
+
+    await waitForEditorText("value = 1");
+    fireEvent.click(await screen.findByTitle("src"));
+    fireEvent.click(await screen.findByTitle("src/main.ts"));
+
+    await waitForEditorText("value = 2");
+    expect(screen.getByTestId("mock-monaco-editor").textContent).not.toContain("value = 1");
+    expect(createdMockEditors).toHaveLength(1);
+    expect((monacoEditor.createModel as any).mock.calls.map(([content]: [string]) => content)).toEqual([
+      "export const value = 1;\n",
+      "export const value = 2;\n",
+    ]);
   });
 
   it("renders image files inline without starting the code editor", async () => {

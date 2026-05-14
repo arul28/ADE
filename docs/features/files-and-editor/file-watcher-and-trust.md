@@ -20,9 +20,11 @@ come from the node runtime, not Electron). All filesystem operations
 go through:
 
 1. `window.ade.files.*` from the preload bridge
-   (`apps/desktop/src/preload/preload.ts`), which calls
-   `callProjectRuntimeActionIfBound("file", …)` first for the active
-   runtime route, then falls through to the in-process IPC handler.
+   (`apps/desktop/src/preload/preload.ts`), which calls the remote
+   runtime first, then a strict local runtime route for local-bound
+   windows. It falls through to the in-process IPC handler only when no
+   runtime route is available, not when a bound runtime rejects the file
+   action.
 2. `ade.files.*` IPC channels registered in
    `apps/desktop/src/main/services/ipc/registerIpc.ts` (fallback
    path for the desktop's local in-process implementation).
@@ -214,10 +216,13 @@ them when possible.
 ## IPC surface
 
 The primary route is the runtime daemon's `file` action domain.
-`preload.ts` calls `callProjectRuntimeActionIfBound("file", …)` first
-and only falls back to the in-process IPC handler when no runtime is
-bound. Both paths share the same handler shapes; the desktop fallback
-handlers are registered in `registerIpc.ts`:
+`preload.ts` routes through the remote runtime first and then through
+`callLocalProjectActionStrictIfBound("file", …)` for local-bound
+windows. A bound runtime failure is returned to the caller; the
+in-process IPC handler is used only when there is no runtime route
+(for example, local runtime daemon disabled). Both paths share the
+same handler shapes; the desktop fallback handlers are registered in
+`registerIpc.ts`:
 
 | Channel | Handler behavior |
 |---|---|

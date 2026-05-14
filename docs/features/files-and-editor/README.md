@@ -18,9 +18,11 @@ local-bound windows and the SSH-attached remote runtime for
 remote-bound windows. The Monaco editor in the renderer is purely
 client-side; every byte it reads or writes flows through
 `window.ade.files.*` in `apps/desktop/src/preload/preload.ts`, which
-calls `callProjectRuntimeActionIfBound("file", …)` first and only
-falls through to the legacy in-process IPC handlers when no runtime
-is bound. Watcher events arrive over the runtime's event stream
+routes file actions through the remote runtime first, then through the
+strict local-runtime route for local-bound windows. It only falls
+through to the legacy in-process IPC handlers when no runtime route is
+available, for example with no project binding or when the local daemon
+has been explicitly disabled. Watcher events arrive over the runtime's event stream
 (category `"runtime"`) and are dispatched into renderer subscribers
 through the same preload pump that powers lane / pty / process
 events. Remote-bound desktop windows therefore browse and edit files
@@ -33,6 +35,14 @@ Runtime services back the canonical implementation. The desktop
 `apps/desktop/src/main/services/files/` files below stay as fallback
 targets for the legacy IPC path.
 
+- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
+  — local daemon project registration, file action dispatch, and event
+  polling; file actions use a bounded per-call timeout before the
+  desktop IPC handler timeout can fire.
+- `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts` —
+  JSON-RPC client used by both local and remote runtime transports,
+  including per-call timeout overrides for file actions and event
+  polling.
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
   listing, atomic writes, quick open, cross-file search, path safety.
   ~620 lines.
@@ -80,7 +90,7 @@ Preload bridge:
 Renderer:
 
 - `apps/desktop/src/renderer/components/files/FilesPage.tsx` — Files
-  tab shell (~2,720 lines): workspace chrome, tab bar, Monaco edit host,
+  tab shell (~2,840 lines): workspace chrome, tab bar, Monaco edit host,
   diff and conflict modes, quick open, text search, trust warnings. It
   composes the virtualized tree below and mounts `AdeDiffViewer` for diff
   tabs. Accepts optional `preferredLaneId` and `embedded` props so the
@@ -257,6 +267,10 @@ For deeper detail on the watcher + trust boundary, see
 - `writeTextAtomic` creates a temp file in the target's directory. If
   the directory has no write permission, the operation throws, which
   surfaces as an IPC rejection at the editor tab.
+- Runtime-bound file calls are strict: a timeout or connection failure
+  from a bound local/remote runtime surfaces to the tab instead of
+  retrying against the desktop main process, which could point at a
+  different host or workspace.
 - File watcher subscriptions are per sender (BrowserWindow /
   webContents). Closing a window calls `stopAllForSender` to tear
   down every subscription for that window.

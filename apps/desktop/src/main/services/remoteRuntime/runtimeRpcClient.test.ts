@@ -104,6 +104,40 @@ describe("RuntimeRpcClient", () => {
     await expect(client.call("projects.list", {})).rejects.toThrow("broken pipe");
   });
 
+  it("honors per-call timeout overrides", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new MockTransport();
+      const client = new RuntimeRpcClient(transport, 60_000);
+
+      const pending = client.call("projects.list", {}, { timeoutMs: 25 });
+      const assertion = expect(pending).rejects.toThrow(
+        "Timed out waiting for remote ADE service method projects.list.",
+      );
+      await vi.advanceTimersByTimeAsync(25);
+
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects invalid per-call timeout overrides before writing requests", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    await expect(client.call("projects.list", {}, { timeoutMs: 0 })).rejects.toThrow(
+      "Runtime RPC timeout must be a finite positive number",
+    );
+    await expect(client.call("projects.list", {}, { timeoutMs: Number.NaN })).rejects.toThrow(
+      "Runtime RPC timeout must be a finite positive number",
+    );
+    await expect(client.call("projects.list", {}, { timeoutMs: Number.POSITIVE_INFINITY })).rejects.toThrow(
+      "Runtime RPC timeout must be a finite positive number",
+    );
+    expect(transport.writes).toEqual([]);
+  });
+
   it("dispatches JSON-RPC notifications without resolving pending calls", async () => {
     const transport = new MockTransport();
     const client = new RuntimeRpcClient(transport);

@@ -58,6 +58,10 @@ type LocalRuntimeNodePathOptions = {
   existingNodePath?: string;
 };
 
+const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 3_000;
+const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
+const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
+
 export function buildLocalRuntimeServeArgs(
   cliPath: string,
   socketPath: string,
@@ -432,7 +436,11 @@ export class LocalRuntimeConnectionPool {
     const cached = this.projectsByRoot.get(normalizedRoot);
     if (cached) return cached;
     const entry = await this.connect();
-    const project = await entry.client.call("projects.add", { rootPath: normalizedRoot });
+    const project = await entry.client.call(
+      "projects.add",
+      { rootPath: normalizedRoot },
+      { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
+    );
     const record = coerceProjects([project])[0];
     if (!record) throw new Error("Local ADE service did not return a project record.");
     this.projectsByRoot.set(normalizedRoot, record);
@@ -492,17 +500,24 @@ export class LocalRuntimeConnectionPool {
   ): Promise<RemoteRuntimeActionResult> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    const value = await entry.client.call("ade/actions/call", {
-      projectId: project.projectId,
-      name: "run_ade_action",
-      arguments: {
-        domain: request.domain,
-        action: request.action,
-        ...(request.args ? { args: request.args } : {}),
-        ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
-        ...(request.argsList ? { argsList: request.argsList } : {}),
+    const actionCallOptions = request.domain === "file"
+      ? { timeoutMs: LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS }
+      : undefined;
+    const value = await entry.client.call(
+      "ade/actions/call",
+      {
+        projectId: project.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: request.domain,
+          action: request.action,
+          ...(request.args ? { args: request.args } : {}),
+          ...(Object.prototype.hasOwnProperty.call(request, "arg") ? { arg: request.arg } : {}),
+          ...(request.argsList ? { argsList: request.argsList } : {}),
+        },
       },
-    });
+      actionCallOptions,
+    );
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
@@ -536,15 +551,19 @@ export class LocalRuntimeConnectionPool {
   ): Promise<RemoteRuntimeStreamEventsResult> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    const value = await entry.client.call("ade/actions/call", {
-      projectId: project.projectId,
-      name: "stream_events",
-      arguments: {
-        cursor: clampCursor(request.cursor),
-        limit: clampLimit(request.limit),
-        ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+    const value = await entry.client.call(
+      "ade/actions/call",
+      {
+        projectId: project.projectId,
+        name: "stream_events",
+        arguments: {
+          cursor: clampCursor(request.cursor),
+          limit: clampLimit(request.limit),
+          ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+        },
       },
-    });
+      { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },
+    );
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;

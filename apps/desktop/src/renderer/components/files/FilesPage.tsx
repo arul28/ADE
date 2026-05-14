@@ -1734,7 +1734,7 @@ export function FilesPage({
   // in the effect below; including editorTheme here would dispose/recreate the editor on
   // every theme click and break the instance (race with async loadMonaco).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab?.path, activeTabIsText, mode, editorHostEl, revealPendingLocation]);
+  }, [activeTabIsText, mode, editorHostEl, revealPendingLocation, workspaceComparisonRoot]);
 
   useEffect(() => {
     const monaco = monacoRef.current;

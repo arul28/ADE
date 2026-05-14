@@ -11,14 +11,20 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local daemon connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. Spawns `ade serve` if the machine socket is
-  not listening; tracks the per-user login service install/health state.
+  not listening; tracks the per-user login service install/health state; applies
+  short per-call timeouts for project registration, file actions, and event
+  polling so renderer IPC calls do not wait for the desktop handler timeout.
 - `apps/desktop/src/renderer/components/remoteTargets/` — remote machine form,
   target list, project picker, dirty-local-work warning.
 - `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
 - `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
-  local or remote JSON-RPC actions based on the active project binding. When
+  local or remote JSON-RPC actions based on the active project binding. Remote
+  project usage/budget reads route through the remote runtime; local project
+  usage/budget reads stay on desktop usage IPC. File actions are strict once a
+  local or remote runtime is bound, while most other local-runtime actions may
+  use guarded Electron IPC fallbacks for safe daemon failures. When
   `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip local runtime
   actions and event polling and use guarded Electron IPC fallbacks.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
