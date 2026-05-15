@@ -721,6 +721,18 @@ function AppearanceSection({
   );
 }
 
+// Mirror the backend's normalization (apps/desktop/src/main/services/shared/utils.ts
+// `normalizeBranchName`) so the frontend `baseChanged` check matches what the
+// IPC handler will actually compare against. Without this, typing
+// `refs/heads/main` or `origin/main` when the stored ref is already `main` would
+// flip `baseChanged` to true but the backend would no-op the rebase.
+function normalizeBranchRefForCompare(ref: string): string {
+  return ref
+    .trim()
+    .replace(/^refs\/heads\//, "")
+    .replace(/^origin\//, "");
+}
+
 function collectDescendantLaneIds(rootId: string, all: LaneSummary[]): Set<string> {
   const childrenByParent = new Map<string, LaneSummary[]>();
   for (const row of all) {
@@ -789,8 +801,18 @@ function StackPositionSection({
   const defaultBaseBranch = candidates.find((c) => c.id === stackParentId)?.branchRef ?? "";
 
   const baseOverrideTrim = baseBranchInput.trim();
+  const normalizedOverride = normalizeBranchRefForCompare(baseOverrideTrim);
+  const normalizedExistingBase = normalizeBranchRefForCompare(lane.baseRef ?? "");
   const parentChanged = stackParentId !== effectiveCurrentParentId;
-  const baseChanged = baseOverrideTrim.length > 0 && baseOverrideTrim !== lane.baseRef;
+  // baseChanged covers two cases:
+  //   1. User typed a non-empty override that resolves to a different effective
+  //      branch than what is currently stored (after normalizing refs/heads/
+  //      and origin/ prefixes consistent with the backend).
+  //   2. User cleared the field while a stored base override still exists —
+  //      clearing should remove the override.
+  const baseChanged = normalizedOverride.length > 0
+    ? normalizedOverride !== normalizedExistingBase
+    : normalizedExistingBase.length > 0;
   const canApply =
     !lane.status.dirty &&
     !lane.status.rebaseInProgress &&

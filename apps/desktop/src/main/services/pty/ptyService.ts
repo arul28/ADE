@@ -2008,6 +2008,11 @@ export function createPtyService({
     clearToolAutoCloseTimer(ptyId);
     cleanupEntryPaths(entry);
     flushPreview(entry);
+    // Release the live-tail buffer (up to LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS
+    // per session). Disposed entries linger in the `ptys` map for replacement
+    // lookups; without this, every ended terminal would keep its 2 MB tail
+    // pinned indefinitely.
+    entry.recentOutputTail = "";
 
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
@@ -3314,6 +3319,8 @@ export function createPtyService({
       clearToolAutoCloseTimer(ptyId);
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
+      // Release the live-tail buffer; see closeEntry for rationale.
+      entry.recentOutputTail = "";
       try {
         entry.pty.kill();
       } catch {

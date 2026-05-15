@@ -89,7 +89,28 @@ struct LaneManageSheet: View {
   }
 
   private var reparentBaseChanged: Bool {
-    !trimmedBaseOverride.isEmpty && trimmedBaseOverride != snapshot.lane.baseRef
+    // Empty input means "use the selected parent's current branch" — that is
+    // still a change when the lane currently has a stored base override, so
+    // clearing the field must be applyable. Compare normalized values to
+    // mirror the backend's normalizeBranchName (strips refs/heads/ and
+    // origin/ prefixes).
+    let normalizedOverride = LaneManageSheet.normalizeBranchRefForCompare(trimmedBaseOverride)
+    let normalizedExisting = LaneManageSheet.normalizeBranchRefForCompare(snapshot.lane.baseRef)
+    if normalizedOverride.isEmpty {
+      return !normalizedExisting.isEmpty
+    }
+    return normalizedOverride != normalizedExisting
+  }
+
+  private static func normalizeBranchRefForCompare(_ ref: String) -> String {
+    var value = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.hasPrefix("refs/heads/") {
+      value = String(value.dropFirst("refs/heads/".count))
+    }
+    if value.hasPrefix("origin/") {
+      value = String(value.dropFirst("origin/".count))
+    }
+    return value
   }
 
   private var canApplyReparent: Bool {

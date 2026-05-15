@@ -83,11 +83,14 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const key = event.agentId ?? event.taskId;
       const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
       const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
-      const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
       if (key !== event.taskId) snapshots.delete(event.taskId);
       if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
       snapshots.set(key, {
-        taskId: adoptEventTaskId ? event.taskId : existing?.taskId ?? event.taskId,
+        // Preserve the stable merged identity. Overwriting taskId with the
+        // current event's taskId for a parent-based match would split the
+        // agent's history in `deriveSubagentTimeline`, which keys off
+        // `snapshot.taskId`.
+        taskId: existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
@@ -109,11 +112,11 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
       const key = event.agentId ?? event.taskId;
       const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
       const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
-      const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
       if (key !== event.taskId) snapshots.delete(event.taskId);
       if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
       snapshots.set(key, {
-        taskId: adoptEventTaskId ? event.taskId : existing?.taskId ?? event.taskId,
+        // Preserve the merged taskId (see subagent_progress branch above).
+        taskId: existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,

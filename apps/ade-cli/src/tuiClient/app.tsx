@@ -618,7 +618,7 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const parsedDurationMs = endedAt && startedAt ? Date.parse(endedAt) - Date.parse(startedAt) : Number.NaN;
     const fallbackDurationMs = Number.isFinite(parsedDurationMs) ? Math.max(0, parsedDurationMs) : existing?.durationMs;
     const summaryFromEvent = [event.summary, event.finalSummary, event.text, event.description]
-      .find((value): value is string => typeof value === "string");
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0);
     const summary = summaryFromEvent ?? existing?.summary ?? "";
     const base: SubagentSnapshot = {
       id,
@@ -714,9 +714,15 @@ function reparentTargetsForLane(lane: LaneSummary, lanes: LaneSummary[]): LaneSu
 function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSummary | null {
   const normalized = reference.trim().toLowerCase();
   if (!normalized) return null;
-  return lanes.find((lane) => lane.id.toLowerCase() === normalized || lane.name.toLowerCase() === normalized)
-    ?? lanes.find((lane) => lane.name.toLowerCase().includes(normalized))
-    ?? null;
+  const exact = lanes.find((lane) => (
+    lane.id.toLowerCase() === normalized || lane.name.toLowerCase() === normalized
+  ));
+  if (exact) return exact;
+  // Only accept partial-name matches when they resolve uniquely. The previous
+  // implementation picked the first `includes()` hit, which could silently
+  // pick the wrong lane (and target the wrong rebase) for `/reparent`.
+  const partialMatches = lanes.filter((lane) => lane.name.toLowerCase().includes(normalized));
+  return partialMatches.length === 1 ? partialMatches[0] ?? null : null;
 }
 
 function seedLaneDetails(
@@ -3178,6 +3184,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           setContextPercent(null);
           setTokenSummary(null);
           setStatusLineStats(null);
+          // The replacement view should not carry stale interrupted state from
+          // a previously-selected chat that we've now lost track of.
+          setInterrupted(false);
           eventCountRef.current = 0;
           loadedSessionIdRef.current = null;
           nextEvents = [];

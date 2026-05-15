@@ -926,6 +926,51 @@ describe("ptyService", () => {
       })).resolves.toBe(`disk\n${overlap} live`);
     });
 
+    it("returns the disk tail when the live entry has been disposed", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      // Dispose the live pty so `liveEntryBySessionId` returns null and the
+      // merge path falls through to disk-only.
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("only on disk\n");
+
+      await expect(service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 20_000,
+        raw: true,
+      })).resolves.toBe("only on disk\n");
+    });
+
+    it("runs the merged tail through stripAnsi when raw is not set", async () => {
+      const { service, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("disk tail");
+      // Reset before the call so we can detect the new invocation specifically.
+      mocks.stripAnsi.mockClear();
+
+      await service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 20_000,
+      });
+
+      // Without raw: true, the service must pass the merged tail through
+      // stripAnsi before returning. The fixture mocks stripAnsi to an identity
+      // function, so we assert by invocation rather than by output content.
+      expect(mocks.stripAnsi).toHaveBeenCalledWith(expect.stringContaining("disk tail"));
+    });
+
     it("stores structured resume metadata for Claude launches", async () => {
       const { service, sessionService } = createHarness();
       await service.create({

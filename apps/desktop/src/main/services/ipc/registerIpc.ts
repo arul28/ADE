@@ -3767,16 +3767,30 @@ export function registerIpc({
   const getCachedProjectDetail = (rootPath: string): Promise<ProjectDetail> => {
     const now = Date.now();
     const cached = projectDetailCache.get(rootPath);
-    if (cached && cached.expiresAtMs > now) return cached.promise;
+    // Cache hit when either the TTL is still valid (resolved entry) or the
+    // entry is still in flight (sentinel = Infinity). Without the in-flight
+    // arm, a slow `getProjectDetail` call can blow the start-time TTL while
+    // still pending, causing duplicate concurrent fetches for the same root.
+    if (cached && (cached.expiresAtMs > now || cached.expiresAtMs === Number.POSITIVE_INFINITY)) {
+      return cached.promise;
+    }
     const promise = getProjectDetail(rootPath, { globalStatePath });
     projectDetailCache.set(rootPath, {
-      expiresAtMs: now + PROJECT_DETAIL_CACHE_TTL_MS,
+      // Keep pending requests deduped; the TTL only starts once the promise
+      // settles successfully.
+      expiresAtMs: Number.POSITIVE_INFINITY,
       promise,
     });
     if (projectDetailCache.size > 64) {
       const oldestKey = projectDetailCache.keys().next().value;
       if (typeof oldestKey === "string") projectDetailCache.delete(oldestKey);
     }
+    promise.then(() => {
+      const current = projectDetailCache.get(rootPath);
+      if (current?.promise === promise) {
+        current.expiresAtMs = Date.now() + PROJECT_DETAIL_CACHE_TTL_MS;
+      }
+    });
     promise.catch(() => {
       if (projectDetailCache.get(rootPath)?.promise === promise) {
         projectDetailCache.delete(rootPath);

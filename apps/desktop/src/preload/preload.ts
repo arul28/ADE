@@ -2642,16 +2642,23 @@ contextBridge.exposeInMainWorld("ade", {
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
-    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> =>
-      clearAround(
+    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {
+      // `clearAround` runs its cleanup callback both before AND after the
+      // action. Nulling the binding inside that callback meant a successful
+      // open clobbered the freshly-published binding (set by the
+      // appProjectBindingChanged listener) and disabled runtime routing /
+      // event pumping until another refresh restored it. Null once up front;
+      // the listener handles the post-action update.
+      rememberProjectBinding(null);
+      return clearAround(
         () => {
-          rememberProjectBinding(null);
           clearProjectScopedReadCaches();
         },
         () => runProjectRuntimeTransition(() =>
           ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
         ),
-      ),
+      );
+    },
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
@@ -2714,16 +2721,20 @@ contextBridge.exposeInMainWorld("ade", {
           ipcRenderer.invoke(IPC.projectCloseCurrent),
         ),
       ),
-    switchToPath: async (rootPath: string): Promise<ProjectInfo> =>
-      clearAround(
+    switchToPath: async (rootPath: string): Promise<ProjectInfo> => {
+      // See openRepo above: `clearAround` runs cleanup twice, so nulling the
+      // binding inside it would clobber the new one set by the
+      // appProjectBindingChanged listener.
+      rememberProjectBinding(null);
+      return clearAround(
         () => {
-          rememberProjectBinding(null);
           clearProjectScopedReadCaches();
         },
         () => runProjectRuntimeTransition(() =>
           ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
         ),
-      ),
+      );
+    },
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     reorderRecent: async (

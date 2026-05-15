@@ -16,6 +16,12 @@ struct PRsTabView: View {
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
   @State private var githubExternalHistoryLoaded = false
+  // Set synchronously on the @MainActor before any awaited fetch so concurrent
+  // callers (the `onChange` filter handler and the projection-reload `task`)
+  // do not both pass the `!githubExternalHistoryLoaded` guard and issue
+  // duplicate `fetchGitHubPullRequestSnapshot(includeExternalClosed: true)`
+  // requests.
+  @State private var isLoadingExternalHistory = false
   @State private var errorMessage: String?
   @State private var actionMessage: String?
   @State private var busyAction: String?
@@ -1185,22 +1191,31 @@ struct PRsTabView: View {
       if shouldAttemptLiveSnapshots {
         lastPrsLiveSnapshotAttempt = now
         let includeExternalClosed = githubSnapshotShouldIncludeExternalClosed
+        // If `loadGitHubExternalHistoryIfNeeded` is already fetching external
+        // history, skip the external-closed arm here so we don't issue a
+        // duplicate concurrent request. The other task will populate the
+        // snapshot.
+        let suppressExternalClosed = includeExternalClosed && isLoadingExternalHistory
+        let effectiveIncludeExternalClosed = includeExternalClosed && !suppressExternalClosed
+        let markLoadingExternal = effectiveIncludeExternalClosed
+        if markLoadingExternal { isLoadingExternalHistory = true }
         let mobileSnapshotTask = Task { try? await syncService.fetchPrMobileSnapshot() }
         let githubSnapshotTask = Task {
           try? await syncService.fetchGitHubPullRequestSnapshot(
             force: refreshRemote,
-            includeExternalClosed: includeExternalClosed
+            includeExternalClosed: effectiveIncludeExternalClosed
           )
         }
         nextMobileSnapshot = await mobileSnapshotTask.value
         if let nextGithubSnapshot = await githubSnapshotTask.value {
-          if includeExternalClosed {
+          if effectiveIncludeExternalClosed {
             githubExternalHistoryLoaded = true
           }
           if githubSnapshot != nextGithubSnapshot {
             githubSnapshot = nextGithubSnapshot
           }
         }
+        if markLoadingExternal { isLoadingExternalHistory = false }
       }
 
       if !isLive {
@@ -1211,6 +1226,7 @@ struct PRsTabView: View {
           githubSnapshot = nil
         }
         githubExternalHistoryLoaded = false
+        isLoadingExternalHistory = false
       }
       if let nextMobileSnapshot {
         if mobileSnapshot != nextMobileSnapshot {
@@ -1259,6 +1275,12 @@ struct PRsTabView: View {
   @MainActor
   private func loadGitHubExternalHistoryIfNeeded() async {
     guard isLive, githubSnapshotNeedsExternalHistory, !githubExternalHistoryLoaded else { return }
+    // Atomic guard against concurrent fetches: the filter `onChange` and the
+    // projection-reload `task` can race here. Setting this synchronously
+    // before the first await ensures only one fetch is in flight at a time.
+    if isLoadingExternalHistory { return }
+    isLoadingExternalHistory = true
+    defer { isLoadingExternalHistory = false }
     if let nextGithubSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(includeExternalClosed: true) {
       githubExternalHistoryLoaded = true
       if githubSnapshot != nextGithubSnapshot {
