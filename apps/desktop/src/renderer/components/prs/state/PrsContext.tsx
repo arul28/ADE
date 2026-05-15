@@ -1193,6 +1193,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
           setDetailBusy(false);
         })
         .finally(() => {
+          if (cancelled) return;
           markPrimarySettled(fulfilled);
         });
     };
