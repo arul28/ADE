@@ -2315,4 +2315,64 @@ describe("preload OAuth bridge", () => {
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
   });
+
+  it("falls through read-only chat actions to IPC while a project switch is in flight", async () => {
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const listResult = [{ id: "summary-1" }];
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.projectSwitchToPath) {
+        return switchPromise;
+      }
+      if (channel === IPC.agentChatList) {
+        return listResult;
+      }
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/old", displayName: "Old", baseRef: "main" },
+          binding: {
+            kind: "local",
+            key: "local:/old",
+            rootPath: "/old",
+            displayName: "Old",
+          },
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+    // Read-only chat call must fall through to the IPC-backed read API
+    // instead of rejecting because a project transition is in flight.
+    await expect(
+      bridge.agentChat.list({ laneId: "lane-1" }),
+    ).resolves.toEqual(listResult);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.agentChatList, { laneId: "lane-1" });
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
 });

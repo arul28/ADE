@@ -1206,14 +1206,52 @@ async function callLocalProjectActionStrictIfBound<T>(
   return { handled: true, result: response.result as T };
 }
 
+// Chat actions that mutate runtime state. Only these are gated by the
+// project-transition guard: read-only chat queries (e.g. `listSessions`,
+// `getSessionSummary`, `getAvailableModels`, `getChatEventHistory`) must be
+// allowed to fall through to IPC while a project switch is in flight, so the
+// UI can render summaries and history during the transition.
+const MUTATING_CHAT_ACTIONS = new Set<string>([
+  "sendMessage",
+  "respondToInput",
+  "approveToolUse",
+  "interrupt",
+  "steer",
+  "cancelSteer",
+  "editSteer",
+  "dispatchSteer",
+  "cancelDispatchedSteer",
+  "createSession",
+  "archiveSession",
+  "unarchiveSession",
+  "deleteSession",
+  "updateSession",
+  "handoffSession",
+  "setClaudeOutputStyle",
+  "reloadClaudePlugins",
+  "setParallelLaunchState",
+  "ensureCtoSession",
+  "ensureAgentIdentitySession",
+  "warmupModel",
+  "rewindFiles",
+  "saveTempAttachment",
+]);
+
 async function callProjectRuntimeActionIfBound<T>(
   domain: string,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   const freshBinding = domain === "chat";
-  if (freshBinding && projectRuntimeTransitionDepth > 0) {
+  const isMutatingChatAction =
+    freshBinding && MUTATING_CHAT_ACTIONS.has(action);
+  if (isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
     throw new Error("Project is switching. Wait for the current project to finish loading before sending chat messages.");
+  }
+  // During a project transition, let read-only chat calls fall through to
+  // their IPC fallback instead of binding to a possibly-stale runtime.
+  if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
+    return { handled: false };
   }
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
