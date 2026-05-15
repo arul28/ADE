@@ -45,6 +45,7 @@ import { useAppStore, THEME_IDS, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT
 function resetStore() {
   useAppStore.setState({
     project: null,
+    projectBinding: null,
     projectHydrated: false,
     showWelcome: true,
     projectTransition: null,
@@ -739,6 +740,14 @@ describe("appStore", () => {
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
       (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
+      useAppStore.setState({
+        projectBinding: {
+          kind: "local",
+          key: "local:/tmp/old",
+          rootPath: "/tmp/old",
+          displayName: "Old",
+        },
+      } as any);
 
       const pending = useAppStore.getState().switchProjectToPath("/tmp/next");
       expect(useAppStore.getState().projectTransition).toEqual(
@@ -747,6 +756,7 @@ describe("appStore", () => {
           rootPath: "/tmp/next",
         }),
       );
+      expect(useAppStore.getState().projectBinding).toBeNull();
 
       await pending;
 

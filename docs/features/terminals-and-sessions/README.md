@@ -38,9 +38,12 @@ desktop fallback IPC path.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
   transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
-  state, AI auto-titles, tool-type routing, continuation-target backfill, and
+  state, AI auto-titles, tool-type routing, continuation-target backfill,
   session-id based write/resize entry points used by mobile sync
-  terminal control. ~1,500 lines. Branch rewrite.
+  terminal control, and `readTranscriptTail({ sessionId, ... })`, which
+  merges the on-disk transcript tail with the live PTY output tail so
+  Work/TUI terminal hydration can replay output that is still buffered
+  in the transcript write stream. ~1,500 lines. Branch rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -121,8 +124,9 @@ IPC registration:
   `ptyWrite`, `ptyResize`, `ptyDispose`, the `processes.*` handlers,
   and the chat-scoped `terminalList` / `terminalRead` /
   `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
-  handlers (which delegate to the new `ptyService` chat-terminal
-  helpers).
+  handlers. `terminalRead` delegates transcript-tail reads to
+  `ptyService` so chat-owned terminal drawers and `ade code` get the
+  same live-tail merge as the Work tab.
 
 Renderer surfaces:
 

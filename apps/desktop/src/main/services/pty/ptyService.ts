@@ -96,6 +96,7 @@ const PTY_DATA_BATCH_INTERVAL_MS = 16;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const DEFAULT_TERMINAL_READ_MAX_BYTES = 220_000;
+const LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS = 2_000_000;
 const TERMINAL_SNAPSHOT_DEBOUNCE_MS = 500;
 const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
@@ -329,6 +330,7 @@ type PtyEntry = {
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
   terminalSnapshot: TerminalSnapshotMirror | null;
+  recentOutputTail: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
@@ -395,6 +397,47 @@ function statusFromExit(exitCode: number | null): TerminalSessionStatus {
   if (exitCode === 0) return "completed";
   if (exitCode === 130 || exitCode === 143) return "disposed";
   return "failed";
+}
+
+function tailString(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return value.slice(value.length - maxChars);
+}
+
+function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
+  if (!left.length || !right.length) return 0;
+  const cap = Math.min(maxChars, left.length, right.length);
+  if (cap <= 0) return 0;
+
+  const rightHead = right.slice(0, cap);
+  const leftTail = left.slice(left.length - cap);
+  const prefixLengths = new Array<number>(rightHead.length).fill(0);
+  for (let index = 1, matched = 0; index < rightHead.length; index += 1) {
+    while (matched > 0 && rightHead[index] !== rightHead[matched]) {
+      matched = prefixLengths[matched - 1] ?? 0;
+    }
+    if (rightHead[index] === rightHead[matched]) matched += 1;
+    prefixLengths[index] = matched;
+  }
+
+  let matched = 0;
+  for (let index = 0; index < leftTail.length; index += 1) {
+    while (matched > 0 && leftTail[index] !== rightHead[matched]) {
+      matched = prefixLengths[matched - 1] ?? 0;
+    }
+    if (leftTail[index] === rightHead[matched]) matched += 1;
+    if (matched === rightHead.length && index < leftTail.length - 1) {
+      matched = prefixLengths[matched - 1] ?? 0;
+    }
+  }
+  return matched;
+}
+
+function mergeTranscriptTailWithLiveOutput(transcriptTail: string, liveOutputTail: string, maxChars: number): string {
+  if (!liveOutputTail) return tailString(transcriptTail, maxChars);
+  if (!transcriptTail) return tailString(liveOutputTail, maxChars);
+  const overlap = computeSuffixPrefixOverlap(transcriptTail, liveOutputTail, maxChars);
+  return tailString(`${transcriptTail}${liveOutputTail.slice(overlap)}`, maxChars);
 }
 
 function runtimeFromStatus(status: TerminalSessionStatus): TerminalRuntimeState {
@@ -1965,6 +2008,11 @@ export function createPtyService({
     clearToolAutoCloseTimer(ptyId);
     cleanupEntryPaths(entry);
     flushPreview(entry);
+    // Release the live-tail buffer (up to LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS
+    // per session). Disposed entries linger in the `ptys` map for replacement
+    // lookups; without this, every ended terminal would keep its 2 MB tail
+    // pinned indefinitely.
+    entry.recentOutputTail = "";
 
     const endedAt = new Date().toISOString();
     const status = statusFromExit(exitCode);
@@ -2045,6 +2093,11 @@ export function createPtyService({
     } catch {
       // ignore
     }
+  };
+
+  const appendRecentOutput = (entry: PtyEntry, data: string) => {
+    if (!data) return;
+    entry.recentOutputTail = tailString(`${entry.recentOutputTail}${data}`, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
   };
 
   const flushPreview = (entry: PtyEntry) => {
@@ -2549,6 +2602,7 @@ export function createPtyService({
         pendingDataChars: 0,
         pendingDataTimer: null,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
+        recentOutputTail: "",
         aiTitleTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
@@ -2573,6 +2627,7 @@ export function createPtyService({
         // emit ptyData after ptyExit while transcript summarization is in
         // flight.
         if (entry.disposed) return;
+        appendRecentOutput(entry, data);
         writeTranscript(entry, data);
         feedTerminalSnapshot(entry, data);
         updatePreviewThrottled(entry, data);
@@ -3171,6 +3226,31 @@ export function createPtyService({
       return computeRuntimeState(sessionId, fallbackStatus);
     },
 
+    async readTranscriptTail(args: {
+      sessionId: string;
+      maxBytes: number;
+      raw?: boolean;
+      alignToLineBoundary?: boolean;
+    }): Promise<string> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return "";
+      const session = sessionService.get(sessionId);
+      if (!session) return "";
+      const maxBytes = Number.isFinite(args.maxBytes)
+        ? Math.max(1024, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
+        : DEFAULT_TERMINAL_READ_MAX_BYTES;
+      const diskTail = await sessionService.readTranscriptTail(session.transcriptPath, maxBytes, {
+        raw: true,
+        alignToLineBoundary: args.alignToLineBoundary,
+      });
+      // A Work terminal can mount after the CLI has already drawn its first TUI
+      // frame, while the transcript WriteStream is still buffered. Merge the
+      // live tail so hydration can replay that initial screen state.
+      const live = liveEntryBySessionId(sessionId)?.[1].recentOutputTail ?? "";
+      const merged = mergeTranscriptTailWithLiveOutput(diskTail, live, maxBytes);
+      return args.raw ? merged : stripAnsi(merged);
+    },
+
     enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {
       return rows.map((row) => {
         const live = liveEntryBySessionId(row.id);
@@ -3239,6 +3319,8 @@ export function createPtyService({
       clearToolAutoCloseTimer(ptyId);
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
       cleanupEntryPaths(entry);
+      // Release the live-tail buffer; see closeEntry for rationale.
+      entry.recentOutputTail = "";
       try {
         entry.pty.kill();
       } catch {

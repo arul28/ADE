@@ -247,7 +247,7 @@ import type {
   AgentChatCreateArgs,
   AgentChatDeleteArgs,
   AgentChatGetSummaryArgs,
-  AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
@@ -3759,12 +3759,52 @@ export function registerIpc({
       browseProjectDirectories(args)
   );
 
+  const PROJECT_DETAIL_CACHE_TTL_MS = 10_000;
+  const projectDetailCache = new Map<string, {
+    expiresAtMs: number;
+    promise: Promise<ProjectDetail>;
+  }>();
+  const getCachedProjectDetail = (rootPath: string): Promise<ProjectDetail> => {
+    const now = Date.now();
+    const cached = projectDetailCache.get(rootPath);
+    // Cache hit when either the TTL is still valid (resolved entry) or the
+    // entry is still in flight (sentinel = Infinity). Without the in-flight
+    // arm, a slow `getProjectDetail` call can blow the start-time TTL while
+    // still pending, causing duplicate concurrent fetches for the same root.
+    if (cached && (cached.expiresAtMs > now || cached.expiresAtMs === Number.POSITIVE_INFINITY)) {
+      return cached.promise;
+    }
+    const promise = getProjectDetail(rootPath, { globalStatePath });
+    projectDetailCache.set(rootPath, {
+      // Keep pending requests deduped; the TTL only starts once the promise
+      // settles successfully.
+      expiresAtMs: Number.POSITIVE_INFINITY,
+      promise,
+    });
+    if (projectDetailCache.size > 64) {
+      const oldestKey = projectDetailCache.keys().next().value;
+      if (typeof oldestKey === "string") projectDetailCache.delete(oldestKey);
+    }
+    promise.then(() => {
+      const current = projectDetailCache.get(rootPath);
+      if (current?.promise === promise) {
+        current.expiresAtMs = Date.now() + PROJECT_DETAIL_CACHE_TTL_MS;
+      }
+    });
+    promise.catch(() => {
+      if (projectDetailCache.get(rootPath)?.promise === promise) {
+        projectDetailCache.delete(rootPath);
+      }
+    });
+    return promise;
+  };
+
   ipcMain.handle(
     IPC.projectGetDetail,
     async (_event, args: { rootPath: string }): Promise<ProjectDetail> => {
       const rootPath = typeof args?.rootPath === "string" ? args.rootPath.trim() : "";
       if (!rootPath) throw new Error("rootPath is required");
-      return getProjectDetail(rootPath, { globalStatePath });
+      return getCachedProjectDetail(rootPath);
     }
   );
 
@@ -3910,10 +3950,47 @@ export function registerIpc({
     return { deletedPaths, clearedAt };
   });
 
-  ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> => {
+  const RECENT_PROJECT_SUMMARY_CACHE_TTL_MS = 5_000;
+  let recentProjectSummaryCache: {
+    signature: string;
+    rows: RecentProjectSummary[];
+    expiresAtMs: number;
+  } | null = null;
+  const recentProjectSignature = (
+    entries: Array<{ rootPath: string; displayName: string; lastOpenedAt: string }>,
+  ): string => JSON.stringify(entries.map((entry) => [
+    entry.rootPath,
+    entry.displayName,
+    entry.lastOpenedAt,
+  ]));
+  const listRecentProjectSummaries = (options?: { force?: boolean }): RecentProjectSummary[] => {
     const state = readGlobalState(globalStatePath);
-    return (state.recentProjects ?? []).map(toRecentProjectSummary);
-  });
+    const entries = state.recentProjects ?? [];
+    const signature = recentProjectSignature(entries);
+    const now = Date.now();
+    if (
+      !options?.force
+      && recentProjectSummaryCache
+      && recentProjectSummaryCache.signature === signature
+      && recentProjectSummaryCache.expiresAtMs > now
+    ) {
+      return recentProjectSummaryCache.rows;
+    }
+    const rows = entries.map(toRecentProjectSummary);
+    recentProjectSummaryCache = {
+      signature,
+      rows,
+      expiresAtMs: now + RECENT_PROJECT_SUMMARY_CACHE_TTL_MS,
+    };
+    return rows;
+  };
+  const clearRecentProjectSummaryCache = (): void => {
+    recentProjectSummaryCache = null;
+  };
+
+  ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
+    listRecentProjectSummaries()
+  );
 
   registerRuntimeBridge({
     appVersion: app.getVersion(),
@@ -3968,10 +4045,8 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.projectGetDefaultParentDir, async (): Promise<string> => {
-    const state = readGlobalState(globalStatePath);
-    const recents = (state.recentProjects ?? []).map(toRecentProjectSummary);
     const ctx = getCtx();
-    return ctx.projectScaffoldService.getDefaultParentDir(recents);
+    return ctx.projectScaffoldService.getDefaultParentDir(listRecentProjectSummaries());
   });
 
   ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
@@ -3982,7 +4057,7 @@ export function registerIpc({
     const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
     const state = readGlobalState(globalStatePath);
     if (!rootPath) {
-      return (state.recentProjects ?? []).map(toRecentProjectSummary);
+      return listRecentProjectSummaries();
     }
     const filtered = (state.recentProjects ?? []).filter((entry) => entry.rootPath !== rootPath);
     const next = { ...state, recentProjects: filtered };
@@ -3990,24 +4065,25 @@ export function registerIpc({
       delete next.lastProjectRoot;
     }
     writeGlobalState(globalStatePath, next);
+    clearRecentProjectSummaryCache();
     try {
       await closeProjectByPath(rootPath);
     } catch {
       // Best effort; forgetting a project should still update recents even if teardown fails.
     }
-    return filtered.map(toRecentProjectSummary);
+    return listRecentProjectSummaries({ force: true });
   });
 
   ipcMain.handle(IPC.projectReorderRecent, async (_event, arg: { orderedPaths: string[] }): Promise<RecentProjectSummary[]> => {
     const orderedPaths = Array.isArray(arg?.orderedPaths) ? arg.orderedPaths.filter((p): p is string => typeof p === "string" && p.length > 0) : [];
     if (orderedPaths.length === 0) {
-      const state = readGlobalState(globalStatePath);
-      return (state.recentProjects ?? []).map(toRecentProjectSummary);
+      return listRecentProjectSummaries();
     }
     const state = readGlobalState(globalStatePath);
     const next = reorderRecentProjects(state, orderedPaths);
     writeGlobalState(globalStatePath, next);
-    return (next.recentProjects ?? []).map(toRecentProjectSummary);
+    clearRecentProjectSummaryCache();
+    return listRecentProjectSummaries({ force: true });
   });
 
   ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
@@ -6501,9 +6577,11 @@ export function registerIpc({
     if (!session) return "";
     const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(2_000_000, arg.maxBytes)) : 160_000;
     const raw = arg.raw === true;
-    return ctx.sessionService.readTranscriptTail(session.transcriptPath, maxBytes, {
+    return ctx.ptyService.readTranscriptTail({
+      sessionId: session.id,
+      maxBytes,
       raw,
-      alignToLineBoundary: raw
+      alignToLineBoundary: raw,
     });
   });
 
@@ -6752,10 +6830,10 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetEventHistory, async (
     _event,
     arg: { sessionId?: string; maxEvents?: number },
-  ): Promise<{ sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean }> => {
+  ): Promise<AgentChatEventHistorySnapshot> => {
     const ctx = getCtx();
     const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
-    if (!sessionId) return { sessionId: "", events: [], truncated: false };
+    if (!sessionId) return { sessionId: "", events: [], truncated: false, sessionFound: false };
     // Only forward maxEvents when it is a finite positive number; the service
     // layer applies its own clamp but guarding here avoids ambiguous NaN/0
     // inputs from untrusted renderer IPC.

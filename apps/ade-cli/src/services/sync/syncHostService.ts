@@ -2830,11 +2830,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.subscribedSessionIds.add(sessionId);
         const session = args.sessionService.get(sessionId);
         const transcript = session
-          ? await args.sessionService.readTranscriptTail(
-              session.transcriptPath,
-              Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES))),
-              { raw: true, alignToLineBoundary: true },
-            )
+          ? await args.ptyService.readTranscriptTail({
+              sessionId,
+              maxBytes: Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES))),
+              raw: true,
+              alignToLineBoundary: true,
+            })
           : "";
         const snapshot: SyncTerminalSnapshotPayload = {
           sessionId,

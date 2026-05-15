@@ -882,6 +882,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes unarchive <lane>                    Restore an archived lane
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
+    $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
+    $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
+                                                    Reparent and stack onto a specific branch (e.g. origin/main)
     $ ade lanes actions --text                      List callable lane service methods
 `,
   git: `${ADE_BANNER}
@@ -947,6 +950,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs github-snapshot --include-external-closed
+                                                    Include closed external PR history in the GitHub snapshot
     $ ade prs inventory <pr>                        Refresh ADE issue inventory
     $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
     $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
@@ -2478,6 +2483,23 @@ function buildLanePlan(args: string[]): CliPlan {
       readLaneId(args) ?? firstPositional(args),
       "laneId",
     );
+    const reparentArgs: JsonObject = {
+      laneId,
+      newParentLaneId:
+        readValue(args, [
+          "--parent",
+          "--parent-lane",
+          "--parent-lane-id",
+        ]) ?? firstPositional(args),
+    };
+    const stackBaseBranchRef = readValue(args, [
+      "--stack-base-branch",
+      "--stack-base",
+      "--base-branch-ref",
+    ]);
+    if (stackBaseBranchRef != null) {
+      reparentArgs.stackBaseBranchRef = stackBaseBranchRef;
+    }
     return {
       kind: "execute",
       label: "lane reparent",
@@ -2486,15 +2508,7 @@ function buildLanePlan(args: string[]): CliPlan {
           "result",
           "lane",
           "reparent",
-          collectGenericObjectArgs(args, {
-            laneId,
-            newParentLaneId:
-              readValue(args, [
-                "--parent",
-                "--parent-lane",
-                "--parent-lane-id",
-              ]) ?? firstPositional(args),
-          }),
+          collectGenericObjectArgs(args, reparentArgs),
         ),
       ],
     };
@@ -3628,7 +3642,13 @@ function buildPrPlan(args: string[]): CliPlan {
       label: "PR mobile snapshot",
       steps: [actionArgsListStep("result", "pr", "getMobileSnapshot", [])],
     };
-  if (sub === "github-snapshot")
+  if (sub === "github-snapshot") {
+    const snapshotArgs: JsonObject = {
+      force: readFlag(args, ["--force"]),
+    };
+    if (readFlag(args, ["--include-external-closed", "--include-closed-external"])) {
+      snapshotArgs.includeExternalClosed = true;
+    }
     return {
       kind: "execute",
       label: "PR GitHub snapshot",
@@ -3637,12 +3657,11 @@ function buildPrPlan(args: string[]): CliPlan {
           "result",
           "pr",
           "getGithubSnapshot",
-          collectGenericObjectArgs(args, {
-            force: readFlag(args, ["--force"]),
-          }),
+          collectGenericObjectArgs(args, snapshotArgs),
         ),
       ],
     };
+  }
   if (sub === "conflicts") {
     const mode = firstPositional(args) ?? "list";
     if (mode === "list")
@@ -8312,6 +8331,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--backend",
   "--base",
   "--base-branch",
+  "--base-branch-ref",
   "--base-ref",
   "--body",
   "--branch",
@@ -8449,6 +8469,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--source",
   "--source-lane",
   "--stack",
+  "--stack-base",
+  "--stack-base-branch",
   "--stack-id",
   "--scheme",
   "--start-point",

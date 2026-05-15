@@ -252,6 +252,12 @@ export type RenameLaneArgs = {
 export type ReparentLaneArgs = {
   laneId: string;
   newParentLaneId: string;
+  /**
+   * Git branch name to stack onto (resolved in the project repo, prefers `origin/<branch>`).
+   * When omitted, uses the new parent lane's current branch, or for the primary lane the same
+   * upstream / origin resolution as graph reparent.
+   */
+  stackBaseBranchRef?: string | null;
 };
 
 export type ReparentLaneResult = {

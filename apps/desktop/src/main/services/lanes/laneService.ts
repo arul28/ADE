@@ -3361,7 +3361,7 @@ export function createLaneService({
       return run ? cloneRebaseRun(run) : null;
     },
 
-    async reparent({ laneId, newParentLaneId }: ReparentLaneArgs): Promise<ReparentLaneResult> {
+    async reparent({ laneId, newParentLaneId, stackBaseBranchRef }: ReparentLaneArgs): Promise<ReparentLaneResult> {
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       if (lane.lane_type === "primary") throw new Error("Primary lane cannot be reparented");
@@ -3378,11 +3378,26 @@ export function createLaneService({
 
       const previousParentLaneId = lane.parent_lane_id;
       const previousBaseRef = lane.base_ref;
-      const newBaseRef = newParent.branch_ref;
       const persistedParentLaneId = newParent.lane_type === "primary" ? null : newParent.id;
-      const preHeadSha = await getHeadSha(lane.worktree_path);
-      const newParentTarget = await resolveParentRebaseTarget({ projectRoot, parent: newParent });
+      const stackBaseOverride = stackBaseBranchRef ? normalizeBranchName(stackBaseBranchRef).trim() : "";
+      const newBaseRef = stackBaseOverride || newParent.branch_ref;
+      if (lane.parent_lane_id === persistedParentLaneId && newBaseRef === previousBaseRef) {
+        const headSha = await getHeadSha(lane.worktree_path);
+        return {
+          laneId: lane.id,
+          previousParentLaneId,
+          newParentLaneId: newParent.id,
+          previousBaseRef,
+          newBaseRef: previousBaseRef,
+          preHeadSha: headSha,
+          postHeadSha: headSha,
+        };
+      }
+      const newParentTarget = stackBaseOverride
+        ? await resolveBranchRebaseTarget({ projectRoot, branchRef: stackBaseOverride, preferRemote: true })
+        : await resolveParentRebaseTarget({ projectRoot, parent: newParent });
       const newParentHead = newParentTarget.headSha;
+      const preHeadSha = await getHeadSha(lane.worktree_path);
 
       const operation = operationService?.start({
         laneId: lane.id,
@@ -3401,6 +3416,11 @@ export function createLaneService({
         "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
         [persistedParentLaneId, newBaseRef, lane.id, projectId]
       );
+      upsertBranchProfileForRow(lane, {
+        branchRef: lane.branch_ref,
+        baseRef: newBaseRef,
+        parentLaneId: persistedParentLaneId,
+      });
       invalidateLaneListCache();
 
       try {
@@ -3415,6 +3435,11 @@ export function createLaneService({
           "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
           [previousParentLaneId, previousBaseRef, lane.id, projectId]
         );
+        upsertBranchProfileForRow(lane, {
+          branchRef: lane.branch_ref,
+          baseRef: previousBaseRef,
+          parentLaneId: previousParentLaneId,
+        });
         invalidateLaneListCache();
         const message = error instanceof Error ? error.message : String(error);
         if (operation?.operationId) {

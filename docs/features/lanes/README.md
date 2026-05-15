@@ -59,7 +59,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
-| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. |
+| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths (Phase 5 W1) |
@@ -89,13 +89,14 @@ Renderer components:
 | `renderer/components/lanes/LaneWorkPane.tsx` | Terminal/chat toggle work surface |
 | `renderer/components/lanes/LaneRebaseBanner.tsx` | Inline banner driven by `rebaseSuggestionService` |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
-| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome. The "import existing branch" path inside `CreateLaneDialog` swaps the dialog body for `BranchPickerView` when the user opens the picker; the "Connect Linear issue" affordance in the always-open Advanced section swaps it for `LinearIssuePickerView`. The dialog title/description/icon switch in lockstep with the active sub-view, and connecting a Linear issue auto-flips the create mode out of `existing` (the import-branch tab is locked while an issue is attached). |
+| `renderer/components/lanes/CreateLaneDialog.tsx`, `AttachLaneDialog.tsx`, `MultiAttachWorktreeDialog.tsx`, `LaneDialogShell.tsx` | Lane creation / attach dialogs and shared dialog chrome. `LaneDialogShell` is viewport-centered (`top-1/2 -translate-y-1/2`), capped at `min(92dvh, calc(100vh-1rem))`, and renders a sticky header strip plus a single scrollable body — every lane modal (create, attach, multi-attach, manage) inherits this layout so long content scrolls instead of overflowing the dialog. The "import existing branch" path inside `CreateLaneDialog` swaps the dialog body for `BranchPickerView` when the user opens the picker; the "Connect Linear issue" affordance in the always-open Advanced section swaps it for `LinearIssuePickerView`. The dialog title/description/icon switch in lockstep with the active sub-view, and connecting a Linear issue auto-flips the create mode out of `existing` (the import-branch tab is locked while an issue is attached). |
+| `renderer/components/lanes/laneDialogTokens.ts` | Shared Tailwind class-name tokens for lane dialog sections: `SECTION_CLASS_NAME` (neutral), `SECTION_ACCENT_CLASS_NAME` (accent wash used by stack/integration callouts like the Stack position panel), `SECTION_HERO_CLASS_NAME` (the hero strip at the top of Manage Lane), `LABEL_CLASS_NAME`, `INPUT_CLASS_NAME`, `SELECT_CLASS_NAME`. |
 | `renderer/components/lanes/BranchPickerView.tsx` | Filterable virtualized branch list rendered inside `CreateLaneDialog`. Each row shows branch name, last-commit author + relative date, and an inline PR pill (`#NNN`, dim for drafts) when the branch has an open PR. Loading/empty/error states are handled inline. Backed by `branchPickerSearch.ts`. |
 | `renderer/components/lanes/branchPickerSearch.ts` | Pure parser + matcher. Tokens AND together: `pr:open` / `pr:none` / `pr:draft`, `author:NAME` (or `author:me` / `mine` resolved against the local git user), `stale:Nd` (older than N days), `#PRNUMBER` (exact match), and free text fuzzy-matched across branch name / PR title / author. Also exposes `formatRelativeTime` for the row subtitle. |
 | `renderer/components/lanes/LinearIssuePicker.tsx` | Filterable Linear issue picker rendered inside `CreateLaneDialog`. Loads project / state / assignee filters from `ade.cto.getLinearIssuePickerData` and pages issues through `ade.cto.searchLinearIssues`. Shared row + label helpers (`LinearIssueRow`, `linearPriorityLabel`, `issueProjectLabel`, `issueUpdatedLabel`, `toLaneLinearIssue`, `branchExistsForLinearIssue`) are reused by `LinearIssueBrowser` (top-bar quick view) and the chat composer's Linear context dialog. Also exports a `LinearIssueSummaryCard` used by the dialog's "currently connected" state. |
 | `renderer/components/lanes/LinearIssueBadge.tsx` | Compact lane-list badge that surfaces the lane's connected Linear issue (identifier + state + priority); clicking opens the issue in a new chat with the issue pre-attached as context, falling back to opening the issue in Linear when chat is unavailable. |
 | `renderer/components/lanes/linearBrand.tsx` | Linear brand tokens (`LINEAR_BRAND` colour palette) plus the icon family used everywhere ADE references Linear: `LinearMark`, `LinearStateIcon`, `LinearPriorityIcon`. |
-| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified delete / archive / adopt-attached dialog. Supports single-lane and batch (multi-select) modes, three delete scopes (`worktree`, `local_branch`, `remote_branch`), a typed confirmation phrase, remote-branch name input, dirty-state warnings, and a live multi-step progress strip wired to `lanes.delete.event` (`stop_processes` / `stop_ptys` / `stop_watchers` / `cancel_auto_rebase` / `cleanup_env` / `git_status` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). Optional branch cleanup steps can finish as warnings, allowing lane-owned worktree/database cleanup to complete while still showing the branch cleanup error inline. The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; running deletes are shown as non-cancellable because teardown runs to completion once started. |
+| `renderer/components/lanes/ManageLaneDialog.tsx` | Unified manage dialog covering stack position, appearance, adopt-attached, archive, and delete in both single-lane and batch (multi-select) modes. Single-lane mode opens with a "What each section does" info panel and a hero lane-info strip; batch mode swaps in a callout explaining that only archive/delete apply to multiple lanes (stack, color, and adopt are single-lane only). The `StackPositionSection` is single-lane and non-primary only: it shows a parent-lane select (filtered to exclude the lane itself and its descendants), an optional base-branch override input, and an inline "Runs git rebase" disclosure. Apply calls `lanes.reparent({ laneId, newParentLaneId, stackBaseBranchRef })`; the button is disabled while the lane is dirty or has a rebase in progress and while nothing has actually changed, and a parent-callback (`onStackReorganized`) refreshes the lane list. Delete still supports the three scopes (`worktree`, `local_branch`, `remote_branch`), the typed confirmation phrase, remote-branch name input, dirty-state warnings, and the live multi-step progress strip wired to `lanes.delete.event` (`git_status` when a worktree exists, then `cancel_auto_rebase` / `stop_processes` / `stop_ptys` / `stop_watchers` / `cleanup_env` / `git_worktree_remove` / `git_branch_delete` / `git_remote_branch_delete` / `pack_dir_remove` / `database_cleanup`). Optional branch cleanup steps can finish as warnings, allowing lane-owned worktree/database cleanup to complete while still showing the branch cleanup error inline. The dialog calls `lanes.getDeleteRisk` on open to surface dirty state, unpushed commits, running processes / PTYs / watchers, and remote-branch existence before the user confirms; running deletes are shown as non-cancellable because teardown runs to completion once started. |
 | `renderer/components/lanes/MonacoDiffView.tsx` | Monaco diff editor used for editable working-tree views (invoked from `AdeDiffViewer`) |
 | `renderer/components/run/LaneRuntimeBar.tsx` | Compact lane runtime status bar (health, preview, port, proxy, oauth) |
 | `renderer/components/run/RunPage.tsx`, `RunNetworkPanel.tsx` | Runtime dashboards that consume lane runtime services |
@@ -138,6 +139,11 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `LaneChatLaunchSheet.swift`, `LaneTreeView.swift`,
   `LaneFileTreeComponents.swift` — mobile detail, git, rebase, diff,
   stash, sync, manage, chat-launch, and file-tree parity surfaces.
+  `LaneManageSheet.swift` mirrors desktop's single-lane Stack position
+  section: parent-lane picker, optional base-branch override, "Runs git
+  rebase" disclosure, dirty/rebase-in-progress guards, and
+  `lanes.reparent` payloads that omit `stackBaseBranchRef` when the
+  override is blank.
   `LaneCommitSheet.swift` is now a "review & commit" sheet: staged
   and unstaged files render with per-file stage / unstage / discard /
   restore / open-diff / open-files affordances, plus a "Suggest"
@@ -275,24 +281,31 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
 5. **Attach** — `attach` links an external worktree path (pre-existing
    outside ADE). `lane_type = 'attached'`.
 6. **Rename / update appearance / reparent** — `rename`, `updateAppearance`,
-   `reparent` edit the lane row. `reparent` refuses to move a lane
-   under one of its own descendants and refuses to reparent the
-   primary lane.
+   `reparent` edit the lane row. `reparent({ laneId, newParentLaneId,
+   stackBaseBranchRef? })` refuses to move a lane under one of its own
+   descendants and refuses to reparent the primary lane. When
+   `stackBaseBranchRef` is supplied the service resolves it in the project
+   repo (preferring `origin/<branch>`) and uses that as the rebase target
+   and persisted base ref; otherwise it falls back to the new parent's
+   current branch. When both the parent link and the resolved base ref are
+   unchanged, reparent short-circuits without touching git so a redundant
+   apply is a no-op rather than a stack rebase.
 7. **Archive** — `archive` sets `archived_at` and `status = 'archived'`
    but keeps the worktree on disk. `unarchive` reverses it.
 8. **Delete** — `delete({ laneId, deleteBranch?, deleteRemoteBranch?,
    remoteBranchName?, force? })` runs an explicit teardown pipeline
    and emits `lanes.delete.event` per step. Steps execute in order:
+   `git_status` (when a worktree exists) → `cancel_auto_rebase` →
    `stop_processes` → `stop_ptys` → `stop_watchers` →
-   `cancel_auto_rebase` → `cleanup_env` → `git_status` →
-   `git_worktree_remove` → `git_branch_delete` (only when
-   `deleteBranch`) → `git_remote_branch_delete` (only when
-   `deleteRemoteBranch`) → `pack_dir_remove` → `database_cleanup`.
+   `cleanup_env` → `git_worktree_remove` (when a worktree exists) →
+   `git_branch_delete` (only when `deleteBranch`) →
+   `git_remote_branch_delete` (only when `deleteRemoteBranch`) →
+   `pack_dir_remove` → `database_cleanup`.
    `getDeleteRisk(laneId)` returns the preflight `LaneDeleteRisk`
    the dialog renders before confirmation. `cancelDelete(laneId)` is
-   honored cooperatively until the first irreversible filesystem step
-   (`git_worktree_remove`) starts; after that the call no-ops with
-   `{ cancelled: false, reason: "uncancellable_step_in_progress" }`.
+   retained for contract compatibility but always returns
+   `{ cancelled: false, reason }`; once a delete starts, teardown runs
+   to completion.
    Teardown depends on optional injected services
    (`processService`, `ptyService`, `autoRebaseService`,
    `rebaseSuggestionService`, `fileWatcherService`); when one is not

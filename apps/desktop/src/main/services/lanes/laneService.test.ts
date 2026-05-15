@@ -2052,6 +2052,151 @@ describe("laneService reparent", () => {
       ["rebase", "sha-origin-main"],
       expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
     );
+    expect(
+      db.get<{ base_ref: string; parent_lane_id: string | null }>(
+        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
+        ["lane-child", "feature/child"],
+      ),
+    ).toEqual({ base_ref: "main", parent_lane_id: null });
+  });
+
+  it("reparents onto stackBaseBranchRef when provided", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-stack-base-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-stack-base", repoRoot });
+
+    let childHeadReads = 0;
+    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
+      if (cwd.endsWith("/child")) {
+        childHeadReads += 1;
+        return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
+      }
+      return "sha-unused";
+    });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/develop") {
+        return { exitCode: 0, stdout: "sha-origin-develop\n", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rebase") {
+        expect(args[1]).toBe("sha-origin-develop");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-stack-base",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.reparent({
+      laneId: "lane-child",
+      newParentLaneId: "lane-main",
+      stackBaseBranchRef: "develop",
+    });
+
+    expect(result.newBaseRef).toBe("develop");
+    expect(result.newParentLaneId).toBe("lane-main");
+    expect(runGitOrThrow).toHaveBeenCalledWith(
+      ["rebase", "sha-origin-develop"],
+      expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
+    );
+    expect(
+      db.get<{ base_ref: string; parent_lane_id: string | null }>(
+        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
+        ["lane-child", "feature/child"],
+      ),
+    ).toEqual({ base_ref: "develop", parent_lane_id: null });
+  });
+
+  it("restores the active branch profile when reparent rebase fails", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-rollback-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-rollback", repoRoot });
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-child");
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (
+        args[0] === "rev-parse"
+        && args[1] === "--abbrev-ref"
+        && args[2] === "--symbolic-full-name"
+        && args[3] === "@{upstream}"
+      ) {
+        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
+      if (args[0] === "rebase" && args[1] === "--abort") {
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "rebase") throw new Error("rebase failed");
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-rollback",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await expect(service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" })).rejects.toThrow("rebase failed");
+    expect(
+      db.get<{ base_ref: string; parent_lane_id: string | null }>(
+        "select base_ref, parent_lane_id from lanes where id = ?",
+        ["lane-child"],
+      ),
+    ).toEqual({ base_ref: "feature/parent", parent_lane_id: "lane-parent" });
+    expect(
+      db.get<{ base_ref: string; parent_lane_id: string | null }>(
+        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
+        ["lane-child", "feature/child"],
+      ),
+    ).toEqual({ base_ref: "feature/parent", parent_lane_id: "lane-parent" });
+  });
+
+  it("skips git rebase when parent and base ref are unchanged", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-noop-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-reparent-noop", repoRoot });
+
+    vi.mocked(getHeadSha).mockResolvedValue("sha-stable");
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockReset();
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-reparent-noop",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-parent" });
+
+    expect(runGitOrThrow).not.toHaveBeenCalled();
   });
 });
 

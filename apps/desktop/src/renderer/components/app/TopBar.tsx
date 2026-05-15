@@ -650,6 +650,8 @@ export function TopBar() {
   const [openRemoteProjectTabs, setOpenRemoteProjectTabs] = useState<
     RemoteProjectTab[]
   >([]);
+  const openProjectTabRootsRef = useRef(openProjectTabRoots);
+  const openRemoteProjectTabsRef = useRef(openRemoteProjectTabs);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dropIdx, setDropIdx] = useState<number | null>(null);
   const [windowId, setWindowId] = useState<number | null>(null);
@@ -692,6 +694,14 @@ export function TopBar() {
   const remoteButtonLabel =
     connectedRemoteCount > 0 ? `Remote ${connectedRemoteCount}` : "Remote";
   const showSyncControl = workspaceProjectOpen;
+
+  useEffect(() => {
+    openProjectTabRootsRef.current = openProjectTabRoots;
+  }, [openProjectTabRoots]);
+
+  useEffect(() => {
+    openRemoteProjectTabsRef.current = openRemoteProjectTabs;
+  }, [openRemoteProjectTabs]);
 
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
@@ -1045,39 +1055,45 @@ export function TopBar() {
         const shouldClose = await checkForActiveWorkloads(rootPath);
         if (!shouldClose) return;
 
-        const currentIndex = openProjectTabRoots.indexOf(rootPath);
-        const nextTabRoots = openProjectTabRoots.filter(
+        const latestTabRoots = openProjectTabRootsRef.current;
+        const currentIndex = latestTabRoots.indexOf(rootPath);
+        if (currentIndex === -1) return;
+        const nextTabRoots = latestTabRoots.filter(
           (entry) => entry !== rootPath,
         );
-        setOpenProjectTabRoots(nextTabRoots);
-        if (!remoteBinding && project?.rootPath === rootPath) {
+        openProjectTabRootsRef.current = nextTabRoots;
+        setOpenProjectTabRoots((prev) =>
+          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
+        );
+
+        const latestState = useAppStore.getState();
+        const latestProjectRoot = latestState.project?.rootPath ?? null;
+        const latestRemoteBinding =
+          latestState.projectBinding?.kind === "remote"
+            ? latestState.projectBinding
+            : null;
+        const latestRemoteTabs = openRemoteProjectTabsRef.current;
+        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
           const nextRoot =
             nextTabRoots[currentIndex] ??
             nextTabRoots[currentIndex - 1] ??
             null;
           if (nextRoot) {
-            switchProjectToPath(nextRoot).catch(() => {});
-          } else if (openRemoteProjectTabs[0]) {
-            switchRemoteProject(
-              openRemoteProjectTabs[0].targetId,
-              openRemoteProjectTabs[0].projectId,
+            latestState.switchProjectToPath(nextRoot).catch(() => {});
+          } else if (latestRemoteTabs[0]) {
+            latestState.switchRemoteProject(
+              latestRemoteTabs[0].targetId,
+              latestRemoteTabs[0].projectId,
             ).catch(() => {});
           } else {
-            closeProject().catch(() => {});
+            latestState.closeProject().catch(() => {});
           }
         }
       })().catch(() => {});
     },
     [
       checkForActiveWorkloads,
-      closeProject,
-      openProjectTabRoots,
-      openRemoteProjectTabs,
-      project?.rootPath,
       projectTabs,
-      remoteBinding,
-      switchProjectToPath,
-      switchRemoteProject,
     ],
   );
 
@@ -1238,43 +1254,52 @@ export function TopBar() {
       setDropIdx(null);
       if (!draggedOutside || droppedOnAdeTarget || !rootPath) return;
 
-      // Fire IPC immediately so the new window starts spawning while we
-      // optimistically clean up the source window's tab state.
-      window.ade.app.openProjectInNewWindow(rootPath).catch(() => {});
-
-      // Detach skips the confirmation + active workload checks intentionally:
-      // the user already committed to detaching by dragging the tab out, and
-      // the work is moving to a new window rather than terminating.
-      const currentIndex = openProjectTabRoots.indexOf(rootPath);
-      if (currentIndex === -1) return;
-      const nextTabRoots = openProjectTabRoots.filter(
-        (entry) => entry !== rootPath,
-      );
-      setOpenProjectTabRoots(nextTabRoots);
-      if (!remoteBinding && project?.rootPath === rootPath) {
-        const nextRoot =
-          nextTabRoots[currentIndex] ?? nextTabRoots[currentIndex - 1] ?? null;
-        if (nextRoot) {
-          switchProjectToPath(nextRoot).catch(() => {});
-        } else if (openRemoteProjectTabs[0]) {
-          switchRemoteProject(
-            openRemoteProjectTabs[0].targetId,
-            openRemoteProjectTabs[0].projectId,
-          ).catch(() => {});
-        } else {
-          closeProject().catch(() => {});
+      void (async () => {
+        try {
+          await window.ade.app.openProjectInNewWindow(rootPath);
+        } catch {
+          return;
         }
-      }
+
+        // Detach skips the confirmation + active workload checks intentionally:
+        // the user already committed to detaching by dragging the tab out, and
+        // the work is moving to a new window rather than terminating. Only remove
+        // the source tab after the destination window has a bound project.
+        const latestTabRoots = openProjectTabRootsRef.current;
+        const currentIndex = latestTabRoots.indexOf(rootPath);
+        if (currentIndex === -1) return;
+        const nextTabRoots = latestTabRoots.filter(
+          (entry) => entry !== rootPath,
+        );
+        openProjectTabRootsRef.current = nextTabRoots;
+        setOpenProjectTabRoots((prev) =>
+          prev.includes(rootPath) ? prev.filter((entry) => entry !== rootPath) : prev,
+        );
+
+        const latestState = useAppStore.getState();
+        const latestProjectRoot = latestState.project?.rootPath ?? null;
+        const latestRemoteBinding =
+          latestState.projectBinding?.kind === "remote"
+            ? latestState.projectBinding
+            : null;
+        const latestRemoteTabs = openRemoteProjectTabsRef.current;
+        if (!latestRemoteBinding && latestProjectRoot === rootPath) {
+          const nextRoot =
+            nextTabRoots[currentIndex] ?? nextTabRoots[currentIndex - 1] ?? null;
+          if (nextRoot) {
+            await latestState.switchProjectToPath(nextRoot).catch(() => {});
+          } else if (latestRemoteTabs[0]) {
+            await latestState.switchRemoteProject(
+              latestRemoteTabs[0].targetId,
+              latestRemoteTabs[0].projectId,
+            ).catch(() => {});
+          } else {
+            await latestState.closeProject().catch(() => {});
+          }
+        }
+      })();
     },
-    [
-      closeProject,
-      openProjectTabRoots,
-      openRemoteProjectTabs,
-      project?.rootPath,
-      remoteBinding,
-      switchProjectToPath,
-      switchRemoteProject,
-    ],
+    [],
   );
 
   const handleProjectAccentColorChange = useCallback(

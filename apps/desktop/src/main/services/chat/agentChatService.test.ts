@@ -748,6 +748,15 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return undefined;
     }),
+    stopTask: vi.fn(async (taskId: string) => {
+      if (typeof session.stopTask === "function") {
+        return session.stopTask(taskId);
+      }
+      if (typeof session.query?.stopTask === "function") {
+        return session.query.stopTask(taskId);
+      }
+      return undefined;
+    }),
     setPermissionMode: vi.fn(async (mode: string) => {
       if (typeof session.setPermissionMode === "function") {
         return session.setPermissionMode(mode);
@@ -1408,6 +1417,7 @@ describe("createAgentChatService", () => {
     expect(service.resumeSession).toBeTypeOf("function");
     expect(service.listSessions).toBeTypeOf("function");
     expect(service.getSessionSummary).toBeTypeOf("function");
+    expect(service.hasActiveWorkloads).toBeTypeOf("function");
     expect(service.getChatTranscript).toBeTypeOf("function");
     expect(service.ensureIdentitySession).toBeTypeOf("function");
     expect(service.approveToolUse).toBeTypeOf("function");
@@ -1491,6 +1501,93 @@ describe("createAgentChatService", () => {
       expect(session.provider).toBe("claude");
       expect(session.modelId).toBe("anthropic/claude-sonnet-4-6");
       expect(session.model).toBe("sonnet");
+    });
+
+    it("derives Claude Opus 1M from bracketed model aliases", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-7[1m]",
+      });
+
+      expect(session.modelId).toBe("anthropic/claude-opus-4-7-1m");
+      expect(session.model).toBe("claude-opus-4-7[1m]");
+    });
+
+    it("preserves Claude Opus 1M in done events when the SDK reports base Opus", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-opus-1m",
+              model: "claude-opus-4-7",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              session_id: "sdk-opus-1m",
+              usage: { input_tokens: 1, output_tokens: 1 },
+              modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+            };
+            return;
+          }
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-opus-1m",
+            model: "claude-opus-4-7",
+            slash_commands: [],
+          };
+          yield {
+            type: "assistant",
+            message: {
+              model: "claude-opus-4-7",
+              content: [{ type: "text", text: "Done" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-opus-1m",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-opus-1m",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-7[1m]",
+        modelId: "anthropic/claude-opus-4-7-1m",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Report the selected model.",
+      });
+
+      const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
+      expect(doneEvent?.event.type).toBe("done");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
     });
 
     it("honors an explicit initial chat title", async () => {
@@ -5022,6 +5119,97 @@ describe("createAgentChatService", () => {
   // dispose and disposeAll
   // --------------------------------------------------------------------------
 
+  describe("hasActiveWorkloads", () => {
+    it("reports active Codex app-server turns so project rebalancing keeps their context alive", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn alive during a project switch.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done"
+          && event.event.status === "completed"
+          && event.event.turnId === "turn-1",
+      );
+
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("does not treat an idle reusable Claude query as an active workload", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-claude",
+            slash_commands: [],
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-idle-claude",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-idle-claude",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Complete a short turn.",
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done"
+          && event.event.status === "completed",
+      );
+
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+  });
+
   describe("dispose", () => {
     it("only writes the persisted chat summary when the session is explicitly disposed", async () => {
       vi.mocked(streamText).mockReturnValue({
@@ -5241,6 +5429,57 @@ describe("createAgentChatService", () => {
       } finally {
         releaseStream();
       }
+    });
+
+    it("marks an active Codex app-server turn interrupted during shutdown", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start a turn that is still active during shutdown.",
+      }, { awaitDispatch: true });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      service.forceDisposeAll();
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            message: expect.stringMatching(/stopped this Codex turn/i),
+            turnId: "turn-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "status",
+            turnStatus: "interrupted",
+            turnId: "turn-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "interrupted",
+            turnId: "turn-1",
+          }),
+        }),
+      ]));
     });
   });
 
@@ -6625,6 +6864,35 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("starts a normal Codex turn when steering stale active UI state", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const result = await service.steer({
+        sessionId: session.id,
+        text: "Recover from a stale active marker.",
+      });
+
+      expect(result.queued).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            text: "Recover from a stale active marker.",
+          }),
+        }),
+      ]));
+    });
+
     it("sends Codex image steer payloads as localImage input blocks", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -6875,6 +7143,171 @@ describe("createAgentChatService", () => {
       expect(
         service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("completed");
+    });
+
+    it("coalesces Codex spawn placeholders when the app-server reveals the agent thread later", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          taskId: "call-spawn-1",
+          parentToolUseId: "call-spawn-1",
+          status: "running",
+        }),
+      ]);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            status: "completed",
+            newThreadId: "agent-thread-1",
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          status: "running",
+        }),
+      ]);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-wait-1",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            agentsStates: {
+              "agent-thread-1": {
+                status: "completed",
+                message: "Renderer path mapped.",
+              },
+            },
+          },
+        },
+      });
+
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          status: "completed",
+          summary: "Renderer path mapped.",
+        }),
+      ]);
+    });
+
+    it("stops foreground Codex subagents when the parent turn completes without a terminal subagent event", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done"
+          && event.event.status === "completed"
+          && event.event.turnId === "turn-1",
+      );
+
+      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          status: "stopped",
+          summary: "Parent turn completed before ADE received a final subagent status",
+        }),
+      ]);
+      expect(service.hasActiveWorkloads()).toBe(false);
     });
 
     it("does not add Codex cache breakdown tokens to derived totals", async () => {
@@ -7441,6 +7874,7 @@ describe("createAgentChatService", () => {
       const history = service.getChatEventHistory("unknown-session");
       expect(history.events).toEqual([]);
       expect(history.truncated).toBe(false);
+      expect(history.sessionFound).toBe(false);
     });
 
     it("hydrates history from the on-disk transcript on first read", async () => {
@@ -7476,6 +7910,7 @@ describe("createAgentChatService", () => {
 
       const history = service.getChatEventHistory(session.id);
       expect(history.sessionId).toBe(session.id);
+      expect(history.sessionFound).toBe(true);
       expect(history.events).toHaveLength(2);
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
@@ -7631,6 +8066,7 @@ describe("createAgentChatService", () => {
       const afterDelete = service.getChatEventHistory(session.id);
       expect(afterDelete.events).toEqual([]);
       expect(afterDelete.truncated).toBe(false);
+      expect(afterDelete.sessionFound).toBe(false);
     });
   });
 
@@ -8027,7 +8463,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      await waitForEvent(
+      const completedPlanEvent = await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
           event: Extract<AgentChatEventEnvelope["event"], { type: "plan" }>;
@@ -8037,6 +8473,8 @@ describe("createAgentChatService", () => {
           && event.event.state === "complete"
           && (event.event.streamingText ?? "").includes("Inspect the streamed plan"),
       );
+      expect(completedPlanEvent.event.state).toBe("complete");
+      expect(completedPlanEvent.event.streamingText).toContain("Inspect the streamed plan");
     });
 
     it("emits a terminal event when a native Codex plan item completes without text", async () => {
@@ -10356,6 +10794,7 @@ describe("createAgentChatService", () => {
       const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stopTask = vi.fn().mockResolvedValue(undefined);
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
         if (streamCall === 1) {
@@ -10394,6 +10833,7 @@ describe("createAgentChatService", () => {
         close: vi.fn(),
         sessionId: "sdk-interrupt-sub-1",
         setPermissionMode,
+        stopTask,
       } as any);
 
       const { service } = createService({
@@ -10433,6 +10873,8 @@ describe("createAgentChatService", () => {
 
       const stoppedTaskIds = stoppedEvents.map((e) => (e.event as any).taskId).sort();
       expect(stoppedTaskIds).toEqual(["sub-task-1", "sub-task-2"]);
+      expect(stopTask).toHaveBeenCalledTimes(2);
+      expect(stopTask.mock.calls.map((call) => call[0]).sort()).toEqual(["sub-task-1", "sub-task-2"]);
 
       // After interrupt, listSubagents should reflect the stopped status
       const subagents = service.listSubagents({ sessionId: session.id });

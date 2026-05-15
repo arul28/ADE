@@ -28,6 +28,18 @@ describe("commands", () => {
     }));
   });
 
+  it("routes lane reparent to the right pane", () => {
+    const parsed = parseCommand("/reparent lane-parent origin/main");
+    expect(parsed?.name).toBe("/reparent");
+    expect(parsed?.args).toBe("lane-parent origin/main");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/rep")).toContainEqual(expect.objectContaining({
+      name: "/reparent",
+      source: "ade",
+      description: "Move the active lane under another lane",
+    }));
+  });
+
   it("routes /feedback to the ADE Code right pane", () => {
     const parsed = parseCommand("/feedback");
     expect(parsed?.spec?.name).toBe("/feedback");

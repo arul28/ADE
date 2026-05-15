@@ -49,6 +49,7 @@ import {
   calculateVirtualWindow,
   deriveTurnModelState,
   reconcileMeasuredScrollTop,
+  shouldAbsorbProgrammaticScrollEvent,
 } from "./AgentChatMessageList";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
@@ -1126,6 +1127,21 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(adjusted).toBe(460);
     expect(unchanged).toBe(400);
+  });
+
+  it("only absorbs the exact programmatic scroll target", () => {
+    expect(shouldAbsorbProgrammaticScrollEvent({
+      scrollTop: 800,
+      programmaticTarget: 800,
+    })).toBe(true);
+    expect(shouldAbsorbProgrammaticScrollEvent({
+      scrollTop: 400,
+      programmaticTarget: 800,
+    })).toBe(false);
+    expect(shouldAbsorbProgrammaticScrollEvent({
+      scrollTop: 400,
+      programmaticTarget: null,
+    })).toBe(false);
   });
 
   it("keeps activity rows in the streaming indicator instead of the transcript", () => {

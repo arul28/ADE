@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatParallelLaunchState,
   AgentChatSession,
   AgentChatSessionSummary,
@@ -27,6 +28,20 @@ vi.mock("../terminals/TerminalView", () => {
   return {
     TerminalView: (props: { sessionId: string; ptyId: string }) =>
       ReactMod.createElement("div", { "data-testid": "terminal-view" }, `${props.sessionId}:${props.ptyId}`),
+  };
+});
+
+vi.mock("./ChatIosSimulatorPanel", () => {
+  const ReactMod = require("react") as typeof import("react");
+  return {
+    ChatIosSimulatorPanel: () => ReactMod.createElement("div", { "data-testid": "ios-panel" }, "iOS panel mounted"),
+  };
+});
+
+vi.mock("./ChatAppControlPanel", () => {
+  const ReactMod = require("react") as typeof import("react");
+  return {
+    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
   };
 });
 
@@ -138,6 +153,7 @@ function installAdeMocks(options?: {
   createError?: Error;
   handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean };
   sessions?: AgentChatSessionSummary[];
+  eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
   includeClaudeModel?: boolean;
   parallelLaunchState?: AgentChatParallelLaunchState | null;
   linkedPr?: PrSummary | null;
@@ -179,6 +195,8 @@ function installAdeMocks(options?: {
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
   const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
   const deleteChat = vi.fn().mockResolvedValue(undefined);
+  const archive = vi.fn().mockResolvedValue(undefined);
+  const unarchive = vi.fn().mockResolvedValue(undefined);
   const deleteLane = vi.fn().mockResolvedValue(undefined);
   const chatEventListeners = new Set<(event: AgentChatEventEnvelope) => void>();
   const sessionChangeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
@@ -216,6 +234,14 @@ function installAdeMocks(options?: {
       send,
       steer,
       list,
+      ...(options?.eventHistory !== undefined
+        ? {
+            getEventHistory: vi.fn().mockImplementation(async (args: { sessionId: string; maxEvents?: number }) => {
+              if (typeof options.eventHistory === "function") return options.eventHistory(args);
+              return options.eventHistory;
+            }),
+          }
+        : {}),
       suggestLaneName,
       parallelLaunchState: {
         get: parallelLaunchStateGet,
@@ -227,6 +253,8 @@ function installAdeMocks(options?: {
       }),
       editSteer: vi.fn().mockResolvedValue(undefined),
       updateSession: vi.fn().mockResolvedValue(undefined),
+      archive,
+      unarchive,
       interrupt: vi.fn().mockResolvedValue(undefined),
       approve: vi.fn().mockResolvedValue(undefined),
       respondToInput: vi.fn().mockResolvedValue(undefined),
@@ -248,7 +276,7 @@ function installAdeMocks(options?: {
       }),
     },
     computerUse: {
-      getOwnerSnapshot: vi.fn().mockResolvedValue(null),
+      getOwnerSnapshot: vi.fn().mockResolvedValue({ artifacts: [] }),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
     },
     files: {
@@ -290,6 +318,19 @@ function installAdeMocks(options?: {
       signal: vi.fn().mockResolvedValue({ ok: true }),
       activeForChat: vi.fn().mockResolvedValue(null),
     },
+    iosSimulator: {
+      getStatus: vi.fn().mockResolvedValue({ platform: "darwin" }),
+      onEvent: vi.fn().mockImplementation((listener: (event: { type: string; chatSessionId?: string; laneId?: string; mode?: string }) => void) => {
+        iosEventListener = listener;
+        return () => {
+          if (iosEventListener === listener) iosEventListener = null;
+        };
+      }),
+    },
+    appControl: {
+      getStatus: vi.fn().mockResolvedValue({ supported: true }),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+    },
   } as any;
 
   return {
@@ -299,6 +340,8 @@ function installAdeMocks(options?: {
     create,
     createLane,
     deleteChat,
+    archive,
+    unarchive,
     deleteLane,
     suggestLaneName,
     parallelLaunchStateGet,
@@ -324,6 +367,7 @@ function resetChatTestStore() {
     lanes: [],
     selectedLaneId: null,
     focusedSessionId: null,
+    projectTransition: null,
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
@@ -336,16 +380,28 @@ function LocationProbe() {
 }
 
 const originalAde = globalThis.window.ade;
+const originalNavigatorPlatform = window.navigator.platform;
+let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: string; mode?: string }) => void) | null = null;
 
 beforeEach(() => {
   invalidateAiDiscoveryCache();
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  iosEventListener = null;
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    value: "MacIntel",
+  });
   resetChatTestStore();
 });
 
 afterEach(() => {
   cleanup();
   invalidateAiDiscoveryCache();
+  Object.defineProperty(window.navigator, "platform", {
+    configurable: true,
+    value: originalNavigatorPlatform,
+  });
   if (originalAde === undefined) {
     delete (globalThis.window as any).ade;
   } else {
@@ -391,6 +447,50 @@ function renderTabbedPane(session: AgentChatSessionSummary) {
       />
     </MemoryRouter>,
   );
+}
+
+function seedDrawerStore() {
+  useAppStore.setState({
+    project: { rootPath: "/tmp/project-under-test" } as any,
+    lanes: [{
+      id: "lane-1",
+      name: "drawer lane",
+      branchRef: "refs/heads/drawer-lane",
+      laneType: "worktree",
+      worktreePath: "/tmp/project-under-test/drawer-lane",
+    } as any],
+    selectedLaneId: "lane-1",
+  });
+}
+
+function renderDrawerPane() {
+  const session = buildSession("session-1", { title: "Drawer audit chat" });
+  installAdeMocks({ sessions: [session] });
+  seedDrawerStore();
+  return renderPane(session);
+}
+
+function renderDrawerSessionPane(
+  sessions: AgentChatSessionSummary[],
+  options?: {
+    transcript?: string;
+    presentation?: React.ComponentProps<typeof AgentChatPane>["presentation"];
+  },
+) {
+  const active = sessions[0]!;
+  const mocks = installAdeMocks({ sessions, transcript: options?.transcript });
+  seedDrawerStore();
+  const view = render(
+    <MemoryRouter>
+      <AgentChatPane
+        laneId="lane-1"
+        initialSessionId={active.sessionId}
+        initialSessionSummary={active}
+        presentation={options?.presentation}
+      />
+    </MemoryRouter>,
+  );
+  return { ...mocks, view };
 }
 
 function renderParallelDraftPane(args?: {
@@ -492,11 +592,143 @@ async function clickEnabledModelOption(name: RegExp | string) {
   fireEvent.click(enabledOption!);
 }
 
-function expectSessionTabOrder(expectedTitles: string[]) {
+function sessionTabTitles(expectedTitles: string[]) {
   const tabs = screen.getAllByRole("button")
     .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
-  expect(tabs.map((button) => button.textContent?.trim())).toEqual(expectedTitles);
+  return tabs.map((button) => button.textContent?.trim());
 }
+
+describe("AgentChatPane companion drawers", () => {
+  it("opens and closes the iOS simulator and App Control drawers from chat chrome", async () => {
+    renderDrawerPane();
+
+    await waitFor(() => {
+      expect(typeof iosEventListener).toBe("function");
+    });
+    act(() => {
+      iosEventListener?.({
+        type: "drawer-open-requested",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        mode: "control",
+      });
+    });
+
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    fireEvent.click(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!);
+    await waitFor(() => {
+      expect(screen.queryByTestId("ios-panel")).toBeNull();
+    });
+
+    const iosButton = screen.getAllByRole("button", { name: "Open iOS simulator drawer" })[0]!;
+    fireEvent.click(iosButton);
+
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    expect(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Close iOS simulator drawer" })[0]!);
+    await waitFor(() => {
+      expect(screen.queryByTestId("ios-panel")).toBeNull();
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
+    });
+    const appControlButton = screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!;
+    fireEvent.click(appControlButton);
+
+    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
+    expect(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!);
+    await waitFor(() => {
+      expect(screen.queryByTestId("app-control-panel")).toBeNull();
+    });
+  });
+
+  it("opens the proof drawer and persists split resize from the real divider", async () => {
+    renderDrawerPane();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open proof drawer" }));
+    expect(screen.getByText("Artifacts")).toBeTruthy();
+
+    const divider = screen.getByRole("separator", { name: "" });
+    const splitParent = divider.parentElement;
+    expect(splitParent).toBeInstanceOf(HTMLElement);
+    Object.defineProperty(splitParent as HTMLElement, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 600,
+        top: 0,
+        right: 1000,
+        bottom: 600,
+        left: 0,
+        toJSON: () => ({}),
+      }),
+    });
+
+    fireEvent.mouseDown(divider, { clientX: 500 });
+    fireEvent.mouseMove(document, { clientX: 600 });
+    fireEvent.mouseUp(document);
+
+    await waitFor(() => {
+      expect(window.sessionStorage.getItem("ade.chat.rightPaneSplit")).toBe("40");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close proof drawer" }));
+    await waitFor(() => {
+      expect(screen.queryByText("Artifacts")).toBeNull();
+    });
+  });
+
+  it("restores an archived chat from the archived selector", async () => {
+    const active = buildSession("active-session", { title: "Active chat" });
+    const archived = buildSession("archived-session", {
+      title: "Archived chat",
+      archivedAt: "2026-05-12T00:00:00.000Z",
+    });
+    const { unarchive } = renderDrawerSessionPane([active, archived]);
+
+    const restoreSelect = await screen.findByTitle("Restore archived chat");
+    fireEvent.change(restoreSelect, { target: { value: "archived-session" } });
+
+    await waitFor(() => {
+      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" });
+    });
+  });
+
+  it("clears a persistent identity chat view without deleting the session", async () => {
+    const transcript = `${JSON.stringify({
+      sessionId: "persistent-session",
+      timestamp: "2026-05-12T00:00:00.000Z",
+      event: {
+        type: "text",
+        text: "Persistent memory view text",
+        itemId: "persistent-text",
+        turnId: "turn-1",
+      },
+    })}\n`;
+
+    renderDrawerSessionPane(
+      [buildSession("persistent-session", { title: "Persistent identity" })],
+      {
+        transcript,
+        presentation: { mode: "standard", profile: "persistent_identity" },
+      },
+    );
+
+    expect(await screen.findByText("Persistent memory view text")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear view" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Persistent memory view text")).toBeNull();
+    });
+    expect(globalThis.window.ade.agentChat.delete).not.toHaveBeenCalled();
+  });
+});
 
 describe("AgentChatPane submit recovery", () => {
   it("loads Claude slash commands for a draft chat before session creation", async () => {
@@ -709,6 +941,30 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     expect(await screen.findByText("Answer or decline the pending request before sending another message.")).toBeTruthy();
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+  });
+
+  it("disables chat sending while the project is switching", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send, steer } = installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      projectTransition: {
+        kind: "switching",
+        rootPath: "/tmp/next",
+        startedAtMs: Date.now(),
+      },
+    } as any);
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    expect((textbox as HTMLTextAreaElement).placeholder).toBe("Project is switching...");
+    fireEvent.change(textbox, { target: { value: "This should wait." } });
+    const sendButton = await screen.findByRole("button", { name: "Send" });
+    expect((sendButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(sendButton);
+
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
   });
@@ -1035,6 +1291,56 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("falls back to a normal send when the active-turn marker is stale", async () => {
+    const session = buildSession("session-1");
+    const { send, steer } = installAdeMocks({
+      transcript: buildStatusStartedTranscript(session.sessionId),
+      steerError: new Error("No active turn to steer."),
+    });
+
+    renderPane(session);
+
+    const textbox = await screen.findByPlaceholderText("Steer the active turn...");
+    fireEvent.change(textbox, { target: { value: "Recover by starting a new turn." } });
+    fireEvent.click(screen.getByLabelText("Send steer message"));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        text: "Recover by starting a new turn.",
+      });
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "Recover by starting a new turn.",
+      }));
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+  });
+
+  it("retries a send when the turn ends between send-active and steer", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+      steerError: new Error("No active turn to steer."),
+    });
+    send.mockRejectedValueOnce(new Error("turn is already active"));
+
+    renderPane(session);
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Please keep going." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(steer).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        text: "Please keep going.",
+      });
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+    });
+  });
+
   it("restores the draft when the send itself fails", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({
@@ -1305,13 +1611,13 @@ describe("AgentChatPane submit recovery", () => {
     renderTabbedPane(newerSession);
 
     await waitFor(() => {
-      expectSessionTabOrder(["Newer chat", "Older chat"]);
+      expect(sessionTabTitles(["Newer chat", "Older chat"])).toEqual(["Newer chat", "Older chat"]);
     });
 
     fireEvent.click(screen.getByRole("button", { name: /Older chat/i }));
 
     await waitFor(() => {
-      expectSessionTabOrder(["Older chat", "Newer chat"]);
+      expect(sessionTabTitles(["Older chat", "Newer chat"])).toEqual(["Older chat", "Newer chat"]);
     });
   });
 
@@ -1549,7 +1855,7 @@ describe("AgentChatPane submit recovery", () => {
     renderTabbedPane(newerSession);
 
     await waitFor(() => {
-      expectSessionTabOrder(["Newer chat", "Older chat"]);
+      expect(sessionTabTitles(["Newer chat", "Older chat"])).toEqual(["Newer chat", "Older chat"]);
     });
 
     emitChatEvent({
@@ -1563,7 +1869,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expectSessionTabOrder(["Older chat", "Newer chat"]);
+      expect(sessionTabTitles(["Older chat", "Newer chat"])).toEqual(["Older chat", "Newer chat"]);
     });
   });
 
@@ -2203,6 +2509,50 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(screen.getByRole("button", { name: /Background chat/i }));
 
     expect(await screen.findByText("Background output kept streaming")).toBeTruthy();
+  });
+
+  it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
+    const session = buildSession("session-1", { title: "Possibly foreign chat" });
+    installAdeMocks({
+      sessions: [],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+      },
+    });
+
+    renderPane(session);
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+      }));
+      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
+    });
+  });
+
+  it("rejects explicit foreign-session event-history snapshots", async () => {
+    const session = buildSession("session-1", { title: "Foreign chat" });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: false,
+      },
+    });
+
+    renderPane(session);
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+      }));
+      expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
+    });
   });
 
   it("reloads a previously viewed chat transcript when switching back to recover missed background output", async () => {

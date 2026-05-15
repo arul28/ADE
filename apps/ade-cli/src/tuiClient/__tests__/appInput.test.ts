@@ -174,6 +174,85 @@ describe("subagentSnapshotsFromEvents", () => {
       summary: "done",
     });
   });
+
+  it("adopts the resolved task id when a runtime placeholder has the same parent tool id", () => {
+    const snapshots = subagentSnapshotsFromEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_started",
+          taskId: "spawn-1",
+          parentToolUseId: "spawn-1",
+          description: "Parallel agent",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "subagent_progress",
+          taskId: "thread-1",
+          parentToolUseId: "spawn-1",
+          summary: "working",
+        },
+      },
+    ]);
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      id: "thread-1",
+      name: "Parallel agent",
+      parentToolUseId: "spawn-1",
+      status: "running",
+      summary: "working",
+    });
+  });
+
+  it("stops foreground subagents when their parent turn has ended", () => {
+    const snapshots = subagentSnapshotsFromEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_started",
+          taskId: "agent-1",
+          description: "Foreground agent",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "subagent_started",
+          taskId: "agent-bg",
+          description: "Background agent",
+          background: true,
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+    ]);
+
+    expect(snapshots.find((snapshot) => snapshot.id === "agent-1")).toMatchObject({
+      status: "stopped",
+      summary: "Parent turn ended before ADE received a final subagent status",
+    });
+    expect(snapshots.find((snapshot) => snapshot.id === "agent-bg")).toMatchObject({
+      status: "running",
+      background: true,
+    });
+  });
 });
 
 describe("clampChatScrollOffsetRows", () => {

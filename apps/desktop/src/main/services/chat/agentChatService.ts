@@ -111,6 +111,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
   AgentChatHandoffArgs,
@@ -462,7 +463,12 @@ type CodexRuntime = {
   webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
   planningApprovalGuardByTurnId: Map<string, boolean>;
   pendingTurnPlanningApprovalGuarded: boolean | null;
-  activeSubagents: Map<string, { taskId: string; description: string; background: boolean }>;
+  activeSubagents: Map<string, {
+    taskId: string;
+    description: string;
+    background: boolean;
+    parentToolUseId: string | null;
+  }>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
   terminalTurnIds: Set<string>;
@@ -1005,6 +1011,57 @@ function hasLivePendingInput(managed: ManagedChatSession | null | undefined): bo
   if (runtime.kind === "opencode") return runtime.pendingApprovals.size > 0;
   if (runtime.kind === "cursor" || runtime.kind === "droid") return runtime.permissionWaiters.size > 0;
   return false;
+}
+
+function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
+  if (!runtime) return false;
+  switch (runtime.kind) {
+    case "codex":
+      return Boolean(
+        runtime.activeTurnId
+        || runtime.startedTurnId
+        || runtime.awaitingTurnStart
+        || runtime.manualCompactionPending
+        || runtime.pending.size > 0
+        || runtime.approvals.size > 0
+        || runtime.activeSubagents.size > 0
+        || runtime.pendingPlanFollowups.length > 0
+      );
+    case "claude":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.pendingSteers.length > 0
+        || runtime.approvals.size > 0
+        || runtime.activeSubagents.size > 0
+      );
+    case "opencode":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.eventAbortController
+        || runtime.pendingApprovals.size > 0
+        || runtime.pendingSteers.length > 0
+      );
+    case "cursor":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.activeCloudRunId
+        || runtime.cloudRuns.size > 0
+        || runtime.pendingSteers.length > 0
+        || runtime.permissionWaiters.size > 0
+      );
+    case "droid":
+      return Boolean(
+        runtime.busy
+        || runtime.activeTurnId
+        || runtime.pendingSteers.length > 0
+        || runtime.permissionWaiters.size > 0
+      );
+    default:
+      return false;
+  }
 }
 
 function isSignalPermissionError(error: unknown): boolean {
@@ -1574,6 +1631,7 @@ const MAX_INJECTED_PROJECT_COMMANDS = 20;
 const MAX_INJECTED_PROJECT_SKILLS = 20;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
+const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
 
 const DEFAULT_CODEX_DESCRIPTOR = getDefaultModelDescriptor("codex");
 const DEFAULT_CLAUDE_DESCRIPTOR = getDefaultModelDescriptor("claude");
@@ -2609,21 +2667,26 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
     .replace(/-api$/, "");
 
   const inputs = [normalized, normalizedWithoutProvider];
+  const descriptors = listModelDescriptorsForProvider("claude");
 
-  return listModelDescriptorsForProvider("claude").find((descriptor) => {
+  const exactMatch = descriptors.find((descriptor) => {
     const descriptorShortId = descriptor.shortId.toLowerCase();
     const candidates = new Set([
       descriptor.id.toLowerCase(),
       descriptorShortId,
       descriptor.providerModelId.toLowerCase(),
       descriptor.id.toLowerCase().replace(/^anthropic\//, ""),
+      ...(descriptor.aliases ?? []).map((alias) => alias.toLowerCase()),
     ]);
 
-    if (inputs.some((input) => candidates.has(input))) return true;
+    return inputs.some((input) => candidates.has(input));
+  });
+  if (exactMatch) return exactMatch.id;
 
+  return descriptors.find((descriptor) => {
+    const descriptorShortId = descriptor.shortId.toLowerCase();
     return normalizedWithoutProvider === `claude-${descriptorShortId}`
-      || normalizedWithoutProvider.startsWith(`claude-${descriptorShortId}-`)
-      || normalizedWithoutProvider.includes(descriptorShortId);
+      || normalizedWithoutProvider.startsWith(`claude-${descriptorShortId}-`);
   })?.id;
 }
 
@@ -2690,6 +2753,28 @@ function resolveClaudeTurnModelPayload(
   session: Pick<AgentChatSession, "model" | "modelId">,
   candidates: Array<string | null | undefined>,
 ): { model: string; modelId?: string } {
+  const sessionModelId = session.modelId ?? resolveModelIdFromStoredValue(session.model, "claude");
+  const sessionPayload = {
+    model: session.model,
+    ...(sessionModelId ? { modelId: sessionModelId } : {}),
+  };
+  let selectedDescriptor: ReturnType<typeof getModelById> | null = null;
+  if (session.modelId) {
+    selectedDescriptor = getModelById(session.modelId) ?? resolveModelAlias(session.modelId);
+  } else if (sessionModelId) {
+    selectedDescriptor = getModelById(sessionModelId);
+  }
+  const selectedIsOpusOneMillion =
+    selectedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
+    || selectedDescriptor?.shortId === "opus-1m"
+    || selectedDescriptor?.providerModelId.toLowerCase().includes("[1m]");
+  const shouldPreserveSelectedModel = (reportedModelId: string | undefined): boolean => {
+    if (!reportedModelId || reportedModelId === session.modelId) return false;
+    if (!selectedIsOpusOneMillion) return false;
+    const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
+    return reportedDescriptor?.id === "anthropic/claude-opus-4-7";
+  };
+
   for (const candidate of candidates) {
     const normalized = normalizeReportedModelName(candidate);
     if (!normalized) continue;
@@ -2698,21 +2783,20 @@ function resolveClaudeTurnModelPayload(
       resolveClaudeCliModelIdFromRuntimeValue(normalized)
       ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
     if (resolvedCliModelId) {
+      if (shouldPreserveSelectedModel(resolvedCliModelId)) return sessionPayload;
       return { model: normalized, modelId: resolvedCliModelId };
     }
     const resolvedModelId =
       resolveModelIdFromStoredValue(normalized, "claude")
       ?? resolveModelIdFromStoredValue(normalizedCliModel, "claude");
     if (resolvedModelId) {
+      if (shouldPreserveSelectedModel(resolvedModelId)) return sessionPayload;
       return { model: normalized, modelId: resolvedModelId };
     }
     return { model: normalized };
   }
 
-  return {
-    model: session.model,
-    ...(session.modelId ? { modelId: session.modelId } : {}),
-  };
+  return sessionPayload;
 }
 
 function fallbackModelForProvider(provider: AgentChatProvider): string {
@@ -5149,13 +5233,28 @@ export function createAgentChatService(args: {
     subagentStates.delete(sessionId);
   };
 
+  const findSubagentSnapshotByParent = (
+    map: Map<string, AgentChatSubagentSnapshot>,
+    parentToolUseId: string | null | undefined,
+  ): [string, AgentChatSubagentSnapshot] | null => {
+    if (!parentToolUseId) return null;
+    const direct = map.get(parentToolUseId);
+    if (direct) return [parentToolUseId, direct];
+    for (const [key, snapshot] of map) {
+      if (snapshot.parentToolUseId === parentToolUseId) return [key, snapshot];
+    }
+    return null;
+  };
+
   const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") return;
     const map = ensureSubagentSnapshotMap(managed.session.id);
     if (event.type === "subagent_started") {
       const key = event.agentId ?? event.taskId;
-      const previous = map.get(key) ?? map.get(event.taskId);
+      const parentMatch = findSubagentSnapshotByParent(map, event.parentToolUseId);
+      const previous = map.get(key) ?? map.get(event.taskId) ?? parentMatch?.[1];
       if (key !== event.taskId) map.delete(event.taskId);
+      if (parentMatch && parentMatch[0] !== key) map.delete(parentMatch[0]);
       map.set(key, {
         taskId: event.taskId,
         agentId: event.agentId ?? previous?.agentId,
@@ -5171,10 +5270,13 @@ export function createAgentChatService(args: {
     }
     if (event.type === "subagent_progress") {
       const key = event.agentId ?? event.taskId;
-      const previous = map.get(key) ?? map.get(event.taskId);
+      const parentMatch = findSubagentSnapshotByParent(map, event.parentToolUseId);
+      const previous = map.get(key) ?? map.get(event.taskId) ?? parentMatch?.[1];
+      const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
       if (key !== event.taskId) map.delete(event.taskId);
+      if (parentMatch && parentMatch[0] !== key) map.delete(parentMatch[0]);
       map.set(key, {
-        taskId: previous?.taskId ?? event.taskId,
+        taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         agentType: event.agentType ?? previous?.agentType,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -5190,15 +5292,18 @@ export function createAgentChatService(args: {
       return;
     }
     const key = event.agentId ?? event.taskId;
-    const previous = map.get(key) ?? map.get(event.taskId);
+    const parentMatch = findSubagentSnapshotByParent(map, event.parentToolUseId);
+    const previous = map.get(key) ?? map.get(event.taskId) ?? parentMatch?.[1];
+    const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
     if (key !== event.taskId) map.delete(event.taskId);
+    if (parentMatch && parentMatch[0] !== key) map.delete(parentMatch[0]);
     const status = event.status === "failed"
       ? "failed"
       : event.status === "stopped"
         ? "stopped"
         : "completed";
     map.set(key, {
-      taskId: previous?.taskId ?? event.taskId,
+      taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
       agentId: event.agentId ?? previous?.agentId,
       agentType: event.agentType ?? previous?.agentType,
       parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -5333,6 +5438,7 @@ export function createAgentChatService(args: {
       getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
       rewindFiles?: (userMessageId: string, options?: { dryRun?: boolean }) => Promise<ClaudeRewindFilesResult>;
       interrupt?: () => Promise<void>;
+      stopTask?: ClaudeQuery["stopTask"];
   } => {
     return {
         setPermissionMode: typeof sessionQuery?.setPermissionMode === "function"
@@ -5355,6 +5461,9 @@ export function createAgentChatService(args: {
         : undefined,
       interrupt: typeof sessionQuery?.interrupt === "function"
         ? sessionQuery.interrupt.bind(sessionQuery)
+        : undefined,
+      stopTask: typeof sessionQuery?.stopTask === "function"
+        ? sessionQuery.stopTask.bind(sessionQuery)
         : undefined,
     };
   };
@@ -5648,17 +5757,17 @@ export function createAgentChatService(args: {
   const getChatEventHistory = (
     sessionId: string,
     options?: { maxEvents?: number },
-  ): { sessionId: string; events: AgentChatEventEnvelope[]; truncated: boolean } => {
+  ): AgentChatEventHistorySnapshot => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) {
-      return { sessionId: trimmedId, events: [], truncated: false };
+      return { sessionId: trimmedId, events: [], truncated: false, sessionFound: false };
     }
     // Validate the session belongs to an agent chat before reading any
     // transcript path — this function is reachable via IPC and builds
     // filesystem paths from `trimmedId` downstream.
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) {
-      return { sessionId: trimmedId, events: [], truncated: false };
+      return { sessionId: trimmedId, events: [], truncated: false, sessionFound: false };
     }
     const maxEvents = Math.max(
       1,
@@ -5681,7 +5790,7 @@ export function createAgentChatService(args: {
 
     const truncated = merged.length > maxEvents;
     const windowed = truncated ? merged.slice(-maxEvents) : merged;
-    return { sessionId: trimmedId, events: windowed, truncated };
+    return { sessionId: trimmedId, events: windowed, truncated, sessionFound: true };
   };
 
   const deriveTranscriptTurnActive = (entries: AgentChatEventEnvelope[]): boolean => {
@@ -7919,21 +8028,53 @@ export function createAgentChatService(args: {
     const preserveClaudeResumeState =
       managed.runtime.kind === "claude" && reasonAllowsPreservation;
     if (managed.runtime?.kind === "codex") {
-      managed.runtime.suppressExitError = true;
-      try { managed.runtime.reader.close(); } catch { /* ignore */ }
-      managed.runtime.killTimer = terminateChildProcessTree(
-        managed.runtime.process,
-        managed.runtime.killTimer,
+      const runtime = managed.runtime;
+      const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      const shouldMarkInterrupted =
+        reasonAllowsPreservation
+        && managed.session.status === "active"
+        && !managed.deleted;
+      runtime.suppressExitError = true;
+      try { runtime.reader.close(); } catch { /* ignore */ }
+      runtime.killTimer = terminateChildProcessTree(
+        runtime.process,
+        runtime.killTimer,
       );
-      managed.runtime.pending.clear();
-      for (const followup of managed.runtime.pendingPlanFollowups.splice(0)) {
+      runtime.pending.clear();
+      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
           decision: "cancel",
           turnId: followup.turnId,
         });
       }
-      managed.runtime.approvals.clear();
+      runtime.approvals.clear();
+      if (shouldMarkInterrupted) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "ADE stopped this Codex turn while the app or project was closing. Send again to continue the saved thread.",
+          ...(interruptedTurnId ? { turnId: interruptedTurnId } : {}),
+        });
+        emitChatEvent(managed, {
+          type: "status",
+          turnStatus: "interrupted",
+          message: "Stopped while ADE was closing.",
+          ...(interruptedTurnId ? { turnId: interruptedTurnId } : {}),
+        });
+        if (interruptedTurnId) {
+          void emitTurnDiffSummaryIfChanged(managed, interruptedTurnId);
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: interruptedTurnId,
+            status: "interrupted",
+            model: managed.session.model,
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
+        markSessionIdleWithFreshCache(managed);
+        persistChatState(managed);
+      }
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "claude") {
@@ -9987,6 +10128,9 @@ export function createAgentChatService(args: {
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
+      if (runtime.interrupted) {
+        await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
+      }
       flushOpenClaudeToolUses(runtime.interrupted ? "interrupted" : "completed");
       // Note: query is NOT closed here — it stays alive for the next turn.
       runtime.busy = false;
@@ -10050,6 +10194,9 @@ export function createAgentChatService(args: {
         runtime.interrupted || isAbortRelatedError(effectiveError)
           ? "interrupted"
           : "failed";
+      if (finalToolStatus === "interrupted") {
+        await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
+      }
       flushOpenClaudeToolUses(finalToolStatus);
 
       // Only close the query on genuine errors. User interrupts close and
@@ -11816,18 +11963,76 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     turnId: string | undefined,
     summary: string,
+    options?: { includeBackground?: boolean },
   ): void => {
     if (runtime.activeSubagents.size === 0) return;
-    for (const { taskId } of runtime.activeSubagents.values()) {
+    const includeBackground = options?.includeBackground ?? true;
+    for (const { taskId, parentToolUseId, background } of [...runtime.activeSubagents.values()]) {
+      if (!includeBackground && background) continue;
       emitChatEvent(managed, {
         type: "subagent_result",
         taskId,
+        parentToolUseId,
         status: "stopped",
         summary,
         turnId,
       });
+      runtime.activeSubagents.delete(taskId);
     }
-    runtime.activeSubagents.clear();
+    if (includeBackground) {
+      runtime.activeSubagents.clear();
+    }
+  };
+
+  const stopActiveClaudeSubagents = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string | undefined,
+    summary: string,
+  ): Promise<void> => {
+    const activeSubagents = [...runtime.activeSubagents.values()];
+    if (activeSubagents.length === 0) return;
+
+    const control = getClaudeQueryControl(runtime.query);
+    for (const subagent of activeSubagents) {
+      if (!runtime.activeSubagents.has(subagent.taskId)) continue;
+      runtime.activeSubagents.delete(subagent.taskId);
+      if (typeof control.stopTask === "function") {
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        try {
+          const stopTaskPromise = Promise.resolve(control.stopTask(subagent.taskId));
+          stopTaskPromise.catch(() => {
+            // The awaited race below handles timely rejections. This catch only
+            // prevents an unhandled rejection if the SDK rejects after our timeout.
+          });
+          await Promise.race([
+            stopTaskPromise,
+            new Promise<never>((_, reject) => {
+              timeoutHandle = setTimeout(() => {
+                reject(new Error(`Timed out stopping Claude task after ${CLAUDE_STOP_TASK_TIMEOUT_MS}ms`));
+              }, CLAUDE_STOP_TASK_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (error) {
+          logger.warn("agent_chat.claude_stop_task_failed", {
+            sessionId: managed.session.id,
+            taskId: subagent.taskId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
+      }
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId: subagent.taskId,
+        parentToolUseId: subagent.parentToolUseId ?? undefined,
+        status: "stopped",
+        summary,
+        finalSummary: summary,
+        turnId,
+      });
+    }
   };
 
   type CodexCollabAgentState = {
@@ -12100,6 +12305,7 @@ export function createAgentChatService(args: {
           taskId: itemId,
           description: String(item.description ?? item.title ?? "Delegated task"),
           background: isBackgroundTask(item as Record<string, unknown>),
+          parentToolUseId: null,
         });
         emitChatEvent(managed, {
           type: "subagent_started",
@@ -12132,6 +12338,7 @@ export function createAgentChatService(args: {
 
       if (tool === "spawn_agent" && eventKind === "started") {
         const taskIds = receiverIds.length ? receiverIds : [itemId];
+        const background = isBackgroundTask(item as Record<string, unknown>);
         emitChatEvent(managed, {
           type: "activity",
           activity: "spawning_agent",
@@ -12142,13 +12349,15 @@ export function createAgentChatService(args: {
           runtime.activeSubagents.set(taskId, {
             taskId,
             description: prompt.slice(0, 120) || "Parallel agent",
-            background: isBackgroundTask(item as Record<string, unknown>),
+            background,
+            parentToolUseId: itemId,
           });
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
+            parentToolUseId: itemId,
             description: prompt.slice(0, 120) || "Parallel agent",
-            background: isBackgroundTask(item as Record<string, unknown>),
+            background,
             turnId,
           });
         }
@@ -12158,14 +12367,39 @@ export function createAgentChatService(args: {
         const spawnStatus = mapCodexCollabAgentStatus(item.status);
         if (spawnStatus === "failed") {
           for (const taskId of receiverIds.length ? receiverIds : [itemId]) {
+            const existing = runtime.activeSubagents.get(taskId) ?? runtime.activeSubagents.get(itemId);
             runtime.activeSubagents.delete(taskId);
             emitChatEvent(managed, {
               type: "subagent_result",
               taskId,
+              parentToolUseId: existing?.parentToolUseId ?? itemId,
               status: "failed",
               summary: String(item.error ?? item.result ?? "Agent spawn failed"),
               turnId,
             });
+          }
+        } else {
+          const resolvedTaskIds = receiverIds.length
+            ? receiverIds
+            : agentsStates.map((agentState) => agentState.threadId);
+          const placeholder = runtime.activeSubagents.get(itemId);
+          if (placeholder && resolvedTaskIds.length > 0) {
+            runtime.activeSubagents.delete(itemId);
+            for (const taskId of resolvedTaskIds) {
+              runtime.activeSubagents.set(taskId, {
+                ...placeholder,
+                taskId,
+                parentToolUseId: placeholder.parentToolUseId ?? itemId,
+              });
+              emitChatEvent(managed, {
+                type: "subagent_started",
+                taskId,
+                parentToolUseId: placeholder.parentToolUseId ?? itemId,
+                description: placeholder.description,
+                background: placeholder.background,
+                turnId,
+              });
+            }
           }
         }
       }
@@ -12173,9 +12407,11 @@ export function createAgentChatService(args: {
       if ((tool === "send_input" || tool === "resume_agent") && eventKind === "completed") {
         const targetIds = receiverIds.length ? receiverIds : [itemId];
         for (const targetId of targetIds) {
+          const existing = runtime.activeSubagents.get(targetId);
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: targetId,
+            parentToolUseId: existing?.parentToolUseId ?? null,
             summary: prompt || "Agent received input",
             turnId,
           });
@@ -12185,11 +12421,13 @@ export function createAgentChatService(args: {
       if (tool === "wait" && eventKind === "completed") {
         for (const agentState of agentsStates) {
           const agentThreadId = agentState.threadId || itemId;
+          const existing = runtime.activeSubagents.get(agentThreadId);
           const subagentStatus = mapCodexCollabAgentStatus(agentState.status);
           if (!subagentStatus) {
             emitChatEvent(managed, {
               type: "subagent_progress",
               taskId: agentThreadId,
+              parentToolUseId: existing?.parentToolUseId ?? null,
               summary: agentState.summary || "Agent is still working",
               turnId,
             });
@@ -12199,6 +12437,7 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId: agentThreadId,
+            parentToolUseId: existing?.parentToolUseId ?? null,
             status: subagentStatus,
             summary: agentState.summary,
             turnId,
@@ -12209,10 +12448,12 @@ export function createAgentChatService(args: {
       if (tool === "close_agent" && eventKind === "completed") {
         const targetIds = receiverIds.length ? receiverIds : [itemId];
         for (const targetId of targetIds) {
+          const existing = runtime.activeSubagents.get(targetId);
           runtime.activeSubagents.delete(targetId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId: targetId,
+            parentToolUseId: existing?.parentToolUseId ?? null,
             status: "stopped",
             summary: "Agent closed",
             turnId,
@@ -12567,6 +12808,16 @@ export function createAgentChatService(args: {
           ? { message: String(turn.error.message) }
           : {})
       });
+
+      stopActiveCodexSubagents(
+        managed,
+        runtime,
+        turnId,
+        status === "failed"
+          ? "Parent turn failed before ADE received a final subagent status"
+          : "Parent turn completed before ADE received a final subagent status",
+        { includeBackground: false },
+      );
 
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       emitChatEvent(managed, {
@@ -13114,7 +13365,7 @@ export function createAgentChatService(args: {
       webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
       planningApprovalGuardByTurnId: new Map<string, boolean>(),
       pendingTurnPlanningApprovalGuarded: null,
-      activeSubagents: new Map<string, { taskId: string; description: string; background: boolean }>(),
+      activeSubagents: new Map(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
       terminalTurnIds: new Set<string>(managed.codexTerminalTurnIds),
@@ -13676,6 +13927,7 @@ export function createAgentChatService(args: {
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
     const pluginPaths = discoverClaudePluginPaths(managed.laneWorktreePath);
+    const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const opts: ClaudeSDKOptions = {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
@@ -13699,7 +13951,7 @@ export function createAgentChatService(args: {
       enableFileCheckpointing: true,
       skills: "all",
       maxBudgetUsd: chatConfig.sessionBudgetUsd ?? undefined,
-      model: resolveClaudeCliModel(managed.session.model),
+      model: resolveClaudeCliModel(claudeDescriptor?.providerModelId ?? managed.session.model ?? DEFAULT_CLAUDE_MODEL),
       spawnClaudeCodeProcess: (spawnOptions) => claudeSubprocessReaper.spawnClaudeCodeProcess(spawnOptions, {
         sessionId: managed.session.id,
         sdkSessionId: runtime.sdkSessionId,
@@ -13797,7 +14049,6 @@ export function createAgentChatService(args: {
         ENABLE_TOOL_SEARCH: managed.session.identityKey === "cto" ? "0" : "auto",
       };
     }
-    const claudeDescriptor = resolveSessionModelDescriptor(managed.session);
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
@@ -18627,9 +18878,6 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
-      if (!managed.session.threadId || !runtime.activeTurnId) {
-        throw new Error("No active turn to steer.");
-      }
 
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -18639,6 +18887,10 @@ export function createAgentChatService(args: {
         contextAttachments,
       });
       if (!preparedSteer) {
+        return { steerId, queued: false };
+      }
+      if (!managed.session.threadId || !runtime.activeTurnId) {
+        await executePreparedSendMessage(preparedSteer);
         return { steerId, queued: false };
       }
 
@@ -18881,6 +19133,12 @@ export function createAgentChatService(args: {
       }
 
       runtime.interrupted = true;
+      await stopActiveClaudeSubagents(
+        managed,
+        runtime,
+        runtime.activeTurnId ?? undefined,
+        "Interrupted by queued message",
+      );
       const control = getClaudeQueryControl(runtime.query);
       if (control.interrupt) {
         try {
@@ -19085,6 +19343,7 @@ export function createAgentChatService(args: {
       });
     }
     cancelClaudeWarmup(managed, runtime, "interrupt");
+    await stopActiveClaudeSubagents(managed, runtime, interruptedTurnId ?? undefined, "Interrupted by user");
     try { await runtime.query?.interrupt(); } catch { /* ignore */ }
     try { runtime.query?.close(); } catch { /* ignore */ }
     runtime.inputPump?.close();
@@ -19098,19 +19357,6 @@ export function createAgentChatService(args: {
     }
     runtime.approvals.clear();
 
-    // Emit subagent_result "stopped" for every active subagent so the UI
-    // properly transitions them from "running" → "stopped" (matching Claude Code CLI behaviour).
-    const turnId = interruptedTurnId ?? undefined;
-    for (const { taskId } of runtime.activeSubagents.values()) {
-      emitChatEvent(managed, {
-        type: "subagent_result",
-        taskId,
-        status: "stopped",
-        summary: "Interrupted by user",
-        turnId,
-      });
-    }
-    runtime.activeSubagents.clear();
     persistChatState(managed);
     logger.info("agent_chat.turn_interrupt_completed", {
       sessionId,
@@ -19398,6 +19644,16 @@ export function createAgentChatService(args: {
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
     return summarizeSessionRow(row);
+  };
+
+  const hasActiveWorkloads = (): boolean => {
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      if (managed.session.status === "active") return true;
+      if (hasLivePendingInput(managed)) return true;
+      if (hasRuntimeActiveWorkload(managed.runtime)) return true;
+    }
+    return false;
   };
 
   const ensureIdentitySession = async (args: {
@@ -21650,6 +21906,7 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    hasActiveWorkloads,
     getChatTranscript,
     getCodexResumeContext,
     getChatEventHistory,

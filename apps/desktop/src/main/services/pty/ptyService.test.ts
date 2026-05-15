@@ -860,6 +860,117 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("echo hello\r");
     });
 
+    it("hydrates transcript reads from recent live output before the file stream flushes", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+        args: ["--no-alt-screen", "ADE session guidance"],
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("");
+
+      mockPty._emitter.emit("data", "\u001b[2J\u001b[HReady for input\n> ");
+
+      await expect(service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 160_000,
+        raw: true,
+      })).resolves.toBe("\u001b[2J\u001b[HReady for input\n> ");
+      expect(sessionService.readTranscriptTail).toHaveBeenLastCalledWith(
+        "/tmp/transcripts/uuid-2.log",
+        160_000,
+        expect.objectContaining({ raw: true }),
+      );
+    });
+
+    it("deduplicates recent live output that has already reached the transcript file", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+      mockPty._emitter.emit("data", "Ready for input\n> ");
+      sessionService.readTranscriptTail.mockResolvedValueOnce("Booting\nReady for input");
+
+      await expect(service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 160_000,
+        raw: true,
+      })).resolves.toBe("Booting\nReady for input\n> ");
+    });
+
+    it("deduplicates live output overlaps larger than the default scan window", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      const overlap = "x".repeat(13_000);
+      mockPty._emitter.emit("data", `${overlap} live`);
+      sessionService.readTranscriptTail.mockResolvedValueOnce(`disk\n${overlap}`);
+
+      await expect(service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 20_000,
+        raw: true,
+      })).resolves.toBe(`disk\n${overlap} live`);
+    });
+
+    it("returns the disk tail when the live entry has been disposed", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      // Dispose the live pty so `liveEntryBySessionId` returns null and the
+      // merge path falls through to disk-only.
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("only on disk\n");
+
+      await expect(service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 20_000,
+        raw: true,
+      })).resolves.toBe("only on disk\n");
+    });
+
+    it("runs the merged tail through stripAnsi when raw is not set", async () => {
+      const { service, sessionService } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("disk tail");
+      // Reset before the call so we can detect the new invocation specifically.
+      mocks.stripAnsi.mockClear();
+
+      await service.readTranscriptTail({
+        sessionId: created.sessionId,
+        maxBytes: 20_000,
+      });
+
+      // Without raw: true, the service must pass the merged tail through
+      // stripAnsi before returning. The fixture mocks stripAnsi to an identity
+      // function, so we assert by invocation rather than by output content.
+      expect(mocks.stripAnsi).toHaveBeenCalledWith(expect.stringContaining("disk tail"));
+    });
+
     it("stores structured resume metadata for Claude launches", async () => {
       const { service, sessionService } = createHarness();
       await service.create({

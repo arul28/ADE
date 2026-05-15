@@ -100,9 +100,14 @@ main process because they execute before a runtime binding exists.
   expands `~`, handles
   platform-appropriate relative / absolute paths, lists matching
   subdirectories with `.git` detection (concurrency-limited, capped at
-  `limit` with 500 max), and resolves any exact-directory match up to
-  an openable repo root via `resolveRepoRoot()`. Windows-style paths
-  are rejected on non-Windows hosts.
+  `limit` with 500 max), and resolves any exact-directory match to an
+  openable project root without shelling out while the user types. If
+  the candidate path is inside an ADE-managed worktree, it resolves
+  back to that lane's owning project root via
+  `findAdeManagedWorktreeRoot`; otherwise it walks ancestors until it
+  finds a `.git` file or directory. The eventual open flow still
+  performs full git validation. Windows-style paths are rejected on
+  non-Windows hosts.
 - `apps/desktop/src/main/services/projects/projectScaffoldService.ts`
   — backs the "Add project → Create" and "Add project → Clone" flows.
   `createLocalProject({ name, parentDir })` makes a new directory, runs
@@ -126,6 +131,10 @@ main process because they execute before a runtime binding exists.
   depth-2 walk capped at 2,000 files), subdirectory count, and — when
   the path matches a recent-projects row in the global state file —
   lane count and last-opened timestamp.
+  `registerIpc.ts` wraps `project.getDetail(rootPath)` in a short
+  per-root promise cache (10 s, capped at 64 entries) so moving through
+  the project browser does not recompute git/README/language metadata
+  for the same highlighted path on every render.
 - `apps/desktop/src/main/services/projects/projectIconResolver.ts` —
   best-effort icon discovery and user-overridable selection for a
   project root. Discovery walks a fixed list of base directories
@@ -210,7 +219,10 @@ a prior session. Shows:
 - "ADD PROJECT" primary button → opens the Command Palette in
   `intent="project-add"` mode (see the next subsection)
 - recent projects list from `window.ade.project.listRecent()`, with
-  display name, host path, lane count, and last-opened timestamp
+  display name, host path, lane count, and last-opened timestamp.
+  `registerIpc.ts` caches the converted summaries for 5 seconds keyed
+  by the recent-project signature, and clears the cache after forget /
+  reorder writes.
 
 Clicking a recent project calls `appStore.switchProjectToPath(path)`
 which goes through the project open flow
@@ -256,7 +268,9 @@ Project-browse behavior:
 3. A debounced `window.ade.project.getDetail(target)` populates a
    preview pane alongside the list — branch, dirty/ahead/behind,
    last commit, README excerpt (rendered through `react-markdown` +
-   `remark-gfm`), language swatches, lane count, last-opened.
+   `remark-gfm`), language swatches, lane count, last-opened. The
+   main process dedupes repeated detail reads for the same root for a
+   short window.
 4. Enter activates the highlighted directory (walks into it). ⌘/Ctrl+
    Enter opens the openable project root (the first ancestor with a
    `.git` entry).

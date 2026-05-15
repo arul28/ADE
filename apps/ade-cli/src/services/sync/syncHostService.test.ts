@@ -292,6 +292,7 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
     },
     ptyService: {
       create: vi.fn(),
+      readTranscriptTail: vi.fn(async () => ""),
       enrichSessions: (rows: unknown[]) => rows,
     },
     computerUseArtifactBrokerService: {

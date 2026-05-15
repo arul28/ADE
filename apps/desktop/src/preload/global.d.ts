@@ -74,6 +74,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
@@ -1536,11 +1537,7 @@ declare global {
         getEventHistory: (args: {
           sessionId: string;
           maxEvents?: number;
-        }) => Promise<{
-          sessionId: string;
-          events: AgentChatEventEnvelope[];
-          truncated: boolean;
-        }>;
+        }) => Promise<AgentChatEventHistorySnapshot>;
         codex: {
           openInCli: (
             args: AgentChatCodexOpenInCliArgs,

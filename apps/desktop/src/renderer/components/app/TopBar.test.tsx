@@ -143,11 +143,16 @@ function fireProjectTabDragEnd(
   fireEvent(element, event);
 }
 
+async function flushMicrotasks(count = 1) {
+  for (let index = 0; index < count; index += 1) {
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+  }
+}
+
 async function advancePhoneSyncStartupDelay() {
   await act(async () => {
     vi.advanceTimersByTime(5_000);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks(2);
   });
 }
 
@@ -367,6 +372,37 @@ describe("TopBar", () => {
     expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
   });
 
+  it("keeps the source project tab active until the detached window is bound", async () => {
+    let resolveOpen!: (value: { windowId: number; project: { rootPath: string; name: string } }) => void;
+    const openPromise = new Promise<{ windowId: number; project: { rootPath: string; name: string } }>((resolve) => {
+      resolveOpen = resolve;
+    });
+    globalThis.window.ade.app.openProjectInNewWindow = vi.fn(() => openPromise) as any;
+    const closeProject = useAppStore.getState().closeProject;
+    render(<TopBar />);
+
+    const tab = await screen.findByTitle("/Users/arul/ADE");
+    fireProjectTabDragEnd(tab, makeDataTransfer({}, "none"));
+
+    expect(globalThis.window.ade.app.openProjectInNewWindow).toHaveBeenCalledWith("/Users/arul/ADE");
+    await act(async () => {
+      await flushMicrotasks();
+    });
+    expect(closeProject).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveOpen({
+        windowId: 2,
+        project: { rootPath: "/Users/arul/ADE", name: "ADE" },
+      });
+      await openPromise;
+    });
+
+    await waitFor(() => {
+      expect(closeProject).toHaveBeenCalled();
+    });
+  });
+
   it("opens the phone sync drawer from the host status control", async () => {
     vi.useFakeTimers();
     try {
@@ -462,14 +498,14 @@ describe("TopBar", () => {
       render(<TopBar />);
 
       await act(async () => {
-        await Promise.resolve();
+        await flushMicrotasks();
       });
 
       expect(getStatus).not.toHaveBeenCalled();
 
       await act(async () => {
         vi.advanceTimersByTime(15_000);
-        await Promise.resolve();
+        await flushMicrotasks();
       });
 
       expect(getStatus).toHaveBeenCalledTimes(1);
@@ -490,16 +526,14 @@ describe("TopBar", () => {
 
       await act(async () => {
         window.dispatchEvent(new Event("focus"));
-        await Promise.resolve();
-        await Promise.resolve();
+        await flushMicrotasks(2);
       });
 
       expect(screen.getByText("Phone sync ready")).toBeTruthy();
 
       await act(async () => {
         window.dispatchEvent(new Event("focus"));
-        await Promise.resolve();
-        await Promise.resolve();
+        await flushMicrotasks(2);
       });
 
       expect(screen.getByText("1 phone connected to ADE Desktop")).toBeTruthy();
@@ -608,7 +642,7 @@ describe("TopBar", () => {
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
-      await Promise.resolve();
+      await flushMicrotasks();
     });
 
     fireEvent.click(await screen.findByRole("button", { name: /linear quick view/i }));
@@ -667,7 +701,7 @@ describe("TopBar", () => {
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
-      await Promise.resolve();
+      await flushMicrotasks();
     });
     await waitFor(() => {
       expect(getLinearConnectionStatus).toHaveBeenCalledTimes(1);
@@ -676,7 +710,7 @@ describe("TopBar", () => {
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
-      await Promise.resolve();
+      await flushMicrotasks();
     });
 
     expect(await screen.findByRole("button", { name: /linear quick view/i })).toBeTruthy();

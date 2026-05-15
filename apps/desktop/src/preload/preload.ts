@@ -283,6 +283,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
@@ -1088,10 +1089,14 @@ function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
 
 let currentProjectBinding: OpenProjectBinding | null = null;
 let projectBindingGeneration = 0;
+let projectBindingVersion = 0;
+let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
+let projectRuntimeTransitionDepth = 0;
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
   const nextKey = binding?.key ?? null;
+  projectBindingVersion += 1;
   currentProjectBinding = binding;
   if (previousKey !== nextKey) {
     projectBindingGeneration += 1;
@@ -1107,53 +1112,51 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   }
 }
 
-async function getRemoteProjectBinding(): Promise<Extract<
+async function refreshProjectBinding(): Promise<OpenProjectBinding | null> {
+  if (projectBindingRefreshPromise) return projectBindingRefreshPromise;
+  const refreshVersion = projectBindingVersion;
+  projectBindingRefreshPromise = ipcRenderer
+    .invoke(IPC.appGetWindowSession)
+    .then((session: { binding?: OpenProjectBinding | null } | null) => {
+      const binding = session?.binding ?? null;
+      if (projectBindingVersion !== refreshVersion) return currentProjectBinding;
+      rememberProjectBinding(binding);
+      return binding;
+    })
+    .finally(() => {
+      projectBindingRefreshPromise = null;
+    });
+  return projectBindingRefreshPromise;
+}
+
+async function getRemoteProjectBinding(options?: { fresh?: boolean }): Promise<Extract<
   OpenProjectBinding,
   { kind: "remote" }
 > | null> {
-  if (currentProjectBinding) {
-    return currentProjectBinding.kind === "remote"
-      ? currentProjectBinding
-      : null;
-  }
-  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
-    binding?: OpenProjectBinding | null;
-  } | null;
-  rememberProjectBinding(session?.binding ?? null);
-  return session?.binding?.kind === "remote" ? session.binding : null;
+  const binding = await getProjectRuntimeBinding(options);
+  return binding?.kind === "remote" ? binding : null;
 }
 
-async function getLocalProjectBinding(): Promise<Extract<
+async function getLocalProjectBinding(options?: { fresh?: boolean }): Promise<Extract<
   OpenProjectBinding,
   { kind: "local" }
 > | null> {
-  if (currentProjectBinding) {
-    return currentProjectBinding.kind === "local"
-      ? currentProjectBinding
-      : null;
-  }
-  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
-    binding?: OpenProjectBinding | null;
-  } | null;
-  rememberProjectBinding(session?.binding ?? null);
-  return session?.binding?.kind === "local" ? session.binding : null;
+  const binding = await getProjectRuntimeBinding(options);
+  return binding?.kind === "local" ? binding : null;
 }
 
-async function getProjectRuntimeBinding(): Promise<OpenProjectBinding | null> {
-  if (currentProjectBinding) return currentProjectBinding;
-  const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
-    binding?: OpenProjectBinding | null;
-  } | null;
-  rememberProjectBinding(session?.binding ?? null);
-  return session?.binding ?? null;
+async function getProjectRuntimeBinding(options?: { fresh?: boolean }): Promise<OpenProjectBinding | null> {
+  if (!options?.fresh && currentProjectBinding) return currentProjectBinding;
+  return refreshProjectBinding();
 }
 
 async function callRemoteProjectActionIfBound<T>(
   domain: string,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+  options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
-  const binding = await getRemoteProjectBinding();
+  const binding = await getRemoteProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
     id: binding.targetId,
@@ -1167,9 +1170,10 @@ async function callLocalProjectActionIfBound<T>(
   domain: string,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+  options?: { freshBinding?: boolean },
 ): Promise<{ handled: true; result: T } | { handled: false }> {
   if (localRuntimeDaemonDisabled) return { handled: false };
-  const binding = await getLocalProjectBinding();
+  const binding = await getLocalProjectBinding(options?.freshBinding ? { fresh: true } : undefined);
   if (!binding) return { handled: false };
   try {
     const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
@@ -1202,18 +1206,61 @@ async function callLocalProjectActionStrictIfBound<T>(
   return { handled: true, result: response.result as T };
 }
 
+// Chat actions that mutate runtime state. Only these are gated by the
+// project-transition guard: read-only chat queries (e.g. `listSessions`,
+// `getSessionSummary`, `getAvailableModels`, `getChatEventHistory`) must be
+// allowed to fall through to IPC while a project switch is in flight, so the
+// UI can render summaries and history during the transition.
+const MUTATING_CHAT_ACTIONS = new Set<string>([
+  "sendMessage",
+  "respondToInput",
+  "approveToolUse",
+  "interrupt",
+  "steer",
+  "cancelSteer",
+  "editSteer",
+  "dispatchSteer",
+  "cancelDispatchedSteer",
+  "createSession",
+  "archiveSession",
+  "unarchiveSession",
+  "deleteSession",
+  "updateSession",
+  "handoffSession",
+  "setClaudeOutputStyle",
+  "reloadClaudePlugins",
+  "setParallelLaunchState",
+  "ensureCtoSession",
+  "ensureAgentIdentitySession",
+  "warmupModel",
+  "rewindFiles",
+  "saveTempAttachment",
+]);
+
 async function callProjectRuntimeActionIfBound<T>(
   domain: string,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
 ): Promise<{ handled: true; result: T } | { handled: false }> {
+  const freshBinding = domain === "chat";
+  const isMutatingChatAction =
+    freshBinding && MUTATING_CHAT_ACTIONS.has(action);
+  if (isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
+    throw new Error("Project is switching. Wait for the current project to finish loading before sending chat messages.");
+  }
+  // During a project transition, let read-only chat calls fall through to
+  // their IPC fallback instead of binding to a possibly-stale runtime.
+  if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
+    return { handled: false };
+  }
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
     action,
     request,
+    { freshBinding },
   );
   if (remote.handled) return remote;
-  return callLocalProjectActionIfBound<T>(domain, action, request);
+  return callLocalProjectActionIfBound<T>(domain, action, request, { freshBinding });
 }
 
 async function callProjectRuntimeActionOr<T>(
@@ -2453,6 +2500,17 @@ async function clearAround<T>(
   }
 }
 
+async function runProjectRuntimeTransition<T>(
+  action: () => Promise<T>,
+): Promise<T> {
+  projectRuntimeTransitionDepth += 1;
+  try {
+    return await action();
+  } finally {
+    projectRuntimeTransitionDepth = Math.max(0, projectRuntimeTransitionDepth - 1);
+  }
+}
+
 function createIpcEventFanout<T>(
   channel: string,
   beforeDispatch?: (payload: T) => void,
@@ -2622,11 +2680,23 @@ contextBridge.exposeInMainWorld("ade", {
     ): void => ipcRenderer.send(IPC.appLogDebugEvent, { event, payload }),
   },
   project: {
-    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> =>
-      clearAround(
-        () => clearProjectScopedReadCaches(),
-        () => ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
-      ),
+    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {
+      // `clearAround` runs its cleanup callback both before AND after the
+      // action. Nulling the binding inside that callback meant a successful
+      // open clobbered the freshly-published binding (set by the
+      // appProjectBindingChanged listener) and disabled runtime routing /
+      // event pumping until another refresh restored it. Null once up front;
+      // the listener handles the post-action update.
+      rememberProjectBinding(null);
+      return clearAround(
+        () => {
+          clearProjectScopedReadCaches();
+        },
+        () => runProjectRuntimeTransition(() =>
+          ipcRenderer.invoke(IPC.projectOpenRepo, args ?? {}),
+        ),
+      );
+    },
     chooseDirectory: async (
       args: { title?: string; defaultPath?: string } = {},
     ): Promise<string | null> =>
@@ -2685,16 +2755,24 @@ contextBridge.exposeInMainWorld("ade", {
           rememberProjectBinding(null);
           clearProjectScopedReadCaches();
         },
-        () => ipcRenderer.invoke(IPC.projectCloseCurrent),
+        () => runProjectRuntimeTransition(() =>
+          ipcRenderer.invoke(IPC.projectCloseCurrent),
+        ),
       ),
-    switchToPath: async (rootPath: string): Promise<ProjectInfo> =>
-      clearAround(
+    switchToPath: async (rootPath: string): Promise<ProjectInfo> => {
+      // See openRepo above: `clearAround` runs cleanup twice, so nulling the
+      // binding inside it would clobber the new one set by the
+      // appProjectBindingChanged listener.
+      rememberProjectBinding(null);
+      return clearAround(
         () => {
-          rememberProjectBinding(null);
           clearProjectScopedReadCaches();
         },
-        () => ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
-      ),
+        () => runProjectRuntimeTransition(() =>
+          ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+        ),
+      );
+    },
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
     reorderRecent: async (
@@ -5296,16 +5374,8 @@ contextBridge.exposeInMainWorld("ade", {
     getEventHistory: async (args: {
       sessionId: string;
       maxEvents?: number;
-    }): Promise<{
-      sessionId: string;
-      events: AgentChatEventEnvelope[];
-      truncated: boolean;
-    }> => {
-      const runtime = await callProjectRuntimeActionIfBound<{
-        sessionId: string;
-        events: AgentChatEventEnvelope[];
-        truncated: boolean;
-      }>("chat", "getChatEventHistory", {
+    }): Promise<AgentChatEventHistorySnapshot> => {
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistorySnapshot>("chat", "getChatEventHistory", {
         argsList: [args.sessionId, { maxEvents: args.maxEvents }],
       });
       return runtime.handled

@@ -10,6 +10,7 @@ struct LaneManageSheet: View {
 
   @State private var renameText: String
   @State private var selectedParentLaneId: String
+  @State private var baseBranchOverride: String = ""
   @State private var colorText: String
   @State private var iconText: String
   @State private var tagsText: String
@@ -27,8 +28,9 @@ struct LaneManageSheet: View {
     self.snapshot = snapshot
     self.allLaneSnapshots = allLaneSnapshots
     self.onComplete = onComplete
+    let primaryLaneId = allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
     _renameText = State(initialValue: snapshot.lane.name)
-    _selectedParentLaneId = State(initialValue: snapshot.lane.parentLaneId ?? "")
+    _selectedParentLaneId = State(initialValue: snapshot.lane.parentLaneId ?? primaryLaneId)
     _colorText = State(initialValue: snapshot.lane.color ?? "")
     _iconText = State(initialValue: snapshot.lane.icon?.rawValue ?? "")
     _tagsText = State(initialValue: snapshot.lane.tags.joined(separator: ", "))
@@ -62,6 +64,64 @@ struct LaneManageSheet: View {
 
   private var canArchive: Bool {
     snapshot.lane.laneType != "primary"
+  }
+
+  private var primaryLaneId: String {
+    allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
+  }
+
+  private var effectiveCurrentParentId: String {
+    snapshot.lane.parentLaneId ?? primaryLaneId
+  }
+
+  /// Branch ref the host will stack onto when the override field is empty —
+  /// matches desktop placeholder copy and mirrors the lanes.reparent fallback.
+  private var defaultStackBaseBranch: String {
+    reparentCandidates.first(where: { $0.id == selectedParentLaneId })?.branchRef ?? ""
+  }
+
+  private var trimmedBaseOverride: String {
+    baseBranchOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private var reparentParentChanged: Bool {
+    selectedParentLaneId != effectiveCurrentParentId
+  }
+
+  private var reparentBaseChanged: Bool {
+    // Empty input means "use the selected parent's current branch". That is
+    // only a real change when the lane's stored base actually diverges from
+    // the selected parent's effective branch — `snapshot.lane.baseRef` is a
+    // non-optional string and is essentially always populated, so gating on
+    // its mere presence enables Apply on initial sheet open and risks an
+    // unintended rebase. Compare normalized values against the parent's
+    // default to mirror the backend's normalizeBranchName (strips
+    // refs/heads/ and origin/ prefixes).
+    let normalizedOverride = LaneManageSheet.normalizeBranchRefForCompare(trimmedBaseOverride)
+    let normalizedExisting = LaneManageSheet.normalizeBranchRefForCompare(snapshot.lane.baseRef)
+    let normalizedDefault = LaneManageSheet.normalizeBranchRefForCompare(defaultStackBaseBranch)
+    if normalizedOverride.isEmpty {
+      return !normalizedExisting.isEmpty && normalizedExisting != normalizedDefault
+    }
+    return normalizedOverride != normalizedExisting
+  }
+
+  private static func normalizeBranchRefForCompare(_ ref: String) -> String {
+    var value = ref.trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.hasPrefix("refs/heads/") {
+      value = String(value.dropFirst("refs/heads/".count))
+    }
+    if value.hasPrefix("origin/") {
+      value = String(value.dropFirst("origin/".count))
+    }
+    return value
+  }
+
+  private var canApplyReparent: Bool {
+    guard canRunLiveActions else { return false }
+    if snapshot.lane.status.dirty || snapshot.lane.status.rebaseInProgress { return false }
+    guard !selectedParentLaneId.isEmpty else { return false }
+    return reparentParentChanged || reparentBaseChanged
   }
 
   private var canRunLiveActions: Bool {
@@ -154,24 +214,96 @@ struct LaneManageSheet: View {
           }
 
           if snapshot.lane.laneType != "primary" {
-            GlassSection(title: "Reparent") {
+            GlassSection(title: "Stack position") {
               VStack(alignment: .leading, spacing: 12) {
-                Picker("Parent lane", selection: $selectedParentLaneId) {
-                  Text("No parent").tag("")
-                  ForEach(reparentCandidates) { lane in
-                    Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
+                Text("Parent lane is where this lane sits in the stack; the primary lane is the root. Base branch is the ref ADE uses for ahead/behind. Leave it blank to use the parent lane's current branch.")
+                  .font(.caption)
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .fixedSize(horizontal: false, vertical: true)
+
+                HStack(alignment: .top, spacing: 10) {
+                  Image(systemName: "exclamationmark.bubble.fill")
+                    .foregroundStyle(ADEColor.warning)
+                    .accessibilityHidden(true)
+                  Text("Runs git rebase. Applying updates ADE then runs git rebase in this lane's worktree onto the resolved base commit. If rebase fails, ADE aborts and restores the previous parent and base.")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                  Spacer(minLength: 0)
+                }
+                .padding(10)
+                .background(
+                  RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ADEColor.warning.opacity(0.08))
+                )
+
+                if snapshot.lane.status.dirty {
+                  HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                      .foregroundStyle(ADEColor.warning)
+                      .accessibilityHidden(true)
+                    Text("Commit or stash changes before changing stack position.")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.warning)
                   }
                 }
-                .pickerStyle(.menu)
 
-                LaneActionButton(title: "Save parent", symbol: "arrow.triangle.swap", tint: ADEColor.accent) {
-                  Task {
-                    await performAction("reparent lane") {
-                      try await syncService.reparentLane(snapshot.lane.id, newParentLaneId: selectedParentLaneId.isEmpty ? nil : selectedParentLaneId)
+                if snapshot.lane.status.rebaseInProgress {
+                  HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                      .foregroundStyle(ADEColor.warning)
+                      .accessibilityHidden(true)
+                    Text("Finish or abort the in-progress rebase before changing stack position.")
+                      .font(.caption)
+                      .foregroundStyle(ADEColor.warning)
+                  }
+                }
+
+                Picker("Parent lane", selection: $selectedParentLaneId) {
+                  if reparentCandidates.isEmpty {
+                    Text("No valid parent").tag("")
+                  } else {
+                    ForEach(reparentCandidates) { lane in
+                      Text(lane.laneType == "primary" ? "\(lane.name) (primary)" : "\(lane.name) (\(lane.branchRef))").tag(lane.id)
                     }
                   }
                 }
-                .disabled(!canRunLiveActions || selectedParentLaneId == (snapshot.lane.parentLaneId ?? ""))
+                .pickerStyle(.menu)
+                .onChange(of: selectedParentLaneId) { _, _ in
+                  // Clear the override so the new parent's branch is used as
+                  // the default — matches desktop behavior on parent change.
+                  baseBranchOverride = ""
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                  LaneTextField(
+                    defaultStackBaseBranch.isEmpty
+                      ? "Base branch (optional)"
+                      : "Base branch (default: \(defaultStackBaseBranch))",
+                    text: $baseBranchOverride
+                  )
+                  .textInputAutocapitalization(.never)
+                  .autocorrectionDisabled()
+                  .accessibilityLabel("Base branch override")
+                  if !defaultStackBaseBranch.isEmpty {
+                    Text("Selected parent is on \(defaultStackBaseBranch) right now; that is used when this is empty.")
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textMuted)
+                  }
+                }
+
+                LaneActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap", tint: ADEColor.accent) {
+                  Task {
+                    await performAction("reparent lane") {
+                      try await syncService.reparentLane(
+                        snapshot.lane.id,
+                        newParentLaneId: selectedParentLaneId,
+                        stackBaseBranchRef: trimmedBaseOverride.isEmpty ? nil : trimmedBaseOverride
+                      )
+                    }
+                  }
+                }
+                .disabled(!canApplyReparent)
               }
             }
           }

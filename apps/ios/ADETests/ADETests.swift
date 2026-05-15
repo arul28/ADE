@@ -144,6 +144,51 @@ final class ADETests: XCTestCase {
     XCTAssertNil(payload["projectRootPath"])
   }
 
+  func testMakeLanesReparentArgsUsesTrimmedParentLaneIdAndOmitsBaseOverride() throws {
+    let args = makeLanesReparentArgs(
+      laneId: "lane-1",
+      newParentLaneId: "  lane-primary  ",
+      stackBaseBranchRef: nil
+    )
+
+    XCTAssertEqual(args["laneId"] as? String, "lane-1")
+    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-primary")
+    // No stackBaseBranchRef in the payload -- host falls back to the parent's current branch.
+    XCTAssertNil(args["stackBaseBranchRef"])
+  }
+
+  func testMakeLanesReparentArgsIncludesTrimmedStackBaseBranchOverride() throws {
+    let args = makeLanesReparentArgs(
+      laneId: "lane-1",
+      newParentLaneId: "lane-parent",
+      stackBaseBranchRef: "  feature/integration  "
+    )
+
+    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-parent")
+    XCTAssertEqual(args["stackBaseBranchRef"] as? String, "feature/integration")
+  }
+
+  func testMakeLanesReparentArgsOmitsWhitespaceOnlyStackBaseBranchOverride() throws {
+    let args = makeLanesReparentArgs(
+      laneId: "lane-1",
+      newParentLaneId: "lane-parent",
+      stackBaseBranchRef: "   "
+    )
+
+    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-parent")
+    XCTAssertNil(args["stackBaseBranchRef"])
+  }
+
+  func testMakePrGithubSnapshotArgsIncludesExternalClosedOnlyWhenRequested() throws {
+    let defaultArgs = makePrGithubSnapshotArgs(force: false, includeExternalClosed: false)
+    XCTAssertEqual(defaultArgs["force"] as? Bool, false)
+    XCTAssertNil(defaultArgs["includeExternalClosed"])
+
+    let historyArgs = makePrGithubSnapshotArgs(force: true, includeExternalClosed: true)
+    XCTAssertEqual(historyArgs["force"] as? Bool, true)
+    XCTAssertEqual(historyArgs["includeExternalClosed"] as? Bool, true)
+  }
+
   func testProjectScopedOutboundEnvelopeTypesIncludeActiveProjectId() {
     let projectScopedTypes = [
       "changeset_batch",
@@ -4625,7 +4670,7 @@ final class ADETests: XCTestCase {
   func testFilesSearchEmptyMessageReflectsLiveAndQueryState() {
     XCTAssertEqual(
       filesSearchEmptyMessage(kind: .quickOpen, isLive: false, needsRepairing: false, query: ""),
-      "Quick open needs a live host connection."
+      "Quick open needs a live machine connection."
     )
     XCTAssertEqual(
       filesSearchEmptyMessage(kind: .textSearch, isLive: true, needsRepairing: false, query: "needle"),
@@ -4664,7 +4709,7 @@ final class ADETests: XCTestCase {
       filesHistoryFallback(laneId: "lane-1", entries: [], errorMessage: nil),
       FilesSectionFallback(
         title: "No recent history",
-        message: "The host did not return recent commits for this file yet. Reconnect or refresh to try again."
+        message: "The machine did not return recent commits for this file yet. Reconnect or refresh to try again."
       )
     )
   }

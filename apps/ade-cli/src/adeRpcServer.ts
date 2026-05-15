@@ -3592,9 +3592,11 @@ async function waitForSessionCompletion(args: {
   while (Date.now() <= deadline) {
     const session = runtime.sessionService.get(sessionId);
     if (session && session.status !== "running") {
-      const logTail = runtime.sessionService.readTranscriptTail(session.transcriptPath, maxLogBytes, {
+      const logTail = await runtime.ptyService.readTranscriptTail({
+        sessionId,
+        maxBytes: maxLogBytes,
         raw: true,
-        alignToLineBoundary: true
+        alignToLineBoundary: true,
       });
       return {
         session,
@@ -3610,9 +3612,11 @@ async function waitForSessionCompletion(args: {
     session,
     timedOut: true,
     logTail: session
-      ? runtime.sessionService.readTranscriptTail(session.transcriptPath, maxLogBytes, {
+      ? await runtime.ptyService.readTranscriptTail({
+          sessionId,
+          maxBytes: maxLogBytes,
           raw: true,
-          alignToLineBoundary: true
+          alignToLineBoundary: true,
         })
       : ""
   };

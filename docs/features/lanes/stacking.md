@@ -77,19 +77,37 @@ children, `base_ref` otherwise) and memoized per-call.
 
 ## Reparenting
 
-`laneService.reparent({ laneId, newParentLaneId })`:
+`laneService.reparent({ laneId, newParentLaneId, stackBaseBranchRef? })`:
 
 - Refuses to reparent the primary lane (`lane_type === "primary"`).
 - Refuses to reparent a lane under one of its own descendants
   (detected by walking up from `newParentLaneId`).
 - Refuses to reparent a lane to itself.
-- Updates `parent_lane_id` and records a `lane_reparent` operation in
-  the history timeline with the reason `reparent`.
+- Resolves the new base ref: when `stackBaseBranchRef` is provided it is
+  resolved in the project repo through `resolveBranchRebaseTarget` with
+  `preferRemote: true` so a name like `develop` picks `origin/develop`
+  when it exists; otherwise the new parent's current `branch_ref` is
+  used (with the primary-lane upstream fallback handled by
+  `resolveParentRebaseTarget`).
+- No-op fast path: when the persisted parent link and the resolved base
+  ref both match the lane's current state, `reparent` returns the
+  current head sha for both pre/post and does not run git. This keeps
+  redundant "Apply" clicks from the Manage Lane dialog cheap.
+- Otherwise updates `parent_lane_id`, persists the new `base_ref`,
+  records a `lane_reparent` operation in the history timeline with the
+  reason `reparent`, and rebases the lane's worktree onto the resolved
+  base commit.
 - Triggers downstream refresh events (rebase suggestion service
   re-evaluates, stack graph re-renders).
 
-`ReparentLaneResult` carries the before/after parent ids so the UI
-can update state without a full list refresh.
+`ReparentLaneResult` carries the before/after parent ids and base refs
+plus pre/post head shas so the UI can update state without a full list
+refresh.
+
+`syncRemoteCommandService` (ade-cli) parses `stackBaseBranchRef` off the
+`lanes.reparent` payload as an optional trimmed string, so headless
+controllers driving stack edits over sync see the same surface as the
+desktop renderer.
 
 ## Rebase runs
 

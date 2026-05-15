@@ -15,6 +15,13 @@ struct PRsTabView: View {
   @State private var queueStates: [QueueLandingState] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
+  @State private var githubExternalHistoryLoaded = false
+  // Set synchronously on the @MainActor before any awaited fetch so concurrent
+  // callers (the `onChange` filter handler and the projection-reload `task`)
+  // do not both pass the `!githubExternalHistoryLoaded` guard and issue
+  // duplicate `fetchGitHubPullRequestSnapshot(includeExternalClosed: true)`
+  // requests.
+  @State private var isLoadingExternalHistory = false
   @State private var errorMessage: String?
   @State private var actionMessage: String?
   @State private var busyAction: String?
@@ -122,6 +129,14 @@ struct PRsTabView: View {
 
   private var allGitHubPrs: [GitHubPrListItem] {
     repoScopedGitHubPullRequests(from: githubSnapshot)
+  }
+
+  private var githubSnapshotNeedsExternalHistory: Bool {
+    selectedGitHubStatusFilter.wrappedValue != .open
+  }
+
+  private var githubSnapshotShouldIncludeExternalClosed: Bool {
+    githubExternalHistoryLoaded || githubSnapshotNeedsExternalHistory
   }
 
   private var filteredGitHubPrs: [GitHubPrListItem] {
@@ -384,6 +399,10 @@ struct PRsTabView: View {
       .task(id: prNavigationRequestKey) {
         guard prNavigationRequestKey != nil else { return }
         await handleRequestedPrNavigation()
+      }
+      .onChange(of: githubStatusFilterRawValue) { _, _ in
+        guard selectedGitHubStatusFilter.wrappedValue != .open else { return }
+        Task { await loadGitHubExternalHistoryIfNeeded() }
       }
       .refreshable {
         await refreshFromPullGesture()
@@ -1171,12 +1190,32 @@ struct PRsTabView: View {
       var nextMobileSnapshot: PrMobileSnapshot?
       if shouldAttemptLiveSnapshots {
         lastPrsLiveSnapshotAttempt = now
+        let includeExternalClosed = githubSnapshotShouldIncludeExternalClosed
+        // If `loadGitHubExternalHistoryIfNeeded` is already fetching external
+        // history, skip the external-closed arm here so we don't issue a
+        // duplicate concurrent request. The other task will populate the
+        // snapshot.
+        let suppressExternalClosed = includeExternalClosed && isLoadingExternalHistory
+        let effectiveIncludeExternalClosed = includeExternalClosed && !suppressExternalClosed
+        let markLoadingExternal = effectiveIncludeExternalClosed
+        if markLoadingExternal { isLoadingExternalHistory = true }
         let mobileSnapshotTask = Task { try? await syncService.fetchPrMobileSnapshot() }
-        let githubSnapshotTask = Task { try? await syncService.fetchGitHubPullRequestSnapshot(force: refreshRemote) }
-        nextMobileSnapshot = await mobileSnapshotTask.value
-        if let nextGithubSnapshot = await githubSnapshotTask.value, githubSnapshot != nextGithubSnapshot {
-          githubSnapshot = nextGithubSnapshot
+        let githubSnapshotTask = Task {
+          try? await syncService.fetchGitHubPullRequestSnapshot(
+            force: refreshRemote,
+            includeExternalClosed: effectiveIncludeExternalClosed
+          )
         }
+        nextMobileSnapshot = await mobileSnapshotTask.value
+        if let nextGithubSnapshot = await githubSnapshotTask.value {
+          if effectiveIncludeExternalClosed {
+            githubExternalHistoryLoaded = true
+          }
+          if githubSnapshot != nextGithubSnapshot {
+            githubSnapshot = nextGithubSnapshot
+          }
+        }
+        if markLoadingExternal { isLoadingExternalHistory = false }
       }
 
       if !isLive {
@@ -1186,6 +1225,8 @@ struct PRsTabView: View {
         if githubSnapshot != nil {
           githubSnapshot = nil
         }
+        githubExternalHistoryLoaded = false
+        isLoadingExternalHistory = false
       }
       if let nextMobileSnapshot {
         if mobileSnapshot != nextMobileSnapshot {
@@ -1227,6 +1268,23 @@ struct PRsTabView: View {
       let message = error.localizedDescription
       if errorMessage != message {
         errorMessage = message
+      }
+    }
+  }
+
+  @MainActor
+  private func loadGitHubExternalHistoryIfNeeded() async {
+    guard isLive, githubSnapshotNeedsExternalHistory, !githubExternalHistoryLoaded else { return }
+    // Atomic guard against concurrent fetches: the filter `onChange` and the
+    // projection-reload `task` can race here. Setting this synchronously
+    // before the first await ensures only one fetch is in flight at a time.
+    if isLoadingExternalHistory { return }
+    isLoadingExternalHistory = true
+    defer { isLoadingExternalHistory = false }
+    if let nextGithubSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(includeExternalClosed: true) {
+      githubExternalHistoryLoaded = true
+      if githubSnapshot != nextGithubSnapshot {
+        githubSnapshot = nextGithubSnapshot
       }
     }
   }
