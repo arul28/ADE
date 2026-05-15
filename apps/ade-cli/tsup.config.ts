@@ -15,6 +15,18 @@ const external = [
   "sqlite3",
   "zod",
 ];
+const tuiNoExternal = [
+  "ink",
+  "ink-text-input",
+  "react",
+  "react/jsx-runtime",
+  "@opencode-ai/sdk",
+  "@xterm/headless",
+  "marked",
+  "ws",
+  "yaml",
+  /^highlight\.js(?:\/.*)?$/,
+];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
 const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0.0.0";
@@ -63,9 +75,16 @@ export default defineConfig([
     sourcemap: true,
     clean: false,
     splitting: false,
-    noExternal: ["ink", "ink-text-input", "react", "react/jsx-runtime", "@opencode-ai/sdk"],
+    noExternal: tuiNoExternal,
     banner: {
-      js: "import { createRequire as __adeCreateRequire } from 'node:module'; const require = __adeCreateRequire(import.meta.url);",
+      js: [
+        "import { createRequire as __adeCreateRequire } from 'node:module';",
+        "import { fileURLToPath as __adeFileURLToPath } from 'node:url';",
+        "import { dirname as __adeDirname } from 'node:path';",
+        "const require = __adeCreateRequire(import.meta.url);",
+        "const __filename = __adeFileURLToPath(import.meta.url);",
+        "const __dirname = __adeDirname(__filename);",
+      ].join("\n"),
     },
     outExtension: () => ({
       js: ".mjs"

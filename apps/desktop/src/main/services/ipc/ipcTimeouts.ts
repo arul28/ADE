@@ -1,9 +1,22 @@
 import { IPC } from "../../../shared/ipc";
 
-export function ipcInvokeTimeoutMs(channel: string): number {
+function isRuntimeLaneDeleteAction(args: unknown[] | undefined): boolean {
+  const first = args?.[0];
+  if (!first || typeof first !== "object" || Array.isArray(first)) return false;
+  const request = (first as { request?: unknown }).request;
+  if (!request || typeof request !== "object" || Array.isArray(request)) return false;
+  const record = request as { domain?: unknown; action?: unknown };
+  return record.domain === "lane" && record.action === "delete";
+}
+
+export function ipcInvokeTimeoutMs(channel: string, args?: unknown[]): number {
   switch (channel) {
     case IPC.lanesDelete:
       return 4 * 60_000;
+    case IPC.localRuntimeCallAction:
+    case IPC.remoteRuntimeCallAction:
+      if (isRuntimeLaneDeleteAction(args)) return 4 * 60_000;
+      return 30_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.macosVmProvision:

@@ -32,6 +32,7 @@ import type {
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
+  DeleteLaneArgs,
   FileChangeEvent,
   FilesWatchArgs,
   LaneEnvInitConfig,
@@ -2202,6 +2203,26 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       );
     },
     listRebaseSuggestions: () => runtime.rebaseSuggestionService?.listSuggestions() ?? [],
+    delete: async (args?: DeleteLaneArgs): Promise<void> => {
+      const laneId = requireNonEmptyString(args?.laneId, "laneId");
+      const laneEnvironmentService = runtime.laneEnvironmentService;
+      const envContext = laneEnvironmentService
+        ? await resolveLaneOverlayContext(runtime, laneId).catch((error: unknown) => {
+            runtime.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
+              laneId,
+              error: getErrorMessage(error),
+            });
+            return null;
+          })
+        : null;
+      const teardownEnv = laneEnvironmentService && envContext?.envInitConfig
+        ? async () => {
+            await laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+          }
+        : undefined;
+      await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
+      runtime.portAllocationService?.release(laneId);
+    },
     dismissRebaseSuggestion: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       runtime.conflictService?.dismissRebase(laneId);

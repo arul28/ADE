@@ -382,6 +382,30 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
+  it("does not mount the terminal drawer when lane tool drawers are hidden", async () => {
+    const session = buildSession();
+    installAdeMocks(session);
+    seedStore();
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          hideLaneToolDrawers
+          initialSessionSummary={session}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("textbox");
+
+    expect(screen.queryByRole("button", { name: /open terminal/i })).toBeNull();
+    expect(globalThis.window.ade.terminal.list).not.toHaveBeenCalled();
+    expect(globalThis.window.ade.appControl.getStatus).not.toHaveBeenCalled();
+  });
+
   it("restores an archived chat from the archived selector", async () => {
     const active = buildSession({ sessionId: "active-session", title: "Active chat" });
     const archived = buildSession({

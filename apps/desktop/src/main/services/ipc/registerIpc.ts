@@ -2240,7 +2240,7 @@ export function registerIpc({
             args: summarizeIpcArgs(redactIpcArgsForChannel(channel, args)),
           });
         }
-        const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel);
+        const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
         let timeoutHandle: NodeJS.Timeout | null = null;
         try {
           const result = await Promise.race([

@@ -120,6 +120,26 @@ describe("TerminalPane", () => {
     expect(rows[0]?.runs[0]?.style.bold).toBe(true);
   });
 
+  it("marks direct Claude terminal control with the escape hints", () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("permission prompt"), row("1. Yes")])}
+        liveChunks={[]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CLAUDE CONTROL");
+    expect(frame).toContain("Ctrl+T returns to ADE");
+    expect(frame).toContain("Ctrl+] escape");
+    expect(frame).toContain("permission prompt");
+  });
+
   it("uses transcript history for closed terminal sessions instead of the final resume-only snapshot", async () => {
     const result = render(
       <TerminalPane

@@ -1448,6 +1448,15 @@ export function encodeTerminalPromptSubmit(value: string): string {
   return `${normalized}\r`;
 }
 
+export function isTerminalControlToggle(input: string, key: { ctrl?: boolean }): boolean {
+  return input === "\x14" || (key.ctrl === true && input.toLowerCase() === "t");
+}
+
+export function splitTerminalControlInput(raw: string): { detach: boolean; forwarded: string } {
+  const forwarded = raw.replace(/[\x14\x1d]/g, "");
+  return { detach: forwarded.length !== raw.length, forwarded };
+}
+
 function claudeTerminalRowsForPane(rows: number): number {
   const safeRows = finiteFloor(rows, 4);
   return Math.max(
@@ -1956,6 +1965,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],
   );
+  const activeTerminalProvider = terminalSessionProvider(activeTerminalSession);
   const displaySessions = useMemo(
     () => [...sessions, ...terminalSessions.map(terminalSessionToChatSummary)]
       .sort((left, right) => {
@@ -1965,7 +1975,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }),
     [sessions, terminalSessions],
   );
-  const activeCommandProvider = terminalSessionProvider(activeTerminalSession) ?? activeSession?.provider ?? modelState.provider;
+  const claudeTerminalControlAvailable = Boolean(
+    activeTerminalSession
+      && activeTerminalSession.status === "running"
+      && activeTerminalProvider === "claude",
+  );
+  const claudeTerminalControlActive = claudeTerminalControlAvailable
+    && attachedTerminalId === activeTerminalSession?.terminalId;
+  const activeCommandProvider = activeTerminalProvider ?? activeSession?.provider ?? modelState.provider;
   // Once a chat has any sent user message, the provider is locked — swapping
   // mid-thread breaks runtime continuity. Derived from events; persists across reloads.
   const providerLocked = useMemo(() => Boolean(activeSession) && hasFirstUserMessage(events), [activeSession, events]);
@@ -2286,10 +2303,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
-    const cols = clampTerminalPaneCols(terminalPaneWidth);
-    const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
+    const cols = clampTerminalPaneCols(claudeTerminalControlActive ? terminalPaneWidth - 2 : terminalPaneWidth);
+    const terminalRows = claudeTerminalControlActive
+      ? Math.max(4, chatRowBudget - 1)
+      : claudeTerminalRowsForPane(chatRowBudget);
     void resizeTerminal(connection, activeTerminalSession.terminalId, cols, terminalRows).catch(() => {});
-  }, [activeTerminalSession, chatRowBudget, connection, terminalPaneWidth]);
+  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, terminalPaneWidth]);
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
@@ -2714,11 +2733,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     const handleRawInput = (chunk: Buffer | string) => {
       const raw = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
       if (!raw) return;
-      if (raw.includes("\x1d")) {
-        const forwarded = raw.replace(/\x1d/g, "");
+      const terminalControlInput = splitTerminalControlInput(raw);
+      if (terminalControlInput.detach) {
         setAttachedTerminalId(null);
-        if (forwarded) {
-          void writeTerminal(connection, attachedTerminalId, forwarded).catch((err) => {
+        if (terminalControlInput.forwarded) {
+          void writeTerminal(connection, attachedTerminalId, terminalControlInput.forwarded).catch((err) => {
             addNotice(err instanceof Error ? err.message : String(err), "error");
           });
         }
@@ -5623,7 +5642,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
   useInput((input, key) => {
     if (attachedTerminalIdRef.current) {
-      if (input === "\x1d") setAttachedTerminalId(null);
+      if (input === "\x1d" || isTerminalControlToggle(input, key)) setAttachedTerminalId(null);
+      return;
+    }
+    if (isTerminalControlToggle(input, key)) {
+      const terminal = activeTerminalSession ?? activeTerminalSessionRef.current;
+      if (
+        terminal?.terminalId === activeSessionIdRef.current
+        && terminal.status === "running"
+        && terminalSessionProvider(terminal) === "claude"
+      ) {
+        focusChat();
+        setAttachedTerminalId(terminal.terminalId);
+      }
       return;
     }
     const mouse = parseTerminalMouseInput(input);
@@ -6715,6 +6746,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           providerLocked={providerLocked}
           subagentsButtonVisible={subagentsButtonVisible}
           planMode={isPlanMode(modelState)}
+          terminalControlAvailable={claudeTerminalControlAvailable}
+          terminalControlActive={claudeTerminalControlActive}
         />
       </Box>
     </SpinTickProvider>

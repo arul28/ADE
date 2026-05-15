@@ -228,6 +228,10 @@ func filterPullRequestListItems(
   }
 }
 
+func repoScopedGitHubPullRequests(from snapshot: GitHubPrSnapshot?) -> [GitHubPrListItem] {
+  snapshot?.repoPullRequests ?? []
+}
+
 func matchesPullRequestListItemStatus(_ item: PullRequestListItem, state: PrGitHubStatusFilter) -> Bool {
   switch state {
   case .all:

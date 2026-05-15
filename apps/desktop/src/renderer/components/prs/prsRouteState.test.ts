@@ -127,17 +127,16 @@ describe("prsRouteState", () => {
     ).toBe("?tab=workflows&workflow=rebase&laneId=lane-456");
   });
 
-  it("stores the last PRs route per project and falls back to the legacy global key", () => {
+  it("stores the last PRs route per project without falling back across projects", () => {
     writeStoredPrsRoute("/prs?tab=normal&prId=project-a", "/tmp/project-a");
     writeStoredPrsRoute("/prs?tab=normal&prId=project-b", "/tmp/project-b");
     writeStoredPrsRoute("/files", "/tmp/project-b");
+    writeStoredPrsRoute("/prs?tab=workflows&workflow=queue");
 
     expect(readStoredPrsRoute("/tmp/project-a")).toBe("/prs?tab=normal&prId=project-a");
     expect(readStoredPrsRoute("/tmp/project-b")).toBe("/prs?tab=normal&prId=project-b");
     expect(readStoredPrsRoute("/tmp/project-c")).toBeNull();
-
-    writeStoredPrsRoute("/prs?tab=workflows&workflow=queue");
-    expect(readStoredPrsRoute("/tmp/project-c")).toBe("/prs?tab=workflows&workflow=queue");
+    expect(readStoredPrsRoute()).toBe("/prs?tab=workflows&workflow=queue");
   });
 });
 

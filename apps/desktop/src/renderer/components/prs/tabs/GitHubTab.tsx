@@ -2,7 +2,7 @@ import React from "react";
 import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary } from "../../../../shared/types";
+import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary, PrWithConflicts } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { isMissionResultLane } from "../../lanes/laneUtils";
@@ -457,6 +457,7 @@ export function GitHubTab({
   const inFlightSnapshotRef = React.useRef<{ request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null>(null);
   const loadingSnapshotRequestCountRef = React.useRef(0);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
+  const missingLinkedPrHydrationRef = React.useRef<string | null>(null);
   const filterRef = React.useRef(filter);
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
   const projectRootRef = React.useRef(projectRoot);
@@ -657,7 +658,7 @@ export function GitHubTab({
   }, [searchQuery]);
 
   const allItems = React.useMemo(
-    () => [...(snapshot?.repoPullRequests ?? []), ...(snapshot?.externalPullRequests ?? [])],
+    () => snapshot?.repoPullRequests ?? [],
     [snapshot],
   );
 
@@ -738,9 +739,50 @@ export function GitHubTab({
     () => allItems.find((item) => item.id === selectedItemId) ?? null,
     [allItems, selectedItemId],
   );
+  const missingLinkedPrId = selectedItem?.linkedPrId && !prsByIdMap.has(selectedItem.linkedPrId)
+    ? selectedItem.linkedPrId
+    : null;
+
+  React.useEffect(() => {
+    if (!missingLinkedPrId) {
+      missingLinkedPrHydrationRef.current = null;
+      return;
+    }
+    if (missingLinkedPrHydrationRef.current === missingLinkedPrId) return;
+    missingLinkedPrHydrationRef.current = missingLinkedPrId;
+    void onRefreshAll({ prId: missingLinkedPrId }).catch(() => {});
+  }, [missingLinkedPrId, onRefreshAll]);
 
   const selectedLinkedPr = React.useMemo(
-    () => (selectedItem?.linkedPrId ? prs.find((pr) => pr.id === selectedItem.linkedPrId) ?? null : null),
+    (): PrWithConflicts | null => {
+      if (!selectedItem?.linkedPrId) return null;
+      const linked = prs.find((pr) => pr.id === selectedItem.linkedPrId);
+      if (linked) return linked;
+      const fallbackProjectId = prs[0]?.projectId;
+      if (!fallbackProjectId) return null;
+      return {
+        id: selectedItem.linkedPrId,
+        laneId: selectedItem.linkedLaneId ?? "",
+        projectId: fallbackProjectId,
+        repoOwner: selectedItem.repoOwner,
+        repoName: selectedItem.repoName,
+        githubPrNumber: selectedItem.githubPrNumber,
+        githubUrl: selectedItem.githubUrl,
+        githubNodeId: null,
+        title: selectedItem.title,
+        state: selectedItem.state,
+        baseBranch: selectedItem.baseBranch ?? "",
+        headBranch: selectedItem.headBranch ?? "",
+        checksStatus: "none",
+        reviewStatus: "none",
+        additions: 0,
+        deletions: 0,
+        lastSyncedAt: null,
+        createdAt: selectedItem.createdAt,
+        updatedAt: selectedItem.updatedAt,
+        conflictAnalysis: null,
+      };
+    },
     [prs, selectedItem],
   );
   const selectedQueueContext = React.useMemo(() => {

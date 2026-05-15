@@ -15,16 +15,28 @@ This folder documents:
 
 ## Where this runs
 
-PR CRUD, GitHub polling, queue landing, integration proposal
+PR mutations, GitHub polling, queue landing, integration proposal
 simulation, the Path-to-Merge orchestrator, and the issue/rebase
 resolver agent dispatch all run inside the **active ADE runtime**
 (local daemon for local-bound windows, SSH-attached remote runtime
 for remote-bound windows). The renderer's `window.ade.prs.*` surface
-in `apps/desktop/src/preload/preload.ts` routes every PR call through
-`callProjectRuntimeActionOr("pr", …)` and falls back to the legacy
-in-process IPC handlers only when no runtime is bound. PR polling
-fingerprints, the `prsRouteState.ts` URL-state helper, and the
-PR detail panes are renderer-only — they hold no service state.
+in `apps/desktop/src/preload/preload.ts` is the routing boundary:
+remote-bound windows route PR service work through the remote runtime,
+while local-bound windows still use selected legacy in-process IPC
+paths during migration. PR polling fingerprints, the
+`prsRouteState.ts` URL-state helper, and the PR detail panes are
+renderer-only — they hold no service state.
+
+The PR bridge deliberately splits local and remote reads while the PR
+service finishes its runtime migration. Remote-bound windows execute PR
+tab reads on the remote runtime through `callPrReadRuntimeActionOr`
+(`domain: "pr"`). Local-bound windows call the in-process PR IPC
+handlers directly for high-volume reads such as `listWithConflicts`,
+`getDetail`, `getStatus`, `getChecks`, `getReviews`, `getComments`,
+`getFiles`, `getCommits`, `getDeployments`, `getAiSummary`, and
+`getGitHubSnapshot`, so opening the PR tab does not wait on local
+daemon startup. Mutations and long-running workflows still use the
+project runtime route where that route owns the behavior.
 
 For remote-bound windows, GitHub polling, the queue automation loop,
 and the Path-to-Merge orchestrator all execute on the remote machine.
@@ -63,18 +75,18 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | File | Responsibility |
 |------|---------------|
 | `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
-| `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs, convergence runtime state) |
-| `prsRouteState.ts` | URL ↔ page state mapping |
+| `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs, convergence runtime state). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. |
+| `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
 | `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. A `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
-| `tabs/GitHubTab.tsx` | Unified repo + external PR browser with label filters, CI badges, review indicators |
+| `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. |
 | `tabs/QueueTab.tsx` | Merge queue UI. Hosts the "Automate Merging" entry point that opens `QueueAutomateMergingModal` with the queue's eligible members (everything that has not landed yet). |
 | `tabs/QueueAutomateMergingModal.tsx` | Stack-wide automation modal: edits one `PipelineSettings` config that applies to every queue member, then sequentially saves settings, calls `ade.prs.retargetBase` for non-leading members so each PR's base points at the queue's tracking branch, starts Path-to-Merge via `ade.prs.pathToMerge.start`, and polls `convergenceStateGet` every 4 s until the runtime status is terminal. Halts the sequence on the first `failed | cancelled | stopped`. Closing mid-sequence stops dispatching new starts but leaves already-launched orchestrators running. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
 | `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items |
 | `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
-| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, merge readiness, bypass, Path-to-Merge convergence sub-tab (labelled "Path to Merge" in the tab list), resolver modals. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
+| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, Path-to-Merge convergence sub-tab (labelled "Path to Merge" in the tab list), resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
 | `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: merges timeline events, commit rail (seeded from both `PrActivityEvent.commit_push` entries and the `getCommits` snapshot), status rail, deployment cards, AI summary, and command-palette navigation (`g c` / `g t` / `g f` and `[` / `]`) |
 | `shared/PrTimeline.tsx` | Timeline column: synthesises `PrTimelineEvent`s from detail data, handles per-PR filters (`PrTimelineFilters`), renders grouped events |
 | `shared/PrCommitRail.tsx`, `shared/PrStatusRail.tsx` | Right-hand rails on the timeline view: commit list, checks/reviews summary, deployment chips |
@@ -105,7 +117,7 @@ Shared contracts:
 | `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. |
 | `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
-| `apps/desktop/src/shared/ipc.ts` / `apps/desktop/src/preload/preload.ts` | PR IPC constants and renderer bridge for proposal simulation, update, commit, resolver, and cleanup flows. |
+| `apps/desktop/src/shared/ipc.ts` / `apps/desktop/src/preload/preload.ts` | PR IPC constants and renderer bridge for proposal simulation, update, commit, resolver, cleanup, and read flows. Read-heavy PR tab calls route to the remote runtime only for remote-bound windows and use in-process IPC for local-bound windows. Local PR/session push subscriptions are multiplexed so multiple renderer subscribers share one IPC listener per channel. |
 
 ## Core model
 
@@ -160,7 +172,7 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.pathToMerge.start`, `ade.prs.pathToMerge.stop` — drive the Path-to-Merge orchestrator (see [`path-to-merge.md`](./path-to-merge.md))
 - `ade.prs.retargetBase` — re-point a PR's base branch (used by Queue Automate Merging when stacking the chain bases before PtM picks them up)
 - `ade.prs.pipelineSettingsGet`, `ade.prs.pipelineSettingsSave`, `ade.prs.pipelineSettingsDelete`
-- `ade.prs.getGitHubSnapshot` — merged repo + external PR snapshot. The default fetch includes open external PRs only; closed/merged external history is opt-in with `includeExternalClosed`.
+- `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items.
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 
 Integration merge-into flow uses these existing channels with widened
@@ -183,22 +195,26 @@ DTOs:
 
 ## GitHub data-loading model
 
-The GitHub tab renders a unified list of repo PRs and external PRs
-involving the current user, sorted by creation date. A scope filter
-(`all` / `ade` / `external`) replaces the previous separate toggle.
+The GitHub tab renders PRs from the active repository, sorted by
+creation date. The scope filter (`all` / `ade` / `external`) is local
+to that repository: `ade` means ADE-managed/linked PRs, while
+`external` means repo PRs that are not currently managed by ADE.
+Cross-repo PRs involving the viewer are not fetched or displayed.
 
 Caching layers:
 
 1. **Runtime cache** — GitHub snapshot is cached for a short TTL
-   inside `prService` on the active runtime (local daemon or
-   remote-attached); repeated in-flight snapshot requests are
-   deduplicated. The default snapshot fetches open external PRs only;
-   closed/merged external history is requested after the user switches
-   to a history filter or explicitly refreshes that view.
+   inside `prService` on the active runtime for remote-bound windows
+   and in the local in-process PR service for local-bound windows.
+   Repeated in-flight snapshot requests are deduplicated. The snapshot
+   fetches repository PRs only.
 2. **Renderer cache** — `PrsContext` holds the last snapshot so
    revisiting the tab renders immediately. Selected PR detail panes
    hydrate from `listSnapshots({ prId })` before live status, check,
-   review, and comment requests run in the background.
+   review, comment, file, and commit requests run in the background.
+   Each live piece applies as soon as it resolves; a slow comments or
+   action-runs request does not block status/checks/files from
+   rendering.
 3. **Manual sync** — a "Refresh" action forces a fresh pull. Explicit
    multi-PR refreshes run with bounded parallelism instead of refreshing
    each PR serially.
@@ -578,10 +594,10 @@ best-effort — failures log a warning and do not abort the tick.
   banner, check/review/comment sections with running indicators
   (`PrCiRunningIndicator`), merge readiness with bypass checkbox,
   PR markdown rendered with `rehype-sanitize` after `rehype-raw`.
-- `GitHubTab` renders the unified repo+external list; filter tab
-  counts respect the active scope. Open views load open external PRs
-  first; switching to Closed, Merged, or All asks the runtime for the
-  closed external history snapshot.
+- `GitHubTab` renders the active repository's PR snapshot; filter tab
+  counts respect the active ADE/unmanaged scope. Legacy
+  `externalPullRequests` entries are ignored even if an old cache
+  contains them.
 
 ## CTO operator tools
 

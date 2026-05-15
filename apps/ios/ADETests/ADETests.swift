@@ -260,6 +260,8 @@ final class ADETests: XCTestCase {
   func testSyncRequestTimeoutUsesThirtySecondFriendlyReconnectMessage() {
     XCTAssertEqual(SyncRequestTimeout.defaultTimeoutNanoseconds, 30_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.chatSendTimeoutNanoseconds, 120_000_000_000)
+    XCTAssertEqual(SyncRequestTimeout.commandTimeoutNanoseconds(for: "lanes.delete"), 240_000_000_000)
+    XCTAssertEqual(SyncRequestTimeout.commandTimeoutNanoseconds(for: "lanes.rename"), 30_000_000_000)
     XCTAssertEqual(SyncRequestTimeout.error().localizedDescription, "The machine took too long to respond. Reconnecting now.")
     XCTAssertEqual(
       SyncRequestTimeout.error(message: SyncRequestTimeout.chatSendMessage).localizedDescription,
@@ -3800,6 +3802,51 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .draft).map(\.id), ["pr-2"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "cleanup", state: .merged).map(\.id), ["pr-3"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
+  }
+
+  func testRepoScopedGitHubPullRequestsIgnoreLegacyExternalHistory() {
+    func githubItem(id: String, scope: String, owner: String, repo: String, number: Int) -> GitHubPrListItem {
+      GitHubPrListItem(
+        id: id,
+        scope: scope,
+        repoOwner: owner,
+        repoName: repo,
+        githubPrNumber: number,
+        githubUrl: "https://github.com/\(owner)/\(repo)/pull/\(number)",
+        title: "PR \(number)",
+        state: "open",
+        isDraft: false,
+        baseBranch: "main",
+        headBranch: "feature/\(number)",
+        author: "octocat",
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        linkedPrId: nil,
+        linkedGroupId: nil,
+        linkedLaneId: nil,
+        linkedLaneName: nil,
+        adeKind: nil,
+        workflowDisplayState: nil,
+        cleanupState: nil,
+        labels: [],
+        isBot: false,
+        commentCount: 0
+      )
+    }
+
+    let snapshot = GitHubPrSnapshot(
+      repo: GitHubRepoRef(owner: "arul", name: "ADE", defaultBranch: "main"),
+      viewerLogin: "octocat",
+      repoPullRequests: [
+        githubItem(id: "repo-pr", scope: "repo", owner: "arul", repo: "ADE", number: 10),
+      ],
+      externalPullRequests: [
+        githubItem(id: "external-pr", scope: "external", owner: "elsewhere", repo: "other", number: 20),
+      ],
+      syncedAt: "2026-05-14T00:00:00.000Z"
+    )
+
+    XCTAssertEqual(repoScopedGitHubPullRequests(from: snapshot).map(\.id), ["repo-pr"])
   }
 
   func testPrLinkLanePreselectionRequiresExactBranchMatch() {

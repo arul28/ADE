@@ -421,6 +421,164 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
   });
 
+  it("uses in-process IPC for local PR tab reads instead of waiting on the runtime daemon", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const detail = {
+      prId: "pr-1",
+      body: "Ready to merge",
+      labels: [],
+      assignees: [],
+      requestedReviewers: [],
+      author: null,
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const prs = [
+      {
+        id: "pr-1",
+        laneId: "lane-1",
+        projectId: "project-1",
+        repoOwner: "owner",
+        repoName: "repo",
+        githubPrNumber: 12,
+        githubUrl: "https://github.com/owner/repo/pull/12",
+        githubNodeId: null,
+        title: "Fix detail load",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "lane/fix-detail-load",
+        checksStatus: "none",
+        reviewStatus: "none",
+        additions: 0,
+        deletions: 0,
+        lastSyncedAt: null,
+        createdAt: "2026-05-14T12:00:00.000Z",
+        updatedAt: "2026-05-14T12:00:00.000Z",
+        conflictAnalysis: null,
+      },
+    ];
+    const snapshot = {
+      repo: { owner: "owner", name: "repo" },
+      viewerLogin: "arul",
+      repoPullRequests: [],
+      externalPullRequests: [],
+      syncedAt: "2026-05-14T12:00:00.000Z",
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error("PR tab reads should not call the local runtime daemon");
+      }
+      if (channel === IPC.prsGetDetail) return detail;
+      if (channel === IPC.prsListWithConflicts) return prs;
+      if (channel === IPC.prsGetGitHubSnapshot) return snapshot;
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.prs.getDetail("pr-1")).resolves.toEqual(detail);
+    await expect(bridge.prs.listWithConflicts()).resolves.toEqual(prs);
+    await expect(bridge.prs.getGitHubSnapshot()).resolves.toEqual(snapshot);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.prsGetDetail, { prId: "pr-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.prsListWithConflicts, {});
+    expect(invoke).toHaveBeenCalledWith(IPC.prsGetGitHubSnapshot, {});
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("keeps remote runtime routing for PR tab reads when the project is remote", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const detail = {
+      prId: "pr-1",
+      body: "Loaded remotely",
+      labels: [],
+      assignees: [],
+      requestedReviewers: [],
+      author: null,
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        return { ok: true, domain: request?.domain, action: request?.action, result: detail, statusHints: {} };
+      }
+      if (channel === IPC.prsGetDetail) {
+        throw new Error("remote PR reads should not call desktop PR IPC");
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.prs.getDetail("pr-1")).resolves.toEqual(detail);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "pr", action: "getDetail", arg: "pr-1" },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetDetail, expect.anything());
+  });
+
   it("uses in-process file IPC when no local runtime binding exists", async () => {
     const workspaces = [{ id: "primary", label: "Primary", rootPath: "/repo" }];
     const invoke = vi.fn(async (channel: string) => {
@@ -1940,5 +2098,106 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(callback).toHaveBeenCalledTimes(2);
+  });
+
+  it("multiplexes local session and PR event subscriptions through one IPC listener", async () => {
+    const sessionEvent = {
+      sessionId: "session-1",
+      reason: "meta-updated",
+    };
+    const sessionDelta = {
+      sessionId: "session-1",
+      laneId: "lane-1",
+      startedAt: "2026-05-10T12:00:00.000Z",
+      endedAt: null,
+      headShaStart: null,
+      headShaEnd: null,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      touchedFiles: [],
+      failureLines: [],
+      computedAt: "2026-05-10T12:00:00.000Z",
+    };
+    const prEvent = {
+      type: "prs-updated",
+      polledAt: "2026-05-10T12:00:00.000Z",
+      prs: [],
+    };
+    const invoke = vi.fn(async (channel: string, arg?: { sessionId?: string }) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.sessionsGetDelta) {
+        return { ...sessionDelta, computedAt: `${sessionDelta.computedAt}:${arg?.sessionId ?? "unknown"}` };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const sessionCallbackA = vi.fn();
+    const sessionCallbackB = vi.fn();
+    const prCallbackA = vi.fn();
+    const prCallbackB = vi.fn();
+
+    const unsubscribeSessionA = bridge.sessions.onChanged(sessionCallbackA);
+    const unsubscribeSessionB = bridge.sessions.onChanged(sessionCallbackB);
+    const unsubscribePrA = bridge.prs.onEvent(prCallbackA);
+    const unsubscribePrB = bridge.prs.onEvent(prCallbackB);
+    const cachedDelta = await bridge.sessions.getDelta("session-1");
+    expect(cachedDelta.computedAt).toBe("2026-05-10T12:00:00.000Z:session-1");
+    invoke.mockClear();
+
+    const sessionListeners = on.mock.calls.filter(([channel]) => channel === IPC.sessionsChanged);
+    const prListeners = on.mock.calls.filter(([channel]) => channel === IPC.prsEvent);
+    expect(sessionListeners).toHaveLength(1);
+    expect(prListeners).toHaveLength(1);
+
+    const sessionListener = sessionListeners[0]![1];
+    const prListener = prListeners[0]![1];
+    sessionListener({}, sessionEvent);
+    prListener({}, prEvent);
+    await bridge.sessions.getDelta("session-1");
+
+    expect(sessionCallbackA).toHaveBeenCalledWith(sessionEvent);
+    expect(sessionCallbackB).toHaveBeenCalledWith(sessionEvent);
+    expect(prCallbackA).toHaveBeenCalledWith(prEvent);
+    expect(prCallbackB).toHaveBeenCalledWith(prEvent);
+    expect(invoke).toHaveBeenCalledWith(IPC.sessionsGetDelta, { sessionId: "session-1" });
+
+    unsubscribeSessionA();
+    unsubscribePrA();
+    expect(removeListener).not.toHaveBeenCalledWith(IPC.sessionsChanged, sessionListener);
+    expect(removeListener).not.toHaveBeenCalledWith(IPC.prsEvent, prListener);
+
+    sessionListener({}, sessionEvent);
+    prListener({}, prEvent);
+    expect(sessionCallbackA).toHaveBeenCalledTimes(1);
+    expect(sessionCallbackB).toHaveBeenCalledTimes(2);
+    expect(prCallbackA).toHaveBeenCalledTimes(1);
+    expect(prCallbackB).toHaveBeenCalledTimes(2);
+
+    unsubscribeSessionB();
+    unsubscribePrB();
+    expect(removeListener).toHaveBeenCalledWith(IPC.sessionsChanged, sessionListener);
+    expect(removeListener).toHaveBeenCalledWith(IPC.prsEvent, prListener);
   });
 });

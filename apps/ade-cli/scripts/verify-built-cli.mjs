@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,6 +13,7 @@ const bundledRuntimeEntryPaths = [
   path.join(packageRoot, "dist", "bootstrap.cjs"),
   path.join(packageRoot, "dist", "adeRpcServer.cjs"),
 ];
+const tuiPath = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
 const packageJsonPath = path.join(packageRoot, "package.json");
 
 async function runHelp(command, args) {
@@ -32,6 +34,39 @@ async function assertVersion(command, args, expectedVersion) {
   const actual = stdout.trim().replace(/^ade\s+/i, "");
   if (actual !== expectedVersion) {
     throw new Error(`[ade-cli:build] CLI version mismatch: expected ${expectedVersion}, got ${actual || "<empty>"}`);
+  }
+}
+
+async function assertIsolatedTuiHelp() {
+  const tuiContents = await fs.readFile(tuiPath, "utf8");
+  for (const token of ["__dirname", "__filename"]) {
+    if (tuiContents.includes(token) && !tuiContents.includes(`const ${token} =`)) {
+      throw new Error(`[ade-cli:build] dist/tuiClient/cli.mjs references ${token} without an ESM shim`);
+    }
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-cli-tui-isolated-"));
+  try {
+    const isolatedTuiPath = path.join(tempDir, "cli.mjs");
+    const runnerPath = path.join(tempDir, "run-tui-help.mjs");
+    await fs.copyFile(tuiPath, isolatedTuiPath);
+    await fs.writeFile(
+      runnerPath,
+      "const tui = await import('./cli.mjs');\nprocess.exitCode = await tui.runAdeCodeCli(['--help']);\n",
+      "utf8",
+    );
+    const { stdout } = await execFileAsync(process.execPath, [runnerPath], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        NODE_PATH: "",
+      },
+    });
+    if (!stdout.includes("Terminal-native ADE Work chat.")) {
+      throw new Error("[ade-cli:build] isolated TUI help output did not include the ADE code banner text");
+    }
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -68,6 +103,7 @@ if (process.platform !== "win32" && (stat.mode & 0o111) === 0) {
 
 await runHelp(process.execPath, [cliPath, "--help"]);
 await assertVersion(process.execPath, [cliPath, "--version"], expectedVersion);
+await assertIsolatedTuiHelp();
 
 if (process.platform !== "win32") {
   await runHelp(cliPath, ["--help"]);

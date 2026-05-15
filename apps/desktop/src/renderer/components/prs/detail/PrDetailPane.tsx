@@ -842,15 +842,24 @@ export function PrDetailPane({
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
   const snapshotHydrationRef = React.useRef<PrSnapshotHydration | null>(snapshotHydration);
+  const liveDetailLoadedForPrRef = React.useRef<string | null>(null);
+  const liveFilesLoadedForPrRef = React.useRef<string | null>(null);
+  const liveCommitsLoadedForPrRef = React.useRef<string | null>(null);
 
   const applySnapshotHydration = React.useCallback((cachedSnapshot: PrSnapshotHydration) => {
-    if (cachedSnapshot.detail) setDetail(cachedSnapshot.detail);
-    if (cachedSnapshot.status) setSnapshotStatus(cachedSnapshot.status);
-    if (cachedSnapshot.checks.length > 0) setSnapshotChecks(cachedSnapshot.checks);
-    if (cachedSnapshot.reviews.length > 0) setSnapshotReviews(cachedSnapshot.reviews);
-    if (cachedSnapshot.comments.length > 0) setSnapshotComments(cachedSnapshot.comments);
-    if (cachedSnapshot.files.length > 0) setFiles(cachedSnapshot.files);
-    if (cachedSnapshot.commits.length > 0) setCommits(cachedSnapshot.commits);
+    setSnapshotStatus(cachedSnapshot.status);
+    setSnapshotChecks(cachedSnapshot.checks);
+    setSnapshotReviews(cachedSnapshot.reviews);
+    setSnapshotComments(cachedSnapshot.comments);
+    if (liveDetailLoadedForPrRef.current !== cachedSnapshot.prId) {
+      setDetail(cachedSnapshot.detail);
+    }
+    if (liveFilesLoadedForPrRef.current !== cachedSnapshot.prId) {
+      setFiles(cachedSnapshot.files);
+    }
+    if (liveCommitsLoadedForPrRef.current !== cachedSnapshot.prId) {
+      setCommits(cachedSnapshot.commits);
+    }
   }, []);
 
   React.useEffect(() => {
@@ -872,17 +881,34 @@ export function PrDetailPane({
           applySnapshotHydration(cachedSnapshot);
         }
       }
-      const [d, f, c, a] = await Promise.all([
-        window.ade.prs.getDetail(pr.id).catch(() => null),
-        window.ade.prs.getFiles(pr.id).catch(() => []),
-        (window.ade.prs.getCommits?.(pr.id) ?? Promise.resolve([])).catch(() => []),
-        window.ade.prs.getActionRuns(pr.id).catch(() => []),
-      ]);
-      if (requestId !== detailLoadSeqRef.current) return;
-      setDetail(d);
-      setFiles(f);
-      setCommits(c);
-      setActionRuns(a);
+      const applyIfCurrent = <T,>(apply: (value: T) => void) => (value: T) => {
+        if (requestId === detailLoadSeqRef.current) apply(value);
+        return value;
+      };
+      const detailPromise = window.ade.prs.getDetail(pr.id)
+        .then(applyIfCurrent((value) => {
+          liveDetailLoadedForPrRef.current = pr.id;
+          setDetail(value);
+        }))
+        .catch(() => null);
+      const filesPromise = window.ade.prs.getFiles(pr.id)
+        .then(applyIfCurrent((value) => {
+          liveFilesLoadedForPrRef.current = pr.id;
+          setFiles(value);
+        }))
+        .catch(() => []);
+      const commitsPromise = (typeof window.ade.prs.getCommits === "function"
+        ? window.ade.prs.getCommits(pr.id)
+            .then(applyIfCurrent((value) => {
+              liveCommitsLoadedForPrRef.current = pr.id;
+              setCommits(value);
+            }))
+            .catch(() => [])
+        : Promise.resolve([]));
+      const actionRunsPromise = window.ade.prs.getActionRuns(pr.id)
+        .then(applyIfCurrent((value) => setActionRuns(value)))
+        .catch(() => []);
+      await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise]);
     } catch {
       // silently fail - basic data still available from context
     }
@@ -928,6 +954,17 @@ export function PrDetailPane({
     setShowReviewerEditor(false);
     setShowReviewModal(false);
     setActivity([]);
+    liveDetailLoadedForPrRef.current = null;
+    liveFilesLoadedForPrRef.current = null;
+    liveCommitsLoadedForPrRef.current = null;
+    setDetail(null);
+    setFiles([]);
+    setCommits([]);
+    setActionRuns([]);
+    setSnapshotStatus(null);
+    setSnapshotChecks([]);
+    setSnapshotReviews([]);
+    setSnapshotComments([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;

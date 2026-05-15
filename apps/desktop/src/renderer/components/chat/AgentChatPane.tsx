@@ -1806,6 +1806,7 @@ export function AgentChatPane({
   useEffect(() => {
     const api = window.ade?.appControl;
     if (!api?.getStatus) return;
+    if (!laneToolsVisible) return;
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -1819,7 +1820,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -5908,7 +5909,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {showWorkspaceChrome && laneId ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {laneToolsVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {selectedSession?.provider === "codex"
             && selectedSession.surface !== "mission"
             && selectedSessionId
@@ -6868,7 +6869,7 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    {showWorkspaceChrome ? (
+                    {laneToolsVisible ? (
                       <ChatTerminalDrawer
                         open={terminalDrawerOpen}
                         onToggle={() => setTerminalDrawerOpen((v) => !v)}

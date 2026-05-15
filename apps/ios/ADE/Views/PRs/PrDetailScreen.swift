@@ -895,13 +895,14 @@ struct PrDetailView: View {
       pr = listItems.first(where: { $0.id == prId })
       snapshot = try await snapshotTask
 
-      // Fall back to the GitHub snapshot when the PR isn't in the lane-PR list
-      // (e.g. external PRs or stale local cache). This keeps the hero card from
-      // collapsing into "Pull request / @unknown" placeholders.
+      // Fall back to the repo-scoped GitHub snapshot when the PR isn't in the
+      // lane-PR list. This keeps the hero card from collapsing into
+      // "Pull request / @unknown" placeholders without resurrecting legacy
+      // cross-repo snapshot items.
       if pr == nil && isLive {
         if let github = try? await syncService.fetchGitHubPullRequestSnapshot() {
-          let all = github.repoPullRequests + github.externalPullRequests
-          githubItem = all.first { $0.linkedPrId == prId || $0.id == prId }
+          githubItem = repoScopedGitHubPullRequests(from: github)
+            .first { $0.linkedPrId == prId || $0.id == prId }
         }
       }
       reviewThreads = await reviewThreadsTask?.value ?? []

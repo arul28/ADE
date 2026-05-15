@@ -92,6 +92,8 @@ export function FooterControls({
   inlineRowFocused,
   inlineRowCell,
   planMode,
+  terminalControlAvailable,
+  terminalControlActive,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -107,6 +109,8 @@ export function FooterControls({
   inlineRowFocused?: boolean;
   inlineRowCell?: InlineRowCell;
   planMode?: boolean;
+  terminalControlAvailable?: boolean;
+  terminalControlActive?: boolean;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -211,7 +215,15 @@ export function FooterControls({
         ) : null}
       </Text>
       <Text wrap="truncate-start">
-        {approvalActive ? (
+        {terminalControlActive ? (
+          <>
+            <Text color={theme.color.warning} bold>CLAUDE CONTROL</Text>
+            <Text dimColor>{" · "}</Text>
+            <Hint keyLabel="^t" action="ADE" />
+            <Text dimColor>{"  "}</Text>
+            <Hint keyLabel="^]" action="escape" />
+          </>
+        ) : approvalActive ? (
           <>
             <Text color={theme.color.accent} bold>a</Text>
             <Text dimColor>{" approve  "}</Text>
@@ -239,6 +251,12 @@ export function FooterControls({
             <Hint keyLabel="/" action="cmds" />
             <Text dimColor>{"  "}</Text>
             <Hint keyLabel="?" action="help" />
+            {terminalControlAvailable ? (
+              <>
+                <Text dimColor>{"  "}</Text>
+                <Hint keyLabel="^t" action="Claude" />
+              </>
+            ) : null}
           </>
         )}
       </Text>

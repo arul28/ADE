@@ -6,6 +6,7 @@ import type {
   TerminalSnapshotCell,
   TerminalSnapshotRow,
 } from "../../../../desktop/src/shared/types";
+import { useSpinFrame } from "../spinTick";
 import { theme } from "../theme";
 
 type HeadlessXtermModule = typeof HeadlessXterm;
@@ -224,14 +225,22 @@ export function styledRowsFromSnapshotRows(rows: TerminalSnapshotRow[], maxRows:
   return rows.slice(0, Math.max(0, maxRows)).map((row) => styledRowFromCells(row.cells, row.text));
 }
 
+function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number): TerminalStyledRow[] {
+  const text = stripTerminalControls(transcript ?? "").trimEnd();
+  if (!text) return [{ runs: [{ text: "No terminal output yet.", style: {} }] }];
+  return text.split(/\r\n|\n|\r/).slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
+}
+
 function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number): TerminalStyledRow[] {
   if (!preview) return [{ runs: [{ text: "No terminal preview yet.", style: {} }] }];
   if (preview.snapshot?.visibleRows?.length) {
     return styledRowsFromSnapshotRows(preview.snapshot.visibleRows, maxRows);
   }
-  const text = stripTerminalControls(preview.transcript ?? "").trimEnd();
-  if (!text) return [{ runs: [{ text: "No terminal output yet.", style: {} }] }];
-  return text.split(/\r\n|\n|\r/).slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
+  return transcriptPreviewRows(preview.transcript, maxRows);
+}
+
+function terminalControlBorderColor(frame: string): string {
+  return frame === "◐" || frame === "◑" ? theme.color.warning : theme.color.attention2;
 }
 
 export function TerminalPane({
@@ -243,9 +252,13 @@ export function TerminalPane({
   height,
   hiddenBottomRows = 0,
 }: TerminalPaneProps) {
-  const cols = clampTerminalPaneCols(width);
-  const rows = clampTerminalPaneRows(height);
-  const emulatedRows = clampTerminalPaneRows(rows + Math.max(0, finiteFloor(hiddenBottomRows, 0)));
+  const spinFrame = useSpinFrame();
+  const effectiveHiddenBottomRows = attached ? 0 : hiddenBottomRows;
+  const contentWidth = attached ? Math.max(1, width - 2) : width;
+  const visibleHeight = attached ? Math.max(1, height - 1) : height;
+  const cols = clampTerminalPaneCols(contentWidth);
+  const rows = clampTerminalPaneRows(visibleHeight);
+  const emulatedRows = clampTerminalPaneRows(rows + Math.max(0, finiteFloor(effectiveHiddenBottomRows, 0)));
   const useSnapshotRows = Boolean(
     preview?.snapshot?.visibleRows?.length
       && (preview.session.status === "running" || !preview.transcript),
@@ -303,27 +316,32 @@ export function TerminalPane({
 
   const lines = useMemo(() => {
     if (snapshotRows?.length) return snapshotRows.slice(0, rows);
+    if (preview?.transcript && preview.session.status !== "running" && !liveChunks.length) {
+      return transcriptPreviewRows(preview.transcript, rows);
+    }
     const terminal = terminalRef.current;
     if (terminal) return styledRowsFromTerminal(terminal, rows);
     return fallbackPreviewRows(preview, rows);
-  }, [preview, renderTick, rows, snapshotRows]);
+  }, [liveChunks.length, preview, renderTick, rows, snapshotRows]);
 
   const status = attached
-    ? "attached · Ctrl+] returns to ADE"
+    ? "CLAUDE CONTROL · Ctrl+T returns to ADE · Ctrl+] escape"
     : preview?.session.status === "running"
-      ? hiddenBottomRows > 0 ? "ADE prompt sends to Claude Code" : "live preview"
+      ? effectiveHiddenBottomRows > 0 ? "ADE prompt sends to Claude Code" : "live preview"
       : preview?.session.resumeCommand
         ? "closed, resumable"
         : "closed";
 
-  return (
-    <Box flexDirection="column" width={width} height={height + 2}>
-      <Box width={width}>
-        <Text color={theme.color.accent}>{title}</Text>
+  const content = (
+    <>
+      <Box width={contentWidth}>
+        <Text color={attached ? theme.color.warning : theme.color.accent}>
+          {attached ? `${spinFrame} ${title}` : title}
+        </Text>
         <Text color={theme.color.mutedFg}>  {status}</Text>
       </Box>
-      <Box flexDirection="column" width={width} height={height} overflow="hidden">
-        {lines.slice(0, height).map((line, index) => (
+      <Box flexDirection="column" width={contentWidth} height={visibleHeight} overflow="hidden">
+        {lines.slice(0, visibleHeight).map((line, index) => (
           <Text key={index} wrap="truncate">
             {line.runs.map((run, runIndex) => (
               <Text
@@ -343,6 +361,26 @@ export function TerminalPane({
           </Text>
         ))}
       </Box>
+    </>
+  );
+
+  if (attached) {
+    return (
+      <Box
+        flexDirection="column"
+        width={width}
+        height={height + 2}
+        borderStyle="round"
+        borderColor={terminalControlBorderColor(spinFrame)}
+      >
+        {content}
+      </Box>
+    );
+  }
+
+  return (
+    <Box flexDirection="column" width={width} height={height + 2}>
+      {content}
     </Box>
   );
 }

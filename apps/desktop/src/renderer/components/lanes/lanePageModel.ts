@@ -8,6 +8,10 @@ type CreateLaneRequest =
   | { kind: "root"; args: { name: string; baseBranch: string } }
   | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
 
+export type LaneDeleteBatchResult<T> =
+  | { status: "fulfilled"; lane: T }
+  | { status: "rejected"; lane: T; reason: unknown };
+
 export type LaneTabPrTag = {
   source: "ade" | "github";
   id: string;
@@ -94,6 +98,22 @@ export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parent
   }
 
   return batches;
+}
+
+export async function runLaneDeleteBatchSequentially<T>(
+  lanes: T[],
+  deleteLane: (lane: T) => Promise<void>,
+): Promise<LaneDeleteBatchResult<T>[]> {
+  const results: LaneDeleteBatchResult<T>[] = [];
+  for (const lane of lanes) {
+    try {
+      await deleteLane(lane);
+      results.push({ status: "fulfilled", lane });
+    } catch (reason) {
+      results.push({ status: "rejected", lane, reason });
+    }
+  }
+  return results;
 }
 
 export function laneHasAncestor<T extends Pick<LaneSummary, "id" | "parentLaneId">>(
@@ -228,13 +248,43 @@ function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): Lan
   };
 }
 
+function isTerminalPrState(state: PrSummary["state"]): boolean {
+  return state === "merged" || state === "closed";
+}
+
+function githubPrMatchesAdePr(pr: PrSummary, githubPr: GitHubPrListItem): boolean {
+  return (
+    githubPr.linkedPrId === pr.id ||
+    githubPr.githubPrNumber === pr.githubPrNumber ||
+    githubPr.githubUrl === pr.githubUrl
+  );
+}
+
+function selectTerminalGithubUpdateForPr(
+  pr: PrSummary,
+  githubPrs: GitHubPrListItem[],
+): GitHubPrListItem | null {
+  if (isTerminalPrState(pr.state)) return null;
+  return githubPrs
+    .filter((githubPr) =>
+      githubPr.scope === "repo" &&
+      isTerminalPrState(githubPr.state) &&
+      githubPrMatchesAdePr(pr, githubPr)
+    )
+    .sort(comparePrTags)[0] ?? null;
+}
+
 export function selectLaneTabPrTag(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
   prs: PrSummary[],
   githubPrs: GitHubPrListItem[],
 ): LaneTabPrTag | null {
   const mappedPr = selectLanePrTag(lane, prs);
-  if (mappedPr) return toLaneTabPrTagFromPrSummary(mappedPr);
+  if (mappedPr) {
+    const terminalGithubPr = selectTerminalGithubUpdateForPr(mappedPr, githubPrs);
+    if (terminalGithubPr) return toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id);
+    return toLaneTabPrTagFromPrSummary(mappedPr);
+  }
   const githubPr = selectGithubLanePrTag(lane, githubPrs);
   return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
 }

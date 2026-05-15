@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 
@@ -491,6 +491,12 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(path.join(onnxRuntimeWinPath, "DirectML.dll"), "Windows DirectML DLL");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
+  const adeCliTuiContents = await fsp.readFile(adeCliTuiPath, "utf8");
+  for (const token of ["__dirname", "__filename"]) {
+    if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
+      fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
+    }
+  }
   await assertRemoteRuntimeBundle(resourcesPath);
   await validatePackageHygiene(resourcesPath);
 
@@ -548,6 +554,30 @@ async function validatePackagedRuntime(appDir) {
     env: { ...process.env },
   });
   assertAdeCliHelp(defaultHelp.stdout, "Bundled ADE CLI wrapper");
+
+  const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
+  try {
+    const tuiRunnerPath = path.join(tuiSmokeDir, "run-tui-help.mjs");
+    await fsp.writeFile(
+      tuiRunnerPath,
+      `const tui = await import(${JSON.stringify(pathToFileURL(adeCliTuiPath).href)});\n` +
+        "process.exitCode = await tui.runAdeCodeCli(['--help']);\n",
+      "utf8",
+    );
+    const tuiHelp = await runCommand(appExe, [tuiRunnerPath], {
+      cwd: resourcesPath,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+        NODE_PATH: "",
+      },
+    });
+    if (!tuiHelp.stdout.includes("Terminal-native ADE Work chat.")) {
+      fail("Bundled ADE code TUI did not print help");
+    }
+  } finally {
+    await fsp.rm(tuiSmokeDir, { recursive: true, force: true });
+  }
 
   const nodeOverrideHelp = await runCommand(adeCliBinPath, ["--help"], {
     cwd: resourcesPath,

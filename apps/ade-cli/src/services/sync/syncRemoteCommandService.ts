@@ -1451,9 +1451,16 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
   return null;
 }
 
-async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, laneId: string) {
+async function resolveLaneOverlayContext(
+  args: SyncRemoteCommandServiceArgs,
+  laneId: string,
+  options: { includeArchived?: boolean } = {},
+) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  const lanes = await args.laneService.list({ includeStatus: false });
+  const lanes = await args.laneService.list({
+    includeStatus: false,
+    ...(options.includeArchived === true ? { includeArchived: true } : {}),
+  });
   const lane = lanes.find((entry) => entry.id === laneId);
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
@@ -1468,6 +1475,31 @@ async function resolveLaneOverlayContext(args: SyncRemoteCommandServiceArgs, lan
     overrides,
     envInitConfig,
   };
+}
+
+async function deleteLaneWithRuntimeCleanup(
+  args: SyncRemoteCommandServiceArgs,
+  payload: Record<string, unknown>,
+): Promise<{ ok: true }> {
+  const deleteArgs = parseDeleteLaneArgs(payload);
+  const envContext = args.laneEnvironmentService
+    ? await resolveLaneOverlayContext(args, deleteArgs.laneId, { includeArchived: true }).catch((error: unknown) => {
+        args.logger.warn("sync_remote.lane_env_cleanup.pre_delete_context_failed", {
+          laneId: deleteArgs.laneId,
+          err: String(error),
+        });
+        return null;
+      })
+    : null;
+  const teardownEnv = args.laneEnvironmentService && envContext?.envInitConfig
+    ? async () => {
+        await args.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
+      }
+    : undefined;
+
+  await args.laneService.delete(deleteArgs, { teardownEnv });
+  args.portAllocationService?.release(deleteArgs.laneId);
+  return { ok: true };
 }
 
 async function resolveChatCreateArgs(
@@ -1687,10 +1719,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     await args.laneService.unarchive(parseArchiveLaneArgs(payload, "lanes.unarchive"));
     return { ok: true };
   });
-  register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await args.laneService.delete(parseDeleteLaneArgs(payload));
-    return { ok: true };
-  });
+  register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
+    deleteLaneWithRuntimeCleanup(args, payload));
   register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
     args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
   register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>

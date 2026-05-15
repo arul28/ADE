@@ -81,6 +81,7 @@ function DetailHarness() {
     detailChecks,
     detailReviews,
     detailComments,
+    detailLiveDataPrId,
     detailStatus,
     loading,
     selectedPrId,
@@ -97,12 +98,35 @@ function DetailHarness() {
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="detail-busy">{detailBusy ? "busy" : "idle"}</div>
       <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
+      <div data-testid="live-detail-pr-id">{detailLiveDataPrId ?? ""}</div>
       <div data-testid="status">{detailStatus?.state ?? ""}</div>
       <div data-testid="checks-count">{detailChecks.length}</div>
       <div data-testid="reviews-count">{detailReviews.length}</div>
       <div data-testid="comments-count">{detailComments.length}</div>
     </div>
   );
+}
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function enqueueDeferred<T>(store: Record<string, Deferred<T>[]>, prId: string): Deferred<T> {
+  const request = createDeferred<T>();
+  store[prId] = [...(store[prId] ?? []), request];
+  return request;
 }
 
 function MergeContextHarness() {
@@ -546,6 +570,124 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
       expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
     });
+  });
+
+  it("applies selected PR status and checks without waiting for slow comments", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus: vi.fn(async () => ({ state: "open" })),
+      getChecks: vi.fn(async () => [
+        {
+          name: "ci",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ]),
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn((_prId: string) => new Promise(() => {})),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.getComments).toHaveBeenCalledWith("pr-1");
+  });
+
+  it("ignores stale primary detail settlements after reselecting the same PR", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    const statusRequests: Record<string, Deferred<{ state: string }>[]> = {};
+    const checksRequests: Record<string, Deferred<unknown[]>[]> = {};
+    const reviewsRequests: Record<string, Deferred<unknown[]>[]> = {};
+    const commentsRequests: Record<string, Deferred<unknown[]>[]> = {};
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus: vi.fn((prId: string) => enqueueDeferred(statusRequests, prId).promise),
+      getChecks: vi.fn((prId: string) => enqueueDeferred(checksRequests, prId).promise),
+      getReviews: vi.fn((prId: string) => enqueueDeferred(reviewsRequests, prId).promise),
+      getComments: vi.fn((prId: string) => enqueueDeferred(commentsRequests, prId).promise),
+    });
+
+    const resolveDetailSet = async (prId: string, index: number, state: string) => {
+      const status = statusRequests[prId]?.[index];
+      const checks = checksRequests[prId]?.[index];
+      const reviews = reviewsRequests[prId]?.[index];
+      const comments = commentsRequests[prId]?.[index];
+      if (!status || !checks || !reviews || !comments) {
+        throw new Error(`Missing detail requests for ${prId} #${index}`);
+      }
+      await act(async () => {
+        status.resolve({ state });
+        checks.resolve([
+          {
+            name: `ci-${state}`,
+            status: "completed",
+            conclusion: state === "open" ? "success" : "failure",
+            detailsUrl: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        ]);
+        reviews.resolve([]);
+        comments.resolve([]);
+        await Promise.all([status.promise, checks.promise, reviews.promise, comments.promise]);
+      });
+    };
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(statusRequests["pr-1"]).toHaveLength(1);
+    });
+    await user.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(statusRequests["pr-2"]).toHaveLength(1);
+    });
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(statusRequests["pr-1"]).toHaveLength(2);
+    });
+
+    await resolveDetailSet("pr-1", 1, "open");
+    await waitFor(() => {
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(screen.getByTestId("status").textContent).toBe("open");
+    });
+
+    await resolveDetailSet("pr-1", 0, "closed");
+    await waitFor(() => {
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(screen.getByTestId("status").textContent).toBe("open");
+    });
+
+    await resolveDetailSet("pr-2", 0, "closed");
   });
 
   it("does not let cached snapshot hydration overwrite live detail data", async () => {

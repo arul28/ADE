@@ -53,6 +53,7 @@ Usage:
 Keys:
   ctrl-o   open or focus lanes and chats
   ctrl-p   open or focus details
+  ctrl-t   toggle Claude terminal control when a Claude Code terminal is active
   shift-tab cycle pane focus
   esc      return or cancel the active pane
   ?        help when it is the first and only prompt character

@@ -32,7 +32,7 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/state.ts` | Persists terminal-client state under `~/.ade/`: the last selected chat per lane (`lastChatByLane`) plus the most recently active lane (`lastLaneId`), used to restore lane focus across launches. |
 | `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens. Mirrors the Claude Design wireframe terminal palette 1:1: surfaces, text levels, brand violets, status (`running`/`attention`/`idle`/`failed`/`primary`), executor brand colors (Claude/Codex/Cursor/OpenCode/Droid + Shell + Copilot), plus helper exports `laneStatusColor`, `agentStatusColor`, `agentStatusGlyph`, and per-provider `glyph` + `wordmark`. |
 | `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (exports `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText` for `/copy`), `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink). |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (exports `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText` for `/copy`), `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink; running Claude terminals can be put into direct control mode from the TUI). |
 | `apps/ade-cli/src/tuiClient/keybindings/index.ts` | Verbatim `~/.claude/keybindings.json` reader and TUI action dispatcher (chord support, vim namespace, clipboard-image paste hooks). Resolves `defaultKeybindingsPath()`, parses the Claude keybindings schema, and maps key sequences onto TUI actions. |
 | `apps/ade-cli/src/tuiClient/statusline/index.ts` | Claude-compatible status line config reader and runner. Reads the `~/.claude/statusline.json` contract, executes the configured status command, and exposes the rendered lines to `ModelStatus`. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
@@ -86,6 +86,13 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
 - **Composer** — multi-line input with mention completion (`@…`) sourced from `MentionPalette` and slash command completion from `SlashPalette`. Pending tool approvals surface as `ApprovalPrompt`.
 - **RightPane** — context-sensitive drawer for slash command output. The "right" placement commands (see below) render their results here as forms, lists, diffs, help text, or rendered objects. For an active lane, the default `lane-details` view shows live git stats (`DiffLineStats` via `diff.listLaneDiffStats`), the linked PR if any (`pr.listPrsByLane`), the most recent tool/command summary, elapsed time for the active turn, and a `worktreeAvailable` guard that surfaces a recoverable warning when a lane's worktree path is missing from disk.
 - **FooterControls** — two-row footer. The top row (mode bar, only present when there's content) shows provider glyph + label, model display, fast-mode badge, reasoning effort, permission summary, pending steer count, a 10-cell token usage bar (`TokenBar`) that recolors at 50 / 80 / 95 %, and the cached context-percent / token summary. The bottom row shows pane toggles (`lanes`, `setup`, plus an optional `agents` toggle when subagents/teammates exist) and pane-specific hints (drawer mode lanes/chats, details navigation, chat scroll position, `/steer` reminder when steers are queued). `footerControlsForAvailability(agentsAvailable)` decides which toggles are wired.
+- **Claude terminal control** — when the active session is a running
+  Claude terminal, `Ctrl+T` moves keyboard input from ADE into that
+  terminal. `TerminalPane` switches from preview mode to a bordered
+  control frame, stops hiding Claude's bottom input rows, and the footer
+  shows `CLAUDE CONTROL` with `Ctrl+T` to return to ADE and `Ctrl+]`
+  as the escape chord. Raw terminal input strips only those control
+  bytes before forwarding the rest to the PTY.
 
 Heartbeats are kept alive with `startTuiHeartbeat` so the runtime knows the chat client is still attached.
 
@@ -189,7 +196,7 @@ ade --socket /tmp/ade-runtime-dev.sock code
                                          # attach to a specific socket (dev runtime, peer machine, etc.)
 ```
 
-After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
+After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
 
 ## Claude Code 2.1.x parity
 

@@ -424,6 +424,52 @@ function makeSession(
 }
 
 describe("runtime lane snapshot actions", () => {
+  it("runs lane delete with env teardown and port release in the runtime action domain", async () => {
+    const lane = makeLane({ id: "lane-delete", name: "Delete me" });
+    const envInitConfig = { dependencies: ["npm install"] };
+    const cleanupLaneEnvironment = vi.fn(async () => undefined);
+    const release = vi.fn();
+    const deleteLane = vi.fn(async (_args, opts?: { teardownEnv?: () => Promise<void> }) => {
+      await opts?.teardownEnv?.();
+    });
+    const runtime = {
+      laneService: {
+        list: vi.fn(async () => [lane]),
+        delete: deleteLane,
+      },
+      projectConfigService: {
+        getEffective: vi.fn(() => ({
+          laneEnvInit: null,
+          laneOverlayPolicies: [],
+        })),
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig: vi.fn(() => envInitConfig),
+        cleanupLaneEnvironment,
+      },
+      portAllocationService: {
+        getLease: vi.fn(() => null),
+        release,
+      },
+      logger: {
+        info: vi.fn(),
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const laneService = getAdeActionDomainServices(runtime).lane as {
+      delete?: (args: { laneId: string; force?: boolean; deleteBranch?: boolean }) => Promise<void>;
+    };
+
+    await laneService.delete?.({ laneId: lane.id, force: true, deleteBranch: false });
+
+    expect(deleteLane).toHaveBeenCalledWith(
+      { laneId: lane.id, force: true, deleteBranch: false },
+      { teardownEnv: expect.any(Function) },
+    );
+    expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig);
+    expect(release).toHaveBeenCalledWith(lane.id);
+  });
+
   it("builds rich lane.listSnapshots results from runtime services", async () => {
     const lane = makeLane({ id: "lane-runtime", name: "Runtime lane" });
     const attachedLane = makeLane({

@@ -787,18 +787,82 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     it("lanes.delete parses all optional flags", async () => {
-      await service.execute(makePayload("lanes.delete", {
+      const result = await service.execute(makePayload("lanes.delete", {
         laneId: "lane-1",
         deleteBranch: true,
         deleteRemoteBranch: false,
         force: true,
       }));
-      expect(laneService.delete).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        deleteBranch: true,
-        deleteRemoteBranch: false,
-        force: true,
+      expect(laneService.delete).toHaveBeenCalledWith(
+        {
+          laneId: "lane-1",
+          deleteBranch: true,
+          deleteRemoteBranch: false,
+          force: true,
+        },
+        { teardownEnv: undefined },
+      );
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("lanes.delete runs env teardown and releases the port lease", async () => {
+      const lane = {
+        id: "lane-1",
+        name: "Lane one",
+        laneType: "feature",
+        worktreePath: "/repo/.ade/worktrees/lane-1",
+      };
+      const envInitConfig = { dependencies: ["npm install"] };
+      const cleanupLaneEnvironment = vi.fn(async () => undefined);
+      const release = vi.fn();
+      laneService.list.mockResolvedValue([lane]);
+      laneService.delete.mockImplementation(async (_args: unknown, opts?: { teardownEnv?: () => Promise<void> }) => {
+        await opts?.teardownEnv?.();
       });
+      const withRuntimeCleanup = createSyncRemoteCommandService({
+        laneService,
+        prService,
+        issueInventoryService,
+        queueLandingService,
+        ptyService,
+        sessionService,
+        fileService,
+        gitService,
+        diffService,
+        agentChatService,
+        workerAgentService,
+        conflictService,
+        processService,
+        projectConfigService: {
+          getEffective: vi.fn(() => ({
+            laneEnvInit: null,
+            laneOverlayPolicies: [],
+          })),
+        } as any,
+        laneEnvironmentService: {
+          resolveEnvInitConfig: vi.fn(() => envInitConfig),
+          cleanupLaneEnvironment,
+        } as any,
+        portAllocationService: {
+          getLease: vi.fn(() => null),
+          release,
+        } as any,
+        logger: createLogger() as any,
+      });
+
+      await withRuntimeCleanup.execute(makePayload("lanes.delete", {
+        laneId: "lane-1",
+        force: true,
+        deleteBranch: false,
+      }));
+
+      expect(laneService.list).toHaveBeenCalledWith({ includeStatus: false, includeArchived: true });
+      expect(laneService.delete).toHaveBeenCalledWith(
+        { laneId: "lane-1", force: true, deleteBranch: false, deleteRemoteBranch: undefined },
+        { teardownEnv: expect.any(Function) },
+      );
+      expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig);
+      expect(release).toHaveBeenCalledWith("lane-1");
     });
 
     it("lanes.getStackChain requires laneId", async () => {
@@ -1949,7 +2013,7 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     it("handles payload.args being non-object by defaulting to empty record", async () => {
-      const result = await service.execute({
+      await service.execute({
         commandId: "cmd-1",
         action: "prs.list",
         args: "not-an-object" as any,

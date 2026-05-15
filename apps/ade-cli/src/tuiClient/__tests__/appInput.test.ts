@@ -7,11 +7,13 @@ import {
   footerControlsForAvailability,
   isPromptLineBackspace,
   isPromptWordBackspace,
+  isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   parseTerminalMouseInput,
   promptDisplayRows,
   resolveChatWrapWidth,
   resolveTerminalPaneWidth,
+  splitTerminalControlInput,
   subagentSnapshotsFromEvents,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
@@ -95,6 +97,26 @@ describe("footer control ordering", () => {
   it("puts agents first only when the active chat has subagent history", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("terminal control toggle", () => {
+  it("recognizes ctrl-t from Ink key data and raw terminal bytes", () => {
+    expect(isTerminalControlToggle("t", { ctrl: true })).toBe(true);
+    expect(isTerminalControlToggle("T", { ctrl: true })).toBe(true);
+    expect(isTerminalControlToggle("\x14", {})).toBe(true);
+    expect(isTerminalControlToggle("t", {})).toBe(false);
+  });
+
+  it("detaches from terminal control while preserving other raw input bytes", () => {
+    expect(splitTerminalControlInput("a\x14b\x1dc")).toEqual({
+      detach: true,
+      forwarded: "abc",
+    });
+    expect(splitTerminalControlInput("\x1b[A")).toEqual({
+      detach: false,
+      forwarded: "\x1b[A",
+    });
   });
 });
 
