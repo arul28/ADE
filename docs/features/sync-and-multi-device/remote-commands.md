@@ -128,6 +128,13 @@ Listed in order of appearance in the registry:
   `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
   `brain_status`.
 
+`lanes.reparent` accepts `{ laneId, newParentLaneId,
+stackBaseBranchRef? }`. The optional base ref is trimmed before
+dispatch; when present, the host resolves it in the project repo
+preferring `origin/<branch>`, persists it as the lane's `base_ref`,
+and rebases the lane onto that resolved branch. When omitted, the host
+uses the selected parent lane's current branch.
+
 **Work** (`work.*`)
 - `listSessions`, `updateSessionMeta`, `runQuickCommand`,
   `startCliSession`, `sendToSession`, `stopRuntime`

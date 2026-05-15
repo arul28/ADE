@@ -45,6 +45,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/goal", description: "Set, clear, or inspect the active chat goal", placement: "chat", argumentHint: "[<text>|clear|status active|paused|complete|budget <n>|budget clear]", providers: ["claude", "codex"] },
   { name: "/diff", description: "Show active lane diff", placement: "right" },
   { name: "/log", description: "Show recent commits", placement: "right" },
+  { name: "/reparent", description: "Move the active lane under another lane", placement: "right", argumentHint: "<parent-lane-id|parent-name> [stack-base-ref]" },
   { name: "/pr", description: "Show pull request state", placement: "right" },
   { name: "/pr open", description: "Create or open a PR for the active lane", placement: "right" },
   { name: "/pr review", description: "Show PR reviews", placement: "right" },

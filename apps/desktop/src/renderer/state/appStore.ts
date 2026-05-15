@@ -1174,6 +1174,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
+      projectBinding: null,
     });
     try {
       const project = await window.ade.project.openRepo();
@@ -1229,6 +1230,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
+      projectBinding: null,
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
@@ -1313,6 +1315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
+      projectBinding: null,
     });
     try {
       const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
@@ -1361,6 +1364,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
+      projectBinding: null,
     });
     try {
       await window.ade.project.closeCurrent();

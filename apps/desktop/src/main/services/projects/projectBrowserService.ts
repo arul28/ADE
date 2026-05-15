@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProjectBrowseEntry, ProjectBrowseInput, ProjectBrowseResult } from "../../../shared/types";
-import { resolveRepoRoot } from "./projectService";
+import { findAdeManagedWorktreeRoot } from "../../../../../ade-cli/src/services/projects/projectRoots";
 
 function expandHomePath(input: string): string {
   if (input === "~") return os.homedir();
@@ -27,10 +27,23 @@ function parentPathOf(input: string): string | null {
 
 async function resolveOpenableProjectRoot(candidatePath: string | null): Promise<string | null> {
   if (!candidatePath) return null;
-  try {
-    return path.resolve(await resolveRepoRoot(candidatePath));
-  } catch {
-    return null;
+  const managedWorktree = findAdeManagedWorktreeRoot(candidatePath);
+  if (managedWorktree) return path.resolve(managedWorktree.projectRoot);
+
+  let current = path.resolve(candidatePath);
+  while (true) {
+    try {
+      const stat = await fs.stat(path.join(current, ".git"));
+      if (stat.isDirectory() || stat.isFile()) {
+        return current;
+      }
+    } catch {
+      // Keep walking up. The actual open flow still performs full Git
+      // validation; the browser path stays cheap enough to run while typing.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
   }
 }
 

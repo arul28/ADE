@@ -25,18 +25,19 @@ export function LaneDialogShell({
   children: ReactNode;
 }) {
   const width = widthClassName ?? "w-[min(720px,calc(100vw-1rem))]";
+  const maxHeight = "max-h-[min(92dvh,calc(100vh-1rem))]";
 
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!busy || next) onOpenChange(next); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
         <Dialog.Content
-          className={`fixed left-1/2 top-1/2 z-50 flex max-h-[min(92dvh,calc(100vh-1rem))] ${width} -translate-x-1/2 -translate-y-1/2 overflow-hidden focus:outline-none`}
+          className={`fixed left-1/2 top-1/2 z-50 flex ${maxHeight} ${width} -translate-x-1/2 -translate-y-1/2 overflow-hidden focus:outline-none`}
           onCloseAutoFocus={onCloseAutoFocus}
         >
           <BorderBeam size="md" colorVariant="mono" duration={25} strength={0.85} borderRadius={12}>
             <div
-              className="relative flex max-h-[min(92dvh,calc(100vh-1rem))] min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float"
+              className={`relative flex ${maxHeight} min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float`}
               style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
             >
               <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" />

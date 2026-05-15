@@ -186,13 +186,18 @@ export function ManageLaneDialog({
   const confirmMatch = !requiresTypeConfirm || deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
   const showStaticBusy = laneActionBusy && !deleteProgress;
 
+  let shellDescription: string | undefined;
+  if (lanes.length > 0 && !allPrimary) {
+    shellDescription = isBatch ? SHELL_DESCRIPTION_BATCH : SHELL_DESCRIPTION_SINGLE;
+  }
+
   return (
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
       title={isBatch ? `Manage ${lanes.length} Lanes` : "Manage Lane"}
       icon={GitBranch}
-      description={lanes.length === 0 ? undefined : allPrimary ? undefined : isBatch ? SHELL_DESCRIPTION_BATCH : SHELL_DESCRIPTION_SINGLE}
+      description={shellDescription}
       widthClassName="w-[calc(100vw-1rem)] max-w-[720px] sm:max-w-[min(720px,calc(100vw-2rem))]"
       busy={laneActionBusy}
     >
@@ -310,13 +315,13 @@ export function ManageLaneDialog({
           )}
 
           {/* Appearance — single lane only */}
-          {!isBatch && lanes[0] ? (
-            <AppearanceSection lane={lanes[0]} allLanes={allLanes} disabled={laneActionBusy} onChanged={onAppearanceChanged} />
+          {singleLane ? (
+            <AppearanceSection lane={singleLane} allLanes={allLanes} disabled={laneActionBusy} onChanged={onAppearanceChanged} />
           ) : null}
 
-          {!isBatch && lanes[0] && lanes[0].laneType !== "primary" ? (
+          {singleLane && singleLane.laneType !== "primary" ? (
             <StackPositionSection
-              lane={lanes[0]}
+              lane={singleLane}
               allLanes={allLanes}
               disabled={laneActionBusy}
               onDone={onStackReorganized}

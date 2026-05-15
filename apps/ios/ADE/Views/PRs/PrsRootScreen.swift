@@ -15,6 +15,7 @@ struct PRsTabView: View {
   @State private var queueStates: [QueueLandingState] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
+  @State private var githubExternalHistoryLoaded = false
   @State private var errorMessage: String?
   @State private var actionMessage: String?
   @State private var busyAction: String?
@@ -122,6 +123,14 @@ struct PRsTabView: View {
 
   private var allGitHubPrs: [GitHubPrListItem] {
     repoScopedGitHubPullRequests(from: githubSnapshot)
+  }
+
+  private var githubSnapshotNeedsExternalHistory: Bool {
+    selectedGitHubStatusFilter.wrappedValue != .open
+  }
+
+  private var githubSnapshotShouldIncludeExternalClosed: Bool {
+    githubExternalHistoryLoaded || githubSnapshotNeedsExternalHistory
   }
 
   private var filteredGitHubPrs: [GitHubPrListItem] {
@@ -384,6 +393,10 @@ struct PRsTabView: View {
       .task(id: prNavigationRequestKey) {
         guard prNavigationRequestKey != nil else { return }
         await handleRequestedPrNavigation()
+      }
+      .onChange(of: githubStatusFilterRawValue) { _, _ in
+        guard selectedGitHubStatusFilter.wrappedValue != .open else { return }
+        Task { await loadGitHubExternalHistoryIfNeeded() }
       }
       .refreshable {
         await refreshFromPullGesture()
@@ -1171,11 +1184,22 @@ struct PRsTabView: View {
       var nextMobileSnapshot: PrMobileSnapshot?
       if shouldAttemptLiveSnapshots {
         lastPrsLiveSnapshotAttempt = now
+        let includeExternalClosed = githubSnapshotShouldIncludeExternalClosed
         let mobileSnapshotTask = Task { try? await syncService.fetchPrMobileSnapshot() }
-        let githubSnapshotTask = Task { try? await syncService.fetchGitHubPullRequestSnapshot(force: refreshRemote) }
+        let githubSnapshotTask = Task {
+          try? await syncService.fetchGitHubPullRequestSnapshot(
+            force: refreshRemote,
+            includeExternalClosed: includeExternalClosed
+          )
+        }
         nextMobileSnapshot = await mobileSnapshotTask.value
-        if let nextGithubSnapshot = await githubSnapshotTask.value, githubSnapshot != nextGithubSnapshot {
-          githubSnapshot = nextGithubSnapshot
+        if let nextGithubSnapshot = await githubSnapshotTask.value {
+          if includeExternalClosed {
+            githubExternalHistoryLoaded = true
+          }
+          if githubSnapshot != nextGithubSnapshot {
+            githubSnapshot = nextGithubSnapshot
+          }
         }
       }
 
@@ -1186,6 +1210,7 @@ struct PRsTabView: View {
         if githubSnapshot != nil {
           githubSnapshot = nil
         }
+        githubExternalHistoryLoaded = false
       }
       if let nextMobileSnapshot {
         if mobileSnapshot != nextMobileSnapshot {
@@ -1227,6 +1252,17 @@ struct PRsTabView: View {
       let message = error.localizedDescription
       if errorMessage != message {
         errorMessage = message
+      }
+    }
+  }
+
+  @MainActor
+  private func loadGitHubExternalHistoryIfNeeded() async {
+    guard isLive, githubSnapshotNeedsExternalHistory, !githubExternalHistoryLoaded else { return }
+    if let nextGithubSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(includeExternalClosed: true) {
+      githubExternalHistoryLoaded = true
+      if githubSnapshot != nextGithubSnapshot {
+        githubSnapshot = nextGithubSnapshot
       }
     }
   }

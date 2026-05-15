@@ -541,7 +541,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
     const disposeProjectBindingChanged = window.ade.app.onProjectBindingChanged((binding) => {
       const state = useAppStore.getState();
-      if (state.projectTransition) return;
+      if (state.projectTransition) {
+        setProjectBinding(binding);
+        return;
+      }
       setProjectHydrated(false);
       applyProjectState(binding?.kind === "local" ? state.project : null, binding);
       setProjectHydrated(true);

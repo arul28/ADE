@@ -7,6 +7,7 @@ export type ChatSubagentSnapshot = {
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
+  turnId?: string;
   startedAt: string;
   updatedAt: string;
   summary: string | null;
@@ -24,22 +25,49 @@ function compareIsoDesc(left: string, right: string): number {
   return Date.parse(right) - Date.parse(left);
 }
 
+function findSnapshotByParent(
+  snapshots: Map<string, ChatSubagentSnapshot>,
+  parentToolUseId: string | null | undefined,
+): [string, ChatSubagentSnapshot] | null {
+  if (!parentToolUseId) return null;
+  const direct = snapshots.get(parentToolUseId);
+  if (direct) return [parentToolUseId, direct];
+  for (const entry of snapshots.entries()) {
+    const [, snapshot] = entry;
+    if (snapshot.parentToolUseId === parentToolUseId) return entry;
+  }
+  return null;
+}
+
 export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): ChatSubagentSnapshot[] {
   const snapshots = new Map<string, ChatSubagentSnapshot>();
+  const terminalTurnIds = new Set<string>();
+
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "done") {
+      terminalTurnIds.add(event.turnId);
+    } else if (event.type === "status" && event.turnStatus !== "started" && event.turnId) {
+      terminalTurnIds.add(event.turnId);
+    }
+  }
 
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type === "subagent_started") {
       const key = event.agentId ?? event.taskId;
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
       if (key !== event.taskId) snapshots.delete(event.taskId);
+      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
       snapshots.set(key, {
-        taskId: existing?.taskId ?? event.taskId,
+        taskId: event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
+        turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: existing?.summary ?? null,
@@ -53,15 +81,19 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
 
     if (event.type === "subagent_progress") {
       const key = event.agentId ?? event.taskId;
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
+      const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
       if (key !== event.taskId) snapshots.delete(event.taskId);
+      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
       snapshots.set(key, {
-        taskId: existing?.taskId ?? event.taskId,
+        taskId: adoptEventTaskId ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
+        turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
@@ -75,15 +107,19 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
 
     if (event.type === "subagent_result") {
       const key = event.agentId ?? event.taskId;
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId);
+      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
+      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
+      const adoptEventTaskId = Boolean(parentMatch && parentMatch[0] !== key);
       if (key !== event.taskId) snapshots.delete(event.taskId);
+      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
       snapshots.set(key, {
-        taskId: event.taskId,
+        taskId: adoptEventTaskId ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,
+        turnId: event.turnId ?? existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         summary: event.summary?.trim() || existing?.summary || null,
@@ -91,6 +127,22 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         lastToolName: existing?.lastToolName,
         background: existing?.background ?? false,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
+      });
+    }
+  }
+
+  for (const [key, snapshot] of snapshots) {
+    if (
+      snapshot.status === "running"
+      && snapshot.background !== true
+      && snapshot.turnId
+      && terminalTurnIds.has(snapshot.turnId)
+    ) {
+      snapshots.set(key, {
+        ...snapshot,
+        status: "stopped",
+        summary: snapshot.summary ?? "Parent turn ended before ADE received a final subagent status",
+        finalSummary: snapshot.finalSummary ?? "Parent turn ended before ADE received a final subagent status",
       });
     }
   }

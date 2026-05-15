@@ -3636,7 +3636,7 @@ export function LanesPage() {
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
         onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
-        onStackReorganized={() => { void refreshLanes().catch(() => {}); }}
+        onStackReorganized={() => { refreshLanes().catch(() => {}); }}
       />
 
 

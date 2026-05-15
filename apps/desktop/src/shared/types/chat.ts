@@ -640,6 +640,17 @@ export type AgentChatEventEnvelope = {
   };
 };
 
+export type AgentChatEventHistorySnapshot = {
+  sessionId: string;
+  events: AgentChatEventEnvelope[];
+  truncated: boolean;
+  /**
+   * Explicitly false means the session id did not resolve in this project
+   * runtime. Optional for compatibility with older desktop/runtime pairs.
+   */
+  sessionFound?: boolean;
+};
+
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
 export type AgentChatInteractionMode = "default" | "plan";

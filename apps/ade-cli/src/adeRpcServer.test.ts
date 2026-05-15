@@ -337,6 +337,7 @@ function createRuntime() {
         void data;
         return true;
       }),
+      readTranscriptTail: vi.fn(async () => ""),
       enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     },
     testService: {

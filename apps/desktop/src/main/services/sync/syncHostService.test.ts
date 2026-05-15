@@ -1399,6 +1399,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const createSpy = vi.fn().mockResolvedValue({ ptyId: "pty-1", sessionId: "session-1" });
     const writeBySessionId = vi.fn().mockReturnValue(true);
     const resizeBySessionId = vi.fn().mockReturnValue(true);
+    const readTranscriptTail = vi.fn(async () => "prior output\n");
 
     const host = createSyncHostService({
       db: brainDb,
@@ -1534,6 +1535,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       } as any,
       ptyService: {
         create: createSpy,
+        readTranscriptTail,
         writeBySessionId,
         resizeBySessionId,
         enrichSessions: (rows: any[]) => rows,
@@ -1568,6 +1570,12 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const snapshot = await client.queue.next("terminal_snapshot");
     expect(snapshot.requestId).toBe("sub-1");
     expect((snapshot.payload as { transcript: string }).transcript).toContain("prior output");
+    expect(readTranscriptTail).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      maxBytes: 32_000,
+      raw: true,
+      alignToLineBoundary: true,
+    });
 
     client.ws.send(encodeSyncEnvelope({
       type: "terminal_input",

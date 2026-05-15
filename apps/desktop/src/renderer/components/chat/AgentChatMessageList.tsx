@@ -3555,6 +3555,16 @@ const VIRTUALIZATION_THRESHOLD = 60;
  */
 const STICK_THRESHOLD_PX = 160;
 
+export function shouldAbsorbProgrammaticScrollEvent({
+  scrollTop,
+  programmaticTarget,
+}: {
+  scrollTop: number;
+  programmaticTarget: number | null;
+}): boolean {
+  return programmaticTarget != null && Math.abs(scrollTop - programmaticTarget) < 1;
+}
+
 export function calculateVirtualWindow({
   rowCount,
   scrollTop,
@@ -3702,10 +3712,10 @@ export function AgentChatMessageList({
   // into at most one scrollTop assignment per frame.
   const scrollRafRef = useRef<number | null>(null);
   const scrollFollowFramesRef = useRef(0);
-  // Each programmatic scroll write increments this counter; the matching
-  // scroll event then decrements it and skips stick-state updates. Keeps
-  // user gestures as the only thing that toggles auto-follow off.
-  const programmaticScrollCountRef = useRef(0);
+  // Programmatic scroll writes can be coalesced by the browser. Track the
+  // latest ADE-authored scrollTop target instead of using a counter, so a real
+  // user scroll never gets swallowed by stale "programmatic" credits.
+  const programmaticScrollTargetRef = useRef<number | null>(null);
   const onApprovalRef = useRef(onApproval);
   const resolvedInputStates = useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
@@ -3855,11 +3865,10 @@ export function AgentChatMessageList({
         setScrollTop(el.scrollTop);
         // Only register a pending programmatic scroll event if the assignment
         // actually moved the element. Otherwise (clamped to the same value,
-        // hidden element, etc.) no scroll event will fire and the counter
-        // would stay positive forever, misclassifying the next real user
-        // scroll as programmatic.
+        // hidden element, etc.) no scroll event will fire and the next real
+        // user scroll must still be allowed to update sticky state.
         if (el.scrollTop !== before) {
-          programmaticScrollCountRef.current += 1;
+          programmaticScrollTargetRef.current = el.scrollTop;
         }
       }
       const remaining = scrollFollowFramesRef.current;
@@ -3953,6 +3962,7 @@ export function AgentChatMessageList({
         });
         if (adjustedScrollTop !== scrollEl.scrollTop) {
           scrollEl.scrollTop = adjustedScrollTop;
+          programmaticScrollTargetRef.current = adjustedScrollTop;
           setScrollTop(adjustedScrollTop);
         }
       }
@@ -3999,11 +4009,16 @@ export function AgentChatMessageList({
     // Absorb scroll events produced by our own programmatic scroll-to-bottom
     // writes so we never flip sticky state based on them — only the user's
     // own gesture (wheel / trackpad / keyboard) should break auto-follow.
-    if (programmaticScrollCountRef.current > 0) {
-      programmaticScrollCountRef.current -= 1;
+    const programmaticTarget = programmaticScrollTargetRef.current;
+    if (shouldAbsorbProgrammaticScrollEvent({
+      scrollTop: target.scrollTop,
+      programmaticTarget,
+    })) {
+      programmaticScrollTargetRef.current = null;
       setScrollTop(target.scrollTop);
       return;
     }
+    programmaticScrollTargetRef.current = null;
     const distanceFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
     // Wider threshold (~1 row of assistant text) so a small wheel nudge
     // while the turn is streaming actually breaks free instead of snapping
@@ -4060,7 +4075,7 @@ export function AgentChatMessageList({
       const before = el.scrollTop;
       el.scrollTop = clamped;
       if (el.scrollTop !== before) {
-        programmaticScrollCountRef.current += 1;
+        programmaticScrollTargetRef.current = el.scrollTop;
       }
       setScrollTop(el.scrollTop);
     },

@@ -49,6 +49,7 @@ apps/ios/
 │   │                                # PIN pairing, lane presence, terminal
 │   │                                # subscribe/unsubscribe + input/resize,
 │   │                                # CLI launcher (startCliSession), chat push,
+│   │                                # lane reparent stack-base override payloads,
 │   │                                # push-token registration, worktree discovery
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
@@ -319,7 +320,7 @@ turns a raw response dict into either the `result` value or throws an
 ### Timeouts
 
 `SyncRequestTimeout.defaultTimeoutNanoseconds = 30_000_000_000` (30s).
-Timed-out requests throw with the message *"The host took too long to
+Timed-out requests throw with the message *"The machine took too long to
 respond. Reconnecting now."* Chat send commands (`chat.send` and the
 mobile CLI launchers) use an extended budget
 `SyncRequestTimeout.chatSendTimeoutNanoseconds = 120_000_000_000` (120s)
@@ -721,6 +722,11 @@ The iOS PRs tab consumes a single aggregate command,
 - `live: boolean` — false signals the phone should render a
   "host offline" banner.
 
+The PR list's GitHub browser uses the same GitHub snapshot shape as
+desktop: `repoPullRequests` and `externalPullRequests` are combined so
+external PRs involving the viewer can populate list/detail fallback
+cards instead of collapsing to unknown placeholders.
+
 ## Command policy from the host
 
 The host exposes command-policy metadata
@@ -741,7 +747,7 @@ reflected in the phone's UI on the next descriptor read.
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
 | Project home + machine project switching | Implemented |
-| Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, and template environment progress) |
+| Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
 | Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |

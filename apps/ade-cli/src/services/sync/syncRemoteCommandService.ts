@@ -404,15 +404,12 @@ function parseRenameLaneArgs(value: Record<string, unknown>): RenameLaneArgs {
 }
 
 function parseReparentLaneArgs(value: Record<string, unknown>): ReparentLaneArgs {
-  const parsed: ReparentLaneArgs = {
+  const stackBaseBranchRef = asTrimmedString(value.stackBaseBranchRef);
+  return {
     laneId: requireString(value.laneId, "lanes.reparent requires laneId."),
     newParentLaneId: requireString(value.newParentLaneId, "lanes.reparent requires newParentLaneId."),
+    ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
   };
-  const stackBase = asTrimmedString(value.stackBaseBranchRef);
-  if (stackBase) {
-    parsed.stackBaseBranchRef = stackBase;
-  }
-  return parsed;
 }
 
 function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLaneAppearanceArgs {
@@ -2338,7 +2335,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
   register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
   register("prs.getGitHubSnapshot", { viewerAllowed: true }, async (payload) =>
-    args.prService.getGithubSnapshot({ force: payload.force === true }));
+    args.prService.getGithubSnapshot({
+      force: payload.force === true,
+      includeExternalClosed: payload.includeExternalClosed === true,
+    }));
   register("prs.getReviewThreads", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
   register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
   register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));

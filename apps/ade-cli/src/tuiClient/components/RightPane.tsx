@@ -31,7 +31,7 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message" },
   { k: "p", label: "push", slashCommand: "/push" },
   { k: "d", label: "diff", slashCommand: "/diff" },
-  { k: "r", label: "rebase onto main", slashCommand: "/rebase" },
+  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref" },
 ];
 
 // ---------------------------------------------------------------------------

@@ -524,8 +524,32 @@ function formatContextUsage(usage: AgentChatContextUsage | null): string {
     .join("\n");
 }
 
+function findSubagentSnapshotByParent(
+  snapshots: Map<string, SubagentSnapshot>,
+  parentToolUseId: string | null | undefined,
+): [string, SubagentSnapshot] | null {
+  if (!parentToolUseId) return null;
+  const direct = snapshots.get(parentToolUseId);
+  if (direct) return [parentToolUseId, direct];
+  for (const [key, snapshot] of snapshots) {
+    if (snapshot.parentToolUseId === parentToolUseId) return [key, snapshot];
+  }
+  return null;
+}
+
 export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): SubagentSnapshot[] {
   const snapshots = new Map<string, SubagentSnapshot>();
+  const terminalTurnIds = new Set<string>();
+
+  for (const envelope of events) {
+    const event = envelope.event as Record<string, unknown>;
+    const turnId = typeof event.turnId === "string" ? event.turnId : null;
+    if (!turnId) continue;
+    const isDone = event.type === "done";
+    const isTerminalStatus = event.type === "status" && event.turnStatus !== "started";
+    if (isDone || isTerminalStatus) terminalTurnIds.add(turnId);
+  }
+
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "";
@@ -579,26 +603,23 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
     const id = agentId ?? taskId;
     if (!id) continue;
-    const existing = snapshots.get(id) ?? (taskId ? snapshots.get(taskId) : undefined);
+    const incomingParentToolUseId = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
+      ? event.parentToolUseId.trim()
+      : null;
+    const parentMatch = findSubagentSnapshotByParent(snapshots, incomingParentToolUseId);
+    const existing = snapshots.get(id) ?? (taskId ? snapshots.get(taskId) : undefined) ?? parentMatch?.[1];
     if (taskId && id !== taskId) snapshots.delete(taskId);
+    if (parentMatch && parentMatch[0] !== id) snapshots.delete(parentMatch[0]);
     const agentType = typeof event.agentType === "string" ? event.agentType : "subagent";
     const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : {};
-    const parentToolUseId = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
-      ? event.parentToolUseId.trim()
-      : existing?.parentToolUseId ?? null;
+    const parentToolUseId = incomingParentToolUseId ?? existing?.parentToolUseId ?? null;
     const startedAt = existing?.startedAt ?? envelope.timestamp;
     const endedAt = type === "subagent_result" || type === "subagent.completed" ? envelope.timestamp : existing?.endedAt;
     const parsedDurationMs = endedAt && startedAt ? Date.parse(endedAt) - Date.parse(startedAt) : Number.NaN;
     const fallbackDurationMs = Number.isFinite(parsedDurationMs) ? Math.max(0, parsedDurationMs) : existing?.durationMs;
-    const summary = typeof event.summary === "string"
-      ? event.summary
-      : typeof event.finalSummary === "string"
-        ? event.finalSummary
-        : typeof event.text === "string"
-          ? event.text
-          : typeof event.description === "string"
-            ? event.description
-            : existing?.summary ?? "";
+    const summaryFromEvent = [event.summary, event.finalSummary, event.text, event.description]
+      .find((value): value is string => typeof value === "string");
+    const summary = summaryFromEvent ?? existing?.summary ?? "";
     const base: SubagentSnapshot = {
       id,
       name: typeof event.description === "string" ? event.description : existing?.name ?? agentType,
@@ -621,6 +642,24 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       snapshots.set(id, { ...base, status: "running" });
     }
   }
+
+  for (const [key, snapshot] of snapshots) {
+    if (
+      snapshot.kind === "subagent"
+      && snapshot.status === "running"
+      && snapshot.background !== true
+      && snapshot.turnId
+      && terminalTurnIds.has(snapshot.turnId)
+    ) {
+      const terminalSummary = "Parent turn ended before ADE received a final subagent status";
+      snapshots.set(key, {
+        ...snapshot,
+        status: "stopped",
+        summary: snapshot.summary && snapshot.summary !== snapshot.name ? snapshot.summary : terminalSummary,
+      });
+    }
+  }
+
   return [...snapshots.values()];
 }
 
@@ -639,6 +678,45 @@ function laneWorktreeUnavailableMessage(lane: LaneSummary | null | undefined): s
   if (isLaneWorktreeAvailable(lane)) return null;
   const pathLabel = lane.worktreePath?.trim() || "unknown path";
   return `Lane "${lane.name}" is missing its worktree at ${pathLabel}. Restore or recreate the lane before starting a chat.`;
+}
+
+function collectDescendantLaneIds(rootId: string, lanes: LaneSummary[]): Set<string> {
+  const childrenByParent = new Map<string, LaneSummary[]>();
+  for (const lane of lanes) {
+    if (!lane.parentLaneId) continue;
+    const children = childrenByParent.get(lane.parentLaneId) ?? [];
+    children.push(lane);
+    childrenByParent.set(lane.parentLaneId, children);
+  }
+  const descendants = new Set<string>();
+  const stack = [...(childrenByParent.get(rootId) ?? [])];
+  while (stack.length) {
+    const lane = stack.pop();
+    if (!lane || descendants.has(lane.id)) continue;
+    descendants.add(lane.id);
+    stack.push(...(childrenByParent.get(lane.id) ?? []));
+  }
+  return descendants;
+}
+
+function reparentTargetsForLane(lane: LaneSummary, lanes: LaneSummary[]): LaneSummary[] {
+  const descendants = collectDescendantLaneIds(lane.id, lanes);
+  return lanes
+    .filter((candidate) => !candidate.archivedAt && candidate.id !== lane.id && !descendants.has(candidate.id))
+    .sort((left, right) => {
+      const leftPrimary = left.laneType === "primary" ? 0 : 1;
+      const rightPrimary = right.laneType === "primary" ? 0 : 1;
+      if (leftPrimary !== rightPrimary) return leftPrimary - rightPrimary;
+      return left.name.localeCompare(right.name);
+    });
+}
+
+function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSummary | null {
+  const normalized = reference.trim().toLowerCase();
+  if (!normalized) return null;
+  return lanes.find((lane) => lane.id.toLowerCase() === normalized || lane.name.toLowerCase() === normalized)
+    ?? lanes.find((lane) => lane.name.toLowerCase().includes(normalized))
+    ?? null;
 }
 
 function seedLaneDetails(
@@ -3083,6 +3161,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       newChatPreviewLaneIdRef.current = nextLaneId;
     }
     let nextEvents: AgentChatEventEnvelope[] | null = null;
+    let selectedSessionFound = true;
     if (nextSessionId && !nextTerminalSession) {
       const shouldHydrateHistory = shouldHydrateRefreshHistory({
         hydrateHistory: options.hydrateHistory,
@@ -3093,21 +3172,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (shouldHydrateHistory) {
         const history = await getChatHistory(conn, nextSessionId);
         if (!isCurrentRefresh()) return;
-        setCurrentGoal(latestGoal(history.events));
-        nextEvents = clearedAt
-          ? history.events.filter((event) => event.timestamp > clearedAt)
-          : history.events;
-        const activeModelId = nextSession?.modelId ?? null;
-        const fallbackContext = activeModelId ? getModelById(activeModelId)?.contextWindow ?? null : null;
-        const stats = latestTokenStats(history.events, fallbackContext);
-        setContextPercent(stats.percent);
-        setTokenSummary(formatTokenSummary(stats));
-        setStatusLineStats(stats);
-        eventCountRef.current = history.events.length;
-        loadedSessionIdRef.current = nextSessionId;
+        if (history.sessionFound === false) {
+          selectedSessionFound = false;
+          setCurrentGoal(null);
+          setContextPercent(null);
+          setTokenSummary(null);
+          setStatusLineStats(null);
+          eventCountRef.current = 0;
+          loadedSessionIdRef.current = null;
+          nextEvents = [];
+        } else {
+          setCurrentGoal(latestGoal(history.events));
+          nextEvents = clearedAt
+            ? history.events.filter((event) => event.timestamp > clearedAt)
+            : history.events;
+          const activeModelId = nextSession?.modelId ?? null;
+          const fallbackContext = activeModelId ? getModelById(activeModelId)?.contextWindow ?? null : null;
+          const stats = latestTokenStats(history.events, fallbackContext);
+          setContextPercent(stats.percent);
+          setTokenSummary(formatTokenSummary(stats));
+          setStatusLineStats(stats);
+          eventCountRef.current = history.events.length;
+          loadedSessionIdRef.current = nextSessionId;
+        }
       }
-      setStreaming(nextSession?.status === "active");
-      if (nextSession?.status === "active") setInterrupted(false);
+      setStreaming(selectedSessionFound && nextSession?.status === "active");
+      if (selectedSessionFound && nextSession?.status === "active") setInterrupted(false);
     } else {
       setContextPercent(null);
       setTokenSummary(null);
@@ -4179,6 +4269,58 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const log = await conn.action("git", "listRecentCommits", { laneId, limit: 12 });
       setRightPane({ kind: "list", title: "Recent commits", rows: routeRows(log), emptyText: "No commits." });
+      return;
+    }
+    if (name === "/reparent") {
+      const showReparentDetails = (body: string): void => {
+        setRightPane({ kind: "details", title: "Reparent lane", body });
+      };
+      if (!laneId) {
+        showReparentDetails("No active lane is selected.");
+        return;
+      }
+      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+      if (!lane) {
+        showReparentDetails(`Lane ${laneId} is not loaded.`);
+        return;
+      }
+      if (lane.laneType === "primary") {
+        showReparentDetails("Primary lane cannot be reparented.");
+        return;
+      }
+      const targets = reparentTargetsForLane(lane, lanes);
+      const parsed = splitFirstArg(args);
+      if (!parsed.first) {
+        const rows = targets.map((target) => {
+          const current = target.id === (lane.parentLaneId ?? "") ? "current" : target.laneType;
+          return `${target.id.padEnd(18)} ${target.name} · ${target.branchRef} · ${current}`;
+        });
+        showReparentDetails([
+          "Usage: /reparent <parent-lane-id|parent-name> [stack-base-ref]",
+          "",
+          "Moves the active lane under another parent and runs git rebase. The optional stack-base-ref overrides the parent branch, for example origin/main.",
+          "",
+          rows.length ? rows.join("\n") : "No valid parent lanes are available.",
+        ].join("\n"));
+        return;
+      }
+      const parent = resolveLaneReference(targets, parsed.first);
+      if (!parent) {
+        showReparentDetails(`No valid parent lane matched "${parsed.first}". Run /reparent to list targets.`);
+        return;
+      }
+      const stackBaseBranchRef = parsed.rest.trim();
+      const result = await conn.action("lane", "reparent", {
+        laneId,
+        newParentLaneId: parent.id,
+        ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
+      });
+      showReparentDetails(renderObject(result, 20));
+      addNotice(
+        `Reparented ${lane.name} under ${parent.name}${stackBaseBranchRef ? ` using ${stackBaseBranchRef}` : ""}.`,
+        "success",
+      );
+      await refreshState();
       return;
     }
     if (name.startsWith("/pr")) {

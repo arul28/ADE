@@ -14,6 +14,7 @@ import {
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
   type AgentChatEventEnvelope,
+  type AgentChatEventHistorySnapshot,
   type AgentChatContextAttachment,
   type AgentChatFileRef,
   type AgentChatInteractionMode,
@@ -1224,6 +1225,18 @@ function isMissingParallelLaunchLaneError(error: unknown): boolean {
   return /not found|no such lane|does not exist/i.test(message);
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isTurnAlreadyActiveError(error: unknown): boolean {
+  return /turn is already active|already active/i.test(errorMessage(error));
+}
+
+function isNoActiveTurnToSteerError(error: unknown): boolean {
+  return /no active turn to steer/i.test(errorMessage(error));
+}
+
 export function formatParallelLaunchFailureMessage(args: {
   launchError: string;
   cleanupIssues: ParallelLaunchCleanupIssue[];
@@ -1480,6 +1493,7 @@ export function AgentChatPane({
   onLaneChange?: (laneId: string) => void;
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectTransition = useAppStore((s) => s.projectTransition);
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
   const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
@@ -1739,6 +1753,7 @@ export function AgentChatPane({
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
   const completionSoundPrevTurnActiveRef = useRef(false);
   const completionSoundArmedRef = useRef(true);
+  const projectTransitionBlocksChat = projectTransition != null;
 
   const appliedInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null);
   const loadedHistoryRef = useRef<Set<string>>(new Set());
@@ -1993,24 +2008,42 @@ export function AgentChatPane({
   const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
     setError(null);
     try {
-      if (turnActiveBySession[sessionId]) {
+      const steerControlMessage = async () => {
         await window.ade.agentChat.steer({ sessionId, text });
+      };
+      const sendOrSteerIfBusy = async (retryOnStaleSteer = true) => {
+        try {
+          await window.ade.agentChat.send({ sessionId, text });
+        } catch (sendError) {
+          if (isTurnAlreadyActiveError(sendError)) {
+            setError(null);
+            try {
+              await steerControlMessage();
+            } catch (steerError) {
+              if (!isNoActiveTurnToSteerError(steerError) || !retryOnStaleSteer) throw steerError;
+              setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+              await sendOrSteerIfBusy(false);
+            }
+            return;
+          }
+          throw sendError;
+        }
+      };
+
+      if (turnActiveBySession[sessionId]) {
+        try {
+          await steerControlMessage();
+        } catch (steerError) {
+          if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
+          setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+          await sendOrSteerIfBusy();
+        }
         return;
       }
 
-      try {
-        await window.ade.agentChat.send({ sessionId, text });
-      } catch (sendError) {
-        const message = sendError instanceof Error ? sendError.message : String(sendError);
-        if (/turn is already active|already active/i.test(message)) {
-          setError(null);
-          await window.ade.agentChat.steer({ sessionId, text });
-          return;
-        }
-        throw sendError;
-      }
+      await sendOrSteerIfBusy();
     } catch (controlError) {
-      setError(controlError instanceof Error ? controlError.message : String(controlError));
+      setError(errorMessage(controlError));
     }
   }, [turnActiveBySession]);
   // Per-session memo of which sessions have already triggered the auto-open
@@ -2529,6 +2562,9 @@ export function AgentChatPane({
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || "Type to vibecode...";
+  const effectiveMessagePlaceholder = projectTransitionBlocksChat
+    ? "Project is switching..."
+    : messagePlaceholder;
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
@@ -3040,6 +3076,14 @@ export function AgentChatPane({
     }
   }, []);
 
+  const clearSessionView = useCallback((sessionId: string) => {
+    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
+    setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
+    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
+    setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
+  }, []);
+
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
     if (options?.force) {
       loadedHistoryRef.current.delete(sessionId);
@@ -3060,10 +3104,23 @@ export function AgentChatPane({
       let usedSnapshotPath = false;
       try {
         if (typeof window.ade.agentChat.getEventHistory === "function") {
-          const snapshot = await window.ade.agentChat.getEventHistory({
+          const snapshot: AgentChatEventHistorySnapshot = await window.ade.agentChat.getEventHistory({
             sessionId,
             maxEvents: MAX_SELECTED_CHAT_SESSION_EVENTS,
           });
+          if (snapshot?.sessionId === sessionId && snapshot.sessionFound === false) {
+            clearSessionView(sessionId);
+            loadedHistoryRef.current.delete(sessionId);
+            return;
+          }
+          if (snapshot?.sessionId === sessionId && !snapshot.events?.length && snapshot.sessionFound !== true) {
+            const summary = await window.ade.agentChat.getSummary({ sessionId }).catch(() => null);
+            if (!summary) {
+              clearSessionView(sessionId);
+              loadedHistoryRef.current.delete(sessionId);
+              return;
+            }
+          }
           if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
             parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
             usedSnapshotPath = true;
@@ -3120,15 +3177,7 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [initialSessionSummary, lockSessionId]);
-
-  const clearSessionView = useCallback((sessionId: string) => {
-    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
-    setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
-    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
-    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
-    setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
-  }, []);
+  }, [clearSessionView, initialSessionSummary, lockSessionId]);
 
   useEffect(() => {
     if (lockSessionId) {
@@ -4645,7 +4694,7 @@ export function AgentChatPane({
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const submit = useCallback(async () => {
-    if (submitInFlightRef.current || busy || parallelLaunchBusy) return;
+    if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) return;
     if (selectedSessionId) {
       const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
       const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
@@ -4766,27 +4815,31 @@ export function AgentChatPane({
           if (!sessionId) continue;
           const desc = getModelById(slot.modelId);
           const provider = resolveChatRuntimeProvider(desc);
+          const sendPayload = {
+            sessionId,
+            text: sendText,
+            displayText: displayForSend,
+            attachments: attachmentsSnapshot,
+            contextAttachments: contextAttachmentsSnapshot,
+            reasoningEffort: slot.reasoningEffort,
+            executionMode: slot.executionMode,
+            interactionMode: provider === "claude" ? slot.interactionMode : null,
+          };
           try {
-            await window.ade.agentChat.send({
-              sessionId,
-              text: sendText,
-              displayText: displayForSend,
-              attachments: attachmentsSnapshot,
-              contextAttachments: contextAttachmentsSnapshot,
-              reasoningEffort: slot.reasoningEffort,
-              executionMode: slot.executionMode,
-              interactionMode: provider === "claude" ? slot.interactionMode : null,
-            });
+            await window.ade.agentChat.send(sendPayload);
           } catch (sendError) {
-            const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
-            const isBusyErr = /turn is already active|already active/i.test(sendMsg);
-            if (isBusyErr) {
-              await window.ade.agentChat.steer({
-                sessionId,
-                text: sendText,
-                ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
-                ...(contextAttachmentsSnapshot.length ? { contextAttachments: contextAttachmentsSnapshot } : {}),
-              });
+            if (isTurnAlreadyActiveError(sendError)) {
+              try {
+                await window.ade.agentChat.steer({
+                  sessionId,
+                  text: sendText,
+                  ...(attachmentsSnapshot.length ? { attachments: attachmentsSnapshot } : {}),
+                  ...(contextAttachmentsSnapshot.length ? { contextAttachments: contextAttachmentsSnapshot } : {}),
+                });
+              } catch (steerError) {
+                if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
+                await window.ade.agentChat.send(sendPayload);
+              }
             } else {
               throw sendError;
             }
@@ -5121,15 +5174,16 @@ export function AgentChatPane({
         lastActivityAt: new Date().toISOString(),
       });
 
-      if (turnActiveBySession[sessionId]) {
-        setOptimisticOutgoingMessageSynced(null);
+      const steerMessage = async () => {
         await window.ade.agentChat.steer({
           sessionId,
           text: finalText,
           ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
           ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
         });
-      } else {
+      };
+
+      const sendMessageOrSteerIfBusy = async (retryOnStaleSteer = true) => {
         try {
           setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
           await window.ade.agentChat.send({
@@ -5147,19 +5201,31 @@ export function AgentChatPane({
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer
           // instead of surfacing a confusing error to the user.
-          const sendMsg = sendError instanceof Error ? sendError.message : String(sendError);
-          const isBusy = /turn is already active|already active/i.test(sendMsg);
-          if (isBusy) {
-            await window.ade.agentChat.steer({
-              sessionId,
-              text: finalText,
-              ...(selectedAttachments.length ? { attachments: selectedAttachments } : {}),
-              ...(selectedContextAttachments.length ? { contextAttachments: selectedContextAttachments } : {}),
-            });
+          if (isTurnAlreadyActiveError(sendError)) {
+            try {
+              await steerMessage();
+            } catch (steerError) {
+              if (!isNoActiveTurnToSteerError(steerError) || !retryOnStaleSteer) throw steerError;
+              setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+              await sendMessageOrSteerIfBusy(false);
+            }
           } else {
             throw sendError;
           }
         }
+      };
+
+      if (turnActiveBySession[sessionId]) {
+        setOptimisticOutgoingMessageSynced(null);
+        try {
+          await steerMessage();
+        } catch (steerError) {
+          if (!isNoActiveTurnToSteerError(steerError)) throw steerError;
+          setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
+          await sendMessageOrSteerIfBusy();
+        }
+      } else {
+        await sendMessageOrSteerIfBusy();
       }
       // Skip refresh when we just created the session — createSession already triggered one.
       // A redundant refresh here causes flicker as it re-resolves session selection.
@@ -5210,6 +5276,7 @@ export function AgentChatPane({
     launchModeEditable,
     modelId,
     patchSessionSummary,
+    projectTransitionBlocksChat,
     reasoningEffort,
     pendingInputsBySession,
     refreshAvailableModels,
@@ -6311,7 +6378,7 @@ export function AgentChatPane({
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
-            busy={busy}
+            busy={busy || projectTransitionBlocksChat}
             sessionProvider={sessionProvider}
             interactionMode={interactionMode}
             claudePermissionMode={claudePermissionMode}
@@ -6328,10 +6395,10 @@ export function AgentChatPane({
             builtInBrowserContextItems={builtInBrowserContextItems}
             macosVmContextItems={macosVmContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
-            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive}
-            permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy}
+            modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
+            permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
-            messagePlaceholder={messagePlaceholder}
+            messagePlaceholder={effectiveMessagePlaceholder}
             onExecutionModeChange={setExecutionMode}
             onModelCatalogOpen={refreshCursorModelInventory}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}

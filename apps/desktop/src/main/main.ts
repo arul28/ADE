@@ -1367,6 +1367,14 @@ app.whenReady().then(async () => {
     }
 
     try {
+      if (ctx.agentChatService?.hasActiveWorkloads()) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("agent_chats", error);
+    }
+
+    try {
       if (ctx.missionService?.list({ status: "active", limit: 1 }).length > 0) {
         return true;
       }

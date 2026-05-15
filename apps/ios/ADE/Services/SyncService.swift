@@ -797,6 +797,35 @@ func syncCommandEnvelopePayload(
   return payload
 }
 
+/// Builds the args dictionary for the `lanes.reparent` sync command.
+///
+/// Behavior mirrors the host contract in `apps/desktop/src/main/services/lanes/laneService.ts`:
+/// - `newParentLaneId` is always emitted. Use the primary lane id when moving a lane to
+///   the root of the stack.
+/// - `stackBaseBranchRef` is only emitted when non-empty after trimming, so the host falls
+///   back to the new parent lane's current branch when the caller leaves it blank.
+func makeLanesReparentArgs(
+  laneId: String,
+  newParentLaneId: String,
+  stackBaseBranchRef: String?
+) -> [String: Any] {
+  var args: [String: Any] = ["laneId": laneId]
+  args["newParentLaneId"] = newParentLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let trimmed = stackBaseBranchRef?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !trimmed.isEmpty {
+    args["stackBaseBranchRef"] = trimmed
+  }
+  return args
+}
+
+func makePrGithubSnapshotArgs(force: Bool = false, includeExternalClosed: Bool = false) -> [String: Any] {
+  var args: [String: Any] = ["force": force]
+  if includeExternalClosed {
+    args["includeExternalClosed"] = true
+  }
+  return args
+}
+
 func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> String? {
   let projectScopedTypes: Set<String> = [
     "changeset_batch",
@@ -2862,8 +2891,12 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
   }
 
-  func fetchGitHubPullRequestSnapshot(force: Bool = false) async throws -> GitHubPrSnapshot {
-    try await sendDecodableCommand(action: "prs.getGitHubSnapshot", args: ["force": force], as: GitHubPrSnapshot.self)
+  func fetchGitHubPullRequestSnapshot(force: Bool = false, includeExternalClosed: Bool = false) async throws -> GitHubPrSnapshot {
+    try await sendDecodableCommand(
+      action: "prs.getGitHubSnapshot",
+      args: makePrGithubSnapshotArgs(force: force, includeExternalClosed: includeExternalClosed),
+      as: GitHubPrSnapshot.self
+    )
   }
 
   func fetchPullRequestReviewThreads(prId: String) async throws -> [PrReviewThread] {
@@ -3300,11 +3333,16 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
   }
 
-  func reparentLane(_ laneId: String, newParentLaneId: String?) async throws {
-    var args: [String: Any] = ["laneId": laneId]
-    // Always include the key so the server receives a defined value.
-    // "ROOT" signals detachment from any parent lane.
-    args["newParentLaneId"] = (newParentLaneId?.isEmpty == false) ? newParentLaneId! : "ROOT"
+  func reparentLane(
+    _ laneId: String,
+    newParentLaneId: String,
+    stackBaseBranchRef: String? = nil
+  ) async throws {
+    let args = makeLanesReparentArgs(
+      laneId: laneId,
+      newParentLaneId: newParentLaneId,
+      stackBaseBranchRef: stackBaseBranchRef
+    )
     _ = try await sendCommand(action: "lanes.reparent", args: args)
   }
 

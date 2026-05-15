@@ -7,6 +7,7 @@ import type {
   AgentChatCursorConfigValue,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   AgentChatInteractionMode,
   AgentChatModelInfo,
   AgentChatOpenCodePermissionMode,
@@ -29,11 +30,7 @@ export type ProjectLaunchContext = {
   laneHint: string | null;
 };
 
-export type ChatHistorySnapshot = {
-  sessionId: string;
-  events: AgentChatEventEnvelope[];
-  truncated: boolean;
-};
+export type ChatHistorySnapshot = AgentChatEventHistorySnapshot;
 
 export type RunAdeActionResult<T = unknown> = {
   domain: string;

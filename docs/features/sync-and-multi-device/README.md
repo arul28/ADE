@@ -169,6 +169,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   matching `projectId` (see *Scope enforcement* below). Mobile /
   controller CLI launches resolve the target lane worktree before
   building provider argv/env so ADE Agent Skills roots stay lane-aware.
+  Lane reparent commands parse the optional `stackBaseBranchRef`
+  override and forward it to the host lane service so controllers can
+  pick a specific branch to stack onto instead of always using the
+  selected parent lane's branch.
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
   `sync_cluster_state` singleton.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
@@ -226,9 +230,11 @@ iOS service files (`apps/ios/ADE/Services/`):
   command routing, keychain integration, PIN-based pairing, lane
   presence announcements, terminal subscribe/unsubscribe tracking,
   terminal input/resize senders, mobile CLI launch/continuation,
-  PR mobile snapshot fetch, live chat-event push listener, project
-  home/catalog state, active-project scoping, unregistered-worktree
-  discovery, and APNs push-token registration to the host.
+  PR mobile snapshot fetch, live chat-event push listener, lane
+  reparent payload building with the optional stack base-branch
+  override, project home/catalog state, active-project scoping,
+  unregistered-worktree discovery, and APNs push-token registration
+  to the host.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets (per-host token shelf included).
 - `LiveActivityCoordinator.swift` — owns the single workspace

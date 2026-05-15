@@ -1502,6 +1502,74 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("forwards lane reparent stack base branch override to the runtime action", () => {
+    const reparent = buildCliPlan([
+      "lanes",
+      "reparent",
+      "lane-child",
+      "--parent",
+      "lane-parent",
+      "--stack-base-branch",
+      "develop",
+    ]);
+    expect(reparent.kind).toBe("execute");
+    if (reparent.kind !== "execute") return;
+    expect(reparent.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "reparent",
+        args: {
+          laneId: "lane-child",
+          newParentLaneId: "lane-parent",
+          stackBaseBranchRef: "develop",
+        },
+      },
+    });
+
+    const reparentDefault = buildCliPlan([
+      "lanes",
+      "reparent",
+      "lane-child",
+      "--parent",
+      "lane-parent",
+    ]);
+    expect(reparentDefault.kind).toBe("execute");
+    if (reparentDefault.kind !== "execute") return;
+    expect(reparentDefault.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "reparent",
+        args: {
+          laneId: "lane-child",
+          newParentLaneId: "lane-parent",
+        },
+      },
+    });
+  });
+
+  it("forwards PR GitHub snapshot full-history flag to the runtime action", () => {
+    const snapshot = buildCliPlan([
+      "prs",
+      "github-snapshot",
+      "--include-external-closed",
+    ]);
+    expect(snapshot.kind).toBe("execute");
+    if (snapshot.kind !== "execute") return;
+    expect(snapshot.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "getGithubSnapshot",
+        args: {
+          force: false,
+          includeExternalClosed: true,
+        },
+      },
+    });
+  });
+
   it("maps discoverable git status, sync, and conflict helpers to existing actions", () => {
     const fullStatus = buildCliPlan([
       "git",
@@ -1854,6 +1922,16 @@ describe("ADE CLI", () => {
     // Regression: --text as output flag must not swallow --help.
     const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);
     expect(lanesHelp.kind).toBe("help");
+
+    const reparentHelp = buildCliPlan([
+      "lanes",
+      "reparent",
+      "lane-child",
+      "--stack-base-branch",
+      "develop",
+      "--help",
+    ]);
+    expect(reparentHelp.kind).toBe("help");
   });
 
   it("maps PR create Linear close flag to the typed RPC tool", () => {
