@@ -803,16 +803,22 @@ function StackPositionSection({
   const baseOverrideTrim = baseBranchInput.trim();
   const normalizedOverride = normalizeBranchRefForCompare(baseOverrideTrim);
   const normalizedExistingBase = normalizeBranchRefForCompare(lane.baseRef ?? "");
+  const normalizedDefaultBase = normalizeBranchRefForCompare(defaultBaseBranch);
   const parentChanged = stackParentId !== effectiveCurrentParentId;
   // baseChanged covers two cases:
   //   1. User typed a non-empty override that resolves to a different effective
   //      branch than what is currently stored (after normalizing refs/heads/
   //      and origin/ prefixes consistent with the backend).
-  //   2. User cleared the field while a stored base override still exists —
-  //      clearing should remove the override.
+  //   2. User cleared the field while the lane's stored base actually diverges
+  //      from the selected parent's current branch — clearing then removes the
+  //      override and the backend will rebase onto the parent's branch.
+  //      `lane.baseRef` is a non-nullable string so we can't gate on its mere
+  //      presence; we must compare it against the effective default to avoid
+  //      enabling Apply on initial open when nothing has actually changed.
   const baseChanged = normalizedOverride.length > 0
     ? normalizedOverride !== normalizedExistingBase
-    : normalizedExistingBase.length > 0;
+    : normalizedExistingBase.length > 0 &&
+      normalizedExistingBase !== normalizedDefaultBase;
   const canApply =
     !lane.status.dirty &&
     !lane.status.rebaseInProgress &&

@@ -89,15 +89,19 @@ struct LaneManageSheet: View {
   }
 
   private var reparentBaseChanged: Bool {
-    // Empty input means "use the selected parent's current branch" — that is
-    // still a change when the lane currently has a stored base override, so
-    // clearing the field must be applyable. Compare normalized values to
-    // mirror the backend's normalizeBranchName (strips refs/heads/ and
-    // origin/ prefixes).
+    // Empty input means "use the selected parent's current branch". That is
+    // only a real change when the lane's stored base actually diverges from
+    // the selected parent's effective branch — `snapshot.lane.baseRef` is a
+    // non-optional string and is essentially always populated, so gating on
+    // its mere presence enables Apply on initial sheet open and risks an
+    // unintended rebase. Compare normalized values against the parent's
+    // default to mirror the backend's normalizeBranchName (strips
+    // refs/heads/ and origin/ prefixes).
     let normalizedOverride = LaneManageSheet.normalizeBranchRefForCompare(trimmedBaseOverride)
     let normalizedExisting = LaneManageSheet.normalizeBranchRefForCompare(snapshot.lane.baseRef)
+    let normalizedDefault = LaneManageSheet.normalizeBranchRefForCompare(defaultStackBaseBranch)
     if normalizedOverride.isEmpty {
-      return !normalizedExisting.isEmpty
+      return !normalizedExisting.isEmpty && normalizedExisting != normalizedDefault
     }
     return normalizedOverride != normalizedExisting
   }
