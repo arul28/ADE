@@ -6409,7 +6409,7 @@ describe("orchestratorService", () => {
 
       fs.mkdirSync(path.join(fixture.projectRoot, ".ade"), { recursive: true });
       fs.writeFileSync(
-        path.join(fixture.projectRoot, ".ade", "step-output-implementation-worker.md"),
+        path.join(fixture.projectRoot, ".ade", `step-output-implementation-worker-attempt-${attempt.id}.md`),
         [
           "## Summary",
           "Implemented the preference banner and validated the helper.",

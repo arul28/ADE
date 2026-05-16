@@ -2268,18 +2268,22 @@ function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
       });
     }
     if (name === "report_status") {
-      const message =
-        readValue(args, ["--text", "--message", "--summary"]) ??
-        args
-          .filter((entry) => entry !== "--" && !entry.startsWith("-"))
-          .join(" ")
-          .trim();
-      return collectGenericObjectArgs(args, {
-        status: readValue(args, ["--status"]) ?? "running",
-        summary: message || undefined,
-        nextAction: message || undefined,
-        details: message || undefined,
-      });
+      const explicitMessage = readValue(args, ["--text", "--message", "--summary"]);
+      const status = readValue(args, ["--status"]) ?? "running";
+      const positionalParts: string[] = [];
+      while (true) {
+        const part = firstStandalonePositional(args);
+        if (part == null) break;
+        positionalParts.push(part);
+      }
+      const message = explicitMessage ?? positionalParts.join(" ").trim();
+      const input: JsonObject = { status };
+      if (message) {
+        input.summary = message;
+        input.nextAction = message;
+        input.details = message;
+      }
+      return collectGenericObjectArgs(args, input);
     }
     if (name === "report_result" || name === "report_validation") {
       return collectGenericObjectArgs(args, {
@@ -10248,11 +10252,8 @@ function readRuntimeInfoVersion(value: unknown): string | null {
 }
 
 function shouldReplaceMachineRuntimeVersion(runtimeVersion: string | null): boolean {
-  return Boolean(
-    runtimeVersion &&
-      runtimeVersion !== VERSION &&
-      VERSION !== PLACEHOLDER_VERSION,
-  );
+  if (VERSION === PLACEHOLDER_VERSION) return false;
+  return runtimeVersion == null || runtimeVersion !== VERSION;
 }
 
 async function initializeMachineRuntimeDaemon(

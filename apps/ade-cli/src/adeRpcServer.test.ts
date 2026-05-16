@@ -3562,6 +3562,10 @@ describe("adeRpcServer", () => {
         skipped: 0,
         raw: expect.stringContaining("npm test (passed: 2 files, 3 tests)")
       });
+      const raw = String(response.structuredContent.report.testsRun.raw ?? "");
+      expect(raw).toContain("npm run typecheck (passed)");
+      expect(raw).toContain("npm test (passed: 2 files, 3 tests)");
+      expect(raw).toContain("ADE_PROJECT_ROOT=/tmp/app npm run build (passed)");
     });
   });
 

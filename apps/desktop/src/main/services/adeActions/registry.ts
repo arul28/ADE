@@ -1966,7 +1966,12 @@ async function waitForMissionCloseoutAfterFinalize(
   const terminalMissionStatuses = new Set(["completed", "failed", "canceled", "intervention_required"]);
   const started = Date.now();
   while (Date.now() - started < 10_000) {
-    const mission = await Promise.resolve(runtime.missionService.get(missionId));
+    let mission: Awaited<ReturnType<typeof runtime.missionService.get>> | null = null;
+    try {
+      mission = await Promise.resolve(runtime.missionService.get(missionId));
+    } catch {
+      return;
+    }
     const status = typeof mission?.status === "string" ? mission.status : "";
     if (terminalMissionStatuses.has(status)) return;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1993,9 +1998,9 @@ function buildOrchestratorCoreDomainService(runtime: AdeRuntime): OpaqueService 
     resumeRun: (args: Parameters<typeof service.resumeRun>[0]) =>
       compactRunForTransport(service.resumeRun(args)),
     finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
-      const result = runtime.aiOrchestratorService?.finalizeRun
+      const result = await (runtime.aiOrchestratorService?.finalizeRun
         ? runtime.aiOrchestratorService.finalizeRun(args as never)
-        : service.finalizeRun(args);
+        : service.finalizeRun(args));
       await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
       return result;
     },
@@ -2016,7 +2021,7 @@ function buildAiOrchestratorDomainService(runtime: AdeRuntime): OpaqueService | 
     sendThreadMessage: async (args: Parameters<typeof service.sendThreadMessage>[0]) =>
       compactChatMessageForTransport(await service.sendThreadMessage(args)),
     finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
-      const result = service.finalizeRun(args);
+      const result = await service.finalizeRun(args);
       await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
       return result;
     },

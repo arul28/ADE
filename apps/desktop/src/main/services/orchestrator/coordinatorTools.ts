@@ -1675,7 +1675,7 @@ export function createCoordinatorToolSet(deps: {
   function phaseAllowsValidationWorker(phase: PhaseCard | null | undefined): boolean {
     if (!phase) return false;
     const stepType = resolvePhaseStepType(phase.phaseKey);
-    if (stepType === "validation" || stepType === "review" || stepType === "test_review") return true;
+    if (stepType.includes("validation") || stepType.includes("review")) return true;
     const gate = phase.validationGate;
     return gate.required === true || gate.tier === "dedicated";
   }
@@ -2271,10 +2271,10 @@ export function createCoordinatorToolSet(deps: {
     const name = args.name.trim().toLowerCase();
     const roleName = args.roleName?.trim().toLowerCase() ?? "";
     const prompt = args.prompt.trim().toLowerCase();
-    const validationPattern = /\b(validat(?:e|ion|or))\b/;
+    const validationPattern = /\b(validat(?:e|ion|or)|review(?:er|ing)?|audit|proof)\b/;
     return (
       (includeNameHeuristics && validationPattern.test(name))
-      || (includeNameHeuristics && validationPattern.test(roleName))
+      || validationPattern.test(roleName)
       || (includePromptHeuristics && prompt.includes("report_validation"))
       || (includePromptHeuristics && prompt.includes("verdict: \"pass\""))
       || (includePromptHeuristics && prompt.includes("verdict \"pass\""))
@@ -2423,6 +2423,8 @@ export function createCoordinatorToolSet(deps: {
 
     const phaseHasSucceeded = (phase: PhaseCard): boolean =>
       phaseHasSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
+    const phaseHasValidatedSucceeded = (phase: PhaseCard): boolean =>
+      phaseHasValidatedSuccessfulCompletion(phase, (p) => getStepsForPhase(g, p));
 
     const phaseHasNonTerminalStep = (phase: PhaseCard): boolean =>
       getStepsForPhase(g, phase).some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
@@ -2464,10 +2466,10 @@ export function createCoordinatorToolSet(deps: {
 
     const mustPrecedePredecessors = resolveMustPrecedePredecessors(sorted, currentPhase);
     for (const predecessorPhase of mustPrecedePredecessors) {
-      if (!phaseHasSucceeded(predecessorPhase)) {
+      if (!phaseHasValidatedSucceeded(predecessorPhase)) {
         return {
           valid: false,
-          reason: `Phase "${currentPhase.name}" cannot start until phase "${predecessorPhase.name}" succeeds (mustPrecede constraint).`,
+          reason: `Phase "${currentPhase.name}" cannot start until phase "${predecessorPhase.name}" succeeds with required validation complete (mustPrecede constraint).`,
         };
       }
     }
@@ -3294,7 +3296,7 @@ export function createCoordinatorToolSet(deps: {
           currentPhase,
           nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
           workerName,
-          roleName: null,
+          roleName: roleDef.name,
           prompt: normalizedObjective,
           validationContract: null,
           validationHeuristics: "prompt_only",
@@ -6831,20 +6833,38 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
 
   const read_step_output = defineCoordinatorTool({
     description:
-      "Read a worker's structured step output file (.ade/step-output-{stepKey}.md). Workers write these files as durable output records when they complete their tasks. Use this to understand what a worker accomplished, especially after context compaction.",
+      "Read a worker's structured step output file for the latest attempt. Workers write these files as durable output records when they complete their tasks. Use this to understand what a worker accomplished, especially after context compaction.",
     inputSchema: z.object({
       stepKey: z.string().describe("The step key to read the output file for"),
     }),
     execute: async ({ stepKey }) => {
       try {
         const sanitized = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const filePath = resolveWorkspacePath(`.ade/step-output-${sanitized}.md`, true);
-        if (!filePath) {
-          return { ok: false, error: "Path is outside mission workspace root" };
+        const g = graph();
+        const step = g.steps.find((entry) => entry.stepKey === stepKey || entry.id === stepKey) ?? null;
+        const latestAttempt = step
+          ? [...g.attempts]
+              .filter((attempt) => attempt.stepId === step.id)
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
+          : null;
+        const candidateRelativePaths = latestAttempt
+          ? [`.ade/step-output-${sanitized}-attempt-${latestAttempt.id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`]
+          : [`.ade/step-output-${sanitized}.md`];
+        let lastError: unknown = null;
+        for (const relativePath of candidateRelativePaths) {
+          const filePath = resolveWorkspacePath(relativePath, true);
+          if (!filePath) {
+            return { ok: false, error: "Path is outside mission workspace root" };
+          }
+          try {
+            const content = fs.readFileSync(filePath, "utf-8");
+            return { ok: true, stepKey, content };
+          } catch (error) {
+            lastError = error;
+          }
         }
         try {
-          const content = fs.readFileSync(filePath, "utf-8");
-          return { ok: true, stepKey, content };
+          throw lastError;
         } catch (error) {
           return { ok: false, error: formatWorkspaceReadError("step output", stepKey, error) };
         }
@@ -7045,7 +7065,6 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           };
         }
 
-        const roleDef = role?.trim().length ? resolveRoleDefinition(teamRuntime, role.trim()) : null;
         const spawnPolicy = authorizeWorkerSpawnPolicy({
           g,
           requestedModelId: modelId,
@@ -7092,7 +7111,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           currentPhase,
           nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
           workerName: name,
-          roleName: null,
+          roleName: normalizedRole.length > 0 ? normalizedRole : null,
           prompt,
           validationContract: null,
           validationHeuristics: "prompt_only",
@@ -7359,12 +7378,15 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           if (!taskPrompt.length) {
             return { ok: false, error: `tasks[${i}].prompt is required.` };
           }
+          const normalizedRole = typeof rawTask.role === "string" && rawTask.role.trim().length > 0
+            ? rawTask.role.trim()
+            : null;
           const phaseValidation = validateDelegationPromptForCurrentPhase({
             currentPhaseKey,
             currentPhase,
             nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
             workerName: taskName,
-            roleName: null,
+            roleName: normalizedRole,
             prompt: taskPrompt,
             validationContract: null,
             validationHeuristics: "prompt_only",
@@ -7372,9 +7394,6 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           if (!phaseValidation.ok) {
             return { ok: false, error: phaseValidation.error };
           }
-          const normalizedRole = typeof rawTask.role === "string" && rawTask.role.trim().length > 0
-            ? rawTask.role.trim()
-            : null;
           const roleDef = normalizedRole ? resolveRoleDefinition(teamRuntime, normalizedRole) : null;
           if (normalizedRole && !roleDef) {
             return { ok: false, error: `Unknown role '${normalizedRole}' in active team template.` };
