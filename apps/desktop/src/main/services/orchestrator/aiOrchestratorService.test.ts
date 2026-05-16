@@ -2010,6 +2010,130 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("counts runtime review summaries toward closeout requirements", async () => {
+    const fixture = await createFixture();
+    try {
+      const phase = {
+        id: "phase-review",
+        phaseKey: "review",
+        name: "Review",
+        description: "Review result lane.",
+        instructions: "Audit the result lane and report review_summary.",
+        model: { provider: "codex", modelId: "openai/gpt-5.3-codex-spark", thinkingLevel: "medium" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: {
+          tier: "dedicated",
+          required: true,
+          criteria: "Review passes.",
+          evidenceRequirements: ["review_summary"],
+        },
+        requiresApproval: false,
+        isBuiltIn: false,
+        isCustom: true,
+        position: 0,
+        createdAt: "2026-05-05T00:00:00.000Z",
+        updatedAt: "2026-05-05T00:00:00.000Z",
+      } as const;
+      const mission = fixture.missionService.create({
+        prompt: "Verify review summary evidence from runtime reports.",
+        laneId: fixture.laneId,
+        phaseOverride: [phase as any],
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "planning-review-prompt",
+            title: "Planning worker",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              phaseKey: "planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+              instructions: "Plan the mission and remember that closeout later needs review_summary.",
+            },
+          },
+          {
+            stepKey: "review-runtime-finalizer",
+            title: "Runtime Review phase finalizer",
+            stepIndex: 1,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              phaseKey: "validation",
+              phaseName: "Validation",
+              stepType: "validation",
+              taskType: "validation",
+              instructions: "Produce a runtime-visible Review phase result with review_summary.",
+            },
+          },
+        ],
+      });
+      const step = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 }).steps[0];
+      const reviewStep = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 }).steps.find((entry) => entry.stepKey === "review-runtime-finalizer");
+      if (!step || !reviewStep) throw new Error("Expected seeded steps");
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'succeeded',
+              metadata_json = ?,
+              updated_at = ?
+          where id = ?
+        `,
+        [
+          JSON.stringify({
+            ...(step.metadata ?? {}),
+            lastResultReport: {
+              summary: "Planning summary should not satisfy review summary evidence.",
+            },
+          }),
+          "2026-05-05T00:01:00.000Z",
+          step.id,
+        ],
+      );
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'succeeded',
+              metadata_json = ?,
+              updated_at = ?
+          where id = ?
+        `,
+        [
+          JSON.stringify({
+            ...(reviewStep.metadata ?? {}),
+            validationContract: { required: true },
+            validationState: "pass",
+            validationPassedAt: "2026-05-05T00:01:00.000Z",
+            lastValidationReport: { verdict: "pass" },
+            lastResultReport: {
+              summary: "Review audit passed. Acceptance criteria and proof evidence were confirmed.",
+            },
+          }),
+          "2026-05-05T00:01:00.000Z",
+          reviewStep.id,
+        ],
+      );
+      fixture.db.run(
+        `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
+        ["2026-05-05T00:01:00.000Z", "2026-05-05T00:01:00.000Z", started.run.id],
+      );
+
+      const view = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id, runId: started.run.id });
+      const reviewSummary = view?.closeoutRequirements.find((entry) => entry.key === "review_summary");
+
+      expect(reviewSummary?.status).toBe("present");
+      expect(reviewSummary?.source).toBe("runtime");
+      expect(reviewSummary?.detail).toContain("Review audit passed");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("keeps a succeeded run blocked while required closeout evidence is missing", async () => {
     const logger = createLogger();
     logger.info = vi.fn();
@@ -6571,7 +6695,7 @@ describe("aiOrchestratorService", () => {
 
       const finalizeResult = fixture.aiOrchestratorService.finalizeRun({ runId });
       expect(finalizeResult.finalized).toBe(true);
-      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "test_final_sync");
+      await waitFor(() => fixture.missionService.get(mission.id)?.status === "completed");
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("completed");
       expect(refreshed?.steps.every((step) => step.status === "succeeded")).toBe(true);

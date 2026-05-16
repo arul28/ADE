@@ -61,7 +61,7 @@ import {
   hasConflictingDelegationContract,
   updateDelegationContract,
 } from "./delegationContracts";
-import { resolveDevelopmentPhaseKey } from "../missions/phaseEngine";
+import { resolveFirstPostPlanningPhaseKey } from "../missions/phaseEngine";
 
 /** Timeout for autopilot agent startup (Promise.race guard). */
 const AUTOPILOT_START_TIMEOUT_MS = 15_000;
@@ -1652,8 +1652,37 @@ export function createCoordinatorToolSet(deps: {
     };
   }
 
+  function normalizePhaseRef(value: string | null | undefined): string {
+    return typeof value === "string" ? value.trim().toLowerCase() : "";
+  }
+
+  function phaseMatchesRef(phase: PhaseCard, ref: string): boolean {
+    const normalized = normalizePhaseRef(ref);
+    if (!normalized) return false;
+    return normalizePhaseRef(phase.phaseKey) === normalized || normalizePhaseRef(phase.name) === normalized;
+  }
+
+  function findPhaseByRef(phases: PhaseCard[], ref: string): PhaseCard | null {
+    return phases.find((phase) => phaseMatchesRef(phase, ref)) ?? null;
+  }
+
+  function resolveMustPrecedePredecessors(phases: PhaseCard[], targetPhase: PhaseCard): PhaseCard[] {
+    return phases.filter((phase) =>
+      (phase.orderingConstraints.mustPrecede ?? []).some((successorRef) => phaseMatchesRef(targetPhase, successorRef))
+    );
+  }
+
+  function phaseAllowsValidationWorker(phase: PhaseCard | null | undefined): boolean {
+    if (!phase) return false;
+    const stepType = resolvePhaseStepType(phase.phaseKey);
+    if (stepType === "validation" || stepType === "review" || stepType === "test_review") return true;
+    const gate = phase.validationGate;
+    return gate.required === true || gate.tier === "dedicated";
+  }
+
   function validateDelegationPromptForCurrentPhase(args: {
     currentPhaseKey: string;
+    currentPhase?: PhaseCard | null;
     nextImplementationPhaseKey: string;
     workerName: string;
     roleName: string | null;
@@ -1671,7 +1700,7 @@ export function createCoordinatorToolSet(deps: {
     }
     const validationHeuristics = args.validationHeuristics ?? "strict";
     if (
-      args.currentPhaseKey !== "validation"
+      !phaseAllowsValidationWorker(args.currentPhase)
       && looksLikeValidationWorkerRequest({
         name: args.workerName,
         roleName: validationHeuristics === "strict" ? args.roleName : null,
@@ -1684,8 +1713,8 @@ export function createCoordinatorToolSet(deps: {
       return {
         ok: false,
         error:
-          'Validation workers can only be spawned during the "validation" phase. ' +
-          'Finish the active work, call set_current_phase with phaseKey "validation", and depend on the worker you are validating.'
+          'Validation workers can only be spawned during a validation-capable phase. ' +
+          'Finish the active work, call set_current_phase with the configured validation/review phase, and depend on the worker you are validating.'
       };
     }
     return { ok: true };
@@ -2409,7 +2438,7 @@ export function createCoordinatorToolSet(deps: {
         };
       }
       if (planningExecutionSteps.some((step) => step.status === "succeeded")) {
-        const nextPhaseKey = resolveDevelopmentPhaseKey(sorted);
+        const nextPhaseKey = resolveFirstPostPlanningPhaseKey(sorted);
         return {
           valid: false,
           reason: `Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "${nextPhaseKey}" before spawning more workers.`,
@@ -2424,11 +2453,21 @@ export function createCoordinatorToolSet(deps: {
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0);
     for (const predecessor of explicitMustFollow) {
-      const predecessorPhase = sorted.find((p) => p.phaseKey === predecessor || p.name === predecessor);
+      const predecessorPhase = findPhaseByRef(sorted, predecessor);
       if (predecessorPhase && !phaseHasSucceeded(predecessorPhase)) {
         return {
           valid: false,
           reason: `Phase "${currentPhase.name}" requires phase "${predecessorPhase.name}" to succeed first (mustFollow constraint). No successful completion was found for "${predecessorPhase.name}".`,
+        };
+      }
+    }
+
+    const mustPrecedePredecessors = resolveMustPrecedePredecessors(sorted, currentPhase);
+    for (const predecessorPhase of mustPrecedePredecessors) {
+      if (!phaseHasSucceeded(predecessorPhase)) {
+        return {
+          valid: false,
+          reason: `Phase "${currentPhase.name}" cannot start until phase "${predecessorPhase.name}" succeeds (mustPrecede constraint).`,
         };
       }
     }
@@ -2611,7 +2650,8 @@ export function createCoordinatorToolSet(deps: {
           requestedDependsOn.length > 0 ? requestedDependsOn : inferredDependsOn;
         const phaseValidation = validateDelegationPromptForCurrentPhase({
           currentPhaseKey,
-          nextImplementationPhaseKey: resolveDevelopmentPhaseKey(missionPhases),
+          currentPhase,
+          nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
           workerName: normalizedName,
           roleName: normalizedRole.length > 0 ? normalizedRole : null,
           prompt: normalizedPrompt,
@@ -2682,6 +2722,18 @@ export function createCoordinatorToolSet(deps: {
             );
           }
           return { ok: false, error: spawnPolicy.error };
+        }
+        if (
+          missionPhases.length > 0
+          && currentPhase
+          && targetPhase
+          && targetPhase.phaseKey !== currentPhase.phaseKey
+        ) {
+          return phaseOrderingBlockedResult(
+            `Worker '${normalizedName}' targets phase "${targetPhase.name}", but the current phase is "${currentPhase.name}". Call set_current_phase with phaseKey "${targetPhase.phaseKey}" before spawning this worker.`,
+            targetPhase.phaseKey,
+            "target_phase_required",
+          );
         }
         let resolvedModelId = spawnPolicy.resolvedModelId;
         let resolvedProvider = spawnPolicy.resolvedProvider;
@@ -2798,7 +2850,7 @@ export function createCoordinatorToolSet(deps: {
                 && step.status === "succeeded";
             });
             if (completedPlanningWorker) {
-              const nextPhaseKey = resolveDevelopmentPhaseKey(missionPhases);
+              const nextPhaseKey = resolveFirstPostPlanningPhaseKey(missionPhases);
               return phaseOrderingBlockedResult(
                 `Planning phase already produced a completed worker result. Call set_current_phase with phaseKey "${nextPhaseKey}" before spawning more workers.`,
                 nextPhaseKey,
@@ -3239,7 +3291,8 @@ export function createCoordinatorToolSet(deps: {
         const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
         const phaseValidation = validateDelegationPromptForCurrentPhase({
           currentPhaseKey,
-          nextImplementationPhaseKey: resolveDevelopmentPhaseKey(missionPhases),
+          currentPhase,
+          nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
           workerName,
           roleName: null,
           prompt: normalizedObjective,
@@ -5408,11 +5461,20 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         }
 
         for (const predecessorKey of explicitMustFollow) {
-          const predecessor = missionPhases.find((phase) => phase.phaseKey === predecessorKey || phase.name === predecessorKey);
+          const predecessor = findPhaseByRef(missionPhases, predecessorKey);
           if (predecessor && !hasValidatedSuccessfulCompletion(predecessor)) {
             return {
               ok: false,
               error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' succeeds (mustFollow).`
+            };
+          }
+        }
+
+        for (const predecessor of resolveMustPrecedePredecessors(missionPhases, targetPhase)) {
+          if (!hasValidatedSuccessfulCompletion(predecessor)) {
+            return {
+              ok: false,
+              error: `Cannot enter phase '${targetPhase.name}' until '${predecessor.name}' succeeds (mustPrecede).`
             };
           }
         }
@@ -5584,7 +5646,7 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const currentPhase = missionPhases.length > 0 ? resolveCurrentPhaseCard(g, missionPhases) : null;
         const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
         if (currentPhaseKey === "planning") {
-          const nextPhaseKey = resolveDevelopmentPhaseKey(missionPhases);
+          const nextPhaseKey = resolveFirstPostPlanningPhaseKey(missionPhases);
           return phaseOrderingBlockedResult(
             "Planning should be represented by the planning worker itself. " +
               `Spawn the read-only planning worker, review its output, then call set_current_phase with phaseKey "${nextPhaseKey}" before creating execution tasks.`,
@@ -7027,7 +7089,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         const currentPhaseKey = currentPhase?.phaseKey.trim().toLowerCase() ?? "";
         const phaseValidation = validateDelegationPromptForCurrentPhase({
           currentPhaseKey,
-          nextImplementationPhaseKey: resolveDevelopmentPhaseKey(missionPhases),
+          currentPhase,
+          nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
           workerName: name,
           roleName: null,
           prompt,
@@ -7298,7 +7361,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
           }
           const phaseValidation = validateDelegationPromptForCurrentPhase({
             currentPhaseKey,
-            nextImplementationPhaseKey: resolveDevelopmentPhaseKey(missionPhases),
+            currentPhase,
+            nextImplementationPhaseKey: resolveFirstPostPlanningPhaseKey(missionPhases),
             workerName: taskName,
             roleName: null,
             prompt: taskPrompt,

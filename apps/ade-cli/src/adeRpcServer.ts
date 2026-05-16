@@ -3990,22 +3990,73 @@ function normalizeWorkerOutcome(raw: unknown): "succeeded" | "failed" | "partial
   return "partial";
 }
 
-function summarizeLegacyTestsRun(entries: unknown): Record<string, number> | null {
+function parseLegacyTestCount(text: string, labels: string[]): number | null {
+  const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const labelFirst = new RegExp(`(?:^|[^\\w])(?:${escapedLabels})\\s*:?\\s*(\\d+)\\b`, "i");
+  const valueFirst = new RegExp(`\\b(\\d+)\\s+(?:${escapedLabels})\\b`, "i");
+  const match = labelFirst.exec(text) ?? valueFirst.exec(text);
+  if (!match?.[1]) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function summarizeLegacyTestsRun(entries: unknown): Record<string, unknown> | null {
   if (!Array.isArray(entries)) return null;
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
+  const statusCounts = { passed: 0, failed: 0, skipped: 0 };
+  const counted = { passed: 0, failed: 0, skipped: 0 };
+  const rawEntries: string[] = [];
+  const commands: string[] = [];
+  let sawNumericCount = false;
   for (const entry of entries) {
-    const result = asOptionalTrimmedString(safeObject(entry).result)?.toLowerCase() ?? "";
+    const record = safeObject(entry);
+    const stringEntry = typeof entry === "string" ? entry.trim() : "";
+    const command = asOptionalTrimmedString(record.command) ?? asOptionalTrimmedString(record.name) ?? "";
+    const result = asOptionalTrimmedString(record.result)?.toLowerCase() ?? "";
+    const text = [stringEntry, command, result, asOptionalTrimmedString(record.raw) ?? ""].filter((part) => part.length > 0).join(" ");
+    if (text.trim().length > 0) rawEntries.push(text.trim());
+    if (command) commands.push(command);
+
+    const failedCount = parseLegacyTestCount(text, ["failed", "failures", "failure", "fail"]);
+    const skippedCount = parseLegacyTestCount(text, ["skipped", "skip"]);
+    const passedFromTests =
+      /\b(?:pass|passed|passing|success|successful)\b/i.test(text)
+        ? /\b(\d+)\s+tests?\b/i.exec(text)?.[1]
+        : null;
+    const passedCount = passedFromTests && Number.isFinite(Number(passedFromTests))
+      ? Number(passedFromTests)
+      : parseLegacyTestCount(text, ["passed", "passing", "pass"]);
+    if (passedCount != null || failedCount != null || skippedCount != null) {
+      sawNumericCount = true;
+      counted.passed += passedCount ?? 0;
+      counted.failed += failedCount ?? 0;
+      counted.skipped += skippedCount ?? 0;
+      continue;
+    }
+
     if (result === "pass" || result === "passed" || result === "success" || result === "succeeded") {
-      passed += 1;
+      statusCounts.passed += 1;
+    } else if (!result && /\b(?:pass|passed|success|succeeded)\b/i.test(text) && !/\b(?:fail|failed|error)\b/i.test(text)) {
+      statusCounts.passed += 1;
     } else if (result === "fail" || result === "failed" || result === "error") {
-      failed += 1;
+      statusCounts.failed += 1;
+    } else if (!result && /\b(?:fail|failed|failure|error)\b/i.test(text)) {
+      statusCounts.failed += 1;
     } else {
-      skipped += 1;
+      statusCounts.skipped += 1;
     }
   }
-  return { passed, failed, skipped };
+  const summary = sawNumericCount
+    ? {
+        passed: counted.passed,
+        failed: counted.failed + statusCounts.failed,
+        skipped: counted.skipped + statusCounts.skipped,
+      }
+    : statusCounts;
+  return {
+    ...summary,
+    ...(commands.length > 0 ? { command: commands.join("; ") } : {}),
+    ...(rawEntries.length > 0 ? { raw: rawEntries.join("\n") } : {}),
+  };
 }
 
 function normalizeCoordinatorWorkerToolArgs(args: {

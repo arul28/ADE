@@ -91,6 +91,29 @@ describe("coordinator project context", () => {
   });
 });
 
+function testPhase(overrides: Record<string, any> = {}) {
+  const phaseKey = overrides.phaseKey ?? "development";
+  const name = overrides.name ?? "Development";
+  return {
+    id: overrides.id ?? `phase-${phaseKey}`,
+    phaseKey,
+    name,
+    description: overrides.description ?? `${name} phase`,
+    instructions: overrides.instructions ?? `Run the ${name} phase.`,
+    model: overrides.model ?? { modelId: "openai/gpt-5.5", provider: "codex", thinkingLevel: "medium" },
+    budget: overrides.budget ?? {},
+    orderingConstraints: overrides.orderingConstraints ?? {},
+    askQuestions: overrides.askQuestions ?? { enabled: false },
+    validationGate: overrides.validationGate ?? { tier: "none", required: false },
+    requiresApproval: overrides.requiresApproval ?? false,
+    isBuiltIn: overrides.isBuiltIn ?? false,
+    isCustom: overrides.isCustom ?? true,
+    position: overrides.position ?? 0,
+    createdAt: overrides.createdAt ?? "2026-03-02T00:00:00.000Z",
+    updatedAt: overrides.updatedAt ?? "2026-03-02T00:00:00.000Z",
+  };
+}
+
 describe("coordinator memory tools", () => {
   it("memory_search queries project memory with mission scope defaults", async () => {
     const memoryService = {
@@ -1294,6 +1317,217 @@ describe("coordinatorTools task planning", () => {
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
 
+  it("steers post-planning workers to the configured next phase", async () => {
+    const planning = testPhase({
+      id: "phase-planning",
+      phaseKey: "planning",
+      name: "Planning",
+      position: 0,
+      isBuiltIn: true,
+      isCustom: false,
+      model: { modelId: "anthropic/claude-sonnet-4-6", provider: "claude", thinkingLevel: "medium" },
+      orderingConstraints: { mustBeFirst: true },
+    });
+    const testing = testPhase({
+      id: "phase-testing",
+      phaseKey: "testing",
+      name: "Testing",
+      position: 1,
+      isBuiltIn: true,
+      isCustom: false,
+      validationGate: { tier: "dedicated", required: true },
+    });
+    const development = testPhase({
+      id: "phase-development",
+      phaseKey: "development",
+      name: "Development",
+      position: 2,
+      isBuiltIn: true,
+      isCustom: false,
+    });
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: planning.model,
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-plan-1",
+            stepKey: "worker-plan",
+            stepIndex: 0,
+            title: "Planning worker",
+            laneId: null,
+            status: "succeeded",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: { phaseKey: "planning", phaseName: "Planning", stepType: "planning", readOnlyExecution: true },
+          },
+        ],
+        attempts: [],
+      },
+      missionMetadata: { phaseConfiguration: { selectedPhases: [planning, testing, development] } },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "test-runner",
+      prompt: "Run the test suite and report failures.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      blockedByPhaseOrdering: true,
+      phaseTransitionRequired: {
+        phaseKey: "testing",
+        reason: "planning_complete",
+      },
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("blocks target phase drift until the coordinator transitions phases", async () => {
+    const development = testPhase({ phaseKey: "development", name: "Development", position: 0 });
+    const testing = testPhase({
+      phaseKey: "testing",
+      name: "Testing",
+      position: 1,
+      validationGate: { tier: "dedicated", required: true },
+    });
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: development.model,
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: { phaseConfiguration: { selectedPhases: [development, testing] } },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "test-runner",
+      prompt: "Run targeted tests before implementation is finished.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      blockedByPhaseOrdering: true,
+      phaseTransitionRequired: {
+        phaseKey: "testing",
+        reason: "target_phase_required",
+      },
+    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
+  });
+
+  it("enforces mustPrecede before entering successor phases", async () => {
+    const development = testPhase({ phaseKey: "development", name: "Development", position: 0 });
+    const security = testPhase({
+      phaseKey: "security_review",
+      name: "Security review",
+      position: 1,
+      orderingConstraints: { mustPrecede: ["release"] },
+    });
+    const release = testPhase({ phaseKey: "release", name: "Release", position: 2 });
+    const { tools, db } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "development",
+              currentPhaseName: "Development",
+              currentPhaseModel: development.model,
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-dev-1",
+            stepKey: "worker-dev",
+            stepIndex: 0,
+            title: "Development worker",
+            laneId: null,
+            status: "succeeded",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: { phaseKey: "development", phaseName: "Development", stepType: "implementation" },
+          },
+        ],
+        attempts: [],
+      },
+      missionMetadata: { phaseConfiguration: { selectedPhases: [development, security, release] } },
+    });
+
+    const result = await (tools.set_current_phase as any).execute({ phaseKey: "release" });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "Cannot enter phase 'Release' until 'Security review' succeeds (mustPrecede).",
+    });
+    expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it("allows validation-looking workers in custom validation-capable phases", async () => {
+    const review = testPhase({
+      phaseKey: "security_review",
+      name: "Security review",
+      position: 0,
+      validationGate: {
+        tier: "dedicated",
+        required: true,
+        criteria: "Security review passes.",
+        evidenceRequirements: ["review_summary", "risk_notes"],
+      },
+    });
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "security_review",
+              currentPhaseName: "Security review",
+              currentPhaseModel: review.model,
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: { phaseConfiguration: { selectedPhases: [review] } },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "security-validator",
+      prompt: "Validate the result lane and produce review summary plus risk notes.",
+      dependsOn: [],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [expect.objectContaining({
+        metadata: expect.objectContaining({
+          phaseKey: "security_review",
+          phaseName: "Security review",
+        }),
+      })],
+    }));
+  });
+
   it("report_status tolerates omitted optional arrays from runtime tool calls", async () => {
     const graph = {
       run: { metadata: {} },
@@ -1634,19 +1868,14 @@ describe("coordinatorTools task planning", () => {
     });
 
     expect(result).toMatchObject({
-      ok: true,
-      delegationContract: expect.objectContaining({
+      ok: false,
+      blockedByPhaseOrdering: true,
+      phaseTransitionRequired: {
         phaseKey: "testing",
-        scope: expect.objectContaining({ key: "phase:testing" }),
-      }),
+        reason: "target_phase_required",
+      },
     });
-    const addedStepInput = orchestratorService.addSteps.mock.calls.at(-1)?.[0]?.steps?.[0];
-    expect(addedStepInput?.metadata).toMatchObject({
-      phaseKey: "testing",
-      phaseName: "Testing",
-      stepType: "testing",
-      taskType: "testing",
-    });
+    expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
 });
 
@@ -2882,7 +3111,7 @@ describe("coordinatorTools planning manual-input blocking", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
+      error: expect.stringContaining("Validation workers can only be spawned during a validation-capable phase."),
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
@@ -2902,7 +3131,25 @@ describe("coordinatorTools budget hard-cap guards", () => {
             }
           }
         },
-        steps: [],
+        steps: [
+          {
+            id: "step-planning",
+            stepKey: "plan",
+            stepIndex: 0,
+            title: "Planning",
+            laneId: null,
+            status: "succeeded",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              validationState: "pass",
+            },
+          },
+        ],
         attempts: [],
       },
     });
@@ -4210,7 +4457,25 @@ describe("coordinatorTools validation enforcement", () => {
             },
           },
         },
-        steps: [],
+        steps: [
+          {
+            id: "step-planning",
+            stepKey: "plan",
+            stepIndex: 0,
+            title: "Planning",
+            laneId: null,
+            status: "succeeded",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              validationState: "pass",
+            },
+          },
+        ],
         attempts: [],
       },
     });
@@ -4223,7 +4488,11 @@ describe("coordinatorTools validation enforcement", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
+      blockedByPhaseOrdering: true,
+      phaseTransitionRequired: {
+        phaseKey: "validation",
+        reason: "target_phase_required",
+      },
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });
@@ -4293,7 +4562,11 @@ describe("coordinatorTools validation enforcement", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: expect.stringContaining('Validation workers can only be spawned during the "validation" phase.'),
+      blockedByPhaseOrdering: true,
+      phaseTransitionRequired: {
+        phaseKey: "validation",
+        reason: "target_phase_required",
+      },
     });
     expect(orchestratorService.addSteps).not.toHaveBeenCalled();
   });

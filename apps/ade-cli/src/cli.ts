@@ -177,6 +177,7 @@ const VERSION =
   BUNDLED_VERSION && BUNDLED_VERSION !== "0.0.0"
     ? BUNDLED_VERSION
     : ENV_VERSION || BUNDLED_VERSION || "0.0.0";
+const PLACEHOLDER_VERSION = "0.0.0";
 const PROTOCOL_VERSION = "2025-06-18";
 const SOURCE_FALLBACK_ENV = "ADE_CLI_SOURCE_FALLBACK_ACTIVE";
 const CLI_ENTRY_PATH =
@@ -191,6 +192,9 @@ const WORKER_MISSION_TOOL_CLI_NAMES = new Set([
   "get_pending_messages",
   "stream_events",
   "message_worker",
+  "report_status",
+  "report_result",
+  "report_validation",
 ]);
 
 function resolveCliPackageRoot(entryPath: string): string {
@@ -2261,6 +2265,25 @@ function buildWorkerMissionToolPlan(name: string, args: string[]): CliPlan {
         toWorkerId,
         content,
         priority: readValue(args, ["--priority"]) ?? "normal",
+      });
+    }
+    if (name === "report_status") {
+      const message =
+        readValue(args, ["--text", "--message", "--summary"]) ??
+        args
+          .filter((entry) => entry !== "--" && !entry.startsWith("-"))
+          .join(" ")
+          .trim();
+      return collectGenericObjectArgs(args, {
+        status: readValue(args, ["--status"]) ?? "running",
+        summary: message || undefined,
+        nextAction: message || undefined,
+        details: message || undefined,
+      });
+    }
+    if (name === "report_result" || name === "report_validation") {
+      return collectGenericObjectArgs(args, {
+        summary: readValue(args, ["--text", "--message", "--summary"]),
       });
     }
     return collectGenericObjectArgs(args);
@@ -10224,6 +10247,14 @@ function readRuntimeInfoVersion(value: unknown): string | null {
   return asString(value.runtimeInfo.version);
 }
 
+function shouldReplaceMachineRuntimeVersion(runtimeVersion: string | null): boolean {
+  return Boolean(
+    runtimeVersion &&
+      runtimeVersion !== VERSION &&
+      VERSION !== PLACEHOLDER_VERSION,
+  );
+}
+
 async function initializeMachineRuntimeDaemon(
   client: SocketJsonRpcClient,
   options: GlobalOptions,
@@ -10303,7 +10334,7 @@ async function connectMachineRuntimeDaemon(
       client,
       options,
     );
-    if (runtimeVersion && runtimeVersion !== VERSION) {
+    if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
       if (!allowSpawn) {
         client.close();
         throw new Error(
@@ -10326,7 +10357,7 @@ async function connectMachineRuntimeDaemon(
         restarted,
         options,
       );
-      if (restartedVersion && restartedVersion !== VERSION) {
+      if (shouldReplaceMachineRuntimeVersion(restartedVersion)) {
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
           `ADE runtime daemon version ${restartedVersion} does not match CLI version ${VERSION}.`,
@@ -10349,7 +10380,7 @@ async function connectMachineRuntimeDaemon(
         client,
         options,
       );
-      if (runtimeVersion && runtimeVersion !== VERSION) {
+      if (shouldReplaceMachineRuntimeVersion(runtimeVersion)) {
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
           `ADE runtime daemon version ${runtimeVersion} does not match CLI version ${VERSION}.`,

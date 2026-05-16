@@ -11,7 +11,7 @@ import type {
   PhaseCard,
   PhaseProfile,
 } from "../../../shared/types";
-import { createBuiltInPhaseCards, validatePhaseSequence } from "./phaseEngine";
+import { createBuiltInPhaseCards, ensurePlanningPhase, validatePhaseSequence } from "./phaseEngine";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import type { MissionBudgetService } from "../orchestrator/missionBudgetService";
 import { mergeMissionPermissionConfig, normalizeMissionPermissions } from "../orchestrator/permissionMapping";
@@ -102,11 +102,13 @@ function resolveSelectedPhases(args: {
     : args.profiles.find((profile) => profile.isDefault) ?? args.profiles[0] ?? null;
   const hasOverride = Array.isArray(args.launch.phaseOverride) && args.launch.phaseOverride.length > 0;
   const phases = normalizePhaseCards(
-    hasOverride
-      ? args.launch.phaseOverride ?? []
-      : selectedProfile?.phases?.length
-        ? selectedProfile.phases
-        : createBuiltInPhaseCards(),
+    ensurePlanningPhase(
+      hasOverride
+        ? args.launch.phaseOverride ?? []
+        : selectedProfile?.phases?.length
+          ? selectedProfile.phases
+          : createBuiltInPhaseCards()
+    )
   );
   return { profile: selectedProfile, phases };
 }

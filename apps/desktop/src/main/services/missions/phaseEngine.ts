@@ -60,6 +60,38 @@ export function resolveDevelopmentPhaseKey(phases: PhaseCard[]): string {
   return phase?.phaseKey ?? BUILT_IN_PHASE_KEYS.development;
 }
 
+export function resolveFirstPostPlanningPhaseKey(phases: PhaseCard[]): string {
+  const sorted = [...phases].sort((a, b) => a.position - b.position);
+  const planningIndex = sorted.findIndex((phase) => normalizePhaseKey(phase.phaseKey) === BUILT_IN_PHASE_KEYS.planning);
+  const nextPhase =
+    sorted.find((phase, index) => index > planningIndex && normalizePhaseKey(phase.phaseKey) !== BUILT_IN_PHASE_KEYS.planning)
+    ?? sorted.find((phase) => normalizePhaseKey(phase.phaseKey) !== BUILT_IN_PHASE_KEYS.planning);
+  return nextPhase?.phaseKey ?? resolveDevelopmentPhaseKey(sorted);
+}
+
+export function ensurePlanningPhase(phases: PhaseCard[], at: string = nowIso()): PhaseCard[] {
+  const sorted = [...phases].sort((a, b) => a.position - b.position);
+  if (sorted.some((phase) => normalizePhaseKey(phase.phaseKey) === BUILT_IN_PHASE_KEYS.planning)) {
+    return sorted.map((phase, index) => ({ ...phase, position: index }));
+  }
+
+  const planningPhase = createBuiltInPhaseCards(at)[0]!;
+  return [planningPhase, ...sorted].map((phase, index) => {
+    if (index === 0) return { ...phase, position: index };
+    if (!phase.orderingConstraints.mustBeFirst) return { ...phase, position: index };
+    const mustFollow = new Set([...(phase.orderingConstraints.mustFollow ?? []), BUILT_IN_PHASE_KEYS.planning]);
+    return {
+      ...phase,
+      orderingConstraints: {
+        ...phase.orderingConstraints,
+        mustBeFirst: false,
+        mustFollow: [...mustFollow],
+      },
+      position: index,
+    };
+  });
+}
+
 const DEFAULT_CLAUDE_PHASE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 

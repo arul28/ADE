@@ -4,7 +4,9 @@ import {
   BUILT_IN_PHASE_KEYS,
   createBuiltInPhaseCards,
   createBuiltInPhaseProfiles,
+  ensurePlanningPhase,
   validatePhaseSequence,
+  resolveFirstPostPlanningPhaseKey,
   normalizeProfileInput,
   applyPhaseCardsToPlanSteps,
   groupMissionStepsByPhase,
@@ -143,6 +145,39 @@ describe("createBuiltInPhaseProfiles", () => {
     expect(tdd.phases[3].position).toBe(3); // integration
     expect(tdd.phases[4].position).toBe(4); // validation
     expect(tdd.phases[5].position).toBe(5); // closeout
+  });
+});
+
+describe("ensurePlanningPhase", () => {
+  it("injects planning before a custom-only workflow", () => {
+    const auditPhase = makePhaseCard({
+      id: "phase-audit",
+      phaseKey: "score_audit",
+      name: "Score audit",
+      isBuiltIn: false,
+      isCustom: true,
+      orderingConstraints: { mustBeFirst: true },
+      position: 0,
+    });
+
+    const phases = ensurePlanningPhase([auditPhase], "2026-03-25T00:00:00.000Z");
+
+    expect(phases.map((phase) => phase.phaseKey)).toEqual(["planning", "score_audit"]);
+    expect(phases[0]?.orderingConstraints.mustBeFirst).toBe(true);
+    expect(phases[1]?.orderingConstraints.mustBeFirst).toBe(false);
+    expect(phases[1]?.orderingConstraints.mustFollow).toContain("planning");
+    expect(validatePhaseSequence(phases)).toEqual([]);
+  });
+
+  it("resolves the configured phase immediately after planning", () => {
+    const cards = createBuiltInPhaseCards();
+    const tddOrder = [
+      cards.find((c) => c.phaseKey === "planning")!,
+      { ...cards.find((c) => c.phaseKey === "testing")!, position: 1 },
+      { ...cards.find((c) => c.phaseKey === "development")!, position: 2 },
+    ];
+
+    expect(resolveFirstPostPlanningPhaseKey(tddOrder)).toBe("testing");
   });
 });
 
