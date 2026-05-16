@@ -339,6 +339,11 @@ function getWorkerStepOutputPath(worktreePath: string, stepKey: string, attemptI
   return path.join(worktreePath, ".ade", `step-output-${sanitizedStepKey}-attempt-${sanitizedAttemptId}.md`);
 }
 
+function getLegacyWorkerStepOutputPath(worktreePath: string, stepKey: string): string {
+  const sanitizedStepKey = sanitizeStepOutputPathPart(stepKey);
+  return path.join(worktreePath, ".ade", `step-output-${sanitizedStepKey}.md`);
+}
+
 type NormalizedValidationContract = {
   level: "step" | "milestone" | "mission";
   tier: "self" | "dedicated";
@@ -1421,6 +1426,17 @@ function extractReportResultPayloadFromStepOutput(filePath: string | null | unde
   } catch {
     return null;
   }
+}
+
+function extractReportResultPayloadFromWorkerStepOutput(args: {
+  worktreePath: string;
+  stepKey: string;
+  attemptId: string | number;
+}): Record<string, unknown> | null {
+  return (
+    extractReportResultPayloadFromStepOutput(getWorkerStepOutputPath(args.worktreePath, args.stepKey, args.attemptId))
+    ?? extractReportResultPayloadFromStepOutput(getLegacyWorkerStepOutputPath(args.worktreePath, args.stepKey))
+  );
 }
 
 function normalizeRecoveredWorkerResultReport(args: {
@@ -7036,8 +7052,11 @@ export function createOrchestratorService({
               ? laneRow.worktree_path.trim()
               : null;
             if (worktreePath) {
-              const stepOutputPath = getWorkerStepOutputPath(worktreePath, step.stepKey, attempt.id);
-              recoveredPayload = extractReportResultPayloadFromStepOutput(stepOutputPath);
+              recoveredPayload = extractReportResultPayloadFromWorkerStepOutput({
+                worktreePath,
+                stepKey: step.stepKey,
+                attemptId: attempt.id,
+              });
               if (recoveredPayload) recoveredFrom = "step_output";
             }
           }
@@ -9259,7 +9278,11 @@ export function createOrchestratorService({
 	            ? laneRow.worktree_path.trim()
 	            : null;
 	          if (worktreePath) {
-	            recoveredPayload = extractReportResultPayloadFromStepOutput(getWorkerStepOutputPath(worktreePath, step.stepKey, attempt.id));
+	            recoveredPayload = extractReportResultPayloadFromWorkerStepOutput({
+	              worktreePath,
+	              stepKey: step.stepKey,
+	              attemptId: attempt.id,
+	            });
 	            if (recoveredPayload) recoveredFrom = "step_output";
 	          }
 	        }

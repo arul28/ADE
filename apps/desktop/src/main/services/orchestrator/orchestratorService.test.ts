@@ -6459,6 +6459,96 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("recovers legacy durable step output files for in-flight workers", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "legacy-worker",
+            title: "Legacy Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "step-output-legacy-worker.md"),
+        [
+          "## Summary",
+          "Recovered the legacy output file.",
+          "",
+          "## Files Changed",
+          "- `legacy.ts`",
+          "",
+          "## Tests",
+          "- `npm test` passed: 1 failed: 0 skipped: 0",
+        ].join("\n"),
+        "utf8"
+      );
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "I’m sending the result through the CLI.",
+          "exec",
+          "/bin/zsh -lc 'ade coordinator report_result --payload @/tmp/result.json' in /tmp/mission-lane",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("succeeded");
+      expect(after?.errorClass).toBe("none");
+      const [stepAfter] = fixture.service.listSteps(started.run.id);
+      const metadata = stepAfter?.metadata as Record<string, unknown>;
+      const report = metadata.lastResultReport as Record<string, unknown>;
+      expect(metadata.recoveredResultReportFromStepOutput).toBe(true);
+      expect(report.summary).toBe("Recovered the legacy output file.");
+      expect(report.filesChanged).toEqual(["legacy.ts"]);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("does not recover report_result prompt templates as worker results", async () => {
     const fixture = await createFixture();
     try {
