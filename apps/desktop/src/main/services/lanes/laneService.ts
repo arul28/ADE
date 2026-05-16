@@ -3750,29 +3750,38 @@ export function createLaneService({
             const removeArgs = ["worktree", "remove"];
             if (force) removeArgs.push("--force");
             removeArgs.push(row.worktree_path);
+            const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
+              try {
+                await fs.promises.rm(row.worktree_path, { recursive: true, force: true });
+              } catch (rmError) {
+                throw new Error(
+                  `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
+                    rmError instanceof Error ? rmError.message : String(rmError)
+                  }`
+                );
+              }
+              await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+              return { detail };
+            };
             // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
             // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
             // state that blocks future deletes.
             const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
             if (removeRes.exitCode === 0) {
+              if (fs.existsSync(row.worktree_path)) {
+                return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
+              }
               return { detail: row.worktree_path };
             }
             // Recovery path: a previous failed delete (or this one's first attempt)
             // can leave the worktree dir present without its `.git` pointer file, or
             // the dir gone with stale metadata still registered. Either way: rm the
             // dir if any, then prune git's metadata.
-            try {
-              await fs.promises.rm(row.worktree_path, { recursive: true, force: true });
-            } catch (rmError) {
-              const original = (removeRes.stderr || removeRes.stdout || "").trim();
-              throw new Error(
-                `git worktree remove failed (${original}); manual cleanup also failed: ${
-                  rmError instanceof Error ? rmError.message : String(rmError)
-                }`
-              );
-            }
-            await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
-            return { detail: `${row.worktree_path} (recovered from stale state)` };
+            const original = (removeRes.stderr || removeRes.stdout || "").trim();
+            return removeResidualDirectory(
+              `${row.worktree_path} (recovered from stale state)`,
+              `git worktree remove failed (${original})`
+            );
           });
         }
 

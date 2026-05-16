@@ -430,14 +430,65 @@ describe("selectLaneTabPrTag", () => {
   });
 
   it("prefers an ADE-mapped PR over an unlinked GitHub branch match", () => {
-    const mappedPr = makePr({ id: "mapped-pr", state: "closed" });
+    const mappedPr = makePr({ id: "mapped-pr", state: "open" });
     const githubPr = makeGitHubPr({ id: "github-pr", state: "open" });
 
     expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
       source: "ade",
       id: "mapped-pr",
       linkedPrId: "mapped-pr",
+      state: "open",
+    });
+  });
+
+  it("prefers an external GitHub PR over a stale terminal ADE row for the same branch", () => {
+    const mappedPr = makePr({
+      id: "mapped-pr",
       state: "closed",
+      githubPrNumber: 123,
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "open",
+      githubPrNumber: 224,
+      linkedPrId: null,
+      linkedLaneId: null,
+      title: "Fresh external PR",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "github",
+      id: "github-pr",
+      linkedPrId: null,
+      state: "open",
+      title: "Fresh external PR",
+    });
+  });
+
+  it("keeps a terminal ADE row when the branch-matched GitHub PR is also terminal and unrelated", () => {
+    const mappedPr = makePr({
+      id: "mapped-pr",
+      state: "closed",
+      githubPrNumber: 123,
+      githubUrl: "https://github.com/arul28/ADE/pull/123",
+    });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "closed",
+      githubPrNumber: 224,
+      githubUrl: "https://github.com/arul28/ADE/pull/224",
+      linkedPrId: null,
+      linkedLaneId: null,
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "ade",
+      id: "mapped-pr",
+      linkedPrId: "mapped-pr",
+      state: "closed",
+      githubPrNumber: 123,
     });
   });
 
@@ -501,6 +552,19 @@ describe("selectLaneTabPrTag", () => {
       linkedPrId: null,
       githubUrl: "https://github.com/arul28/ADE/pull/224",
     });
+  });
+
+  it("does not match fork PRs to same-named local repo branches", () => {
+    expect(
+      githubPrMatchesCurrentBranch(
+        makeLane(),
+        makeGitHubPr({
+          headBranch: "ade/pr-state",
+          headRepoOwner: "contributor",
+          headRepoName: "ADE",
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("does not match repo GitHub PRs for primary while primary is on its base branch", () => {

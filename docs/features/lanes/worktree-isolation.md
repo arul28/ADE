@@ -84,7 +84,9 @@ auto-clean it.
 
 1. Fetch the row; reject if `is_edit_protected = 1` (primary).
 2. If managed worktree: `git worktree remove --force <path>`. If
-   attached: skip.
+   Git reports success but residual files remain, ADE removes the
+   directory with `fs.promises.rm` and runs `git worktree prune` before
+   continuing. If attached: skip.
 3. If caller requested `deleteBranch`: `git branch -D <branch>`.
 4. Delete the lane row. Stale state in `key_value`, `operations`,
    `sessions`, etc. that references the lane is either cascaded

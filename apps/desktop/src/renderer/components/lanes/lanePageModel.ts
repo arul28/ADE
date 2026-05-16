@@ -202,11 +202,15 @@ export function selectLanePrTag(
 
 export function githubPrMatchesCurrentBranch(
   lane: Pick<LaneSummary, "laneType" | "branchRef" | "baseRef">,
-  pr: Pick<GitHubPrListItem, "headBranch">,
+  pr: Pick<GitHubPrListItem, "headBranch" | "repoOwner" | "repoName" | "headRepoOwner" | "headRepoName">,
 ): boolean {
   const laneBranch = normalizeLanePrBranch(lane.branchRef);
   const prHeadBranch = normalizeLanePrBranch(pr.headBranch);
   if (!laneBranch || !prHeadBranch || laneBranch !== prHeadBranch) return false;
+  const headRepoOwner = pr.headRepoOwner?.trim();
+  const headRepoName = pr.headRepoName?.trim();
+  if (headRepoOwner && pr.repoOwner && headRepoOwner.toLowerCase() !== pr.repoOwner.toLowerCase()) return false;
+  if (headRepoName && pr.repoName && headRepoName.toLowerCase() !== pr.repoName.toLowerCase()) return false;
   if (lane.laneType === "primary") {
     const baseBranch = normalizeLanePrBranch(lane.baseRef);
     if (laneBranch && baseBranch && laneBranch === baseBranch) return false;
@@ -274,18 +278,30 @@ function selectTerminalGithubUpdateForPr(
     .sort(comparePrTags)[0] ?? null;
 }
 
+function shouldPreferGithubPrTag(
+  pr: PrSummary,
+  githubPr: GitHubPrListItem,
+): boolean {
+  const githubState = githubPr.isDraft ? "draft" : githubPr.state;
+  if (githubPrMatchesAdePr(pr, githubPr) && githubState !== pr.state) return true;
+  return isTerminalPrState(pr.state) && !isTerminalPrState(githubState);
+}
+
 export function selectLaneTabPrTag(
   lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">,
   prs: PrSummary[],
   githubPrs: GitHubPrListItem[],
 ): LaneTabPrTag | null {
   const mappedPr = selectLanePrTag(lane, prs);
+  const githubPr = selectGithubLanePrTag(lane, githubPrs);
   if (mappedPr) {
     const terminalGithubPr = selectTerminalGithubUpdateForPr(mappedPr, githubPrs);
     if (terminalGithubPr) return toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id);
+    if (githubPr && shouldPreferGithubPrTag(mappedPr, githubPr)) {
+      return toLaneTabPrTagFromGithubItem(githubPr, lane.id);
+    }
     return toLaneTabPrTagFromPrSummary(mappedPr);
   }
-  const githubPr = selectGithubLanePrTag(lane, githubPrs);
   return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
 }
 
