@@ -61,7 +61,11 @@ import {
   hasConflictingDelegationContract,
   updateDelegationContract,
 } from "./delegationContracts";
-import { resolveFirstPostPlanningPhaseKey } from "../missions/phaseEngine";
+import {
+  findPhaseByRef,
+  resolveFirstPostPlanningPhaseKey,
+  resolveMustPrecedePredecessors,
+} from "../missions/phaseEngine";
 
 /** Timeout for autopilot agent startup (Promise.race guard). */
 const AUTOPILOT_START_TIMEOUT_MS = 15_000;
@@ -1650,26 +1654,6 @@ export function createCoordinatorToolSet(deps: {
       currentPhase,
       phaseRuntime,
     };
-  }
-
-  function normalizePhaseRef(value: string | null | undefined): string {
-    return typeof value === "string" ? value.trim().toLowerCase() : "";
-  }
-
-  function phaseMatchesRef(phase: PhaseCard, ref: string): boolean {
-    const normalized = normalizePhaseRef(ref);
-    if (!normalized) return false;
-    return normalizePhaseRef(phase.phaseKey) === normalized || normalizePhaseRef(phase.name) === normalized;
-  }
-
-  function findPhaseByRef(phases: PhaseCard[], ref: string): PhaseCard | null {
-    return phases.find((phase) => phaseMatchesRef(phase, ref)) ?? null;
-  }
-
-  function resolveMustPrecedePredecessors(phases: PhaseCard[], targetPhase: PhaseCard): PhaseCard[] {
-    return phases.filter((phase) =>
-      (phase.orderingConstraints.mustPrecede ?? []).some((successorRef) => phaseMatchesRef(targetPhase, successorRef))
-    );
   }
 
   function phaseAllowsValidationWorker(phase: PhaseCard | null | undefined): boolean {
