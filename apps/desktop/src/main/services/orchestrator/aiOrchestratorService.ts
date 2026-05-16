@@ -2991,11 +2991,14 @@ Check all worker statuses and continue managing the mission from here. Read work
         typeof meta.stepType === "string" ? meta.stepType : "",
         typeof meta.taskType === "string" ? meta.taskType : "",
       ].join(" ");
-      const planningLike =
-        meta.readOnlyExecution === true
-        || (typeof meta.phaseKey === "string" && meta.phaseKey.trim().toLowerCase() === "planning")
-        || (typeof meta.stepType === "string" && meta.stepType.trim().toLowerCase() === "planning");
-      const reviewRelated = !planningLike && /\breview\b/i.test(identityText);
+      const phaseIdentity = [
+        typeof meta.phaseKey === "string" ? meta.phaseKey : "",
+        typeof meta.phaseName === "string" ? meta.phaseName : "",
+        typeof meta.stepType === "string" ? meta.stepType : "",
+        typeof meta.taskType === "string" ? meta.taskType : "",
+      ].join(" ").toLowerCase();
+      const planningLike = /\bplanning\b/.test(phaseIdentity);
+      const reviewRelated = /\b(review|validation|audit|proof)\b/.test(`${identityText} ${phaseIdentity}`);
       const details: string[] = [];
       if (report) {
         collectReviewSummaryStrings(report.reviewSummary, details);
@@ -3022,7 +3025,9 @@ Check all worker statuses and continue managing the mission from here. Read work
       const payload = isRecord(event.payload) ? event.payload : {};
       const workerId = typeof payload.workerId === "string" ? payload.workerId : "";
       const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
-      const reviewRelated = /\breview\b/i.test(`${workerId} ${summary}`);
+      const reviewRelated =
+        event.eventType === "validation_report"
+        || /\b(review|validation|audit|proof)\b/i.test(`${workerId} ${summary}`);
       const planningRelated = /\bplanning\b/i.test(`${workerId} ${summary}`);
       const details: string[] = [];
       collectReviewSummaryStrings(payload.reviewSummary, details);
@@ -3332,10 +3337,11 @@ Check all worker statuses and continue managing the mission from here. Read work
             : `Step ${step.stepKey} is in progress.`;
     // Best-effort: try to read durable step output file for enriched summary
     let stepOutputContent: string | null = null;
-    if (projectRoot) {
+    if (projectRoot && latestAttempt) {
       try {
         const sanitizedKey = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-        const outputPath = nodePath.resolve(projectRoot, `.ade/step-output-${sanitizedKey}.md`);
+        const sanitizedAttemptId = latestAttempt.id.replace(/[^a-zA-Z0-9_-]/g, "_");
+        const outputPath = nodePath.resolve(projectRoot, `.ade/step-output-${sanitizedKey}-attempt-${sanitizedAttemptId}.md`);
         if (fs.existsSync(outputPath)) {
           stepOutputContent = fs.readFileSync(outputPath, "utf-8").trim();
         }
@@ -5422,25 +5428,27 @@ Check all worker statuses and continue managing the mission from here. Read work
       }
     })();
 
-    if (retrospective && projectRoot) {
-      const missionForState = missionService.get(missionId);
-      void updateMissionStateDocument({
-        projectRoot,
-        missionId,
-        runId,
-        goal: missionForState?.prompt || missionForState?.title || "Mission run",
-        patch: {
-          reflections: orchestratorService.listReflections({ runId, limit: 200 }),
-          latestRetrospective: retrospective,
-        },
-      }).catch((error) => {
-        logger.debug("ai_orchestrator.retrospective_mission_state_sync_failed", {
-          runId,
-          missionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
+    const retrospectiveStateSync = retrospective && projectRoot
+      ? (async () => {
+          const missionForState = missionService.get(missionId);
+          await updateMissionStateDocument({
+            projectRoot,
+            missionId,
+            runId,
+            goal: missionForState?.prompt || missionForState?.title || "Mission run",
+            patch: {
+              reflections: orchestratorService.listReflections({ runId, limit: 200 }),
+              latestRetrospective: retrospective,
+            },
+          });
+        })().catch((error) => {
+          logger.debug("ai_orchestrator.retrospective_mission_state_sync_failed", {
+            runId,
+            missionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+      : Promise.resolve();
 
     logger.info("ai_orchestrator.run_finalized", {
       runId,
@@ -5451,13 +5459,15 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
 
     if (finalStatus === "succeeded") {
-      void syncMissionFromRun(runId, "finalize_run_succeeded").catch((error) => {
-        logger.debug("ai_orchestrator.finalize_sync_failed", {
-          runId,
-          missionId,
-          error: error instanceof Error ? error.message : String(error),
+      void retrospectiveStateSync
+        .then(() => syncMissionFromRun(runId, "finalize_run_succeeded"))
+        .catch((error) => {
+          logger.debug("ai_orchestrator.finalize_sync_failed", {
+            runId,
+            missionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
-      });
     }
 
     return finalized;

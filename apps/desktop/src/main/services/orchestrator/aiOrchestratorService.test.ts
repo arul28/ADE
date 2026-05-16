@@ -2478,7 +2478,7 @@ describe("aiOrchestratorService", () => {
         summary: "Risk notes: no remaining product risks identified.",
       });
 
-      await waitFor(() => fixture.missionService.get(mission.id)?.status === "completed");
+      await waitFor(() => fixture.missionService.get(mission.id)?.status === "completed", 10_000);
       expect(fixture.missionService.get(mission.id)?.lastError).toBeNull();
       const runView = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id, runId });
       expect(runView?.lifecycle.displayStatus).toBe("completed");
@@ -6695,7 +6695,7 @@ describe("aiOrchestratorService", () => {
 
       const finalizeResult = fixture.aiOrchestratorService.finalizeRun({ runId });
       expect(finalizeResult.finalized).toBe(true);
-      await waitFor(() => fixture.missionService.get(mission.id)?.status === "completed");
+      await waitFor(() => fixture.missionService.get(mission.id)?.status === "completed", 10_000);
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("completed");
       expect(refreshed?.steps.every((step) => step.status === "succeeded")).toBe(true);

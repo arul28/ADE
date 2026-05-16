@@ -6025,13 +6025,18 @@ describe("coordinatorTools file path containment", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-step-output-root-"));
     const maliciousKey = "../../sensitive";
     const sanitized = maliciousKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const attemptId = "attempt-for-sensitive-output";
     const outputDir = path.join(projectRoot, ".ade");
     fs.mkdirSync(outputDir, { recursive: true });
-    const scopedFile = path.join(outputDir, `step-output-${sanitized}.md`);
+    const scopedFile = path.join(outputDir, `step-output-${sanitized}-attempt-${attemptId}.md`);
     fs.writeFileSync(scopedFile, "scoped output", "utf-8");
 
     const { tools } = createCoordinatorHarness({
-      graph: { run: { metadata: {} }, steps: [], attempts: [] },
+      graph: {
+        run: { metadata: {} },
+        steps: [{ id: "step-sensitive", stepKey: maliciousKey }],
+        attempts: [{ id: attemptId, stepId: "step-sensitive", createdAt: "2026-01-01T00:00:00.000Z" }],
+      },
       projectRoot,
     });
 

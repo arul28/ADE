@@ -328,9 +328,15 @@ function getWorkerCheckpointPath(worktreePath: string, stepKey: string): string 
   return path.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
 }
 
-function getWorkerStepOutputPath(worktreePath: string, stepKey: string): string {
-  const sanitizedStepKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
-  return path.join(worktreePath, ".ade", `step-output-${sanitizedStepKey}.md`);
+function sanitizeStepOutputPathPart(value: string | number | null | undefined): string {
+  const sanitized = String(value ?? "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return sanitized.length > 0 ? sanitized : "unknown";
+}
+
+function getWorkerStepOutputPath(worktreePath: string, stepKey: string, attemptId: string | number): string {
+  const sanitizedStepKey = sanitizeStepOutputPathPart(stepKey);
+  const sanitizedAttemptId = sanitizeStepOutputPathPart(attemptId);
+  return path.join(worktreePath, ".ade", `step-output-${sanitizedStepKey}-attempt-${sanitizedAttemptId}.md`);
 }
 
 type NormalizedValidationContract = {
@@ -1438,7 +1444,10 @@ function normalizeRecoveredWorkerResultReport(args: {
       ? planMarkdownRaw
       : "";
   const planSummary =
-    typeof rawPlan?.summary === "string" && rawPlan.summary.trim().length > 0 && !looksLikeReportTemplatePlaceholder(rawPlan.summary)
+    typeof rawPlan?.summary === "string"
+    && rawPlan.summary.trim().length > 0
+    && !looksLikeReportTemplatePlaceholder(rawPlan.summary)
+    && !looksLikePlanTemplatePlaceholder(rawPlan.summary)
       ? rawPlan.summary.trim()
       : "";
   const normalizedPlan = rawPlan && planMarkdown.length > 0
@@ -1459,7 +1468,10 @@ function normalizeRecoveredWorkerResultReport(args: {
         : normalizedPlan
           ? "Planning step completed."
           : "";
-  const summary = looksLikeReportTemplatePlaceholder(rawSummary) ? "" : rawSummary;
+  const summary =
+    looksLikeReportTemplatePlaceholder(rawSummary) || looksLikePlanTemplatePlaceholder(rawSummary)
+      ? ""
+      : rawSummary;
   if (!summary && !normalizedPlan) return null;
   const artifactsRaw = Array.isArray(args.payload.artifacts) ? args.payload.artifacts : [];
   const filesChangedRaw = Array.isArray(args.payload.filesChanged)
@@ -7024,7 +7036,7 @@ export function createOrchestratorService({
               ? laneRow.worktree_path.trim()
               : null;
             if (worktreePath) {
-              const stepOutputPath = getWorkerStepOutputPath(worktreePath, step.stepKey);
+              const stepOutputPath = getWorkerStepOutputPath(worktreePath, step.stepKey, attempt.id);
               recoveredPayload = extractReportResultPayloadFromStepOutput(stepOutputPath);
               if (recoveredPayload) recoveredFrom = "step_output";
             }
@@ -9247,7 +9259,7 @@ export function createOrchestratorService({
 	            ? laneRow.worktree_path.trim()
 	            : null;
 	          if (worktreePath) {
-	            recoveredPayload = extractReportResultPayloadFromStepOutput(getWorkerStepOutputPath(worktreePath, step.stepKey));
+	            recoveredPayload = extractReportResultPayloadFromStepOutput(getWorkerStepOutputPath(worktreePath, step.stepKey, attempt.id));
 	            if (recoveredPayload) recoveredFrom = "step_output";
 	          }
 	        }

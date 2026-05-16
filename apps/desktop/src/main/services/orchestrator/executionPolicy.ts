@@ -937,13 +937,44 @@ function validationSurrogateSearchText(step: OrchestratorStep): string {
     typeof meta.lastValidationReport === "object" && meta.lastValidationReport
       ? (meta.lastValidationReport as Record<string, unknown>)
       : null;
+  const searchableValue = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (Array.isArray(value)) return value.map(searchableValue).filter(Boolean).join(" ");
+    if (value && typeof value === "object") {
+      return Object.values(value as Record<string, unknown>).map(searchableValue).filter(Boolean).join(" ");
+    }
+    return "";
+  };
   const values = [
     step.stepKey,
     step.title,
+    searchableValue(meta.targetPhaseKey),
+    searchableValue(meta.targetPhaseName),
+    searchableValue(meta.targetPhase),
+    searchableValue(meta.phase),
+    searchableValue(meta.phaseKey),
+    searchableValue(meta.phaseName),
     typeof meta.instructions === "string" ? meta.instructions : "",
     typeof meta.workerName === "string" ? meta.workerName : "",
     typeof lastResultReport?.summary === "string" ? lastResultReport.summary : "",
+    searchableValue(lastResultReport?.phase),
+    searchableValue(lastResultReport?.targetPhase),
+    searchableValue(lastResultReport?.targetPhaseKey),
+    searchableValue(lastResultReport?.reviewEvidence),
+    searchableValue(lastResultReport?.review_summary),
+    searchableValue(lastResultReport?.reviewSummary),
+    searchableValue(lastResultReport?.risk_notes),
+    searchableValue(lastResultReport?.riskNotes),
     typeof lastValidationReport?.summary === "string" ? lastValidationReport.summary : "",
+    searchableValue(lastValidationReport?.phase),
+    searchableValue(lastValidationReport?.targetPhase),
+    searchableValue(lastValidationReport?.targetPhaseKey),
+    searchableValue(lastValidationReport?.reviewEvidence),
+    searchableValue(lastValidationReport?.review_summary),
+    searchableValue(lastValidationReport?.reviewSummary),
+    searchableValue(lastValidationReport?.risk_notes),
+    searchableValue(lastValidationReport?.riskNotes),
   ];
   return normalizeSearchableText(values.join(" "));
 }
@@ -1291,7 +1322,8 @@ export function buildExecutionPlanPreviewFromPhases(args: {
     phaseOrder.push({ phaseName, card });
   }
   for (const phaseName of phaseMap.keys()) {
-    if (seenPhases.has(phaseName)) continue;
+    const normalizedPhaseName = normalizeSearchableText(phaseName);
+    if (normalizedPhaseName === "planning" || normalizedPhaseName === "analysis" || seenPhases.has(phaseName)) continue;
     seenPhases.add(phaseName);
     phaseOrder.push({ phaseName, card: null });
   }

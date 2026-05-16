@@ -862,6 +862,23 @@ describe("ADE CLI", () => {
         details: "Running npm run typecheck",
       },
     });
+
+    const statusOnly = buildCliPlan([
+      "report_status",
+      "--status",
+      "failed",
+      "--arg",
+      "details=structured payload",
+    ]);
+    expect(statusOnly.kind).toBe("execute");
+    if (statusOnly.kind !== "execute") return;
+    expect(statusOnly.steps[0]?.params).toEqual({
+      name: "report_status",
+      arguments: {
+        status: "failed",
+        details: "structured payload",
+      },
+    });
   });
 
   it("rejects invalid JSON action shapes before execution", () => {

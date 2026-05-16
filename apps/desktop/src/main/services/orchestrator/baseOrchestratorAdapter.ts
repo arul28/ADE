@@ -689,11 +689,14 @@ export function buildFullPrompt(
 
   // Durable step output file
   if (!readOnlyExecution) {
-    const sanitizedStepKeyForOutput = step.stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const rawStepKeyForOutput = step.stepKey ?? step.id ?? step.title ?? "worker";
+    const sanitizedStepKeyForOutput = String(rawStepKeyForOutput).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const rawAttemptIdForOutput = args.attempt?.id ?? step.lastAttemptId ?? "unknown";
+    const sanitizedAttemptIdForOutput = String(rawAttemptIdForOutput).replace(/[^a-zA-Z0-9_-]/g, "_");
     systemParts.push(
       [
         `STEP OUTPUT FILE: When you complete your task, write a structured summary file at:`,
-        `  .ade/step-output-${sanitizedStepKeyForOutput}.md`,
+        `  .ade/step-output-${sanitizedStepKeyForOutput}-attempt-${sanitizedAttemptIdForOutput}.md`,
         "",
         "The file MUST contain these sections:",
         "## Summary",
