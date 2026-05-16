@@ -6364,6 +6364,186 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("recovers durable step output before classifying an open shell command as interrupted", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "implementation-worker",
+            title: "Implementation Worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              stepType: "implementation",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected implementation step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.mkdirSync(path.join(fixture.projectRoot, ".ade"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fixture.projectRoot, ".ade", "step-output-implementation-worker.md"),
+        [
+          "## Summary",
+          "Implemented the preference banner and validated the helper.",
+          "",
+          "## Files Changed",
+          "- `app/page.tsx`",
+          "- `lib/preference-banner.ts`",
+          "",
+          "## Tests",
+          "- `npm test` passed: 3 failed: 0 skipped: 0",
+          "",
+          "## Validation",
+          "- `npm run typecheck` passed",
+        ].join("\n"),
+        "utf8"
+      );
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "codex",
+          "I’m sending the result through the CLI.",
+          "exec",
+          "/bin/zsh -lc 'ade coordinator report_result --payload @/tmp/result.json' in /tmp/mission-lane",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("succeeded");
+      expect(after?.errorClass).toBe("none");
+      const [stepAfter] = fixture.service.listSteps(started.run.id);
+      const metadata = stepAfter?.metadata as Record<string, unknown>;
+      const report = metadata.lastResultReport as Record<string, unknown>;
+      expect(metadata.recoveredResultReportFromStepOutput).toBe(true);
+      expect(report.summary).toBe("Implemented the preference banner and validated the helper.");
+      expect(report.filesChanged).toEqual(["app/page.tsx", "lib/preference-banner.ts"]);
+      expect(report.testsRun).toMatchObject({ command: "npm test", passed: 3, failed: 0, skipped: 0 });
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not recover report_result prompt templates as worker results", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const preSessionId = "session-1";
+      const transcriptPath = path.join(transcriptDir, `${preSessionId}.log`);
+      fixture.db.run(
+        `insert or ignore into terminal_sessions(
+          id, lane_id, pty_id, tracked, title, started_at, ended_at,
+          exit_code, transcript_path, head_sha_start, head_sha_end,
+          status, last_output_preview, summary, tool_type, resume_command, last_output_at
+        ) values (?, ?, null, 1, 'Worker', ?, null, null, ?, null, null,
+          'running', null, null, 'codex-orchestrated', null, ?)`,
+        [preSessionId, fixture.laneId, now, transcriptPath, now]
+      );
+
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "opencode",
+            metadata: {
+              phaseKey: "planning",
+              stepType: "planning",
+            },
+          }
+        ]
+      });
+      const stepId = fixture.service.listSteps(started.run.id)[0]?.id;
+      if (!stepId) throw new Error("Expected planning step");
+
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId,
+        ownerId: "operator"
+      });
+      if (!attempt.executorSessionId) throw new Error("Expected running session-backed attempt");
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          "## Planning worker report contract",
+          "If the runtime exposes mission control through transcript recovery instead of a callable tool, finish with this exact section shape:",
+          "### report_result",
+          "- outcome: succeeded",
+          "- summary: <one sentence>",
+          "- filesChanged: []",
+          "- testsRun: <commands run, or read-only checks only>",
+          "- plan.markdown:",
+          "  ```markdown",
+          "  ## Plan",
+          "  - What was learned",
+          "  - Recommended next steps",
+          "  - Risks or stop conditions",
+          "  ```",
+          "/bin/zsh -lc 'ade coordinator report_result --payload @/tmp/result.json' in /tmp/mission-lane",
+        ].join("\n"),
+        "utf8"
+      );
+
+      const reconciled = await fixture.service.onTrackedSessionEnded({
+        sessionId: attempt.executorSessionId,
+        laneId: fixture.laneId,
+        exitCode: 0
+      });
+      expect(reconciled).toBe(1);
+
+      const after = fixture.service.listAttempts({ runId: started.run.id }).find((entry) => entry.id === attempt.id);
+      expect(after?.status).toBe("failed");
+      expect(after?.errorClass).toBe("interrupted");
+      expect(after?.errorMessage).toBe("Planning worker session was interrupted while a shell command was still running before report_result.plan.markdown.");
+      const [stepAfter] = fixture.service.listSteps(started.run.id);
+      const metadata = stepAfter?.metadata as Record<string, unknown>;
+      expect(metadata.lastResultReport).toBeUndefined();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("derives tracked-session completion status from terminal session state when exit code is missing", async () => {
     const fixture = await createFixture();
     try {

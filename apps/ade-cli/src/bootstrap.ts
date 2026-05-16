@@ -19,7 +19,7 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createMissionService } from "../../desktop/src/main/services/missions/missionService";
-import type { createMissionPreflightService } from "../../desktop/src/main/services/missions/missionPreflightService";
+import { createMissionPreflightService } from "../../desktop/src/main/services/missions/missionPreflightService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -284,14 +284,14 @@ function ensureAdeCliShim(entryPath: string): { dir: string; path: string } | nu
     fs.mkdirSync(shimDir, { recursive: true });
     if (process.platform === "win32") {
       const body = isJavaScriptCliEntry(entryPath)
-        ? `@echo off\r\n"${process.execPath}" "${entryPath}" %*\r\n`
+        ? `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${entryPath}" %*\r\n`
         : `@echo off\r\n"${entryPath}" %*\r\n`;
       if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
         fs.writeFileSync(shimPath, body, "utf8");
       }
     } else {
       const body = isJavaScriptCliEntry(entryPath)
-        ? `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(entryPath)} "$@"\n`
+        ? `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(entryPath)} "$@"\n`
         : `#!/bin/sh\nexec ${JSON.stringify(entryPath)} "$@"\n`;
       if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
         fs.writeFileSync(shimPath, body, "utf8");
@@ -770,6 +770,17 @@ export async function createAdeRuntime(args: {
     orchestratorService,
     logger,
   });
+  const missionPreflightService = createMissionPreflightService({
+    logger,
+    projectRoot,
+    missionService,
+    laneService,
+    aiIntegrationService,
+    projectConfigService,
+    missionBudgetService,
+    humanWorkDigestService: null,
+    computerUseArtifactBrokerService,
+  });
   const iosSimulatorService = chatOnlyRuntime
     ? null
     : createIosSimulatorService({
@@ -1128,6 +1139,7 @@ export async function createAdeRuntime(args: {
     gitService,
     diffService,
     missionService,
+    missionPreflightService,
     missionBudgetService,
     syncService,
     syncHostService: syncService?.getHostService() ?? null,

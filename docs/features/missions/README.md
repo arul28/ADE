@@ -69,7 +69,7 @@ All under `apps/desktop/src/renderer/components/missions/`:
 
 ### Planning is mandatory
 
-Planning is the first-class initial phase. If a phase profile omits a planning phase, `createBuiltInPhaseCards()` injects one before execution begins. The coordinator:
+Planning is the first-class initial phase. If a phase profile omits a planning phase, mission launch normalizes the selected phase deck with an injected Planning phase before execution begins. The coordinator:
 
 1. Gathers project context (`fetching_project_context`).
 2. Optionally asks clarifying questions.

@@ -328,6 +328,11 @@ function getWorkerCheckpointPath(worktreePath: string, stepKey: string): string 
   return path.join(worktreePath, ".ade", "checkpoints", `${sanitizedStepKey}.md`);
 }
 
+function getWorkerStepOutputPath(worktreePath: string, stepKey: string): string {
+  const sanitizedStepKey = stepKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(worktreePath, ".ade", `step-output-${sanitizedStepKey}.md`);
+}
+
 type NormalizedValidationContract = {
   level: "step" | "milestone" | "mission";
   tier: "self" | "dedicated";
@@ -1079,10 +1084,36 @@ function sliceLikelyCodexResultText(text: string): string {
 function looksLikeReportTemplatePlaceholder(value: string): boolean {
   const normalized = value.trim().toLowerCase();
   return (
-    normalized === "1-2 sentence description of what was accomplished."
+    normalized === "<one sentence>"
+    || normalized === "<one sentence>."
+    || normalized === "<commands run, or read-only checks only>"
+    || /^<[^>\r\n]+>$/.test(normalized)
+    || normalized === "1-2 sentence description of what was accomplished."
     || normalized.includes("1-2 sentence description of what was accomplished")
     || normalized.includes("bulleted list of files created or modified")
     || normalized.includes("test results if any tests were run")
+  );
+}
+
+function looksLikePlanTemplatePlaceholder(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized.length) return false;
+  const templateLabels = [
+    "what was learned",
+    "recommended next steps",
+    "risks or stop conditions",
+  ];
+  const lines = normalized
+    .replace(/^```(?:markdown|md)?\s*/, "")
+    .replace(/\s*```\s*$/, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .filter((line) => !/^#{1,6}\s*plan\s*:?\s*$/.test(line))
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").replace(/[:.]$/, "").trim());
+  return (
+    lines.length === templateLabels.length
+    && templateLabels.every((label) => lines.includes(label))
   );
 }
 
@@ -1375,6 +1406,17 @@ function extractReportResultPayloadFromTranscript(filePath: string | null | unde
   }
 }
 
+function extractReportResultPayloadFromStepOutput(filePath: string | null | undefined): Record<string, unknown> | null {
+  const normalizedPath = typeof filePath === "string" ? filePath.trim() : "";
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) return null;
+  try {
+    const rawTail = readUtf8Tail(normalizedPath, REPORT_RESULT_TRANSCRIPT_TAIL_BYTES);
+    return extractReportResultPayloadFromText(rawTail);
+  } catch {
+    return null;
+  }
+}
+
 function normalizeRecoveredWorkerResultReport(args: {
   payload: Record<string, unknown>;
   step: OrchestratorStep;
@@ -1388,24 +1430,36 @@ function normalizeRecoveredWorkerResultReport(args: {
       ? rawOutcome
       : "succeeded";
   const rawPlan = asRecord(args.payload.plan);
-  const planMarkdown = typeof rawPlan?.markdown === "string" ? rawPlan.markdown.trim() : "";
+  const planMarkdownRaw = typeof rawPlan?.markdown === "string" ? rawPlan.markdown.trim() : "";
+  const planMarkdown =
+    planMarkdownRaw.length > 0
+    && !looksLikeReportTemplatePlaceholder(planMarkdownRaw)
+    && !looksLikePlanTemplatePlaceholder(planMarkdownRaw)
+      ? planMarkdownRaw
+      : "";
+  const planSummary =
+    typeof rawPlan?.summary === "string" && rawPlan.summary.trim().length > 0 && !looksLikeReportTemplatePlaceholder(rawPlan.summary)
+      ? rawPlan.summary.trim()
+      : "";
   const normalizedPlan = rawPlan && planMarkdown.length > 0
     ? {
         markdown: planMarkdown,
-        ...(typeof rawPlan.summary === "string" && rawPlan.summary.trim().length > 0 ? { summary: rawPlan.summary.trim() } : {}),
+        ...(planSummary.length > 0 ? { summary: planSummary } : {}),
         ...(typeof rawPlan.title === "string" && rawPlan.title.trim().length > 0 ? { title: rawPlan.title.trim() } : {}),
         ...(rawPlan.format === "markdown" ? { format: "markdown" as const } : {}),
         ...(typeof rawPlan.artifactPath === "string" && rawPlan.artifactPath.trim().length > 0 ? { artifactPath: rawPlan.artifactPath.trim() } : {}),
       }
     : null;
-  const summary =
+  if (isPlanningLikeStepMetadata(asRecord(args.step.metadata)) && !normalizedPlan) return null;
+  const rawSummary =
     typeof args.payload.summary === "string" && args.payload.summary.trim().length > 0
       ? args.payload.summary.trim()
-      : typeof rawPlan?.summary === "string" && rawPlan.summary.trim().length > 0
-        ? rawPlan.summary.trim()
+      : planSummary.length > 0
+        ? planSummary
         : normalizedPlan
           ? "Planning step completed."
           : "";
+  const summary = looksLikeReportTemplatePlaceholder(rawSummary) ? "" : rawSummary;
   if (!summary && !normalizedPlan) return null;
   const artifactsRaw = Array.isArray(args.payload.artifacts) ? args.payload.artifacts : [];
   const filesChangedRaw = Array.isArray(args.payload.filesChanged)
@@ -6947,7 +7001,7 @@ export function createOrchestratorService({
         touchedRunIds.add(attempt.run_id);
         const stepRow = getStepRow(attempt.step_id);
         const step = stepRow ? toStep(stepRow) : null;
-        const stepMetadata = asRecord(step?.metadata) ?? {};
+        let stepMetadata = asRecord(step?.metadata) ?? {};
         const attemptMetadata = parseJsonRecord(attempt.metadata_json);
         const transcriptPath =
           typeof attemptMetadata?.transcriptPath === "string"
@@ -6955,13 +7009,97 @@ export function createOrchestratorService({
             : (typeof sessionRow?.transcript_path === "string" ? sessionRow.transcript_path.trim() : "");
         const transcriptAnalysis = analyzeTranscriptFromPath(transcriptPath);
         const transcriptSummary = transcriptAnalysis.summary;
-        const silentFailure = classifySilentWorkerExit({
-          stepMetadata,
-          transcriptSummary,
-          hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
-          hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
-          appearsInterruptedDuringCommand: transcriptAnalysis.appearsInterruptedDuringCommand,
-        });
+        let hasStructuredResult = asRecord(stepMetadata.lastResultReport) != null;
+        if (!hasStructuredResult && step) {
+          let recoveredFrom: "transcript" | "step_output" | null = null;
+          let recoveredPayload = extractReportResultPayloadFromTranscript(transcriptPath);
+          if (recoveredPayload) {
+            recoveredFrom = "transcript";
+          } else if (step.laneId) {
+            const laneRow = db.get<{ worktree_path: string | null }>(
+              `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+              [step.laneId, projectId]
+            );
+            const worktreePath = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length > 0
+              ? laneRow.worktree_path.trim()
+              : null;
+            if (worktreePath) {
+              const stepOutputPath = getWorkerStepOutputPath(worktreePath, step.stepKey);
+              recoveredPayload = extractReportResultPayloadFromStepOutput(stepOutputPath);
+              if (recoveredPayload) recoveredFrom = "step_output";
+            }
+          }
+
+          const runForAttempt = recoveredPayload ? getRunRow(attempt.run_id) : null;
+          const recoveredReport = recoveredPayload && runForAttempt
+            ? normalizeRecoveredWorkerResultReport({
+                payload: recoveredPayload,
+                step,
+                attempt: toAttempt(attempt),
+                missionId: runForAttempt.mission_id,
+                runId: attempt.run_id,
+              })
+            : null;
+          if (recoveredReport) {
+            const recoveredFromTranscript = recoveredFrom === "transcript";
+            const recoveredFromStepOutput = recoveredFrom === "step_output";
+            stepMetadata = {
+              ...stepMetadata,
+              lastResultReport: recoveredReport,
+              ...(recoveredFromTranscript ? { recoveredResultReportFromTranscript: true } : {}),
+              ...(recoveredFromStepOutput ? { recoveredResultReportFromStepOutput: true } : {}),
+            };
+            this.updateStepMetadata({
+              runId: attempt.run_id,
+              stepId: attempt.step_id,
+              metadata: stepMetadata,
+              allowTerminal: true,
+            });
+            this.appendRuntimeEvent({
+              runId: attempt.run_id,
+              stepId: attempt.step_id,
+              attemptId: attempt.id,
+              sessionId,
+              eventType: "worker_result_report",
+              payload: {
+                ...recoveredReport,
+                recoveredFromTranscript,
+                recoveredFromStepOutput,
+              } as unknown as Record<string, unknown>,
+            });
+            this.appendTimelineEvent({
+              runId: attempt.run_id,
+              stepId: attempt.step_id,
+              attemptId: attempt.id,
+              eventType: "worker_result_reported",
+              reason: recoveredFromStepOutput ? "step_output_report_result" : "transcript_report_result",
+              detail: {
+                ...recoveredReport,
+                recoveredFromTranscript,
+                recoveredFromStepOutput,
+              } as unknown as Record<string, unknown>,
+            });
+            this.createHandoff({
+              missionId: recoveredReport.missionId,
+              runId: attempt.run_id,
+              stepId: attempt.step_id,
+              attemptId: attempt.id,
+              handoffType: "worker_result_report",
+              producer: step.stepKey,
+              payload: recoveredReport as unknown as Record<string, unknown>,
+            });
+            hasStructuredResult = true;
+          }
+        }
+        const silentFailure = hasStructuredResult
+          ? null
+          : classifySilentWorkerExit({
+              stepMetadata,
+              transcriptSummary,
+              hasMaterialOutput: transcriptAnalysis.hasMaterialOutput,
+              hasLifecycleActivity: transcriptAnalysis.hasLifecycleActivity,
+              appearsInterruptedDuringCommand: transcriptAnalysis.appearsInterruptedDuringCommand,
+            });
         const completionForAttempt =
           completion.status === "succeeded" && silentFailure
             ? {
@@ -9096,7 +9234,23 @@ export function createOrchestratorService({
 	          : null;
 	      let lastResultReport = asRecord(stepMetadata.lastResultReport);
 	      if (!lastResultReport && status === "succeeded") {
-	        const recoveredPayload = extractReportResultPayloadFromTranscript(transcriptPath);
+	        let recoveredFrom: "transcript" | "step_output" | null = null;
+	        let recoveredPayload = extractReportResultPayloadFromTranscript(transcriptPath);
+	        if (recoveredPayload) {
+	          recoveredFrom = "transcript";
+	        } else if (step.laneId) {
+	          const laneRow = db.get<{ worktree_path: string | null }>(
+	            `select worktree_path from lanes where id = ? and project_id = ? limit 1`,
+	            [step.laneId, projectId]
+	          );
+	          const worktreePath = typeof laneRow?.worktree_path === "string" && laneRow.worktree_path.trim().length
+	            ? laneRow.worktree_path.trim()
+	            : null;
+	          if (worktreePath) {
+	            recoveredPayload = extractReportResultPayloadFromStepOutput(getWorkerStepOutputPath(worktreePath, step.stepKey));
+	            if (recoveredPayload) recoveredFrom = "step_output";
+	          }
+	        }
 	        const recoveredReport = recoveredPayload
 	          ? normalizeRecoveredWorkerResultReport({
 	              payload: recoveredPayload,
@@ -9107,10 +9261,13 @@ export function createOrchestratorService({
 	            })
 	          : null;
 	        if (recoveredReport) {
+	          const recoveredFromTranscript = recoveredFrom === "transcript";
+	          const recoveredFromStepOutput = recoveredFrom === "step_output";
 	          stepMetadata = {
 	            ...stepMetadata,
 	            lastResultReport: recoveredReport,
-	            recoveredResultReportFromTranscript: true,
+	            ...(recoveredFromTranscript ? { recoveredResultReportFromTranscript: true } : {}),
+	            ...(recoveredFromStepOutput ? { recoveredResultReportFromStepOutput: true } : {}),
 	          };
 	          this.updateStepMetadata({
 	            runId: run.id,
@@ -9126,7 +9283,8 @@ export function createOrchestratorService({
 	            eventType: "worker_result_report",
 	            payload: {
 	              ...recoveredReport,
-	              recoveredFromTranscript: true,
+	              recoveredFromTranscript,
+	              recoveredFromStepOutput,
 	            } as unknown as Record<string, unknown>,
 	          });
 	          this.appendTimelineEvent({
@@ -9134,10 +9292,11 @@ export function createOrchestratorService({
 	            stepId: step.id,
 	            attemptId: attempt.id,
 	            eventType: "worker_result_reported",
-	            reason: "transcript_report_result",
+	            reason: recoveredFromStepOutput ? "step_output_report_result" : "transcript_report_result",
 	            detail: {
 	              ...recoveredReport,
-	              recoveredFromTranscript: true,
+	              recoveredFromTranscript,
+	              recoveredFromStepOutput,
 	            } as unknown as Record<string, unknown>,
 	          });
 	          this.createHandoff({

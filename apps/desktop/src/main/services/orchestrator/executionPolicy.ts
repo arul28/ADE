@@ -872,6 +872,101 @@ function shouldCountDisplayOnlyPhaseRecordForCompletion(
   return Boolean(resolvedTargetKey && phaseTargets.has(resolvedTargetKey));
 }
 
+function splitCamelWords(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}
+
+function normalizeSearchableText(value: string | null | undefined): string {
+  return typeof value === "string"
+    ? splitCamelWords(value).replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase()
+    : "";
+}
+
+function stepHasPassingValidation(step: OrchestratorStep): boolean {
+  const meta = step.metadata ?? {};
+  const lastValidationReport =
+    typeof meta.lastValidationReport === "object" && meta.lastValidationReport
+      ? (meta.lastValidationReport as Record<string, unknown>)
+      : null;
+  const lastVerdict = typeof lastValidationReport?.verdict === "string" ? lastValidationReport.verdict : "";
+  const validationState = typeof meta.validationState === "string" ? meta.validationState : "";
+  const validationPassedAt = typeof meta.validationPassedAt === "string" ? meta.validationPassedAt.trim() : "";
+  return isPassingValidationValue(lastVerdict) || isPassingValidationValue(validationState) || validationPassedAt.length > 0;
+}
+
+function isValidationSurrogateCandidate(step: OrchestratorStep): boolean {
+  if (step.status !== "succeeded") return false;
+  const meta = step.metadata ?? {};
+  const stepType = normalizeSearchableText(typeof meta.stepType === "string" ? meta.stepType : "");
+  const taskType = normalizeSearchableText(typeof meta.taskType === "string" ? meta.taskType : "");
+  const phaseKey = normalizeSearchableText(typeof meta.phaseKey === "string" ? meta.phaseKey : "");
+  const phaseName = normalizeSearchableText(typeof meta.phaseName === "string" ? meta.phaseName : "");
+  const delegationIntent = normalizeSearchableText(typeof meta.delegationIntent === "string" ? meta.delegationIntent : "");
+  return (
+    stepHasPassingValidation(step)
+    && (
+      stepType === "validation"
+      || taskType === "validation"
+      || phaseKey === "validation"
+      || phaseName === "validation"
+      || delegationIntent === "validation"
+    )
+  );
+}
+
+function phaseTargetIdentities(target: PhaseEvaluationTarget): string[] {
+  const identities = [
+    target.key,
+    splitCamelWords(target.key),
+    target.label,
+  ];
+  if (target.key === "codeReview") identities.push("review", "code review");
+  if (target.key === "testReview") identities.push("test review");
+  return identities
+    .map(normalizeSearchableText)
+    .filter((entry, index, all) => entry.length > 0 && all.indexOf(entry) === index);
+}
+
+function validationSurrogateSearchText(step: OrchestratorStep): string {
+  const meta = step.metadata ?? {};
+  const lastResultReport =
+    typeof meta.lastResultReport === "object" && meta.lastResultReport
+      ? (meta.lastResultReport as Record<string, unknown>)
+      : null;
+  const lastValidationReport =
+    typeof meta.lastValidationReport === "object" && meta.lastValidationReport
+      ? (meta.lastValidationReport as Record<string, unknown>)
+      : null;
+  const values = [
+    step.stepKey,
+    step.title,
+    typeof meta.instructions === "string" ? meta.instructions : "",
+    typeof meta.workerName === "string" ? meta.workerName : "",
+    typeof lastResultReport?.summary === "string" ? lastResultReport.summary : "",
+    typeof lastValidationReport?.summary === "string" ? lastValidationReport.summary : "",
+  ];
+  return normalizeSearchableText(values.join(" "));
+}
+
+function canUseValidationStepAsPhaseCompletionSurrogate(
+  step: OrchestratorStep,
+  target: PhaseEvaluationTarget,
+): boolean {
+  if (target.key === "implementation" || target.key === "testing" || target.key === "validation" || target.key === "integration") {
+    return false;
+  }
+  if (!isValidationSurrogateCandidate(step)) return false;
+
+  const searchable = validationSurrogateSearchText(step);
+  const referencesTargetPhase = phaseTargetIdentities(target).some((identity) => searchable.includes(identity));
+  if (!referencesTargetPhase) return false;
+
+  if (target.key === "codeReview" || target.key === "testReview") {
+    return searchable.includes("review summary") && searchable.includes("risk notes");
+  }
+  return true;
+}
+
 const BUILT_IN_EXECUTION_PHASES: ExecutionPhase[] = [
   "implementation",
   "testing",
@@ -1034,6 +1129,18 @@ export function evaluateRunCompletionFromPhases(
     phaseSteps.set(resolvedTargetKey, bucket);
   }
 
+  for (const [phase, target] of phaseTargets) {
+    if (!target.required) continue;
+    const currentSteps = phaseSteps.get(phase) ?? [];
+    if (phaseHasConcreteSuccess(currentSteps.map((step) => step.status))) continue;
+    const surrogateSteps = relevantSteps.filter((step) =>
+      canUseValidationStepAsPhaseCompletionSurrogate(step, target)
+    );
+    if (surrogateSteps.length > 0) {
+      phaseSteps.set(phase, [...currentSteps, ...surrogateSteps]);
+    }
+  }
+
   const evaluationOrder = [...BUILT_IN_EXECUTION_PHASES, ...customPhaseOrder];
 
   for (const phase of evaluationOrder) {
@@ -1173,24 +1280,26 @@ export function buildExecutionPlanPreviewFromPhases(args: {
   const recoveryPolicy: RecoveryLoopPolicy =
     settings.recoveryLoop ?? DEFAULT_RECOVERY_LOOP_POLICY;
 
-  // Build phase details from phase cards
+  // Build phase details from phase cards, preserving custom workflow phases.
   const phaseDetails: ExecutionPlanPhase[] = [];
-  const cardsByPhaseKey = new Map<string, PhaseCard>();
-  for (const card of phases) {
-    const ep = phaseKeyToExecutionPhase(card.phaseKey);
-    if (ep) cardsByPhaseKey.set(ep, card);
+  const phaseOrder: Array<{ phaseName: string; card: PhaseCard | null }> = [];
+  const seenPhases = new Set<string>();
+  for (const card of [...phases].sort((a, b) => a.position - b.position)) {
+    const phaseName = phaseKeyToExecutionPhase(card.phaseKey) ?? card.phaseKey;
+    if (phaseName === "planning" || seenPhases.has(phaseName)) continue;
+    seenPhases.add(phaseName);
+    phaseOrder.push({ phaseName, card });
+  }
+  for (const phaseName of phaseMap.keys()) {
+    if (seenPhases.has(phaseName)) continue;
+    seenPhases.add(phaseName);
+    phaseOrder.push({ phaseName, card: null });
   }
 
-  const phaseOrder = [
-    "implementation", "testing", "validation",
-    "codeReview", "testReview", "integration"
-  ];
-
-  for (const phaseName of phaseOrder) {
+  for (const { phaseName, card } of phaseOrder) {
     const phaseSteps = phaseMap.get(phaseName);
     if (!phaseSteps || phaseSteps.length === 0) continue;
 
-    const card = cardsByPhaseKey.get(phaseName);
     const gatePolicy = card?.validationGate.required ? "required" : (card?.validationGate.tier ?? "none");
 
     const recoveryPhases = new Set(["testing", "codeReview", "testReview", "validation"]);

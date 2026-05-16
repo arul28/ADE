@@ -75,6 +75,7 @@ import {
   applyPhaseCardsToPlanSteps,
   createBuiltInPhaseCards,
   createBuiltInPhaseProfiles,
+  ensurePlanningPhase,
   normalizeProfileInput,
   validatePhaseSequence,
   groupMissionStepsByPhase,
@@ -3093,11 +3094,13 @@ export function createMissionService({
         throw new Error("Invalid mission phase override payload.");
       }
       const selectedPhases = normalizePhaseCards(
-        overridePhasesRaw.length > 0
-          ? overridePhasesRaw
-          : selectedProfile?.phases?.length
-            ? selectedProfile.phases
-            : createBuiltInPhaseCards(nowIso())
+        ensurePlanningPhase(
+          overridePhasesRaw.length > 0
+            ? overridePhasesRaw
+            : selectedProfile?.phases?.length
+              ? selectedProfile.phases
+              : createBuiltInPhaseCards(nowIso())
+        )
       );
       const phaseErrors = validatePhaseSequence(selectedPhases);
       if (phaseErrors.length > 0) {

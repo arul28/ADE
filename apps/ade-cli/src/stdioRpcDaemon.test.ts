@@ -297,4 +297,58 @@ describe("ade rpc --stdio daemon bridge", () => {
       if (!oldDaemon.killed) oldDaemon.kill();
     }
   }, 45_000);
+
+  itUnix("does not replace a real daemon when the bridging CLI has only the placeholder version", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-version-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+    };
+    const realDaemon = startServeProcess({
+      cliPath,
+      cwd: packageRoot,
+      env: {
+        ...baseEnv,
+        ADE_CLI_VERSION: "2.0.0",
+      },
+      socketPath,
+    });
+
+    let proxy: StdioRpcProcess | null = null;
+    try {
+      await waitForSocket(socketPath);
+
+      const placeholderEnv: NodeJS.ProcessEnv = { ...baseEnv };
+      delete placeholderEnv.ADE_CLI_VERSION;
+      proxy = StdioRpcProcess.start({
+        cliPath,
+        cwd: packageRoot,
+        env: placeholderEnv,
+      });
+      const initialize = await proxy.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "stdio-daemon-placeholder-version-test",
+        identity: { role: "external", callerId: "stdio-daemon-placeholder-version-test" },
+      });
+
+      expect(initialize).toMatchObject({
+        runtimeInfo: {
+          version: "2.0.0",
+          multiProject: true,
+        },
+      });
+
+      await expect(proxy.request("shutdown")).resolves.toEqual({});
+      proxy.closeInput();
+      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
+    } finally {
+      proxy?.kill();
+      if (!realDaemon.killed) realDaemon.kill();
+    }
+  }, 45_000);
 });

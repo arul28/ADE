@@ -2584,6 +2584,22 @@ export class CoordinatorAgent {
       .some((step) => !TERMINAL_STEP_STATUSES.has(step.status));
   }
 
+  private phaseMatchesRef(phase: PhaseCard, ref: string): boolean {
+    const normalizedRef = ref.trim().toLowerCase();
+    if (!normalizedRef) return false;
+    return phase.phaseKey.trim().toLowerCase() === normalizedRef || phase.name.trim().toLowerCase() === normalizedRef;
+  }
+
+  private findPhaseByRef(phases: PhaseCard[], ref: string): PhaseCard | null {
+    return phases.find((phase) => this.phaseMatchesRef(phase, ref)) ?? null;
+  }
+
+  private resolveMustPrecedePredecessors(phases: PhaseCard[], targetPhase: PhaseCard): PhaseCard[] {
+    return phases.filter((phase) =>
+      (phase.orderingConstraints.mustPrecede ?? []).some((successorRef) => this.phaseMatchesRef(targetPhase, successorRef))
+    );
+  }
+
   private resolvePhaseDependencyStepKeys(
     graph: ReturnType<CoordinatorAgentDeps["orchestratorService"]["getRunGraph"]>,
     phase: PhaseCard,
@@ -2596,11 +2612,14 @@ export class CoordinatorAgent {
     const predecessorPhases =
       explicitMustFollow.length > 0
         ? explicitMustFollow
-            .map((key) => sorted.find((candidate) => candidate.phaseKey === key || candidate.name === key) ?? null)
+            .map((key) => this.findPhaseByRef(sorted, key))
             .filter((candidate): candidate is PhaseCard => Boolean(candidate))
         : sorted.slice(0, Math.max(0, targetIndex)).filter((candidate) =>
             candidate.orderingConstraints.mustBeFirst || candidate.validationGate.required === true
           );
+    for (const predecessor of this.resolveMustPrecedePredecessors(sorted, phase)) {
+      if (!predecessorPhases.includes(predecessor)) predecessorPhases.push(predecessor);
+    }
     const dependencyKeys: string[] = [];
     for (const predecessor of predecessorPhases) {
       const successful = this.getExecutionStepsForPhaseFromGraph(graph, predecessor)
@@ -2634,8 +2653,11 @@ export class CoordinatorAgent {
       if (phase.orderingConstraints.mustBeLast && this.phaseHasOpenExecutionStepInGraph(graph, earlier)) return false;
     }
     for (const predecessorKey of explicitMustFollow) {
-      const predecessor = sorted.find((candidate) => candidate.phaseKey === predecessorKey || candidate.name === predecessorKey);
+      const predecessor = this.findPhaseByRef(sorted, predecessorKey);
       if (predecessor && !this.phaseHasValidatedSuccess(graph, predecessor)) return false;
+    }
+    for (const predecessor of this.resolveMustPrecedePredecessors(sorted, phase)) {
+      if (!this.phaseHasValidatedSuccess(graph, predecessor)) return false;
     }
     return true;
   }

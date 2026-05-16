@@ -596,21 +596,12 @@ export function createProviderOrchestratorAdapter(options?: {
 
       if (descriptor?.isCliWrapped && descriptor.family === "openai") {
         // Codex CLI path — use per-provider permission when available
-        const originalProviderPermissions = normalizeMissionPermissions(permissionConfig as MissionPermissionConfig | undefined);
-        const allowReadOnlyControlPlaneFullAuto =
-          readOnlyExecution
-          && originalProviderPermissions.codex === "full-auto"
-          && typeof process.env.ADE_RPC_URL === "string"
-          && process.env.ADE_RPC_URL.trim().length > 0;
+        const reasoningEffort = resolveStepReasoningEffort(step.metadata);
         const codexProviderMode = effectivePermissionConfig?._providers?.codex;
         const mappedCodex = mapPermissionToCodex(codexProviderMode);
         const useCodexConfig = codexProviderMode === "config-toml" || mappedCodex == null;
-        const approvalPolicy = allowReadOnlyControlPlaneFullAuto
-          ? "never"
-          : mappedCodex?.approvalPolicy ?? "on-request";
-        const sandboxMode = allowReadOnlyControlPlaneFullAuto
-          ? "danger-full-access"
-          : readOnlyExecution
+        const approvalPolicy = mappedCodex?.approvalPolicy ?? "on-request";
+        const sandboxMode = readOnlyExecution
           ? "read-only"
           : codexProviderMode === "full-auto"
             ? mappedCodex?.sandbox ?? "danger-full-access"
@@ -622,6 +613,11 @@ export function createProviderOrchestratorAdapter(options?: {
         const previewParts: string[] = [
           "codex", "--model", shellEscapeArg(resolveCodexCliModel(descriptor.providerModelId)),
         ];
+        if (reasoningEffort) {
+          const reasoningConfig = `model_reasoning_effort="${reasoningEffort}"`;
+          commandArgs.push("-c", reasoningConfig);
+          previewParts.push("-c", shellEscapeArg(reasoningConfig));
+        }
         if (!useCodexConfig) {
           commandArgs.push("-a", approvalPolicy, "-s", sandboxMode);
           previewParts.push("-a", shellEscapeArg(approvalPolicy), "-s", shellEscapeArg(sandboxMode));

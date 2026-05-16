@@ -1945,6 +1945,34 @@ function buildMissionDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
+async function waitForMissionCloseoutAfterFinalize(
+  runtime: AdeRuntime,
+  runId: string,
+  result: unknown,
+): Promise<void> {
+  const finalized = asActionRecord(result).finalized === true;
+  const finalStatus = String(asActionRecord(result).finalStatus ?? "");
+  if (!finalized || finalStatus !== "succeeded" || !runtime.orchestratorService || !runtime.missionService) return;
+
+  let missionId = "";
+  try {
+    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+    missionId = String(graph.run.missionId ?? "").trim();
+  } catch {
+    return;
+  }
+  if (!missionId) return;
+
+  const terminalMissionStatuses = new Set(["completed", "failed", "canceled", "intervention_required"]);
+  const started = Date.now();
+  while (Date.now() - started < 10_000) {
+    const mission = await Promise.resolve(runtime.missionService.get(missionId));
+    const status = typeof mission?.status === "string" ? mission.status : "";
+    if (terminalMissionStatuses.has(status)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 function buildOrchestratorCoreDomainService(runtime: AdeRuntime): OpaqueService | null {
   const service = runtime.orchestratorService;
   if (!service) return null;
@@ -1964,8 +1992,13 @@ function buildOrchestratorCoreDomainService(runtime: AdeRuntime): OpaqueService 
       compactRunForTransport(service.pauseRun(args)),
     resumeRun: (args: Parameters<typeof service.resumeRun>[0]) =>
       compactRunForTransport(service.resumeRun(args)),
-    finalizeRun: (args: Parameters<typeof service.finalizeRun>[0]) =>
-      service.finalizeRun(args),
+    finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
+      const result = runtime.aiOrchestratorService?.finalizeRun
+        ? runtime.aiOrchestratorService.finalizeRun(args as never)
+        : service.finalizeRun(args);
+      await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
+      return result;
+    },
   };
 }
 
@@ -1982,6 +2015,11 @@ function buildAiOrchestratorDomainService(runtime: AdeRuntime): OpaqueService | 
       service.getThreadMessages(args).map(compactChatMessageForTransport),
     sendThreadMessage: async (args: Parameters<typeof service.sendThreadMessage>[0]) =>
       compactChatMessageForTransport(await service.sendThreadMessage(args)),
+    finalizeRun: async (args: Parameters<typeof service.finalizeRun>[0]) => {
+      const result = service.finalizeRun(args);
+      await waitForMissionCloseoutAfterFinalize(runtime, args.runId, result);
+      return result;
+    },
     cancelRunGracefully: async (args: Parameters<typeof service.cancelRunGracefully>[0]) =>
       compactRunForTransport(await service.cancelRunGracefully(args)),
     resumeRun: async (args: Parameters<typeof service.resumeRun>[0]) =>

@@ -11,7 +11,7 @@ import type {
   OrchestratorStepStatus,
   PhaseCard,
 } from "../../../shared/types";
-import { resolveDevelopmentPhaseKey } from "../missions/phaseEngine";
+import { resolveFirstPostPlanningPhaseKey } from "../missions/phaseEngine";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,7 +158,7 @@ function buildCoordinatorActionHints(
     || runPhase.phaseName === "planning";
 
   if (planningPhase && step?.status === "succeeded") {
-    const nextPhaseKey = resolveDevelopmentPhaseKey(resolveGraphPhaseCards(graph));
+    const nextPhaseKey = resolveFirstPostPlanningPhaseKey(resolveGraphPhaseCards(graph));
     hints.push(
       `Coordinator action: this completion is still labeled Planning. Review the worker output, create/update the visible DAG if needed, then call set_current_phase with phaseKey "${nextPhaseKey}" before spawning any code-changing worker.`
     );

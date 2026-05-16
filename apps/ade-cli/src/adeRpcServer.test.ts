@@ -3494,6 +3494,77 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("normalizes legacy string test summaries for report_result", async () => {
+    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
+      const fixture = createRuntime();
+      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
+        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
+        steps: [
+          {
+            id: "step-parent",
+            runId: "run-1",
+            missionStepId: null,
+            stepKey: "parent-worker",
+            stepIndex: 0,
+            title: "Parent Worker",
+            laneId: "lane-1",
+            status: "running",
+            joinPolicy: "all_success",
+            quorumCount: null,
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            lastAttemptId: "attempt-parent",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            metadata: {}
+          }
+        ],
+        attempts: [
+          { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
+        ],
+        claims: [],
+        contextSnapshots: [],
+        handoffs: [],
+        timeline: [],
+        runtimeEvents: [],
+        completionEvaluation: null
+      }));
+
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, {
+        callerId: "attempt-parent",
+        role: "agent",
+        missionId: "mission-1",
+        runId: "run-from-identity",
+        stepId: "step-parent",
+        attemptId: "attempt-parent"
+      });
+
+      const response = await callTool(handler, "report_result", {
+        outcome: "succeeded",
+        summary: "Finished with validation.",
+        artifacts: [],
+        filesChanged: [],
+        testsRun: [
+          "npm run typecheck (passed)",
+          "npm test (passed: 2 files, 3 tests)",
+          "ADE_PROJECT_ROOT=/tmp/app npm run build (passed)"
+        ]
+      });
+
+      expect(response?.isError).toBeUndefined();
+      expect(response.structuredContent.report.testsRun).toMatchObject({
+        passed: 3,
+        failed: 0,
+        skipped: 0,
+        raw: expect.stringContaining("npm test (passed: 2 files, 3 tests)")
+      });
+    });
+  });
+
   it("uses trusted env run context for shared-fact writes instead of initialize payload runId", async () => {
     await withEnv({ ADE_RUN_ID: "run-from-env" }, async () => {
       const fixture = createRuntime();

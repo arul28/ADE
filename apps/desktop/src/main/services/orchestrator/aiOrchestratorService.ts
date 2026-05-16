@@ -262,7 +262,7 @@ import {
   dispatchOrchestratorHookCtx,
   maybeDispatchTeammateIdleHookCtx,
 } from "./missionLifecycle";
-import { resolveDevelopmentPhaseKey } from "../missions/phaseEngine";
+import { resolveFirstPostPlanningPhaseKey } from "../missions/phaseEngine";
 import type { HookDispatchDeps } from "./missionLifecycle";
 import { hasMaterialWorkerChatEvent } from "../../../shared/chatTranscript";
 import {
@@ -326,7 +326,7 @@ export function buildCoordinatorEvaluationActionHints(graph: OrchestratorRunGrap
   const hints: string[] = [];
   const executionSteps = filterExecutionSteps(graph.steps);
   if (executionSteps.length === 0) return hints;
-  const nextImplementationPhaseKey = resolveDevelopmentPhaseKey(
+  const nextImplementationPhaseKey = resolveFirstPostPlanningPhaseKey(
     deriveConfiguredPhasesForSync(graph) as unknown as PhaseCard[],
   );
 
@@ -817,6 +817,7 @@ export function createAiOrchestratorService(args: {
   let agentChatService = initialAgentChatService ?? null;
   const plannerMemoryService = createMemoryService(db);
   const syncLocks = new Set<string>();
+  const syncInFlight = new Map<string, Promise<void>>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
   const activeSteeringDirectives = new Map<string, UserSteeringDirective[]>();
   const runRuntimeProfiles = new Map<string, MissionRuntimeProfile>();
@@ -2920,6 +2921,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       const details: string[] = [];
       collectRiskLikeStrings(report.risks, details);
       collectRiskLikeStrings(report.riskNotes, details);
+      collectRiskLikeStrings(report.risk_notes, details);
       collectRiskLikeStrings(report.warnings, details);
       collectRiskSummary(report.summary, details);
       return details;
@@ -2930,6 +2932,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       const details: string[] = [];
       collectRiskLikeStrings(payload.risks, details);
       collectRiskLikeStrings(payload.riskNotes, details);
+      collectRiskLikeStrings(payload.risk_notes, details);
       collectRiskLikeStrings(payload.warnings, details);
       collectRiskSummary(payload.summary, details);
       return details;
@@ -2941,6 +2944,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         && (phase.validationGate.evidenceRequirements ?? [])
           .some((entry) => mapEvidenceRequirementToCloseoutKey(entry) === "risk_notes")
       );
+    const retrospective = args.stateDoc?.latestRetrospective ?? null;
+    const retrospectiveHasNoUnresolvedRisks =
+      retrospective?.finalStatus === "succeeded" && retrospective.unresolvedRisks.length === 0;
     if (allRuntimeRiskDetails.length > 0) {
       runtimeEvidenceByKey.set("risk_notes", {
         artifactId: null,
@@ -2948,11 +2954,91 @@ Check all worker statuses and continue managing the mission from here. Read work
         detail: clipTextForContext(allRuntimeRiskDetails[0], 600),
         source: "runtime",
       });
-    } else if (args.graph.run.status === "succeeded" && !phaseRequiresRiskNotes) {
+    } else if (args.graph.run.status === "succeeded" && (!phaseRequiresRiskNotes || retrospectiveHasNoUnresolvedRisks)) {
       runtimeEvidenceByKey.set("risk_notes", {
         artifactId: null,
         uri: null,
         detail: "No unresolved risks were reported by completed mission steps.",
+        source: "runtime",
+      });
+    }
+
+    const collectReviewSummaryStrings = (value: unknown, details: string[]): void => {
+      if (typeof value === "string" && value.trim().length > 0) {
+        details.push(value.trim());
+      } else if (Array.isArray(value)) {
+        for (const entry of value) collectReviewSummaryStrings(entry, details);
+      }
+    };
+    const isReviewEvidenceText = (value: string): boolean =>
+      /\breview\b/i.test(value) && (
+        /\baudit\b/i.test(value)
+        || /\bacceptance\b/i.test(value)
+        || /\bvalidation\b/i.test(value)
+        || /\bproof\b/i.test(value)
+        || /review[_\s-]?summary/i.test(value)
+      );
+    const runtimeReviewSummaryDetails = args.graph.steps.flatMap((step) => {
+      const meta = isRecord(step.metadata) ? step.metadata : {};
+      const report = isRecord(meta.lastResultReport) ? meta.lastResultReport : null;
+      const validationReport = isRecord(meta.lastValidationReport) ? meta.lastValidationReport : null;
+      const identityText = [
+        step.stepKey,
+        step.title,
+        typeof meta.workerName === "string" ? meta.workerName : "",
+        typeof meta.phaseKey === "string" ? meta.phaseKey : "",
+        typeof meta.phaseName === "string" ? meta.phaseName : "",
+        typeof meta.stepType === "string" ? meta.stepType : "",
+        typeof meta.taskType === "string" ? meta.taskType : "",
+      ].join(" ");
+      const planningLike =
+        meta.readOnlyExecution === true
+        || (typeof meta.phaseKey === "string" && meta.phaseKey.trim().toLowerCase() === "planning")
+        || (typeof meta.stepType === "string" && meta.stepType.trim().toLowerCase() === "planning");
+      const reviewRelated = !planningLike && /\breview\b/i.test(identityText);
+      const details: string[] = [];
+      if (report) {
+        collectReviewSummaryStrings(report.reviewSummary, details);
+        collectReviewSummaryStrings(report.review_summary, details);
+        const summary = typeof report.summary === "string" ? report.summary.trim() : "";
+        if (summary && !planningLike && (reviewRelated || isReviewEvidenceText(summary))) details.push(summary);
+      }
+      if (validationReport) {
+        collectReviewSummaryStrings(validationReport.reviewSummary, details);
+        collectReviewSummaryStrings(validationReport.review_summary, details);
+        const summary = typeof validationReport.summary === "string" ? validationReport.summary.trim() : "";
+        if (summary && !planningLike && (reviewRelated || isReviewEvidenceText(summary))) details.push(summary);
+      }
+      return details;
+    });
+    const runtimeReviewEventDetails = (args.graph.runtimeEvents ?? []).flatMap((event) => {
+      if (
+        event.eventType !== "worker_result_report"
+        && event.eventType !== "validation_report"
+        && event.eventType !== "done"
+      ) {
+        return [];
+      }
+      const payload = isRecord(event.payload) ? event.payload : {};
+      const workerId = typeof payload.workerId === "string" ? payload.workerId : "";
+      const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
+      const reviewRelated = /\breview\b/i.test(`${workerId} ${summary}`);
+      const planningRelated = /\bplanning\b/i.test(`${workerId} ${summary}`);
+      const details: string[] = [];
+      collectReviewSummaryStrings(payload.reviewSummary, details);
+      collectReviewSummaryStrings(payload.review_summary, details);
+      if (summary && !planningRelated && (reviewRelated || isReviewEvidenceText(summary))) details.push(summary);
+      return details;
+    });
+    const allRuntimeReviewSummaryDetails = [
+      ...runtimeReviewSummaryDetails,
+      ...runtimeReviewEventDetails,
+    ];
+    if (allRuntimeReviewSummaryDetails.length > 0) {
+      runtimeEvidenceByKey.set("review_summary", {
+        artifactId: null,
+        uri: null,
+        detail: clipTextForContext(allRuntimeReviewSummaryDetails[0], 600),
         source: "runtime",
       });
     }
@@ -5364,6 +5450,16 @@ Check all worker statuses and continue managing the mission from here. Read work
       retrospectiveGenerated: Boolean(retrospective)
     });
 
+    if (finalStatus === "succeeded") {
+      void syncMissionFromRun(runId, "finalize_run_succeeded").catch((error) => {
+        logger.debug("ai_orchestrator.finalize_sync_failed", {
+          runId,
+          missionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+
     return finalized;
   };
 
@@ -6887,8 +6983,22 @@ Check all worker statuses and continue managing the mission from here. Read work
     reason: string,
     options?: { nextMissionStatus?: MissionStatus | null }
   ) => {
-    if (!runId || syncLocks.has(runId)) return;
-    syncLocks.add(runId);
+    if (!runId) return;
+    const activeSync = syncInFlight.get(runId);
+    if (activeSync) {
+      await activeSync;
+      if (options?.nextMissionStatus) {
+        await syncMissionFromRun(runId, reason, options);
+      }
+      return;
+    }
+    let resolveSync!: () => void;
+    const executeSync = new Promise<void>((resolve) => {
+      resolveSync = resolve;
+    });
+    syncInFlight.set(runId, executeSync);
+    void (async () => {
+      syncLocks.add(runId);
     try {
       const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 120 });
       const mission = missionService.get(graph.run.missionId);
@@ -7181,7 +7291,11 @@ Check all worker statuses and continue managing the mission from here. Read work
       });
     } finally {
       syncLocks.delete(runId);
+      syncInFlight.delete(runId);
+      resolveSync();
     }
+    })();
+    await executeSync;
   };
 
   // ── Project Docs Discovery ──────────────────────────────────
@@ -11149,6 +11263,7 @@ Check all worker statuses and continue managing the mission from here. Read work
         runWatchdogTimers.delete(runId);
       }
       syncLocks.clear();
+      syncInFlight.clear();
       workerStates.clear();
       activeSteeringDirectives.clear();
       runRuntimeProfiles.clear();

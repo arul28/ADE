@@ -25,7 +25,8 @@ import {
   roleForStepType,
   validateRoleIsolation,
   contextViewForRole,
-  evaluateRecoveryLoop
+  evaluateRecoveryLoop,
+  buildExecutionPlanPreviewFromPhases
 } from "./executionPolicy";
 
 function makeStep(overrides: Partial<OrchestratorStep> & { id: string; status: OrchestratorStepStatus }): OrchestratorStep {
@@ -557,6 +558,81 @@ describe("evaluateRunCompletionFromPhases", () => {
     );
   });
 
+  it("counts runtime review finalizers as Review phase completion evidence", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true }, position: 0 }),
+      makePhaseCard({ phaseKey: "validation", validationGate: { tier: "dedicated", required: true }, position: 1 }),
+      makePhaseCard({
+        phaseKey: "review",
+        name: "Review",
+        validationGate: { tier: "dedicated", required: true },
+        position: 2
+      })
+    ];
+    const steps = [
+      makeStep({
+        id: "impl",
+        status: "succeeded",
+        metadata: { stepType: "code", phaseKey: "implementation" }
+      }),
+      makeStep({
+        id: "validate-acceptance",
+        status: "succeeded",
+        metadata: {
+          stepType: "validation",
+          taskType: "validation",
+          phaseKey: "validation",
+          validationState: "pass"
+        }
+      }),
+      makeStep({
+        id: "review-phase-record",
+        status: "skipped",
+        metadata: {
+          phaseKey: "review",
+          phaseName: "Review",
+          stepType: "task",
+          taskType: "review",
+          isTask: true,
+          displayOnlyTask: true,
+          skippedReason: "Administrative runtime record only; actual Review work is complete in review-runtime-finalizer."
+        }
+      }),
+      makeStep({
+        id: "review-runtime-finalizer",
+        title: "Runtime Review phase finalizer",
+        status: "succeeded",
+        metadata: {
+          stepType: "validation",
+          taskType: "validation",
+          phaseKey: "validation",
+          phaseName: "Validation",
+          delegationIntent: "validation",
+          instructions:
+            "Produce and validate a runtime-visible Review phase result. Include review_summary and risk_notes before closeout.",
+          validationState: "pass",
+          lastValidationReport: {
+            verdict: "pass",
+            summary: "Review phase validation passed with review_summary and risk_notes."
+          }
+        }
+      })
+    ];
+
+    const result = evaluateRunCompletionFromPhases(steps, phases, defaultSettings);
+
+    expect(result.completionReady).toBe(true);
+    expect(result.status).toBe("succeeded");
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "codeReview",
+          code: "phase_required_missing"
+        })
+      ])
+    );
+  });
+
   it("returns active when a required phase is missing", () => {
     const phases = [
       makePhaseCard({ phaseKey: "implementation", validationGate: { tier: "none", required: true } }),
@@ -675,6 +751,52 @@ describe("evaluateRunCompletionFromPhases", () => {
     expect(result.riskFactors).toContain("validation_required_but_missing");
     expect(validationDiag?.code).toBe("phase_required_missing");
     expect(releaseDiag?.code).toBe("phase_succeeded");
+  });
+});
+
+describe("buildExecutionPlanPreviewFromPhases", () => {
+  it("preserves custom phases in preview order", () => {
+    const phases = [
+      makePhaseCard({ phaseKey: "planning", name: "Planning", position: 0 }),
+      makePhaseCard({
+        phaseKey: "release",
+        name: "Release readiness",
+        position: 1,
+        validationGate: { tier: "dedicated", required: true },
+        isBuiltIn: false,
+        isCustom: true,
+      }),
+    ];
+
+    const preview = buildExecutionPlanPreviewFromPhases({
+      runId: "run-1",
+      missionId: "mission-1",
+      phases,
+      steps: [
+        {
+          stepKey: "release-check",
+          title: "Release check",
+          role: "validator" as OrchestratorWorkerRole,
+          executorKind: "opencode",
+          model: "openai/gpt-5.5",
+          laneId: "lane-1",
+          dependencies: [],
+          phase: "release",
+        },
+      ],
+      settings: { prStrategy: { kind: "manual" } },
+      teamManifest: {
+        workers: [{ role: "validator" }],
+        parallelLanes: [["lane-1"]],
+      } as any,
+    });
+
+    expect(preview.phases.map((phase) => phase.phase)).toEqual(["release"]);
+    expect(preview.phases[0]).toMatchObject({
+      phase: "release",
+      gatePolicy: "required",
+      stepCount: 1,
+    });
   });
 });
 

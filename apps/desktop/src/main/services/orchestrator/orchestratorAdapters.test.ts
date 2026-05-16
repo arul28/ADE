@@ -575,6 +575,11 @@ describe("providerOrchestratorAdapter", () => {
         status: "ready",
         metadata: {
           modelId: "openai/gpt-5.3-codex",
+          phaseModel: {
+            modelId: "openai/gpt-5.3-codex",
+            provider: "codex",
+            thinkingLevel: "low",
+          },
         },
       },
       attempt: {
@@ -611,8 +616,84 @@ describe("providerOrchestratorAdapter", () => {
       }),
       startupCommand: expect.stringContaining("exec codex"),
     }));
+    expect(createTrackedSession).toHaveBeenCalledWith(expect.objectContaining({
+      startupCommand: expect.stringContaining('model_reasoning_effort="low"'),
+    }));
     const firstCreateArgs = (createTrackedSession.mock.calls as any[])[0]?.[0];
+    const launchSpec = JSON.parse(fs.readFileSync(firstCreateArgs?.args?.[2], "utf8"));
+    expect(launchSpec.args).toEqual(expect.arrayContaining([
+      "-c",
+      'model_reasoning_effort="low"',
+    ]));
     expect(firstCreateArgs?.startupCommand).toContain("< ");
+  });
+
+  it("keeps read-only Codex CLI workers in a read-only sandbox even when full-auto is configured", async () => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-adapter-"));
+    const previousRpcUrl = process.env.ADE_RPC_URL;
+    process.env.ADE_RPC_URL = "http://127.0.0.1:65535";
+    const createTrackedSession = vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" }));
+    const adapter = createProviderOrchestratorAdapter({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      agentChatService: null,
+    });
+
+    try {
+      const result = await adapter.start({
+        run: {
+          id: "run-1",
+          missionId: "mission-1",
+          metadata: {},
+        },
+        step: {
+          id: "step-1",
+          runId: "run-1",
+          stepKey: "codex-planner",
+          title: "Codex planner",
+          stepIndex: 0,
+          dependencyStepIds: [],
+          dependencyStepKeys: [],
+          laneId: "lane-1",
+          status: "ready",
+          metadata: {
+            modelId: "openai/gpt-5.3-codex",
+            readOnlyExecution: true,
+          },
+        },
+        attempt: {
+          id: "attempt-read-only",
+          runId: "run-1",
+          stepId: "step-1",
+        },
+        allSteps: [],
+        contextProfile: {} as any,
+        laneExport: null,
+        projectExport: { content: "Project context", truncated: false },
+        docsRefs: [],
+        fullDocs: [],
+        createTrackedSession,
+        permissionConfig: {
+          _providers: {
+            codex: "full-auto",
+            codexSandbox: "danger-full-access",
+          },
+        },
+      } as any);
+
+      expect(result.status).toBe("accepted");
+      const firstCreateArgs = (createTrackedSession.mock.calls as any[])[0]?.[0];
+      const launchSpec = JSON.parse(fs.readFileSync(firstCreateArgs?.args?.[2], "utf8"));
+      expect(launchSpec.args).toEqual(expect.arrayContaining(["-s", "read-only"]));
+      expect(firstCreateArgs?.startupCommand).toMatch(/-s '?read-only'?/);
+      expect(firstCreateArgs?.startupCommand).not.toContain("danger-full-access");
+    } finally {
+      if (previousRpcUrl == null) {
+        delete process.env.ADE_RPC_URL;
+      } else {
+        process.env.ADE_RPC_URL = previousRpcUrl;
+      }
+    }
   });
 });
 
