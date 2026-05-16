@@ -1650,16 +1650,27 @@ export function createPrService({
 
     const extras: any[] = [];
     for (const branch of targetedBranches) {
-      const branchPulls = await fetchAllPages<any>({
-        path: `/repos/${repo.owner}/${repo.name}/pulls`,
-        query: {
-          state: "all",
-          head: `${repo.owner}:${branch}`,
-          sort: "updated",
-          direction: "desc",
-        },
-        maxPages: 1,
-      });
+      let branchPulls: any[];
+      try {
+        branchPulls = await fetchAllPages<any>({
+          path: `/repos/${repo.owner}/${repo.name}/pulls`,
+          query: {
+            state: "all",
+            head: `${repo.owner}:${branch}`,
+            sort: "updated",
+            direction: "desc",
+          },
+          maxPages: 1,
+        });
+      } catch (error) {
+        logger.warn("prs.github_snapshot_targeted_lane_pull_lookup_failed", {
+          owner: repo.owner,
+          repo: repo.name,
+          branch,
+          error: getErrorMessage(error),
+        });
+        continue;
+      }
       for (const rawPr of branchPulls) {
         const prNumber = asNumber(rawPr?.number);
         if (!prNumber || seenRepoPrNumbers.has(prNumber)) continue;

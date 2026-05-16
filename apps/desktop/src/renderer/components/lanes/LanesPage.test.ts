@@ -467,6 +467,31 @@ describe("selectLaneTabPrTag", () => {
     });
   });
 
+  it("keeps a terminal ADE row when the branch-matched GitHub PR is also terminal and unrelated", () => {
+    const mappedPr = makePr({
+      id: "mapped-pr",
+      state: "closed",
+      githubPrNumber: 123,
+      githubUrl: "https://github.com/arul28/ADE/pull/123",
+    });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "closed",
+      githubPrNumber: 224,
+      githubUrl: "https://github.com/arul28/ADE/pull/224",
+      linkedPrId: null,
+      linkedLaneId: null,
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "ade",
+      id: "mapped-pr",
+      linkedPrId: "mapped-pr",
+      state: "closed",
+      githubPrNumber: 123,
+    });
+  });
+
   it("uses a fresh GitHub terminal state over a stale open ADE row for the same PR", () => {
     const mappedPr = makePr({ id: "mapped-pr", state: "open" });
     const githubPr = makeGitHubPr({

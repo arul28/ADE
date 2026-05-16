@@ -759,6 +759,79 @@ describe("prService.getGithubSnapshot", () => {
     );
   });
 
+  it("continues targeted lane branch PR lookups after one branch lookup fails", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        if (args.query?.head === `${REPO.owner}:feature/flaky`) {
+          throw new Error("temporary GitHub failure");
+        }
+        if (args.query?.head === `${REPO.owner}:feature/missed`) {
+          return {
+            data: [
+              makeGitHubPull({
+                number: 222,
+                title: "Missed branch PR",
+                state: "closed",
+                merged_at: null,
+                head: {
+                  ref: "feature/missed",
+                  user: { login: REPO.owner },
+                  repo: { owner: { login: REPO.owner }, name: REPO.name },
+                },
+              }),
+            ],
+          };
+        }
+        return {
+          data: [
+            makeGitHubPull({
+              number: 111,
+              title: "Recent unrelated PR",
+              head: {
+                ref: "feature/recent",
+                user: { login: REPO.owner },
+                repo: { owner: { login: REPO.owner }, name: REPO.name },
+              },
+            }),
+          ],
+        };
+      }),
+    });
+    const db = makeMockDb();
+    const laneService = makeLaneService([
+      makeFakeLane({ id: "lane-flaky", branchRef: "refs/heads/feature/flaky" }),
+      makeFakeLane({ branchRef: "refs/heads/feature/missed" }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const snapshot = await service.getGithubSnapshot({ force: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/flaky` }),
+    }));
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/missed` }),
+    }));
+    expect(snapshot.repoPullRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        githubPrNumber: 222,
+        title: "Missed branch PR",
+      }),
+    ]));
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 222, "Missed branch PR", "closed", "main", "feature/missed"]),
+    );
+  });
+
   it("updates an existing repo PR row during lane PR backfill instead of duplicating it", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => ({
