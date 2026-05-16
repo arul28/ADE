@@ -92,6 +92,26 @@ export function ensurePlanningPhase(phases: PhaseCard[], at: string = nowIso()):
   });
 }
 
+export function normalizePhaseRef(value: string | null | undefined): string {
+  return normalizePhaseKey(value);
+}
+
+export function phaseMatchesRef(phase: PhaseCard, ref: string | null | undefined): boolean {
+  const normalized = normalizePhaseRef(ref);
+  if (!normalized) return false;
+  return normalizePhaseRef(phase.phaseKey) === normalized || normalizePhaseRef(phase.name) === normalized;
+}
+
+export function findPhaseByRef(phases: PhaseCard[], ref: string | null | undefined): PhaseCard | null {
+  return phases.find((phase) => phaseMatchesRef(phase, ref)) ?? null;
+}
+
+export function resolveMustPrecedePredecessors(phases: PhaseCard[], targetPhase: PhaseCard): PhaseCard[] {
+  return phases.filter((phase) =>
+    (phase.orderingConstraints.mustPrecede ?? []).some((successorRef) => phaseMatchesRef(targetPhase, successorRef))
+  );
+}
+
 const DEFAULT_CLAUDE_PHASE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
 const DEFAULT_CODEX_PHASE_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 
