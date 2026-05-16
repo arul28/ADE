@@ -2939,6 +2939,35 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(wtStep?.status).toBe("completed");
   });
 
+  it("removes residual worktree files before deleting the lane row", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const childPath = path.join(repoRoot, "child");
+    fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" } as any;
+      if (args[0] === "worktree" && args[1] === "remove") {
+        fake.calls.push("git_worktree_remove");
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    await service.delete({ laneId: "lane-child", deleteBranch: false });
+
+    expect(fs.existsSync(childPath)).toBe(false);
+    expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
+    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "prune")).toBe(true);
+    const last = events[events.length - 1];
+    expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("removed residual files");
+  });
+
   it("keeps recent delete progress queryable for remounted renderers", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

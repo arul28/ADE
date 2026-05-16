@@ -129,6 +129,8 @@ export type GitHubPrListItem = {
   isDraft: boolean;
   baseBranch: string | null;
   headBranch: string | null;
+  headRepoOwner?: string | null;
+  headRepoName?: string | null;
   author: string | null;
   createdAt: string;
   updatedAt: string;

@@ -432,6 +432,13 @@ export function LanesPage() {
     [laneSnapshots],
   );
   const sortedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
+  const lanePrBranchSignature = useMemo(
+    () => sortedLanes
+      .map((lane) => `${lane.id}:${lane.laneType}:${lane.branchRef ?? ""}:${lane.baseRef ?? ""}`)
+      .sort()
+      .join("\0"),
+    [sortedLanes],
+  );
   const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
   const deletingLaneIds = useMemo(() => {
     const ids = new Set<string>();
@@ -938,14 +945,14 @@ export function LanesPage() {
     }
     const timer = window.setTimeout(() => {
       void refreshLanePrTags();
-      void refreshLaneGithubPrTags();
+      void refreshLaneGithubPrTags({ force: true });
     }, 160);
     return () => {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
       window.clearTimeout(timer);
     };
-  }, [refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath]);
+  }, [refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath, lanePrBranchSignature]);
 
   useEffect(() => {
     return window.ade.prs.onEvent((event) => {

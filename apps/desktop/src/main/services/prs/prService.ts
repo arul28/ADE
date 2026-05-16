@@ -1546,6 +1546,19 @@ export function createPrService({
     }
   };
 
+  const rawPullHeadBranch = (rawPr: any): string => normalizeBranchName(asString(rawPr?.head?.ref));
+  const rawPullHeadOwner = (rawPr: any): string => asString(rawPr?.head?.repo?.owner?.login)
+    || asString(rawPr?.head?.user?.login)
+    || asString(rawPr?.head?.repo?.owner);
+  const rawPullHeadRepoName = (rawPr: any): string => asString(rawPr?.head?.repo?.name);
+  const rawPullHasSameRepoHead = (rawPr: any, repo: GitHubRepoRef): boolean => {
+    const owner = rawPullHeadOwner(rawPr);
+    const name = rawPullHeadRepoName(rawPr);
+    if (!owner || owner.toLowerCase() !== repo.owner.toLowerCase()) return false;
+    if (name && name.toLowerCase() !== repo.name.toLowerCase()) return false;
+    return true;
+  };
+
   const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
     const activeLaneByBranch = new Map<string, LaneSummary>();
     for (const lane of lanes) {
@@ -1558,13 +1571,11 @@ export function createPrService({
 
     const backfilledIds: string[] = [];
     for (const rawPr of rawPulls) {
-      const headBranch = normalizeBranchName(asString(rawPr?.head?.ref));
+      const headBranch = rawPullHeadBranch(rawPr);
       const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
       if (!lane) continue;
 
-      const headOwner = asString(rawPr?.head?.repo?.owner?.login)
-        || asString(rawPr?.head?.user?.login)
-        || asString(rawPr?.head?.repo?.owner);
+      const headOwner = rawPullHeadOwner(rawPr);
       if (!headOwner || headOwner.toLowerCase() !== repo.owner.toLowerCase()) continue;
 
       const prNumber = asNumber(rawPr?.number);
@@ -1607,6 +1618,57 @@ export function createPrService({
       invalidateGithubSnapshotCache();
     }
     return backfilledIds.length;
+  };
+
+  const fetchMissingSameRepoLanePulls = async (
+    rawPulls: any[],
+    repo: GitHubRepoRef,
+    lanes: LaneSummary[],
+  ): Promise<any[]> => {
+    const branchHasSameRepoPr = new Set<string>();
+    const seenRepoPrNumbers = new Set<number>();
+    for (const rawPr of rawPulls) {
+      const prNumber = asNumber(rawPr?.number);
+      if (prNumber) seenRepoPrNumbers.add(prNumber);
+      const branch = rawPullHeadBranch(rawPr);
+      if (branch && rawPullHasSameRepoHead(rawPr, repo)) branchHasSameRepoPr.add(branch);
+    }
+
+    const candidateBranches: string[] = [];
+    const seenBranches = new Set<string>();
+    for (const lane of lanes) {
+      if (lane.archivedAt || lane.laneType === "primary") continue;
+      const branch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+      if (!branch || seenBranches.has(branch) || branchHasSameRepoPr.has(branch)) continue;
+      seenBranches.add(branch);
+      candidateBranches.push(branch);
+    }
+
+    const MAX_TARGETED_LANE_PR_BRANCH_LOOKUPS = 12;
+    const targetedBranches = candidateBranches.slice(0, MAX_TARGETED_LANE_PR_BRANCH_LOOKUPS);
+    if (targetedBranches.length === 0) return rawPulls;
+
+    const extras: any[] = [];
+    for (const branch of targetedBranches) {
+      const branchPulls = await fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls`,
+        query: {
+          state: "all",
+          head: `${repo.owner}:${branch}`,
+          sort: "updated",
+          direction: "desc",
+        },
+        maxPages: 1,
+      });
+      for (const rawPr of branchPulls) {
+        const prNumber = asNumber(rawPr?.number);
+        if (!prNumber || seenRepoPrNumbers.has(prNumber)) continue;
+        seenRepoPrNumbers.add(prNumber);
+        extras.push(rawPr);
+      }
+    }
+
+    return extras.length ? [...rawPulls, ...extras] : rawPulls;
   };
 
   const pluralizeCommit = (count: number): string => count === 1 ? "commit" : "commits";
@@ -5070,6 +5132,8 @@ export function createPrService({
         isDraft: Boolean(rawPr?.draft),
         baseBranch: asString(rawPr?.base?.ref) || null,
         headBranch: asString(rawPr?.head?.ref) || null,
+        headRepoOwner: rawPullHeadOwner(rawPr) || null,
+        headRepoName: rawPullHeadRepoName(rawPr) || null,
         author: asString(rawPr?.user?.login) || null,
         createdAt: asString(rawPr?.created_at) || nowIso(),
         updatedAt: asString(rawPr?.updated_at) || asString(rawPr?.created_at) || nowIso(),
@@ -5090,10 +5154,11 @@ export function createPrService({
       };
     };
 
-    const repoPullRequestsRaw = await fetchAllPages<any>({
+    let repoPullRequestsRaw = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: { state: "all", sort: "updated", direction: "desc" },
     });
+    repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(repoPullRequestsRaw, repo, lanes);
     if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, lanes) > 0) {
       pullRequestRows = listRows();
       linkedPrByRepoKey = new Map(

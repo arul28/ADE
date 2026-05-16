@@ -56,7 +56,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
@@ -207,7 +207,9 @@ Caching layers:
    inside `prService` on the active runtime for remote-bound windows
    and in the local in-process PR service for local-bound windows.
    Repeated in-flight snapshot requests are deduplicated. The snapshot
-   fetches repository PRs only.
+   fetches repository PRs only, then does at most 12 targeted same-repo
+   head-branch lookups for active lane branches that were absent from
+   the repo-wide page window.
 2. **Renderer cache** — `PrsContext` holds the last snapshot so
    revisiting the tab renders immediately. Selected PR detail panes
    hydrate from `listSnapshots({ prId })` before live status, check,
