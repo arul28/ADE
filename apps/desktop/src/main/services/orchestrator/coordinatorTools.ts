@@ -391,14 +391,29 @@ function resolveCurrentPhase(graph: OrchestratorRunGraph): string {
 
 function buildMissionStateProgress(graph: OrchestratorRunGraph): MissionStateProgress {
   const relevantSteps = filterExecutionSteps(graph.steps);
-  const completedSteps = relevantSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length;
+  let completedSteps = 0;
+  const activeWorkers: string[] = [];
+  const blockedSteps: string[] = [];
+  const failedSteps: string[] = [];
+  for (const step of relevantSteps) {
+    if (TERMINAL_STEP_STATUSES.has(step.status)) {
+      completedSteps += 1;
+    }
+    if (step.status === "running") {
+      activeWorkers.push(step.stepKey);
+    } else if (step.status === "blocked") {
+      blockedSteps.push(step.stepKey);
+    } else if (step.status === "failed") {
+      failedSteps.push(step.stepKey);
+    }
+  }
   return {
     currentPhase: resolveCurrentPhase(graph),
     completedSteps,
     totalSteps: relevantSteps.length,
-    activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
-    blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-    failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+    activeWorkers,
+    blockedSteps,
+    failedSteps,
   };
 }
 
