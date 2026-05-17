@@ -9,6 +9,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 const focusSessionSpy = vi.fn();
 const selectLaneSpy = vi.fn();
 const setWorkViewStateSpy = vi.fn();
+const refreshLanesSpy = vi.fn();
 const navigateSpy = vi.fn();
 let fakeAppStoreState: Record<string, unknown>;
 const routerLocation = {
@@ -24,6 +25,7 @@ function resetFakeAppStoreState() {
     focusSession: focusSessionSpy,
     focusedSessionId: null,
     selectLane: selectLaneSpy,
+    refreshLanes: refreshLanesSpy.mockResolvedValue(undefined),
     workViewByProject: {},
     setWorkViewState: setWorkViewStateSpy,
   };
@@ -258,6 +260,29 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(refreshDoneIdx).toBeLessThan(focusIdx);
     expect(refreshDoneIdx).toBeLessThan(openTabIdx);
+  });
+
+  it("lightly refreshes lanes when Work sessions load before lane state recovers", async () => {
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [],
+    };
+    listSessionsCachedMock.mockResolvedValue([
+      makeSession("session-1", "lane-1"),
+    ]);
+
+    renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(refreshLanesSpy).toHaveBeenCalledWith({
+        includeStatus: false,
+        includeSnapshots: false,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
+    });
+    expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
   });
 
   it("launchPtySession keeps the new terminal visible when the forced refresh is stale", async () => {

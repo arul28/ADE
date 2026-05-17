@@ -138,7 +138,10 @@ Control flows through `ade.macosVm.*` IPC and the `macos_vm` ADE action domain:
 `getSharePolicy`, `focusWindow`, `captureScreenshot`, `selectPoint`, `click`,
 and `typeText`. The Work sidebar's Mac VM tab renders the desktop panel, while
 `ade --socket macos-vm ...` gives agents the same status/start/screenshot/select
-and click/type controls from the CLI.
+and click/type controls from the CLI. Headless screenshot capture uses direct
+VNC first; ADE waits through transient black framebuffer updates, wakes the
+display with a pointer move plus a Shift key tap, and refuses to attach a
+persistent black frame as review context.
 
 ## Cross-links
 

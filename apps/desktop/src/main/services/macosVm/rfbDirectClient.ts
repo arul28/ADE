@@ -11,10 +11,15 @@ export type DirectVncScreenshot = {
   width: number;
   height: number;
   pngData: Buffer;
+  blankFrameAttempts?: number;
 };
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const MOUSE_LEFT_BUTTON = 1;
+const KEYSYM_SHIFT_LEFT = 0xffe1;
+const MAX_FRAME_ANALYSIS_SAMPLES = 4096;
+const BLANK_FRAME_NON_BLACK_RATIO = 0.003;
+const BLANK_FRAME_RETRY_MS = 250;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,6 +80,33 @@ function encodeRgbaPng(width: number, height: number, rgba: Buffer): Buffer {
   ]);
 }
 
+function makeOpaqueRgba(width: number, height: number, rgba: Buffer): Buffer {
+  const length = Math.max(0, Math.floor(width) * Math.floor(height) * 4);
+  const opaque = Buffer.from(rgba.subarray(0, length));
+  for (let offset = 3; offset < opaque.length; offset += 4) {
+    opaque[offset] = 255;
+  }
+  return opaque;
+}
+
+export function isLikelyBlankRgbaFrame(width: number, height: number, rgba: Buffer): boolean {
+  const pixelCount = Math.max(0, Math.floor(width) * Math.floor(height));
+  if (pixelCount <= 0 || rgba.length < pixelCount * 4) return true;
+  const stride = Math.max(1, Math.floor(pixelCount / MAX_FRAME_ANALYSIS_SAMPLES));
+  let sampled = 0;
+  let nonBlack = 0;
+  for (let pixel = 0; pixel < pixelCount; pixel += stride) {
+    const offset = pixel * 4;
+    const red = rgba[offset] ?? 0;
+    const green = rgba[offset + 1] ?? 0;
+    const blue = rgba[offset + 2] ?? 0;
+    sampled += 1;
+    if (red > 12 || green > 12 || blue > 12) nonBlack += 1;
+  }
+  if (sampled === 0) return true;
+  return nonBlack / sampled < BLANK_FRAME_NON_BLACK_RATIO;
+}
+
 function createClient(): VncClient {
   const client = new VncClient({
     debug: false,
@@ -98,6 +130,16 @@ function createClient(): VncClient {
     // See sendAudio above.
   };
   return client;
+}
+
+function wakeVncDisplay(client: VncClient, width: number, height: number): void {
+  try {
+    client.sendPointerEvent(Math.floor(width / 2), Math.floor(height / 2), 0);
+    client.sendKeyEvent(KEYSYM_SHIFT_LEFT, true);
+    client.sendKeyEvent(KEYSYM_SHIFT_LEFT, false);
+  } catch {
+    // Display wake-up is best-effort; screenshot capture still retries frames.
+  }
 }
 
 function connectVnc(connection: DirectVncConnection, timeoutMs: number): Promise<VncClient> {
@@ -157,16 +199,26 @@ export async function captureVncScreenshot(
 ): Promise<DirectVncScreenshot> {
   return await withVncClient(connection, timeoutMs, async (client) => new Promise<DirectVncScreenshot>((resolve, reject) => {
     let settled = false;
-    const timeout = setTimeout(() => finish(new Error(`Timed out capturing VNC screenshot from ${connection.host}:${connection.port}.`)), timeoutMs);
+    let blankFrameAttempts = 0;
+    let retryTimer: NodeJS.Timeout | null = null;
+    const requestFullFrame = (): void => {
+      client.requestFrameUpdate(true, 0, 0, 0, Math.max(1, client.clientWidth), Math.max(1, client.clientHeight));
+    };
+    const timeout = setTimeout(() => {
+      const suffix = blankFrameAttempts > 0
+        ? ` VNC returned ${blankFrameAttempts} black frame${blankFrameAttempts === 1 ? "" : "s"} while ADE waited, so ADE skipped attaching the unusable frame. The VM display may be asleep or still booting; try the screenshot again in a few seconds.`
+        : "";
+      finish(new Error(`Timed out capturing VNC screenshot from ${connection.host}:${connection.port}.${suffix}`));
+    }, timeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
-      client.removeListener("firstFrameUpdate", onFrame);
+      if (retryTimer) clearTimeout(retryTimer);
       client.removeListener("frameUpdated", onFrame);
       client.removeListener("connectError", onError);
       client.removeListener("authError", onAuthError);
       client.removeListener("closed", onClosed);
     };
-    const finish = (error?: Error): void => {
+    const finish = (error: Error | null, screenshot?: DirectVncScreenshot): void => {
       if (settled) return;
       settled = true;
       cleanup();
@@ -174,16 +226,36 @@ export async function captureVncScreenshot(
         reject(error);
         return;
       }
-      const width = Math.max(1, client.clientWidth);
-      const height = Math.max(1, client.clientHeight);
-      resolve({
-        width,
-        height,
-        pngData: encodeRgbaPng(width, height, Buffer.from(client.fb)),
-      });
+      resolve(screenshot!);
     };
     function onFrame(): void {
-      finish();
+      const width = Math.max(1, client.clientWidth);
+      const height = Math.max(1, client.clientHeight);
+      const rgba = Buffer.from(client.fb);
+      if (!isLikelyBlankRgbaFrame(width, height, rgba)) {
+        finish(null, {
+          width,
+          height,
+          pngData: encodeRgbaPng(width, height, makeOpaqueRgba(width, height, rgba)),
+          blankFrameAttempts,
+        });
+        return;
+      }
+
+      blankFrameAttempts += 1;
+      if (blankFrameAttempts === 1 || blankFrameAttempts % 3 === 0) {
+        wakeVncDisplay(client, width, height);
+      }
+      if (!retryTimer) {
+        retryTimer = setTimeout(() => {
+          retryTimer = null;
+          try {
+            requestFullFrame();
+          } catch (error) {
+            onError(error);
+          }
+        }, BLANK_FRAME_RETRY_MS);
+      }
     }
     function onError(error: unknown): void {
       finish(error instanceof Error ? error : new Error(String(error)));
@@ -194,12 +266,11 @@ export async function captureVncScreenshot(
     function onClosed(): void {
       finish(new Error(`VNC connection closed before a screenshot was captured from ${connection.host}:${connection.port}.`));
     }
-    client.once("firstFrameUpdate", onFrame);
-    client.once("frameUpdated", onFrame);
+    client.on("frameUpdated", onFrame);
     client.once("connectError", onError);
     client.once("authError", onAuthError);
     client.once("closed", onClosed);
-    client.requestFrameUpdate(true, 0, 0, 0, Math.max(1, client.clientWidth), Math.max(1, client.clientHeight));
+    requestFullFrame();
   }));
 }
 
