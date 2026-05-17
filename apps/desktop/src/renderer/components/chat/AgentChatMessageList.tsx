@@ -47,7 +47,7 @@ import type {
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { formatTime } from "../../lib/format";
-import { openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
@@ -552,13 +552,6 @@ function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "
   if (status === "interrupted") return <ChatStatusGlyph status="waiting" size={13} />;
   if (status === "completed" || status === "failed") return <ChatStatusGlyph status={status} size={13} />;
   return <ChatStatusGlyph status="working" size={13} />;
-}
-
-function PlanStepIcon({ status }: { status: string }) {
-  if (status === "completed") return <Checks size={13} weight="bold" className="text-emerald-400" />;
-  if (status === "failed") return <XCircle size={13} weight="bold" className="text-red-400" />;
-  if (status === "in_progress") return <Circle size={11} weight="fill" className="text-sky-400/80" />;
-  return <Circle size={11} weight="regular" className="text-muted-fg/40" />;
 }
 
 function todoItemStatusClass(status: string): string {
@@ -3176,26 +3169,11 @@ function renderEvent(
   );
 }
 
-type TurnSummaryTask = {
-  id: string;
-  description: string;
-  status: string;
-};
-
-type TurnSummaryFile = {
-  path: string;
-  kind: Extract<AgentChatEvent, { type: "file_change" }>["kind"];
-  status?: Extract<AgentChatEvent, { type: "file_change" }>["status"];
-  additions: number;
-  deletions: number;
-};
-
 type TurnSummary = {
   turnId: string;
-  tasks: TurnSummaryTask[];
-  files: TurnSummaryFile[];
-  totalAdditions: number;
-  totalDeletions: number;
+  taskCount: number;
+  completedTaskCount: number;
+  changedFileCount: number;
   backgroundAgentCount: number;
   activeBackgroundAgentCount: number;
   turnModel: { label: string; modelId?: string; model?: string } | null;
@@ -3207,10 +3185,11 @@ function deriveTurnSummary(
   events: AgentChatEventEnvelope[],
   turnModelState: DerivedTurnModelState | null,
 ): TurnSummary | null {
-  const latestTurnId = [...events]
-    .reverse()
-    .map((envelope) => getEventTurnId(envelope.event))
-    .find((turnId): turnId is string => Boolean(turnId));
+  let latestTurnId: string | null = null;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    latestTurnId = getEventTurnId(events[i]!.event);
+    if (latestTurnId) break;
+  }
   if (!latestTurnId) return null;
 
   let latestTodoUpdate: Extract<AgentChatEvent, { type: "todo_update" }> | null = null;
@@ -3218,7 +3197,7 @@ function deriveTurnSummary(
   let turnStartedAt: number | null = null;
   let turnEndedAt: number | null = null;
   let ended = false;
-  const files = new Map<string, TurnSummaryFile>();
+  const changedFilePaths = new Set<string>();
   const subagents = new Map<string, { background: boolean; status: ChatSubagentSnapshot["status"] }>();
 
   for (const envelope of events) {
@@ -3245,14 +3224,7 @@ function deriveTurnSummary(
     }
 
     if (event.type === "file_change") {
-      const stats = summarizeDiffStats(event.diff);
-      files.set(event.path, {
-        path: event.path,
-        kind: event.kind,
-        status: event.status,
-        additions: stats.additions,
-        deletions: stats.deletions,
-      });
+      changedFilePaths.add(event.path);
       continue;
     }
 
@@ -3283,26 +3255,25 @@ function deriveTurnSummary(
     }
   }
 
-  const tasks: TurnSummaryTask[] = latestTodoUpdate
-    ? latestTodoUpdate.items.map((item) => ({
-        id: item.id,
-        description: item.description,
-        status: item.status,
-      }))
-    : latestPlan
-      ? latestPlan.steps.map((step, index) => ({
-          id: `plan-${index}`,
-          description: step.text,
-          status: step.status,
-        }))
-      : [];
-  const changedFiles = [...files.values()];
-  const totalAdditions = changedFiles.reduce((sum, file) => sum + file.additions, 0);
-  const totalDeletions = changedFiles.reduce((sum, file) => sum + file.deletions, 0);
-  const backgroundAgentCount = [...subagents.values()].filter((entry) => entry.background).length;
-  const activeBackgroundAgentCount = [...subagents.values()].filter((entry) => entry.background && entry.status === "running").length;
+  let taskCount = 0;
+  let completedTaskCount = 0;
+  const taskSource = latestTodoUpdate?.items ?? latestPlan?.steps ?? [];
+  for (const task of taskSource) {
+    taskCount += 1;
+    if (task.status === "completed") completedTaskCount += 1;
+  }
+  const changedFileCount = changedFilePaths.size;
+  let backgroundAgentCount = 0;
+  let activeBackgroundAgentCount = 0;
+  for (const entry of subagents.values()) {
+    if (!entry.background) continue;
+    backgroundAgentCount += 1;
+    if (entry.status === "running") {
+      activeBackgroundAgentCount += 1;
+    }
+  }
 
-  if (!tasks.length && !changedFiles.length && !backgroundAgentCount) {
+  if (!taskCount && !changedFileCount && !backgroundAgentCount) {
     return null;
   }
 
@@ -3313,12 +3284,11 @@ function deriveTurnSummary(
 
   return {
     turnId: latestTurnId,
-    tasks,
-    files: changedFiles,
+    taskCount,
+    completedTaskCount,
+    changedFileCount,
     durationMs,
     ended,
-    totalAdditions,
-    totalDeletions,
     backgroundAgentCount,
     activeBackgroundAgentCount,
     turnModel: turnModelState?.map.get(latestTurnId) ?? null,
@@ -3336,9 +3306,7 @@ function formatTurnDuration(durationMs: number): string {
 
 function TurnDivider({ summary }: { summary: TurnSummary }) {
   if (!summary.ended) return null;
-  const completedCount = summary.tasks.filter((task) => task.status === "completed").length;
-  const totalCount = summary.tasks.length;
-  const taskLine = totalCount ? `${completedCount}/${totalCount} tasks complete` : null;
+  const taskLine = summary.taskCount ? `${summary.completedTaskCount}/${summary.taskCount} tasks complete` : null;
   const agentLine = summary.backgroundAgentCount
     ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"}${
         summary.activeBackgroundAgentCount > 0 ? ` · ${summary.activeBackgroundAgentCount} still running` : " finished"
@@ -3831,7 +3799,7 @@ export function AgentChatMessageList({
   const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
 
   const handleReviewChanges = useCallback(() => {
-    if (!turnSummary?.files.length) return;
+    if (!turnSummary?.changedFileCount) return;
     const state = currentLaneId ? { laneId: currentLaneId } : undefined;
     navigate("/files", state ? { state } : undefined);
   }, [currentLaneId, navigate, turnSummary]);

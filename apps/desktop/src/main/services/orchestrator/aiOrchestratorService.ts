@@ -2682,13 +2682,29 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   const buildMissionStateProgressFromGraph = (graph: OrchestratorRunGraph): MissionStateProgress => {
     const relevantSteps = filterExecutionSteps(graph.steps);
+    let completedSteps = 0;
+    const activeWorkers: string[] = [];
+    const blockedSteps: string[] = [];
+    const failedSteps: string[] = [];
+    for (const step of relevantSteps) {
+      if (MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)) {
+        completedSteps += 1;
+      }
+      if (step.status === "running") {
+        activeWorkers.push(step.stepKey);
+      } else if (step.status === "blocked") {
+        blockedSteps.push(step.stepKey);
+      } else if (step.status === "failed") {
+        failedSteps.push(step.stepKey);
+      }
+    }
     return {
       currentPhase: currentPhaseFromGraph(graph),
-      completedSteps: relevantSteps.filter((step) => MISSION_STATE_TERMINAL_STEP_STATUSES.has(step.status)).length,
+      completedSteps,
       totalSteps: relevantSteps.length,
-      activeWorkers: relevantSteps.filter((step) => step.status === "running").map((step) => step.stepKey),
-      blockedSteps: relevantSteps.filter((step) => step.status === "blocked").map((step) => step.stepKey),
-      failedSteps: relevantSteps.filter((step) => step.status === "failed").map((step) => step.stepKey),
+      activeWorkers,
+      blockedSteps,
+      failedSteps,
     };
   };
 

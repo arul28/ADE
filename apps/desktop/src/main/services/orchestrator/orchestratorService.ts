@@ -4125,12 +4125,26 @@ export function createOrchestratorService({
 
     const runSteps = listStepRows(args.run.id).map(toStep);
     const frontier = {
-      pending: runSteps.filter((step) => step.status === "pending").length,
-      ready: runSteps.filter((step) => step.status === "ready").length,
-      running: runSteps.filter((step) => step.status === "running").length,
-      blocked: runSteps.filter((step) => step.status === "blocked").length,
-      terminal: runSteps.filter((step) => TERMINAL_STEP_STATUSES.has(step.status)).length
+      pending: 0,
+      ready: 0,
+      running: 0,
+      blocked: 0,
+      terminal: 0
     };
+    for (const step of runSteps) {
+      if (TERMINAL_STEP_STATUSES.has(step.status)) {
+        frontier.terminal += 1;
+      }
+      if (step.status === "pending") {
+        frontier.pending += 1;
+      } else if (step.status === "ready") {
+        frontier.ready += 1;
+      } else if (step.status === "running") {
+        frontier.running += 1;
+      } else if (step.status === "blocked") {
+        frontier.blocked += 1;
+      }
+    }
     const openQuestions = Number(
       db.get<{ count: number }>(
         `
@@ -11350,7 +11364,13 @@ export function createOrchestratorService({
     checkFanOutCompletion(args: { runId: string; completedStepKey: string }): boolean {
       const { runId, completedStepKey } = args;
       const allSteps = listStepRows(runId).map(toStep);
-      const completedStep = allSteps.find((s) => s.stepKey === completedStepKey);
+      const stepByKey = new Map<string, OrchestratorStep>();
+      for (const step of allSteps) {
+        if (!stepByKey.has(step.stepKey)) {
+          stepByKey.set(step.stepKey, step);
+        }
+      }
+      const completedStep = stepByKey.get(completedStepKey);
       if (!completedStep) return false;
 
       // Find the parent via fanOutParent in metadata
@@ -11358,7 +11378,7 @@ export function createOrchestratorService({
       const parentStepKey = meta.fanOutParent as string | undefined;
       if (!parentStepKey) return false;
 
-      const parentStep = allSteps.find((s) => s.stepKey === parentStepKey);
+      const parentStep = stepByKey.get(parentStepKey);
       if (!parentStep) return false;
 
       const parentMeta = (parentStep.metadata ?? {}) as Record<string, unknown>;
@@ -11368,15 +11388,23 @@ export function createOrchestratorService({
       // Check if all children are in a terminal state
       const terminalStatuses = new Set<string>(["succeeded", "failed", "skipped", "superseded", "canceled"]);
       const allDone = childKeys.every((key) => {
-        const child = allSteps.find((s) => s.stepKey === key);
+        const child = stepByKey.get(key);
         return child && terminalStatuses.has(child.status);
       });
 
       if (allDone && parentMeta.fanOutComplete !== true) {
         const updatedMeta = { ...parentMeta, fanOutComplete: true };
         const now = nowIso();
-        const succeededCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "succeeded").length;
-        const failedCount = childKeys.filter((key) => allSteps.find((s) => s.stepKey === key)?.status === "failed").length;
+        let succeededCount = 0;
+        let failedCount = 0;
+        for (const key of childKeys) {
+          const child = stepByKey.get(key);
+          if (child?.status === "succeeded") {
+            succeededCount += 1;
+          } else if (child?.status === "failed") {
+            failedCount += 1;
+          }
+        }
 
         // VAL-STATE-002: Update parent step status to reflect variant outcomes.
         // If any child succeeded → parent succeeded; if all failed → parent failed.
