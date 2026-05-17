@@ -344,7 +344,13 @@ Renderer surfaces:
 - `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
   headless VNC bridge for screenshot, click, and type operations. It
   disables unsupported audio negotiation for Lume VNC sessions and
-  encodes captured RGBA frames as PNGs for proof/context flows.
+  encodes captured RGBA frames as PNGs for proof/context flows. Screenshot
+  capture waits through transient black frames, wakes the VNC display with a
+  pointer move plus a Shift key tap, and fails instead of returning a persistent
+  black frame as usable context.
+- `apps/desktop/src/main/services/macosVm/rfbDirectClient.test.ts` —
+  focused coverage for direct-VNC blank-frame detection so boot/sleep frames
+  do not become misleading screenshot proof.
 - `apps/desktop/src/main/services/macosVm/macosVmService.test.ts` —
   macOS VM provider, share-policy, lifecycle, guidance, and direct-VNC
   control tests.

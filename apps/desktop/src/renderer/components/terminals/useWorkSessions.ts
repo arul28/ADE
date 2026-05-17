@@ -322,6 +322,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
 
@@ -338,6 +339,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
   const projectRootRef = useRef<string | null>(projectRoot);
+  const laneRecoveryRefreshProjectRef = useRef<string | null>(null);
   const isWorkRoute = active && (location.pathname === "/work" || location.pathname.startsWith("/work/"));
 
   useEffect(() => {
@@ -386,6 +388,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+  const hasLaneBackedSessions = useMemo(
+    () => sessions.some((session) => Boolean(session.laneId)),
+    [sessions],
+  );
 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
@@ -794,11 +800,30 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     hasLoadedOnceRef.current = false;
     hasRunningSessionsRef.current = false;
+    laneRecoveryRefreshProjectRef.current = null;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
     pendingOptimisticSessionsRef.current.clear();
   }, [projectRoot]);
+
+  useEffect(() => {
+    if (!projectRoot || !isWorkRoute) return;
+    if (lanes.length > 0) {
+      laneRecoveryRefreshProjectRef.current = null;
+      return;
+    }
+    if (!hasLaneBackedSessions) return;
+    if (laneRecoveryRefreshProjectRef.current === projectRoot) return;
+    laneRecoveryRefreshProjectRef.current = projectRoot;
+    void refreshLanes({
+      includeStatus: false,
+      includeSnapshots: false,
+      includeConflictStatus: false,
+      includeRebaseSuggestions: false,
+      includeAutoRebaseStatus: false,
+    }).catch(() => {});
+  }, [hasLaneBackedSessions, isWorkRoute, lanes.length, projectRoot, refreshLanes]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;

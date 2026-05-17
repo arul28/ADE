@@ -1446,7 +1446,10 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       const screenshot = await directVncClient.captureScreenshot(directVnc, 15_000);
       fs.writeFileSync(outputPath, screenshot.pngData);
       const target = directVncTargetForRecord(lane, record, screenshot);
-      emitOperation("screenshot", "completed", lane.id, record.name, "Captured macOS VM screenshot through headless VNC.");
+      const retryDetail = screenshot.blankFrameAttempts && screenshot.blankFrameAttempts > 0
+        ? ` after waiting through ${screenshot.blankFrameAttempts} black frame${screenshot.blankFrameAttempts === 1 ? "" : "s"}`
+        : "";
+      emitOperation("screenshot", "completed", lane.id, record.name, `Captured macOS VM screenshot through headless VNC${retryDetail}.`);
       return {
         ok: true,
         laneId: lane.id,
