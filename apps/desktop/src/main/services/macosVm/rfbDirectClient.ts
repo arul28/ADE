@@ -208,32 +208,35 @@ export async function captureVncScreenshot(
       const suffix = blankFrameAttempts > 0
         ? ` VNC returned ${blankFrameAttempts} black frame${blankFrameAttempts === 1 ? "" : "s"} while ADE waited, so ADE skipped attaching the unusable frame. The VM display may be asleep or still booting; try the screenshot again in a few seconds.`
         : "";
-      finish(new Error(`Timed out capturing VNC screenshot from ${connection.host}:${connection.port}.${suffix}`));
+      finishWithError(new Error(`Timed out capturing VNC screenshot from ${connection.host}:${connection.port}.${suffix}`));
     }, timeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
       if (retryTimer) clearTimeout(retryTimer);
+      client.removeListener("firstFrameUpdate", onFrame);
       client.removeListener("frameUpdated", onFrame);
       client.removeListener("connectError", onError);
       client.removeListener("authError", onAuthError);
       client.removeListener("closed", onClosed);
     };
-    const finish = (error: Error | null, screenshot?: DirectVncScreenshot): void => {
+    const finishWithError = (error: Error): void => {
       if (settled) return;
       settled = true;
       cleanup();
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(screenshot!);
+      reject(error);
+    };
+    const finishWithScreenshot = (screenshot: DirectVncScreenshot): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(screenshot);
     };
     function onFrame(): void {
       const width = Math.max(1, client.clientWidth);
       const height = Math.max(1, client.clientHeight);
       const rgba = Buffer.from(client.fb);
       if (!isLikelyBlankRgbaFrame(width, height, rgba)) {
-        finish(null, {
+        finishWithScreenshot({
           width,
           height,
           pngData: encodeRgbaPng(width, height, makeOpaqueRgba(width, height, rgba)),
@@ -258,14 +261,15 @@ export async function captureVncScreenshot(
       }
     }
     function onError(error: unknown): void {
-      finish(error instanceof Error ? error : new Error(String(error)));
+      finishWithError(error instanceof Error ? error : new Error(String(error)));
     }
     function onAuthError(): void {
-      finish(new Error(`VNC authentication failed for ${connection.host}:${connection.port}.`));
+      finishWithError(new Error(`VNC authentication failed for ${connection.host}:${connection.port}.`));
     }
     function onClosed(): void {
-      finish(new Error(`VNC connection closed before a screenshot was captured from ${connection.host}:${connection.port}.`));
+      finishWithError(new Error(`VNC connection closed before a screenshot was captured from ${connection.host}:${connection.port}.`));
     }
+    client.on("firstFrameUpdate", onFrame);
     client.on("frameUpdated", onFrame);
     client.once("connectError", onError);
     client.once("authError", onAuthError);

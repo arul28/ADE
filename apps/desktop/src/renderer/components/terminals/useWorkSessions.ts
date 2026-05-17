@@ -388,6 +388,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+  const hasLaneBackedSessions = useMemo(
+    () => sessions.some((session) => Boolean(session.laneId)),
+    [sessions],
+  );
 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
@@ -809,7 +813,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       laneRecoveryRefreshProjectRef.current = null;
       return;
     }
-    if (!sessions.some((session) => session.laneId)) return;
+    if (!hasLaneBackedSessions) return;
     if (laneRecoveryRefreshProjectRef.current === projectRoot) return;
     laneRecoveryRefreshProjectRef.current = projectRoot;
     void refreshLanes({
@@ -818,12 +822,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       includeConflictStatus: false,
       includeRebaseSuggestions: false,
       includeAutoRebaseStatus: false,
-    }).catch(() => {
-      if (laneRecoveryRefreshProjectRef.current === projectRoot) {
-        laneRecoveryRefreshProjectRef.current = null;
-      }
-    });
-  }, [isWorkRoute, lanes.length, projectRoot, refreshLanes, sessions]);
+    }).catch(() => {});
+  }, [hasLaneBackedSessions, isWorkRoute, lanes.length, projectRoot, refreshLanes]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;

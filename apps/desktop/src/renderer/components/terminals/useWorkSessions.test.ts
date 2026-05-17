@@ -285,6 +285,32 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry lane recovery on every session refresh after a failure", async () => {
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [],
+    };
+    refreshLanesSpy.mockRejectedValue(new Error("IPC unavailable"));
+    listSessionsCachedMock.mockResolvedValue([
+      makeSession("session-1", "lane-1"),
+    ]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
+    });
+
+    listSessionsCachedMock.mockResolvedValue([
+      makeSession("session-2", "lane-1"),
+    ]);
+    await act(async () => {
+      await result.current.refresh({ force: true });
+    });
+
+    expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("launchPtySession keeps the new terminal visible when the forced refresh is stale", async () => {
     const workState = {
       openItemIds: [] as string[],
