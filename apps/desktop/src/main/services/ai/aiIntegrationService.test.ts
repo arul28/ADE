@@ -19,6 +19,7 @@ const mockState = vi.hoisted(() => ({
   clearOpenCodeInventoryCache: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(),
   probeOpenCodeProviderInventory: vi.fn(),
+  clearOpenCodeBinaryCache: vi.fn(),
   resolveOpenCodeBinary: vi.fn(),
 }));
 
@@ -68,6 +69,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
 }));
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({
+  clearOpenCodeBinaryCache: (...args: unknown[]) => mockState.clearOpenCodeBinaryCache(...args),
   resolveOpenCodeBinary: (...args: unknown[]) => mockState.resolveOpenCodeBinary(...args),
 }));
 
@@ -276,6 +278,7 @@ beforeEach(() => {
     error: null,
     descriptors: [],
   });
+  mockState.clearOpenCodeBinaryCache.mockImplementation(() => undefined);
   mockState.resolveOpenCodeBinary.mockReturnValue({
     path: "/Users/admin/.opencode/bin/opencode",
     source: "user-installed",
@@ -450,6 +453,14 @@ describe("aiIntegrationService", () => {
       { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
     ]);
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
+  });
+
+  it("clears the OpenCode binary cache on forced status refresh", async () => {
+    const { service } = makeService();
+
+    await service.getStatus({ force: true });
+
+    expect(mockState.clearOpenCodeBinaryCache).toHaveBeenCalledTimes(1);
   });
 
   it("keeps forced status refresh non-interactive for Claude", async () => {

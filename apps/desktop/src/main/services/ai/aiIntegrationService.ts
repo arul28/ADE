@@ -47,7 +47,11 @@ import {
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
 import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
-import { resolveOpenCodeBinary, type OpenCodeBinarySource } from "../opencode/openCodeBinaryManager";
+import {
+  clearOpenCodeBinaryCache,
+  resolveOpenCodeBinary,
+  type OpenCodeBinarySource,
+} from "../opencode/openCodeBinaryManager";
 import { initialize as initModelsDevService } from "./modelsDevService";
 import { updateModelPricing } from "../../../shared/modelProfiles";
 import { isRecord } from "../shared/utils";
@@ -1637,6 +1641,7 @@ export function createAiIntegrationService(args: {
     resetLocalProviderDetectionCache();
     clearCursorCliModelsCache();
     clearDroidCliModelsCache();
+    clearOpenCodeBinaryCache();
     clearOpenCodeInventoryCache();
     replaceDynamicOpenCodeModelDescriptors([]);
   };
