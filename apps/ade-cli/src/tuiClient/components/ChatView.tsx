@@ -16,6 +16,7 @@ import {
   type AggregatedBlock,
   type FileChangeEntry,
   type PlanStep,
+  type RuntimeActivityEntry,
   type ToolCallEntry,
   type WorkToolStatus,
 } from "../aggregate";
@@ -41,6 +42,7 @@ type RenderedChatRow = {
   italic?: boolean;
   rail?: string | null;
   runs?: InlineRun[];
+  sourceRowIndex?: number | null;
 };
 
 export type ChatTextSelection = {
@@ -48,6 +50,11 @@ export type ChatTextSelection = {
   startColumn: number;
   endRow: number;
   endColumn: number;
+};
+
+export type ChatVisibleSelectionRow = {
+  sourceRow: number | null;
+  text: string;
 };
 
 function textWidth(value: string): number {
@@ -570,6 +577,12 @@ const WORK_STATUS_COLOR: Record<WorkToolStatus, string> = {
   ok: theme.color.running,
   failed: theme.color.error,
 };
+const ACTIVITY_STATUS_COLOR: Record<RuntimeActivityEntry["status"], string> = {
+  running: theme.color.violet,
+  ok: theme.color.running,
+  failed: theme.color.error,
+  info: theme.color.t4,
+};
 
 // How many entries to render inline per work-group before collapsing into "+N more".
 // Tight by design: the TUI can't expand groups, so flooding with all tools is just noise.
@@ -594,6 +607,13 @@ function statusGlyph(status: WorkToolStatus, spinFrame: string): string {
   if (status === "failed") return "✗";
   if (status === "running") return spinFrame;
   return "✓";
+}
+
+function activityStatusGlyph(status: RuntimeActivityEntry["status"], spinFrame: string): string {
+  if (status === "failed") return "✗";
+  if (status === "running") return spinFrame;
+  if (status === "ok") return "✓";
+  return "·";
 }
 
 function truncateLongLine(value: string): string {
@@ -762,6 +782,41 @@ function filesChangedGroupRows(
   return out;
 }
 
+function runtimeActivityRows(
+  block: Extract<AggregatedBlock, { kind: "runtime-activity" }>,
+  spinFrame: string,
+): RenderedChatRow[] {
+  if (!block.entries.length) return [];
+  const ok = block.entries.filter((entry) => entry.status === "ok").length;
+  const failed = block.entries.filter((entry) => entry.status === "failed").length;
+  const out: RenderedChatRow[] = [{
+    id: block.id,
+    tone: "work",
+    text: `▸ Runtime (${block.entries.length})`,
+    runs: groupHeaderRuns("Runtime", block.entries.length, block.live ? null : { ok, failed }, spinFrame),
+    rail: null,
+  }];
+  const { shown, remaining } = visibleEntries(block.entries);
+  for (const entry of shown) {
+    const glyph = activityStatusGlyph(entry.status, spinFrame);
+    const runs: InlineRun[] = [
+      { text: "    " },
+      { text: glyph, color: ACTIVITY_STATUS_COLOR[entry.status] },
+      { text: ` ${entry.label}`, color: theme.color.t1 },
+    ];
+    if (entry.detail) runs.push({ text: `  ${truncateLongLine(entry.detail)}`, color: theme.color.t3 });
+    out.push({
+      id: `${block.id}:${entry.id}`,
+      tone: "work",
+      text: `    ${glyph} ${entry.label}${entry.detail ? `  ${entry.detail}` : ""}`,
+      runs,
+      rail: null,
+    });
+  }
+  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
+  return out;
+}
+
 function memoryRows(block: Extract<AggregatedBlock, { kind: "memory" }>, brailleFrame: string): RenderedChatRow[] {
   const text = block.live
     ? `· memory ${brailleFrame}`
@@ -845,11 +900,14 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
   return out;
 }
 
-function modelWorkingRows(dots: string): RenderedChatRow[] {
+function activeTurnRows(blocks: AggregatedBlock[], dots: string): RenderedChatRow[] {
+  const hasLiveBlock = blocks.some((block) => "live" in block && block.live);
+  const hasAssistantOutput = blocks.some((block) => block.kind === "assistant-text");
+  if (hasLiveBlock || hasAssistantOutput) return [];
   return [{
-    id: "model-working",
+    id: "active-turn-waiting",
     tone: "work",
-    text: `✦ model working${dots}`,
+    text: `✦ active turn · waiting for runtime events${dots}`,
     color: theme.color.violet,
     bold: true,
     rail: null,
@@ -937,6 +995,8 @@ function rowsForBlock(
       return toolCallsGroupRows(block, spinFrame);
     case "files-changed-group":
       return filesChangedGroupRows(block, width, spinFrame);
+    case "runtime-activity":
+      return runtimeActivityRows(block, spinFrame);
     case "memory":
       return memoryRows(block, brailleFrame);
     case "compaction":
@@ -991,18 +1051,19 @@ function sliceRows(
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
 ): RenderedChatRow[] {
-  if (!maxRows || maxRows <= 0) return rows;
+  const indexedRows = rows.map((row, index) => ({ ...row, sourceRowIndex: index }));
+  if (!maxRows || maxRows <= 0) return indexedRows;
   const viewportRows = Math.max(1, maxRows);
-  if (rows.length <= viewportRows) {
+  if (indexedRows.length <= viewportRows) {
     return [
-      ...rows,
-      ...Array.from({ length: viewportRows - rows.length }, (_, index) => (
-        spacerRow(`scroll-filler:${rows.length + index}`)
+      ...indexedRows,
+      ...Array.from({ length: viewportRows - indexedRows.length }, (_, index) => (
+        spacerRow(`scroll-filler:${indexedRows.length + index}`)
       )),
     ];
   }
-  const offset = Math.max(0, Math.min(scrollOffsetRows, maxScrollOffsetForRows(rows.length, viewportRows)));
-  const end = Math.max(1, rows.length - offset);
+  const offset = Math.max(0, Math.min(scrollOffsetRows, maxScrollOffsetForRows(indexedRows.length, viewportRows)));
+  const end = Math.max(1, indexedRows.length - offset);
   const hasNewer = offset > 0;
   let contentRows = Math.max(1, viewportRows - (hasNewer ? 1 : 0));
   let start = Math.max(0, end - contentRows);
@@ -1011,7 +1072,7 @@ function sliceRows(
     contentRows = Math.max(1, viewportRows - 1 - (hasNewer ? 1 : 0));
     start = Math.max(0, end - contentRows);
   }
-  const visible = rows.slice(start, end);
+  const visible = indexedRows.slice(start, end);
   const result: RenderedChatRow[] = [];
   if (hasOlder) {
     result.push({ id: "older-indicator", tone: "indicator", text: "↑ older messages", dim: true, rail: null });
@@ -1112,16 +1173,16 @@ function splitTextByColumns(value: string, start: number, end: number): [string,
 
 function ChatRow({
   row,
-  rowIndex,
   selection,
 }: {
   row: RenderedChatRow;
-  rowIndex: number;
   selection?: ChatTextSelection | null;
 }) {
   const railColor = row.rail === undefined ? railColorForTone(row.tone) : row.rail;
   const plainText = row.text || BLANK_ROW_TEXT;
-  const selectedRange = selection ? selectedRangeForRow(rowIndex, selection, textWidth(renderedRowText(row))) : null;
+  const selectedRange = selection && typeof row.sourceRowIndex === "number"
+    ? selectedRangeForRow(row.sourceRowIndex, selection, textWidth(renderedRowText(row)))
+    : null;
   if (selectedRange) {
     const [before, selected, after] = splitTextByColumns(renderedRowText(row), selectedRange[0], selectedRange[1]);
     return (
@@ -1160,6 +1221,30 @@ function isPaginationIndicatorRow(row: RenderedChatRow): boolean {
   return row.id === "older-indicator" || row.id === "newer-indicator";
 }
 
+function selectableRowsForBlocks({
+  blocks,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+  brailleFrame = "·",
+  spinFrame = "◐",
+  dotPulse = "",
+}: {
+  blocks: AggregatedBlock[];
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+  brailleFrame?: string;
+  spinFrame?: string;
+  dotPulse?: string;
+}): RenderedChatRow[] {
+  const innerWidth = Math.max(24, width - 4);
+  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
+  if (streaming) return [...baseRows, ...activeTurnRows(blocks, dotPulse)];
+  if (interrupted) return [...baseRows, ...modelInterruptedRows()];
+  return baseRows;
+}
+
 function visibleRowsForBlocks({
   blocks,
   maxRows,
@@ -1183,14 +1268,16 @@ function visibleRowsForBlocks({
   spinFrame?: string;
   dotPulse?: string;
 }): RenderedChatRow[] {
-  const innerWidth = Math.max(24, width - 4);
-  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
   return sliceRows(
-    streaming
-      ? [...baseRows, ...modelWorkingRows(dotPulse)]
-      : interrupted
-        ? [...baseRows, ...modelInterruptedRows()]
-        : baseRows,
+    selectableRowsForBlocks({
+      blocks,
+      width,
+      streaming,
+      interrupted,
+      brailleFrame,
+      spinFrame,
+      dotPulse,
+    }),
     maxRows,
     scrollOffsetRows,
     unseenMessageCount,
@@ -1237,7 +1324,81 @@ export function renderChatVisibleRowTexts({
   }).map(renderedRowText);
 }
 
-export function selectedTextFromVisibleChatRows(rows: string[], selection: ChatTextSelection): string {
+export function renderChatVisibleSelectionRows({
+  events,
+  notices,
+  activeSession,
+  expandedLineIds,
+  maxRows,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+}: {
+  events: AgentChatEventEnvelope[];
+  notices: LocalNotice[];
+  activeSession: AgentChatSessionSummary | null;
+  expandedLineIds?: Set<string>;
+  maxRows?: number;
+  scrollOffsetRows?: number;
+  unseenMessageCount?: number;
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+}): ChatVisibleSelectionRow[] {
+  const blocks = aggregateChatBlocks({
+    events,
+    notices,
+    activeSession,
+    expandedLineIds,
+  });
+  return visibleRowsForBlocks({
+    blocks,
+    maxRows,
+    scrollOffsetRows,
+    unseenMessageCount,
+    width,
+    streaming,
+    interrupted,
+  }).map((row) => ({
+    sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
+    text: renderedRowText(row),
+  }));
+}
+
+export function renderChatSelectableRowTexts({
+  events,
+  notices,
+  activeSession,
+  expandedLineIds,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+}: {
+  events: AgentChatEventEnvelope[];
+  notices: LocalNotice[];
+  activeSession: AgentChatSessionSummary | null;
+  expandedLineIds?: Set<string>;
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+}): string[] {
+  const blocks = aggregateChatBlocks({
+    events,
+    notices,
+    activeSession,
+    expandedLineIds,
+  });
+  return selectableRowsForBlocks({
+    blocks,
+    width,
+    streaming,
+    interrupted,
+  }).map(renderedRowText);
+}
+
+export function selectedTextFromChatRows(rows: string[], selection: ChatTextSelection): string {
   const normalized = normalizeSelection(selection);
   const selected: string[] = [];
   for (let rowIndex = normalized.startRow; rowIndex <= normalized.endRow; rowIndex += 1) {
@@ -1311,7 +1472,9 @@ export function computeChatScrollMaxOffset({
   });
   if (!blocks.length && !streaming && !interrupted) return 0;
   const innerWidth = Math.max(24, width - 4);
-  const statusRows = streaming ? modelWorkingRows("").length : interrupted ? modelInterruptedRows().length : 0;
+  let statusRows = 0;
+  if (streaming) statusRows = activeTurnRows(blocks, "").length;
+  else if (interrupted) statusRows = modelInterruptedRows().length;
   const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐").length + statusRows;
   return maxScrollOffsetForRows(rowCount, maxRows);
 }
@@ -1398,7 +1561,7 @@ export function ChatView({
   return (
     <Box flexDirection="column" paddingX={1} height={maxRows}>
       {rows.map((row, index) => (
-        <ChatRow key={`${row.id}:${index}`} row={row} rowIndex={index} selection={selection} />
+        <ChatRow key={`${row.id}:${index}`} row={row} selection={selection} />
       ))}
     </Box>
   );

@@ -28,6 +28,12 @@ describe("terminalSessionSignals", () => {
     );
   });
 
+  it("does not treat Codex prompt glyphs as resume targets", () => {
+    const chunk = "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume ›";
+    expect(parseTrackedCliResumeCommand(chunk, "codex")).toBeNull();
+    expect(extractResumeCommandFromOutput(chunk, "codex")).toBeNull();
+  });
+
   it("respects preferred tool when both tools appear", () => {
     const chunk = [
       "claude --resume abc",
@@ -171,7 +177,7 @@ describe("terminalSessionSignals", () => {
         targetId: null,
         launch: { permissionMode: "default" },
       }),
-    ).toBe("codex --no-alt-screen --full-auto resume");
+    ).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume");
   });
 
   it("parses legacy codex approval_policy=untrusted sandbox_mode=read-only as plan", () => {

@@ -215,6 +215,24 @@ describe("commands", () => {
     expect(parsed?.userCommand).toBeNull();
   });
 
+  it("does not reserve /copy as an ADE built-in", () => {
+    const rows = paletteCommands("/copy", [
+      { name: "/copy", description: "Runtime copy command", source: "sdk" },
+    ]);
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/copy",
+      source: "user",
+      description: "Runtime copy command",
+    }));
+
+    const parsed = parseCommand("/copy all", [
+      { name: "/copy", description: "Runtime copy command", source: "sdk" },
+    ]);
+    expect(parsed?.spec).toBeNull();
+    expect(parsed?.userCommand?.name).toBe("/copy");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("chat");
+  });
+
   it("dedupes slash command case variants and keeps runtime casing", () => {
     const rows = paletteCommands("/ship", [
       { name: "/shipLane", description: "Ship the lane", source: "sdk" },
@@ -258,9 +276,9 @@ describe("commands", () => {
     expect(goal?.args).toBe("Ship the migration");
     expect(goal ? commandPlacement(goal) : null).toBe("chat");
 
-    const goalBudget = parseCommand("/goal budget 50000");
-    expect(goalBudget?.spec?.name).toBe("/goal");
-    expect(goalBudget?.args).toBe("budget 50000");
+    const goalStatus = parseCommand("/goal status active");
+    expect(goalStatus?.spec?.name).toBe("/goal");
+    expect(goalStatus?.args).toBe("status active");
   });
 
   it("drops the legacy /resume builtin", () => {
@@ -268,16 +286,22 @@ describe("commands", () => {
     expect(rows.find((row) => row.name === "/resume" && row.source === "ade")).toBeUndefined();
   });
 
-  it("registers /subagents as a right-pane builtin", () => {
+  it("registers /info as the active-chat info command", () => {
+    const info = parseCommand("/info");
+    expect(info?.spec?.name).toBe("/info");
+    expect(info?.spec?.placement).toBe("right");
+    expect(info ? commandPlacement(info) : null).toBe("right");
+
     const parsed = parseCommand("/subagents");
-    expect(parsed?.spec?.name).toBe("/subagents");
-    expect(parsed?.spec?.placement).toBe("right");
-    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(parsed?.spec).toBeNull();
   });
 
-  it("surfaces /subagents in the palette and not /effort or /plan", () => {
+  it("surfaces /info in the palette and not /subagents, /effort, or /plan", () => {
+    const infoRows = paletteCommands("info");
+    expect(infoRows.some((row) => row.name === "/info")).toBe(true);
+
     const subagentRows = paletteCommands("subagents");
-    expect(subagentRows.some((row) => row.name === "/subagents")).toBe(true);
+    expect(subagentRows.some((row) => row.name === "/subagents")).toBe(false);
 
     const allRows = paletteCommands("");
     expect(allRows.some((row) => row.name === "/effort" && row.source === "ade")).toBe(false);

@@ -25,6 +25,7 @@ export function sanitizeTrackedCliResumeTargetId(value: string | null | undefine
   if (!target) return null;
   if (/[\x00-\x1F\x7F]/.test(target)) return null;
   if (target.startsWith("-")) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:@%+=,/-]*$/.test(target)) return null;
   return target;
 }
 
@@ -56,6 +57,11 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   opencode: ["opencode", "opencode-orchestrated", "opencode-chat"],
   shell: ["shell", "run-shell"],
 };
+
+const ADE_CODEX_STARTUP_CONFIG_FLAGS = [
+  "-c",
+  "mcp_servers.linear.enabled=false",
+] as const;
 
 export function isLaunchProfile(value: string | null | undefined): value is LaunchProfile {
   return typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
@@ -194,11 +200,16 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "codex") {
+    // ADE has native Linear surfaces and context attachment. Do not let a
+    // stale user-level Linear MCP OAuth/handshake block the Codex TUI's
+    // first paint inside Work. Skip when the user opted into raw config-toml.
+    const codexStartupConfigFlags = args.permissionMode === "config-toml" ? [] : ADE_CODEX_STARTUP_CONFIG_FLAGS;
     const commandArgs: string[] = [
       "--no-alt-screen",
       ...modelToCliFlag(args.model),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
+      ...codexStartupConfigFlags,
       workTabCliPrompt(initialPrompt, skillRoots),
     ];
     return {
@@ -340,7 +351,7 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--full-auto"];
+  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
   if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];

@@ -642,6 +642,112 @@ describe("WorkViewArea", () => {
     expect(modelsMock).toHaveBeenCalledWith({ provider: "claude" });
   });
 
+  it("uses colored terminal snapshots for closed TUI sessions", async () => {
+    const plainCell = (text: string) => ({
+      text,
+      fg: null,
+      bg: null,
+      fgMode: "default" as const,
+      bgMode: "default" as const,
+    });
+    const claudeCell = (text: string) => ({
+      text,
+      fg: 0xd77757,
+      bg: null,
+      fgMode: "rgb" as const,
+      bgMode: "default" as const,
+      bold: true,
+    });
+    terminalPreviewMock.mockResolvedValueOnce({
+      terminalId: "session-1",
+      source: "snapshot",
+      transcript: "\u001b[38;2;215;119;87mplain transcript fallback\u001b[0m\n",
+      capturedAt: "2026-04-06T12:10:00.000Z",
+      snapshot: {
+        version: 1,
+        terminalId: "session-1",
+        cols: 24,
+        rows: 3,
+        capturedAt: "2026-04-06T12:10:00.000Z",
+        status: "completed",
+        runtimeState: "exited",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [
+          {
+            text: "╭─Claude Code─╮",
+            wrapped: false,
+            cells: [
+              ...Array.from("╭─", plainCell),
+              ...Array.from("Claude Code", claudeCell),
+              ...Array.from("─╮", plainCell),
+            ],
+          },
+          {
+            text: "│ Ready       │",
+            wrapped: false,
+            cells: Array.from("│ Ready       │", plainCell),
+          },
+          {
+            text: "╰─────────────╯",
+            wrapped: false,
+            cells: Array.from("╰─────────────╯", plainCell),
+          },
+        ],
+      },
+    });
+    const session = {
+      ...makeSession(),
+      toolType: "claude" as const,
+      resumeCommand: "claude --resume abc123",
+      resumeMetadata: {
+        provider: "claude" as const,
+        targetKind: "session" as const,
+        targetId: "abc123",
+        launch: { permissionMode: "default" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+    const local = within(view.container);
+
+    await local.findByText("Claude Code");
+    const coloredLabel = Array.from(view.container.querySelectorAll("span"))
+      .find((node) => (
+        node.textContent === "Claude Code"
+        && (node as HTMLElement).style.color === "rgb(215, 119, 87)"
+      )) as HTMLElement | undefined;
+    expect(coloredLabel).toBeTruthy();
+    expect(coloredLabel?.style.fontWeight).toBe("700");
+    expect(local.getByText(/Ready/)).toBeTruthy();
+    expect(local.queryByText(/plain transcript fallback/)).toBeNull();
+    expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
+  });
+
   it("submits continuation text for ended agent CLI sessions", async () => {
     const onContinue = vi.fn().mockResolvedValue(undefined);
     const session = {

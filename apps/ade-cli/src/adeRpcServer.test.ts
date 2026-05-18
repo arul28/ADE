@@ -2401,6 +2401,30 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.contextRef?.path).toBeNull();
   });
 
+  it("launches default Codex spawn_agent sessions with supported sandbox flags", async () => {
+    const fixture = createRuntime();
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-codex-bin-"));
+    createFakePathExecutable(binDir, "codex");
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "codex",
+        permissionMode: "default",
+        prompt: "Check the Codex launch flags",
+      });
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
+    expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
+    expect(createCall.args).not.toContain("--full-auto");
+    expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(createCall.startupCommand).not.toContain("--full-auto");
+  });
+
   it("routes start_cli_session through shared provider launch helpers", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue({

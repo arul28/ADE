@@ -33,6 +33,7 @@ export function sanitizeResumeTargetId(value: string | null | undefined): string
   if (!target) return null;
   if (/[\x00-\x1F\x7F]/.test(target)) return null;
   if (target.startsWith("-")) return null;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:@%+=,/-]*$/.test(target)) return null;
   return target;
 }
 
@@ -82,7 +83,7 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--full-auto"];
+  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
   if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];

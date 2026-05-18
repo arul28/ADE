@@ -497,6 +497,7 @@ type CodexRuntime = {
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
   planModeFallbackNotified: boolean;
+  goalBudgetClearInFlight: Set<string>;
 };
 
 type QueuedSteer = {
@@ -565,7 +566,7 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/experimental", description: "Toggle experimental features.", source: "sdk" },
   { name: "/feedback", description: "Send logs to the Codex maintainers.", source: "sdk" },
   { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
-  { name: "/goal", description: "Set, show, pause, resume, budget, or clear the thread goal.", source: "local", argumentHint: "[pause|resume|clear|budget <tokens>|<objective>]" },
+  { name: "/goal", description: "Set, show, pause, resume, or clear the thread goal.", source: "local", argumentHint: "[pause|resume|clear|<objective>]" },
   { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
@@ -2209,7 +2210,7 @@ function formatCodexErrorInfo(value: unknown): string | undefined {
   }
 }
 
-type ChatErrorCategory = "auth" | "rate_limit" | "budget" | "network" | "unknown";
+type ChatErrorCategory = "auth" | "rate_limit" | "network" | "unknown";
 
 function readErrorMessage(value: unknown): string {
   if (value instanceof Error) {
@@ -2382,7 +2383,7 @@ function classifyAcpHostError(
     return {
       message: payloadDetail ?? "Billing is required for this model before the request can continue.",
       ...(detailLines.length ? { detail: detailLines.join("\n") } : {}),
-      errorInfo: { category: "budget", provider: providerLabel, model: modelDisplayName },
+      errorInfo: { category: "unknown", provider: providerLabel, model: modelDisplayName },
     };
   }
 
@@ -7896,6 +7897,82 @@ export function createAgentChatService(args: {
     commitChatEventWithCanonical(managed, normalizedEvent);
   };
 
+  const maybeClearCodexGoalBudget = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    goal: CodexThreadGoal | null,
+    turnId?: string,
+  ): void => {
+    if (!goal || goal.tokenBudget == null) return;
+    const threadId = managed.session.threadId?.trim();
+    if (!threadId || runtime.goalBudgetClearInFlight.has(threadId)) return;
+
+    const nextStatus = goal.status === "budget_limited" ? "active" : goal.status;
+    const params: Record<string, unknown> = {
+      threadId,
+      tokenBudget: null,
+    };
+    if (goal.objective) params.objective = goal.objective;
+    if (nextStatus === "active" || nextStatus === "paused" || nextStatus === "complete") {
+      params.status = nextStatus;
+    }
+
+    runtime.goalBudgetClearInFlight.add(threadId);
+    runtime.request<{ goal?: unknown }>("thread/goal/set", params)
+      .then((response) => {
+        const updatedGoal = normalizeCodexGoalPayload(response)
+          ?? {
+            ...goal,
+            tokenBudget: null,
+            ...(goal.status === "budget_limited" ? { status: "active" as const } : {}),
+          };
+        managed.session.codexGoal = updatedGoal;
+        emitChatEvent(managed, {
+          type: "codex_goal_updated",
+          goal: updatedGoal,
+          ...(turnId ? { turnId } : {}),
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: goal.status === "budget_limited"
+            ? "Codex goal resumed."
+            : "Codex goal updated.",
+          ...(turnId ? { turnId } : {}),
+        });
+        persistChatState(managed);
+      })
+      .catch((error) => {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "error",
+          severity: "error",
+          message: `Codex goal update failed: ${error instanceof Error ? error.message : String(error)}`,
+          ...(turnId ? { turnId } : {}),
+        });
+      })
+      .finally(() => {
+        runtime.goalBudgetClearInFlight.delete(threadId);
+      });
+  };
+
+  const applyCodexGoalUpdate = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    value: unknown,
+    turnId?: string,
+  ): CodexThreadGoal | null => {
+    const goal = normalizeCodexGoalPayload(value);
+    managed.session.codexGoal = goal;
+    emitChatEvent(managed, {
+      type: "codex_goal_updated",
+      goal,
+      ...(turnId ? { turnId } : {}),
+    });
+    maybeClearCodexGoalBudget(managed, runtime, goal, turnId);
+    return goal;
+  };
+
   const emitPendingInputRequest = (
     managed: ManagedChatSession,
     request: PendingInputRequest,
@@ -8841,12 +8918,7 @@ export function createAgentChatService(args: {
           threadId: managed.session.threadId,
         }, "Codex goal command failed");
         if (!response.ok) return;
-        const goal = normalizeCodexGoalPayload(response.result);
-        managed.session.codexGoal = goal;
-        emitChatEvent(managed, {
-          type: "codex_goal_updated",
-          goal,
-        });
+        const goal = applyCodexGoalUpdate(managed, runtime, response.result);
         completeInlineCodexSlash(goal?.objective ? "Codex goal is current." : "No active Codex goal.");
         return;
       }
@@ -8874,44 +8946,8 @@ export function createAgentChatService(args: {
           status,
         }, "Codex goal command failed");
         if (!response.ok) return;
-        const goal = normalizeCodexGoalPayload(response.result);
-        managed.session.codexGoal = goal;
-        emitChatEvent(managed, {
-          type: "codex_goal_updated",
-          goal,
-        });
+        applyCodexGoalUpdate(managed, runtime, response.result);
         completeInlineCodexSlash(`Codex goal ${status === "active" ? "resumed" : status}.`);
-        return;
-      }
-      const budgetMatch = /^budget\s+(.+)$/i.exec(goalArgs);
-      if (/^budget(?:\s|$)/i.test(goalArgs) && !budgetMatch) {
-        completeInlineCodexSlash("Usage: /goal budget <positive tokens>|clear.");
-        return;
-      }
-      if (budgetMatch) {
-        const rawBudget = budgetMatch[1]?.trim() ?? "";
-        const budgetDigits = rawBudget.replace(/_/g, "");
-        const tokenBudget = /^(clear|none|reset)$/i.test(rawBudget)
-          ? null
-          : /^\d+$/.test(budgetDigits)
-            ? Number.parseInt(budgetDigits, 10)
-            : Number.NaN;
-        if (tokenBudget !== null && (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1)) {
-          completeInlineCodexSlash("Usage: /goal budget <positive tokens>|clear.");
-          return;
-        }
-        const response = await requestInlineCodexSlash<{ goal?: unknown }>("thread/goal/set", {
-          threadId: managed.session.threadId,
-          tokenBudget,
-        }, "Codex goal command failed");
-        if (!response.ok) return;
-        const goal = normalizeCodexGoalPayload(response.result);
-        managed.session.codexGoal = goal;
-        emitChatEvent(managed, {
-          type: "codex_goal_updated",
-          goal,
-        });
-        completeInlineCodexSlash(tokenBudget === null ? "Codex goal budget cleared." : `Codex goal budget set to ${tokenBudget}.`);
         return;
       }
       const objective = goalArgs.replace(/^set\s+/i, "").trim();
@@ -8924,12 +8960,7 @@ export function createAgentChatService(args: {
         objective,
       }, "Codex goal command failed");
       if (!response.ok) return;
-      const goal = normalizeCodexGoalPayload(response.result);
-      managed.session.codexGoal = goal;
-      emitChatEvent(managed, {
-        type: "codex_goal_updated",
-        goal,
-      });
+      applyCodexGoalUpdate(managed, runtime, response.result);
       completeInlineCodexSlash("Codex goal updated.");
       return;
     }
@@ -9076,7 +9107,7 @@ export function createAgentChatService(args: {
     modelDisplayName: string,
   ): {
     message: string;
-    errorInfo: { category: "auth" | "rate_limit" | "budget" | "network" | "unknown"; provider?: string; model?: string };
+    errorInfo: { category: "auth" | "rate_limit" | "network" | "unknown"; provider?: string; model?: string };
   } => {
     const rawMessage = error instanceof Error ? error.message : String(error);
     const lower = rawMessage.toLowerCase();
@@ -9104,10 +9135,10 @@ export function createAgentChatService(args: {
       };
     }
 
-    if (lower.includes("budget") || lower.includes("cost limit") || lower.includes("spending limit")) {
+    if (lower.includes("cost limit") || lower.includes("spending limit")) {
       return {
-        message: "Session budget limit reached. Increase budget in Settings or start a new session.",
-        errorInfo: { category: "budget", provider: providerFamily, model: modelDisplayName },
+        message: "Session limit reached. Check Settings or start a new session.",
+        errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
       };
     }
 
@@ -12107,12 +12138,33 @@ export function createAgentChatService(args: {
   const mapCodexCollabAgentStatus = (value: unknown): "completed" | "failed" | "stopped" | null => {
     const normalized = String(value ?? "").replace(/[_-]/g, "").toLowerCase();
     if (normalized === "completed") return "completed";
-    if (normalized === "failed" || normalized === "errored") return "failed";
-    if (normalized === "stopped" || normalized === "interrupted" || normalized === "shutdown" || normalized === "notfound") {
+    if (normalized === "failed" || normalized === "errored" || normalized === "rejected" || normalized === "refused" || normalized === "denied") {
+      return "failed";
+    }
+    if (normalized === "stopped" || normalized === "interrupted" || normalized === "shutdown" || normalized === "notfound" || normalized === "cancelled" || normalized === "canceled") {
       return "stopped";
     }
     return null;
   };
+
+  const readCodexCollabFailureSummary = (item: Record<string, unknown>): string => {
+    const direct = item.error ?? item.result ?? item.message;
+    if (direct != null) return readErrorMessage(direct);
+    const contentItems = Array.isArray(item.contentItems) ? item.contentItems : [];
+    const contentText = contentItems
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        const record = asRecord(entry);
+        return typeof record?.text === "string" ? record.text : "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    return contentText || "Codex rejected the parallel agent request.";
+  };
+
+  const codexCollabItemHasFailure = (item: Record<string, unknown>): boolean =>
+    item.success === false || item.error != null;
 
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
@@ -12364,20 +12416,33 @@ export function createAgentChatService(args: {
       }
 
       if (tool === "spawn_agent" && eventKind === "completed") {
-        const spawnStatus = mapCodexCollabAgentStatus(item.status);
-        if (spawnStatus === "failed") {
-          for (const taskId of receiverIds.length ? receiverIds : [itemId]) {
+        const spawnStatus = mapCodexCollabAgentStatus(item.status)
+          ?? (codexCollabItemHasFailure(item) ? "failed" : null);
+        if (spawnStatus === "failed" || spawnStatus === "stopped") {
+          const failedTaskIds = runtime.activeSubagents.has(itemId)
+            ? [itemId]
+            : (receiverIds.length ? receiverIds : [itemId]);
+          const summary = readCodexCollabFailureSummary(item);
+          for (const taskId of failedTaskIds) {
             const existing = runtime.activeSubagents.get(taskId) ?? runtime.activeSubagents.get(itemId);
             runtime.activeSubagents.delete(taskId);
+            if (taskId !== itemId) runtime.activeSubagents.delete(itemId);
             emitChatEvent(managed, {
               type: "subagent_result",
               taskId,
               parentToolUseId: existing?.parentToolUseId ?? itemId,
-              status: "failed",
-              summary: String(item.error ?? item.result ?? "Agent spawn failed"),
+              status: spawnStatus,
+              summary,
               turnId,
             });
           }
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "error",
+            severity: "error",
+            message: `Codex parallel agent ${spawnStatus === "stopped" ? "stopped" : "failed"}: ${summary}`,
+            turnId,
+          });
         } else {
           const resolvedTaskIds = receiverIds.length
             ? receiverIds
@@ -13113,13 +13178,12 @@ export function createAgentChatService(args: {
     }
 
     if (method === "thread/goal/updated") {
-      const goal = normalizeCodexGoalPayload(params);
-      managed.session.codexGoal = goal;
-      emitChatEvent(managed, {
-        type: "codex_goal_updated",
-        goal,
-        turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
-      });
+      applyCodexGoalUpdate(
+        managed,
+        runtime,
+        params,
+        turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+      );
       persistChatState(managed);
       return;
     }
@@ -13378,6 +13442,7 @@ export function createAgentChatService(args: {
       collaborationModes: null,
       collaborationModesReady: null,
       planModeFallbackNotified: false,
+      goalBudgetClearInFlight: new Set<string>(),
       request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;

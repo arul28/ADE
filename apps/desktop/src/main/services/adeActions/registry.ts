@@ -52,6 +52,7 @@ import type {
   PrAiResolutionSessionStatus,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
+  ReadTranscriptTailArgs,
   PrAiResolutionStopArgs,
   PrIssueResolutionPromptPreviewArgs,
   PrIssueResolutionStartArgs,
@@ -1164,6 +1165,18 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!sessionService) return null;
   return {
     ...(sessionService as unknown as OpaqueService),
+    readTranscriptTail: (args?: ReadTranscriptTailArgs) => {
+      const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");
+      const maxBytes = typeof args?.maxBytes === "number" && Number.isFinite(args.maxBytes)
+        ? Math.max(1024, Math.min(2_000_000, Math.floor(args.maxBytes)))
+        : 160_000;
+      return runtime.ptyService?.readTranscriptTail({
+        sessionId,
+        maxBytes,
+        raw: args?.raw === true,
+        alignToLineBoundary: args?.raw === true,
+      }) ?? "";
+    },
     getDelta: (args?: { sessionId?: string } | string) => {
       const sessionId = typeof args === "string"
         ? requireNonEmptyString(args, "sessionId")

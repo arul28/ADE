@@ -169,9 +169,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
   });
 
   // -----------------------------------------------------------------------
-  // launchPtySession: refresh() must complete before focusSession / openSessionTab
+  // launchPtySession: focus/open immediately; refresh reconciles in background.
   // -----------------------------------------------------------------------
-  it("launchPtySession: awaits refresh() before calling focusSession and openSessionTab", async () => {
+  it("launchPtySession opens the optimistic terminal before the forced refresh completes", async () => {
     const callOrder: string[] = [];
     const workState = {
       openItemIds: [] as string[],
@@ -224,33 +224,30 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       }
     });
 
-    // Act: start launchPtySession
-    let launchPromise!: Promise<unknown>;
-    act(() => {
-      launchPromise = result.current.launchPtySession({
+    await act(async () => {
+      await result.current.launchPtySession({
         laneId: "lane-1",
         profile: "claude",
       });
     });
 
-    // Give the async function a tick to reach the refresh await
     await act(async () => {
-      await new Promise((r) => setTimeout(r, 10));
+      await Promise.resolve();
     });
 
-    // refresh-start should be recorded but focusSession NOT yet
+    expect(callOrder).toContain("focusSession");
+    expect(callOrder).toContain("openSessionTab");
     expect(callOrder).toContain("refresh-start");
-    expect(callOrder).not.toContain("focusSession");
-    expect(callOrder).not.toContain("openSessionTab");
+    expect(callOrder).not.toContain("refresh-done");
 
     // Resolve the refresh promise
     await act(async () => {
       expect(refreshResolve).not.toBeNull();
       refreshResolve!();
-      await launchPromise;
+      await Promise.resolve();
     });
 
-    // Verify ordering: refresh-done BEFORE focusSession and openSessionTab
+    // Verify ordering: focus/open happen before refresh completes.
     const refreshDoneIdx = callOrder.indexOf("refresh-done");
     const focusIdx = callOrder.indexOf("focusSession");
     const openTabIdx = callOrder.indexOf("openSessionTab");
@@ -258,8 +255,8 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshDoneIdx).toBeGreaterThanOrEqual(0);
     expect(focusIdx).toBeGreaterThanOrEqual(0);
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
-    expect(refreshDoneIdx).toBeLessThan(focusIdx);
-    expect(refreshDoneIdx).toBeLessThan(openTabIdx);
+    expect(focusIdx).toBeLessThan(refreshDoneIdx);
+    expect(openTabIdx).toBeLessThan(refreshDoneIdx);
   });
 
   it("lightly refreshes lanes when Work sessions load before lane state recovers", async () => {

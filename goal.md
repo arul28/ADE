@@ -1,32 +1,60 @@
-I want to add a sidebar toggle in teh work tab, that open up a pane on the right side of whatever chat or cli sessoins you have in view in the ade work tab. Ok so right now there are a coupl eof things that all independentlay open up to the
-  right, there is a proof drawer, which is currently tied per chat, there is an app control drawer and an ios drawer also per chat, then separetly theres a whole panel, that if you tkae your mouse all the way to the right side of the screen, has a popup
-  arrow appear which pulls out the floating pane with a bunch of options. Now heres the reality of this. Things have changed, the onlt thing that really ahs any need to be tied to a chat is the proof drawer. I dont see any reason that the app contorl
-  and the ios drawer cannot be per lane, i mean they run an app from a certain pwd, which for all chats within the same lane, theyre all he same. Now with the floating pane, we have git, files, stack, diff, and work. Now over here, i wanna remove stack
-  and work, and diff. Heres the new directoin i wanna take. A gobal sidebar toggle button or somehtign indicative of a sidebar on the right poppin out. In the drawer, im expecting a sliding out drawer that sompeltely splits the screen. Right now, the
-  app cotnrol and the ios sim drawer are th eonly ones that have the fully splut ui right, so look at that. Anyways, in this new drawer i wanna show first the git view, which should just be the git actions pane in the lanes tab (which also currenlty
-  shows int eh pop out pane), but with the lane of the chat that the drawer is open from. So state of the current chat is what populates the items in this new pane. So the tabs in order are gonna be the git tab, files tab, ios sim drawer, and the app
-  contorl drawer. Now all of these are tied to the current lane of the open chat or cli session or normal chat.
+You are working in /Users/arul/ADE/.ade/worktrees/fixing-cli-send-error-099dff5b only. Do not switch repos or lanes.
 
-  Now i want to make sure that in the work tab, this new slide out drawer on the right is global in the sense that if u have it open, no matter what session or what u choose it stays open, but as u navigate sessions omethigns will chage. For exmaple, if
-  u select a session in a diff lane then info ahs to populate to that new lane. For git and files, this is easy just display info for that lane. For the ios and app control tabs we have to keep it open, but show a clear wanring that they waere laucnehd
-  from a different xyz lane, not this one, and so the user cannot attach context and scrrenshots to chat. Also we have to show the cannot attach context to chat message hwen looking at a cli session or shell session even if in the same lane. Rmemeber
-  that for both fo these views ade has a system whe reu can highlight different elements and cpmponents and a screenshot with context pack gets added, but only works for ade chats.
+Goal:
+Fix the ADE Work tab bug where sending a prompt to a CLI session shows a blank black terminal with an orange cursor or falls back to a closed-session resume pane instead of a live Claude/Codex session. Then verify it with Computer Use on the live ADE desktop app.
 
-  Now for the new chat pane, the lside out drawer shoulst still wok, but of course be popualted based on the lane selected in teh lane picker in teh new chat view. So like there is no case int eh work tab where a clear lane the user is "working in" is
-  not in veiw. In the new chat view, autoamtaiclly primary is selected as the lane, so we show primary, but if the user goes to the dorpwdown and choose a diff one then of course we change the info in the pane. The only view which if confusing, is the
-  grid view, as many chats from different lanes can be open, if the user goes to grid view we auto close and hide the slide out drawer, but as soon as they leave, we reopen/reshow.
+Important context:
+- The prior “success” was false. The UI was showing a closed session resume pane, not a live CLI session.
+- The user wants the actual live terminal to appear after sending a prompt from the Work tab.
+- This must work for both Claude and Codex providers.
+- Verification must be visual with Computer Use, not just logs.
+- Keep the scope to the Work-tab CLI launch/render path.
 
-  So to recap this is a "global" view that keeps state as in the open tab and he views as long as naviagtinv sessoins in the same lane, but the info repopulates for different lanes, but we keep the same tab open int eh slide our drawer.
+What I already learned:
+- `useWorkSessions.ts` already opens the optimistic terminal immediately after creating a PTY session.
+- `TerminalView.tsx` hydrates missed startup output from `window.ade.sessions.readTranscriptTail(...)`.
+- The local-runtime path previously looked suspicious because transcript hydration could miss live PTY output, but the remaining problem now appears to be the actual CLI launch command path, not just rendering.
+- The likely place to inspect next is the CLI launch builder in:
+  - `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`
+  - `apps/desktop/src/main/services/ai/providerTaskRunner.ts`
+  - anything that generates the Codex/Claude startup command or resume command
+- There are existing files already modified in the worktree from earlier attempts:
+  - `apps/desktop/src/main/services/adeActions/registry.ts`
+  - `apps/desktop/src/main/services/adeActions/registry.test.ts`
+  - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts`
+  - `apps/desktop/src/renderer/components/terminals/useWorkSessions.test.ts`
 
-  I wnat to think of this as its own system, not really tied to the cahts specificalkly but to the work tab as a whole, and diff lanes can be shown as info in there.
+Likely bug shape:
+- A bad launch arg / command string is causing the CLI to exit immediately or launch into a resume flow.
+- The UI then shows the closed session/resume pane instead of a live terminal.
+- There may be a provider-specific mismatch between Claude and Codex startup/resume commands.
 
-  Also, for the files tab, the one in the current pop oput floaitng pane sucks, its really old, in the new view please make sure the files tab looks like the real files tab in teh ade sidebar.
-  This is a huge architecture change, so please carefully make edits, and clean up all legcay and dead code as to not leave behind old code not needed. So once again we need to comepltely get rid of and delete the current floating pop up pane stuff, all
-  of ti, its getting refactored into this new view.
+What to do:
+1. Inspect the actual command generation for Work-tab CLI launches for Claude and Codex.
+2. Trace how the session is created, how startup commands are assembled, and how the session gets marked as live vs resumable.
+3. Fix the underlying launch command issue, not just the renderer.
+4. Keep changes narrow and preserve the existing Work-tab optimistic open behavior unless it is directly part of the bug.
+5. Add or update tests around the real failure mode.
+6. Verify with focused tests first.
+7. Run the desktop dev app and use Computer Use to send a fresh Work-tab prompt like “test message” for both CLI providers if feasible.
+8. Confirm visually that the app shows a live terminal session, not the closed resume pane.
 
-  Also leave the roof drawer alone, since that truly is per chat.
+Validation expectations:
+- Run the smallest relevant tests first.
+- Then run whatever broader checks are necessary for the touched code path.
+- Use Computer Use for the final proof of the live UI state.
+- If you capture proof, make sure it is visual, not just textual.
 
-  For all this work, consider .claude/commands/optimize.md, i dont want yout o direclty run this, becuase this sessoins is currenlty running in the ade desktop app via npm run dev, and if u start a new ade session, this one will crash meaning this chat
-  ends. U cannot spin up a new ade instance, since we are running in ade right. U have to take into condersation the things in this slash commadn though, and try to maek this enw feature as perofmative as possivle.
+Useful files to inspect:
+- `apps/desktop/src/main/services/orchestrator/orchestratorService.ts`
+- `apps/desktop/src/main/services/ai/providerTaskRunner.ts`
+- `apps/desktop/src/main/services/sessions/sessionService.ts`
+- `apps/desktop/src/main/services/ipc/registerIpc.ts`
+- `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts`
+- `apps/desktop/src/renderer/components/terminals/TerminalView.tsx`
+- `apps/desktop/src/renderer/components/terminals/WorkCliSessionHeader.tsx`
 
-  Use parallel agents as needed
+Known recent state:
+- There was already a false-positive verification run.
+- The user is frustrated and wants the actual fix plus proof.
+- Stay direct and keep the work scoped to the live CLI launch issue.

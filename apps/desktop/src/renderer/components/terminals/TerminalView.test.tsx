@@ -173,6 +173,16 @@ function installWindowAde() {
     sessions: {
       readTranscriptTail: vi.fn().mockResolvedValue(""),
     },
+    terminal: {
+      preview: vi.fn().mockResolvedValue({
+        terminalId: "session",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      }),
+    },
   };
 }
 
@@ -636,6 +646,139 @@ describe("TerminalView", () => {
     }
   });
 
+  it("maps macOS Cmd+C without an xterm selection to Ctrl+C terminal input", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+
+      render(<TerminalView ptyId="pty-copy" sessionId="session-copy" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+      const preventDefault = vi.fn();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault,
+      } as unknown as KeyboardEvent);
+
+      expect(handled).toBe(false);
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledWith({
+        ptyId: "pty-copy",
+        data: "\x03",
+      });
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    }
+  });
+
+  it("forwards Shift+mouse selection gestures while terminal mouse tracking is active", async () => {
+    render(<TerminalView ptyId="pty-shift-mouse" sessionId="session-shift-mouse" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const ignoredDown = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+    });
+    terminal!.element!.dispatchEvent(ignoredDown);
+    expect(ignoredDown.defaultPrevented).toBe(false);
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-shift-mouse",
+        sessionId: "session-shift-mouse",
+        projectRoot: "/project/a",
+        data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
+      });
+    }
+
+    const down = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+    });
+    terminal!.element!.dispatchEvent(down);
+
+    const move = new MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      buttons: 1,
+      clientX: 64,
+      clientY: 72,
+    });
+    document.dispatchEvent(move);
+
+    const up = new MouseEvent("mouseup", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 0,
+      clientX: 64,
+      clientY: 72,
+    });
+    document.dispatchEvent(up);
+
+    expect(down.defaultPrevented).toBe(true);
+    expect(move.defaultPrevented).toBe(true);
+    expect(up.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenNthCalledWith(1, {
+      ptyId: "pty-shift-mouse",
+      data: "\x1b[<4;1;1M",
+    });
+    expect(ptyWrite).toHaveBeenNthCalledWith(2, {
+      ptyId: "pty-shift-mouse",
+      data: "\x1b[<36;13;9M",
+    });
+    expect(ptyWrite).toHaveBeenNthCalledWith(3, {
+      ptyId: "pty-shift-mouse",
+      data: "\x1b[<4;13;9m",
+    });
+  });
+
   it("falls back to native image paste when macOS Cmd+V does not fire a paste event", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
@@ -781,6 +924,110 @@ describe("TerminalView", () => {
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
   });
 
+  it("hydrates live terminals from serialized snapshots when structured rows are unavailable", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-snapshot",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-snapshot",
+        cols: 120,
+        rows: 32,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "\x1b[?1049hClaude Code ready\n",
+        visibleRows: [],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-snapshot" sessionId="session-snapshot" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.write).toHaveBeenCalledWith("\x1b[?1049hClaude Code ready\n");
+    expect(readTranscriptTailMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves snapshot cell colors when hydrating live terminals", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-colored-snapshot",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-colored-snapshot",
+        cols: 12,
+        rows: 2,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "alternate",
+        cursorX: 1,
+        cursorY: 1,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "UNSTYLED SERIALIZED\n",
+        visibleRows: [
+          {
+            text: "Claude",
+            wrapped: false,
+            cells: [
+              { text: "C", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+              { text: "l", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+              { text: "a", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+              { text: "u", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+              { text: "d", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+              { text: "e", fg: 0xd77757, bg: null, fgMode: "rgb", bgMode: "default", bold: true },
+            ],
+          },
+          {
+            text: "Ready",
+            wrapped: false,
+            cells: [
+              { text: "R", fg: 34, bg: 18, fgMode: "palette", bgMode: "palette" },
+              { text: "e", fg: 34, bg: 18, fgMode: "palette", bgMode: "palette" },
+              { text: "a", fg: 34, bg: 18, fgMode: "palette", bgMode: "palette" },
+              { text: "d", fg: 34, bg: 18, fgMode: "palette", bgMode: "palette" },
+              { text: "y", fg: 34, bg: 18, fgMode: "palette", bgMode: "palette" },
+            ],
+          },
+        ],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-colored-snapshot" sessionId="session-colored-snapshot" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const written = terminal?.write.mock.calls.find(([value]) => String(value).includes("Claude"))?.[0] as string | undefined;
+    expect(written).toBeTruthy();
+    expect(written).toContain("\x1b[?1049h");
+    expect(written).toContain("\x1b[0;1;38;2;215;119;87mClaude");
+    expect(written).toContain("\x1b[0;38;5;34;48;5;18mReady");
+    expect(written).toContain("\x1b[2;2H");
+    expect(written).not.toContain("UNSTYLED SERIALIZED");
+    expect(readTranscriptTailMock).not.toHaveBeenCalled();
+  });
+
   it("keeps a mounted live runtime bound to its original project while the active project changes", async () => {
     const view = render(<TerminalView ptyId="pty-mounted-switch" sessionId="session-mounted-switch" isActive />);
     await flushAllTimers();
@@ -865,6 +1112,325 @@ describe("TerminalView", () => {
 
     expect(terminal?.dispose).toHaveBeenCalledTimes(1);
     expect(getTerminalRuntimeSnapshot("session-background")).toBeNull();
+  });
+
+  it("paints live PTY output before initial transcript hydration finishes", async () => {
+    render(<TerminalView ptyId="pty-fast-live" sessionId="session-fast-live" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+      refresh: ReturnType<typeof vi.fn>;
+      scrollToBottom: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    terminal?.write.mockClear();
+    terminal?.refresh.mockClear();
+    terminal?.scrollToBottom.mockClear();
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-fast-live", sessionId: "session-fast-live", data: "codex initial frame\n" });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+
+    expect(terminal?.write).toHaveBeenCalledWith("codex initial frame\n");
+    expect(terminal?.scrollToBottom).toHaveBeenCalled();
+    expect(terminal?.refresh).toHaveBeenCalled();
+    expect(window.ade.terminal.preview).not.toHaveBeenCalled();
+  });
+
+  it("does not replay transcript hydration over live PTY output that already painted", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-fast-transcript",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "old transcript should not replay\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-fast-transcript" sessionId="session-fast-transcript" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    terminal?.write.mockClear();
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-fast-transcript", sessionId: "session-fast-transcript", data: "live frame\n" });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    await flushAllTimers();
+
+    expect(terminal?.write).toHaveBeenCalledWith("live frame\n");
+    expect(terminal?.write).not.toHaveBeenCalledWith("old transcript should not replay\n");
+  });
+
+  it("backfills a running terminal from preview when initial hydration was empty", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock
+      .mockResolvedValueOnce({
+        terminalId: "session-late-snapshot",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        terminalId: "session-late-snapshot",
+        session: null,
+        source: "transcript",
+        snapshot: null,
+        transcript: "late codex frame\n",
+        capturedAt: new Date().toISOString(),
+      });
+
+    render(<TerminalView ptyId="pty-late-snapshot" sessionId="session-late-snapshot" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(terminal?.write).toHaveBeenCalledWith("late codex frame\n");
+  });
+
+  it("does not let startup-only control bytes block later snapshot backfill", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock
+      .mockResolvedValueOnce({
+        terminalId: "session-control-then-snapshot",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        terminalId: "session-control-then-snapshot",
+        session: null,
+        source: "snapshot",
+        snapshot: {
+          version: 1,
+          terminalId: "session-control-then-snapshot",
+          cols: 120,
+          rows: 2,
+          capturedAt: new Date().toISOString(),
+          status: "running",
+          runtimeState: "running",
+          bufferType: "normal",
+          cursorX: 0,
+          cursorY: 1,
+          baseY: 0,
+          viewportY: 0,
+          serialized: "",
+          visibleRows: [
+            {
+              text: "Codex ready",
+              wrapped: false,
+              cells: "Codex ready".split("").map((text) => ({
+                text,
+                fg: null,
+                bg: null,
+                fgMode: "default" as const,
+                bgMode: "default" as const,
+              })),
+            },
+          ],
+        },
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      });
+
+    render(<TerminalView ptyId="pty-control-then-snapshot" sessionId="session-control-then-snapshot" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    terminal?.write.mockClear();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-control-then-snapshot",
+        sessionId: "session-control-then-snapshot",
+        data: "\x1b[?2004h\x1b[>7u\x1b[?1004h\x1b[6n\x1b[?u\x1b[c\x1b]10;?\x1b\\",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    await flushAllTimers();
+
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("Codex ready"))).toBe(true);
+  });
+
+  it("does not let renderable cursor-diff chunks block snapshot backfill when the DOM stays blank", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock
+      .mockResolvedValueOnce({
+        terminalId: "session-diff-then-snapshot",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        terminalId: "session-diff-then-snapshot",
+        session: null,
+        source: "snapshot",
+        snapshot: {
+          version: 1,
+          terminalId: "session-diff-then-snapshot",
+          cols: 120,
+          rows: 2,
+          capturedAt: new Date().toISOString(),
+          status: "running",
+          runtimeState: "running",
+          bufferType: "normal",
+          cursorX: 0,
+          cursorY: 1,
+          baseY: 0,
+          viewportY: 0,
+          serialized: "",
+          visibleRows: [
+            {
+              text: "Codex snapshot ready",
+              wrapped: false,
+              cells: "Codex snapshot ready".split("").map((text) => ({
+                text,
+                fg: null,
+                bg: null,
+                fgMode: "default" as const,
+                bgMode: "default" as const,
+              })),
+            },
+          ],
+        },
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      });
+
+    render(<TerminalView ptyId="pty-diff-then-snapshot" sessionId="session-diff-then-snapshot" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    terminal?.write.mockClear();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-diff-then-snapshot",
+        sessionId: "session-diff-then-snapshot",
+        data: "\x1b[29;3HStarting MCP server",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16);
+    });
+    await flushAllTimers();
+
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("Codex snapshot ready"))).toBe(true);
+  });
+
+  it("polls the preview snapshot quickly when visible Codex cursor-diff output leaves the DOM blank", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValue({
+      terminalId: "session-fast-blank-snapshot",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-fast-blank-snapshot",
+        cols: 120,
+        rows: 2,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 1,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [
+          {
+            text: "Fast snapshot paint",
+            wrapped: false,
+            cells: "Fast snapshot paint".split("").map((text) => ({
+              text,
+              fg: null,
+              bg: null,
+              fgMode: "default" as const,
+              bgMode: "default" as const,
+            })),
+          },
+        ],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-fast-blank-snapshot" sessionId="session-fast-blank-snapshot" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    terminal?.write.mockClear();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-fast-blank-snapshot",
+        sessionId: "session-fast-blank-snapshot",
+        data: "\x1b[29;3HStarting MCP server",
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("Fast snapshot paint"))).toBe(true);
+  });
+
+  it("does not mask the terminal while waiting for the first xterm text frame", async () => {
+    const view = render(<TerminalView ptyId="pty-startup-loading" sessionId="session-startup-loading" isActive />);
+    await flushAnimationFrame();
+
+    expect(view.queryByTestId("terminal-startup-loading")).toBeNull();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    const rows = document.createElement("div");
+    rows.className = "xterm-rows";
+    rows.textContent = "Codex is ready";
+    terminal?.element?.appendChild(rows);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(view.queryByTestId("terminal-startup-loading")).toBeNull();
   });
 
   it("writes PTY output into the parked runtime so the terminal state stays current", async () => {

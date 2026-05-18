@@ -47,6 +47,63 @@ export function cliPath() {
   return path.join(repoRoot, "apps", "ade-cli", "dist", "cli.cjs");
 }
 
+function newestMtimeMs(rootPath) {
+  let newest = 0;
+  const stack = [rootPath];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current) continue;
+    let stat;
+    try {
+      stat = fs.statSync(current);
+    } catch {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const name = path.basename(current);
+      if (name === "node_modules" || name === "dist" || name === ".git") continue;
+      for (const child of fs.readdirSync(current)) {
+        stack.push(path.join(current, child));
+      }
+      continue;
+    }
+    if (stat.isFile()) newest = Math.max(newest, stat.mtimeMs);
+  }
+  return newest;
+}
+
+function oldestMtimeMs(paths) {
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const candidate of paths) {
+    try {
+      oldest = Math.min(oldest, fs.statSync(candidate).mtimeMs);
+    } catch {
+      return 0;
+    }
+  }
+  return Number.isFinite(oldest) ? oldest : 0;
+}
+
+export function isRuntimeCliBuildFresh() {
+  const packageRoot = path.join(repoRoot, "apps", "ade-cli");
+  const distMtime = oldestMtimeMs([
+    cliPath(),
+    path.join(packageRoot, "dist", "tuiClient", "cli.mjs"),
+  ]);
+  if (distMtime <= 0) return false;
+  const sourceMtime = Math.max(
+    newestMtimeMs(path.join(packageRoot, "src")),
+    newestMtimeMs(path.join(packageRoot, "scripts")),
+    ...[
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+      "tsup.config.ts",
+    ].map((file) => newestMtimeMs(path.join(packageRoot, file))),
+  );
+  return distMtime >= sourceMtime;
+}
+
 export function resolveDevAppVersion() {
   const override = process.env.ADE_CLI_VERSION?.trim();
   if (override) return override;
@@ -107,8 +164,8 @@ export async function buildRuntimeCli(skipRuntimeBuild = false) {
 
 export async function buildRuntimeCliForDevClient(skipRuntimeBuild, socketPath) {
   if (skipRuntimeBuild) return;
-  if (fs.existsSync(cliPath()) && await canConnectToSocket(socketPath)) {
-    process.stdout.write("[ade] dev runtime is already listening; skipping runtime CLI rebuild\n");
+  if (isRuntimeCliBuildFresh() && await canConnectToSocket(socketPath)) {
+    process.stdout.write("[ade] dev runtime is already listening and CLI build is fresh; skipping runtime CLI rebuild\n");
     return;
   }
   await buildRuntimeCli(false);

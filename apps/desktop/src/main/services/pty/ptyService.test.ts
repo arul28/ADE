@@ -596,6 +596,38 @@ describe("ptyService", () => {
       }));
     });
 
+    it("does not leak inherited NO_COLOR into interactive terminal launches", async () => {
+      const previousNoColor = process.env.NO_COLOR;
+      const previousForceColor = process.env.FORCE_COLOR;
+      process.env.NO_COLOR = "1";
+      delete process.env.FORCE_COLOR;
+      try {
+        const { service, loadPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Inherited color env",
+          cols: 80,
+          rows: 24,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+        const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env?.NO_COLOR).toBeUndefined();
+        expect(opts?.env).toEqual(expect.objectContaining({
+          TERM: "xterm-256color",
+          COLORTERM: "truecolor",
+          FORCE_COLOR: "1",
+        }));
+      } finally {
+        if (previousNoColor === undefined) delete process.env.NO_COLOR;
+        else process.env.NO_COLOR = previousNoColor;
+        if (previousForceColor === undefined) delete process.env.FORCE_COLOR;
+        else process.env.FORCE_COLOR = previousForceColor;
+      }
+    });
+
     it("does not type startupCommand preview into direct command sessions", async () => {
       const { service, mockPty } = createHarness();
 

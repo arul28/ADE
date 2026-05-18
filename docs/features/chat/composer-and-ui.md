@@ -336,6 +336,23 @@ Interrupt transitions all running subagents to `stopped` by emitting a
 `subagent_result` with `status: "stopped"` for each, matching the
 Claude Code CLI behavior.
 
+Codex parallel agent failures emit a system-notice plus `failed` /
+`stopped` `subagent_result` rows. The agentChatService maps
+`failed | errored | rejected | refused | denied` Codex status values
+to `failed` and `stopped | interrupted | shutdown | notfound |
+cancelled | canceled` to `stopped`; `readCodexCollabFailureSummary`
+pulls the human-readable rejection out of `item.error` /
+`item.result` / `item.contentItems[*].text` so the chat surface shows
+a useful reason instead of a bare "Agent spawn failed".
+
+`deriveChatSubagentSnapshots` (in `chatExecutionSummary.ts`) keeps
+sibling Codex subagents distinct when they share a `parentToolUseId`:
+it pre-scans every envelope to count the resolved subagent ids per
+parent, only adopts the placeholder parent row when exactly one
+sibling resolves under that parent, and otherwise creates separate
+snapshots keyed by `agentId ?? taskId`. The TUI mirrors this in
+`subagentSnapshotsFromEvents`.
+
 ## Terminal drawer
 
 `ChatTerminalDrawer` is a collapsible drawer at the bottom of the chat

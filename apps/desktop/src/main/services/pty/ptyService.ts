@@ -177,8 +177,14 @@ export function ensureNodePtySpawnHelperExecutable({
   }
 }
 
-function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function withInteractiveTerminalColorEnv(
+  env: NodeJS.ProcessEnv,
+  opts: { preserveNoColor?: boolean } = {},
+): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...env };
+  if (!opts.preserveNoColor) {
+    delete next.NO_COLOR;
+  }
   const term = next.TERM?.trim().toLowerCase() ?? "";
   if (!term || term === "dumb") {
     next.TERM = "xterm-256color";
@@ -2425,9 +2431,11 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
+      const explicitNoColor = hasEnvValue(args.env ?? {}, "NO_COLOR") || hasEnvValue(laneRuntimeEnv, "NO_COLOR");
       const baseLaunchEnv = {
         ...process.env,
-        ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
+        ...laneRuntimeEnv,
         ...(args.env ?? {})
       };
       const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
@@ -2435,7 +2443,10 @@ export function createPtyService({
         laneId,
         chatSessionId,
       });
-      const launchEnv = withInteractiveTerminalColorEnv(getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv);
+      const launchEnv = withInteractiveTerminalColorEnv(
+        getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
+        { preserveNoColor: explicitNoColor },
+      );
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)

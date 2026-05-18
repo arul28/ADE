@@ -338,6 +338,35 @@ describe("runtime session actions", () => {
     expect(sessionService.getDelta({ sessionId: "session-1" })).toEqual(delta);
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
   });
+
+  it("routes readTranscriptTail through ptyService so live PTY output is included", async () => {
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        readTranscriptTail: vi.fn(async () => "stale disk tail"),
+      },
+      ptyService: {
+        readTranscriptTail: vi.fn(async () => "live merged tail"),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      readTranscriptTail: (args: { sessionId: string; maxBytes?: number; raw?: boolean }) => Promise<string>;
+    } & Record<string, unknown>;
+
+    await expect(sessionService.readTranscriptTail({
+      sessionId: "session-1",
+      maxBytes: 999,
+      raw: true,
+    })).resolves.toBe("live merged tail");
+    expect(runtime.ptyService?.readTranscriptTail).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      maxBytes: 1024,
+      raw: true,
+      alignToLineBoundary: true,
+    });
+    expect(runtime.sessionService.readTranscriptTail).not.toHaveBeenCalled();
+  });
 });
 
 describe("runtime computer-use artifact actions", () => {

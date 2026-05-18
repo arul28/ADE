@@ -185,6 +185,15 @@ Grid mode keeps running PTY sessions mounted so multiple terminals can
 stay live at once; `isActive` only controls focus/input, not whether the
 terminal renderer exists.
 
+For tracked agent CLI sessions that have already exited, `WorkViewArea`
+renders `ClosedCliSessionSurface` instead of `TerminalView`. The surface
+fetches `ade.terminal.preview` and decides between a serialized snapshot
+preview and the plain transcript text via `snapshotLooksLikeTui(rows)`:
+when the snapshot contains TUI frame characters (`╭`, `─`, etc.) or
+enough styled cells to be obviously a TUI redraw, the snapshot wins so
+the user sees the Claude/Codex final screen instead of a flattened
+transcript with the alt-screen escape codes visible.
+
 Constants:
 
 - `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`
@@ -400,6 +409,32 @@ Key behaviors:
   reliable signal that "the surface is back on screen at its new
   size" since hidden surfaces no longer fire layout/resize events;
   without it, terminals come back blank after a tab swap.
+- **Hydration backfill** — initial hydration prefers
+  `ade.terminal.preview` (serialized snapshot of the visible rows
+  rebuilt as SGR-bracketed ANSI through `serializeSnapshotVisibleRows`,
+  falling back to the snapshot's `serialized` scrollback) and only uses
+  the transcript tail when no snapshot is available. The runtime
+  tracks `hasAppliedTerminalContent` and
+  `displayedLiveDataBeforeHydration`; if hydration returns nothing
+  renderable while live PTY data is already on screen,
+  `scheduleHydrationBackfill` retries the preview every ~100 ms (up to
+  120 attempts) until the DOM reports renderable text. This is the fix
+  that keeps the Work-tab terminal from showing a blank black pane with
+  an orange cursor after sending a first prompt to a fast TUI like
+  Codex or Claude. The backfill also re-arms whenever the tile becomes
+  visible but the xterm rows are empty (e.g. after a webgl→dom
+  fallback).
+- **Mouse tracking forwarding** — `TerminalView` tracks DECSET 1000 /
+  1002 / 1003 (SGR mouse modes) by scanning every PTY data chunk via
+  `updateTerminalMouseTrackingModes`. When the embedded TUI has mouse
+  tracking enabled, the renderer installs a Shift-mouse bridge
+  (`installShiftMouseBridge`) that forwards Shift-click + drag as SGR
+  mouse press/move/release sequences so users can drive in-app mouse UIs
+  through the surrounding xterm.
+- **Cmd+C → SIGINT on macOS** — when the terminal is focused on macOS,
+  ⌘C with no current selection sends `\x03` to the PTY (matches the
+  Terminal.app behaviour TUI users expect). Selection-aware copy is
+  handled by xterm's own selection plus the runtime's clipboard hook.
 
 Font stack defaults: `ui-monospace`, `SFMono-Regular`, `Menlo`,
 `Monaco`, `Cascadia Mono`, `JetBrains Mono`, `Geist Mono`, `monospace`.
@@ -452,9 +487,18 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   choices map onto provider-native flags / configs:
   - **Claude** → `--permission-mode` flag (CLI default plus
     plan/acceptEdits/bypassPermissions).
-  - **Codex** → `--ask-for-approval` + `--sandbox` pair (or
-    `--full-auto`/`--dangerously-bypass-approvals-and-sandbox` for the
-    presets), plus `config-toml` mode that defers to `.codex/config.toml`.
+  - **Codex** → `--ask-for-approval` + `--sandbox` pair. `default`
+    maps to `--sandbox workspace-write --ask-for-approval on-request`
+    (Codex's documented Guarded Edit semantics; the older `--full-auto`
+    alias caused the TUI to drop straight into auto-approval and was
+    surprising in the Work tab). `full-auto` keeps the explicit
+    `--dangerously-bypass-approvals-and-sandbox` flag, and `config-toml`
+    mode defers to `.codex/config.toml`. Fresh Codex launches also
+    pass `-c mcp_servers.linear.enabled=false` (see
+    `ADE_CODEX_STARTUP_CONFIG_FLAGS` in `cliLaunch.ts`) to keep a stale
+    user-level Linear MCP OAuth handshake from blocking the TUI's
+    first paint — ADE has its own Linear surfaces, so the MCP wiring
+    is intentionally suppressed for the in-app launch.
   - **Cursor** → `--mode plan|ask` for read-only modes and `--force`
     for full-auto. Sessions pre-allocate a chat id with
     `cursor-agent create-chat` so `--resume <id>` is always known.
@@ -516,7 +560,17 @@ The hook exposes `openSessionTab`, `focusSession`, `selectLane`,
 `upsertOptimisticChatSession` (so new chats appear in the tab strip
 before the IPC round-trip completes), `refresh`, and the right-sidebar
 setters `setWorkSidebarOpen`, `setWorkSidebarTab` (also forces the
-sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%). The
+sidebar open), and `setWorkSidebarWidthPct` (clamped 26–55%).
+
+`launchPtySession` opens the tab off the synchronous `ptyCreate`
+result before kicking off the background refresh: it focuses the
+session, calls `openSessionTab`, and only then fires `refresh({
+showLoading: false, force: true })`. This is what makes the Work tab's
+optimistic terminal visible the moment the PTY exists, which is the
+window in which the new `TerminalView` runtime needs to attach so it
+can subscribe to live PTY data before fast TUIs like Codex or Claude
+paint their first frame. Waiting on the refresh round-trip first used
+to lose the initial paint and leave the terminal blank. The
 `launchPtySession({ laneId, profile, command?, args?, startupCommand?,
 env?, title?, tracked? })` helper (and its lane-scoped twin in
 `useLaneWorkSessions`) builds a default launch payload with

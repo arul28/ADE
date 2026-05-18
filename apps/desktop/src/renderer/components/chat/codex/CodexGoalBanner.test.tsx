@@ -92,14 +92,15 @@ describe("CodexGoalBanner", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("shows the status pill label with underscores replaced", () => {
+  it("shows app-server limited goals as active", () => {
     render(
       <CodexGoalBanner
-        goal={{ objective: "Stay under budget", status: "budget_limited" }}
+        goal={{ objective: "Finish the verification", status: "budget_limited" }}
         onEdit={() => undefined}
         onClear={() => undefined}
       />,
     );
-    expect(screen.getByText(/budget limited/i)).toBeTruthy();
+    expect(screen.getByText(/^active$/i)).toBeTruthy();
+    expect(screen.queryByText(/budget/i)).toBeNull();
   });
 });

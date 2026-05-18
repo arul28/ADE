@@ -9,6 +9,11 @@ import {
   isPromptWordBackspace,
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
+  isChatTextSelectionRange,
+  chatSelectionEdgeDirectionForMouseY,
+  chatSelectionFromAnchor,
+  chatSelectionPointFromVisibleRows,
+  moveChatSelectionFocusByRows,
   parseTerminalMouseInput,
   promptDisplayRows,
   resolveChatWrapWidth,
@@ -79,6 +84,37 @@ describe("parseTerminalMouseInput", () => {
     });
   });
 
+  it("parses mouse modifier bits", () => {
+    expect(parseTerminalMouseInput("[<20;5;6M")).toEqual({
+      kind: "click",
+      x: 5,
+      y: 6,
+      shift: true,
+      ctrl: true,
+    });
+    expect(parseTerminalMouseInput("[<88;5;6M")).toEqual({
+      kind: "wheel",
+      direction: "up",
+      x: 5,
+      y: 6,
+      alt: true,
+      ctrl: true,
+    });
+    expect(parseTerminalMouseInput("[<52;7;8M")).toEqual({
+      kind: "drag",
+      x: 7,
+      y: 8,
+      shift: true,
+      ctrl: true,
+    });
+    expect(parseTerminalMouseInput("[<16;7;8m")).toEqual({
+      kind: "release",
+      x: 7,
+      y: 8,
+      ctrl: true,
+    });
+  });
+
   it("swallows batched SGR mouse events from fast scrolling", () => {
     expect(parseTerminalMouseInput("[<64;104;32M[<64;104;32M[<65;104;31M")).toEqual({
       kind: "wheel",
@@ -93,8 +129,84 @@ describe("parseTerminalMouseInput", () => {
   });
 });
 
+describe("chat text selection helpers", () => {
+  it("resolves visible rows to absolute transcript rows", () => {
+    const rows = [
+      { sourceRow: null, text: "↑ older messages" },
+      { sourceRow: 42, text: "hello" },
+      { sourceRow: 43, text: "world" },
+    ];
+
+    expect(chatSelectionPointFromVisibleRows(rows, 1, 3, false)).toEqual({ row: 42, column: 3 });
+    expect(chatSelectionPointFromVisibleRows(rows, 0, 2, false)).toBeNull();
+    expect(chatSelectionPointFromVisibleRows(rows, 0, 2, true)).toEqual({ row: 42, column: 2 });
+  });
+
+  it("moves an active selection focus within transcript bounds", () => {
+    expect(moveChatSelectionFocusByRows({
+      startRow: 5,
+      startColumn: 1,
+      endRow: 5,
+      endColumn: 3,
+      active: true,
+    }, -10, 20, 0)).toMatchObject({ endRow: 0, endColumn: 0 });
+
+    expect(moveChatSelectionFocusByRows({
+      startRow: 5,
+      startColumn: 1,
+      endRow: 18,
+      endColumn: 3,
+      active: true,
+    }, 10, 20, 7)).toMatchObject({ endRow: 19, endColumn: 7 });
+  });
+
+  it("extends chat selection from a retained anchor", () => {
+    expect(chatSelectionFromAnchor(
+      { row: 4, column: 2 },
+      { row: 9, column: 12 },
+      true,
+    )).toEqual({
+      startRow: 4,
+      startColumn: 2,
+      endRow: 9,
+      endColumn: 12,
+      active: true,
+    });
+  });
+
+  it("starts selection autoscroll on reachable transcript edge rows", () => {
+    expect(chatSelectionEdgeDirectionForMouseY({
+      y: 2,
+      topRow: 2,
+      rowBudget: 8,
+      scrollOffsetRows: 1,
+      maxScrollOffsetRows: 4,
+    })).toBe("older");
+    expect(chatSelectionEdgeDirectionForMouseY({
+      y: 9,
+      topRow: 2,
+      rowBudget: 8,
+      scrollOffsetRows: 1,
+      maxScrollOffsetRows: 4,
+    })).toBe("newer");
+    expect(chatSelectionEdgeDirectionForMouseY({
+      y: 5,
+      topRow: 2,
+      rowBudget: 8,
+      scrollOffsetRows: 1,
+      maxScrollOffsetRows: 4,
+    })).toBeNull();
+  });
+
+  it("detects non-collapsed chat selections", () => {
+    expect(isChatTextSelectionRange(null)).toBe(false);
+    expect(isChatTextSelectionRange({ startRow: 1, startColumn: 2, endRow: 1, endColumn: 2 })).toBe(false);
+    expect(isChatTextSelectionRange({ startRow: 1, startColumn: 2, endRow: 2, endColumn: 0 })).toBe(true);
+  });
+});
+
 describe("footer control ordering", () => {
-  it("puts agents first only when the active chat has subagent history", () => {
+  it("puts chat info first when that pane is available", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
   });
@@ -121,8 +233,8 @@ describe("terminal control toggle", () => {
 });
 
 describe("pane width helpers", () => {
-  it("caps prose chat width but lets embedded terminals use the full center pane", () => {
-    expect(resolveChatWrapWidth(180, false, 0)).toBe(110);
+  it("lets prose chat and embedded terminals use the full center pane", () => {
+    expect(resolveChatWrapWidth(180, false, 0)).toBe(180);
     expect(resolveChatWrapWidth(Number.NaN, false, 0)).toBe(24);
     expect(resolveTerminalPaneWidth(180)).toBe(180);
     expect(resolveTerminalPaneWidth(Number.NaN)).toBe(24);
@@ -208,6 +320,56 @@ describe("subagentSnapshotsFromEvents", () => {
       parentToolUseId: "spawn-1",
       status: "running",
       summary: "working",
+    });
+  });
+
+  it("keeps sibling subagents separate when they share the same parent tool id", () => {
+    const snapshots = subagentSnapshotsFromEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_started",
+          taskId: "thread-1",
+          parentToolUseId: "spawn-1",
+          description: "Inspect renderer",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "subagent_started",
+          taskId: "thread-2",
+          parentToolUseId: "spawn-1",
+          description: "Inspect service",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: {
+          type: "subagent_result",
+          taskId: "thread-1",
+          parentToolUseId: "spawn-1",
+          status: "completed",
+          summary: "renderer done",
+        },
+      },
+    ]);
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.map((snapshot) => snapshot.id).sort()).toEqual(["thread-1", "thread-2"]);
+    expect(snapshots.find((snapshot) => snapshot.id === "thread-1")).toMatchObject({
+      status: "completed",
+      summary: "renderer done",
+    });
+    expect(snapshots.find((snapshot) => snapshot.id === "thread-2")).toMatchObject({
+      status: "running",
+      summary: "Inspect service",
     });
   });
 

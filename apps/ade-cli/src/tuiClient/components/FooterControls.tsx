@@ -181,7 +181,9 @@ export function FooterControls({
           <>
             <Text>{"  "}</Text>
             {(() => {
-              const subagentValue = `⊚ ${agents} subagent${agents === 1 ? '' : 's'}`;
+              const subagentValue = agents > 0
+                ? `⊚ chat info · ${agents}`
+                : "⊚ chat info";
               const isFocused = inlineRowCell === 'subagents';
               if (rowFocused && isFocused) {
                 return (
@@ -244,9 +246,9 @@ export function FooterControls({
           <>
             <Hint keyLabel="^o" action="lanes" />
             <Text dimColor>{"  "}</Text>
-            <Hint keyLabel="^p" action="info" />
+            <Hint keyLabel="^p" action="pane" />
             <Text dimColor>{"  "}</Text>
-            <Hint keyLabel="^a" action="subagents" />
+            <Hint keyLabel="^a" action="chat info" />
             <Text dimColor>{"  "}</Text>
             <Hint keyLabel="/" action="cmds" />
             <Text dimColor>{"  "}</Text>
