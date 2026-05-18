@@ -85,6 +85,7 @@ type CachedRuntime = {
   active: boolean;
   visible: boolean;
   mouseTrackingModes: Set<number>;
+  shiftMouseBridgeCleanup: (() => void) | null;
   shiftMouseCleanup: (() => void) | null;
   // Set when a webgl→dom fallback is in flight and the runtime turned
   // invisible before the webgl restore could run. Persists across renderer
@@ -601,7 +602,7 @@ function consumeMouseEvent(ev: MouseEvent): void {
 }
 
 function installShiftMouseBridge(runtime: CachedRuntime): void {
-  runtime.host.addEventListener("mousedown", (ev: MouseEvent) => {
+  const onMouseDown = (ev: MouseEvent) => {
     if (runtime.disposed || !isTerminalMouseTrackingActive(runtime)) return;
     if (!ev.shiftKey || ev.button !== 0) return;
     const point = terminalMousePoint(runtime, ev);
@@ -639,7 +640,13 @@ function installShiftMouseBridge(runtime: CachedRuntime): void {
     runtime.shiftMouseCleanup = cleanup;
     document.addEventListener("mousemove", onMouseMove, true);
     document.addEventListener("mouseup", onMouseUp, true);
-  }, true);
+  };
+  runtime.host.addEventListener("mousedown", onMouseDown, true);
+  const cleanupBridge = () => {
+    runtime.host.removeEventListener("mousedown", onMouseDown, true);
+    if (runtime.shiftMouseBridgeCleanup === cleanupBridge) runtime.shiftMouseBridgeCleanup = null;
+  };
+  runtime.shiftMouseBridgeCleanup = cleanupBridge;
 }
 
 async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
@@ -668,6 +675,11 @@ function teardownRuntime(runtime: CachedRuntime) {
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
   try {
     runtime.shiftMouseCleanup?.();
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.shiftMouseBridgeCleanup?.();
   } catch {
     // ignore
   }
@@ -1283,6 +1295,7 @@ function createRuntime(args: {
     active: true,
     visible: true,
     mouseTrackingModes: new Set(),
+    shiftMouseBridgeCleanup: null,
     shiftMouseCleanup: null,
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,

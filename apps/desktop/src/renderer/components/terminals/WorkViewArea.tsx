@@ -253,9 +253,10 @@ function snapshotLooksLikeTui(rows: TerminalSnapshotRow[]): boolean {
   let styledCells = 0;
   for (const row of rows) {
     const text = row.text.trimEnd();
-    if (text.trim()) nonBlankRows += 1;
+    const visibleStyleCells = row.cells.filter(cellHasVisibleStyle).length;
+    if (text.trim() || visibleStyleCells > 0) nonBlankRows += 1;
     if (TUI_FRAME_CHARS.test(text)) return true;
-    styledCells += row.cells.filter(cellHasVisibleStyle).length;
+    styledCells += visibleStyleCells;
   }
   return nonBlankRows >= 3 && styledCells >= 8;
 }

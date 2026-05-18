@@ -811,6 +811,15 @@ describe("TerminalView", () => {
     expect(ptyWrite).toHaveBeenCalledTimes(1);
 
     __resetTerminalRuntimesForTests();
+    terminal!.element!.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+    }));
     document.dispatchEvent(new MouseEvent("mouseup", {
       bubbles: true,
       cancelable: true,
