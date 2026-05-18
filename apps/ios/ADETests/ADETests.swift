@@ -7614,6 +7614,7 @@ final class ADETests: XCTestCase {
       codexSandbox: nil,
       codexConfigSource: nil,
       opencodePermissionMode: nil,
+      droidPermissionMode: nil,
       cursorModeSnapshot: nil,
       cursorModeId: nil,
       cursorConfigValues: nil,

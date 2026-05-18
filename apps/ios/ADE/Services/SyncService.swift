@@ -3698,6 +3698,60 @@ final class SyncService: ObservableObject {
     ].joined(separator: "\u{1f}")
   }
 
+  // MARK: - Cross-surface model picker (favorites + recents)
+  //
+  // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
+  // TUI implementation. Backed by `~/.ade/modelPicker.json` on the ade-cli
+  // host so favorites and recents follow the user across worktrees, projects,
+  // and surfaces (desktop, TUI, iOS). Recents are capped at 10 server-side
+  // — the client should not pre-trim.
+
+  func getModelFavorites() async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.getFavorites",
+      args: [:],
+      as: ModelPickerFavorites.self
+    )
+    return payload.favorites
+  }
+
+  func setModelFavorites(_ favorites: [String]) async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.setFavorites",
+      args: ["favorites": favorites],
+      as: ModelPickerFavorites.self
+    )
+    return payload.favorites
+  }
+
+  @discardableResult
+  func toggleModelFavorite(_ modelId: String) async throws -> ModelPickerToggleFavoriteResult {
+    try await sendDecodableCommand(
+      action: "modelPicker.toggleFavorite",
+      args: ["modelId": modelId],
+      as: ModelPickerToggleFavoriteResult.self
+    )
+  }
+
+  func getModelRecents() async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.getRecents",
+      args: [:],
+      as: ModelPickerRecents.self
+    )
+    return payload.recents
+  }
+
+  @discardableResult
+  func pushModelRecent(_ modelId: String) async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.pushRecent",
+      args: ["modelId": modelId],
+      as: ModelPickerRecents.self
+    )
+    return payload.recents
+  }
+
   func listChatSessions(laneId: String) async throws -> [AgentChatSessionSummary] {
     try await sendDecodableCommand(action: "chat.listSessions", args: ["laneId": laneId, "includeAutomation": true], as: [AgentChatSessionSummary].self)
   }
@@ -3716,6 +3770,7 @@ final class SyncService: ObservableObject {
     codexSandbox: String? = nil,
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -3759,6 +3814,9 @@ final class SyncService: ObservableObject {
     }
     if let opencodePermissionMode, !opencodePermissionMode.isEmpty {
       args["opencodePermissionMode"] = opencodePermissionMode
+    }
+    if let droidPermissionMode, !droidPermissionMode.isEmpty {
+      args["droidPermissionMode"] = droidPermissionMode
     }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
@@ -3887,6 +3945,7 @@ final class SyncService: ObservableObject {
     codexSandbox: String? = nil,
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -3908,6 +3967,7 @@ final class SyncService: ObservableObject {
         codexSandbox: codexSandbox,
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
+        droidPermissionMode: droidPermissionMode,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,
