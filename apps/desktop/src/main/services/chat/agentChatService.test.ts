@@ -4173,6 +4173,65 @@ describe("createAgentChatService", () => {
       expect(clearCmd!.source).toBe("local");
     });
 
+    it("returns Claude and Codex prompt commands plus /clear for a droid lane", async () => {
+      const claudeCommandsDir = path.join(tmpRoot, ".claude", "commands");
+      fs.mkdirSync(claudeCommandsDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeCommandsDir, "deploy.md"), [
+        "---",
+        "description: Deploy the active branch",
+        "---",
+        "",
+        "Deploy.",
+        "",
+      ].join("\n"));
+      const codexPromptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(codexPromptsDir, { recursive: true });
+      fs.writeFileSync(path.join(codexPromptsDir, "triage.md"), "Triage the inbox.");
+      const { service } = createService();
+
+      const commands = service.getSlashCommands({ laneId: "lane-1", provider: "droid" });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/clear");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/deploy",
+          description: "Deploy the active branch",
+          source: "sdk",
+        }),
+        expect.objectContaining({
+          name: "/triage",
+          description: "Triage the inbox.",
+          source: "sdk",
+        }),
+      ]));
+    });
+
+    it("returns the same slash command set for a live droid session", async () => {
+      const codexPromptsDir = path.join(tmpRoot, ".codex", "prompts");
+      fs.mkdirSync(codexPromptsDir, { recursive: true });
+      fs.writeFileSync(path.join(codexPromptsDir, "summarize.md"), "Summarize this lane.");
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-4-6-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      });
+
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      const names = commands.map((command) => command.name);
+
+      expect(names).toContain("/clear");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/summarize",
+          description: "Summarize this lane.",
+          source: "sdk",
+        }),
+      ]));
+    });
+
 	    it("does not advertise /login as a Claude SDK command", async () => {
 	      const { service } = createService();
 	      const session = await service.createSession({

@@ -20828,6 +20828,28 @@ export function createAgentChatService(args: {
       return mergeSlashCommands([promptCommands, claudeProjectCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
+    // Droid uses Claude/Codex models under the hood, so surface the same
+    // filesystem-backed prompt commands codex exposes (Claude `.claude/commands`
+    // and Codex `.codex/prompts`) plus a local `/clear` for chat housekeeping.
+    if (provider === "droid") {
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      return mergeSlashCommands([promptCommands, claudeProjectCommands, localCommands]);
+    }
+
     // OpenCode / Cursor — only local commands
     return localCommands;
   };
