@@ -498,6 +498,7 @@ type CodexRuntime = {
   collaborationModesReady: Promise<void> | null;
   planModeFallbackNotified: boolean;
   goalBudgetClearInFlight: Set<string>;
+  goalBudgetClearRetryAfterByThreadId: Map<string, number>;
 };
 
 type QueuedSteer = {
@@ -1677,6 +1678,7 @@ const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
+const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 
 type PendingTranscriptWrite = {
   chunks: Buffer[];
@@ -7906,6 +7908,8 @@ export function createAgentChatService(args: {
     if (!goal || goal.tokenBudget == null) return;
     const threadId = managed.session.threadId?.trim();
     if (!threadId || runtime.goalBudgetClearInFlight.has(threadId)) return;
+    const retryAfter = runtime.goalBudgetClearRetryAfterByThreadId.get(threadId) ?? 0;
+    if (retryAfter > Date.now()) return;
 
     const nextStatus = goal.status === "budget_limited" ? "active" : goal.status;
     const params: Record<string, unknown> = {
@@ -7920,6 +7924,7 @@ export function createAgentChatService(args: {
     runtime.goalBudgetClearInFlight.add(threadId);
     runtime.request<{ goal?: unknown }>("thread/goal/set", params)
       .then((response) => {
+        runtime.goalBudgetClearRetryAfterByThreadId.delete(threadId);
         const updatedGoal = normalizeCodexGoalPayload(response)
           ?? {
             ...goal,
@@ -7943,6 +7948,10 @@ export function createAgentChatService(args: {
         persistChatState(managed);
       })
       .catch((error) => {
+        runtime.goalBudgetClearRetryAfterByThreadId.set(
+          threadId,
+          Date.now() + CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS,
+        );
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "error",
@@ -12147,9 +12156,25 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const readCodexCollabSummaryValue = (value: unknown): string | null => {
+    if (value == null) return null;
+    if (value instanceof Error) return trimLine(value.message);
+    if (typeof value === "string") return trimLine(value);
+    if (typeof value === "number" || typeof value === "boolean") return trimLine(String(value));
+    const record = asRecord(value);
+    if (!record) return null;
+    for (const key of ["message", "summary", "text"] as const) {
+      const summary = trimLine(typeof record[key] === "string" ? record[key] : null);
+      if (summary) return summary;
+    }
+    return null;
+  };
+
   const readCodexCollabFailureSummary = (item: Record<string, unknown>): string => {
-    const direct = item.error ?? item.result ?? item.message;
-    if (direct != null) return readErrorMessage(direct);
+    for (const value of [item.error, item.result, item.message]) {
+      const direct = readCodexCollabSummaryValue(value);
+      if (direct) return direct;
+    }
     const contentItems = Array.isArray(item.contentItems) ? item.contentItems : [];
     const contentText = contentItems
       .map((entry) => {
@@ -13443,6 +13468,7 @@ export function createAgentChatService(args: {
       collaborationModesReady: null,
       planModeFallbackNotified: false,
       goalBudgetClearInFlight: new Set<string>(),
+      goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
       request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;

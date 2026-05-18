@@ -7560,6 +7560,83 @@ describe("createAgentChatService", () => {
       expect(service.listSubagents({ sessionId: session.id }).some((snapshot) => snapshot.status === "running")).toBe(false);
     });
 
+    it("uses content text instead of object stringification for Codex spawn failures", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            status: "rejected",
+            result: { reason: "runtime_missing" },
+            contentItems: [{ text: "spawn_agent is not available in this runtime" }],
+          },
+        },
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "subagent_result",
+            taskId: "call-spawn-1",
+            status: "failed",
+            summary: "spawn_agent is not available in this runtime",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "error",
+            message: "Codex parallel agent failed: spawn_agent is not available in this runtime",
+          }),
+        }),
+      ]));
+      expect(events.some((event) =>
+        event.event.type === "subagent_result"
+        && event.event.summary === "[object Object]"
+      )).toBe(false);
+    });
+
     it("stops foreground Codex subagents when the parent turn completes without a terminal subagent event", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -9345,6 +9422,98 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
+    });
+
+    it("backs off automatic Codex goal budget clearing after app-server failures", async () => {
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      mockState.delayedCodexMethods.add("thread/goal/set");
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.codexRequestPayloads = [];
+
+      const emitBudgetLimitedGoal = () => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "thread/goal/updated",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            goal: {
+              objective: "Ship CLI parity",
+              status: "budgetLimited",
+              tokenBudget: 5000,
+              tokensUsed: 125,
+              timeUsedSeconds: 90,
+              createdAt: 1_760_000_000,
+              updatedAt: 1_760_000_001,
+            },
+          },
+        });
+      };
+
+      emitBudgetLimitedGoal();
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/goal/set")).toHaveLength(1);
+      });
+
+      const clearRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: clearRequest?.id,
+        error: { code: -32001, message: "goal RPC failed" },
+      });
+      mockState.pendingCodexResponses = [];
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message === "Codex goal update failed: goal RPC failed"
+        )).toBe(true);
+      });
+
+      mockState.codexRequestPayloads = [];
+      emitBudgetLimitedGoal();
+      await Promise.resolve();
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(false);
+
+      nowSpy.mockReturnValue(1_031_000);
+      emitBudgetLimitedGoal();
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/goal/set")).toBe(true);
+      });
+      const retryRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/goal/set");
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: retryRequest?.id,
+        result: {
+          goal: {
+            objective: "Ship CLI parity",
+            status: "active",
+            tokenBudget: null,
+          },
+        },
+      });
+      mockState.pendingCodexResponses = [];
     });
 
     it("treats /goal set reserved words as objective text", async () => {

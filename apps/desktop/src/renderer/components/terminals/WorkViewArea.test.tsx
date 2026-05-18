@@ -748,6 +748,89 @@ describe("WorkViewArea", () => {
     expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
   });
 
+  it("treats background-styled spaces as visible TUI snapshot cells", async () => {
+    const plainCell = (text: string) => ({
+      text,
+      fg: null,
+      bg: null,
+      fgMode: "default" as const,
+      bgMode: "default" as const,
+    });
+    const bgCell = () => ({
+      text: " ",
+      fg: null,
+      bg: 0x17324d,
+      fgMode: "default" as const,
+      bgMode: "rgb" as const,
+    });
+    terminalPreviewMock.mockResolvedValueOnce({
+      terminalId: "session-1",
+      source: "snapshot",
+      transcript: "plain transcript fallback\n",
+      capturedAt: "2026-04-06T12:10:00.000Z",
+      snapshot: {
+        version: 1,
+        terminalId: "session-1",
+        cols: 8,
+        rows: 3,
+        capturedAt: "2026-04-06T12:10:00.000Z",
+        status: "completed",
+        runtimeState: "exited",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: ["A", "B", "C"].map((label) => ({
+          text: `${label}     `,
+          wrapped: false,
+          cells: [plainCell(label), ...Array.from({ length: 5 }, bgCell)],
+        })),
+      },
+    });
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "plan" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        gridLayoutId="work:grid:test"
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        tabGroups={[]}
+        tabVisibleSessionIds={[session.id]}
+        activeItemId={session.id}
+        viewMode="tabs"
+        draftKind="chat"
+        setViewMode={() => {}}
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={async () => ({})}
+        onShowDraftKind={() => {}}
+        onToggleTabGroupCollapsed={() => {}}
+        closingPtyIds={new Set()}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByText("A")).toBeTruthy();
+    expect(local.getByText("B")).toBeTruthy();
+    expect(local.getByText("C")).toBeTruthy();
+    expect(local.queryByText(/plain transcript fallback/)).toBeNull();
+    expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
+  });
+
   it("submits continuation text for ended agent CLI sessions", async () => {
     const onContinue = vi.fn().mockResolvedValue(undefined);
     const session = {

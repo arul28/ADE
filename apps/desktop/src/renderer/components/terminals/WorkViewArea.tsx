@@ -233,19 +233,19 @@ function snapshotRuns(row: TerminalSnapshotRow): Array<{ text: string; style: CS
 const TUI_FRAME_CHARS = /[╭╮╰╯│─┌┐└┘├┤┬┴┼▐▌▀▄█▛▜▝▘]/;
 
 function cellHasVisibleStyle(cell: TerminalSnapshotCell): boolean {
-  return (
-    ((cell.text || " ") !== " ")
-    && (
-      cell.fgMode !== "default"
-      || cell.bgMode !== "default"
-      || Boolean(cell.bold)
-      || Boolean(cell.dim)
-      || Boolean(cell.italic)
-      || Boolean(cell.underline)
-      || Boolean(cell.inverse)
-      || Boolean(cell.strikethrough)
-    )
+  const hasText = (cell.text || " ") !== " ";
+  const hasTextStyle = (
+    cell.fgMode !== "default"
+    || cell.bgMode !== "default"
+    || Boolean(cell.bold)
+    || Boolean(cell.dim)
+    || Boolean(cell.italic)
+    || Boolean(cell.underline)
+    || Boolean(cell.inverse)
+    || Boolean(cell.strikethrough)
   );
+  if (hasText) return hasTextStyle;
+  return cell.bgMode !== "default" || Boolean(cell.inverse);
 }
 
 function snapshotLooksLikeTui(rows: TerminalSnapshotRow[]): boolean {
