@@ -6905,8 +6905,8 @@ async function runTool(args: {
         commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
         commandPreviewParts.push("--dangerously-bypass-approvals-and-sandbox");
       } else if (permissionMode === "default") {
-        commandArgs.push("--full-auto");
-        commandPreviewParts.push("--full-auto");
+        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
       } else if (permissionMode === "config-toml") {
         // No explicit Codex permission flags; let the host config.toml decide.
       } else if (permissionMode === "plan") {

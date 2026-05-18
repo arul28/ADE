@@ -97,6 +97,18 @@ describe("keybindings", () => {
     expect(dispatchKeybinding(diagnostics.bindings, "Chat", "s", { ctrl: true })).toBeUndefined();
   });
 
+  it("dispatches selection copy as an implemented action", () => {
+    const diagnostics = validateClaudeKeybindingsConfig({
+      bindings: [
+        { context: "Chat", bindings: { "ctrl+y": "selection:copy" } },
+      ],
+    });
+
+    expect(diagnostics.bindingCount).toBe(1);
+    expect(diagnostics.warnings).toEqual([]);
+    expect(dispatchKeybinding(diagnostics.bindings, "Chat", "y", { ctrl: true })).toBe("selection:copy");
+  });
+
   it("converts Ink keypresses to chords", () => {
     expect(keypressToChord("", { pageDown: true })).toBe("pagedown");
     expect(keypressToChord("k", { ctrl: true })).toBe("ctrl+k");

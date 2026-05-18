@@ -8,131 +8,157 @@ function stripAnsi(text: string): string {
   return text.replace(/\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-describe("RightPane subagents", () => {
-  it("renders an agents process table with main, subagents, and teammates", () => {
+import type { ChatInfoSnapshot } from "../types";
+
+function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
+  return {
+    provider: "codex",
+    modelLabel: "gpt-5.5-high",
+    laneLabel: "fixing-cli-send-error",
+    contextPercent: 42,
+    tokenSummary: "+1.2k/340",
+    streaming: true,
+    goal: null,
+    plan: {
+      current: 1,
+      total: 2,
+      live: true,
+      steps: [
+        { text: "Patch runtime bridge", status: "in_progress" },
+        { text: "Verify desktop smoke", status: "pending" },
+      ],
+    },
+    snapshots: [],
+    inspectedSubagentId: null,
+    ...overrides,
+  };
+}
+
+describe("RightPane chat info", () => {
+  it("renders the model + lane header, plan, goal, and chats — but no errors section", () => {
     const result = render(
       <RightPane
         content={{
-          kind: "subagents",
-          tab: "subagents",
-          provider: "claude",
-          snapshots: [
-            { id: "a1", name: "research", kind: "subagent", status: "running", summary: "checking files", tokens: 2300, durationMs: 14000 },
-            { id: "b1", name: "mate-x", kind: "teammate", status: "completed", summary: "done" },
-          ],
+          kind: "chat-info",
+          info: chatInfo({
+            goal: {
+              objective: "Ship CLI parity",
+              status: "active",
+              tokenBudget: null,
+              tokensUsed: 1234,
+              timeUsedSeconds: 90,
+            },
+            snapshots: [
+              { id: "x1", name: "delegated", kind: "subagent", status: "running", summary: "checking renderer" },
+            ],
+          }),
         }}
+        selectedIndex={1}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("AGENTS · CLAUDE");
-    expect(frame).toContain("Subagents · 1");
-    expect(frame).toContain("Teammates · 1");
-    expect(frame).toContain("Background · 0");
-    expect(frame).toContain("main");
-    expect(frame).toContain("research");
-    expect(frame).toContain("TEAMMATES");
-    expect(frame).toContain("mate-x");
-    expect(frame).toContain("transcript follows");
-  });
-
-  it("renders the empty-state copy when no subagents have run yet", () => {
-    const result = render(
-      <RightPane
-        content={{
-          kind: "subagents",
-          tab: "subagents",
-          provider: "claude",
-          snapshots: [],
-        }}
-        focused
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("No subagents yet.");
-  });
-
-  it("renders a single tab + placeholder for Droid (no subagents in ACP)", () => {
-    const result = render(
-      <RightPane
-        content={{ kind: "subagents", tab: "subagents", provider: "droid", snapshots: [] }}
-        focused
-      />,
-    );
-    const frame = result.lastFrame() ?? "";
-
-    expect(frame).toContain("AGENTS · DROID");
-    expect(frame).toContain("agentclientprotocol.com");
-    // Droid does not show the Teammates tab.
-    expect(frame).not.toContain("Teammates");
-  });
-
-  it("renders only the Subagents tab for Codex/Cursor/OpenCode", () => {
-    const result = render(
-      <RightPane
-        content={{
-          kind: "subagents",
-          tab: "subagents",
-          provider: "codex",
-          snapshots: [
-            { id: "x1", name: "delegated", kind: "subagent", status: "running", summary: "" },
-          ],
-        }}
-        focused
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("AGENTS · CODEX");
-    expect(frame).toContain("Subagents · 1");
-    expect(frame).toContain("Teammates · 0");
+    expect(frame).toContain("CHAT INFO · CODEX");
+    expect(frame).toContain("gpt-5.5-high");
+    expect(frame).toContain("lane");
+    expect(frame).toContain("fixing-cli-send-error");
+    expect(frame).toContain("PLAN");
+    expect(frame).toContain("Patch runtime bridge");
+    expect(frame).toContain("GOAL");
+    expect(frame).toContain("Ship CLI parity");
+    expect(frame).toContain("CHATS");
     expect(frame).toContain("delegated");
+    expect(frame).toContain("↑↓ focus · ↵ swap · esc → main");
+    expect(frame).not.toContain("Errors");
+    expect(frame).not.toContain("Activity");
+    expect(frame).not.toContain("tab · cycle");
   });
 
-  it("uses a spinning frame for running subagents at or below the cap", () => {
+  it("hides the Goal section for providers that do not surface goal data", () => {
     const result = render(
       <RightPane
         content={{
-          kind: "subagents",
-          tab: "subagents",
-          provider: "codex",
-          snapshots: [
-            { id: "x1", name: "delegated", kind: "subagent", status: "running", summary: "" },
-          ],
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", modelLabel: "claude-opus-4-7", goal: null }),
         }}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toMatch(/[◐◓◑◒] 01/);
+    expect(frame).toContain("CHAT INFO · CLAUDE");
+    expect(frame).toContain("PLAN");
+    expect(frame).not.toContain("GOAL");
   });
 
-  it("falls back to the static running glyph when more than twelve subagents are running", () => {
-    const snapshots = Array.from({ length: 13 }, (_, index) => ({
+  it("shows the main row + a 'no subagents yet' hint when the roster is empty", () => {
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ snapshots: [] }) }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CHATS");
+    expect(frame).toContain("main");
+    expect(frame).toContain("viewing");
+    expect(frame).toContain("no subagents yet");
+  });
+
+  it("marks the focused subagent row with a rail and exposes its last tool as a hover preview", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            snapshots: [
+              {
+                id: "x1",
+                name: "agent-01",
+                kind: "subagent",
+                status: "running",
+                summary: "",
+                lastToolName: "edit src/lib/tui.ts",
+              },
+            ],
+          }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("agent-01");
+    expect(frame).toContain("edit src/lib/tui.ts");
+  });
+
+  it("scrolls the roster internally with overflow hints when more than the cap are live", () => {
+    const snapshots = Array.from({ length: 9 }, (_, index) => ({
       id: `x${index + 1}`,
-      name: `agent-${index + 1}`,
+      name: `agent-${String(index + 1).padStart(2, "0")}`,
       kind: "subagent" as const,
       status: "running" as const,
       summary: "",
     }));
     const result = render(
       <RightPane
-        content={{
-          kind: "subagents",
-          tab: "subagents",
-          provider: "codex",
-          snapshots,
-        }}
+        content={{ kind: "chat-info", info: chatInfo({ snapshots }) }}
+        selectedIndex={7}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("● 01");
-    expect(frame).not.toMatch(/[◐◓◑◒] 01/);
+    expect(frame).toMatch(/↑\s+\d+\s+earlier/);
+    expect(frame).toContain("agent-07");
   });
 });
 

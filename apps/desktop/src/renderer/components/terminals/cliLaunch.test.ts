@@ -22,12 +22,12 @@ describe("withCodexNoAltScreen", () => {
   });
 
   it("adds --no-alt-screen to 'codex' with arguments", () => {
-    expect(withCodexNoAltScreen("codex --full-auto")).toBe("codex --no-alt-screen --full-auto");
+    expect(withCodexNoAltScreen("codex --sandbox workspace-write")).toBe("codex --no-alt-screen --sandbox workspace-write");
   });
 
   it("does not add flag if already present", () => {
     expect(withCodexNoAltScreen("codex --no-alt-screen")).toBe("codex --no-alt-screen");
-    expect(withCodexNoAltScreen("codex --no-alt-screen --full-auto")).toBe("codex --no-alt-screen --full-auto");
+    expect(withCodexNoAltScreen("codex --no-alt-screen --sandbox workspace-write")).toBe("codex --no-alt-screen --sandbox workspace-write");
   });
 
   it("trims whitespace from input", () => {
@@ -147,9 +147,10 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
-    it("adds Codex's auto preset for default", () => {
+    it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
-      expect(command).toContain("codex --no-alt-screen --full-auto");
+      expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
+      expect(command).toContain("-c mcp_servers.linear.enabled=false");
       expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
@@ -157,6 +158,7 @@ describe("buildTrackedCliStartupCommand", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "config-toml" });
       expect(command).toContain("codex --no-alt-screen");
       expect(command).not.toContain("--full-auto");
+      expect(command).not.toContain("mcp_servers.linear.enabled=false");
       expect(command).toContain("only normal reason to skip ADE CLI");
     });
 

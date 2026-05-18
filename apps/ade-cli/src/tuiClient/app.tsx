@@ -80,6 +80,7 @@ import {
   type TokenStats,
 } from "./adeApi";
 import { derivePendingSteers } from "./aggregate";
+import { deriveChatInfoSnapshot } from "./chatInfo";
 import { paletteCommands, parseCommand } from "./commands";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde } from "./connection";
@@ -87,9 +88,10 @@ import { Drawer, visibleDrawerChatCount, visibleDrawerLaneCount, type DrawerPrSu
 import {
   ChatView,
   computeChatScrollMaxOffset,
-  renderChatTranscriptPlainText,
-  renderChatVisibleRowTexts,
-  selectedTextFromVisibleChatRows,
+  renderChatSelectableRowTexts,
+  renderChatVisibleSelectionRows,
+  selectedTextFromChatRows,
+  type ChatVisibleSelectionRow,
   type ChatTextSelection,
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
@@ -123,9 +125,9 @@ import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybind
 import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
-  clampSubagentSelection,
   subagentIndexForPaneLine,
-  selectedSubagentSnapshot,
+  subagentPaneContentFromRightPane,
+  type SubagentPaneRow,
 } from "./subagentPane";
 import { readClaudeStatusLineConfig, runClaudeStatusLineCommand } from "./statusline";
 import type {
@@ -491,10 +493,7 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
   if (!objective) return null;
   const right: string[] = [];
   const used = goal.tokensUsed ?? null;
-  const budget = goal.tokenBudget ?? null;
-  if (used != null && budget != null) {
-    right.push(`${compactNumber(used)}/${compactNumber(budget)}`);
-  } else if (used != null) {
+  if (used != null) {
     right.push(`${compactNumber(used)} tokens`);
   }
   if (typeof goal.timeUsedSeconds === "number" && goal.timeUsedSeconds > 0) {
@@ -502,7 +501,8 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
     const mins = Math.floor(seconds / 60);
     right.push(mins > 0 ? `${mins}m ${seconds % 60}s` : `${seconds}s`);
   }
-  if (goal.status) right.push(goal.status.replace(/_/g, " "));
+  const visibleStatus = goal.status === "budget_limited" ? "active" : goal.status;
+  if (visibleStatus) right.push(visibleStatus.replace(/_/g, " "));
   return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
 }
 
@@ -524,22 +524,39 @@ function formatContextUsage(usage: AgentChatContextUsage | null): string {
     .join("\n");
 }
 
-function findSubagentSnapshotByParent(
-  snapshots: Map<string, SubagentSnapshot>,
-  parentToolUseId: string | null | undefined,
-): [string, SubagentSnapshot] | null {
-  if (!parentToolUseId) return null;
-  const direct = snapshots.get(parentToolUseId);
-  if (direct) return [parentToolUseId, direct];
-  for (const [key, snapshot] of snapshots) {
-    if (snapshot.parentToolUseId === parentToolUseId) return [key, snapshot];
+function buildResolvedSubagentIdsByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
+  const idsByParent = new Map<string, Set<string>>();
+  for (const envelope of events) {
+    const event = envelope.event as Record<string, unknown>;
+    const type = typeof event.type === "string" ? event.type : "";
+    if (!type.startsWith("subagent")) continue;
+    const parent = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
+      ? event.parentToolUseId.trim()
+      : null;
+    if (!parent) continue;
+    const taskId = typeof event.taskId === "string" && event.taskId.trim() ? event.taskId.trim() : null;
+    const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
+    const id = agentId ?? taskId;
+    if (!id || id === parent) continue;
+    const ids = idsByParent.get(parent) ?? new Set<string>();
+    ids.add(id);
+    idsByParent.set(parent, ids);
   }
-  return null;
+  return idsByParent;
+}
+
+function isParentSubagentPlaceholder(snapshot: SubagentSnapshot | undefined, parentToolUseId: string): snapshot is SubagentSnapshot {
+  return Boolean(
+    snapshot
+      && snapshot.id === parentToolUseId
+      && snapshot.parentToolUseId === parentToolUseId,
+  );
 }
 
 export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): SubagentSnapshot[] {
   const snapshots = new Map<string, SubagentSnapshot>();
   const terminalTurnIds = new Set<string>();
+  const resolvedIdsByParent = buildResolvedSubagentIdsByParent(events);
 
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
@@ -606,10 +623,25 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const incomingParentToolUseId = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
       ? event.parentToolUseId.trim()
       : null;
-    const parentMatch = findSubagentSnapshotByParent(snapshots, incomingParentToolUseId);
-    const existing = snapshots.get(id) ?? (taskId ? snapshots.get(taskId) : undefined) ?? parentMatch?.[1];
+    const parentPlaceholder = incomingParentToolUseId ? snapshots.get(incomingParentToolUseId) : undefined;
+    const parentResolvedIds = incomingParentToolUseId ? resolvedIdsByParent.get(incomingParentToolUseId) : undefined;
+    const parentIsPlaceholder = Boolean(
+      incomingParentToolUseId
+        && isParentSubagentPlaceholder(parentPlaceholder, incomingParentToolUseId),
+    );
+    const canAdoptParentPlaceholder = parentIsPlaceholder
+      && parentResolvedIds?.size === 1
+      && parentResolvedIds.has(id);
+    const taskAlias = taskId && taskId !== id ? snapshots.get(taskId) : undefined;
+    const existing = snapshots.get(id) ?? taskAlias ?? (canAdoptParentPlaceholder ? parentPlaceholder : undefined);
     if (taskId && id !== taskId) snapshots.delete(taskId);
-    if (parentMatch && parentMatch[0] !== id) snapshots.delete(parentMatch[0]);
+    if (
+      incomingParentToolUseId
+      && parentIsPlaceholder
+      && (canAdoptParentPlaceholder || (parentResolvedIds && parentResolvedIds.size > 1))
+    ) {
+      snapshots.delete(incomingParentToolUseId);
+    }
     const agentType = typeof event.agentType === "string" ? event.agentType : "subagent";
     const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : {};
     const parentToolUseId = incomingParentToolUseId ?? existing?.parentToolUseId ?? null;
@@ -786,6 +818,7 @@ type ContextDefaultArgs = {
   liveAgentCount: number;
   highlightedDrawerLane: LaneSummary | null;
   drawerMode: "chats" | "lanes";
+  chatInfo: Extract<RightPaneContent, { kind: "chat-info" }>["info"];
   subagentSnapshots: SubagentSnapshot[];
   provider: AdeCodeProvider;
   newChatSetup: { laneId: string; laneLabel: string; rows: SetupPaneRow[] } | null;
@@ -808,12 +841,10 @@ function resolveContextDefault(args: ContextDefaultArgs): RightPaneContent {
       rows: args.newChatSetup.rows,
     };
   }
-  if (args.activeSession && args.liveAgentCount > 0) {
+  if (args.activeSession) {
     return {
-      kind: "subagents",
-      tab: "subagents",
-      snapshots: args.subagentSnapshots,
-      provider: args.provider,
+      kind: "chat-info",
+      info: args.chatInfo,
     };
   }
   if (args.activeLane) {
@@ -1418,22 +1449,41 @@ type TerminalMouseInput = {
   x: number | null;
   y: number | null;
   direction?: "up" | "down" | "left" | "right";
+  shift?: boolean;
+  alt?: boolean;
+  ctrl?: boolean;
 };
+
+export type ChatSelectionState = ChatTextSelection & { active: boolean };
+export type ChatSelectionPoint = { row: number; column: number };
+type ChatSelectionEdgeDirection = "older" | "newer";
+
+const CTRL_C_EXIT_ARM_MS = 1500;
+const CHAT_SELECTION_EDGE_SCROLL_MS = 90;
+
+function withMouseModifiers(input: Omit<TerminalMouseInput, "shift" | "alt" | "ctrl">, code: number): TerminalMouseInput {
+  return {
+    ...input,
+    ...(code & 4 ? { shift: true } : {}),
+    ...(code & 8 ? { alt: true } : {}),
+    ...(code & 16 ? { ctrl: true } : {}),
+  };
+}
 
 function decodeMouseButton(code: number, x: number | null, y: number | null, pressed: boolean): TerminalMouseInput {
   if (!pressed) {
-    return { kind: "release", x, y };
+    return withMouseModifiers({ kind: "release", x, y }, code);
   }
   if (code & 64) {
     const wheelButton = code & 3;
-    if (wheelButton === 0) return { kind: "wheel", direction: "up", x, y };
-    if (wheelButton === 1) return { kind: "wheel", direction: "down", x, y };
-    if (wheelButton === 2) return { kind: "wheel", direction: "left", x, y };
-    return { kind: "wheel", direction: "right", x, y };
+    if (wheelButton === 0) return withMouseModifiers({ kind: "wheel", direction: "up", x, y }, code);
+    if (wheelButton === 1) return withMouseModifiers({ kind: "wheel", direction: "down", x, y }, code);
+    if (wheelButton === 2) return withMouseModifiers({ kind: "wheel", direction: "left", x, y }, code);
+    return withMouseModifiers({ kind: "wheel", direction: "right", x, y }, code);
   }
-  if ((code & 32) && (code & 3) === 0) return { kind: "drag", x, y };
-  if ((code & 3) === 0) return { kind: "click", x, y };
-  return { kind: "other", x, y };
+  if ((code & 32) && (code & 3) === 0) return withMouseModifiers({ kind: "drag", x, y }, code);
+  if ((code & 3) === 0) return withMouseModifiers({ kind: "click", x, y }, code);
+  return withMouseModifiers({ kind: "other", x, y }, code);
 }
 
 export function parseTerminalMouseInput(input: string): TerminalMouseInput | null {
@@ -1475,6 +1525,86 @@ export function clampChatScrollOffsetRows(value: number, maxOffset: number): num
   return Math.max(0, Math.min(Math.floor(value), safeMax));
 }
 
+export function isChatTextSelectionRange(selection: ChatTextSelection | null | undefined): selection is ChatTextSelection {
+  if (!selection) return false;
+  return selection.startRow !== selection.endRow || selection.startColumn !== selection.endColumn;
+}
+
+export function isCtrlCCopyPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32";
+}
+
+export function chatSelectionPointFromVisibleRows(
+  rows: ChatVisibleSelectionRow[],
+  visibleRow: number,
+  column: number,
+  clampToSelectable: boolean,
+): ChatSelectionPoint | null {
+  if (!rows.length) return null;
+  const safeVisibleRow = Math.max(0, Math.min(Math.floor(visibleRow), rows.length - 1));
+  const safeColumn = Math.max(0, Math.floor(column));
+  const exact = rows[safeVisibleRow];
+  if (exact && exact.sourceRow != null) {
+    return { row: exact.sourceRow, column: safeColumn };
+  }
+  if (!clampToSelectable) return null;
+  for (let distance = 1; distance < rows.length; distance += 1) {
+    const before = rows[safeVisibleRow - distance];
+    if (before?.sourceRow != null) return { row: before.sourceRow, column: safeColumn };
+    const after = rows[safeVisibleRow + distance];
+    if (after?.sourceRow != null) return { row: after.sourceRow, column: safeColumn };
+  }
+  return null;
+}
+
+export function moveChatSelectionFocusByRows(
+  selection: ChatSelectionState,
+  rowDelta: number,
+  rowCount: number,
+  column: number,
+): ChatSelectionState {
+  const maxRow = Math.max(0, rowCount - 1);
+  return {
+    ...selection,
+    endRow: Math.max(0, Math.min(maxRow, selection.endRow + rowDelta)),
+    endColumn: Math.max(0, Math.floor(column)),
+  };
+}
+
+export function chatSelectionFromAnchor(
+  anchor: ChatSelectionPoint,
+  point: ChatSelectionPoint,
+  active: boolean,
+): ChatSelectionState {
+  return {
+    startRow: anchor.row,
+    startColumn: anchor.column,
+    endRow: point.row,
+    endColumn: point.column,
+    active,
+  };
+}
+
+export function chatSelectionEdgeDirectionForMouseY({
+  y,
+  topRow,
+  rowBudget,
+  scrollOffsetRows,
+  maxScrollOffsetRows,
+}: {
+  y: number | null;
+  topRow: number;
+  rowBudget: number;
+  scrollOffsetRows: number;
+  maxScrollOffsetRows: number;
+}): ChatSelectionEdgeDirection | null {
+  if (y == null) return null;
+  const bottomRow = topRow + Math.max(1, rowBudget) - 1;
+  if (y < topRow && scrollOffsetRows < maxScrollOffsetRows) return "older";
+  if (y > bottomRow && scrollOffsetRows > 0) return "newer";
+  return null;
+}
+
 export function isTerminalMouseTrackingEnabled(value?: string): boolean {
   return !/^(0|false|no|off)$/i.test((value ?? "").trim());
 }
@@ -1497,11 +1627,6 @@ function useTerminalMouseTracking(): void {
 
 const DRAWER_PANE_WIDTH = 32;
 const MIN_CENTER_PANE_WIDTH = 24;
-// When the chat fills most of the terminal (drawer and/or right pane closed),
-// agent text can stretch into hard-to-read 200-char lines. Cap the wrap width
-// here so the rhythm stays comfortable; the rendered Box still fills the full
-// centerWidth, but the wrap budget passed to ChatView is bounded.
-const READABLE_CHAT_MAX_WIDTH = 110;
 const MIN_RIGHT_PANE_WIDTH = 30;
 const RIGHT_PANE_MAX_WIDTH = 42;
 const CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS = 3;
@@ -1514,12 +1639,8 @@ function safeCenterWidth(centerWidth: number): number {
   return Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(centerWidth, MIN_CENTER_PANE_WIDTH));
 }
 
-export function resolveChatWrapWidth(centerWidth: number, drawerOpen: boolean, rightPaneWidth: number): number {
-  const safeWidth = safeCenterWidth(centerWidth);
-  const bothSidePanesOpen = drawerOpen && rightPaneWidth > 0;
-  return bothSidePanesOpen
-    ? safeWidth
-    : Math.min(safeWidth, READABLE_CHAT_MAX_WIDTH);
+export function resolveChatWrapWidth(centerWidth: number, _drawerOpen: boolean, _rightPaneWidth: number): number {
+  return safeCenterWidth(centerWidth);
 }
 
 export function resolveTerminalPaneWidth(centerWidth: number): number {
@@ -1742,10 +1863,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [hideVimModeIndicator, setHideVimModeIndicator] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [interrupted, setInterrupted] = useState(false);
-  const [chatMouseSelection, setChatMouseSelection] = useState<(ChatTextSelection & { active: boolean }) | null>(null);
+  const [chatMouseSelection, setChatMouseSelection] = useState<ChatSelectionState | null>(null);
   const [clearedAt, setClearedAt] = useState<string | null>(null);
   const [expandedLineIds, setExpandedLineIds] = useState<Set<string>>(() => new Set());
   const [chatScrollOffsetRows, setChatScrollOffsetRows] = useState(0);
+  const [inspectedSubagentId, setInspectedSubagentId] = useState<string | null>(null);
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
@@ -1801,7 +1923,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const claudeTerminalSubmitQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const exitRequestedRef = useRef(false);
   const modelStateRef = useRef<AdeCodeModelState>(initialModelState());
-  const chatMouseSelectionRef = useRef<(ChatTextSelection & { active: boolean }) | null>(null);
+  const chatMouseSelectionRef = useRef<ChatSelectionState | null>(null);
+  const chatSelectionAnchorRef = useRef<ChatSelectionPoint | null>(null);
+  const selectableChatRowTextsRef = useRef<string[]>([]);
+  const chatSelectionEdgeScrollTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const chatSelectionEdgeScrollRef = useRef<{ direction: ChatSelectionEdgeDirection; column: number } | null>(null);
+  const ctrlCExitArmedUntilRef = useRef(0);
+  const ctrlCExitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const loadedSessionIdRef = useRef<string | null>(null);
   const providerModelsCacheRef = useRef<Map<AdeCodeProvider, AgentChatModelInfo[]>>(new Map());
   const pendingModelCommitTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -1845,7 +1973,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, []);
 
   const selectActiveLaneId = useCallback((laneId: string | null) => {
-    if (activeLaneIdRef.current !== laneId) setChatScrollOffset(0);
+    if (activeLaneIdRef.current !== laneId) {
+      setChatScrollOffset(0);
+      chatSelectionAnchorRef.current = null;
+      chatMouseSelectionRef.current = null;
+      setChatMouseSelection(null);
+    }
     activeLaneIdRef.current = laneId;
     setActiveLaneId(laneId);
     if (laneId && lastLaneIdRef.current !== laneId) {
@@ -1859,6 +1992,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setChatScrollOffset(0);
       setCurrentGoal(null);
       lastUserOpenedPaneRef.current = null;
+      chatSelectionAnchorRef.current = null;
+      chatMouseSelectionRef.current = null;
+      setChatMouseSelection(null);
     }
     if (!sessionId) {
       activeTerminalSessionRef.current = null;
@@ -1920,10 +2056,54 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }, 3000);
   }, [modelState]);
 
-  const updateChatMouseSelection = useCallback((selection: (ChatTextSelection & { active: boolean }) | null) => {
+  const updateChatMouseSelection = useCallback((selection: ChatSelectionState | null) => {
     chatMouseSelectionRef.current = selection;
     setChatMouseSelection(selection);
   }, []);
+
+  const stopChatSelectionEdgeScroll = useCallback(() => {
+    chatSelectionEdgeScrollRef.current = null;
+    if (chatSelectionEdgeScrollTimerRef.current) {
+      clearInterval(chatSelectionEdgeScrollTimerRef.current);
+      chatSelectionEdgeScrollTimerRef.current = null;
+    }
+  }, []);
+
+  const stepChatSelectionEdgeScroll = useCallback(() => {
+    const edge = chatSelectionEdgeScrollRef.current;
+    const selection = chatMouseSelectionRef.current;
+    if (!edge || !selection?.active) {
+      stopChatSelectionEdgeScroll();
+      return;
+    }
+    const rowCount = selectableChatRowTextsRef.current.length;
+    if (!rowCount) {
+      stopChatSelectionEdgeScroll();
+      return;
+    }
+    if (
+      (edge.direction === "older" && selection.endRow <= 0 && chatScrollOffsetRowsRef.current >= chatScrollMaxOffsetRef.current)
+      || (edge.direction === "newer" && selection.endRow >= rowCount - 1 && chatScrollOffsetRowsRef.current <= 0)
+    ) {
+      stopChatSelectionEdgeScroll();
+      return;
+    }
+    const rowDelta = edge.direction === "older" ? -1 : 1;
+    updateChatMouseSelection(moveChatSelectionFocusByRows(selection, rowDelta, rowCount, edge.column));
+    setChatScrollOffset((offset) => offset + (edge.direction === "older" ? 1 : -1));
+  }, [setChatScrollOffset, stopChatSelectionEdgeScroll, updateChatMouseSelection]);
+
+  const startChatSelectionEdgeScroll = useCallback((direction: ChatSelectionEdgeDirection, column: number) => {
+    chatSelectionEdgeScrollRef.current = { direction, column };
+    if (chatSelectionEdgeScrollTimerRef.current) return;
+    stepChatSelectionEdgeScroll();
+    chatSelectionEdgeScrollTimerRef.current = setInterval(stepChatSelectionEdgeScroll, CHAT_SELECTION_EDGE_SCROLL_MS);
+  }, [stepChatSelectionEdgeScroll]);
+
+  useEffect(() => () => {
+    stopChatSelectionEdgeScroll();
+    if (ctrlCExitTimerRef.current) clearTimeout(ctrlCExitTimerRef.current);
+  }, [stopChatSelectionEdgeScroll]);
 
   const stashActiveInput = useCallback(() => {
     const pane = activePaneRef.current;
@@ -2005,9 +2185,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [focusChat, focusDetails, rightOpen, rightPane.kind, selectFooterControl]);
 
   const cyclePaneFocus = useCallback(() => {
-    const order: PaneFocus[] = ["drawer", "chat", "details"];
+    const order: PaneFocus[] = [
+      ...(drawerOpen ? (["drawer"] as PaneFocus[]) : []),
+      "chat",
+      ...(rightOpen ? (["details"] as PaneFocus[]) : []),
+    ];
     const currentIndex = order.indexOf(activePaneRef.current);
-    const nextPane = order[(currentIndex + 1) % order.length] ?? "chat";
+    const nextPane = order[(currentIndex >= 0 ? currentIndex + 1 : 0) % order.length] ?? "chat";
     if (nextPane === "drawer") {
       focusDrawer();
     } else if (nextPane === "details") {
@@ -2015,7 +2199,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     } else {
       focusChat();
     }
-  }, [focusChat, focusDetails, focusDrawer]);
+  }, [drawerOpen, focusChat, focusDetails, focusDrawer, rightOpen]);
 
   const focusAfterDetails = useCallback(() => {
     if (paneBeforeDetailsRef.current === "drawer" && drawerOpen) {
@@ -2080,19 +2264,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     () => subagentSnapshots.filter((snap) => snap.status === "running").length,
     [subagentSnapshots],
   );
-  // Button visibility (shown in the inline model row) requires snapshots > 0.
-  // Command availability (typing /subagents) only requires a chat to attach to,
-  // so the slash command can open an empty-state pane.
-  const subagentsButtonVisible = Boolean(activeSession && !draftChatActive && subagentSnapshots.length > 0);
+  const chatInfo = useMemo(() => deriveChatInfoSnapshot({
+    events,
+    activeSession,
+    provider: modelState.provider,
+    modelLabel: modelState.displayName || modelState.model || modelState.provider,
+    laneLabel: activeLane?.name ?? null,
+    snapshots: subagentSnapshots,
+    tokenStats: statusLineStats,
+    goal: currentGoal,
+    streaming,
+    inspectedSubagentId,
+  }), [
+    activeLane?.name,
+    activeSession,
+    currentGoal,
+    events,
+    inspectedSubagentId,
+    modelState.displayName,
+    modelState.model,
+    modelState.provider,
+    statusLineStats,
+    streaming,
+    subagentSnapshots,
+  ]);
+  const chatInfoRef = useRef(chatInfo);
+  useEffect(() => {
+    chatInfoRef.current = chatInfo;
+  }, [chatInfo]);
+  // Chat info is available for any active chat; subagent rows fill in when
+  // the provider emits agent lifecycle events.
   const subagentPaneCommandAvailable = Boolean(activeSession && !draftChatActive);
-  const subagentPaneAvailable = subagentsButtonVisible;
   const subagentsButtonVisibleRef = useRef<boolean>(false);
   useEffect(() => {
-    subagentsButtonVisibleRef.current = subagentsButtonVisible;
-  }, [subagentsButtonVisible]);
+    subagentsButtonVisibleRef.current = subagentPaneCommandAvailable;
+  }, [subagentPaneCommandAvailable]);
   const footerControls = useMemo<FooterControl[]>(
-    () => footerControlsForAvailability(subagentPaneAvailable),
-    [subagentPaneAvailable],
+    () => footerControlsForAvailability(subagentPaneCommandAvailable),
+    [subagentPaneCommandAvailable],
   );
   const cycleFooterControl = useCallback((direction: 1 | -1) => {
     const controls: FooterControl[] = footerControls.length ? footerControls : ["drawer", "details"];
@@ -2103,34 +2312,40 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     selectFooterControl(controls[nextIndex] ?? "drawer");
   }, [footerControls, selectFooterControl]);
   useEffect(() => {
-    if (footerControl === "agents" && !subagentPaneAvailable) {
+    if (footerControl === "agents" && !subagentPaneCommandAvailable) {
       selectFooterControl(null);
     }
-  }, [footerControl, selectFooterControl, subagentPaneAvailable]);
+  }, [footerControl, selectFooterControl, subagentPaneCommandAvailable]);
   useEffect(() => {
     if (rightPaneKindRef.current !== rightPane.kind) {
-      if (rightPane.kind === "subagents") {
+      if (rightPane.kind === "chat-info") {
         setRightSelectionIndex(0);
       }
       rightPaneKindRef.current = rightPane.kind;
     }
   }, [rightPane.kind]);
   useEffect(() => {
-    if (subagentPaneAvailable || rightPane.kind !== "subagents") return;
-    // If the user explicitly opened via /subagents, keep the pane open with the
-    // empty state. Auto-close only fires for transient toggle-style openings
-    // when the snapshot list has drained.
-    if (lastUserOpenedPaneRef.current === "subagents") return;
-    setRightPane({ kind: "empty" });
-    setRightOpen(false);
-    if (activePaneRef.current === "details") {
-      focusChat();
-    }
-  }, [focusChat, rightPane.kind, subagentPaneAvailable]);
+    if (rightPane.kind !== "chat-info") return;
+    setRightPane({ kind: "chat-info", info: chatInfo });
+  }, [chatInfo, rightPane.kind]);
   useEffect(() => {
-    if (rightPane.kind !== "subagents") return;
-    setRightSelectionIndex((index) => clampSubagentSelection(rightPane, index));
+    const content = subagentPaneContentFromRightPane(rightPane);
+    if (!content) return;
+    // Chat-info exposes (snapshot count + 1) selectable rows: main row at 0,
+    // subagents at 1..N. Clamp prior selection back into range when the
+    // roster shrinks (e.g., a subagent finishes and is reaped).
+    const rowCount = buildSubagentPaneRows(content).filter((row) => row.kind === "snapshot").length;
+    setRightSelectionIndex((index) => Math.max(0, Math.min(Number.isFinite(index) ? Math.floor(index) : 0, rowCount)));
   }, [rightPane]);
+  useEffect(() => {
+    if (!inspectedSubagentId) return;
+    if (rightPane.kind !== "chat-info" || !rightOpen || !subagentSnapshots.some((snap) => snap.id === inspectedSubagentId)) {
+      setInspectedSubagentId(null);
+    }
+  }, [inspectedSubagentId, rightOpen, rightPane.kind, subagentSnapshots]);
+  useEffect(() => {
+    setInspectedSubagentId(null);
+  }, [activeSessionId]);
   const openSubagentsPane = useCallback((): boolean => {
     if (!subagentPaneCommandAvailable) return false;
     const previousPane = activePaneRef.current;
@@ -2143,31 +2358,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     setPrompt("");
     setInlineRowFocus({ cell: null });
     setRightPane({
-      kind: "subagents",
-      tab: "subagents",
-      snapshots: subagentSnapshots,
-      provider: (activeSession?.provider ?? modelState.provider) as AdeCodeProvider,
+      kind: "chat-info",
+      info: chatInfo,
     });
     setRightSelectionIndex(0);
     setRightOpen(true);
     setPaneFocus("details");
-    lastUserOpenedPaneRef.current = "subagents";
+    lastUserOpenedPaneRef.current = "chat-info";
     return true;
   }, [
-    activeSession?.provider,
-    modelState.provider,
+    chatInfo,
     selectFooterControl,
     setPaneFocus,
     stashActiveInput,
     subagentPaneCommandAvailable,
-    subagentSnapshots,
   ]);
   const toggleSubagentsPane = useCallback((): boolean => {
     if (!subagentPaneCommandAvailable) return true;
     selectFooterControl(null);
-    if (rightOpen && rightPane.kind === "subagents") {
+    if (rightOpen && rightPane.kind === "chat-info") {
       setRightOpen(false);
       lastUserOpenedPaneRef.current = null;
+      setInspectedSubagentId(null);
       focusChat();
       return true;
     }
@@ -2248,16 +2460,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const rightPaneMaxWidth = RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
   const centerWidth = resolveCenterPaneWidth(columns, drawerOpen, rightPaneWidth);
-  const promptRows = promptDisplayRows(prompt, Math.max(1, centerWidth - 5), PROMPT_MAX_ROWS);
+  const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(columns, MIN_CENTER_PANE_WIDTH));
+  const promptRows = promptDisplayRows(prompt, Math.max(1, promptPaneWidth - 5), PROMPT_MAX_ROWS);
   const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - statusRows - goalBannerRows);
   // Only cap the prose chat wrap width. Embedded CLI terminals should track the
   // center pane so PTYs resize when panes or the host window resize.
   const chatWrapWidth = resolveChatWrapWidth(centerWidth, drawerOpen, rightPaneWidth);
   const terminalPaneWidth = resolveTerminalPaneWidth(centerWidth);
   const selectedAgentSnapshot = useMemo(() => {
-    if (!rightOpen || activePane !== "details" || rightPane.kind !== "subagents") return null;
-    return selectedSubagentSnapshot(rightPane, rightSelectionIndex);
-  }, [activePane, rightOpen, rightPane, rightSelectionIndex]);
+    if (!rightOpen || rightPane.kind !== "chat-info" || !inspectedSubagentId) return null;
+    return subagentSnapshots.find((snapshot) => snapshot.id === inspectedSubagentId) ?? null;
+  }, [inspectedSubagentId, rightOpen, rightPane.kind, subagentSnapshots]);
   const displayEvents = useMemo(() => (
     selectedAgentSnapshot
       ? buildSubagentTranscriptEvents({ events, activeSession, snapshot: selectedAgentSnapshot })
@@ -2266,6 +2479,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
+  useEffect(() => {
+    chatSelectionAnchorRef.current = null;
+    stopChatSelectionEdgeScroll();
+    updateChatMouseSelection(null);
+  }, [selectedAgentSnapshot?.id, stopChatSelectionEdgeScroll, updateChatMouseSelection]);
   const spinTickActive = displayStreaming
     || mode === "connecting"
     || sessions.some((session) => session.status === "active")
@@ -2294,7 +2512,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const unseenMessageCount = effectiveChatScrollOffsetRows > 0
     ? Math.max(0, displayEvents.length - lastSeenAtBottomEventCountRef.current)
     : 0;
-  const visibleChatRowTexts = useMemo(() => renderChatVisibleRowTexts({
+  const visibleChatSelectionRows = useMemo(() => renderChatVisibleSelectionRows({
     events: displayEvents,
     notices: displayNotices,
     activeSession,
@@ -2317,6 +2535,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     expandedLineIds,
     unseenMessageCount,
   ]);
+  const selectableChatRowTexts = useMemo(() => renderChatSelectableRowTexts({
+    events: displayEvents,
+    notices: displayNotices,
+    activeSession,
+    expandedLineIds,
+    width: chatWrapWidth,
+    streaming: displayStreaming,
+    interrupted: displayInterrupted,
+  }), [
+    activeSession,
+    chatWrapWidth,
+    displayEvents,
+    displayInterrupted,
+    displayNotices,
+    displayStreaming,
+    expandedLineIds,
+  ]);
+  useEffect(() => {
+    selectableChatRowTextsRef.current = selectableChatRowTexts;
+  }, [selectableChatRowTexts]);
   const providerReadinessRows = useMemo(
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
@@ -2454,6 +2692,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       liveAgentCount,
       highlightedDrawerLane,
       drawerMode: drawerSection,
+      chatInfo,
       subagentSnapshots,
       provider: (activeSession?.provider ?? modelState.provider) as AdeCodeProvider,
       unavailableLaneIds,
@@ -2476,8 +2715,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       ) {
         return prev;
       }
-      // Avoid replacing a populated subagents view with an empty seed.
-      if (prev.kind === "subagents" && next.kind === "subagents") return prev;
       if (prev.kind === next.kind && next.kind === "empty") return prev;
       if (prev.kind === "new-chat-setup" && next.kind === "new-chat-setup" && prev.laneId === next.laneId) return prev;
       return next;
@@ -2486,6 +2723,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     activeLane,
     activeLaneId,
     activeSession,
+    chatInfo,
     draftChatActive,
     drawerLane,
     drawerLaneId,
@@ -2509,11 +2747,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             laneLabel: activeLane?.name ?? prev.laneLabel,
             rows: newChatSetupRows,
           }
-        : prev);
-    } else if (rightPane.kind === "subagents") {
-      const provider = activeSession?.provider ?? modelState.provider;
-      setRightPane((prev) => prev.kind === "subagents"
-        ? { ...prev, snapshots: subagentSnapshots, provider: provider as AdeCodeProvider }
         : prev);
     } else if (rightPane.kind === "lane-details") {
       setRightPane((prev) => prev.kind === "lane-details"
@@ -3490,6 +3723,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (event.type === "status" && event.turnStatus === "started") {
         setStreaming(true);
         setInterrupted(false);
+        if (activePaneRef.current !== "drawer") {
+          setRightPane((prev) => {
+            if (prev.kind === "chat-info") return { kind: "chat-info", info: chatInfoRef.current };
+            if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
+            setRightOpen(true);
+            return { kind: "chat-info", info: chatInfoRef.current };
+          });
+        }
       }
       if (event.type === "status" && event.turnStatus === "interrupted") {
         setStreaming(false);
@@ -3504,19 +3745,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setInterrupted(false);
       }
       if (event.type === "subagent_started" || event.type === "subagent.started") {
-        // Auto-open only when nothing important is showing. Otherwise the
-        // footer chip surfaces the live agent count without disrupting the user.
+        // Auto-open chat info only when the user is in the chat surface.
+        // Drawer navigation keeps lane details in the right pane.
+        if (activePaneRef.current === "drawer") return;
         setRightPane((prev) => {
-          if (prev.kind === "subagents") return prev;
+          if (prev.kind === "chat-info") return { kind: "chat-info", info: chatInfoRef.current };
           if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
           setRightOpen(true);
-          setPaneFocus("details");
-          const provider = (activeSessionRef.current?.provider ?? modelStateRef.current.provider) as AdeCodeProvider;
           return {
-            kind: "subagents",
-            tab: "subagents",
-            snapshots: [],
-            provider,
+            kind: "chat-info",
+            info: chatInfoRef.current,
           };
         });
       }
@@ -3901,37 +4139,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       .finally(() => exit());
   }, [exit, signalActiveTerminalForExit, signalActiveTerminalForExitSync]);
 
-  const copyVisibleTranscript = useCallback((): boolean => {
-    const transcript = renderChatTranscriptPlainText({
-      events: displayEvents,
-      notices: displayNotices,
-      activeSession,
-      expandedLineIds,
-      maxRows: chatRowBudget,
-      scrollOffsetRows: effectiveChatScrollOffsetRows,
-      width: chatWrapWidth,
-    }).trim();
-    if (!transcript) {
-      addNotice("No visible chat text to copy.", "info");
-      return true;
+  const requestCtrlCExit = useCallback(() => {
+    const now = Date.now();
+    if (now <= ctrlCExitArmedUntilRef.current) {
+      ctrlCExitArmedUntilRef.current = 0;
+      if (ctrlCExitTimerRef.current) {
+        clearTimeout(ctrlCExitTimerRef.current);
+        ctrlCExitTimerRef.current = null;
+      }
+      requestAppExit();
+      return;
     }
-    if (!writeClipboardText(transcript)) {
+    ctrlCExitArmedUntilRef.current = now + CTRL_C_EXIT_ARM_MS;
+    if (ctrlCExitTimerRef.current) clearTimeout(ctrlCExitTimerRef.current);
+    ctrlCExitTimerRef.current = setTimeout(() => {
+      ctrlCExitArmedUntilRef.current = 0;
+      ctrlCExitTimerRef.current = null;
+    }, CTRL_C_EXIT_ARM_MS);
+    addNotice("Press Ctrl+C again to exit ADE Code.", "info");
+  }, [addNotice, requestAppExit]);
+
+  const copyChatSelection = useCallback((selection: ChatTextSelection | null | undefined = chatMouseSelectionRef.current): boolean => {
+    if (!isChatTextSelectionRange(selection)) {
+      addNotice("No chat text selected.", "info");
+      return false;
+    }
+    const text = selectedTextFromChatRows(selectableChatRowTextsRef.current, selection);
+    if (text.length === 0) {
+      addNotice("No chat text selected.", "info");
+      return false;
+    }
+    if (!writeClipboardText(text)) {
       addNotice("Could not find a clipboard command for this terminal.", "error");
       return true;
     }
-    addNotice("Copied visible chat text.", "success");
+    addNotice("Copied selected chat text.", "success");
     return true;
-  }, [
-    activeSession,
-    addNotice,
-    chatRowBudget,
-    effectiveChatScrollOffsetRows,
-    chatWrapWidth,
-    displayEvents,
-    displayNotices,
-    expandedLineIds,
-    rightPane.kind,
-  ]);
+  }, [addNotice]);
 
   const sendOrSteerChatMessage = useCallback(async (
     sessionId: string,
@@ -4020,9 +4264,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         openModelRow();
         return;
       }
-      if (name === "/subagents") {
+      if (name === "/info") {
         if (!subagentPaneCommandAvailable) {
-          addNotice("Open a chat first to inspect subagents.", "info");
+          addNotice("Open a chat first to inspect chat info.", "info");
           return;
         }
         openSubagentsPane();
@@ -4530,9 +4774,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       openModelRow();
       return;
     }
-    if (name === "/subagents") {
+    if (name === "/info") {
       if (!subagentPaneCommandAvailable) {
-        addNotice("Open a chat first to inspect subagents.", "info");
+        addNotice("Open a chat first to inspect chat info.", "info");
         return;
       }
       openSubagentsPane();
@@ -4598,10 +4842,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setEvents([]);
       setChatScrollOffset(0);
       addNotice("Local transcript view cleared. The durable chat remains in ADE.", "info");
-      return;
-    }
-    if (name === "/copy") {
-      copyVisibleTranscript();
       return;
     }
     const conn = connectionRef.current;
@@ -4781,7 +5021,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, copyVisibleTranscript, displaySessions, loadProviderModels, modelState.provider, pendingSteers, project, refreshAiSetupStatus, refreshState, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, displaySessions, loadProviderModels, modelState.provider, pendingSteers, project, refreshAiSetupStatus, refreshState, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
@@ -5756,19 +5996,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "selection:copy") {
-      return copyVisibleTranscript();
+      copyChatSelection();
+      return true;
     }
     if (action.startsWith("selection:")) {
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyVisibleTranscript, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
     y: number | null,
     clampToChat: boolean,
-  ): { row: number; column: number } | null => {
+  ): ChatSelectionPoint | null => {
     if (x == null || y == null) return null;
     const drawerWidth = drawerOpen ? DRAWER_PANE_WIDTH : 0;
     const textStartColumn = drawerWidth + 2;
@@ -5778,18 +6019,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!clampToChat && (x < textStartColumn || x > textEndColumn || y < topRow || y > bottomRow)) {
       return null;
     }
-    const row = Math.max(0, Math.min(y - topRow, Math.max(0, chatRowBudget - 1)));
+    const visibleRow = Math.max(0, Math.min(y - topRow, Math.max(0, chatRowBudget - 1)));
     const column = Math.max(0, Math.min(x - textStartColumn, Math.max(0, chatWrapWidth - 1)));
-    return { row, column };
-  }, [chatRowBudget, chatWrapWidth, drawerOpen, goalBannerRows]);
+    return chatSelectionPointFromVisibleRows(visibleChatSelectionRows, visibleRow, column, clampToChat);
+  }, [chatRowBudget, chatWrapWidth, drawerOpen, goalBannerRows, visibleChatSelectionRows]);
 
-  const copyChatMouseSelection = useCallback((selection: ChatTextSelection): void => {
-    const text = selectedTextFromVisibleChatRows(visibleChatRowTexts, selection);
-    if (!text) return;
-    if (!writeClipboardText(text)) {
-      addNotice("Could not find a clipboard command for this terminal.", "error");
-    }
-  }, [addNotice, visibleChatRowTexts]);
+  const chatSelectionEdgeFromMouseY = useCallback((y: number | null): ChatSelectionEdgeDirection | null => {
+    const topRow = 2 + goalBannerRows;
+    return chatSelectionEdgeDirectionForMouseY({
+      y,
+      topRow,
+      rowBudget: chatRowBudget,
+      scrollOffsetRows: chatScrollOffsetRowsRef.current,
+      maxScrollOffsetRows: chatScrollMaxOffsetRef.current,
+    });
+  }, [chatRowBudget, goalBannerRows]);
 
   useInput((input, key) => {
     if (attachedTerminalIdRef.current) {
@@ -5812,22 +6056,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (mouse) {
       const activeSelection = chatMouseSelectionRef.current;
       if (mouse.kind === "click") {
+        stopChatSelectionEdgeScroll();
         const point = chatPointFromMouse(mouse.x, mouse.y, false);
         if (point) {
           focusChat();
-          updateChatMouseSelection({
-            startRow: point.row,
-            startColumn: point.column,
-            endRow: point.row,
-            endColumn: point.column,
-            active: true,
-          });
+          const shiftAnchor = chatSelectionAnchorRef.current
+            ?? (activeSelection ? { row: activeSelection.startRow, column: activeSelection.startColumn } : null);
+          if (mouse.shift && shiftAnchor) {
+            updateChatMouseSelection(chatSelectionFromAnchor(shiftAnchor, point, true));
+          } else {
+            chatSelectionAnchorRef.current = point;
+            updateChatMouseSelection({
+              startRow: point.row,
+              startColumn: point.column,
+              endRow: point.row,
+              endColumn: point.column,
+              active: true,
+            });
+          }
           return;
         }
+        chatSelectionAnchorRef.current = null;
         if (activeSelection) updateChatMouseSelection(null);
       }
       if (mouse.kind === "drag" && activeSelection?.active) {
         const point = chatPointFromMouse(mouse.x, mouse.y, true);
+        const edge = chatSelectionEdgeFromMouseY(mouse.y);
+        if (edge) startChatSelectionEdgeScroll(edge, point?.column ?? activeSelection.endColumn);
+        else stopChatSelectionEdgeScroll();
         if (point) {
           updateChatMouseSelection({
             ...activeSelection,
@@ -5839,6 +6095,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (mouse.kind === "release" && activeSelection?.active) {
+        stopChatSelectionEdgeScroll();
         const point = chatPointFromMouse(mouse.x, mouse.y, true);
         const next = point
           ? {
@@ -5849,8 +6106,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             }
           : { ...activeSelection, active: false };
         const collapsed = next.startRow === next.endRow && next.startColumn === next.endColumn;
+        chatSelectionAnchorRef.current = { row: next.startRow, column: next.startColumn };
         updateChatMouseSelection(collapsed ? null : next);
-        if (!collapsed) copyChatMouseSelection(next);
         return;
       }
 
@@ -5861,29 +6118,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const inCenterPane = mouse.x == null || (mouse.x >= centerStart && mouse.x <= centerEnd);
       const inTranscriptRows = mouse.y == null || mouse.y > 2;
       if (mouse.kind === "wheel" && inCenterPane && inTranscriptRows) {
-        updateChatMouseSelection(null);
         if (mouse.direction === "up") {
           setChatScrollOffset((offset) => offset + 3);
         } else if (mouse.direction === "down") {
           setChatScrollOffset((offset) => offset - 3);
         }
-      } else if (mouse.kind === "click" && rightWidth > 0 && rightPane.kind === "subagents" && mouse.x != null && mouse.y != null) {
+      } else if (
+        mouse.kind === "click"
+        && rightWidth > 0
+        && rightPane.kind === "chat-info"
+        && mouse.x != null
+        && mouse.y != null
+      ) {
         const rightStart = columns - rightWidth + 1;
         if (mouse.x >= rightStart) {
           const subagentPaneTop = 4 + goalBannerRows;
-          const nextIndex = subagentIndexForPaneLine(rightPane, mouse.y - subagentPaneTop);
+          const subagentContent = subagentPaneContentFromRightPane(rightPane);
+          const nextIndex = subagentContent ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex) : null;
           if (nextIndex != null) {
             setRightSelectionIndex(nextIndex);
           }
-          setChatScrollOffset(0);
           setRightOpen(true);
           setPaneFocus("details");
         }
       }
       return;
     }
-
-    if (chatMouseSelectionRef.current) updateChatMouseSelection(null);
 
     const pane = activePaneRef.current;
     const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
@@ -6162,6 +6422,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    if (key.escape && chatMouseSelectionRef.current) {
+      stopChatSelectionEdgeScroll();
+      chatSelectionAnchorRef.current = null;
+      updateChatMouseSelection(null);
+      return;
+    }
+
     if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
       if (key.escape) {
         setVimMode("normal");
@@ -6194,6 +6461,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (key.escape) {
+      // First Esc unwinds a subagent transcript back to the main chat; the
+      // right pane stays focused on the main agent's info, so a second Esc
+      // would close the pane normally.
+      if (
+        pane === "details"
+        && rightOpen
+        && rightPane.kind === "chat-info"
+        && inspectedSubagentId
+      ) {
+        setInspectedSubagentId(null);
+        setChatScrollOffset(0);
+        return;
+      }
       if (pane === "details" && rightOpen) {
         if (rightPane.kind === "form") {
           const values = currentFormValues();
@@ -6240,7 +6520,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (key.ctrl && input === "c") {
+    if (key.meta && input.toLowerCase() === "c") {
+      copyChatSelection();
+      return;
+    }
+
+    if ((key.ctrl && input === "c") || input === "\x03") {
+      if (isCtrlCCopyPlatform() && isChatTextSelectionRange(chatMouseSelectionRef.current)) {
+        copyChatSelection();
+        return;
+      }
       const conn = connectionRef.current;
       const sessionId = activeSessionIdRef.current;
       const activeTurnVisible = streaming || activeSession?.status === "active";
@@ -6252,7 +6541,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         return;
       }
-      requestAppExit();
+      requestCtrlCExit();
       return;
     }
 
@@ -6286,22 +6575,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (
       pane === "details"
       && rightOpen
-      && rightPane.kind === "subagents"
-      && (key.upArrow || key.downArrow || key.return || input === "k")
+      && rightPane.kind === "chat-info"
+      && (key.upArrow || key.downArrow || key.return)
     ) {
-      const rows = buildSubagentPaneRows(rightPane);
+      const subagentContent = subagentPaneContentFromRightPane(rightPane);
+      if (!subagentContent) return;
+      const snapshotRows = buildSubagentPaneRows(subagentContent)
+        .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
+      // Selection: 0 = main row; 1..N = subagent rows.
+      const selectableCount = snapshotRows.length + 1;
       if (key.upArrow || key.downArrow) {
         const delta = key.upArrow ? -1 : 1;
-        setRightSelectionIndex((index) => rows.length ? (index + delta + rows.length) % rows.length : 0);
-        setChatScrollOffset(0);
+        setRightSelectionIndex((index) => (index + delta + selectableCount) % selectableCount);
         return;
       }
       if (key.return) {
+        const row = rightSelectionIndex > 0 ? snapshotRows[rightSelectionIndex - 1] : null;
+        const snapshot: SubagentSnapshot | null = row ? row.snapshot : null;
+        setInspectedSubagentId(snapshot?.id ?? null);
         setChatScrollOffset(0);
         return;
-      }
-      if (input === "k") {
-        addNotice("Subagent kill is not wired in this TUI yet.", "info");
       }
       return;
     }
@@ -6717,7 +7010,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const drawerFooterSelected = footerControl === "drawer";
   const detailsFooterSelected = footerControl === "details";
   const agentsFooterSelected = footerControl === "agents";
-  const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "subagents";
+  const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showMentionPalette = activeMentionRange != null && mentionSuggestions.length > 0;
   const showSlashPalette = prompt.startsWith("/") && slashRows.length > 0;
   const modelStatusOverlayRows = statusRows
@@ -6863,7 +7156,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             <Text color={theme.color.t3}>{` · ${modeDescription(modeChangeNotice.summary)}`}</Text>
           </Box>
         ) : null}
-        <Box borderStyle="round" borderColor={isPlanMode(modelState) ? theme.color.planMode : (promptFocused ? PURPLE : theme.color.border)} paddingX={1} flexShrink={0} flexDirection="column">
+        <Box
+          borderStyle="round"
+          borderColor={isPlanMode(modelState) ? theme.color.planMode : (promptFocused ? PURPLE : theme.color.border)}
+          paddingX={1}
+          flexShrink={0}
+          flexDirection="column"
+          width={promptPaneWidth}
+        >
           {promptRows.map((line, index) => {
             const last = index === promptRows.length - 1;
             return (
@@ -6895,7 +7195,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           inlineRowFocused={inlineRowFocused}
           inlineRowCell={inlineRowFocus.cell}
           providerLocked={providerLocked}
-          subagentsButtonVisible={subagentsButtonVisible}
+          subagentsButtonVisible={subagentPaneCommandAvailable}
           planMode={isPlanMode(modelState)}
           terminalControlAvailable={claudeTerminalControlAvailable}
           terminalControlActive={claudeTerminalControlActive}

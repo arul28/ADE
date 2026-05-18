@@ -12,6 +12,7 @@ import {
   modelToCliFlag,
   normalizeCliFlagValue,
   resolveClaudeCliModelForLaunch,
+  sanitizeTrackedCliResumeTargetId,
 } from "../../shared/cliLaunch";
 
 const OSC_133_REGEX = /\u001b\]133;([ABCD])(?:;[^\u0007\u001b]*)?(?:\u0007|\u001b\\)/g;
@@ -28,13 +29,7 @@ function commandArrayToLine(parts: string[]): string {
   return parts.map(shellQuote).join(" ");
 }
 
-export function sanitizeResumeTargetId(value: string | null | undefined): string | null {
-  const target = String(value ?? "").trim();
-  if (!target) return null;
-  if (/[\x00-\x1F\x7F]/.test(target)) return null;
-  if (target.startsWith("-")) return null;
-  return target;
-}
+export const sanitizeResumeTargetId = sanitizeTrackedCliResumeTargetId;
 
 function normalizeCommand(raw: string): string {
   return raw
@@ -82,7 +77,7 @@ function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | nu
 
 function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--dangerously-bypass-approvals-and-sandbox"];
-  if (permissionMode === "default") return ["--full-auto"];
+  if (permissionMode === "default") return ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"];
   if (permissionMode === "edit") return ["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"];
   if (permissionMode === "plan") return ["--sandbox", "read-only", "--ask-for-approval", "on-request"];
   return [];

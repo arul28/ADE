@@ -3,60 +3,66 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
-import type { RightPaneContent, SubagentSnapshot } from "./types";
+import type { AdeCodeProvider, RightPaneContent, SubagentSnapshot } from "./types";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
 
-export type SubagentPaneSection = "main" | "subagents" | "teammates" | "background" | "recent";
+export type SubagentPaneSection = "main" | "subagents" | "teammates" | "background";
 
 export type SubagentPaneRow =
   | { kind: "main"; key: "main"; section: "main"; label: string }
   | { kind: "snapshot"; key: string; section: Exclude<SubagentPaneSection, "main">; snapshot: SubagentSnapshot };
 
+// Vertical offset of the first selectable roster row in the rendered chat-info
+// pane (header + status + plan + goal occupy the preceding lines). Used only by
+// the mouse-click → row mapper.
 const SUBAGENT_PANE_TABLE_START_LINE = 4;
 
-export function buildSubagentPaneRows(content: Extract<RightPaneContent, { kind: "subagents" }>): SubagentPaneRow[] {
-  const runningSubagents = content.snapshots.filter((snap) => (
+export type SubagentPaneContent = {
+  provider: AdeCodeProvider;
+  snapshots: SubagentSnapshot[];
+};
+
+export function subagentPaneContentFromRightPane(content: RightPaneContent): SubagentPaneContent | null {
+  if (content.kind === "chat-info") {
+    return {
+      provider: content.info.provider,
+      snapshots: content.info.snapshots,
+    };
+  }
+  return null;
+}
+
+export function buildSubagentPaneRows(content: SubagentPaneContent): SubagentPaneRow[] {
+  const foregroundSubagents = content.snapshots.filter((snap) => (
     snap.kind === "subagent"
     && snap.background !== true
-    && snap.status === "running"
   ));
+  const runningWeight = (snap: SubagentSnapshot): number => (snap.status === "running" ? 0 : 1);
+  const sortedForegroundSubagents = [...foregroundSubagents].sort(
+    (left, right) => runningWeight(left) - runningWeight(right),
+  );
   const teammates = content.snapshots.filter((snap) => snap.kind === "teammate");
   const background = content.snapshots.filter((snap) => snap.kind === "subagent" && snap.background === true);
-  const recent = content.snapshots.filter((snap) => (
-    snap.kind === "subagent"
-    && snap.background !== true
-    && snap.status !== "running"
-  ));
 
   return [
     { kind: "main", key: "main", section: "main", label: "main" },
-    ...runningSubagents.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "subagents" as const, snapshot })),
+    ...sortedForegroundSubagents.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "subagents" as const, snapshot })),
     ...teammates.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "teammates" as const, snapshot })),
     ...background.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "background" as const, snapshot })),
-    ...recent.map((snapshot) => ({ kind: "snapshot" as const, key: snapshot.id, section: "recent" as const, snapshot })),
   ];
 }
 
 export function selectedSubagentSnapshot(
-  content: Extract<RightPaneContent, { kind: "subagents" }>,
+  content: SubagentPaneContent,
   selectedIndex: number,
 ): SubagentSnapshot | null {
   const row = buildSubagentPaneRows(content)[selectedIndex] ?? null;
   return row?.kind === "snapshot" ? row.snapshot : null;
 }
 
-export function clampSubagentSelection(
-  content: Extract<RightPaneContent, { kind: "subagents" }>,
-  selectedIndex: number,
-): number {
-  const rowCount = buildSubagentPaneRows(content).length;
-  if (rowCount <= 0) return 0;
-  if (!Number.isFinite(selectedIndex)) return 0;
-  return Math.max(0, Math.min(Math.floor(selectedIndex), rowCount - 1));
-}
-
 export function subagentPaneSelectableLineOffsets(
-  content: Extract<RightPaneContent, { kind: "subagents" }>,
+  content: SubagentPaneContent,
+  selectedIndex = 0,
 ): number[] {
   const rows = buildSubagentPaneRows(content);
   const offsets: number[] = [];
@@ -69,7 +75,10 @@ export function subagentPaneSelectableLineOffsets(
     if (showSection) line += 2;
     offsets.push(line);
     line += 1;
-    if (row.kind === "main" || row.snapshot.lastToolName || row.snapshot.summary) {
+    const selectedSnapshotHasDetail = row.kind === "snapshot"
+      && index === selectedIndex
+      && (row.snapshot.lastToolName || row.snapshot.summary);
+    if (row.kind === "main" || selectedSnapshotHasDetail) {
       line += 1;
     }
   }
@@ -78,11 +87,12 @@ export function subagentPaneSelectableLineOffsets(
 }
 
 export function subagentIndexForPaneLine(
-  content: Extract<RightPaneContent, { kind: "subagents" }>,
+  content: SubagentPaneContent,
   line: number,
+  selectedIndex = 0,
 ): number | null {
   if (!Number.isFinite(line)) return null;
-  const offsets = subagentPaneSelectableLineOffsets(content);
+  const offsets = subagentPaneSelectableLineOffsets(content, selectedIndex);
   if (!offsets.length) return null;
   const first = offsets[0]!;
   const last = offsets[offsets.length - 1]!;
@@ -142,7 +152,8 @@ function isLifecycleEventForSnapshot(event: AgentChatEvent, snapshot: SubagentSn
   ) {
     return false;
   }
-  if (eventSubagentIds(event).includes(snapshot.id)) return true;
+  const explicitIds = eventSubagentIds(event);
+  if (explicitIds.length > 0) return explicitIds.includes(snapshot.id);
   const parentToolUseId = eventParentToolUseId(event);
   return Boolean(snapshot.parentToolUseId && parentToolUseId === snapshot.parentToolUseId);
 }
@@ -158,7 +169,7 @@ function lifecycleText(event: AgentChatEvent, snapshot: SubagentSnapshot): strin
     status?: unknown;
   };
   if (type === "subagent_started" || type === "subagent.started") {
-    return `Subagent started: ${textField(record.description) ?? snapshot.name}`;
+    return "Started.";
   }
   if (type === "subagent_progress" || type === "subagent.progress") {
     return textField(record.summary) ?? textField(record.text) ?? null;
@@ -222,7 +233,7 @@ export function buildSubagentTranscriptEvents(args: {
       args.snapshot.startedAt ?? args.events[0]?.timestamp ?? new Date(0).toISOString(),
       -2,
       args.snapshot.turnId,
-      `Viewing ${args.snapshot.kind === "teammate" ? "teammate" : args.snapshot.background ? "background agent" : "subagent"}: ${args.snapshot.name}\nLeave the agents pane to return to the main chat.`,
+      `Viewing ${args.snapshot.kind === "teammate" ? "teammate" : args.snapshot.background ? "background agent" : "agent"} transcript. Select Main chat in Chat Info to return.\nTask: ${args.snapshot.name}`,
     ),
   ];
 

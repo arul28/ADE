@@ -1271,16 +1271,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
-      // Refresh the session list before activating the tab so the new
-      // session is in sessionsById when the UI resolves activeSession.
-      try {
-        await refresh({ force: true });
-      } catch {
-        // Best-effort: if refresh fails the session was still created,
-        // so proceed to focus/open it.
-      }
       focusSession(result.sessionId);
       openSessionTab(result.sessionId);
+      // Reconcile with persisted backend state in the background. The
+      // optimistic row already has the returned pty/session ids, so opening it
+      // immediately lets TerminalView subscribe before fast TUIs draw their
+      // initial frame.
+      void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
     [focusSession, lanes, openSessionTab, refresh, selectLane],

@@ -94,7 +94,7 @@ describe("FooterControls", () => {
     expect(frame).toContain("full-auto");
   });
 
-  it("renders the resting hint strip with lanes/info/subagents/cmds/help", () => {
+  it("renders the resting hint strip with lanes/pane/chat-info/cmds/help", () => {
     const result = render(
       <FooterControls
         provider="codex"
@@ -107,9 +107,10 @@ describe("FooterControls", () => {
     expect(frame).toContain("^o");
     expect(frame).toContain("lanes");
     expect(frame).toContain("^p");
-    expect(frame).toContain("info");
+    expect(frame).toContain("pane");
     expect(frame).toContain("^a");
-    expect(frame).toContain("subagents");
+    expect(frame).toContain("chat info");
+    expect(frame).not.toContain("subagents");
     expect(frame).toContain("cmds");
     expect(frame).toContain("help");
   });
@@ -187,7 +188,7 @@ describe("FooterControls", () => {
     expect(frame).toContain("acceptEdits");
   });
 
-  it("renders the subagents button when visible and counts agents", () => {
+  it("renders the chat info button when visible and counts agents", () => {
     const result = render(
       <FooterControls
         provider="claude"
@@ -199,7 +200,7 @@ describe("FooterControls", () => {
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("2 subagents");
+    expect(frame).toContain("chat info · 2");
   });
 
   it("renders the approval prompt hints when an approval is active", () => {

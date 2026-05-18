@@ -230,6 +230,37 @@ function snapshotRuns(row: TerminalSnapshotRow): Array<{ text: string; style: CS
   return runs;
 }
 
+const TUI_FRAME_CHARS = /[╭╮╰╯│─┌┐└┘├┤┬┴┼▐▌▀▄█▛▜▝▘]/;
+
+function cellHasVisibleStyle(cell: TerminalSnapshotCell): boolean {
+  const hasText = (cell.text || " ") !== " ";
+  const hasTextStyle = (
+    cell.fgMode !== "default"
+    || cell.bgMode !== "default"
+    || Boolean(cell.bold)
+    || Boolean(cell.dim)
+    || Boolean(cell.italic)
+    || Boolean(cell.underline)
+    || Boolean(cell.inverse)
+    || Boolean(cell.strikethrough)
+  );
+  if (hasText) return hasTextStyle;
+  return cell.bgMode !== "default" || Boolean(cell.inverse);
+}
+
+function snapshotLooksLikeTui(rows: TerminalSnapshotRow[]): boolean {
+  let nonBlankRows = 0;
+  let styledCells = 0;
+  for (const row of rows) {
+    const text = row.text.trimEnd();
+    const visibleStyleCells = row.cells.filter(cellHasVisibleStyle).length;
+    if (text.trim() || visibleStyleCells > 0) nonBlankRows += 1;
+    if (TUI_FRAME_CHARS.test(text)) return true;
+    styledCells += visibleStyleCells;
+  }
+  return nonBlankRows >= 3 && styledCells >= 8;
+}
+
 function TerminalSnapshotTranscript({ rows }: { rows: TerminalSnapshotRow[] }) {
   const renderedRows = useMemo(() => withStableDuplicateKeys(rows, (row) => [
     row.text,
@@ -789,6 +820,7 @@ function ClosedCliSessionSurface({
   const useSnapshotPreview = snapshotRows.length > 0 && (
     preview?.session?.status === "running"
     || !preview?.transcript
+    || snapshotLooksLikeTui(snapshotRows)
   );
   const transcriptText = stripTerminalControls(preview?.transcript ?? "").trimEnd()
     || session.lastOutputPreview

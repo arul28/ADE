@@ -120,6 +120,10 @@ function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
 }
 
+function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(env, key);
+}
+
 function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
   if (platform !== "darwin") return null;
   if (arch === "arm64") return "darwin-arm64";
@@ -177,8 +181,14 @@ export function ensureNodePtySpawnHelperExecutable({
   }
 }
 
-function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function withInteractiveTerminalColorEnv(
+  env: NodeJS.ProcessEnv,
+  opts: { preserveNoColor?: boolean } = {},
+): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...env };
+  if (!opts.preserveNoColor) {
+    delete next.NO_COLOR;
+  }
   const term = next.TERM?.trim().toLowerCase() ?? "";
   if (!term || term === "dumb") {
     next.TERM = "xterm-256color";
@@ -186,7 +196,7 @@ function withInteractiveTerminalColorEnv(env: NodeJS.ProcessEnv): NodeJS.Process
   if (!hasEnvValue(next, "COLORTERM")) {
     next.COLORTERM = "truecolor";
   }
-  if (!hasEnvValue(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
+  if (!hasEnvKey(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
     next.FORCE_COLOR = "1";
   }
   return next;
@@ -2425,9 +2435,11 @@ export function createPtyService({
           .catch(() => {});
       }
 
+      const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
+      const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const baseLaunchEnv = {
         ...process.env,
-        ...((await getLaneRuntimeEnv?.(laneId)) ?? {}),
+        ...laneRuntimeEnv,
         ...(args.env ?? {})
       };
       const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
@@ -2435,7 +2447,10 @@ export function createPtyService({
         laneId,
         chatSessionId,
       });
-      const launchEnv = withInteractiveTerminalColorEnv(getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv);
+      const launchEnv = withInteractiveTerminalColorEnv(
+        getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
+        { preserveNoColor: explicitNoColor },
+      );
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)

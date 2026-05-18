@@ -149,6 +149,22 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroup!.entries.map((e) => e.itemId)).toEqual(["kept-1"]);
   });
 
+  it("groups meaningful runtime activity while suppressing generic thinking heartbeats", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "thinking", detail: "Thinking through the answer", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "activity", activity: "reading", detail: "apps/ade-cli/src/tuiClient/app.tsx", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "child launch spam", turnId: "turn-1" }),
+    ];
+
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
+
+    expect(activity).toBeDefined();
+    expect(activity!.entries[0]).toMatchObject({ label: "reading", detail: "apps/ade-cli/src/tuiClient/app.tsx" });
+    expect(activity!.entries[1]).toMatchObject({ label: "subagent started" });
+    expect(activity!.entries[1]).not.toHaveProperty("detail");
+  });
+
   it("marks tool-calls-group and files-changed-group as not-live without stamping turn duration", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: {}, itemId: "t1", turnId: "turn-1" }),

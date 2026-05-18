@@ -194,6 +194,17 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     shell executes the CLI. Direct launches that succeeded skip this —
     they already received argv. Returns `{ ptyId, sessionId, pid }`.
 
+The launch env is built layer by layer: `process.env`, the lane
+runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
+`withAdeTerminalContextEnv` (project / lane / chat ids), then
+`withInteractiveTerminalColorEnv`. The color helper sets a sensible
+`TERM` (`xterm-256color`) and `COLORTERM` (`truecolor`) when missing
+and unsets `NO_COLOR` so TUIs render in color by default. If the
+caller or the lane env explicitly set `NO_COLOR`, the helper is called
+with `preserveNoColor: true` and leaves it alone. Without this, a
+user-global `NO_COLOR=1` would silently break Claude / Codex /
+OpenCode rendering inside Work tabs.
+
 ### Data, preview, and runtime state
 
 `writeTranscript(entry, data)` writes to the append-mode write stream.

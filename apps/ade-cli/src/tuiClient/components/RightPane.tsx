@@ -2,12 +2,13 @@ import React from "react";
 import { Box, Text } from "ink";
 import type {
   AdeCodeProvider,
+  ChatInfoPlanStep,
+  ChatInfoSnapshot,
   RightPaneContent,
   SubagentSnapshot,
 } from "../types";
 import { theme } from "../theme";
-import { useSpinFrame } from "../spinTick";
-import { buildSubagentPaneRows, type SubagentPaneRow, type SubagentPaneSection } from "../subagentPane";
+import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -352,7 +353,7 @@ function LaneDetailsPane({
         </>
       ) : null}
 
-      <LaneSectionHead title="RUN" hint="s · subagents" width={contentWidth} />
+      <LaneSectionHead title="RUN" hint="s · chat info" width={contentWidth} />
       {content.run ? (
         <LaneRunSummary run={content.run} width={contentWidth} />
       ) : (
@@ -367,12 +368,26 @@ function LaneDetailsPane({
 }
 
 // ---------------------------------------------------------------------------
-// Agents pane (Subagents · Teammates) — htop process table, runtime-adaptive
+// Chat-info pane — main agent dashboard + subagent roster (cross-pane navigator)
 // ---------------------------------------------------------------------------
 
-function subagentExec(snapshot: SubagentSnapshot, provider: AdeCodeProvider): AdeCodeProvider | "copilot" {
-  if (snapshot.kind === "teammate") return "copilot";
-  return provider;
+function planStepColor(status: ChatInfoPlanStep["status"]): string {
+  if (status === "completed") return theme.color.done;
+  if (status === "failed") return theme.color.error;
+  if (status === "in_progress") return theme.color.running;
+  return theme.color.t4;
+}
+
+function planStepGlyph(status: ChatInfoPlanStep["status"]): string {
+  if (status === "completed") return "✓";
+  if (status === "failed") return "✗";
+  if (status === "in_progress") return "◐";
+  return "○";
+}
+
+function secondsElapsed(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  return formatElapsed(Math.max(0, seconds) * 1000);
 }
 
 function subagentAgentKind(status: SubagentSnapshot["status"]): "running" | "ok" | "waiting" | "error" {
@@ -382,244 +397,213 @@ function subagentAgentKind(status: SubagentSnapshot["status"]): "running" | "ok"
   return "error";
 }
 
-function SpinningAgentGlyph({ color }: { color: string }) {
-  const frame = useSpinFrame();
-  return <Text color={color}>{frame}</Text>;
+function isGenericSubagentSummary(value: string | undefined): boolean {
+  const text = (value ?? "").trim().toLowerCase();
+  return !text
+    || text === "agent closed"
+    || text === "stopped"
+    || text === "agent closedstopped"
+    || text.startsWith("parent turn ended before ade received");
 }
 
-function subagentSectionTitle(section: SubagentPaneSection): string {
-  if (section === "main") return "MAIN";
-  if (section === "teammates") return "TEAMMATES";
-  if (section === "background") return "BACKGROUND";
-  if (section === "recent") return "RECENT · DONE";
-  return "SUBAGENTS";
+function rosterRowDetail(snapshot: SubagentSnapshot): string | null {
+  const parts = [snapshot.lastToolName, snapshot.summary]
+    .filter((value): value is string => !isGenericSubagentSummary(value));
+  const unique = parts.filter((part, index) => parts.indexOf(part) === index);
+  return unique.length ? unique.join(" · ") : null;
 }
 
-function subagentSectionCount(rows: SubagentPaneRow[], section: SubagentPaneSection): number {
-  return rows.filter((row) => row.section === section).length;
-}
-
-function SubagentMainRow({
-  selected,
-  provider,
-  nameWidth,
-}: {
-  selected: boolean;
-  provider: AdeCodeProvider;
-  nameWidth: number;
-}) {
-  const brand = theme.provider(provider);
+function ChatInfoSectionHead({ title, hint, color }: { title: string; hint?: string; color: string }) {
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
-        <Text> </Text>
-        <Text color={theme.color.running}>●</Text>
-        <Text color={theme.color.t4}> 00 </Text>
-        <ExecGlyph provider={provider} />
-        <Text color={selected ? theme.color.violet : theme.color.t1} bold={selected}>
-          {` ${endTruncate("main", nameWidth).padEnd(nameWidth)}`}
-        </Text>
-        <Text color={theme.color.t3}>{"   —      —    —"}</Text>
-      </Box>
-      <Text color={theme.color.t4} dimColor>{`      ${brand.label} · main chat`}</Text>
+    <Box flexDirection="row" justifyContent="space-between" marginTop={1}>
+      <Text bold color={color}>{title}</Text>
+      {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
     </Box>
   );
 }
 
-function SubagentRow({
-  snapshot,
-  displayIndex,
-  selected,
-  provider,
-  animateRunningGlyph,
-  nameWidth,
-}: {
-  snapshot: SubagentSnapshot;
-  displayIndex: number;
-  selected: boolean;
-  provider: AdeCodeProvider;
-  animateRunningGlyph: boolean;
-  nameWidth: number;
-}) {
-  const kind = subagentAgentKind(snapshot.status);
-  const glyph = theme.agentStatusGlyph(kind);
-  const glyphColor = theme.agentStatusColor(kind);
-  const tok = formatTokens(snapshot.tokens ?? null);
-  const elapsed = formatElapsed(snapshot.durationMs ?? null);
-  const cost = "—";
-  const id = String(displayIndex).padStart(2, "0");
-  const exec = subagentExec(snapshot, provider);
-  const faded = snapshot.status === "stopped" || snapshot.status === "failed";
-  const nameColor = selected ? theme.color.violet : faded ? theme.color.t4 : theme.color.t1;
-  const detail = snapshot.lastToolName || snapshot.summary;
-
+function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number }) {
+  const brand = theme.provider(info.provider);
+  const inner = Math.max(10, width - 4);
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
-        {/* rail/select */}
-        <Text color={selected ? theme.color.violet : theme.color.t5}>
-          {selected ? theme.rail : " "}
-        </Text>
-        <Text> </Text>
-        {/* status glyph */}
-        {kind === "running" && animateRunningGlyph ? (
-          <SpinningAgentGlyph color={glyphColor} />
-        ) : (
-          <Text color={glyphColor}>{glyph}</Text>
-        )}
-        <Text> </Text>
-        {/* id */}
-        <Text color={theme.color.t4}>{id}</Text>
-        <Text> </Text>
-        {/* exec glyph + name */}
-        <ExecGlyph provider={exec} />
-        <Text color={nameColor} bold={selected}>{` ${endTruncate(snapshot.name, nameWidth).padEnd(nameWidth)}`}</Text>
-        {/* tok / elapsed / cost (right side; not literally right-aligned in Ink) */}
-        <Text color={theme.color.t3}>{`  ${tok.padStart(5)}`}</Text>
-        <Text color={theme.color.t3}>{`  ${elapsed.padStart(4)}`}</Text>
-        <Text color={theme.color.t3}>{`  ${cost.padStart(3)}`}</Text>
+        <Text color={brand.color} bold>{brand.glyph}</Text>
+        <Text color={theme.color.t1}>{` ${endTruncate(info.modelLabel, inner - 2)}`}</Text>
       </Box>
-      {detail ? (
-        <Text color={theme.color.t4} dimColor>      {endTruncate(detail, Math.max(12, nameWidth + 16))}</Text>
+      {info.laneLabel ? (
+        <Box flexDirection="row">
+          <Text color={theme.color.t4}>lane </Text>
+          <Text color={theme.color.t4} dimColor>· </Text>
+          <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
+        </Box>
+      ) : null}
+      <Box flexDirection="row">
+        <Text color={info.streaming ? theme.color.running : theme.color.t4} bold={info.streaming}>
+          {info.streaming ? "●" : "○"} {info.streaming ? "active" : "idle"}
+        </Text>
+        {info.contextPercent != null ? <Text color={theme.color.t4} dimColor>{` · ${info.contextPercent}% ctx`}</Text> : null}
+        {info.tokenSummary ? <Text color={theme.color.t4} dimColor>{` · ${info.tokenSummary}`}</Text> : null}
+      </Box>
+    </Box>
+  );
+}
+
+function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  const plan = info.plan;
+  const inner = Math.max(10, width - 4);
+  if (!plan || !plan.steps.length) {
+    return (
+      <Box flexDirection="column">
+        <ChatInfoSectionHead title="PLAN" color={brandColor} />
+        <Text color={theme.color.t4} dimColor>No plan yet.</Text>
+      </Box>
+    );
+  }
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} />
+      {plan.steps.slice(0, 6).map((step, index) => (
+        <Text key={`${index}:${step.text}`} color={planStepColor(step.status)} wrap="truncate-end">
+          {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
+        </Text>
+      ))}
+    </Box>
+  );
+}
+
+function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (info.provider !== "codex" || !info.goal) return null;
+  const goal = info.goal;
+  const inner = Math.max(10, width - 4);
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="GOAL" hint={secondsElapsed(goal.timeUsedSeconds)} color={brandColor} />
+      {goal.objective ? (
+        <Text color={theme.color.t2} wrap="truncate-end">{endTruncate(goal.objective, inner)}</Text>
       ) : null}
     </Box>
   );
 }
 
-function SubagentsPane({
-  content,
+function rosterWindow(rowCount: number, selected: number, capacity: number): { start: number; end: number } {
+  if (rowCount <= capacity) return { start: 0, end: rowCount };
+  const half = Math.floor(capacity / 2);
+  let start = Math.max(0, selected - half);
+  let end = start + capacity;
+  if (end > rowCount) {
+    end = rowCount;
+    start = end - capacity;
+  }
+  return { start, end };
+}
+
+function ChatInfoRoster({
+  info,
+  selectedIndex,
+  brandColor,
+  width,
+}: {
+  info: ChatInfoSnapshot;
+  selectedIndex: number;
+  brandColor: string;
+  width: number;
+}) {
+  const inner = Math.max(10, width - 4);
+  const snapshotRows = buildSubagentPaneRows(info)
+    .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
+  const runCount = snapshotRows.filter((row) => row.snapshot.status === "running").length;
+  const doneCount = snapshotRows.filter((row) => row.snapshot.status === "completed").length;
+  const failedCount = snapshotRows.filter((row) => row.snapshot.status === "failed").length;
+  // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
+  const totalSelectable = snapshotRows.length + 1;
+  const selected = Math.max(0, Math.min(selectedIndex, totalSelectable - 1));
+  const mainSelected = selected === 0;
+  const showingMain = !info.inspectedSubagentId;
+  const hint = snapshotRows.length === 0
+    ? "0 live"
+    : `${runCount} live · ${doneCount} done${failedCount ? ` · ${failedCount} failed` : ""}`;
+
+  const ROSTER_CAPACITY = 5;
+  const subagentSelectedIndex = mainSelected ? -1 : selected - 1;
+  const window = rosterWindow(snapshotRows.length, Math.max(0, subagentSelectedIndex), ROSTER_CAPACITY);
+  const visibleSlice = snapshotRows.slice(window.start, window.end);
+  const hiddenBefore = window.start;
+  const hiddenAfter = snapshotRows.length - window.end;
+
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} />
+      {/* Main row — always present, tagged with the current middle-pane state */}
+      <Box flexDirection="row" justifyContent="space-between">
+        <Box flexDirection="row">
+          <Text color={mainSelected ? theme.color.violet : theme.color.t5}>{mainSelected ? theme.rail : " "}</Text>
+          <Text color={mainSelected ? theme.color.violet : showingMain ? theme.color.t1 : theme.color.t3} bold={mainSelected || showingMain}>
+            {" main"}
+          </Text>
+        </Box>
+        <Text color={theme.color.t4} dimColor>{showingMain ? "viewing" : "return ↵"}</Text>
+      </Box>
+      {snapshotRows.length === 0 ? (
+        <Text color={theme.color.t4} dimColor>{" "}no subagents yet</Text>
+      ) : (
+        <>
+          {hiddenBefore > 0 ? (
+            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} earlier`}</Text>
+          ) : null}
+          {visibleSlice.map((row, sliceIndex) => {
+            const rosterIndex = window.start + sliceIndex;
+            const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
+            const kind = subagentAgentKind(row.snapshot.status);
+            const statusColor = theme.agentStatusColor(kind);
+            const inspected = info.inspectedSubagentId === row.snapshot.id;
+            const detail = rosterRowDetail(row.snapshot);
+            return (
+              <Box key={row.key} flexDirection="column">
+                <Box flexDirection="row">
+                  <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
+                  <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
+                  <Text color={isSelected ? theme.color.violet : inspected ? theme.color.t1 : theme.color.t2} bold={isSelected || inspected}>
+                    {` ${endTruncate(row.snapshot.name, Math.max(6, inner - 18))}`}
+                  </Text>
+                  <Text color={theme.color.t4} dimColor>{`  ${formatElapsed(row.snapshot.durationMs ?? null)}`}</Text>
+                </Box>
+                {isSelected && detail ? (
+                  <Text color={theme.color.t4} dimColor wrap="truncate-end">
+                    {`     › ${endTruncate(detail, Math.max(8, inner - 8))}`}
+                  </Text>
+                ) : null}
+              </Box>
+            );
+          })}
+          {hiddenAfter > 0 ? (
+            <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text>
+          ) : null}
+        </>
+      )}
+      <Box marginTop={1}>
+        <Text color={theme.color.t4} dimColor>↑↓ focus · ↵ swap · esc → main</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function ChatInfoPane({
+  info,
   selectedIndex,
   width,
 }: {
-  content: Extract<RightPaneContent, { kind: "subagents" }>;
+  info: ChatInfoSnapshot;
   selectedIndex: number;
   width: number;
 }) {
-  const provider = content.provider;
-  const isDroid = provider === "droid";
-
-  if (isDroid && content.snapshots.length === 0) {
-    return (
-      <Box flexDirection="column">
-        <Box marginTop={1}>
-          <Text color={theme.color.t3} dimColor>
-            Droid runs over ACP, which doesn't model
-          </Text>
-        </Box>
-        <Text color={theme.color.t3} dimColor>
-          subagents yet — see agentclientprotocol.com.
-        </Text>
-        <Box marginTop={1}>
-          <Text color={theme.color.t4} dimColor>See /status for session state.</Text>
-        </Box>
-      </Box>
-    );
-  }
-
-  if (content.snapshots.length === 0) {
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={theme.color.t3} dimColor>No subagents yet.</Text>
-        <Text color={theme.color.t4} dimColor>
-          Subagents and teammates spawned by the active chat appear here.
-        </Text>
-      </Box>
-    );
-  }
-
-  const rows = buildSubagentPaneRows(content);
-  const snapshots = rows.filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
-  const subagentsCount = subagentSectionCount(rows, "subagents") + subagentSectionCount(rows, "recent");
-  const teammatesCount = subagentSectionCount(rows, "teammates");
-  const backgroundCount = subagentSectionCount(rows, "background");
-  const selected = Math.max(0, Math.min(selectedIndex, Math.max(0, rows.length - 1)));
-  const nameWidth = Math.max(4, Math.min(22, width - 27));
-  let runCount = 0;
-  let doneCount = 0;
-  let waitCount = 0;
-  let totalTok = 0;
-  let totalMs = 0;
-  for (const { snapshot: s } of snapshots) {
-    const k = subagentAgentKind(s.status);
-    if (k === "running") runCount++;
-    else if (k === "ok") doneCount++;
-    else if (k === "waiting") waitCount++;
-    if (s.tokens) totalTok += s.tokens;
-    if (s.durationMs) totalMs += s.durationMs;
-  }
-
+  const brand = theme.provider(info.provider);
   return (
     <Box flexDirection="column">
-      {/* Tab strip */}
-      <Box flexDirection="column">
-        <Text>
-          <Text color={theme.color.violet} bold underline>Subagents · {subagentsCount}</Text>
-          <Text color={theme.color.t3}>   Teammates · {teammatesCount}</Text>
-        </Text>
-        <Text color={theme.color.t3}>Background · {backgroundCount}</Text>
-      </Box>
-
-      {/* Column header */}
-      <Box flexDirection="row" marginTop={1}>
-        <Text color={theme.color.t4} bold>{`    ID  ${"NAME".padEnd(nameWidth + 2)} TOK  ELAPSED   $`}</Text>
-      </Box>
-
-      {/* Rows */}
-      {rows.map((row, i) => {
-        const previous = rows[i - 1];
-        const showSection = row.section !== "main" && previous?.section !== row.section;
-        const displayIndex = i;
-        return (
-          <Box key={row.key} flexDirection="column" marginTop={showSection ? 1 : 0}>
-            {showSection ? (
-              <Box flexDirection="row">
-                <Text color={theme.color.t4} bold>{subagentSectionTitle(row.section)}</Text>
-                <Text color={theme.color.borderSoft}> {"─".repeat(Math.max(3, width - subagentSectionTitle(row.section).length - 6))}</Text>
-              </Box>
-            ) : null}
-            {row.kind === "main" ? (
-              <SubagentMainRow
-                selected={i === selected}
-                provider={provider}
-                nameWidth={nameWidth}
-              />
-            ) : (
-              <SubagentRow
-                snapshot={row.snapshot}
-                displayIndex={displayIndex}
-                selected={i === selected}
-                provider={provider}
-                animateRunningGlyph={runCount <= 12}
-                nameWidth={nameWidth}
-              />
-            )}
-          </Box>
-        );
-      })}
-
-      {/* Footer summary */}
-      {snapshots.length ? (
-        <Box marginTop={1} flexDirection="row">
-          <Text color={theme.color.running}>●</Text>
-          <Text color={theme.color.t3}>{` ${runCount} run · `}</Text>
-          <Text color={theme.color.done}>●</Text>
-          <Text color={theme.color.t3}>{` ${doneCount} done · `}</Text>
-          <Text color={theme.color.attention}>●</Text>
-          <Text color={theme.color.t3}>{` ${waitCount} wait`}</Text>
-        </Box>
-      ) : null}
-      {snapshots.length ? (
-        <Text color={theme.color.t4} dimColor>
-          {formatTokens(totalTok)} tok · {formatElapsed(totalMs)}
-        </Text>
-      ) : null}
-
-      <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>
-          ↑↓ select · transcript follows · tab returns main
-        </Text>
-      </Box>
+      <ChatInfoHeader info={info} width={width} />
+      <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoRoster info={info} selectedIndex={selectedIndex} brandColor={brand.color} width={width} />
     </Box>
   );
 }
@@ -634,9 +618,9 @@ function HelpPane() {
     <Box flexDirection="column">
       <Text color={theme.color.t3} dimColor>↓ from prompt enters the model row; ↑ returns</Text>
       <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
-      <Text color={theme.color.t3} dimColor>/model focuses the model row · /subagents opens the agents pane</Text>
+      <Text color={theme.color.t3} dimColor>/model focuses the model row · /info opens chat info</Text>
       <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
-      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles subagents</Text>
+      <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles chat info</Text>
       <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
       <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
       <Text color={theme.color.t3} dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
@@ -656,8 +640,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string } 
       };
     case "new-chat-setup":
       return { title: "NEW CHAT" };
-    case "subagents":
-      return { title: `AGENTS · ${theme.provider(content.provider).label.toUpperCase()}`, hint: "tab · cycle" };
+    case "chat-info":
+      return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
     case "help":
       return { title: "HELP" };
     case "status":
@@ -774,8 +758,8 @@ export function RightPane({
         <LaneDetailsPane content={content} width={paneWidth} />
       ) : null}
 
-      {content.kind === "subagents" ? (
-        <SubagentsPane content={content} selectedIndex={selectedIndex} width={paneWidth} />
+      {content.kind === "chat-info" ? (
+        <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} />
       ) : null}
 
       {content.kind === "new-chat-setup" ? (

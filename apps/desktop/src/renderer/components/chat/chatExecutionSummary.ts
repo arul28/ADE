@@ -25,23 +25,90 @@ function compareIsoDesc(left: string, right: string): number {
   return Date.parse(right) - Date.parse(left);
 }
 
-function findSnapshotByParent(
-  snapshots: Map<string, ChatSubagentSnapshot>,
-  parentToolUseId: string | null | undefined,
-): [string, ChatSubagentSnapshot] | null {
-  if (!parentToolUseId) return null;
-  const direct = snapshots.get(parentToolUseId);
-  if (direct) return [parentToolUseId, direct];
-  for (const entry of snapshots.entries()) {
-    const [, snapshot] = entry;
-    if (snapshot.parentToolUseId === parentToolUseId) return entry;
+type ChatSubagentEvent = Extract<
+  AgentChatEventEnvelope["event"],
+  { type: "subagent_started" | "subagent_progress" | "subagent_result" }
+>;
+
+function isSubagentEvent(event: AgentChatEventEnvelope["event"]): event is ChatSubagentEvent {
+  return event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result";
+}
+
+function subagentIdentityKey(event: ChatSubagentEvent): string {
+  return event.agentId ?? event.taskId;
+}
+
+function buildResolvedSubagentKeysByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
+  const keysByParent = new Map<string, Set<string>>();
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (!isSubagentEvent(event) || !event.parentToolUseId) continue;
+    const key = subagentIdentityKey(event);
+    if (key === event.parentToolUseId) continue;
+    const keys = keysByParent.get(event.parentToolUseId) ?? new Set<string>();
+    keys.add(key);
+    keysByParent.set(event.parentToolUseId, keys);
   }
-  return null;
+  return keysByParent;
+}
+
+function isParentPlaceholder(snapshot: ChatSubagentSnapshot, parentToolUseId: string): boolean {
+  return !snapshot.agentId && snapshot.taskId === parentToolUseId && snapshot.parentToolUseId === parentToolUseId;
+}
+
+function resolveSubagentSnapshot(
+  snapshots: Map<string, ChatSubagentSnapshot>,
+  event: ChatSubagentEvent,
+  resolvedKeysByParent: Map<string, Set<string>>,
+): { key: string; existing: ChatSubagentSnapshot | undefined; adoptedPlaceholder: boolean } {
+  const key = subagentIdentityKey(event);
+  const direct = snapshots.get(key);
+  const parentPlaceholder = event.parentToolUseId ? snapshots.get(event.parentToolUseId) : undefined;
+  const parentResolvedKeys = event.parentToolUseId ? resolvedKeysByParent.get(event.parentToolUseId) : undefined;
+  const canAdoptParentPlaceholder = Boolean(
+    event.parentToolUseId
+      && parentPlaceholder
+      && isParentPlaceholder(parentPlaceholder, event.parentToolUseId)
+      && parentResolvedKeys?.size === 1
+      && parentResolvedKeys.has(key),
+  );
+  const taskAliasCandidate = key !== event.taskId ? snapshots.get(event.taskId) : undefined;
+  const taskAliasIsParentPlaceholder = Boolean(
+    taskAliasCandidate
+      && event.parentToolUseId
+      && event.taskId === event.parentToolUseId
+      && isParentPlaceholder(taskAliasCandidate, event.parentToolUseId),
+  );
+  const taskAlias = taskAliasCandidate && (!taskAliasIsParentPlaceholder || canAdoptParentPlaceholder)
+    ? taskAliasCandidate
+    : undefined;
+  const adoptParentPlaceholder = !taskAlias && canAdoptParentPlaceholder ? parentPlaceholder : undefined;
+  const adoptedPlaceholder = Boolean(adoptParentPlaceholder || (taskAlias && taskAliasIsParentPlaceholder));
+
+  if (taskAlias && key !== event.taskId) snapshots.delete(event.taskId);
+  if (adoptParentPlaceholder && event.parentToolUseId) {
+    snapshots.delete(event.parentToolUseId);
+  } else if (
+    event.parentToolUseId
+    && parentPlaceholder
+    && isParentPlaceholder(parentPlaceholder, event.parentToolUseId)
+    && parentResolvedKeys
+    && parentResolvedKeys.size > 1
+  ) {
+    snapshots.delete(event.parentToolUseId);
+  }
+
+  return {
+    key,
+    existing: direct ?? taskAlias ?? adoptParentPlaceholder,
+    adoptedPlaceholder,
+  };
 }
 
 export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): ChatSubagentSnapshot[] {
   const snapshots = new Map<string, ChatSubagentSnapshot>();
   const terminalTurnIds = new Set<string>();
+  const resolvedKeysByParent = buildResolvedSubagentKeysByParent(events);
 
   for (const envelope of events) {
     const event = envelope.event;
@@ -55,11 +122,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
   for (const envelope of events) {
     const event = envelope.event;
     if (event.type === "subagent_started") {
-      const key = event.agentId ?? event.taskId;
-      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
-      if (key !== event.taskId) snapshots.delete(event.taskId);
-      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
+      const { key, existing } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
       snapshots.set(key, {
         taskId: event.taskId,
         agentId: event.agentId ?? existing?.agentId,
@@ -80,17 +143,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     }
 
     if (event.type === "subagent_progress") {
-      const key = event.agentId ?? event.taskId;
-      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
-      if (key !== event.taskId) snapshots.delete(event.taskId);
-      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
+      const { key, existing, adoptedPlaceholder } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
       snapshots.set(key, {
-        // Preserve the stable merged identity. Overwriting taskId with the
-        // current event's taskId for a parent-based match would split the
-        // agent's history in `deriveSubagentTimeline`, which keys off
-        // `snapshot.taskId`.
-        taskId: existing?.taskId ?? event.taskId,
+        taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
@@ -109,14 +164,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     }
 
     if (event.type === "subagent_result") {
-      const key = event.agentId ?? event.taskId;
-      const parentMatch = findSnapshotByParent(snapshots, event.parentToolUseId);
-      const existing = snapshots.get(key) ?? snapshots.get(event.taskId) ?? parentMatch?.[1];
-      if (key !== event.taskId) snapshots.delete(event.taskId);
-      if (parentMatch && parentMatch[0] !== key) snapshots.delete(parentMatch[0]);
+      const { key, existing, adoptedPlaceholder } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
       snapshots.set(key, {
-        // Preserve the merged taskId (see subagent_progress branch above).
-        taskId: existing?.taskId ?? event.taskId,
+        taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,

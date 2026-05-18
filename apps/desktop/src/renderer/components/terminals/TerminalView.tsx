@@ -12,6 +12,7 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import type { TerminalSerializedSnapshot, TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/types";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -60,9 +61,13 @@ type CachedRuntime = {
   settleTimer2: ReturnType<typeof setTimeout> | null;
   hydrateTimer: ReturnType<typeof setTimeout> | null;
   hydrateRetryTimer: ReturnType<typeof setTimeout> | null;
+  hydrationBackfillTimer: ReturnType<typeof setTimeout> | null;
+  hydrationBackfillAttempts: number;
   hasFittedOnce: boolean;
   hydrationStarted: boolean;
   hydrationCompleted: boolean;
+  hasAppliedTerminalContent: boolean;
+  displayedLiveDataBeforeHydration: boolean;
   pendingHydrationChunks: string[];
   pendingHydrationBytes: number;
   frameWriteChunks: string[];
@@ -79,6 +84,9 @@ type CachedRuntime = {
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
+  mouseTrackingModes: Set<number>;
+  shiftMouseBridgeCleanup: (() => void) | null;
+  shiftMouseCleanup: (() => void) | null;
   // Set when a webgl→dom fallback is in flight and the runtime turned
   // invisible before the webgl restore could run. Persists across renderer
   // changes so the restore can be retried on the next visibility-true.
@@ -88,6 +96,9 @@ type CachedRuntime = {
 };
 
 const HYDRATE_TAIL_BYTES = 2_000_000;
+const HYDRATION_BACKFILL_RETRY_MS = 250;
+const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
+const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
 const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
 const MAX_FRAME_WRITE_BYTES = 1_000_000;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
@@ -100,6 +111,7 @@ const RENDERER_RESET_COOLDOWN_MS = 250;
 const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
 const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
+const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
 const runtimeCache = new Map<string, CachedRuntime>();
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -200,6 +212,20 @@ type TerminalDims = {
   rows: number;
 };
 
+type InitialHydrationData = {
+  source: "snapshot" | "transcript" | "empty";
+  text: string;
+};
+
+type PreviewHydrationOptions = {
+  snapshotOnly?: boolean;
+};
+
+type HydrationBackfillOptions = PreviewHydrationOptions & {
+  delayMs?: number;
+  replaceExistingTimer?: boolean;
+};
+
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
   if (!left.length || !right.length) return 0;
   const cap = Math.min(maxChars, left.length, right.length);
@@ -222,6 +248,123 @@ function trimToLikelyTerminalFrameBoundary(raw: string): string {
   if (idx <= 0) return raw;
   if (raw.length - idx < 16) return raw;
   return raw.slice(idx);
+}
+
+function hasRenderableTerminalText(data: string): boolean {
+  if (!data.length) return false;
+  const withoutControlSequences = data
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[()][A-Za-z0-9]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  return /\S/.test(withoutControlSequences);
+}
+
+function terminalDomHasRenderableText(runtime: CachedRuntime): boolean {
+  const rows = runtime.term.element?.querySelector<HTMLElement>(".xterm-rows")
+    ?? runtime.host.querySelector<HTMLElement>(".xterm-rows");
+  return Boolean(rows?.innerText?.trim() || rows?.textContent?.trim());
+}
+
+function needsHydrationBackfill(runtime: CachedRuntime): boolean {
+  if (runtime.disposed || runtime.exitCode != null) return false;
+  if (!runtime.hasAppliedTerminalContent && !runtime.displayedLiveDataBeforeHydration) return true;
+  return Boolean(runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime));
+}
+
+function ansiRgbParts(value: number | null | undefined): [number, number, number] | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const safe = Math.max(0, Math.min(0xffffff, Math.floor(value)));
+  return [(safe >> 16) & 0xff, (safe >> 8) & 0xff, safe & 0xff];
+}
+
+function sgrCodesForSnapshotCell(cell: TerminalSnapshotCell): string[] {
+  const codes = ["0"];
+  if (cell.bold) codes.push("1");
+  if (cell.dim) codes.push("2");
+  if (cell.italic) codes.push("3");
+  if (cell.underline) codes.push("4");
+  if (cell.inverse) codes.push("7");
+  if (cell.strikethrough) codes.push("9");
+
+  if (cell.fgMode === "rgb") {
+    const rgb = ansiRgbParts(cell.fg);
+    if (rgb) codes.push("38", "2", String(rgb[0]), String(rgb[1]), String(rgb[2]));
+  } else if (cell.fgMode === "palette" && typeof cell.fg === "number" && Number.isFinite(cell.fg)) {
+    codes.push("38", "5", String(Math.max(0, Math.min(255, Math.floor(cell.fg)))));
+  }
+
+  if (cell.bgMode === "rgb") {
+    const rgb = ansiRgbParts(cell.bg);
+    if (rgb) codes.push("48", "2", String(rgb[0]), String(rgb[1]), String(rgb[2]));
+  } else if (cell.bgMode === "palette" && typeof cell.bg === "number" && Number.isFinite(cell.bg)) {
+    codes.push("48", "5", String(Math.max(0, Math.min(255, Math.floor(cell.bg)))));
+  }
+
+  return codes;
+}
+
+function snapshotCellStyleKey(cell: TerminalSnapshotCell): string {
+  return [
+    cell.fgMode,
+    cell.fg ?? "",
+    cell.bgMode,
+    cell.bg ?? "",
+    cell.bold ? "b" : "",
+    cell.dim ? "d" : "",
+    cell.italic ? "i" : "",
+    cell.underline ? "u" : "",
+    cell.inverse ? "v" : "",
+    cell.strikethrough ? "s" : "",
+  ].join("|");
+}
+
+function isTrimmedSnapshotBlank(cell: TerminalSnapshotCell | undefined): boolean {
+  return Boolean(
+    cell
+    && (cell.text || " ") === " "
+    && cell.bgMode === "default"
+    && !cell.inverse,
+  );
+}
+
+function trimmedSnapshotCells(row: TerminalSnapshotRow): TerminalSnapshotCell[] {
+  let end = row.cells.length;
+  while (end > 0 && isTrimmedSnapshotBlank(row.cells[end - 1])) end -= 1;
+  return row.cells.slice(0, end);
+}
+
+function serializeSnapshotVisibleRows(snapshot: TerminalSerializedSnapshot): string | null {
+  const rows = snapshot.visibleRows.slice(0, Math.max(0, snapshot.rows));
+  if (rows.length === 0) return null;
+
+  const parts: string[] = [];
+  if (snapshot.bufferType === "alternate") parts.push("\x1b[?1049h");
+  else parts.push("\x1b[?1049l");
+  parts.push("\x1b[?25l", "\x1b[?7l", "\x1b[0m", "\x1b[H", "\x1b[J");
+
+  rows.forEach((row, y) => {
+    const cells = trimmedSnapshotCells(row);
+    if (cells.length === 0) return;
+    parts.push(`\x1b[${y + 1};1H`);
+    let lastStyleKey = "";
+    for (const cell of cells) {
+      const styleKey = snapshotCellStyleKey(cell);
+      if (styleKey !== lastStyleKey) {
+        parts.push(`\x1b[${sgrCodesForSnapshotCell(cell).join(";")}m`);
+        lastStyleKey = styleKey;
+      }
+      parts.push(cell.text || " ");
+    }
+    parts.push("\x1b[0m");
+  });
+
+  const cursorY = Math.max(0, Math.min(Math.max(0, snapshot.rows - 1), snapshot.cursorY));
+  const cursorX = Math.max(0, Math.min(Math.max(0, snapshot.cols - 1), snapshot.cursorX));
+  parts.push(`\x1b[${cursorY + 1};${cursorX + 1}H`, "\x1b[?7h", "\x1b[?25h");
+  return parts.join("");
 }
 
 function ensureParkedRoot(): HTMLDivElement {
@@ -409,6 +552,103 @@ function writePtyInput(runtime: CachedRuntime, data: string) {
   window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
 }
 
+function updateTerminalMouseTrackingModes(runtime: CachedRuntime, data: string): void {
+  for (const match of data.matchAll(/\x1b\[\?([0-9;]+)([hl])/g)) {
+    const action = match[2];
+    for (const rawParam of match[1].split(";")) {
+      const mode = Number(rawParam);
+      if (!TERMINAL_MOUSE_TRACKING_EVENT_MODES.has(mode)) continue;
+      if (action === "h") {
+        runtime.mouseTrackingModes.add(mode);
+      } else {
+        runtime.mouseTrackingModes.delete(mode);
+      }
+    }
+  }
+}
+
+function clampTerminalMouseCoordinate(value: number, max: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(max, Math.floor(value)));
+}
+
+function terminalMousePoint(runtime: CachedRuntime, ev: MouseEvent): { col: number; row: number } | null {
+  const screen = runtime.term.element?.querySelector<HTMLElement>(".xterm-screen")
+    ?? runtime.host.querySelector<HTMLElement>(".xterm-screen")
+    ?? runtime.term.element
+    ?? runtime.host;
+  const rect = screen.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const cols = Math.max(1, runtime.term.cols || 1);
+  const rows = Math.max(1, runtime.term.rows || 1);
+  const col = clampTerminalMouseCoordinate(((ev.clientX - rect.left) / rect.width) * cols + 1, cols);
+  const row = clampTerminalMouseCoordinate(((ev.clientY - rect.top) / rect.height) * rows + 1, rows);
+  return { col, row };
+}
+
+function writeSgrMouse(runtime: CachedRuntime, code: number, point: { col: number; row: number }, final: "M" | "m"): void {
+  writePtyInput(runtime, `\x1b[<${code};${point.col};${point.row}${final}`);
+}
+
+function isTerminalMouseTrackingActive(runtime: CachedRuntime): boolean {
+  const xtermMode = runtime.term.modes?.mouseTrackingMode;
+  return runtime.mouseTrackingModes.size > 0 || (xtermMode != null && xtermMode !== "none");
+}
+
+function consumeMouseEvent(ev: MouseEvent): void {
+  ev.preventDefault();
+  ev.stopPropagation();
+  ev.stopImmediatePropagation();
+}
+
+function installShiftMouseBridge(runtime: CachedRuntime): void {
+  const onMouseDown = (ev: MouseEvent) => {
+    if (runtime.disposed || !isTerminalMouseTrackingActive(runtime)) return;
+    if (!ev.shiftKey || ev.button !== 0) return;
+    const point = terminalMousePoint(runtime, ev);
+    if (!point) return;
+
+    consumeMouseEvent(ev);
+    writeSgrMouse(runtime, 4, point, "M");
+
+    let cleanup = () => {};
+    const onMouseMove = (moveEv: MouseEvent) => {
+      if (runtime.disposed) {
+        cleanup();
+        return;
+      }
+      if ((moveEv.buttons & 1) === 0) return;
+      const nextPoint = terminalMousePoint(runtime, moveEv);
+      if (!nextPoint) return;
+      consumeMouseEvent(moveEv);
+      writeSgrMouse(runtime, 36, nextPoint, "M");
+    };
+    const onMouseUp = (upEv: MouseEvent) => {
+      cleanup();
+      if (runtime.disposed) return;
+      const releasePoint = terminalMousePoint(runtime, upEv) ?? point;
+      consumeMouseEvent(upEv);
+      writeSgrMouse(runtime, 4, releasePoint, "m");
+    };
+
+    cleanup = () => {
+      document.removeEventListener("mousemove", onMouseMove, true);
+      document.removeEventListener("mouseup", onMouseUp, true);
+      if (runtime.shiftMouseCleanup === cleanup) runtime.shiftMouseCleanup = null;
+    };
+    runtime.shiftMouseCleanup?.();
+    runtime.shiftMouseCleanup = cleanup;
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mouseup", onMouseUp, true);
+  };
+  runtime.host.addEventListener("mousedown", onMouseDown, true);
+  const cleanupBridge = () => {
+    runtime.host.removeEventListener("mousedown", onMouseDown, true);
+    if (runtime.shiftMouseBridgeCleanup === cleanupBridge) runtime.shiftMouseBridgeCleanup = null;
+  };
+  runtime.shiftMouseBridgeCleanup = cleanupBridge;
+}
+
 async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
   if (runtime.disposed) return false;
   try {
@@ -431,7 +671,18 @@ function teardownRuntime(runtime: CachedRuntime) {
   if (runtime.settleTimer2) clearTimeout(runtime.settleTimer2);
   if (runtime.hydrateTimer) clearTimeout(runtime.hydrateTimer);
   if (runtime.hydrateRetryTimer) clearTimeout(runtime.hydrateRetryTimer);
+  if (runtime.hydrationBackfillTimer) clearTimeout(runtime.hydrationBackfillTimer);
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
+  try {
+    runtime.shiftMouseCleanup?.();
+  } catch {
+    // ignore
+  }
+  try {
+    runtime.shiftMouseBridgeCleanup?.();
+  } catch {
+    // ignore
+  }
 
   try {
     runtime.ptyDataUnsub?.();
@@ -603,9 +854,28 @@ function flushFrameWriteChunksSync(runtime: CachedRuntime) {
   runtime.frameWriteBytes = 0;
   try {
     runtime.term.write(merged);
+    if (hasRenderableTerminalText(merged)) {
+      runtime.hasAppliedTerminalContent = true;
+    }
+    scheduleVisibleFrameRefresh(runtime);
   } catch {
     // ignore write errors after disposal
   }
+}
+
+function scheduleVisibleFrameRefresh(runtime: CachedRuntime) {
+  if (runtime.disposed || runtime.refs === 0 || !runtime.visible || !runtime.active) return;
+  if (document.visibilityState !== "visible") return;
+  requestAnimationFrame(() => {
+    if (runtime.disposed || runtime.refs === 0 || !runtime.visible || !runtime.active) return;
+    if (document.visibilityState !== "visible") return;
+    try {
+      runtime.term.scrollToBottom();
+      runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+    } catch {
+      // ignore refresh failures after disposal
+    }
+  });
 }
 
 function clearFrameWriteSchedule(runtime: CachedRuntime) {
@@ -617,6 +887,12 @@ function clearFrameWriteSchedule(runtime: CachedRuntime) {
     clearTimeout(runtime.flushTimer);
     runtime.flushTimer = null;
   }
+}
+
+function discardScheduledFrameWrites(runtime: CachedRuntime) {
+  clearFrameWriteSchedule(runtime);
+  runtime.frameWriteChunks.length = 0;
+  runtime.frameWriteBytes = 0;
 }
 
 function flushPendingFrameWrites(runtime: CachedRuntime) {
@@ -654,15 +930,20 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
   runtime.flushRafId = requestAnimationFrame(flush);
 }
 
-function flushHydrationData(runtime: CachedRuntime, tail: string) {
+function flushHydrationData(
+  runtime: CachedRuntime,
+  tail: string,
+  options: { appendPending?: boolean } = {},
+) {
   const stabilizedTail = trimToLikelyTerminalFrameBoundary(tail);
-  const pending = runtime.pendingHydrationChunks.join("");
+  const shouldAppendPending = options.appendPending ?? true;
+  const pending = shouldAppendPending ? runtime.pendingHydrationChunks.join("") : "";
   runtime.pendingHydrationChunks.length = 0;
   runtime.pendingHydrationBytes = 0;
 
   const overlap = computeSuffixPrefixOverlap(stabilizedTail, pending);
-  let appendPending = true;
-  if (pending.length >= 8_000 && overlap < 64) {
+  let appendPending = shouldAppendPending;
+  if (shouldAppendPending && pending.length >= 8_000 && overlap < 64) {
     const probe = pending.slice(0, Math.min(512, pending.length));
     if (probe.length >= 64 && stabilizedTail.lastIndexOf(probe) !== -1) {
       appendPending = false;
@@ -673,6 +954,9 @@ function flushHydrationData(runtime: CachedRuntime, tail: string) {
   if (merged.length) {
     try {
       runtime.term.write(merged);
+      if (hasRenderableTerminalText(merged)) {
+        runtime.hasAppliedTerminalContent = true;
+      }
       requestAnimationFrame(() => {
         try {
           runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
@@ -687,25 +971,102 @@ function flushHydrationData(runtime: CachedRuntime, tail: string) {
   }
 }
 
+async function readPreviewHydrationData(
+  runtime: CachedRuntime,
+  options: PreviewHydrationOptions = {},
+): Promise<InitialHydrationData> {
+  const preview = await window.ade.terminal.preview({
+    terminalId: runtime.sessionId,
+    maxBytes: HYDRATE_TAIL_BYTES,
+  });
+  if (preview?.snapshot) {
+    const visibleRows = serializeSnapshotVisibleRows(preview.snapshot);
+    if (visibleRows) return { source: "snapshot", text: visibleRows };
+    if (preview.snapshot.serialized) return { source: "snapshot", text: preview.snapshot.serialized };
+  }
+  if (options.snapshotOnly) return { source: "empty", text: "" };
+  if (preview?.transcript) return { source: "transcript", text: preview.transcript };
+  return { source: "empty", text: "" };
+}
+
+async function readInitialHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
+  try {
+    const previewData = await readPreviewHydrationData(runtime);
+    if (previewData.text) return previewData;
+  } catch {
+    // Fall back to the transcript tail below.
+  }
+
+  const transcript = await window.ade.sessions.readTranscriptTail({
+    sessionId: runtime.sessionId,
+    maxBytes: HYDRATE_TAIL_BYTES,
+    raw: true,
+  });
+  return transcript
+    ? { source: "transcript", text: transcript }
+    : { source: "empty", text: "" };
+}
+
+function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBackfillOptions = {}) {
+  if (!needsHydrationBackfill(runtime)) return;
+  if (runtime.hydrationBackfillAttempts >= HYDRATION_BACKFILL_MAX_ATTEMPTS) return;
+  if (runtime.hydrationBackfillTimer) {
+    if (!options.replaceExistingTimer) return;
+    clearTimeout(runtime.hydrationBackfillTimer);
+    runtime.hydrationBackfillTimer = null;
+  }
+
+  const delayMs = options.delayMs
+    ?? (runtime.visible && runtime.active ? HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS : HYDRATION_BACKFILL_RETRY_MS);
+  const snapshotOnly = options.snapshotOnly ?? runtime.displayedLiveDataBeforeHydration;
+  runtime.hydrationBackfillTimer = setTimeout(() => {
+    runtime.hydrationBackfillTimer = null;
+    if (!needsHydrationBackfill(runtime)) return;
+    runtime.hydrationBackfillAttempts += 1;
+    if (runtime.hydrationBackfillAttempts > HYDRATION_BACKFILL_MAX_ATTEMPTS) return;
+
+    readPreviewHydrationData(runtime, { snapshotOnly })
+      .then((data) => {
+        if (!needsHydrationBackfill(runtime)) return;
+        if (data.text.length > 0) {
+          discardScheduledFrameWrites(runtime);
+          flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot" });
+          scheduleFit(runtime, true);
+          return;
+        }
+        scheduleHydrationBackfill(runtime, { snapshotOnly });
+      })
+      .catch(() => {
+        if (runtime.disposed || runtime.exitCode != null) return;
+        scheduleHydrationBackfill(runtime, { snapshotOnly });
+      });
+  }, delayMs);
+}
+
 function startHydration(runtime: CachedRuntime) {
   if (runtime.hydrationStarted || runtime.disposed) return;
   runtime.hydrationStarted = true;
 
+  const finalizeHydration = (data: InitialHydrationData) => {
+    if (runtime.disposed) return;
+    const preferLivePending = runtime.displayedLiveDataBeforeHydration && data.source !== "snapshot";
+    if (preferLivePending) {
+      runtime.pendingHydrationChunks.length = 0;
+      runtime.pendingHydrationBytes = 0;
+      flushPendingFrameWrites(runtime);
+    } else {
+      discardScheduledFrameWrites(runtime);
+      flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot" });
+    }
+    runtime.hydrationCompleted = true;
+    scheduleFit(runtime, true);
+    scheduleHydrationBackfill(runtime, { snapshotOnly: runtime.displayedLiveDataBeforeHydration });
+  };
+
   const hydrateTranscript = () => {
-    window.ade.sessions
-      .readTranscriptTail({ sessionId: runtime.sessionId, maxBytes: HYDRATE_TAIL_BYTES, raw: true })
-      .then((text) => {
-        if (runtime.disposed) return;
-        flushHydrationData(runtime, text);
-        runtime.hydrationCompleted = true;
-        scheduleFit(runtime, true);
-      })
-      .catch(() => {
-        if (runtime.disposed) return;
-        flushHydrationData(runtime, "");
-        runtime.hydrationCompleted = true;
-        scheduleFit(runtime, true);
-      });
+    readInitialHydrationData(runtime)
+      .then(finalizeHydration)
+      .catch(() => finalizeHydration({ source: "empty", text: "" }));
   };
 
   const waitForFitThenHydrate = (attempt: number) => {
@@ -911,9 +1272,13 @@ function createRuntime(args: {
     settleTimer2: null,
     hydrateTimer: null,
     hydrateRetryTimer: null,
+    hydrationBackfillTimer: null,
+    hydrationBackfillAttempts: 0,
     hasFittedOnce: false,
     hydrationStarted: false,
     hydrationCompleted: false,
+    hasAppliedTerminalContent: false,
+    displayedLiveDataBeforeHydration: false,
     pendingHydrationChunks: [],
     pendingHydrationBytes: 0,
     frameWriteChunks: [],
@@ -930,6 +1295,9 @@ function createRuntime(args: {
     inputEnabled: true,
     active: true,
     visible: true,
+    mouseTrackingModes: new Set(),
+    shiftMouseBridgeCleanup: null,
+    shiftMouseCleanup: null,
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false
@@ -950,6 +1318,7 @@ function createRuntime(args: {
     }
     void pasteNativeClipboardImageShortcut(runtime);
   }, true);
+  installShiftMouseBridge(runtime);
 
   term.attachCustomKeyEventHandler((ev) => {
     if (!runtime.inputEnabled) return false;
@@ -990,6 +1359,11 @@ function createRuntime(args: {
       const selection = term.getSelection();
       if (selection) {
         navigator.clipboard.writeText(selection).catch(() => {});
+        return false;
+      }
+      if (isMac && ev.metaKey) {
+        ev.preventDefault();
+        writePtyInput(runtime, "\x03");
         return false;
       }
       return true;
@@ -1049,6 +1423,7 @@ function createRuntime(args: {
     if (runtime.disposed) return;
     if (ev.projectRoot && runtime.projectRoot && ev.projectRoot !== runtime.projectRoot) return;
     if (ev.ptyId !== runtime.ptyId) return;
+    updateTerminalMouseTrackingModes(runtime, ev.data);
 
     if (!runtime.hydrationCompleted) {
       runtime.pendingHydrationChunks.push(ev.data);
@@ -1058,6 +1433,17 @@ function createRuntime(args: {
         runtime.pendingHydrationBytes -= dropped?.length ?? 0;
         incrementHealth(runtime, "droppedChunks");
       }
+      if (hasRenderableTerminalText(ev.data)) {
+        runtime.displayedLiveDataBeforeHydration = true;
+        if (runtime.visible && runtime.active && !terminalDomHasRenderableText(runtime)) {
+          scheduleHydrationBackfill(runtime, {
+            delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
+            replaceExistingTimer: true,
+            snapshotOnly: true,
+          });
+        }
+      }
+      enqueueFrameWrite(runtime, ev.data);
       return;
     }
 
@@ -1428,6 +1814,13 @@ export function TerminalView({
       };
       clearTextureAtlas(runtime);
       flushPendingFrameWrites(runtime);
+      if (runtime.active && runtime.displayedLiveDataBeforeHydration && !terminalDomHasRenderableText(runtime)) {
+        scheduleHydrationBackfill(runtime, {
+          delayMs: HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS,
+          replaceExistingTimer: true,
+          snapshotOnly: true,
+        });
+      }
       // Replay a webgl restore that was deferred when the runtime turned
       // invisible mid-fallback. Without this, runtime.renderer stays "dom"
       // and resetWebglRenderer's webgl-only guard would silently skip retry.

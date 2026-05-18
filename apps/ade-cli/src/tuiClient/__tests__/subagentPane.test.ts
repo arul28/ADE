@@ -22,40 +22,63 @@ const session: AgentChatSessionSummary = {
   summary: null,
 };
 
-function subagentsContent(): Extract<RightPaneContent, { kind: "subagents" }> {
+function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
   return {
-    kind: "subagents",
-    tab: "subagents",
-    provider: "codex",
-    snapshots: [
-      { id: "run-1", name: "running", kind: "subagent", status: "running", summary: "checking files" },
-      { id: "team-1", name: "review", kind: "teammate", status: "completed", summary: "done" },
-      { id: "bg-1", name: "lane pack", kind: "subagent", status: "running", background: true, summary: "refreshing" },
-      { id: "done-1", name: "tests", kind: "subagent", status: "completed", summary: "passed" },
-    ],
+    kind: "chat-info",
+    info: {
+      provider: "codex",
+      modelLabel: "gpt-5.5",
+      laneLabel: "lane-1",
+      contextPercent: null,
+      tokenSummary: null,
+      goal: null,
+      plan: null,
+      streaming: false,
+      inspectedSubagentId: null,
+      snapshots: [
+        { id: "run-1", name: "running", kind: "subagent", status: "running", summary: "checking files" },
+        { id: "team-1", name: "review", kind: "teammate", status: "completed", summary: "done" },
+        { id: "bg-1", name: "lane pack", kind: "subagent", status: "running", background: true, summary: "refreshing" },
+        { id: "done-1", name: "tests", kind: "subagent", status: "completed", summary: "passed" },
+      ],
+    },
+  };
+}
+
+function rosterPaneContent() {
+  const content = rosterContent();
+  return {
+    provider: content.info.provider,
+    snapshots: content.info.snapshots,
   };
 }
 
 describe("subagent pane helpers", () => {
   it("keeps main first and groups selectable agent rows by section", () => {
-    const rows = buildSubagentPaneRows(subagentsContent());
+    const rows = buildSubagentPaneRows(rosterPaneContent());
 
-    expect(rows.map((row) => row.key)).toEqual(["main", "run-1", "team-1", "bg-1", "done-1"]);
-    expect(rows.map((row) => row.section)).toEqual(["main", "subagents", "teammates", "background", "recent"]);
-    expect(selectedSubagentSnapshot(subagentsContent(), 0)).toBeNull();
-    expect(selectedSubagentSnapshot(subagentsContent(), 1)?.id).toBe("run-1");
+    expect(rows.map((row) => row.key)).toEqual(["main", "run-1", "done-1", "team-1", "bg-1"]);
+    expect(rows.map((row) => row.section)).toEqual(["main", "subagents", "subagents", "teammates", "background"]);
+    expect(selectedSubagentSnapshot(rosterPaneContent(), 0)).toBeNull();
+    expect(selectedSubagentSnapshot(rosterPaneContent(), 1)?.id).toBe("run-1");
   });
 
   it("maps visual table lines back to selectable rows for mouse clicks", () => {
-    const content = subagentsContent();
-    const offsets = subagentPaneSelectableLineOffsets(content);
+    const content = rosterPaneContent();
+    const offsets = subagentPaneSelectableLineOffsets(content, 1);
 
     expect(offsets.length).toBe(5);
-    expect(subagentIndexForPaneLine(content, offsets[0]!)).toBe(0);
-    expect(subagentIndexForPaneLine(content, offsets[1]!)).toBe(1);
-    expect(subagentIndexForPaneLine(content, offsets[3]!)).toBe(3);
-    expect(subagentIndexForPaneLine(content, offsets[4]! + 1)).toBe(4);
-    expect(subagentIndexForPaneLine(content, offsets[0]! - 2)).toBeNull();
+    expect(subagentIndexForPaneLine(content, offsets[0]!, 1)).toBe(0);
+    expect(subagentIndexForPaneLine(content, offsets[1]!, 1)).toBe(1);
+    expect(subagentIndexForPaneLine(content, offsets[3]!, 1)).toBe(3);
+    expect(subagentIndexForPaneLine(content, offsets[4]! + 1, 1)).toBe(4);
+    expect(subagentIndexForPaneLine(content, offsets[0]! - 2, 1)).toBeNull();
+  });
+
+  it("only accounts for detail lines on the selected subagent row", () => {
+    const content = rosterPaneContent();
+    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([4, 8, 10, 13, 16]);
+    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([4, 8, 9, 13, 16]);
   });
 
   it("builds a focused transcript without unrelated subagent output", () => {
@@ -70,12 +93,18 @@ describe("subagent pane helpers", () => {
         sessionId: "s1",
         timestamp: "2026-01-01T12:00:01.000Z",
         sequence: 2,
+        event: { type: "subagent_started", taskId: "other", parentToolUseId: "spawn-1", description: "sibling agent" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.500Z",
+        sequence: 3,
         event: { type: "tool_call", itemId: "tool-1", parentItemId: "spawn-1", tool: "read_file", args: { path: "src/app.tsx" } },
       },
       {
         sessionId: "s1",
         timestamp: "2026-01-01T12:00:02.000Z",
-        sequence: 3,
+        sequence: 4,
         event: { type: "subagent_result", taskId: "other", parentToolUseId: "spawn-2", status: "completed", summary: "wrong transcript" },
       },
     ];
@@ -95,6 +124,7 @@ describe("subagent pane helpers", () => {
 
     expect(transcript.map((entry) => entry.event.type)).toEqual(["text", "text", "tool_call"]);
     expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).toContain("read_file");
+    expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).not.toContain("sibling agent");
     expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).not.toContain("wrong transcript");
   });
 
@@ -125,6 +155,6 @@ describe("subagent pane helpers", () => {
       },
     });
 
-    expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).toContain("Subagent started: Investigate issue");
+    expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).toContain("Started.");
   });
 });

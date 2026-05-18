@@ -16,6 +16,7 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  CodexThreadGoal,
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
@@ -106,8 +107,6 @@ export type SetupPaneRow = {
   cyclable?: boolean;
 };
 
-export type SubagentPaneTab = "subagents" | "teammates";
-
 export type SubagentSnapshot = {
   id: string;
   name: string;
@@ -122,6 +121,31 @@ export type SubagentSnapshot = {
   tokens?: number;
   durationMs?: number;
   lastToolName?: string;
+};
+
+export type ChatInfoPlanStep = {
+  text: string;
+  status: "pending" | "in_progress" | "completed" | "failed";
+};
+
+export type ChatInfoPlan = {
+  current: number;
+  total: number;
+  steps: ChatInfoPlanStep[];
+  live: boolean;
+} | null;
+
+export type ChatInfoSnapshot = {
+  provider: AdeCodeProvider;
+  modelLabel: string;
+  laneLabel: string | null;
+  contextPercent: number | null;
+  tokenSummary: string | null;
+  goal: CodexThreadGoal | null;
+  plan: ChatInfoPlan;
+  snapshots: SubagentSnapshot[];
+  inspectedSubagentId?: string | null;
+  streaming: boolean;
 };
 
 export type RightPaneContent =
@@ -140,7 +164,7 @@ export type RightPaneContent =
     }
   | { kind: "details"; title: string; body: string }
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
-  | { kind: "subagents"; tab: SubagentPaneTab; snapshots: SubagentSnapshot[]; provider: AdeCodeProvider }
+  | { kind: "chat-info"; info: ChatInfoSnapshot }
   | {
       kind: "new-chat-setup";
       laneId: string;

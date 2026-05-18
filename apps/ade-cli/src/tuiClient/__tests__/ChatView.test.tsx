@@ -4,8 +4,9 @@ import { render } from "ink-testing-library";
 import {
   ChatView,
   computeChatScrollMaxOffset,
+  renderChatSelectableRowTexts,
   renderChatTranscriptPlainText,
-  selectedTextFromVisibleChatRows,
+  selectedTextFromChatRows,
 } from "../components/ChatView";
 import { buildSubagentTranscriptEvents } from "../subagentPane";
 import {
@@ -59,10 +60,37 @@ function transcriptLines(frame: string): string[] {
 
 describe("ChatView", () => {
   it("copies only the selected chat row columns", () => {
-    expect(selectedTextFromVisibleChatRows(
+    expect(selectedTextFromChatRows(
       ["alpha bravo", "charlie delta", "echo"],
       { startRow: 0, startColumn: 6, endRow: 1, endColumn: 6 },
     )).toBe("bravo\ncharlie");
+  });
+
+  it("preserves selected leading and trailing whitespace", () => {
+    expect(selectedTextFromChatRows(
+      ["  const value = 1;  ", "    return value;  "],
+      { startRow: 0, startColumn: 0, endRow: 1, endColumn: 19 },
+    )).toBe("  const value = 1;  \n    return value;  ");
+  });
+
+  it("copies selected absolute transcript rows outside the visible viewport", () => {
+    const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: { type: "text", text: `selectable row ${index + 1}` },
+    }));
+    const rows = renderChatSelectableRowTexts({
+      events,
+      notices: [],
+      activeSession: session,
+      width: 80,
+    });
+
+    expect(rows.join("\n")).toContain("selectable row 1");
+    expect(rows.join("\n")).toContain("selectable row 12");
+    expect(selectedTextFromChatRows(rows, { startRow: 0, startColumn: 0, endRow: rows.length - 1, endColumn: 200 }))
+      .toContain("selectable row 12");
   });
 
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
@@ -99,7 +127,7 @@ describe("ChatView", () => {
     expect(frame).not.toContain("type to chat");
   });
 
-  it("shows a model working indicator while a turn is active before text arrives", () => {
+  it("shows an active-turn wait state before runtime events arrive", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -116,10 +144,59 @@ describe("ChatView", () => {
     ], { streaming: true, width: 80 });
 
     expect(frame).toContain("check status");
-    expect(frame).toContain("model working");
+    expect(frame).toContain("active turn · waiting for runtime events");
   });
 
-  it("keeps the model working indicator visible while active text is streaming", () => {
+  it("shows the active-turn wait state after historical assistant output", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "first turn", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "text", text: "first answer", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "done", status: "completed", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: { type: "user_message", text: "second turn", turnId: "turn-2" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:04.000Z",
+        sequence: 5,
+        event: { type: "status", turnStatus: "started", turnId: "turn-2" },
+      },
+    ];
+    const frame = renderEvents(events, { streaming: true, width: 80 });
+    const maxOffset = computeChatScrollMaxOffset({
+      events,
+      notices: [],
+      activeSession: session,
+      streaming: true,
+      maxRows: 3,
+      width: 80,
+    });
+
+    expect(frame).toContain("first answer");
+    expect(frame).toContain("second turn");
+    expect(frame).toContain("active turn · waiting for runtime events");
+    expect(maxOffset).toBeGreaterThan(0);
+  });
+
+  it("does not add a generic working indicator while active text is streaming", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -130,7 +207,8 @@ describe("ChatView", () => {
     ], { streaming: true, width: 80 });
 
     expect(frame).toContain("I found the issue.");
-    expect(frame).toContain("model working");
+    expect(frame).not.toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
   });
 
   it("shows interrupted state where the working indicator normally appears", () => {
@@ -146,6 +224,7 @@ describe("ChatView", () => {
     expect(frame).toContain("stop this");
     expect(frame).toContain("Interrupted · chat to continue");
     expect(frame).not.toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
   });
 
   it("renders context compaction as an explicit active state", () => {
@@ -160,6 +239,8 @@ describe("ChatView", () => {
 
     expect(frame).toContain("compacting context");
     expect(frame).toContain("auto");
+    expect(frame).not.toContain("model working");
+    expect(frame).not.toContain("waiting for runtime events");
   });
 
   it("renders queued steer messages as staged instead of normal sent bubbles", () => {
@@ -632,9 +713,9 @@ describe("ChatView", () => {
       .map((entry) => JSON.stringify(entry.event))
       .join("\n");
     const frame = renderEvents(transcriptEvents, { width: 100, maxRows: 40 });
-    expect(frame).toContain("Viewing subagent: Explore renderer");
-    expect(frame).toContain("Leave the agents pane to return to the main chat.");
-    expect(transcriptBody).toContain("Subagent started: Explore renderer");
+    expect(frame).toContain("Viewing agent transcript.");
+    expect(frame).toContain("Select Main chat in Chat Info to return.");
+    expect(transcriptBody).toContain("Started.");
     expect(frame).toContain("read_file");
     expect(frame).toContain("src/child.ts");
     expect(transcriptBody).toContain("found the renderer path");

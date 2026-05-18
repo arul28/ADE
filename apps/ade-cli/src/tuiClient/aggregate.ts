@@ -31,6 +31,13 @@ export type FileChangeEntry = {
   deleted?: boolean;
 };
 
+export type RuntimeActivityEntry = {
+  id: string;
+  label: string;
+  detail?: string;
+  status: WorkToolStatus | "info";
+};
+
 export type PlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
@@ -46,6 +53,7 @@ export type AggregatedBlock =
   | { kind: "assistant-text"; id: string; line: RenderedChatLine; precededByHeavy?: boolean }
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
+  | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
   | { kind: "memory"; id: string; turnId: string | null; live: boolean; hitCount?: number; text?: string }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
@@ -219,9 +227,10 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
 
 function isLiveTurnBlock(
   block: AggregatedBlock,
-): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "plan" | "compaction" }> {
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" }> {
   return block.kind === "tool-calls-group"
     || block.kind === "files-changed-group"
+    || block.kind === "runtime-activity"
     || block.kind === "plan"
     || block.kind === "compaction";
 }
@@ -270,6 +279,79 @@ function isSubagentTimelineEvent(event: AgentChatEvent): boolean {
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function compactActivityDetail(value: unknown, max = 70): string | undefined {
+  const text = stringField(value);
+  if (!text) return undefined;
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
+  if (value === "failed" || value === "interrupted") return "failed";
+  if (value === "completed" || value === "ok" || value === "complete") return "ok";
+  if (value === "running" || value === "started" || value === "active") return "running";
+  return "info";
+}
+
+function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
+  if (event.type === "activity") {
+    const activity = event.activity;
+    const detail = compactActivityDetail(event.detail);
+    if (activity === "thinking" || activity === "working") return null;
+    return {
+      id,
+      label: activity.replace(/_/g, " "),
+      detail,
+      status: "running",
+    };
+  }
+  if (event.type === "subagent_started" || event.type === "subagent.started") {
+    return {
+      id,
+      label: "subagent started",
+      status: "running",
+    };
+  }
+  if (event.type === "subagent_progress" || event.type === "subagent.progress") {
+    return {
+      id,
+      label: "subagent progress",
+      status: "running",
+    };
+  }
+  if (event.type === "subagent_result" || event.type === "subagent.completed") {
+    return {
+      id,
+      label: "subagent finished",
+      status: runtimeStatus((event as { status?: unknown }).status ?? "completed"),
+    };
+  }
+  return null;
+}
+
+function appendRuntimeActivityBlock(
+  blocks: AggregatedBlock[],
+  id: string,
+  turnId: string | null,
+  entry: RuntimeActivityEntry,
+): void {
+  const last = blocks[blocks.length - 1];
+  let block: Extract<AggregatedBlock, { kind: "runtime-activity" }>;
+  if (last && last.kind === "runtime-activity" && last.turnId === turnId) {
+    block = last;
+  } else {
+    block = { kind: "runtime-activity", id, turnId, entries: [], live: true };
+    blocks.push(block);
+  }
+  const previous = block.entries[block.entries.length - 1];
+  if (previous && previous.label === entry.label && previous.detail === entry.detail && previous.status === entry.status) {
+    return;
+  }
+  block.entries.push(entry);
+  if (block.entries.length > 8) block.entries.splice(0, block.entries.length - 8);
 }
 
 function subagentParentItemId(event: AgentChatEvent): string | null {
@@ -410,6 +492,8 @@ export function aggregateChatBlocks(args: {
     const turnId = turnIdOf(event);
 
     if (isSubagentTimelineEvent(event)) {
+      const activity = runtimeActivityFromEvent(id, event);
+      if (activity) appendRuntimeActivityBlock(blocks, id, turnId, activity);
       continue;
     }
 
@@ -560,7 +644,8 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "activity") {
-      // Activity rows are low-signal transcript metadata; keep the main chat quiet.
+      const activity = runtimeActivityFromEvent(id, event);
+      if (activity) appendRuntimeActivityBlock(blocks, id, turnId, activity);
       continue;
     }
     if (event.type === "approval_request") {

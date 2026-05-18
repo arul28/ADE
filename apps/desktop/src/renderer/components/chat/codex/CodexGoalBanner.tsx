@@ -34,10 +34,9 @@ function statusPillClass(status: CodexThreadGoal["status"]): string {
       return "bg-emerald-500/12 text-emerald-200/85 ring-1 ring-inset ring-emerald-400/25";
     case "paused":
       return "bg-fg/8 text-fg/55 ring-1 ring-inset ring-fg/15";
-    case "budget_limited":
-      return "bg-red-500/12 text-red-200/85 ring-1 ring-inset ring-red-400/25";
     case "cancelled":
       return "bg-fg/8 text-fg/45 ring-1 ring-inset ring-fg/15";
+    case "budget_limited":
     case "active":
     default:
       return "bg-amber-500/12 text-amber-100 ring-1 ring-inset ring-amber-400/30";
@@ -46,6 +45,7 @@ function statusPillClass(status: CodexThreadGoal["status"]): string {
 
 function statusLabel(status: CodexThreadGoal["status"]): string {
   if (!status || status === "unknown") return "active";
+  if (status === "budget_limited") return "active";
   return status.replace("_", " ");
 }
 
@@ -72,10 +72,6 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
   if (!objective) return null;
 
   const tokensUsed = goal.tokensUsed ?? 0;
-  const tokenBudget = goal.tokenBudget ?? 0;
-  const hasBudget = tokenBudget > 0;
-  const ratio = hasBudget ? Math.max(0, Math.min(1, tokensUsed / tokenBudget)) : 0;
-  const overSoftCap = hasBudget && tokensUsed > tokenBudget * 0.85;
   const elapsed = formatElapsed(goal.timeUsedSeconds);
   const status = goal.status ?? "active";
 
@@ -182,21 +178,9 @@ export function CodexGoalBanner({ goal, onEdit, onClear }: CodexGoalBannerProps)
       </div>
 
       <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/65">
-        <div className="relative h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-amber-950/35">
-          {hasBudget ? (
-            <div
-              className={cn(
-                "absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out",
-                overSoftCap ? "bg-amber-300" : "bg-sky-400/70",
-              )}
-              style={{ width: `${(ratio * 100).toFixed(1)}%` }}
-              aria-hidden
-            />
-          ) : null}
-        </div>
+        <div className="h-1 min-w-0 flex-1 rounded-full bg-amber-950/35" aria-hidden />
         <span className="shrink-0 tabular-nums">
           {formatTokens(tokensUsed)}
-          {hasBudget ? <span className="text-amber-100/40"> / {formatTokens(tokenBudget)}</span> : null}
         </span>
         {elapsed ? (
           <>

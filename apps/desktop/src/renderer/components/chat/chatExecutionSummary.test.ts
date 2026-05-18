@@ -100,6 +100,71 @@ describe("deriveChatSubagentSnapshots", () => {
     ]);
   });
 
+  it("keeps Codex sibling subagents separate when they share a parent tool use id", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect desktop IPC path",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-thread-2",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect desktop IPC path",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-thread-1",
+          parentToolUseId: "call-spawn-1",
+          status: "completed",
+          summary: "Mapped the IPC path.",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:03.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-thread-2",
+          parentToolUseId: "call-spawn-1",
+          status: "completed",
+          summary: "Checked the renderer state.",
+        },
+      },
+    ];
+
+    const snapshots = deriveChatSubagentSnapshots(events);
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        taskId: "agent-thread-2",
+        parentToolUseId: "call-spawn-1",
+        status: "completed",
+        summary: "Checked the renderer state.",
+      }),
+      expect.objectContaining({
+        taskId: "agent-thread-1",
+        parentToolUseId: "call-spawn-1",
+        status: "completed",
+        summary: "Mapped the IPC path.",
+      }),
+    ]);
+  });
+
   it("marks non-background running snapshots stopped when their parent turn has already ended", () => {
     const events: AgentChatEventEnvelope[] = [
       {

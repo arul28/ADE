@@ -6,7 +6,8 @@ import {
   parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
   normalizeResumeCommand,
-  runtimeStateFromOsc133Chunk
+  runtimeStateFromOsc133Chunk,
+  sanitizeResumeTargetId,
 } from "./terminalSessionSignals";
 
 describe("terminalSessionSignals", () => {
@@ -26,6 +27,18 @@ describe("terminalSessionSignals", () => {
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe(
       "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume",
     );
+  });
+
+  it("sanitizes resume target ids through the shared CLI launch helper", () => {
+    expect(sanitizeResumeTargetId(" thread_abc123 ")).toBe("thread_abc123");
+    expect(sanitizeResumeTargetId("-dangerous")).toBeNull();
+    expect(sanitizeResumeTargetId("bad\nid")).toBeNull();
+  });
+
+  it("does not treat Codex prompt glyphs as resume targets", () => {
+    const chunk = "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume ›";
+    expect(parseTrackedCliResumeCommand(chunk, "codex")).toBeNull();
+    expect(extractResumeCommandFromOutput(chunk, "codex")).toBeNull();
   });
 
   it("respects preferred tool when both tools appear", () => {
@@ -171,7 +184,7 @@ describe("terminalSessionSignals", () => {
         targetId: null,
         launch: { permissionMode: "default" },
       }),
-    ).toBe("codex --no-alt-screen --full-auto resume");
+    ).toBe("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume");
   });
 
   it("parses legacy codex approval_policy=untrusted sandbox_mode=read-only as plan", () => {

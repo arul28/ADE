@@ -16,7 +16,7 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation, provider readiness, API-key status, OpenCode diagnostics, project slash-command discovery, lane diff stats (`listLaneDiffStats`), per-lane PR summaries (`listPrsByLane`), and the Claude steer family (`steerChatMessage`, `cancelSteerMessage`, `editSteerMessage`, `dispatchSteerMessage`). |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
-| `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream (e.g. `derivePendingSteers`) consumed by the composer and right-pane steer view. |
+| `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream. Produces `AggregatedBlock`s (assistant text, tool-calls / files-changed / plan / memory / compaction groups, runtime-activity rows for subagent and activity envelopes, queued steers) and `derivePendingSteers`, consumed by `ChatView` and the right-pane steer view. |
 | `apps/ade-cli/src/tuiClient/drawerSelection.ts` | Pure selectors for the lane / chat drawer (active row, expanded groups, keyboard navigation). |
 | `apps/ade-cli/src/tuiClient/eventDedup.ts` | Reserves and syncs chat-event dedupe keys so replayed runtime events do not render twice. |
 | `apps/ade-cli/src/tuiClient/feedback.ts` | Builds the multi-field `/feedback` form. Validates required fields, packs the `FeedbackDraftInput` envelope, and adds project / lane / runtime context before submission. |
@@ -27,12 +27,13 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/pendingInput.ts` | Derives pending tool approvals and answer prompts from the chat event stream. |
 | `apps/ade-cli/src/tuiClient/planMode.ts` | Provider-agnostic plan-mode detector (`isPlanMode(modelState)`) plus `hasFirstUserMessage` event scan. Decides whether the composer should display the plan-mode badge and gate destructive tools. |
 | `apps/ade-cli/src/tuiClient/spinTick.tsx` | Shared monotonic spinner tick provider (`SpinTickProvider`) so every animated glyph in the TUI ticks in lockstep. |
-| `apps/ade-cli/src/tuiClient/subagentPane.ts` | Builds the right-pane Subagents/Teammates snapshot view from `subagent_*` and teammate envelopes (`subagentSnapshotsFromEvents`). |
+| `apps/ade-cli/src/tuiClient/chatInfo.ts` | Builds `ChatInfoSnapshot` for the right-pane Chat Info view (provider/model, lane, plan steps, Codex goal, context %, token summary, subagent roster, streaming state). Consumes the same chat-event stream the TUI is already replaying. |
+| `apps/ade-cli/src/tuiClient/subagentPane.ts` | Pure builders for the Chat Info pane's subagent roster: `buildSubagentPaneRows`, `subagentIndexForPaneLine`, `selectedSubagentSnapshot`, and `subagentPaneContentFromRightPane` (extracts a `SubagentPaneContent` from the `chat-info` right-pane state). `subagentSnapshotsFromEvents` reconstructs snapshots from `subagent_*` and teammate envelopes with sibling-aware parent-placeholder resolution. |
 | `apps/ade-cli/src/tuiClient/workEventIds.ts` | Stable Work-tab identity helpers used by the TUI to thread `ade.work-*` event ids through the renderer without re-deriving them per frame. |
 | `apps/ade-cli/src/tuiClient/state.ts` | Persists terminal-client state under `~/.ade/`: the last selected chat per lane (`lastChatByLane`) plus the most recently active lane (`lastLaneId`), used to restore lane focus across launches. |
 | `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens. Mirrors the Claude Design wireframe terminal palette 1:1: surfaces, text levels, brand violets, status (`running`/`attention`/`idle`/`failed`/`primary`), executor brand colors (Claude/Codex/Cursor/OpenCode/Droid + Shell + Copilot), plus helper exports `laneStatusColor`, `agentStatusColor`, `agentStatusGlyph`, and per-provider `glyph` + `wordmark`. |
-| `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (exports `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText` for `/copy`), `Header`, `RightPane`, `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink; running Claude terminals can be put into direct control mode from the TUI). |
+| `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, `RightPaneContent` (`empty`, `help`, `status`, `details`, `diff`, `chat-info`, `new-chat-setup`, `form`, lane details, …), `ChatInfoSnapshot` (the Chat Info pane payload), `ChatInfoPlan`, `ChatInfoPlanStep`, `SubagentSnapshot`, plus navigation DTOs aligned with `apps/desktop/src/shared/types`. |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (transcript renderer; exports `renderChatVisibleSelectionRows` / `renderChatSelectableRowTexts` / `selectedTextFromChatRows` for the ADE-owned mouse selection, plus `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText`), `Header`, `RightPane` (renders `lane-details` and the Chat Info `chat-info` view with main row + plan + Codex goal + subagent roster), `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink; running Claude terminals can be put into direct control mode from the TUI). |
 | `apps/ade-cli/src/tuiClient/keybindings/index.ts` | Verbatim `~/.claude/keybindings.json` reader and TUI action dispatcher (chord support, vim namespace, clipboard-image paste hooks). Resolves `defaultKeybindingsPath()`, parses the Claude keybindings schema, and maps key sequences onto TUI actions. |
 | `apps/ade-cli/src/tuiClient/statusline/index.ts` | Claude-compatible status line config reader and runner. Reads the `~/.claude/statusline.json` contract, executes the configured status command, and exposes the rendered lines to `ModelStatus`. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
@@ -82,10 +83,10 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
 
 - **Header** — project name, active lane, branch, and the terminal client frame.
 - **Drawer** (toggled with the configured shortcut) — two sections: Lanes and Chats. Selecting a lane in the Lanes pane switches the active lane and filters the Chats pane to that lane's sessions. Lane and chat selection drive the right pane's context.
-- **ChatView** — the main transcript. Renders user, assistant, tool, and system events from `chat/event` notifications. Tool calls collapse into expandable blocks; the most recent expandable failure id is tracked so `Enter` can drill into it.
+- **ChatView** — the main transcript. Renders user, assistant, tool, and system events from `chat/event` notifications. Tool calls collapse into expandable blocks; the most recent expandable failure id is tracked so `Enter` can drill into it. Mouse selection is ADE-owned so it can follow virtual transcript rows: drag selects, edge-drag scrolls, wheel scrolling preserves the highlighted range, Shift-click extends the current anchor, and `Ctrl+C` / delivered `Cmd+C` copy selected chat text.
 - **Composer** — multi-line input with mention completion (`@…`) sourced from `MentionPalette` and slash command completion from `SlashPalette`. Pending tool approvals surface as `ApprovalPrompt`.
-- **RightPane** — context-sensitive drawer for slash command output. The "right" placement commands (see below) render their results here as forms, lists, diffs, help text, or rendered objects. For an active lane, the default `lane-details` view shows live git stats (`DiffLineStats` via `diff.listLaneDiffStats`), the linked PR if any (`pr.listPrsByLane`), the most recent tool/command summary, elapsed time for the active turn, and a `worktreeAvailable` guard that surfaces a recoverable warning when a lane's worktree path is missing from disk.
-- **FooterControls** — two-row footer. The top row (mode bar, only present when there's content) shows provider glyph + label, model display, fast-mode badge, reasoning effort, permission summary, pending steer count, a 10-cell token usage bar (`TokenBar`) that recolors at 50 / 80 / 95 %, and the cached context-percent / token summary. The bottom row shows pane toggles (`lanes`, `setup`, plus an optional `agents` toggle when subagents/teammates exist) and pane-specific hints (drawer mode lanes/chats, details navigation, chat scroll position, `/steer` reminder when steers are queued). `footerControlsForAvailability(agentsAvailable)` decides which toggles are wired.
+- **RightPane** — context-sensitive drawer for slash command output. The "right" placement commands (see below) render their results here as forms, lists, diffs, help text, or rendered objects. When a chat is active the default content is the **Chat Info** view (`kind: "chat-info"`): provider/model header, lane label, streaming/idle indicator with context-percent + token summary, plan steps for the current turn, Codex `/goal` block when present, and a roster of subagents (running first, then teammates and background). Selecting a subagent row with `↵` swaps the centre transcript to that agent's view via `buildSubagentTranscriptEvents`; `Esc` returns to the main chat. For an active lane with no chat focus, the default switches to the `lane-details` view with live git stats (`DiffLineStats` via `diff.listLaneDiffStats`), the linked PR if any (`pr.listPrsByLane`), the most recent tool/command summary, elapsed time for the active turn, and a `worktreeAvailable` guard that surfaces a recoverable warning when a lane's worktree path is missing from disk.
+- **FooterControls** — two-row footer. The top row (mode bar, only present when there's content) shows provider glyph + label, model display, fast-mode badge, reasoning effort, permission summary, pending steer count, a 10-cell token usage bar (`TokenBar`) that recolors at 50 / 80 / 95 %, and the cached context-percent / token summary. The bottom row shows pane toggles (`^o` lanes, `^p` pane, `^a` chat info) and pane-specific hints (drawer mode lanes/chats, details navigation, chat scroll position, `/steer` reminder when steers are queued). The `⊚ chat info` chip shows the live subagent count when greater than zero. `footerControlsForAvailability(agentsAvailable)` decides which toggles are wired.
 - **Claude terminal control** — when the active session is a running
   Claude terminal, `Ctrl+T` moves keyboard input from ADE into that
   terminal. `TerminalPane` switches from preview mode to a bordered
@@ -93,6 +94,12 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
   shows `CLAUDE CONTROL` with `Ctrl+T` to return to ADE and `Ctrl+]`
   as the escape chord. Raw terminal input strips only those control
   bytes before forwarding the rest to the PTY.
+- **Ctrl+C semantics** — when a chat turn is streaming or active, `Ctrl+C`
+  cancels the turn through `cancelChatTurn`. Otherwise it arms a
+  ~1.5 s "press again to exit" window so a stray Ctrl+C does not kill
+  the TUI on the first hit; the prompt is surfaced as an info notice.
+  When the chat has an active text selection, Ctrl+C (and Cmd+C on
+  macOS) copies the selection through `writeClipboardText` instead.
 
 Heartbeats are kept alive with `startTuiHeartbeat` so the runtime knows the chat client is still attached.
 
@@ -107,7 +114,6 @@ Inline (acts on chat or shell):
 | `/commit [message]` | Commit lane changes through `git.commit`. |
 | `/push` | Push the active lane branch. |
 | `/clear` | Clear the local TUI transcript view. |
-| `/copy` | Copy the visible chat transcript (rendered through `renderChatTranscriptPlainText`) to the system clipboard. |
 | `/open` | Hand the current ADE context off to desktop via `app/navigate`. |
 | `/quit` | Exit `ade code`. |
 | `/remember <fact>` | Write a durable ADE memory entry. |
@@ -128,6 +134,7 @@ Right pane (open the contextual drawer):
 | `/output-style [style]` | List or select the active Claude output style (Claude only). |
 | `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |
 | `/agents` | List Claude agents from user/project config (Claude only). |
+| `/info` | Open the Chat Info pane for the active chat (plan, Codex goal, subagents). |
 | `/skills` | List Claude skills from user/project config (Claude only). |
 | `/context` | Show Claude context usage breakdown (Claude only). |
 | `/init` | Generate AGENTS.md and Claude pointer files (Claude only). |
@@ -156,7 +163,7 @@ Inline chat commands (run through the active Claude SDK session, Claude only):
 | `/usage` | Show Claude usage / rate-limit window through the active SDK session. |
 | `/insights` | Generate Claude session insights through the active SDK session. |
 | `/fast [on\|off]` | Toggle Claude fast mode through the active SDK session. |
-| `/goal [condition\|clear]` | Set or clear the Claude completion goal. |
+| `/goal [<objective>\|clear\|pause\|resume]` | Set, pause, resume, or clear the chat goal. Token-budget management is intentionally not exposed — when a Codex thread reports `budget_limited`, ADE auto-clears the runtime budget and the goal banner stays in the active state. |
 
 Claude-only commands only appear in the slash palette when the active chat's provider is `claude`. The palette filters built-in entries by their `providers` whitelist so a Codex / OpenCode / Cursor chat does not show parity affordances that have no backing call.
 
@@ -207,7 +214,7 @@ After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli
 - **Vim namespace.** When vim mode is active, the model-status row exposes the current `insert`/`normal` mode tag and the keybindings dispatcher routes `vim.*` actions.
 - **Clipboard image paste.** Cross-platform clipboard-image paste is wired into the composer (Linux via `xclip`/`wl-paste`, macOS via `pngpaste`/AppleScript, Windows via PowerShell), so pasting a screenshot uploads it as a Claude attachment alongside text.
 - **`auto` permission mode.** The Claude permission picker accepts `auto` (mapped onto the SDK `permissionMode: "auto"`) in addition to `default`, `plan`, `acceptEdits`, and `bypassPermissions`.
-- **Subagent panel.** The right pane's subagent surface is re-keyed on `agentId` + `parentToolUseId` and split across two tabs — Subagents and Teammates. Background runs render inline within the Subagents tab via a per-row `background` flag rather than a separate tab. Snapshots are reconstructed live from `subagent_*` envelopes (and `teammate.idle` / `task.completed` for teammates) via `subagentSnapshotsFromEvents()`. Each snapshot carries `parentToolUseId`, `turnId`, `startedAt`, `endedAt`, and a derived `durationMs` so rows can show elapsed time even when the runtime did not report `usage.durationMs`. The footer exposes an explicit Agents pane toggle (via `pane:agents` keybinding) when at least one teammate/subagent row exists; absent that, the count surfaces as an inline chip.
+- **Chat Info (subagent panel).** The right pane's Chat Info view replaces the legacy Subagents tab strip. It puts the main agent in row 0 and the live subagent / teammate / background roster in rows 1..N, all selectable with `↑`/`↓`; `↵` inspects a subagent by replaying its events into the main transcript via `buildSubagentTranscriptEvents`. Snapshots are still keyed by `agentId + parentToolUseId` and reconstructed from `subagent_*` envelopes (plus `teammate.idle` / `task.completed` for teammates) through `subagentSnapshotsFromEvents()`. Sibling subagents that share a parent tool-use id are tracked separately by counting resolved subagent ids per parent and only adopting the placeholder parent row when exactly one resolves under it. Each snapshot carries `parentToolUseId`, `turnId`, `startedAt`, `endedAt`, and a derived `durationMs` so rows show elapsed time even when the runtime did not report `usage.durationMs`. The `^a` footer toggle opens or closes the Chat Info pane.
 - **Context, output styles, plugins.** `/context`, `/output-style`, and `/plugin` call `chat.getContextUsage`, `chat.listClaudeOutputStyles` / `chat.setClaudeOutputStyle`, and `chat.listClaudePlugins` / `chat.reloadClaudePlugins` against the same Claude SDK runtime the desktop chat uses.
 
 ## Chat setup
