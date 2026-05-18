@@ -1,8 +1,12 @@
 import {
+  createDynamicCursorCliModelDescriptor,
   createDynamicDroidCliModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
+  CURSOR_CANONICAL_MODEL_IDS,
+  DROID_CANONICAL_MODEL_IDS,
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
+  OPENCODE_CANONICAL_PROVIDER_MODELS,
   getLocalModelIdTail,
   parseDynamicDroidModelRef,
   parseDynamicOpenCodeModelRef,
@@ -11,6 +15,46 @@ import {
   type ModelDescriptor,
 } from "../../../../shared/modelRegistry";
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
+
+/**
+ * Canonical descriptors for dynamic-only providers (Droid, Cursor, OpenCode).
+ * These are surfaced in the picker even when the provider isn't authed so the
+ * user can see the catalog and follow a Sign in CTA. When the provider IS
+ * authed, real discovery results land in `availableModelIds` and override
+ * these (`mergeSelectorModels` de-dups by id).
+ *
+ * `MODEL_REGISTRY` already supplies canonical static descriptors for Anthropic
+ * (Claude), OpenAI (Codex), and Ollama, so they don't appear here.
+ */
+function buildDynamicCanonicalDescriptors(): ModelDescriptor[] {
+  const descriptors: ModelDescriptor[] = [];
+  for (const id of DROID_CANONICAL_MODEL_IDS) {
+    descriptors.push(createDynamicDroidCliModelDescriptor(id));
+  }
+  for (const id of CURSOR_CANONICAL_MODEL_IDS) {
+    descriptors.push(createDynamicCursorCliModelDescriptor(id));
+  }
+  for (const pair of OPENCODE_CANONICAL_PROVIDER_MODELS) {
+    descriptors.push(
+      createDynamicOpenCodeModelDescriptor("", {
+        openCodeProviderId: pair.providerId,
+        openCodeModelId: pair.modelId,
+      }),
+    );
+  }
+  return descriptors;
+}
+
+let dynamicCanonicalCache: ModelDescriptor[] | null = null;
+/**
+ * Cached list of canonical descriptors for dynamic-only providers. Exposed so
+ * the picker's "expanded" view (when the Show all models toggle is on) can
+ * include the same canonical entries that `mergeSelectorModels` injects.
+ */
+export function dynamicCanonicalDescriptors(): ModelDescriptor[] {
+  if (!dynamicCanonicalCache) dynamicCanonicalCache = buildDynamicCanonicalDescriptors();
+  return dynamicCanonicalCache;
+}
 
 export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
   const openCode = parseDynamicOpenCodeModelRef(modelId);
@@ -108,6 +152,26 @@ export function mergeSelectorModels(
       if (model.deprecated) continue;
       if (filter && !filter(model)) continue;
       merged.set(model.id, rebucketOpenCodeFamily(model));
+    }
+    // Determine which dynamic providers already have real discovered models
+    // (from `availableModelIds`). For those, skip canonical injection — the
+    // real catalog wins. For providers with no discovery output, fall back to
+    // the canonical list so the picker is never empty pre-signin.
+    const discoveredFamilies = new Set<string>();
+    for (const rawId of availableIdSet) {
+      const descriptor = resolveModelDescriptor(rawId);
+      if (descriptor) {
+        // Apply the same rebucket — OpenCode-routed models all collapse to the
+        // "opencode" rail regardless of upstream provider family.
+        discoveredFamilies.add(rebucketOpenCodeFamily(descriptor).family);
+      }
+    }
+    for (const descriptor of dynamicCanonicalDescriptors()) {
+      if (filter && !filter(descriptor)) continue;
+      if (discoveredFamilies.has(descriptor.family)) continue;
+      if (!merged.has(descriptor.id)) {
+        merged.set(descriptor.id, rebucketOpenCodeFamily(descriptor));
+      }
     }
   }
 

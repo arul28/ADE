@@ -22,17 +22,30 @@ const useProviderAuthStore = create<ProviderAuthStore>((set) => ({
   setInFlight: (promise) => set({ inFlight: promise }),
 }));
 
-function familiesFromStatus(status: {
+// AiClaudeAvailability is an object with `binary.present` + `auth.ready` —
+// historic callers also passed plain booleans, so accept both. We treat Claude
+// as "ok" whenever auth.ready is true (binary may be bundled and present even
+// when path discovery says otherwise), and fall back to binary.present so the
+// rail dot is still informative when only the binary half is known.
+function isClaudeOk(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (!value || typeof value !== "object") return false;
+  const claude = value as {
+    auth?: { ready?: boolean };
+    binary?: { present?: boolean };
+    runtimeAvailable?: boolean;
+  };
+  if (claude.auth?.ready === true) return true;
+  if (claude.runtimeAvailable === true) return true;
+  return false;
+}
+
+export function familiesFromStatus(status: {
   availableProviders?: { claude?: unknown; codex?: unknown; cursor?: unknown; droid?: unknown };
   opencodeProviders?: Array<{ id: string; connected: boolean }>;
 }): AuthStatusMap {
   const out: AuthStatusMap = {};
-  const claude = status.availableProviders?.claude;
-  const claudeOk =
-    typeof claude === "boolean"
-      ? claude
-      : Boolean(claude && typeof claude === "object" && (claude as { runtimeAvailable?: boolean }).runtimeAvailable);
-  out.anthropic = claudeOk ? "ok" : "unauthed";
+  out.anthropic = isClaudeOk(status.availableProviders?.claude) ? "ok" : "unauthed";
   out.openai = status.availableProviders?.codex === true ? "ok" : "unauthed";
   out.cursor = status.availableProviders?.cursor === true ? "ok" : "unauthed";
   out.factory = status.availableProviders?.droid === true ? "ok" : "unauthed";

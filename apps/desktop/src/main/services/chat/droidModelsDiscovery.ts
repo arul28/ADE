@@ -4,34 +4,14 @@ import { homedir } from "node:os";
 import { createSession } from "@factory/droid-sdk";
 import {
   createDynamicDroidCliModelDescriptor,
+  DROID_CANONICAL_MODEL_IDS,
   sortDroidCliDescriptorsForPicker,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
 
 /** Default catalog when `droid` does not expose a machine-readable model list. */
-export const DROID_DEFAULT_MODEL_IDS: string[] = [
-  "claude-opus-4-6",
-  "claude-opus-4-6-fast",
-  "claude-opus-4-5-20251101",
-  "claude-sonnet-4-5-20250929",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "gpt-5.1",
-  "gpt-5.2",
-  "gpt-5.3-codex",
-  "gpt-5.4",
-  "gpt-5.4-fast",
-  "gpt-5.4-mini",
-  "gemini-3-pro-preview",
-  "gemini-3.1-pro-preview",
-  "gemini-3-flash-preview",
-  "glm-4.7",
-  "glm-5",
-  "glm-5.1",
-  "kimi-k2.5",
-  "minimax-m2.5",
-];
+export const DROID_DEFAULT_MODEL_IDS: string[] = [...DROID_CANONICAL_MODEL_IDS];
 
 export type DroidExecHelpModelRow = {
   id: string;
