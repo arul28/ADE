@@ -65,14 +65,20 @@ describe("subagent pane helpers", () => {
 
   it("maps visual table lines back to selectable rows for mouse clicks", () => {
     const content = rosterPaneContent();
-    const offsets = subagentPaneSelectableLineOffsets(content);
+    const offsets = subagentPaneSelectableLineOffsets(content, 1);
 
     expect(offsets.length).toBe(5);
-    expect(subagentIndexForPaneLine(content, offsets[0]!)).toBe(0);
-    expect(subagentIndexForPaneLine(content, offsets[1]!)).toBe(1);
-    expect(subagentIndexForPaneLine(content, offsets[3]!)).toBe(3);
-    expect(subagentIndexForPaneLine(content, offsets[4]! + 1)).toBe(4);
-    expect(subagentIndexForPaneLine(content, offsets[0]! - 2)).toBeNull();
+    expect(subagentIndexForPaneLine(content, offsets[0]!, 1)).toBe(0);
+    expect(subagentIndexForPaneLine(content, offsets[1]!, 1)).toBe(1);
+    expect(subagentIndexForPaneLine(content, offsets[3]!, 1)).toBe(3);
+    expect(subagentIndexForPaneLine(content, offsets[4]! + 1, 1)).toBe(4);
+    expect(subagentIndexForPaneLine(content, offsets[0]! - 2, 1)).toBeNull();
+  });
+
+  it("only accounts for detail lines on the selected subagent row", () => {
+    const content = rosterPaneContent();
+    expect(subagentPaneSelectableLineOffsets(content, 1)).toEqual([4, 8, 10, 13, 16]);
+    expect(subagentPaneSelectableLineOffsets(content, 2)).toEqual([4, 8, 9, 13, 16]);
   });
 
   it("builds a focused transcript without unrelated subagent output", () => {

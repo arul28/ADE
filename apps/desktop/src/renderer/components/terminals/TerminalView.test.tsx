@@ -779,6 +779,51 @@ describe("TerminalView", () => {
     });
   });
 
+  it("does not forward a Shift+mouse release after the runtime is disposed", async () => {
+    render(<TerminalView ptyId="pty-shift-disposed" sessionId="session-shift-disposed" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-shift-disposed",
+        sessionId: "session-shift-disposed",
+        projectRoot: "/project/a",
+        data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
+      });
+    }
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+    terminal!.element!.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 1,
+      clientX: 0,
+      clientY: 0,
+    }));
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+
+    __resetTerminalRuntimesForTests();
+    document.dispatchEvent(new MouseEvent("mouseup", {
+      bubbles: true,
+      cancelable: true,
+      shiftKey: true,
+      button: 0,
+      buttons: 0,
+      clientX: 64,
+      clientY: 72,
+    }));
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to native image paste when macOS Cmd+V does not fire a paste event", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
@@ -1026,6 +1071,56 @@ describe("TerminalView", () => {
     expect(written).toContain("\x1b[2;2H");
     expect(written).not.toContain("UNSTYLED SERIALIZED");
     expect(readTranscriptTailMock).not.toHaveBeenCalled();
+  });
+
+  it("switches back to the main buffer before hydrating normal snapshots", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-normal-snapshot",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-normal-snapshot",
+        cols: 12,
+        rows: 2,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [
+          {
+            text: "Main",
+            wrapped: false,
+            cells: "Main".split("").map((text) => ({
+              text,
+              fg: null,
+              bg: null,
+              fgMode: "default" as const,
+              bgMode: "default" as const,
+            })),
+          },
+        ],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-normal-snapshot" sessionId="session-normal-snapshot" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const written = terminal?.write.mock.calls.find(([value]) => String(value).includes("Main"))?.[0] as string | undefined;
+    expect(written).toBeTruthy();
+    expect(written).toContain("\x1b[?1049l");
+    expect(written).not.toContain("\x1b[?1049h");
   });
 
   it("keeps a mounted live runtime bound to its original project while the active project changes", async () => {

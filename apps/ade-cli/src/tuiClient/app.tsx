@@ -1596,8 +1596,8 @@ export function chatSelectionEdgeDirectionForMouseY({
 }): ChatSelectionEdgeDirection | null {
   if (y == null) return null;
   const bottomRow = topRow + Math.max(1, rowBudget) - 1;
-  if (y <= topRow && scrollOffsetRows < maxScrollOffsetRows) return "older";
-  if (y >= bottomRow && scrollOffsetRows > 0) return "newer";
+  if (y < topRow && scrollOffsetRows < maxScrollOffsetRows) return "older";
+  if (y > bottomRow && scrollOffsetRows > 0) return "newer";
   return null;
 }
 
@@ -2475,6 +2475,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
+  useEffect(() => {
+    chatSelectionAnchorRef.current = null;
+    stopChatSelectionEdgeScroll();
+    updateChatMouseSelection(null);
+  }, [selectedAgentSnapshot?.id, stopChatSelectionEdgeScroll, updateChatMouseSelection]);
   const spinTickActive = displayStreaming
     || mode === "connecting"
     || sessions.some((session) => session.status === "active")
@@ -4155,8 +4160,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       addNotice("No chat text selected.", "info");
       return false;
     }
-    const text = selectedTextFromChatRows(selectableChatRowTextsRef.current, selection).trim();
-    if (!text) {
+    const text = selectedTextFromChatRows(selectableChatRowTextsRef.current, selection);
+    if (text.length === 0) {
       addNotice("No chat text selected.", "info");
       return false;
     }
@@ -6125,7 +6130,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         if (mouse.x >= rightStart) {
           const subagentPaneTop = 4 + goalBannerRows;
           const subagentContent = subagentPaneContentFromRightPane(rightPane);
-          const nextIndex = subagentContent ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop) : null;
+          const nextIndex = subagentContent ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex) : null;
           if (nextIndex != null) {
             setRightSelectionIndex(nextIndex);
           }

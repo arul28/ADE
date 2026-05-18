@@ -62,6 +62,7 @@ export function selectedSubagentSnapshot(
 
 export function subagentPaneSelectableLineOffsets(
   content: SubagentPaneContent,
+  selectedIndex = 0,
 ): number[] {
   const rows = buildSubagentPaneRows(content);
   const offsets: number[] = [];
@@ -74,7 +75,10 @@ export function subagentPaneSelectableLineOffsets(
     if (showSection) line += 2;
     offsets.push(line);
     line += 1;
-    if (row.kind === "main" || row.snapshot.lastToolName || row.snapshot.summary) {
+    const selectedSnapshotHasDetail = row.kind === "snapshot"
+      && index === selectedIndex
+      && (row.snapshot.lastToolName || row.snapshot.summary);
+    if (row.kind === "main" || selectedSnapshotHasDetail) {
       line += 1;
     }
   }
@@ -85,9 +89,10 @@ export function subagentPaneSelectableLineOffsets(
 export function subagentIndexForPaneLine(
   content: SubagentPaneContent,
   line: number,
+  selectedIndex = 0,
 ): number | null {
   if (!Number.isFinite(line)) return null;
-  const offsets = subagentPaneSelectableLineOffsets(content);
+  const offsets = subagentPaneSelectableLineOffsets(content, selectedIndex);
   if (!offsets.length) return null;
   const first = offsets[0]!;
   const last = offsets[offsets.length - 1]!;

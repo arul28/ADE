@@ -901,8 +901,16 @@ function planRows(block: Extract<AggregatedBlock, { kind: "plan" }>, spinFrame: 
 }
 
 function activeTurnRows(blocks: AggregatedBlock[], dots: string): RenderedChatRow[] {
-  const hasLiveBlock = blocks.some((block) => "live" in block && block.live);
-  const hasAssistantOutput = blocks.some((block) => block.kind === "assistant-text");
+  let activeTurnStart = -1;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index]?.kind === "user-bubble") {
+      activeTurnStart = index;
+      break;
+    }
+  }
+  const activeTurnBlocks = activeTurnStart >= 0 ? blocks.slice(activeTurnStart + 1) : blocks;
+  const hasLiveBlock = activeTurnBlocks.some((block) => "live" in block && block.live);
+  const hasAssistantOutput = activeTurnBlocks.some((block) => block.kind === "assistant-text");
   if (hasLiveBlock || hasAssistantOutput) return [];
   return [{
     id: "active-turn-waiting",
@@ -1411,7 +1419,7 @@ export function selectedTextFromChatRows(rows: string[], selection: ChatTextSele
     }
     selected.push(chars.slice(range[0], range[1]).join(""));
   }
-  return selected.join("\n").trimEnd();
+  return selected.join("\n");
 }
 
 export function renderChatTranscriptPlainText({

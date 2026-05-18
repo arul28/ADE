@@ -174,21 +174,35 @@ describe("chat text selection helpers", () => {
     });
   });
 
-  it("starts selection autoscroll on reachable transcript edge rows", () => {
+  it("starts selection autoscroll after leaving reachable transcript edge rows", () => {
     expect(chatSelectionEdgeDirectionForMouseY({
-      y: 2,
+      y: 1,
       topRow: 2,
       rowBudget: 8,
       scrollOffsetRows: 1,
       maxScrollOffsetRows: 4,
     })).toBe("older");
     expect(chatSelectionEdgeDirectionForMouseY({
-      y: 9,
+      y: 10,
       topRow: 2,
       rowBudget: 8,
       scrollOffsetRows: 1,
       maxScrollOffsetRows: 4,
     })).toBe("newer");
+    expect(chatSelectionEdgeDirectionForMouseY({
+      y: 2,
+      topRow: 2,
+      rowBudget: 8,
+      scrollOffsetRows: 1,
+      maxScrollOffsetRows: 4,
+    })).toBeNull();
+    expect(chatSelectionEdgeDirectionForMouseY({
+      y: 9,
+      topRow: 2,
+      rowBudget: 8,
+      scrollOffsetRows: 1,
+      maxScrollOffsetRows: 4,
+    })).toBeNull();
     expect(chatSelectionEdgeDirectionForMouseY({
       y: 5,
       topRow: 2,

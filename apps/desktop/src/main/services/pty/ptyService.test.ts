@@ -494,7 +494,8 @@ describe("ptyService", () => {
             CUSTOM_FLAG: "1",
             TERM: "xterm-256color",
             COLORTERM: "truecolor",
-            FORCE_COLOR: "1",
+            NO_COLOR: "",
+            FORCE_COLOR: "",
           }),
         }),
       );
@@ -594,6 +595,28 @@ describe("ptyService", () => {
         NO_COLOR: "1",
         FORCE_COLOR: "",
       }));
+    });
+
+    it("does not force color when NO_COLOR is explicitly empty", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Empty no color env",
+        cols: 80,
+        rows: 24,
+        env: {
+          NO_COLOR: "",
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        NO_COLOR: "",
+      }));
+      expect(opts?.env?.FORCE_COLOR).toBeUndefined();
     });
 
     it("does not leak inherited NO_COLOR into interactive terminal launches", async () => {

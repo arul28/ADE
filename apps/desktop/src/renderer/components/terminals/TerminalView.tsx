@@ -341,6 +341,7 @@ function serializeSnapshotVisibleRows(snapshot: TerminalSerializedSnapshot): str
 
   const parts: string[] = [];
   if (snapshot.bufferType === "alternate") parts.push("\x1b[?1049h");
+  else parts.push("\x1b[?1049l");
   parts.push("\x1b[?25l", "\x1b[?7l", "\x1b[0m", "\x1b[H", "\x1b[J");
 
   rows.forEach((row, y) => {
@@ -623,6 +624,7 @@ function installShiftMouseBridge(runtime: CachedRuntime): void {
     };
     const onMouseUp = (upEv: MouseEvent) => {
       cleanup();
+      if (runtime.disposed) return;
       const releasePoint = terminalMousePoint(runtime, upEv) ?? point;
       consumeMouseEvent(upEv);
       writeSgrMouse(runtime, 4, releasePoint, "m");

@@ -66,6 +66,13 @@ describe("ChatView", () => {
     )).toBe("bravo\ncharlie");
   });
 
+  it("preserves selected leading and trailing whitespace", () => {
+    expect(selectedTextFromChatRows(
+      ["  const value = 1;  ", "    return value;  "],
+      { startRow: 0, startColumn: 0, endRow: 1, endColumn: 19 },
+    )).toBe("  const value = 1;  \n    return value;  ");
+  });
+
   it("copies selected absolute transcript rows outside the visible viewport", () => {
     const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
       sessionId: "s1",
@@ -138,6 +145,55 @@ describe("ChatView", () => {
 
     expect(frame).toContain("check status");
     expect(frame).toContain("active turn · waiting for runtime events");
+  });
+
+  it("shows the active-turn wait state after historical assistant output", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "first turn", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "text", text: "first answer", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "done", status: "completed", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: { type: "user_message", text: "second turn", turnId: "turn-2" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:04.000Z",
+        sequence: 5,
+        event: { type: "status", turnStatus: "started", turnId: "turn-2" },
+      },
+    ];
+    const frame = renderEvents(events, { streaming: true, width: 80 });
+    const maxOffset = computeChatScrollMaxOffset({
+      events,
+      notices: [],
+      activeSession: session,
+      streaming: true,
+      maxRows: 3,
+      width: 80,
+    });
+
+    expect(frame).toContain("first answer");
+    expect(frame).toContain("second turn");
+    expect(frame).toContain("active turn · waiting for runtime events");
+    expect(maxOffset).toBeGreaterThan(0);
   });
 
   it("does not add a generic working indicator while active text is streaming", () => {

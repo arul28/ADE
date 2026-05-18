@@ -120,6 +120,10 @@ function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
 }
 
+function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(env, key);
+}
+
 function resolveNodePtyPrebuildDir(platform: NodeJS.Platform, arch: string): string | null {
   if (platform !== "darwin") return null;
   if (arch === "arm64") return "darwin-arm64";
@@ -192,7 +196,7 @@ function withInteractiveTerminalColorEnv(
   if (!hasEnvValue(next, "COLORTERM")) {
     next.COLORTERM = "truecolor";
   }
-  if (!hasEnvValue(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
+  if (!hasEnvKey(next, "NO_COLOR") && !hasEnvValue(next, "FORCE_COLOR")) {
     next.FORCE_COLOR = "1";
   }
   return next;
@@ -2432,7 +2436,7 @@ export function createPtyService({
       }
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
-      const explicitNoColor = hasEnvValue(args.env ?? {}, "NO_COLOR") || hasEnvValue(laneRuntimeEnv, "NO_COLOR");
+      const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const baseLaunchEnv = {
         ...process.env,
         ...laneRuntimeEnv,
