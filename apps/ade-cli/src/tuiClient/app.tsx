@@ -3762,6 +3762,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       });
       setRightOpen(true);
       setPaneFocus("details");
+      lastUserOpenedPaneRef.current = "model-picker";
 	      void refreshAiSetupStatus().catch(() => undefined);
 	      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
 	      if (provider === "opencode" || provider === "cursor" || provider === "droid" || provider === "lmstudio" || provider === "ollama") {
@@ -6026,12 +6027,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 	  const commitModelPickerSelection = useCallback(
 	    (modelId: string) => {
 	      let catalogModel: AgentChatModelCatalogModel | null = null;
+	      let catalogProvider: AdeCodeProvider | null = null;
 	      for (const group of modelCatalogRef.current?.groups ?? modelCatalog?.groups ?? []) {
 	        for (const provider of group.providers) {
 	          for (const subsection of provider.subsections) {
 	            const found = subsection.models.find((entry) => entry.id === modelId || entry.modelId === modelId);
 	            if (found) {
 	              catalogModel = found;
+	              catalogProvider = normalizeProvider(group.key as AdeCodeProvider);
 	              break;
 	            }
 	          }
@@ -6048,7 +6051,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const descriptor = getModelById(modelId);
       const provider: AdeCodeProvider = descriptor
         ? normalizeProvider(resolveProviderGroupForModel(descriptor))
-        : modelState.provider;
+        : catalogProvider ?? modelState.provider;
       applyModelState((prev) => ({
         ...prev,
         ...modelStatePatchForModel(provider, target),

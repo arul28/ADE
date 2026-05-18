@@ -1357,7 +1357,9 @@ async function callLocalProjectSyncIfBound<T>(
     })) as T;
     return { handled: true, result };
   } catch (error) {
-    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+    const canUseFallback =
+      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
+    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn(

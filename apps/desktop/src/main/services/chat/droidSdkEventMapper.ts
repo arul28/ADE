@@ -134,7 +134,8 @@ export function mapDroidSdkMessageToChatEvents(
       const role = readString(record.role);
       if (role !== "assistant") return [];
       return extractTextBlocks(record.content).flatMap((block, index): AgentChatEvent[] => {
-        const itemId = block.id ?? `${readString(record.messageId) ?? "droid-message"}:${block.kind}:${index}`;
+        const messageId = readString(record.messageId) ?? `droid-${block.kind === "thinking" ? "thinking" : "text"}`;
+        const itemId = block.id ?? `${messageId}:${block.kind}:${index}`;
         if (block.kind === "thinking") {
           if (meta.state.thinkingDeltaItemIds.has(itemId)) return [];
           return [{ type: "reasoning", text: block.text, itemId, turnId }];

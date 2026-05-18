@@ -85,7 +85,8 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
   hydrateFromRemote: async () => {
     const api = getRpcApi();
     if (!api) {
-      set({ hydrated: true });
+      // RPC surface not yet bound — leave hydrated:false so we retry once it
+      // becomes available, instead of permanently locking on stale local cache.
       return;
     }
     try {
@@ -98,8 +99,6 @@ const useFavoritesStore = create<FavoritesState>((set, get) => ({
     }
   },
 }));
-
-let hydrationStarted = false;
 
 export function useModelFavorites(): {
   favorites: string[];
@@ -117,8 +116,7 @@ export function useModelFavorites(): {
   );
 
   useEffect(() => {
-    if (hydrationStarted || hydrated) return;
-    hydrationStarted = true;
+    if (hydrated) return;
     void hydrateFromRemote();
   }, [hydrateFromRemote, hydrated]);
 

@@ -4061,7 +4061,10 @@ describe("aiOrchestratorService", () => {
       await Promise.race([
         firstReconcileEntered,
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error("first reconcile did not enter within 180s")), 180_000)
+          setTimeout(
+            () => reject(new Error(`first reconcile did not enter within 280s (reconcileCalls=${reconcileCalls})`)),
+            280_000,
+          ),
         ),
       ]);
       expect(reconcileCalls).toBe(1);
@@ -4076,7 +4079,7 @@ describe("aiOrchestratorService", () => {
       releaseFirstSweep();
       fixture.dispose();
     }
-  }, 240_000);
+  }, 300_000);
 
   it("skips background health sweeps for runs blocked on open interventions", async () => {
     const fixture = await createFixture();

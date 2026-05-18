@@ -148,7 +148,7 @@ export function providerBadgeColor(provider: string, models: ModelDescriptor[]):
 
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
   if (model.family === "cursor") return "cursor";
-  if (model.providerRoute === "opencode" && (model.family === "ollama" || model.family === "lmstudio")) {
+  if (model.family === "ollama" || model.family === "lmstudio") {
     return model.family;
   }
   if (model.isCliWrapped) {

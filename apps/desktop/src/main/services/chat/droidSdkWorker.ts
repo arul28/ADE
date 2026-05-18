@@ -18,9 +18,15 @@ type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
 let sdkModule: DroidSdkModule | null = null;
 let initState: DroidSdkWorkerInit | null = null;
 let session: DroidSession | null = null;
-let currentAbort: AbortController | null = null;
+const activeAborts = new Set<AbortController>();
+let waiterSeq = 0;
 const permissionWaiters = new Map<string, (decision: DroidSdkPermissionDecision) => void>();
 const askUserWaiters = new Map<string, (response: DroidSdkAskUserResponse) => void>();
+
+function nextWaiterId(prefix: string): string {
+  waiterSeq = (waiterSeq + 1) >>> 0;
+  return `${prefix}-${Date.now()}-${waiterSeq}`;
+}
 
 function post(message: DroidSdkWorkerResponse): void {
   if (process.send) process.send(message);
@@ -103,11 +109,13 @@ async function requestPermission(
   params: DroidSdkTypes.RequestPermissionRequestParams,
 ): Promise<DroidSdkTypes.RequestPermissionHandlerResult> {
   const request = summarizePermission(params);
+  const waiterId = nextWaiterId("droid-permission");
+  const requestWithId = { ...request, id: waiterId };
   const decision = await new Promise<DroidSdkPermissionDecision>((resolve) => {
-    permissionWaiters.set(request.id, resolve);
-    post({ type: "permission_request", requestId: request.id, request });
+    permissionWaiters.set(waiterId, resolve);
+    post({ type: "permission_request", requestId: waiterId, request: requestWithId });
   });
-  permissionWaiters.delete(request.id);
+  permissionWaiters.delete(waiterId);
   return {
     selectedOption: decision.selectedOption as DroidSdkTypes.RequestPermissionSelection,
     ...(decision.comment?.trim() ? { comment: decision.comment.trim() } : {}),
@@ -132,11 +140,13 @@ function summarizeAskUser(params: DroidSdkTypes.AskUserRequestParams): DroidSdkA
 
 async function requestAskUser(params: DroidSdkTypes.AskUserRequestParams): Promise<DroidSdkTypes.AskUserResult> {
   const request = summarizeAskUser(params);
+  const waiterId = nextWaiterId("droid-ask-user");
+  const requestWithId = { ...request, id: waiterId };
   const response = await new Promise<DroidSdkAskUserResponse>((resolve) => {
-    askUserWaiters.set(request.id, resolve);
-    post({ type: "ask_user_request", requestId: request.id, request });
+    askUserWaiters.set(waiterId, resolve);
+    post({ type: "ask_user_request", requestId: waiterId, request: requestWithId });
   });
-  askUserWaiters.delete(request.id);
+  askUserWaiters.delete(waiterId);
   return response as DroidSdkTypes.AskUserResult;
 }
 
@@ -226,7 +236,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
   if (!session || !initState) throw new Error("Droid SDK worker is not initialized.");
   await applySettings(payload.payload.settings);
   const controller = new AbortController();
-  currentAbort = controller;
+  activeAborts.add(controller);
   let tokenUsage: unknown = null;
   let firstError: unknown = null;
   try {
@@ -253,7 +263,7 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
       ...(firstError ? { error: firstError } : {}),
     };
   } finally {
-    if (currentAbort === controller) currentAbort = null;
+    activeAborts.delete(controller);
   }
 }
 
@@ -262,7 +272,8 @@ async function cancelRun(): Promise<void> {
   permissionWaiters.clear();
   for (const [, resolve] of askUserWaiters) resolve({ cancelled: true, answers: [] });
   askUserWaiters.clear();
-  currentAbort?.abort();
+  for (const controller of activeAborts) controller.abort();
+  activeAborts.clear();
   await session?.interrupt().catch(() => undefined);
 }
 

@@ -435,7 +435,9 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const handleCopyId = useCallback((modelId: string) => {
     try {
-      void navigator.clipboard.writeText(modelId);
+      void navigator.clipboard.writeText(modelId).catch(() => {
+        // ignore clipboard failures
+      });
     } catch {
       // ignore clipboard failures
     }

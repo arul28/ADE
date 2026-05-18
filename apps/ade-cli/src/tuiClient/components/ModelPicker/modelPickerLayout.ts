@@ -143,28 +143,43 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
   const trimmedQuery = input.query.trim();
   const searchActive = trimmedQuery.length > 0;
 
+  // Stale provider selections (persisted from a prior session where the provider
+  // had entries) can fall through to an empty pool while railIndex defaults
+  // back to favorites — leaving the rail and pool out of sync. Normalize the
+  // selection up-front so both derive from the same authoritative state.
+  let normalizedSelection = input.selection;
+  if (
+    !searchActive
+    && normalizedSelection.kind === "provider"
+    && !providersPresent.includes(normalizedSelection.provider)
+  ) {
+    normalizedSelection = providersPresent.length
+      ? { kind: "provider", provider: providersPresent[0]! }
+      : { kind: "favorites" };
+  }
+
   let pool: ModelPickerEntry[];
   if (searchActive) {
     pool = allEntries;
-  } else if (input.selection.kind === "favorites") {
+  } else if (normalizedSelection.kind === "favorites") {
     pool = allEntries.filter((entry) => favoritesSet.has(entry.modelId));
-  } else if (input.selection.kind === "recents") {
+  } else if (normalizedSelection.kind === "recents") {
     const recentSet = new Set(input.recents);
     const order = new Map(input.recents.map((id, i) => [id, i] as const));
     pool = allEntries
       .filter((entry) => recentSet.has(entry.modelId))
       .sort((a, b) => (order.get(a.modelId) ?? 0) - (order.get(b.modelId) ?? 0));
   } else {
-    const target = input.selection.provider;
+    const target = normalizedSelection.provider;
     pool = allEntries.filter((entry) => entry.family === target);
   }
 
   const providerTabs = (() => {
-    if (searchActive || input.selection.kind !== "provider") return [];
+    if (searchActive || normalizedSelection.kind !== "provider") return [];
     const groups = new Map<string, { key: string; label: string; entries: ModelPickerEntry[]; hasAvailable: boolean }>();
     for (const entry of pool) {
       const key = entry.subProviderKey || entry.subProvider || "__default__";
-      const label = entry.subProvider || providerLabel(input.selection.provider);
+      const label = entry.subProvider || providerLabel(normalizedSelection.provider);
       const existing = groups.get(key);
       if (existing) {
         existing.entries.push(entry);
@@ -223,12 +238,12 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
 
   // Pick rail index from selection.
   let railIndex = 0;
-  if (input.selection.kind === "favorites") {
+  if (normalizedSelection.kind === "favorites") {
     railIndex = 0;
-  } else if (input.selection.kind === "recents") {
+  } else if (normalizedSelection.kind === "recents") {
     railIndex = 1;
   } else {
-    const targetProvider = input.selection.provider;
+    const targetProvider = normalizedSelection.provider;
     const idx = railEntries.findIndex(
       (entry) => entry.kind === "provider" && entry.provider === targetProvider,
     );

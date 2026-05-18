@@ -151,5 +151,12 @@ export function getSharedModelPickerStore(): ModelPickerStore {
   return sharedStoreInstance;
 }
 export function resetSharedModelPickerStoreForTests(): void {
+  if (sharedStoreInstance) {
+    try {
+      sharedStoreInstance.flush();
+    } catch {
+      // best-effort flush during teardown
+    }
+  }
   sharedStoreInstance = null;
 }

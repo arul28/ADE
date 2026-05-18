@@ -2403,7 +2403,7 @@ export function AgentChatPane({
 
   const sessionProvider = useMemo(() => {
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
-    return resolveChatRuntimeProvider(getModelById(modelId));
+    return resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
   const effectiveCursorModeSnapshot = useMemo(() => {
     if (sessionProvider !== "cursor") return null;
@@ -2733,7 +2733,7 @@ export function AgentChatPane({
   const refreshAvailableModels = useCallback(async () => {
     ++availableModelsRefreshSeqRef.current;
     const selectedModelProvider = modelId.trim()
-      ? resolveChatRuntimeProvider(getModelById(modelId))
+      ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
       : null;
     const shouldRefreshOpenCodeInventory =
       sessionProvider === "opencode"
