@@ -4,14 +4,10 @@ import { homedir } from "node:os";
 import { createSession } from "@factory/droid-sdk";
 import {
   createDynamicDroidCliModelDescriptor,
-  DROID_CANONICAL_MODEL_IDS,
   sortDroidCliDescriptorsForPicker,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
-
-/** Default catalog when `droid` does not expose a machine-readable model list. */
-export const DROID_DEFAULT_MODEL_IDS: string[] = [...DROID_CANONICAL_MODEL_IDS];
 
 export type DroidExecHelpModelRow = {
   id: string;
@@ -265,9 +261,7 @@ export async function discoverDroidCliModelDescriptors(
   const fromSdk = options?.mode === "cached-or-fallback"
     ? getCachedDroidModels() ?? []
     : await listDroidModelsFromSdk(droidPath).catch(() => []);
-  const baseRows: DroidExecHelpModelRow[] = fromSdk.length
-    ? fromSdk
-    : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));
+  const baseRows: DroidExecHelpModelRow[] = fromSdk;
 
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected
   // models appear even when the CLI help output doesn't list them.

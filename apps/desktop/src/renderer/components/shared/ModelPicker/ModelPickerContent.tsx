@@ -20,7 +20,6 @@ import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
-import { dynamicCanonicalDescriptors } from "./modelCatalog";
 
 const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Anthropic",
@@ -106,6 +105,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     return internalAuth.status;
   }, [providerAuthStatus, internalAuth.status]);
 
+  const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
+  const isOpencodeRequiredFamily = useCallback(
+    (family: ProviderFamily): family is "opencode" | "ollama" | "lmstudio" =>
+      family === "opencode" || family === "ollama" || family === "lmstudio",
+    [],
+  );
+
   const familyIsReady = useCallback(
     (family: ProviderFamily): boolean => {
       const status = effectiveAuth[family];
@@ -122,16 +128,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     for (const m of MODEL_REGISTRY) {
       if (m.deprecated) continue;
       if (!merged.has(m.id)) merged.set(m.id, m);
-    }
-    // Also include canonical descriptors for dynamic-only providers (Droid,
-    // Cursor, OpenCode) so the picker shows the full catalog when "Show all
-    // models" is on. Only inject when that family has no real discovered
-    // models in `models` — otherwise discovery output wins.
-    const familiesWithRealModels = new Set<ProviderFamily>();
-    for (const m of models) familiesWithRealModels.add(m.family);
-    for (const descriptor of dynamicCanonicalDescriptors()) {
-      if (familiesWithRealModels.has(descriptor.family)) continue;
-      if (!merged.has(descriptor.id)) merged.set(descriptor.id, descriptor);
     }
     return [...merged.values()];
   }, [authOnly, models]);
@@ -188,6 +184,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // when off, all models are shown (including unauthed, which the row dims + offers sign-in).
   const filterAvailable = useCallback(
     (m: ModelDescriptor): boolean => {
+      // Models for opencode/ollama/lmstudio require the OpenCode CLI runtime.
+      // When OpenCode isn't installed, hide them across all views so the panes
+      // surface a unified "Install OpenCode" empty state.
+      if (!opencodeBinaryInstalled && isOpencodeRequiredFamily(m.family)) {
+        return false;
+      }
       if (!authOnly) return true;
       // Prefer auth-derived gate; fall back to caller-provided `isAvailable` if no auth signal exists.
       if (Object.keys(effectiveAuth).length > 0) {
@@ -195,7 +197,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       return isAvailable(m.id);
     },
-    [authOnly, effectiveAuth, familyIsReady, isAvailable],
+    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, opencodeBinaryInstalled],
   );
 
   const searchActive = query.trim().length > 0;
@@ -381,10 +383,19 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   // the caller has wired a sign-in handler. Auth status of `undefined` (no
   // signal yet) is treated as "not unauthed" so the banner doesn't flash
   // before status loads.
+  //
+  // Suppress the per-provider banner for opencode/ollama/lmstudio when the
+  // OpenCode binary itself is missing — those families render a unified
+  // "Install OpenCode" empty state instead.
+  const activeFamilyNeedsOpencode =
+    activeProviderFamily != null
+    && isOpencodeRequiredFamily(activeProviderFamily)
+    && !opencodeBinaryInstalled;
   const showSetupBanner =
     activeProviderFamily != null
     && onOpenSignIn != null
-    && effectiveAuth[activeProviderFamily] === "unauthed";
+    && effectiveAuth[activeProviderFamily] === "unauthed"
+    && !activeFamilyNeedsOpencode;
 
   // Sticky "Currently using" detection — show when active row is not in the visible window.
   const activeRowVisibleRef = useRef(true);
@@ -511,6 +522,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               <EmptyState
                 selection={selection}
                 searchActive={searchActive}
+                opencodeBinaryInstalled={opencodeBinaryInstalled}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
@@ -572,14 +584,28 @@ function cssEscape(value: string): string {
 function EmptyState({
   selection,
   searchActive,
+  opencodeBinaryInstalled,
   onOpenSignIn,
 }: {
   selection: RailSelection;
   searchActive: boolean;
+  opencodeBinaryInstalled: boolean;
   onOpenSignIn?: () => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
     const family = selection.slice("provider:".length) as ProviderFamily;
+    if (
+      !opencodeBinaryInstalled
+      && (family === "opencode" || family === "ollama" || family === "lmstudio")
+    ) {
+      return (
+        <ProviderEmptyState
+          mode="opencode-required"
+          family={family}
+          {...(onOpenSignIn ? { onOpenSignIn } : {})}
+        />
+      );
+    }
     return <ProviderEmptyState family={family} {...(onOpenSignIn ? { onOpenSignIn } : {})} />;
   }
   let body = "No models match this view.";

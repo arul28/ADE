@@ -91,10 +91,17 @@ function dispatchAction(action: ProviderEmptyStateAction, onOpenSignIn?: () => v
   openExternalUrl(action.url);
 }
 
-export type ProviderEmptyStateProps = {
-  family: ProviderFamily;
-  onOpenSignIn?: () => void;
-};
+export type ProviderEmptyStateProps =
+  | {
+      family: ProviderFamily;
+      mode?: "default";
+      onOpenSignIn?: () => void;
+    }
+  | {
+      mode: "opencode-required";
+      family: "opencode" | "ollama" | "lmstudio";
+      onOpenSignIn?: () => void;
+    };
 
 const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Claude",
@@ -105,6 +112,25 @@ const PROVIDER_DISPLAY_LABELS: Partial<Record<ProviderFamily, string>> = {
   lmstudio: "LM Studio",
   ollama: "Ollama",
 };
+
+const OPENCODE_REQUIRED_PROVIDER_LABELS: Record<"opencode" | "ollama" | "lmstudio", string> = {
+  opencode: "OpenCode",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+};
+
+function opencodeRequiredCopy(forProvider: "opencode" | "ollama" | "lmstudio"): ProviderCopy {
+  const label = OPENCODE_REQUIRED_PROVIDER_LABELS[forProvider];
+  return {
+    title: "Install OpenCode",
+    body: `Install OpenCode to use ${label} models.`,
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
+    secondary: {
+      label: "OpenCode site",
+      action: { kind: "open-external", url: "https://opencode.ai/" },
+    },
+  };
+}
 
 export type ProviderSetupBannerProps = {
   family: ProviderFamily;
@@ -144,8 +170,12 @@ export function ProviderSetupBanner({ family, onOpenSignIn }: ProviderSetupBanne
   );
 }
 
-export function ProviderEmptyState({ family, onOpenSignIn }: ProviderEmptyStateProps) {
-  const copy = PROVIDER_COPY[family];
+export function ProviderEmptyState(props: ProviderEmptyStateProps) {
+  const { family, onOpenSignIn } = props;
+  const mode = props.mode ?? "default";
+  const copy = mode === "opencode-required"
+    ? opencodeRequiredCopy(family as "opencode" | "ollama" | "lmstudio")
+    : PROVIDER_COPY[family];
   if (!copy) {
     return (
       <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1 px-4 py-6 text-center">
@@ -159,6 +189,7 @@ export function ProviderEmptyState({ family, onOpenSignIn }: ProviderEmptyStateP
     <div
       data-model-picker-empty-state="provider"
       data-provider-family={family}
+      data-empty-state-mode={mode}
       className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 px-6 py-6 text-center"
     >
       <span className="text-[12px] font-semibold text-fg/90">{copy.title}</span>

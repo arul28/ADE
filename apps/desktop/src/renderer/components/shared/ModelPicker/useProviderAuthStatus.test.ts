@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { familiesFromStatus } from "./useProviderAuthStatus";
+import { familiesFromStatus, opencodeBinaryInstalledFromStatus } from "./useProviderAuthStatus";
 
 // `familiesFromStatus` is the pure mapper inside useProviderAuthStatus.
 // We test it directly so the Claude availability shape (object with binary/auth,
@@ -103,5 +103,24 @@ describe("familiesFromStatus", () => {
     expect(out.cursor).toBe("unauthed");
     expect(out.factory).toBe("unauthed");
     expect(out.opencode).toBeUndefined();
+  });
+});
+
+describe("opencodeBinaryInstalledFromStatus", () => {
+  it("returns true only when opencodeBinaryInstalled is the boolean true", () => {
+    expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: true })).toBe(true);
+  });
+
+  it("returns false when opencodeBinaryInstalled is false", () => {
+    expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: false })).toBe(false);
+  });
+
+  it("returns false when opencodeBinaryInstalled is missing", () => {
+    expect(opencodeBinaryInstalledFromStatus({})).toBe(false);
+  });
+
+  it("returns false for non-boolean truthy values (defensive)", () => {
+    expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: "yes" })).toBe(false);
+    expect(opencodeBinaryInstalledFromStatus({ opencodeBinaryInstalled: 1 })).toBe(false);
   });
 });

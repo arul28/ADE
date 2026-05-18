@@ -66,6 +66,44 @@ describe("ProviderEmptyState", () => {
     render(<ProviderEmptyState family="cursor" />);
     expect(screen.queryByText(/No models match this view/i)).toBeNull();
   });
+
+  describe("opencode-required mode", () => {
+    it("renders identical Install OpenCode title for all three families", () => {
+      for (const family of ["opencode", "ollama", "lmstudio"] as const) {
+        cleanup();
+        render(<ProviderEmptyState mode="opencode-required" family={family} />);
+        expect(screen.getByText("Install OpenCode")).toBeTruthy();
+      }
+    });
+
+    it("uses the per-provider label in the body copy", () => {
+      cleanup();
+      render(<ProviderEmptyState mode="opencode-required" family="ollama" />);
+      expect(screen.getByText(/Install OpenCode to use Ollama models\./i)).toBeTruthy();
+      cleanup();
+      render(<ProviderEmptyState mode="opencode-required" family="lmstudio" />);
+      expect(screen.getByText(/Install OpenCode to use LM Studio models\./i)).toBeTruthy();
+      cleanup();
+      render(<ProviderEmptyState mode="opencode-required" family="opencode" />);
+      expect(screen.getByText(/Install OpenCode to use OpenCode models\./i)).toBeTruthy();
+    });
+
+    it("Open Settings CTA invokes onOpenSignIn and OpenCode site link opens externally", async () => {
+      const onOpenSignIn = vi.fn();
+      render(<ProviderEmptyState mode="opencode-required" family="ollama" onOpenSignIn={onOpenSignIn} />);
+      await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
+      expect(onOpenSignIn).toHaveBeenCalledOnce();
+      await userEvent.click(screen.getByRole("button", { name: /OpenCode site/i }));
+      expect(openExternalCalls).toContain("https://opencode.ai/");
+    });
+
+    it("tags the rendered container with data-empty-state-mode='opencode-required'", () => {
+      render(<ProviderEmptyState mode="opencode-required" family="lmstudio" />);
+      const container = document.querySelector('[data-empty-state-mode="opencode-required"]');
+      expect(container).toBeTruthy();
+      expect(container?.getAttribute("data-provider-family")).toBe("lmstudio");
+    });
+  });
 });
 
 describe("ProviderSetupBanner", () => {

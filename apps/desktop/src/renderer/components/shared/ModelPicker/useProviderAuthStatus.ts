@@ -8,17 +8,20 @@ type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 
 type ProviderAuthStore = {
   status: AuthStatusMap;
+  opencodeBinaryInstalled: boolean;
   loaded: boolean;
   inFlight: Promise<void> | null;
-  setStatus: (status: AuthStatusMap) => void;
+  setStatus: (status: AuthStatusMap, opencodeBinaryInstalled: boolean) => void;
   setInFlight: (promise: Promise<void> | null) => void;
 };
 
 const useProviderAuthStore = create<ProviderAuthStore>((set) => ({
   status: {},
+  opencodeBinaryInstalled: false,
   loaded: false,
   inFlight: null,
-  setStatus: (status) => set({ status, loaded: true, inFlight: null }),
+  setStatus: (status, opencodeBinaryInstalled) =>
+    set({ status, opencodeBinaryInstalled, loaded: true, inFlight: null }),
   setInFlight: (promise) => set({ inFlight: promise }),
 }));
 
@@ -57,21 +60,30 @@ export function familiesFromStatus(status: {
   return out;
 }
 
+export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstalled?: unknown }): boolean {
+  return status.opencodeBinaryInstalled === true;
+}
+
 async function fetchStatus(): Promise<void> {
   const store = useProviderAuthStore.getState();
   if (store.inFlight) return store.inFlight;
   const ade = (window as unknown as { ade?: { ai?: { getStatus?: (args?: unknown) => Promise<unknown> } } }).ade;
   const getStatus = ade?.ai?.getStatus;
   if (typeof getStatus !== "function") {
-    store.setStatus({});
+    store.setStatus({}, false);
     return;
   }
   const promise = (async () => {
     try {
-      const raw = (await getStatus()) as Parameters<typeof familiesFromStatus>[0];
-      useProviderAuthStore.getState().setStatus(familiesFromStatus(raw ?? {}));
+      const raw = (await getStatus()) as Parameters<typeof familiesFromStatus>[0] & {
+        opencodeBinaryInstalled?: unknown;
+      };
+      const safe = raw ?? {};
+      useProviderAuthStore
+        .getState()
+        .setStatus(familiesFromStatus(safe), opencodeBinaryInstalledFromStatus(safe));
     } catch {
-      useProviderAuthStore.getState().setStatus({});
+      useProviderAuthStore.getState().setStatus({}, false);
     }
   })();
   store.setInFlight(promise);
@@ -80,10 +92,15 @@ async function fetchStatus(): Promise<void> {
 
 export function useProviderAuthStatus(): {
   status: AuthStatusMap;
+  opencodeBinaryInstalled: boolean;
   loaded: boolean;
 } {
   const slice = useProviderAuthStore(
-    useShallow((state) => ({ status: state.status, loaded: state.loaded })),
+    useShallow((state) => ({
+      status: state.status,
+      opencodeBinaryInstalled: state.opencodeBinaryInstalled,
+      loaded: state.loaded,
+    })),
   );
   // Refetch on every mount — picker mounts on popover open, so the user
   // signing into a provider in Settings then reopening the picker gets fresh

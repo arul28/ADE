@@ -42,6 +42,7 @@ const recentStore: string[] = [];
 let authOnlyState = false;
 const reasoningByFamilyStore: Record<string, string> = {};
 let providerAuthStatusInternal: Record<string, "ok" | "unauthed" | "limited"> = {};
+let opencodeBinaryInstalledInternal = true;
 
 vi.mock("./useModelFavorites", () => ({
   useModelFavorites: () => ({
@@ -99,6 +100,7 @@ vi.mock("./useReasoningByFamily", () => ({
 vi.mock("./useProviderAuthStatus", () => ({
   useProviderAuthStatus: () => ({
     status: { ...providerAuthStatusInternal },
+    opencodeBinaryInstalled: opencodeBinaryInstalledInternal,
     loaded: true,
   }),
 }));
@@ -186,6 +188,7 @@ beforeEach(() => {
   authOnlyState = false;
   for (const key of Object.keys(reasoningByFamilyStore)) delete reasoningByFamilyStore[key];
   providerAuthStatusInternal = {};
+  opencodeBinaryInstalledInternal = true;
 });
 
 afterEach(() => {
@@ -439,5 +442,65 @@ describe("ModelPicker", () => {
       .find((el) => el.getAttribute("data-model-id") === SONNET.id)!;
     const chip = sonnetRow.querySelector('button[aria-label*="Reasoning effort"]');
     expect(chip).toBeNull();
+  });
+
+  describe("OpenCode binary gating", () => {
+    it("shows the same Install OpenCode copy for opencode, ollama, and lmstudio panes when the binary is missing", async () => {
+      const user = userEvent.setup();
+      opencodeBinaryInstalledInternal = false;
+      renderPicker();
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+      const families: Array<"opencode" | "ollama" | "lmstudio"> = ["opencode", "ollama", "lmstudio"];
+      const seenTitles = new Set<string>();
+      const seenBodies = new Set<string>();
+      for (const family of families) {
+        const railButton = document.querySelector(
+          `[data-rail-selection="provider:${family}"]`,
+        ) as HTMLButtonElement | null;
+        expect(railButton).toBeTruthy();
+        await user.click(railButton!);
+
+        const emptyState = document.querySelector(
+          `[data-empty-state-mode="opencode-required"][data-provider-family="${family}"]`,
+        );
+        expect(emptyState).toBeTruthy();
+
+        const title = emptyState!.querySelector("span")!.textContent;
+        seenTitles.add((title ?? "").trim());
+        const bodyText = emptyState!.textContent ?? "";
+        // Capture the body line (after the title) so we can confirm it follows
+        // a consistent pattern across all three panes.
+        seenBodies.add(bodyText.includes("Install OpenCode to use") ? "shared-body" : "other");
+      }
+
+      // All three panes converge on the same Install OpenCode title.
+      expect(seenTitles.size).toBe(1);
+      expect([...seenTitles][0]).toBe("Install OpenCode");
+      // And the body uses the same "Install OpenCode to use … models." pattern.
+      expect(seenBodies).toEqual(new Set(["shared-body"]));
+    });
+
+    it("does not render the regular Set up banner for opencode/ollama/lmstudio rails when OpenCode is missing", async () => {
+      const user = userEvent.setup();
+      opencodeBinaryInstalledInternal = false;
+      providerAuthStatusInternal = { opencode: "unauthed" };
+      const onOpenSignIn = vi.fn();
+      render(
+        <ModelPicker
+          value={SONNET.id}
+          onChange={vi.fn()}
+          surfaceKey="test"
+          models={MODELS}
+          onOpenSignIn={onOpenSignIn}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      const opencodeRail = document.querySelector(
+        '[data-rail-selection="provider:opencode"]',
+      ) as HTMLButtonElement;
+      await user.click(opencodeRail);
+      expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+    });
   });
 });
