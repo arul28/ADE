@@ -406,6 +406,48 @@ describe("aiIntegrationService", () => {
     expect(ollama?.blocker).toBe(`Ollama did not respond at ${getLocalProviderDefaultEndpoint("ollama")}.`);
   });
 
+  it("surfaces LM Studio OpenAI-compatible models as loaded local runtime models", async () => {
+    const modelId = "qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2";
+    const endpoint = getLocalProviderDefaultEndpoint("lmstudio");
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "local", provider: "lmstudio", endpoint, endpointSource: "auto" },
+    ]);
+    mockState.inspectLocalProvider.mockImplementation(async (provider: string, inspectedEndpoint: string) => ({
+      provider,
+      endpoint: inspectedEndpoint,
+      reachable: provider === "lmstudio",
+      health: provider === "lmstudio" ? "ready" : "unreachable",
+      loadedModels: provider === "lmstudio"
+        ? [{
+            provider: "lmstudio",
+            modelId,
+            displayName: modelId,
+            discoverySource: "lmstudio-openai",
+            loaded: true,
+          }]
+        : [],
+    }));
+    mockState.probeOpenCodeProviderInventory.mockImplementation(async (args: any) => {
+      expect(args.discoveredLocalModels).toContainEqual({ provider: "lmstudio", modelId });
+      return {
+        modelIds: [`opencode/lmstudio/${modelId}`],
+        providers: [{ id: "lmstudio", name: "LM Studio", connected: true, modelCount: 1 }],
+        error: null,
+        descriptors: [],
+      };
+    });
+
+    const status = await service.getStatus({ refreshOpenCodeInventory: true });
+
+    expect(status.runtimeConnections?.lmstudio?.loadedModelIds).toContain(`lmstudio/${modelId}`);
+    expect(status.availableModelIds).toContain(`opencode/lmstudio/${modelId}`);
+  });
+
   it("coalesces concurrent getStatus calls for the same request shape", async () => {
     const { service } = makeService();
     let resolveAuth: ((value: Array<Record<string, unknown>>) => void) | null = null;

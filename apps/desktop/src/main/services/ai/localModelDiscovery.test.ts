@@ -325,7 +325,34 @@ describe("inspectLocalProvider — lmstudio (OpenAI-compat fallback)", () => {
     expect(result.health).toBe("ready");
     expect(result.loadedModels).toHaveLength(2);
     expect(result.loadedModels[0]!.discoverySource).toBe("lmstudio-openai");
+    expect(result.loadedModels[0]!.loaded).toBe(true);
     expect(result.loadedModels[0]!.harnessProfile).toBe("verified"); // llama 3.1
+  });
+
+  it("falls back to /v1/models when REST API returns an unexpected object shape", async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: "qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2" },
+        ],
+      }),
+    );
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { id: "qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2" },
+        ],
+      }),
+    );
+
+    const result = await inspectLocalProvider("lmstudio", "http://localhost:1234");
+
+    expect(result.reachable).toBe(true);
+    expect(result.health).toBe("ready");
+    expect(result.loadedModels).toHaveLength(1);
+    expect(result.loadedModels[0]!.modelId).toBe("qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2");
+    expect(result.loadedModels[0]!.discoverySource).toBe("lmstudio-openai");
+    expect(result.loadedModels[0]!.loaded).toBe(true);
   });
 
   it("returns unreachable when both REST and OpenAI endpoints fail", async () => {

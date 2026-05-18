@@ -174,10 +174,12 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
   const base = endpoint.replace(/\/+$/, "");
   const restPayload = await fetchJson(`${base}/api/v1/models`, timeoutMs);
 
-  if (restPayload && typeof restPayload === "object") {
-    const models = Array.isArray((restPayload as { models?: unknown[] }).models)
-      ? (restPayload as { models: Array<Record<string, unknown>> }).models
-      : [];
+  if (
+    restPayload
+    && typeof restPayload === "object"
+    && Array.isArray((restPayload as { models?: unknown[] }).models)
+  ) {
+    const models = (restPayload as { models: Array<Record<string, unknown>> }).models;
 
     const discovered: DiscoveredLocalModel[] = [];
 
@@ -249,7 +251,7 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
         capabilities: fallback.capabilities,
         harnessProfile: fallback.harnessProfile,
         discoverySource: "lmstudio-openai" as const,
-        loaded: false,
+        loaded: true,
       } satisfies DiscoveredLocalModel;
     });
 
@@ -340,4 +342,3 @@ export function clearLocalProviderInspectionCache(): void {
   inspectionCacheGeneration += 1;
   inspectionCache = new Map<string, { generation: number; cachedAt: number; inspection: LocalProviderInspection }>();
 }
-
