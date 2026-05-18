@@ -105,7 +105,15 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     return internalAuth.status;
   }, [providerAuthStatus, internalAuth.status]);
 
-  const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
+  // Treat OpenCode as installed until the auth status loads — the initial
+  // store value is `false` and the fetch can take ~2s on cold-start while
+  // the OpenCode server boots and provider.list responds. Showing the
+  // "Install OpenCode" empty state during that window is wrong for users
+  // who DO have it installed; we only want to flip to the empty state
+  // after a real "loaded && not installed" signal.
+  const opencodeBinaryInstalled = internalAuth.loaded
+    ? internalAuth.opencodeBinaryInstalled
+    : true;
   const isOpencodeRequiredFamily = useCallback(
     (family: ProviderFamily): family is "opencode" | "ollama" | "lmstudio" =>
       family === "opencode" || family === "ollama" || family === "lmstudio",
