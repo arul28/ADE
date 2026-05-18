@@ -1,9 +1,12 @@
+import { useEffect } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
+// Authoritative storage lives in the ade-cli main process so recents sync
+// across desktop, TUI, and iOS surfaces. localStorage is a hot cache that
+// keeps the picker responsive while the RPC roundtrip completes.
 const STORAGE_KEY = "ade.modelPicker.recents.v1";
 const MAX_RECENTS = 10;
-const PERSIST_DEBOUNCE_MS = 500;
 
 function readPersisted(): string[] {
   try {
@@ -19,32 +22,45 @@ function readPersisted(): string[] {
   }
 }
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingValues: string[] | null = null;
+function persistCache(values: string[]): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(values));
+  } catch {
+    // ignore — cache is convenience state.
+  }
+}
 
-function schedulePersist(values: string[]): void {
-  pendingValues = values;
-  if (persistTimer != null) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    const toWrite = pendingValues;
-    pendingValues = null;
-    if (toWrite == null) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(toWrite));
-    } catch {
-      // ignore — recents are convenience state.
+function getRpcApi():
+  | {
+      getRecents: () => Promise<{ recents: string[] }>;
+      pushRecent: (id: string) => Promise<{ recents: string[] }>;
     }
-  }, PERSIST_DEBOUNCE_MS);
+  | null {
+  if (typeof window === "undefined") return null;
+  const ade = (window as unknown as { ade?: { modelPicker?: unknown } }).ade;
+  const picker = ade?.modelPicker as
+    | {
+        getRecents?: () => Promise<{ recents: string[] }>;
+        pushRecent?: (id: string) => Promise<{ recents: string[] }>;
+      }
+    | undefined;
+  if (!picker?.getRecents || !picker.pushRecent) return null;
+  return picker as {
+    getRecents: () => Promise<{ recents: string[] }>;
+    pushRecent: (id: string) => Promise<{ recents: string[] }>;
+  };
 }
 
 type RecentsState = {
   recents: string[];
+  hydrated: boolean;
   recordUsage: (modelId: string) => void;
+  hydrateFromRemote: () => Promise<void>;
 };
 
 const useRecentsStore = create<RecentsState>((set, get) => ({
   recents: typeof window !== "undefined" ? readPersisted() : [],
+  hydrated: false,
   recordUsage: (modelId: string) => {
     const id = modelId.trim();
     if (!id) return;
@@ -52,20 +68,59 @@ const useRecentsStore = create<RecentsState>((set, get) => ({
     const filtered = current.filter((entry) => entry !== id);
     const next = [id, ...filtered].slice(0, MAX_RECENTS);
     set({ recents: next });
-    schedulePersist(next);
+    persistCache(next);
+    const api = getRpcApi();
+    if (!api) return;
+    void api
+      .pushRecent(id)
+      .then((result) => {
+        const authoritative = Array.isArray(result?.recents) ? result.recents : null;
+        if (!authoritative) return;
+        set({ recents: authoritative });
+        persistCache(authoritative);
+      })
+      .catch(() => {
+        // Optimistic update is preserved; we'll reconcile on next hydrate.
+      });
+  },
+  hydrateFromRemote: async () => {
+    const api = getRpcApi();
+    if (!api) {
+      set({ hydrated: true });
+      return;
+    }
+    try {
+      const result = await api.getRecents();
+      const authoritative = Array.isArray(result?.recents) ? result.recents : [];
+      set({ recents: authoritative, hydrated: true });
+      persistCache(authoritative);
+    } catch {
+      set({ hydrated: true });
+    }
   },
 }));
+
+let hydrationStarted = false;
 
 export function useModelRecents(): {
   recents: string[];
   recordUsage: (modelId: string) => void;
   recordRecent: (modelId: string) => void;
 } {
-  return useRecentsStore(
+  const { recents, recordUsage, hydrateFromRemote, hydrated } = useRecentsStore(
     useShallow((state) => ({
       recents: state.recents,
       recordUsage: state.recordUsage,
-      recordRecent: state.recordUsage,
+      hydrateFromRemote: state.hydrateFromRemote,
+      hydrated: state.hydrated,
     })),
   );
+
+  useEffect(() => {
+    if (hydrationStarted || hydrated) return;
+    hydrationStarted = true;
+    void hydrateFromRemote();
+  }, [hydrateFromRemote, hydrated]);
+
+  return { recents, recordUsage, recordRecent: recordUsage };
 }

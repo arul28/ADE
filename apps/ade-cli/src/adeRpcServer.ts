@@ -67,6 +67,18 @@ import {
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
+import { createModelPickerStore, type ModelPickerStore } from "./services/modelPickerStore";
+
+// Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
+// Process-singleton so concurrent JSON-RPC sessions see the same in-memory state.
+// Persistence path is ~/.ade/modelPicker.json — see modelPickerStore.ts for schema.
+let sharedModelPickerStore: ModelPickerStore | null = null;
+function getSharedModelPickerStore(): ModelPickerStore {
+  if (!sharedModelPickerStore) {
+    sharedModelPickerStore = createModelPickerStore();
+  }
+  return sharedModelPickerStore;
+}
 
 type ToolSpec = {
   name: string;
@@ -7761,6 +7773,32 @@ export function createAdeRpcRequestHandler(args: {
         await syncService.setActiveLanePresence(laneIds);
         return null;
       }
+    }
+
+    if (method.startsWith("modelPicker.")) {
+      const store = getSharedModelPickerStore();
+      if (method === "modelPicker.getFavorites") {
+        return { favorites: store.getFavorites() };
+      }
+      if (method === "modelPicker.setFavorites") {
+        const rawFavorites = (params as { favorites?: unknown }).favorites;
+        const favoritesInput = Array.isArray(rawFavorites)
+          ? rawFavorites.filter((entry): entry is string => typeof entry === "string")
+          : [];
+        return { favorites: store.setFavorites(favoritesInput) };
+      }
+      if (method === "modelPicker.toggleFavorite") {
+        const modelId = typeof params.modelId === "string" ? params.modelId : "";
+        return store.toggleFavorite(modelId);
+      }
+      if (method === "modelPicker.getRecents") {
+        return { recents: store.getRecents() };
+      }
+      if (method === "modelPicker.pushRecent") {
+        const modelId = typeof params.modelId === "string" ? params.modelId : "";
+        return { recents: store.pushRecent(modelId) };
+      }
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown modelPicker method: ${method}`);
     }
 
     if (method === "ade/actions/list") {

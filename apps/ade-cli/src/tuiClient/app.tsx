@@ -47,6 +47,10 @@ import {
   getAiSettingsStatus,
   getChatHistory,
   getContextUsage,
+  getModelPickerFavorites,
+  getModelPickerRecents,
+  pushModelPickerRecent,
+  toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
   getSlashCommands,
   getStoredApiKeyProviders,
@@ -97,6 +101,7 @@ import {
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
 import { Header } from "./components/Header";
 import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, RightPane } from "./components/RightPane";
+import { buildModelPickerLayout, defaultSelectionFor } from "./components/ModelPicker/modelPickerLayout";
 import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
@@ -1900,6 +1905,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [footerControl, setFooterControl] = useState<FooterControl | null>(null);
   const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: 'provider' | 'model' | 'reasoning' | 'permission' | 'subagents' | null }>({ cell: null });
   const inlineRowFocused = inlineRowFocus.cell !== null;
+  // Cross-surface model picker favorites/recents — authoritative copy lives in ade-cli.
+  const [modelPickerFavorites, setModelPickerFavorites] = useState<string[]>([]);
+  const [modelPickerRecents, setModelPickerRecents] = useState<string[]>([]);
 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
   const activeLaneIdRef = useRef<string | null>(null);
@@ -3622,6 +3630,96 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     ).catch(() => undefined);
   }, [addNotice, focusDetails, loadProviderModels, modelPickerRows, modelSetupRows, modelState.provider, refreshAiSetupStatus]);
 
+  // Hydrate favorites/recents from the ade-cli RPC once the connection is up.
+  useEffect(() => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [favorites, recents] = await Promise.all([
+          getModelPickerFavorites(conn).catch(() => [] as string[]),
+          getModelPickerRecents(conn).catch(() => [] as string[]),
+        ]);
+        if (cancelled) return;
+        setModelPickerFavorites(favorites);
+        setModelPickerRecents(recents);
+      } catch {
+        // Best-effort hydration — picker still functions with empty state.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [socketPath]);
+
+  // Right-pane model picker — replaces the inline-row focus path when launched
+  // via /model or new-chat. Reuses the same data the inline row uses (models)
+  // plus favorites/recents sourced from ade-cli for cross-surface sync.
+  const openModelPicker = useCallback(
+    (options: { surface?: "chat" | "new-chat" } = {}) => {
+      const surface = options.surface ?? "chat";
+      // Build a starter selection from current activeModelId/recents so the
+      // picker opens with relevant content already filtered.
+      const provider = modelState.provider;
+      const layoutSeed = buildModelPickerLayout({
+        models,
+        favorites: modelPickerFavorites,
+        recents: modelPickerRecents,
+        activeModelId: modelState.modelId,
+        query: "",
+        selection: { kind: "provider", provider },
+        focusedIndex: 0,
+        searchMode: false,
+      });
+      const selection = defaultSelectionFor(
+        modelState.modelId,
+        modelPickerRecents,
+        layoutSeed.railEntries,
+      );
+      setRightPane({
+        kind: "model-picker",
+        surface,
+        query: "",
+        searchMode: false,
+        selection,
+        focusedIndex: 0,
+      });
+      setRightOpen(true);
+      setPaneFocus("details");
+      void refreshAiSetupStatus().catch(() => undefined);
+      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
+    },
+    [
+      loadProviderModels,
+      modelPickerFavorites,
+      modelPickerRecents,
+      modelState.modelId,
+      modelState.provider,
+      models,
+      refreshAiSetupStatus,
+      setPaneFocus,
+    ],
+  );
+
+  const toggleModelPickerFavoriteId = useCallback(
+    (modelId: string) => {
+      if (!modelId) return;
+      // Optimistic toggle so the UI updates instantly.
+      setModelPickerFavorites((prev) =>
+        prev.includes(modelId) ? prev.filter((entry) => entry !== modelId) : [...prev, modelId],
+      );
+      const conn = connectionRef.current;
+      if (!conn) return;
+      void toggleModelPickerFavorite(conn, modelId)
+        .then((result) => {
+          if (Array.isArray(result.favorites)) setModelPickerFavorites(result.favorites);
+        })
+        .catch(() => undefined);
+    },
+    [],
+  );
+
   useEffect(() => {
     const range = activeMentionRange;
     const conn = connectionRef.current;
@@ -4635,7 +4733,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (name === "/model") {
-        openModelRow();
+        openModelPicker();
         return;
       }
       if (name === "/info") {
@@ -5145,7 +5243,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (name === "/model") {
-      openModelRow();
+      openModelPicker();
       return;
     }
     if (name === "/info") {
@@ -5840,6 +5938,66 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     });
   }, [scheduleModelStateCommit]);
 
+  // Commit a model picked in the right-pane ModelPicker into the current chat
+  // model state and push it onto the cross-surface recents list. Defined here
+  // (after applyModelState) so the closure captures a live binding.
+  const commitModelPickerSelection = useCallback(
+    (modelId: string) => {
+      const target = models.find((entry) => (entry.modelId ?? entry.id) === modelId);
+      if (!target) {
+        addNotice(`Model ${modelId} is not available right now.`, "error");
+        return;
+      }
+      const descriptor = getModelById(modelId);
+      const provider: AdeCodeProvider = descriptor
+        ? normalizeProvider(resolveProviderGroupForModel(descriptor))
+        : modelState.provider;
+      applyModelState((prev) => ({
+        ...prev,
+        ...modelStatePatchForModel(provider, target),
+        codexFastMode: modelSupportsFastMode(descriptor) ? prev.codexFastMode : false,
+      }));
+      setModelPickerRecents((prev) => {
+        const filtered = prev.filter((entry) => entry !== modelId);
+        return [modelId, ...filtered].slice(0, 10);
+      });
+      const conn = connectionRef.current;
+      if (conn) {
+        void pushModelPickerRecent(conn, modelId)
+          .then((recents) => setModelPickerRecents(recents))
+          .catch(() => undefined);
+      }
+      // If we were picking for a new-chat draft, return to the setup pane so
+      // the user can finish configuring and dispatch. Otherwise close the pane.
+      let restoreSetup = false;
+      setRightPane((prev) => {
+        if (prev.kind === "model-picker" && prev.surface === "new-chat") {
+          const laneId = activeLaneIdRef.current;
+          const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
+          if (lane) {
+            restoreSetup = true;
+            return {
+              kind: "new-chat-setup",
+              laneId: lane.id,
+              laneLabel: lane.name,
+              rows: newChatSetupRows,
+            };
+          }
+        }
+        return { kind: "empty" };
+      });
+      if (restoreSetup) {
+        setRightOpen(true);
+        setPaneFocus("details");
+      } else {
+        setRightOpen(false);
+        setPaneFocus("chat");
+      }
+      addNotice(`Model set to ${target.displayName}.`, "success");
+    },
+    [addNotice, applyModelState, lanes, models, modelState.provider, newChatSetupRows, setPaneFocus],
+  );
+
   const selectProvider = useCallback((provider: AdeCodeProvider) => {
     if (providerLockedRef.current) {
       addNotice("Provider is locked for this chat. /new chat to switch.", "info");
@@ -6150,7 +6308,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return true;
     }
     if (action === "chat:modelPicker") {
-      openModelRow();
+      openModelPicker();
       return true;
     }
     if (action === "chat:fastMode") {
@@ -6984,6 +7142,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return;
       }
       if (key.return) {
+        // Enter on the model row opens the rich picker (favorites/recents/providers).
+        // Other rows still fall through to "apply" for parity with the prior flow.
+        const focusedRow = rows[rightSelectionIndex];
+        if (focusedRow?.kind === "model" && !focusedRow.disabled) {
+          openModelPicker({ surface: "new-chat" });
+          return;
+        }
         const applyRow = rows.find((entry) => entry.kind === "apply");
         if (applyRow) handleSetupRow(applyRow, 1);
         return;
@@ -6994,6 +7159,124 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const row = rows[rightSelectionIndex] ?? rows[0];
       if (!row) return;
       handleSetupRow(row, key.leftArrow ? -1 : 1);
+      return;
+    }
+
+    if (pane === "details" && rightOpen && rightPane.kind === "model-picker") {
+      const picker = rightPane;
+      // Re-derive layout each keystroke so we never select stale indexes.
+      const layout = buildModelPickerLayout({
+        models,
+        favorites: modelPickerFavorites,
+        recents: modelPickerRecents,
+        activeModelId: modelState.modelId,
+        query: picker.query,
+        selection: picker.selection,
+        focusedIndex: picker.focusedIndex,
+        searchMode: picker.searchMode,
+      });
+
+      if (key.escape) {
+        if (picker.query.length) {
+          setRightPane({ ...picker, query: "", searchMode: false, focusedIndex: 0 });
+          return;
+        }
+        if (picker.surface === "new-chat") {
+          const laneId = activeLaneIdRef.current;
+          const lane = laneId ? lanes.find((entry) => entry.id === laneId) : null;
+          if (lane) {
+            setRightPane({
+              kind: "new-chat-setup",
+              laneId: lane.id,
+              laneLabel: lane.name,
+              rows: newChatSetupRows,
+            });
+            setRightOpen(true);
+            setPaneFocus("details");
+            return;
+          }
+        }
+        setRightPane({ kind: "empty" });
+        setRightOpen(false);
+        setPaneFocus("chat");
+        return;
+      }
+      if (key.upArrow) {
+        const next = Math.max(0, layout.focusedIndex - 1);
+        setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.downArrow) {
+        const next = Math.min(Math.max(0, layout.entries.length - 1), layout.focusedIndex + 1);
+        setRightPane({ ...picker, focusedIndex: next });
+        return;
+      }
+      if (key.tab || (key.shift && key.tab)) {
+        const total = layout.railEntries.length;
+        if (total === 0) return;
+        const delta = key.shift ? -1 : 1;
+        const nextIndex = (layout.railIndex + delta + total) % total;
+        const nextEntry = layout.railEntries[nextIndex];
+        if (!nextEntry) return;
+        const nextSelection =
+          nextEntry.kind === "favorites"
+            ? ({ kind: "favorites" } as const)
+            : nextEntry.kind === "recents"
+              ? ({ kind: "recents" } as const)
+              : ({ kind: "provider", provider: nextEntry.provider } as const);
+        setRightPane({
+          ...picker,
+          selection: nextSelection,
+          focusedIndex: 0,
+          query: "",
+          searchMode: false,
+        });
+        return;
+      }
+      if (key.return) {
+        const target = layout.entries[layout.focusedIndex];
+        if (target) commitModelPickerSelection(target.modelId);
+        return;
+      }
+      // 'f' toggles favorite on focused row when not actively editing a search.
+      if (input === "f" && !picker.searchMode && !key.ctrl && !key.meta) {
+        const target = layout.entries[layout.focusedIndex];
+        if (target) toggleModelPickerFavoriteId(target.modelId);
+        return;
+      }
+      // '/' enters search mode — clears any previous query.
+      if (input === "/" && !picker.searchMode) {
+        setRightPane({ ...picker, searchMode: true, query: "", focusedIndex: 0 });
+        return;
+      }
+      // Backspace shortens the active query; if empty, exit search mode.
+      if (key.backspace || key.delete) {
+        if (!picker.searchMode && !picker.query.length) return;
+        const nextQuery = picker.query.slice(0, -1);
+        setRightPane({
+          ...picker,
+          query: nextQuery,
+          searchMode: nextQuery.length > 0,
+          focusedIndex: 0,
+        });
+        return;
+      }
+      // Plain printable input either starts or extends the query.
+      if (
+        typeof input === "string"
+        && input.length === 1
+        && !key.ctrl
+        && !key.meta
+        && input >= " "
+      ) {
+        setRightPane({
+          ...picker,
+          query: picker.query + input,
+          searchMode: true,
+          focusedIndex: 0,
+        });
+        return;
+      }
       return;
     }
 
@@ -7498,6 +7781,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
               focused={activePane === "details"}
               activeProvider={activeCommandProvider as AdeCodeProvider}
               width={rightPaneWidth}
+              modelPickerInputs={{
+                models,
+                favorites: modelPickerFavorites,
+                recents: modelPickerRecents,
+                activeModelId: modelState.modelId,
+              }}
             />
           ) : null}
         </Box>

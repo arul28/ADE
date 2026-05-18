@@ -148,8 +148,24 @@ export type ChatInfoSnapshot = {
   streaming: boolean;
 };
 
+export type ModelPickerRightPaneSelection =
+  | { kind: "favorites" }
+  | { kind: "recents" }
+  | { kind: "provider"; provider: AdeCodeProvider };
+
+export type ModelPickerRightPaneContent = {
+  kind: "model-picker";
+  /** Active surface (chat) we're committing the picked model into. */
+  surface: "chat" | "new-chat";
+  query: string;
+  searchMode: boolean;
+  selection: ModelPickerRightPaneSelection;
+  focusedIndex: number;
+};
+
 export type RightPaneContent =
   | { kind: "empty" }
+  | ModelPickerRightPaneContent
   | { kind: "help"; title: string }
   | { kind: "status"; rows: Array<[string, string]> }
   | {

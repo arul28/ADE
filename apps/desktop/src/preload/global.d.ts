@@ -946,6 +946,15 @@ declare global {
           args: CursorCloudOpenChatRequest,
         ) => Promise<CursorCloudOpenChatResult>;
       };
+      modelPicker: {
+        getFavorites: () => Promise<{ favorites: string[] }>;
+        setFavorites: (favorites: string[]) => Promise<{ favorites: string[] }>;
+        toggleFavorite: (
+          modelId: string,
+        ) => Promise<{ favorites: string[]; isFavorite: boolean }>;
+        getRecents: () => Promise<{ recents: string[] }>;
+        pushRecent: (modelId: string) => Promise<{ recents: string[] }>;
+      };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;

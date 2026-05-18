@@ -3102,6 +3102,27 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
   },
+  modelPicker: {
+    getFavorites: async (): Promise<{ favorites: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.getFavorites", {}, async () => ({ favorites: [] })),
+    setFavorites: async (favorites: string[]): Promise<{ favorites: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.setFavorites", { favorites }, async () => ({
+        favorites,
+      })),
+    toggleFavorite: async (
+      modelId: string,
+    ): Promise<{ favorites: string[]; isFavorite: boolean }> =>
+      callProjectRuntimeSyncOr("modelPicker.toggleFavorite", { modelId }, async () => ({
+        favorites: [],
+        isFavorite: false,
+      })),
+    getRecents: async (): Promise<{ recents: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.getRecents", {}, async () => ({ recents: [] })),
+    pushRecent: async (modelId: string): Promise<{ recents: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.pushRecent", { modelId }, async () => ({
+        recents: [],
+      })),
+  },
   sync: {
     getStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.getStatus", args ?? {}, () =>
