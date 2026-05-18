@@ -1816,11 +1816,19 @@ export function createAiIntegrationService(args: {
               projectRoot,
               projectConfig: effectiveConfig,
             });
-            return peeked ?? {
-              error: null as string | null,
-              modelIds: [] as string[],
-              providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
-            };
+            if (peeked) return peeked;
+            // Cold path: binary is installed but we have never probed for this
+            // project+config. Warm the cache so the model picker surfaces every
+            // connected OpenCode provider without requiring the user to enter
+            // an OpenCode chat first. Uses force=false so the in-flight
+            // dedup + TTL still apply, preventing repeated server boots.
+            return await probeOpenCodeProviderInventory({
+              projectRoot,
+              projectConfig: effectiveConfig,
+              logger,
+              force: false,
+              discoveredLocalModels,
+            });
           });
 
           // When OpenCode inventory has models for a local provider, remove the

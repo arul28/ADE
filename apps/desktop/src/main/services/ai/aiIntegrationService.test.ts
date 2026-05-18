@@ -473,14 +473,34 @@ describe("aiIntegrationService", () => {
     expect(secondStatus).toEqual(firstStatus);
   });
 
-  it("does not cold-probe OpenCode inventory on default getStatus", async () => {
+  it("warms OpenCode inventory on first getStatus when the cache is empty", async () => {
     const { service } = makeService();
 
     const status = await service.getStatus();
 
     expect(status.opencodeBinaryInstalled).toBe(true);
-    expect(status.opencodeProviders).toEqual([]);
-    expect(status.availableModelIds).not.toContain("opencode/openai/gpt-5.4-mini");
+    expect(status.opencodeProviders).toEqual([
+      { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
+    ]);
+    expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
+    expect(mockState.peekOpenCodeInventoryCache).toHaveBeenCalledTimes(1);
+    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledTimes(1);
+    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledWith(
+      expect.objectContaining({ force: false }),
+    );
+  });
+
+  it("uses peeked OpenCode inventory without re-probing when cache is warm", async () => {
+    mockState.peekOpenCodeInventoryCache.mockReturnValue({
+      modelIds: ["opencode/openai/gpt-5.4-mini"],
+      providers: [{ id: "openai", name: "OpenAI", connected: true, modelCount: 1 }],
+      error: null,
+    });
+    const { service } = makeService();
+
+    const status = await service.getStatus();
+
+    expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
     expect(mockState.peekOpenCodeInventoryCache).toHaveBeenCalledTimes(1);
     expect(mockState.probeOpenCodeProviderInventory).not.toHaveBeenCalled();
   });
