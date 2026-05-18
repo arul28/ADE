@@ -5,7 +5,7 @@ import { RightPane } from "../components/RightPane";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 function stripAnsi(text: string): string {
-  return text.replace(/\[[0-?]*[ -/]*[@-~]/g, "");
+  return text.replace(/\u001b(?:\[[0-9;]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g, "");
 }
 
 import type { ChatInfoSnapshot } from "../types";
@@ -191,39 +191,42 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
 }
 
 describe("RightPane lane-details", () => {
-  it("renders lane identity and branch as a focused lane detail header", () => {
+  const baseLaneDetails = {
+    lane: lane(),
+    git: {
+      staged: 0,
+      unstaged: 0,
+      total: 0,
+      ahead: 0,
+      behind: 0,
+      remote: null,
+      additions: 0,
+      deletions: 0,
+    },
+    files: [] as Array<{ path: string; status: "M" | "A" | "D" | "?"; staged: boolean }>,
+    pr: null,
+    chats: { active: 0, closed: 0, killed: 0 },
+    showFiles: false,
+    selectedActionIndex: 0,
+  };
+
+  it("renders lane name and branch in the pane header", () => {
     const result = render(
       <RightPane
         content={{
           kind: "lane-details",
-          lane: lane(),
-          git: {
-            staged: 0,
-            unstaged: 0,
-            total: 0,
-            ahead: 0,
-            behind: 0,
-            remote: null,
-            additions: 0,
-            deletions: 0,
-          },
-          files: [],
-          pr: null,
-          showFiles: false,
-          selectedActionIndex: 0,
+          ...baseLaneDetails,
         }}
         focused
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("DIFF LANE · FOCUSED");
     expect(frame).toContain("Diff lane");
     expect(frame).toContain("⎇ feature/diff-lane");
-    expect(frame).not.toContain("name");
-    expect(frame).not.toContain("branch");
-    expect(frame).not.toContain("tracking");
-    expect(frame).not.toContain("model");
+    expect(frame).not.toContain("FOCUSED");
+    expect(frame).not.toContain("conflicts");
+    expect(frame).not.toContain("g · git tab");
   });
 
   it("renders real line diff stats with a U+2212 minus sign", () => {
@@ -231,7 +234,7 @@ describe("RightPane lane-details", () => {
       <RightPane
         content={{
           kind: "lane-details",
-          lane: lane(),
+          ...baseLaneDetails,
           git: {
             staged: 2,
             unstaged: 1,
@@ -242,24 +245,20 @@ describe("RightPane lane-details", () => {
             additions: 12,
             deletions: 4,
           },
-          files: [],
-          pr: null,
-          showFiles: false,
-          selectedActionIndex: 0,
         }}
         focused
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("diff");
+    expect(frame).toContain("dirty");
     expect(frame).toContain("+12");
     expect(frame).toContain("−4");
     expect(frame).toContain("CHANGES · 3");
     expect(frame).not.toContain("-4");
     expect(frame).toContain("2 staged");
     expect(frame).toContain("1 unstaged");
-    expect(frame).not.toContain("tracking");
+    expect(frame).toContain("↑1");
   });
 
   it("renders a compact changes header when line additions and deletions are zero", () => {
@@ -267,6 +266,7 @@ describe("RightPane lane-details", () => {
       <RightPane
         content={{
           kind: "lane-details",
+          ...baseLaneDetails,
           lane: lane({ status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false } }),
           git: {
             staged: 0,
@@ -278,10 +278,6 @@ describe("RightPane lane-details", () => {
             additions: 0,
             deletions: 0,
           },
-          files: [],
-          pr: null,
-          showFiles: false,
-          selectedActionIndex: 0,
         }}
       />,
     );
@@ -289,7 +285,87 @@ describe("RightPane lane-details", () => {
 
     expect(frame).toContain("CHANGES · 2");
     expect(frame).toContain("No changed files.");
-    expect(frame).not.toContain("— · 2 files");
+    expect(frame).toContain("● clean");
+  });
+
+  it("shows action shortcuts only for the selected row", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          selectedActionIndex: 0,
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("ACTIONS");
+    expect(frame).toMatch(/\[a\]\s*stage all/);
+    expect(frame).toContain("commit");
+    expect(frame).not.toMatch(/\[c\]\s*commit/);
+    expect(frame).not.toMatch(/\[p\]\s*push/);
+  });
+
+  it("renders PR activity and chat counts", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          pr: {
+            number: 311,
+            state: "open",
+            url: "https://github.com/example/ADE/pull/311",
+            checksPassed: 2,
+            checksTotal: 5,
+            checksPending: 3,
+            checksFailed: 0,
+          },
+          chats: { active: 2, closed: 4, killed: 1 },
+        }}
+        focused
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("PR #311");
+    expect(frame).toContain("CI running");
+    expect(frame).toContain("CHATS");
+    expect(frame).toContain("2 active");
+    expect(frame).toContain("4 closed");
+    expect(frame).toContain("1 killed");
+    expect(frame).not.toContain("RUN");
+  });
+
+  it("shows the PR GitHub link when the PR row is selected", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          selectedActionIndex: 5,
+          pr: {
+            number: 311,
+            state: "open",
+            url: "https://github.com/example/ADE/pull/311",
+            checksPassed: 2,
+            checksTotal: 5,
+            checksPending: 0,
+            checksFailed: 0,
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("open in browser");
+    expect(frame).toContain("github.com/example/ADE/pull/311");
+    expect(frame).toContain("run/open PR");
   });
 
   it("replaces runnable actions with an unavailable message when the worktree is missing", () => {
@@ -297,21 +373,8 @@ describe("RightPane lane-details", () => {
       <RightPane
         content={{
           kind: "lane-details",
+          ...baseLaneDetails,
           lane: lane({ name: "missing lane", worktreePath: "/tmp/missing-lane" }),
-          git: {
-            staged: 0,
-            unstaged: 0,
-            total: 0,
-            ahead: 0,
-            behind: 0,
-            remote: null,
-            additions: 0,
-            deletions: 0,
-          },
-          files: [],
-          pr: null,
-          showFiles: false,
-          selectedActionIndex: 0,
           worktreeAvailable: false,
         }}
       />,

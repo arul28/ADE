@@ -4,10 +4,23 @@
 
 It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proof artifacts live in the per-machine `ade serve` daemon. `ade code` attaches to that daemon, drives a single project scope, and renders incoming events.
 
+## Browser mirror (development)
+
+Ink renders to a TTY, not the DOM. For local dev, **`npm run dev:code:web`** (`scripts/tui-web.mjs`) runs **one** `ade code` in a PTY and streams the same ANSI byte stream to xterm.js in the browser — the same live session, not a separate UI or React DOM clone.
+
+```text
+ade code (Ink) → PTY stdout → tui-web.mjs → WebSocket → xterm.js
+```
+
+Use **`npm run dev:code`** when you want the TUI in Terminal.app or iTerm instead. Do not run `ade code` in a native terminal **and** open the web mirror unless both attach to that single PTY (the web script owns the process).
+
+Point Cursor’s browser inspector at the served page for layout debugging. The DOM is mostly xterm’s terminal grid (rows/cells), not Ink components like `Drawer` or `ChatView`. Fix layout, colors, and keybindings in `apps/ade-cli/src/tuiClient/`; fix blank pages, WebSocket stalls, cwd, or resize/grid drift in `scripts/tui-web.mjs`.
+
 ## Source file map
 
 | Path | Role |
 |------|------|
+| `scripts/tui-web.mjs` | Dev browser mirror for `ade code`: ensures the dev runtime, spawns one PTY, serves xterm.js + WebSocket bridge (`npm run dev:code:web`). |
 | `apps/ade-cli/src/cli.ts` | Resolves the built or source TUI entry and forwards the parsed launch context to `runAdeCodeCli`. |
 | `apps/ade-cli/src/tuiClient/cli.tsx` | TUI entry: argv parsing, project discovery, connection bootstrap, Ink mount. Built to `apps/ade-cli/dist/tuiClient/cli.mjs`. |
 | `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. |
@@ -24,6 +37,7 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/highlightCache.ts` | Pre-registers highlight.js languages (TypeScript, JavaScript, Python, Rust, Go, Swift, Bash, JSON, YAML, Markdown, XML, CSS, SQL) and caches token streams so chat code fences render once instead of being re-highlighted on every redraw. |
 | `apps/ade-cli/src/tuiClient/imageTargets.ts` | Finds the latest openable Codex image result / viewed image target for terminal open actions. |
 | `apps/ade-cli/src/tuiClient/laneTree.ts` | Stack-graph ordering for the lane drawer (`sortLanesForStackGraph`). |
+| `apps/ade-cli/src/tuiClient/project.ts` | Lane/chat launch resolution: `chooseInitialLane`, `chooseTuiLaunchLane`, and `resolveTuiChatRefreshTarget` (drawer chat browsing via `drawerBrowsingChatId` / `drawerBrowsingNewChat` previews a session in the centre pane before Enter commits it). |
 | `apps/ade-cli/src/tuiClient/pendingInput.ts` | Derives pending tool approvals and answer prompts from the chat event stream. |
 | `apps/ade-cli/src/tuiClient/planMode.ts` | Provider-agnostic plan-mode detector (`isPlanMode(modelState)`) plus `hasFirstUserMessage` event scan. Decides whether the composer should display the plan-mode badge and gate destructive tools. |
 | `apps/ade-cli/src/tuiClient/spinTick.tsx` | Shared monotonic spinner tick provider (`SpinTickProvider`) so every animated glyph in the TUI ticks in lockstep. |
@@ -32,8 +46,8 @@ It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proo
 | `apps/ade-cli/src/tuiClient/workEventIds.ts` | Stable Work-tab identity helpers used by the TUI to thread `ade.work-*` event ids through the renderer without re-deriving them per frame. |
 | `apps/ade-cli/src/tuiClient/state.ts` | Persists terminal-client state under `~/.ade/`: the last selected chat per lane (`lastChatByLane`) plus the most recently active lane (`lastLaneId`), used to restore lane focus across launches. |
 | `apps/ade-cli/src/tuiClient/theme.ts` | Shared Ink color and status tokens. Mirrors the Claude Design wireframe terminal palette 1:1: surfaces, text levels, brand violets, status (`running`/`attention`/`idle`/`failed`/`primary`), executor brand colors (Claude/Codex/Cursor/OpenCode/Droid + Shell + Copilot), plus helper exports `laneStatusColor`, `agentStatusColor`, `agentStatusGlyph`, and per-provider `glyph` + `wordmark`. |
-| `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, `RightPaneContent` (`empty`, `help`, `status`, `details`, `diff`, `chat-info`, `new-chat-setup`, `form`, lane details, …), `ChatInfoSnapshot` (the Chat Info pane payload), `ChatInfoPlan`, `ChatInfoPlanStep`, `SubagentSnapshot`, plus navigation DTOs aligned with `apps/desktop/src/shared/types`. |
-| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (with `DrawerPrSummary` rows), `ChatView` (transcript renderer; exports `renderChatVisibleSelectionRows` / `renderChatSelectableRowTexts` / `selectedTextFromChatRows` for the ADE-owned mouse selection, plus `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText`), `Header`, `RightPane` (renders `lane-details` and the Chat Info `chat-info` view with main row + plan + Codex goal + subagent roster), `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink; running Claude terminals can be put into direct control mode from the TUI). |
+| `apps/ade-cli/src/tuiClient/types.ts` | `AdeCodeConnection`, `ProjectLaunchContext`, `RightPaneContent` (`empty`, `help`, `status`, `details`, `diff`, `chat-info`, `new-chat-setup`, `model-setup`, `form`, `lane-details` with git stats + PR CI fields + lane chat counts, …), `ChatInfoSnapshot`, `ChatInfoPlan`, `ChatInfoPlanStep`, `SubagentSnapshot`, plus navigation DTOs aligned with `apps/desktop/src/shared/types`. |
+| `apps/ade-cli/src/tuiClient/components/` | `AdeWordmark`, `Drawer` (`visibleDrawerLaneCount` / `visibleDrawerChatCount`, `DrawerPrSummary` rows, lanes mode chat preview under the selected lane), `ChatView` (transcript renderer; exports `renderChatVisibleSelectionRows` / `renderChatSelectableRowTexts` / `selectedTextFromChatRows` for the ADE-owned mouse selection, plus `computeChatScrollMaxOffset` and `renderChatTranscriptPlainText`), `Header`, `RightPane` (`computeLaneChatCounts`, `LANE_DETAIL_PR_ACTION_INDEX`, wireframe `lane-details` STATUS/CHANGES/ACTIONS/PR/CHATS sections, Chat Info `chat-info`, `model-setup`), `SlashPalette`, `MentionPalette`, `ApprovalPrompt`, `ModelStatus`, `FooterControls`, and `TerminalPane` (xterm-headless preview pane that consumes `ChatTerminalPreviewResult` from `ade.terminal.preview` plus live `ade.pty.data` chunks to render a real terminal grid inside Ink; running Claude terminals can be put into direct control mode from the TUI). |
 | `apps/ade-cli/src/tuiClient/keybindings/index.ts` | Verbatim `~/.claude/keybindings.json` reader and TUI action dispatcher (chord support, vim namespace, clipboard-image paste hooks). Resolves `defaultKeybindingsPath()`, parses the Claude keybindings schema, and maps key sequences onto TUI actions. |
 | `apps/ade-cli/src/tuiClient/statusline/index.ts` | Claude-compatible status line config reader and runner. Reads the `~/.claude/statusline.json` contract, executes the configured status command, and exposes the rendered lines to `ModelStatus`. |
 | `apps/desktop/src/shared/types/chat.ts` | Canonical chat DTOs (`AgentChatEventEnvelope`, sessions, pending input, `AgentChatContextUsage`, `AgentChatClaudeOutputStyle`, `AgentChatClaudePlugin`, subagent kinds). Imported per-module so ade-cli typecheck stays scoped. |
@@ -82,10 +96,10 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
 `apps/ade-cli/src/tuiClient/app.tsx` is the Ink root. Layout:
 
 - **Header** — project name, active lane, branch, and the terminal client frame.
-- **Drawer** (toggled with the configured shortcut) — two sections: Lanes and Chats. Selecting a lane in the Lanes pane switches the active lane and filters the Chats pane to that lane's sessions. Lane and chat selection drive the right pane's context.
+- **Drawer** (toggled with the configured shortcut) — two modes, **lanes** (default) and **chats**, switched with `Tab` while the drawer is focused. In **lanes** mode, `↑`/`↓` move lane cards; the selected lane shows a read-only chat preview (`visibleDrawerChatCount` caps rows). `↓` on an available lane enters **chats** mode for that lane; `↵` opens lane details or resumes the lane's last chat. In **chats** mode, `↑`/`↓` move chat rows and `+ new chat`; highlighting a chat previews it in the centre pane via `resolveTuiChatRefreshTarget` before `↵` commits the session. `↑` at the top of the chat list returns to **lanes**; `↓` past the last chat drops to the next lane card. Lane and chat selection drive the right pane's context.
 - **ChatView** — the main transcript. Renders user, assistant, tool, and system events from `chat/event` notifications. Tool calls collapse into expandable blocks; the most recent expandable failure id is tracked so `Enter` can drill into it. Mouse selection is ADE-owned so it can follow virtual transcript rows: drag selects, edge-drag scrolls, wheel scrolling preserves the highlighted range, Shift-click extends the current anchor, and `Ctrl+C` / delivered `Cmd+C` copy selected chat text.
 - **Composer** — multi-line input with mention completion (`@…`) sourced from `MentionPalette` and slash command completion from `SlashPalette`. Pending tool approvals surface as `ApprovalPrompt`.
-- **RightPane** — context-sensitive drawer for slash command output. The "right" placement commands (see below) render their results here as forms, lists, diffs, help text, or rendered objects. When a chat is active the default content is the **Chat Info** view (`kind: "chat-info"`): provider/model header, lane label, streaming/idle indicator with context-percent + token summary, plan steps for the current turn, Codex `/goal` block when present, and a roster of subagents (running first, then teammates and background). Selecting a subagent row with `↵` swaps the centre transcript to that agent's view via `buildSubagentTranscriptEvents`; `Esc` returns to the main chat. For an active lane with no chat focus, the default switches to the `lane-details` view with live git stats (`DiffLineStats` via `diff.listLaneDiffStats`), the linked PR if any (`pr.listPrsByLane`), the most recent tool/command summary, elapsed time for the active turn, and a `worktreeAvailable` guard that surfaces a recoverable warning when a lane's worktree path is missing from disk.
+- **RightPane** — context-sensitive drawer for slash command output. The "right" placement commands (see below) render their results here as forms, lists, diffs, help text, or rendered objects. When a chat is active the default content is the **Chat Info** view (`kind: "chat-info"`): provider/model header, lane label, streaming/idle indicator with context-percent + token summary, plan steps for the current turn, Codex `/goal` block when present, and a roster of subagents (running first, then teammates and background). Selecting a subagent row with `↵` swaps the centre transcript to that agent's view via `buildSubagentTranscriptEvents`; `Esc` returns to the main chat. For an active lane with no chat focus, the default switches to the wireframe **`lane-details`** view: **STATUS** (clean/dirty, ahead/behind), **CHANGES** (file list + staged/unstaged counts from `diff.listLaneDiffStats`), **ACTIONS** (lane shortcuts), optional **PR #N** (state chip, CI activity via `checksPending` / `checksFailed`, `↵` opens the PR URL when the PR row is selected), and **CHATS** (active / closed / killed counts from `computeLaneChatCounts`). A `worktreeAvailable` guard surfaces a recoverable warning when the lane worktree path is missing from disk. `/model` opens a separate **`model-setup`** pane for provider/model/reasoning/permission picks before the first prompt.
 - **FooterControls** — two-row footer. The top row (mode bar, only present when there's content) shows provider glyph + label, model display, fast-mode badge, reasoning effort, permission summary, pending steer count, a 10-cell token usage bar (`TokenBar`) that recolors at 50 / 80 / 95 %, and the cached context-percent / token summary. The bottom row shows pane toggles (`^o` lanes, `^p` pane, `^a` chat info) and pane-specific hints (drawer mode lanes/chats, details navigation, chat scroll position, `/steer` reminder when steers are queued). The `⊚ chat info` chip shows the live subagent count when greater than zero. `footerControlsForAvailability(agentsAvailable)` decides which toggles are wired.
 - **Claude terminal control** — when the active session is a running
   Claude terminal, `Ctrl+T` moves keyboard input from ADE into that
@@ -185,10 +199,11 @@ Several slash commands forward to a desktop route when issued from `ade code`:
 
 ## Project / lane resolution
 
-Lane resolution at launch goes through two helpers in `tuiClient/project.ts`:
+Lane resolution at launch goes through helpers in `tuiClient/project.ts`:
 
 1. `chooseInitialLane(lanes, context)` — context-only pick: `--lane` hint, then the lane whose worktree contains the current `workspaceRoot`, then the primary/first lane, falling back to "no lane".
 2. `chooseTuiLaunchLane(lanes, context, lastLaneId)` — the actual TUI entry point. If the context lane is explicit (a `--lane` hint, or the user invoked `ade code` from inside a non-primary lane's worktree / attached root), that wins. Otherwise the persisted `AdeCodeState.lastLaneId` from `~/.ade/` wins so reopening the TUI returns to the previously focused lane. Falls back to the context choice when there is no persisted lane.
+3. `resolveTuiChatRefreshTarget(...)` — while the drawer is open in **chats** mode, `drawerBrowsingChatId` can preview a highlighted session in the centre pane (without committing it) until the user presses `↵`.
 
 Lane selection persists `lastLaneId` and updates the daemon's session state so the same lane is reflected in desktop and iOS clients attached to the same runtime.
 
@@ -203,7 +218,7 @@ ade --socket /tmp/ade-runtime-dev.sock code
                                          # attach to a specific socket (dev runtime, peer machine, etc.)
 ```
 
-After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI against the shared dev runtime at `/tmp/ade-runtime-dev.sock`.
+After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI in the terminal against the shared dev runtime at `/tmp/ade-runtime-dev.sock`; `npm run dev:code:web` mirrors that same process in the browser (see [Browser mirror](#browser-mirror-development)).
 
 ## Claude Code 2.1.x parity
 
@@ -219,8 +234,8 @@ After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli
 
 ## Chat setup
 
-- `+ new chat` opens a draft setup view in the details pane; it does not create a backend chat until the first prompt is sent from the middle composer.
-- `/model` opens the model setup view. It can switch provider, model, reasoning, and permission settings, refresh provider readiness through `ai.getStatus`, and open desktop Settings > AI Providers for full configuration.
+- `+ new chat` opens a draft setup view (`new-chat-setup`) in the right pane; it does not create a backend chat until the first prompt is sent from the middle composer.
+- `/model` opens the model setup view (`model-setup`) in the right pane. It can switch provider, model, reasoning, and permission settings, refresh provider readiness through `ai.getStatus`, and open desktop Settings > AI Providers for full configuration.
 - `/login` delegates only to provider CLIs that can authenticate in the current terminal: Claude (`claude auth login`), Codex (`codex login`), and OpenCode (`opencode auth login`). Cursor chat is `@cursor/sdk` and needs `CURSOR_API_KEY` or desktop Settings > AI Providers. Droid chat runs Factory Droid over ACP and needs `FACTORY_API_KEY` or Factory's interactive `droid` login.
 - The middle composer shows the selected provider, model, reasoning, and permission mode under the prompt so draft changes on the right are visible before the chat starts.
 

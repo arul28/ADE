@@ -104,7 +104,7 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(frame).toContain("+ new lane");
   });
 
-  it("shows an indented chat group with new chat at the bottom only in chat mode", () => {
+  it("expands chats under the selected lane in lane mode and highlights chats in chat mode", () => {
     const sessions: AgentChatSessionSummary[] = [
       {
         sessionId: "chat-1",
@@ -135,14 +135,14 @@ describe("Drawer lane and chat navigation layout", () => {
       <Drawer {...baseProps} selectedChatIndex={-1} mode="lanes" focused />,
     ).lastFrame() ?? "");
     const chatModeFrame = stripAnsi(render(
-      <Drawer {...baseProps} selectedLaneIndex={-1} selectedChatIndex={1} mode="chats" focused />,
+      <Drawer {...baseProps} selectedChatIndex={1} mode="chats" focused />,
     ).lastFrame() ?? "");
 
-    expect(laneModeFrame).not.toContain("First chat");
+    expect(laneModeFrame).toContain("First chat");
+    expect(laneModeFrame).toContain("enter chats");
     expect(chatModeFrame).toContain("CHATS · 1");
     expect(chatModeFrame.indexOf("First chat")).toBeLessThan(chatModeFrame.indexOf("+ new chat"));
-    expect(chatModeFrame).not.toContain("^N");
-    expect(chatModeFrame).toContain("Esc back to lanes");
+    expect(chatModeFrame).toContain("lane card");
   });
 
   it("does not offer a new chat action for a missing lane worktree", () => {

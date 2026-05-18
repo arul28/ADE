@@ -168,7 +168,7 @@ Dev command matrix:
 npm run dev:desktop          # desktop only; dev socket; desktop may auto-create runtime
 npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
-npm run dev:code             # terminal TUI only; starts dev runtime if missing
+npm run dev:code:web          # `ade code` in the browser (PTY + inspector WebSocket)
 npm run dev:code:attach      # terminal TUI only; fail if dev runtime is not already running
 npm run dev:runtime          # runtime only in the foreground
 npm run dev:all              # start shared dev runtime, then run desktop/code attach commands in separate terminals

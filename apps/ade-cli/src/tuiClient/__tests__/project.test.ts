@@ -217,4 +217,31 @@ describe("resolveTuiChatRefreshTarget", () => {
     expect(target.previewMode).toBe(true);
     expect(target.session).toBeNull();
   });
+
+  it("prefers the drawer-browsed chat over the newest lane chat during refresh", () => {
+    const lanes = [
+      lane({ id: "feature-b", name: "Feature B", laneType: "worktree", worktreePath: "/repo/.ade/worktrees/feature-b" }),
+    ];
+    const older = chat("older-chat", "feature-b", "2026-01-01T00:00:00.000Z");
+    const newer = chat("newer-chat", "feature-b", "2026-01-02T00:00:00.000Z");
+
+    const target = resolveTuiChatRefreshTarget({
+      lanes,
+      sessions: [older, newer],
+      context: { workspaceRoot: "/repo", laneHint: null },
+      lastLaneId: "feature-b",
+      activeLaneId: "feature-b",
+      activeSessionId: null,
+      draftChatActive: false,
+      initialNewChatPreview: false,
+      newChatPreviewLaneId: null,
+      selectedDrawerChatAction: null,
+      drawerLaneId: "feature-b",
+      drawerBrowsingChatId: "older-chat",
+      drawerBrowsingNewChat: false,
+    });
+
+    expect(target.session?.sessionId).toBe("older-chat");
+    expect(target.previewMode).toBe(false);
+  });
 });

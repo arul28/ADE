@@ -7,6 +7,7 @@ import type {
   RightPaneContent,
   SubagentSnapshot,
 } from "../types";
+import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { theme } from "../theme";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 
@@ -15,7 +16,6 @@ import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_PANE_WIDTH = 38;
-const LANE_LABEL_WIDTH = 10;
 const LANE_FILE_PREVIEW_ROWS = 5;
 
 // ---------------------------------------------------------------------------
@@ -34,6 +34,68 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   { k: "d", label: "diff", slashCommand: "/diff" },
   { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref" },
 ];
+
+export const LANE_DETAIL_PR_ACTION_INDEX = LANE_DETAIL_ACTIONS.length;
+
+export function computeLaneChatCounts(
+  sessions: AgentChatSessionSummary[],
+  laneId: string,
+): { active: number; closed: number; killed: number } {
+  const laneSessions = sessions.filter((session) => session.laneId === laneId);
+  let active = 0;
+  let closed = 0;
+  let killed = 0;
+  for (const session of laneSessions) {
+    if (session.status === "active" || session.status === "idle") {
+      active += 1;
+      continue;
+    }
+    if (session.completion?.status === "blocked") {
+      killed += 1;
+    } else {
+      closed += 1;
+    }
+  }
+  return { active, closed, killed };
+}
+
+type LaneDetailsPr = NonNullable<Extract<RightPaneContent, { kind: "lane-details" }>["pr"]>;
+
+function laneDetailsPrChecksLineColor(pr: LaneDetailsPr): string {
+  if (pr.checksPending > 0) return theme.color.running;
+  if (pr.checksFailed > 0) return theme.color.error;
+  return theme.color.t3;
+}
+
+function laneDetailsPrChipStatus(state: LaneDetailsPr["state"]): "info" | "done" | "idle" {
+  if (state === "open") return "info";
+  if (state === "merged") return "done";
+  return "idle";
+}
+
+function formatPrActivity(pr: LaneDetailsPr): string {
+  if (pr.checksPending > 0) {
+    const done = pr.checksTotal - pr.checksPending;
+    return `CI running · ${done}/${pr.checksTotal} done`;
+  }
+  if (pr.checksFailed > 0) {
+    return `${pr.checksFailed} check${pr.checksFailed === 1 ? "" : "s"} failing`;
+  }
+  if (pr.checksTotal > 0) {
+    return "checks passing";
+  }
+  if (pr.state === "merged") return "merged";
+  if (pr.state === "closed") return "closed";
+  return "open";
+}
+
+function formatLaneChatSummary(chats: Extract<RightPaneContent, { kind: "lane-details" }>["chats"]): string {
+  const parts: string[] = [];
+  if (chats.active > 0) parts.push(`${chats.active} active`);
+  if (chats.closed > 0) parts.push(`${chats.closed} closed`);
+  if (chats.killed > 0) parts.push(`${chats.killed} killed`);
+  return parts.length ? parts.join(" · ") : "no chats";
+}
 
 // ---------------------------------------------------------------------------
 // Tiny atom helpers (inline replacements for Chip / Rail / SectionLG / Kbd /
@@ -83,16 +145,13 @@ function ActionRow({
   detail?: string;
   selected?: boolean;
 }) {
+  if (!selected) {
+    return <Text color={theme.color.t2}>  {label}</Text>;
+  }
   return (
-    <Box flexDirection="row">
-      <Text color={selected ? theme.color.violet : theme.color.t4}>
-        {selected ? theme.rail : " "}
-      </Text>
-      <Text color={selected ? theme.color.violet : theme.color.t2} bold={selected}>
-        {" "}[<Text color={selected ? theme.color.violet : theme.color.t3}>{k}</Text>] {label}
-      </Text>
-      {detail ? <Text color={theme.color.t4} dimColor>  {detail}</Text> : null}
-    </Box>
+    <Text color={theme.color.violet} bold>
+      {theme.rail} [{k}] {label}{detail ? `  ${detail}` : ""}
+    </Text>
   );
 }
 
@@ -146,23 +205,12 @@ function formatElapsed(ms: number | null | undefined): string {
 // Lane-details renderer (wireframe MainChatFinal · right column)
 // ---------------------------------------------------------------------------
 
-function LaneSectionHead({ title, hint, width }: { title: string; hint?: string; width: number }) {
-  const hintWidth = hint ? hint.length + 1 : 0;
-  const lineWidth = Math.max(2, width - title.length - hintWidth - 6);
+function LaneSectionHead({ title, width }: { title: string; width: number }) {
+  const lineWidth = Math.max(2, width - title.length - 4);
   return (
     <Box flexDirection="row" marginTop={1}>
       <Text bold color={theme.color.violet}>{title}</Text>
-      <Text color={theme.color.borderSoft}> {"─".repeat(lineWidth)} </Text>
-      {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
-    </Box>
-  );
-}
-
-function LaneMetaRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Box flexDirection="row">
-      <Text color={theme.color.t3}>{label.padEnd(LANE_LABEL_WIDTH)}</Text>
-      {children}
+      <Text color={theme.color.borderSoft}> {"─".repeat(lineWidth)}</Text>
     </Box>
   );
 }
@@ -189,37 +237,6 @@ function LaneFileRow({
   );
 }
 
-function LaneRunSummary({
-  run,
-  width,
-}: {
-  run: NonNullable<Extract<RightPaneContent, { kind: "lane-details" }>["run"]>;
-  width: number;
-}) {
-  const brand = theme.provider(run.provider);
-  const running = run.status === "running";
-  const parts = [
-    formatElapsed(run.elapsedMs),
-    run.tokenSummary,
-  ].filter((part): part is string => Boolean(part && part !== "—"));
-  const summary = parts.join(" · ");
-  const toolSummary = run.toolSummary ? tailTruncate(run.toolSummary, Math.max(8, width - 18)) : null;
-  return (
-    <Box flexDirection="column">
-      <Box flexDirection="row">
-        <ExecGlyph provider={run.provider} />
-        <Text color={running ? theme.color.running : theme.color.t4} bold={running}>
-          {` ${running ? "running" : "idle"}`}
-        </Text>
-        {summary ? <Text color={theme.color.t3}>{` ${summary}`}</Text> : null}
-      </Box>
-      <Text color={theme.color.t4} dimColor>
-        {brand.label}{toolSummary ? ` · ${toolSummary}` : ""}
-      </Text>
-    </Box>
-  );
-}
-
 function LaneDetailsPane({
   content,
   width,
@@ -229,30 +246,6 @@ function LaneDetailsPane({
 }) {
   const lane = content.lane;
   const worktreeMissing = content.worktreeAvailable === false;
-  const status = lane.status;
-  const activeRun = content.run?.status === "running";
-  const laneKind: "running" | "attention" | "idle" | "failed" | "primary" = ((): "running" | "attention" | "idle" | "failed" | "primary" => {
-    if (worktreeMissing) return "failed";
-    if (lane.laneType === "primary") return "primary";
-    if (status.rebaseInProgress) return "attention";
-    if (status.dirty || status.ahead > 0 || status.behind > 0) return "attention";
-    return "idle";
-  })();
-  const railColor = activeRun ? theme.color.running : theme.laneStatusColor(laneKind);
-  const chipStatus: "running" | "attention" | "idle" = ((): "running" | "attention" | "idle" => {
-    if (activeRun) return "running";
-    if (laneKind === "attention" || laneKind === "failed") return "attention";
-    return "idle";
-  })();
-  const runElapsed = activeRun && content.run?.elapsedMs != null ? formatElapsed(content.run.elapsedMs) : null;
-  const chipLabel = ((): string => {
-    if (activeRun) return `running${runElapsed ? ` · ${runElapsed}` : ""}`;
-    if (worktreeMissing) return "missing";
-    if (laneKind === "primary") return "primary";
-    if (laneKind === "attention") return status.dirty ? "dirty" : "sync";
-    return "idle";
-  })();
-
   const git = content.git;
   const workingClean = git.staged + git.unstaged === 0;
   const filesCount = Math.max(git.total, content.files.length);
@@ -260,35 +253,38 @@ function LaneDetailsPane({
   const remoteLabel = git.remote && git.remote !== lane.branchRef ? git.remote : null;
   const changedRows = content.files.slice(0, content.showFiles ? 9 : LANE_FILE_PREVIEW_ROWS);
   const remainingFiles = Math.max(0, filesCount - changedRows.length);
+  let workingColor: string = theme.color.attention;
+  let workingLabel = "dirty";
+  if (worktreeMissing) {
+    workingColor = theme.color.error;
+    workingLabel = "worktree missing";
+  } else if (workingClean) {
+    workingColor = theme.color.running;
+    workingLabel = "clean";
+  }
+
+  let laneDetailsFooterHint = "↑↓ move · ↵ run · tab next section · esc close";
+  if (worktreeMissing) {
+    laneDetailsFooterHint = "esc close";
+  } else if (content.pr) {
+    laneDetailsFooterHint = "↑↓ move · ↵ run/open PR · tab next section · esc close";
+  }
 
   return (
     <Box flexDirection="column">
-      <Box marginTop={1} flexDirection="row">
-        <Text color={railColor}>{theme.rail} </Text>
-        <Text color={railColor} bold>{endTruncate(lane.name, Math.max(10, contentWidth - 16))}</Text>
-        <Text> </Text>
-        <Chip status={chipStatus}>{chipLabel}</Chip>
-      </Box>
-      <Text color={theme.color.t3}>⎇ {tailTruncate(lane.branchRef, contentWidth - 2)}</Text>
-      {remoteLabel ? <Text color={theme.color.t4}>{tailTruncate(remoteLabel, contentWidth)}</Text> : null}
       {worktreeMissing ? (
         <Text color={theme.color.error}>{tailTruncate(lane.worktreePath, contentWidth)}</Text>
       ) : null}
 
-      <LaneSectionHead title="STATUS" hint="g · git tab" width={contentWidth} />
-      <LaneMetaRow label="working">
-        <Text color={worktreeMissing ? theme.color.error : workingClean ? theme.color.running : theme.color.attention}>
-          ● {worktreeMissing ? "worktree missing" : workingClean ? "clean" : "dirty"}
-        </Text>
-      </LaneMetaRow>
-      <LaneMetaRow label="remote">
+      <LaneSectionHead title="STATUS" width={contentWidth} />
+      <Text color={workingColor}>● {workingLabel}</Text>
+      <Box flexDirection="row">
         <Text color={git.ahead > 0 ? theme.color.running : theme.color.t4}>↑{git.ahead} </Text>
-        <Text color={theme.color.t4}>↓{git.behind}</Text>
-        {remoteLabel ? <Text color={theme.color.t4}> {tailTruncate(remoteLabel, Math.max(5, contentWidth - LANE_LABEL_WIDTH - 8))}</Text> : null}
-      </LaneMetaRow>
-      <LaneMetaRow label="conflicts">
-        <Text color={theme.color.running}>none predicted</Text>
-      </LaneMetaRow>
+        <Text color={git.behind > 0 ? theme.color.attention : theme.color.t4}>↓{git.behind}</Text>
+        {remoteLabel ? (
+          <Text color={theme.color.t4}> {tailTruncate(remoteLabel, Math.max(5, contentWidth - 8))}</Text>
+        ) : null}
+      </Box>
       {worktreeMissing ? (
         <>
           <LaneSectionHead title="UNAVAILABLE" width={contentWidth} />
@@ -296,7 +292,7 @@ function LaneDetailsPane({
         </>
       ) : null}
 
-      <LaneSectionHead title={`CHANGES · ${filesCount}`} hint="t · files" width={contentWidth} />
+      <LaneSectionHead title={`CHANGES · ${filesCount}`} width={contentWidth} />
       <Box flexDirection="column">
         {changedRows.length ? changedRows.map((file) => (
           <LaneFileRow key={`${file.staged ? "s" : "u"}:${file.path}`} file={file} width={contentWidth} />
@@ -320,7 +316,7 @@ function LaneDetailsPane({
 
       {!worktreeMissing ? (
         <>
-          <LaneSectionHead title="ACTIONS" hint="↵ run" width={contentWidth} />
+          <LaneSectionHead title="ACTIONS" width={contentWidth} />
           <Box flexDirection="column">
             {LANE_DETAIL_ACTIONS.map((action, idx) => (
               <ActionRow
@@ -335,33 +331,48 @@ function LaneDetailsPane({
         </>
       ) : null}
 
-      {/* PR */}
       {content.pr ? (
         <>
-          <LaneSectionHead title={`PR #${content.pr.number}`} hint="o · open" width={contentWidth} />
-          <Box flexDirection="row">
-            <Chip status={content.pr.state === "open" ? "info" : content.pr.state === "merged" ? "done" : "idle"}>
-              {content.pr.state}
-            </Chip>
-            <Text color={theme.color.t1}>  #{content.pr.number}</Text>
-          </Box>
-          <Box flexDirection="row">
-            <Text color={theme.color.running}>{content.pr.checksPassed}/{content.pr.checksTotal} ✓</Text>
-            <Text color={theme.color.t4}>  </Text>
-            <Text color={theme.color.t4} dimColor>{content.pr.url ? tailTruncate(content.pr.url, 20) : ""}</Text>
-          </Box>
+          <LaneSectionHead title={`PR #${content.pr.number}`} width={contentWidth} />
+          {content.selectedActionIndex === LANE_DETAIL_PR_ACTION_INDEX ? (
+            <Box flexDirection="column">
+              <Text color={theme.color.violet} bold>
+                {theme.rail} [↵] open in browser
+              </Text>
+              <Text color={theme.color.info}>{tailTruncate(content.pr.url, contentWidth - 2)}</Text>
+              <Text color={laneDetailsPrChecksLineColor(content.pr)}>
+                {formatPrActivity(content.pr)}
+              </Text>
+            </Box>
+          ) : (
+            <Box flexDirection="column">
+              <Box flexDirection="row">
+                <Chip status={laneDetailsPrChipStatus(content.pr.state)}>
+                  {content.pr.state}
+                </Chip>
+              </Box>
+              <Text color={laneDetailsPrChecksLineColor(content.pr)}>
+                {formatPrActivity(content.pr)}
+              </Text>
+              {content.pr.checksTotal > 0 ? (
+                <Text color={theme.color.t4} dimColor>
+                  {content.pr.checksPassed}/{content.pr.checksTotal} passing
+                </Text>
+              ) : null}
+            </Box>
+          )}
         </>
       ) : null}
 
-      <LaneSectionHead title="RUN" hint="s · chat info" width={contentWidth} />
-      {content.run ? (
-        <LaneRunSummary run={content.run} width={contentWidth} />
-      ) : (
-        <Text color={theme.color.t4} dimColor>no active chat for this lane</Text>
-      )}
+      <LaneSectionHead title="CHATS" width={contentWidth} />
+      <Text color={content.chats.active > 0 ? theme.color.running : theme.color.t4}>
+        {formatLaneChatSummary(content.chats)}
+      </Text>
 
       <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>{worktreeMissing ? "t files" : "↑↓ move · ↵ run · tab next section · esc close"}</Text>
+        <Text color={theme.color.t4} dimColor>
+          {laneDetailsFooterHint}
+        </Text>
       </Box>
     </Box>
   );
@@ -618,7 +629,7 @@ function HelpPane() {
     <Box flexDirection="column">
       <Text color={theme.color.t3} dimColor>↓ from prompt enters the model row; ↑ returns</Text>
       <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
-      <Text color={theme.color.t3} dimColor>/model focuses the model row · /info opens chat info</Text>
+      <Text color={theme.color.t3} dimColor>/model opens the model picker · /info opens chat info</Text>
       <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
       <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles chat info</Text>
       <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
@@ -632,14 +643,17 @@ function HelpPane() {
 // Pane title resolution
 // ---------------------------------------------------------------------------
 
-function paneTitle(content: RightPaneContent): { title: string; hint?: string } {
+function paneTitle(content: RightPaneContent): { title: string; hint?: string; branch?: string } {
   switch (content.kind) {
     case "lane-details":
       return {
-        title: `${endTruncate(content.lane.name.toUpperCase(), 22)} · ${content.worktreeAvailable === false ? "MISSING" : "FOCUSED"}`,
+        title: content.lane.name,
+        branch: content.lane.branchRef,
       };
     case "new-chat-setup":
       return { title: "NEW CHAT" };
+    case "model-setup":
+      return { title: "MODEL" };
     case "chat-info":
       return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
     case "help":
@@ -679,7 +693,7 @@ export function RightPane({
   activeProvider?: AdeCodeProvider | null;
   width?: number;
 }) {
-  const { title, hint } = paneTitle(content);
+  const { title, hint, branch } = paneTitle(content);
   const paneWidth = Math.max(30, width);
 
   return (
@@ -690,13 +704,23 @@ export function RightPane({
       borderColor={focused ? theme.color.borderFocused : theme.color.border}
       paddingX={1}
     >
-      {/* Pane header */}
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={focused ? theme.color.violet : theme.color.t2}>
-          {title}
-        </Text>
-        {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
-      </Box>
+      {content.kind === "lane-details" ? (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold color={focused ? theme.color.violet : theme.color.t1}>
+            {endTruncate(title, Math.max(10, paneWidth - 4))}
+          </Text>
+          {branch ? (
+            <Text color={theme.color.t3}>⎇ {tailTruncate(branch, Math.max(8, paneWidth - 4))}</Text>
+          ) : null}
+        </Box>
+      ) : (
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold color={focused ? theme.color.violet : theme.color.t2}>
+            {title}
+          </Text>
+          {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
+        </Box>
+      )}
 
       {content.kind === "empty" ? (
         <Text color={theme.color.t4} dimColor>Run /status, /diff, /model, or /help.</Text>
@@ -762,10 +786,12 @@ export function RightPane({
         <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} />
       ) : null}
 
-      {content.kind === "new-chat-setup" ? (
+      {content.kind === "new-chat-setup" || content.kind === "model-setup" ? (
         <Box flexDirection="column">
-          <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
-          <Box flexDirection="column" marginTop={1}>
+          {content.kind === "new-chat-setup" ? (
+            <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
+          ) : null}
+          <Box flexDirection="column" marginTop={content.kind === "new-chat-setup" ? 1 : 0}>
             {content.rows.map((row, index) => {
               const selected = index === selectedIndex;
               return (
@@ -783,7 +809,7 @@ export function RightPane({
               );
             })}
           </Box>
-          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background</Text>
+          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ {content.kind === "model-setup" ? "done" : "prompt"} · cmd+↵ background</Text>
         </Box>
       ) : null}
 

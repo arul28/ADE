@@ -169,6 +169,8 @@ export function resolveTuiChatRefreshTarget(args: {
   newChatPreviewLaneId: string | null;
   selectedDrawerChatAction: "new-chat" | null;
   drawerLaneId: string | null;
+  drawerBrowsingChatId?: string | null;
+  drawerBrowsingNewChat?: boolean;
 }): {
   lane: LaneSummary | null;
   laneId: string | null;
@@ -177,6 +179,22 @@ export function resolveTuiChatRefreshTarget(args: {
   launchToNewChatPreview: boolean;
   previewMode: boolean;
 } {
+  const browsingChatId = args.drawerBrowsingChatId;
+  const drawerBrowsingChat = browsingChatId
+    ? args.sessions.find((session) => session.sessionId === browsingChatId) ?? null
+    : null;
+  if (drawerBrowsingChat && !args.drawerBrowsingNewChat) {
+    const drawerLane = args.lanes.find((entry) => entry.id === drawerBrowsingChat.laneId) ?? null;
+    return {
+      lane: drawerLane,
+      laneId: drawerBrowsingChat.laneId,
+      session: drawerBrowsingChat,
+      seedSession: null,
+      launchToNewChatPreview: false,
+      previewMode: false,
+    };
+  }
+
   const launchToNewChatPreview = args.initialNewChatPreview
     && args.activeSessionId == null
     && !args.draftChatActive;

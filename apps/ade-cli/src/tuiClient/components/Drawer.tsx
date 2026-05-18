@@ -198,6 +198,11 @@ export function Drawer({
           const worktreeAvailable = !unavailableLaneIds.has(lane.id);
           const status = deriveLaneStatus(lane, sessions, activeLaneId, unavailableLaneIds);
           const isBrowsing = lane.id === browsing;
+          const sessionsInLane = sessions.filter((session) => session.laneId === lane.id);
+          const laneChatSessions = sessionsInLane.slice(0, visibleDrawerChatCount(sessionsInLane.length));
+          const showChatBlock = mode === "chats"
+            ? isBrowsing && browsingLane?.id === lane.id
+            : isSelected;
           return (
             <React.Fragment key={lane.id}>
               <LaneCard
@@ -212,13 +217,14 @@ export function Drawer({
                 diffStats={diffByLaneId[lane.id] ?? null}
                 worktreeAvailable={worktreeAvailable}
               />
-              {mode === "chats" && isBrowsing && browsingLane?.id === lane.id ? (
+              {showChatBlock ? (
                 <ChatBlock
-                  sessions={laneSessions}
+                  sessions={laneChatSessions}
                   activeSessionId={activeSessionId}
                   selectedChatIndex={selectedChatIndex}
                   width={width - 2}
                   worktreeAvailable={worktreeAvailable}
+                  interactive={mode === "chats"}
                 />
               ) : null}
             </React.Fragment>
@@ -233,15 +239,15 @@ export function Drawer({
           ) : mode === "chats" ? (
             <>
               <Text color={theme.color.violet}>↑↓</Text>{" "}
-              {browsingLane && unavailableLaneIds.has(browsingLane.id) ? "lane unavailable" : "view chats"}
+              {browsingLane && unavailableLaneIds.has(browsingLane.id) ? "lane unavailable" : "open chat"}
               {"\n"}
-              <Text color={theme.color.violet}>Esc</Text> back to lanes
+              <Text color={theme.color.violet}>↑</Text> lane card · <Text color={theme.color.violet}>↓</Text> next lane
             </>
           ) : (
             <>
-              <Text color={theme.color.violet}>↑↓</Text> view <Text color={theme.color.t5}>·</Text>{" "}
-              <Text color={theme.color.violet}>↵</Text>{" "}
-              {laneRows[selectedLaneIndex] && unavailableLaneIds.has(laneRows[selectedLaneIndex].id) ? "details" : "open"}
+              <Text color={theme.color.violet}>↑↓</Text> lanes · chats preview
+              {"\n"}
+              <Text color={theme.color.violet}>↓</Text> enter chats · <Text color={theme.color.violet}>↵</Text> details
             </>
           )}
         </Text>
@@ -422,12 +428,14 @@ function ChatBlock({
   selectedChatIndex,
   width,
   worktreeAvailable,
+  interactive = true,
 }: {
   sessions: AgentChatSessionSummary[];
   activeSessionId: string | null;
   selectedChatIndex: number;
   width: number;
   worktreeAvailable: boolean;
+  interactive?: boolean;
 }) {
   if (!worktreeAvailable) {
     return (
@@ -460,12 +468,17 @@ function ChatBlock({
       </Box>
       {sessions.map((session, index) => {
         const running = session.status === "active";
-        const selected = index === selectedChatIndex;
+        const selected = interactive && index === selectedChatIndex;
         const provider = (session.provider as AdeCodeProvider) ?? null;
         const exec = theme.provider(provider);
         const when = formatSessionAge(session);
         const label = truncate(formatSessionLabel(session), max - 6);
-        const titleColor = running ? theme.color.violet : selected ? theme.color.t1 : theme.color.t2;
+        let titleColor: string = theme.color.t2;
+        if (running) {
+          titleColor = theme.color.violet;
+        } else if (selected) {
+          titleColor = theme.color.t1;
+        }
         return (
           <Box key={session.sessionId}>
             <Text color={theme.color.violet}>│ </Text>
@@ -484,7 +497,7 @@ function ChatBlock({
       })}
       <Box>
         <Text color={theme.color.violet}>│ </Text>
-        <Text color={selectedChatIndex === sessions.length ? theme.color.violet : theme.color.t4}>
+        <Text color={interactive && selectedChatIndex === sessions.length ? theme.color.violet : theme.color.t4}>
           + new chat
         </Text>
       </Box>

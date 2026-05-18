@@ -172,6 +172,10 @@ export type RightPaneContent =
       rows: SetupPaneRow[];
     }
   | {
+      kind: "model-setup";
+      rows: SetupPaneRow[];
+    }
+  | {
       kind: "form";
       title: string;
       command: "new-lane" | "rename" | "pr-open" | "feedback";
@@ -197,14 +201,20 @@ export type RightPaneContent =
         deletions: number;
       };
       files: { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }[];
-      pr: { number: number; state: "open" | "closed" | "merged"; url: string; checksPassed: number; checksTotal: number } | null;
-      run?: {
-        status: "running" | "idle";
-        provider: AdeCodeProvider;
-        elapsedMs: number | null;
-        tokenSummary: string | null;
-        toolSummary: string | null;
+      pr: {
+        number: number;
+        state: "open" | "closed" | "merged";
+        url: string;
+        checksPassed: number;
+        checksTotal: number;
+        checksPending: number;
+        checksFailed: number;
       } | null;
+      chats: {
+        active: number;
+        closed: number;
+        killed: number;
+      };
       showFiles: boolean;
       selectedActionIndex: number;
       worktreeAvailable?: boolean;

@@ -205,6 +205,8 @@ ade --socket /path/to/ade.sock code   # attach to a specific socket
 ade --project-root /repo code      # bind to a specific project root
 ```
 
+**Browser mirror (dev):** from the repo root, `npm run dev:code:web` runs **one** `ade code` in a **single PTY** and mirrors that TTY to the browser (xterm). Use Cursor’s browser tools against that page like any other local URL. This is not the same as running `ade code` in a terminal app **and** in the browser at once—that would be two separate processes.
+
 See `docs/features/ade-code/README.md` for the full attach/embedded handshake, slash command catalog, and right-pane drawers.
 
 ## `ade rpc --stdio`

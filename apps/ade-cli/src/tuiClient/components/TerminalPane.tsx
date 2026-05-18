@@ -259,15 +259,20 @@ export function TerminalPane({
   const cols = clampTerminalPaneCols(contentWidth);
   const rows = clampTerminalPaneRows(visibleHeight);
   const emulatedRows = clampTerminalPaneRows(rows + Math.max(0, finiteFloor(effectiveHiddenBottomRows, 0)));
+  const snapshotCols = preview?.snapshot?.cols ?? null;
+  const snapshotMatchesLayout = snapshotCols == null
+    || snapshotCols === cols
+    || (attached && snapshotCols != null && Math.abs(snapshotCols - cols) <= 2);
   const useSnapshotRows = Boolean(
     preview?.snapshot?.visibleRows?.length
-      && (preview.session.status === "running" || !preview.transcript),
+      && (preview.session.status === "running" || !preview.transcript)
+      && snapshotMatchesLayout,
   );
   const snapshotRows = useMemo(
     () => useSnapshotRows && preview?.snapshot?.visibleRows
       ? styledRowsFromSnapshotRows(preview.snapshot.visibleRows, rows)
       : null,
-    [preview?.snapshot, rows, useSnapshotRows],
+    [cols, preview?.snapshot, rows, useSnapshotRows],
   );
   const seed = useSnapshotRows ? "" : preview?.transcript ?? "";
   const terminalRef = useRef<HeadlessTerminalInstance | null>(null);
