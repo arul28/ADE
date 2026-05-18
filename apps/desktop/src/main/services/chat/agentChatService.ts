@@ -247,14 +247,8 @@ import {
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import type {
-  ClientSideConnection,
-  CloseSessionRequest,
-  CloseSessionResponse,
   PermissionOption,
-  RequestPermissionRequest,
   RequestPermissionResponse,
-  ResumeSessionRequest,
-  ResumeSessionResponse,
 } from "@agentclientprotocol/sdk";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
@@ -265,17 +259,22 @@ import {
   type CursorSdkPooled,
 } from "./cursorSdkPool";
 import {
-  acquireDroidAcpConnection,
-  releaseDroidAcpConnection,
-  type DroidAcpLaunchSettings,
-  type DroidAcpPooled,
-} from "./droidAcpPool";
+  acquireDroidSdkConnection,
+  releaseDroidSdkConnection,
+  type DroidSdkPooled,
+} from "./droidSdkPool";
 import { discoverCursorSdkModelDescriptors } from "./cursorModelsDiscovery";
-import { discoverDroidCliModelDescriptors } from "./droidModelsDiscovery";
+import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
 import {
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
 } from "./cursorSdkEventMapper";
+import {
+  createDroidSdkEventMapperState,
+  mapDroidSdkMessageToChatEvents,
+  mapDroidSdkRunResultToDoneEvent,
+  type DroidSdkEventMapperState,
+} from "./droidSdkEventMapper";
 import {
   allowCursorHook,
   approvalPolicyLabel,
@@ -293,6 +292,14 @@ import type {
   CursorSdkHookRequest,
   CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
+import type {
+  DroidSdkAskUserRequest,
+  DroidSdkAskUserResponse,
+  DroidSdkPermissionDecision,
+  DroidSdkPermissionRequest,
+  DroidSdkReasoningEffort,
+  DroidSdkSessionSettings,
+} from "./droidSdkProtocol";
 import {
   buildCursorSdkSystemPrompt,
   CURSOR_SDK_PROMPT_INJECT_ENV,
@@ -303,12 +310,7 @@ import {
   type CursorSdkRuntime,
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
-import {
-  mapAcpSessionNotificationToChatEvents,
-  mapStopReasonToTerminalEvents,
-  parseAcpTerminalIdFromCommandItemId,
-} from "./acpEventMapper";
-import { readAcpConfigSnapshot } from "./acpConfigState";
+import { mapStopReasonToTerminalEvents } from "./acpEventMapper";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
@@ -373,8 +375,10 @@ type PersistedChatState = {
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
-  /** ACP session id for Droid resume across app restarts (best-effort). */
+  /** Legacy ACP session id for Droid resume across app restarts (best-effort). */
   acpSessionId?: string;
+  /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
+  droidSdkSessionId?: string;
   sdkSessionId?: string;
   forkFromSdkSessionId?: string;
   providerSessionId?: string;
@@ -727,20 +731,19 @@ type DroidRuntime = {
   kind: "droid";
   poolKey: string;
   poolGeneration: number;
-  pooled: DroidAcpPooled | null;
-  acpSessionId: string | null;
+  sdk: DroidSdkPooled;
+  sdkSessionId: string | null;
   activeTurnId: string | null;
   busy: boolean;
   interrupted: boolean;
   /** The model ADE intends this session to use. */
   modelId: string;
-  /** The model ACP reports the live session is currently using. */
+  /** The model the Factory SDK reports the live session is currently using. */
   currentModelId: string | null;
   availableModelIds: string[];
-  acpModelIdByDisplayKey: Map<string, string>;
-  displayKeyByAcpModelId: Map<string, string>;
   pendingSteers: QueuedSteer[];
-  permissionWaiters: Map<string, CursorPermissionWaiter>;
+  permissionWaiters: Map<string, DroidPermissionWaiter>;
+  eventMapperState: DroidSdkEventMapperState;
 };
 
 type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
@@ -751,6 +754,16 @@ function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: st
     return;
   }
   waiter.resolve({ outcome: { outcome: "cancelled" } });
+}
+
+type DroidPermissionWaiter = {
+  toolName: string;
+  request: DroidSdkPermissionRequest;
+  resolve: (value: DroidSdkPermissionDecision) => void;
+};
+
+function cancelDroidPermissionWaiter(waiter: DroidPermissionWaiter, reason: string): void {
+  waiter.resolve({ selectedOption: "cancel", comment: reason });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -3501,6 +3514,7 @@ function syncLegacyPermissionMode(session: Pick<
   }
 
   if (session.provider === "droid") {
+    if (session.interactionMode === "plan") return "plan";
     return droidPermissionModeToLegacyPermissionMode(
       session.droidPermissionMode
         ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode),
@@ -3541,6 +3555,7 @@ function applyLegacyPermissionModeToNativeControls(
   }
 
   if (session.provider === "droid") {
+    session.interactionMode = mode === "plan" ? "plan" : "default";
     session.droidPermissionMode = legacyPermissionModeToDroidPermissionMode(mode);
     return;
   }
@@ -3592,6 +3607,9 @@ function hydrateNativePermissionControls(
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
   } else if (session.provider === "droid") {
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+      ? "plan"
+      : "default";
     session.droidPermissionMode = session.droidPermissionMode
       ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
@@ -3843,56 +3861,6 @@ function getCursorSdkApiKey(): string | null {
   return env || null;
 }
 
-const ACP_SERVER_LIST_KEY = ["m", "cpServers"].join("");
-
-function acpSessionRequest<T extends Record<string, unknown>>(request: T): T {
-  return {
-    ...request,
-    [ACP_SERVER_LIST_KEY]: [],
-  } as T;
-}
-
-type AcpSessionLifecycleConnection = ClientSideConnection & {
-  closeSession?: (params: CloseSessionRequest) => Promise<CloseSessionResponse | void>;
-  unstable_closeSession?: (params: CloseSessionRequest) => Promise<CloseSessionResponse | void>;
-  resumeSession?: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>;
-  unstable_resumeSession?: (params: ResumeSessionRequest) => Promise<ResumeSessionResponse>;
-};
-
-function acpSessionLifecycle(connection: ClientSideConnection): AcpSessionLifecycleConnection {
-  return connection as AcpSessionLifecycleConnection;
-}
-
-async function closeAcpSession(
-  connection: ClientSideConnection | null | undefined,
-  sessionId: string | null | undefined,
-): Promise<void> {
-  const normalizedSessionId = sessionId?.trim();
-  if (!connection || !normalizedSessionId) return;
-  const lifecycle = acpSessionLifecycle(connection);
-  if (typeof lifecycle.closeSession === "function") {
-    await lifecycle.closeSession({ sessionId: normalizedSessionId });
-    return;
-  }
-  if (typeof lifecycle.unstable_closeSession === "function") {
-    await lifecycle.unstable_closeSession({ sessionId: normalizedSessionId });
-  }
-}
-
-async function resumeAcpSession(
-  connection: ClientSideConnection,
-  request: ResumeSessionRequest,
-): Promise<ResumeSessionResponse | null> {
-  const lifecycle = acpSessionLifecycle(connection);
-  if (typeof lifecycle.resumeSession === "function") {
-    return lifecycle.resumeSession(request);
-  }
-  if (typeof lifecycle.unstable_resumeSession === "function") {
-    return lifecycle.unstable_resumeSession(request);
-  }
-  return null;
-}
-
 function normalizeCursorConfigValueRecord(
   value: unknown,
 ): Record<string, AgentChatCursorConfigValue> | undefined {
@@ -3992,21 +3960,47 @@ function resolveDroidRuntimeModelId(
   return DEFAULT_DROID_MODEL;
 }
 
-function resolveDroidAcpLaunchSettings(
+function resolveDroidSdkAutonomyLevel(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
-): DroidAcpLaunchSettings {
+): DroidSdkSessionSettings["autonomyLevel"] {
   const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
-      return { autonomy: "none" };
+      return "off";
     case "auto-low":
-      return { autonomy: "low" };
+      return "low";
     case "auto-medium":
-      return { autonomy: "medium" };
+      return "medium";
     case "auto-high":
-      return { autonomy: "high" };
+      return "high";
     default:
-      return { autonomy: "low" };
+      return "low";
+  }
+}
+
+function resolveDroidSdkInteractionMode(
+  session: Pick<AgentChatSession, "interactionMode" | "permissionMode">,
+): DroidSdkSessionSettings["interactionMode"] {
+  return session.interactionMode === "plan" || session.permissionMode === "plan" ? "spec" : "auto";
+}
+
+function normalizeDroidSdkReasoningEffort(value: string | null | undefined): DroidSdkReasoningEffort | null {
+  const normalized = value?.trim().toLowerCase();
+  switch (normalized) {
+    case "none":
+    case "dynamic":
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+      return normalized;
+    case "extra-high":
+    case "extra_high":
+      return "xhigh";
+    default:
+      return null;
   }
 }
 
@@ -4024,18 +4018,6 @@ function normalizeDroidReportedModelId(
     return trimmed;
   }
   return /^[\w.:()+-]+$/i.test(trimmed) ? trimmed : null;
-}
-
-function normalizeDroidDisplayKey(value: string | null | undefined): string | null {
-  const normalized = String(value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
-  return normalized.length ? normalized : null;
-}
-
-function resolveDroidDisplayKeyForModelId(modelId: string | null | undefined): string | null {
-  const trimmed = String(modelId ?? "").trim();
-  if (!trimmed.length) return null;
-  const descriptor = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
-  return normalizeDroidDisplayKey(descriptor?.displayName ?? trimmed);
 }
 
 function normalizeSessionNativePermissionControls(
@@ -4067,7 +4049,9 @@ function normalizeSessionNativePermissionControls(
     delete session.opencodePermissionMode;
     delete session.droidPermissionMode;
   } else if (session.provider === "droid") {
-    delete session.interactionMode;
+    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+      ? "plan"
+      : "default";
     session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
@@ -4377,111 +4361,7 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
-  const acpHostSessionOwners = new Map<string, ManagedChatSession>();
-  const acpHostBridgeWired = new WeakSet<DroidAcpPooled>();
-  /**
-   * Dedup guard for Droid ACP session notifications.
-   *
-   * The droid exec binary has two duplicate-emission behaviors:
-   *  1. Duplicate `current_mode_update` notifications per turn.
-   *  2. After streaming `agent_message_chunk` deltas for the current turn, it
-   *     sends a final chunk containing the concatenation of ALL previous turns'
-   *     assistant text (conversation history replay).
-   *
-   * Per ACP session we track:
-   *  - `historyText`: accumulated text from all completed turns (used to detect
-   *    the history-replay chunk in subsequent turns)
-   *  - `currentTurnText`: text streamed so far in the active turn
-   *  - `seenModes`: mode IDs already emitted in the active turn
-   */
-  const droidSessionDedup = new Map<string, {
-    historyText: string;
-    currentTurnText: string;
-    currentTurnId: string;
-    seenModes: Set<string>;
-  }>();
-
-  function isDuplicateDroidNotification(
-    sessionId: string,
-    turnId: string,
-    note: { update: Record<string, unknown> },
-  ): boolean {
-    const u = note.update;
-
-    if (u.sessionUpdate === "agent_message_chunk") {
-      const c = u.content as { type?: string; text?: string } | undefined;
-      const chunkText = c?.text ?? "";
-      if (!chunkText.length) return false;
-
-      let entry = droidSessionDedup.get(sessionId);
-      if (!entry) {
-        entry = { historyText: "", currentTurnText: "", currentTurnId: turnId, seenModes: new Set() };
-        droidSessionDedup.set(sessionId, entry);
-      }
-
-      // New turn — commit previous turn's text to history and reset.
-      if (entry.currentTurnId !== turnId) {
-        entry.historyText += entry.currentTurnText;
-        entry.currentTurnText = "";
-        entry.currentTurnId = turnId;
-        entry.seenModes.clear();
-      }
-
-      // Replay chunks are full multi-line agent_message_chunks containing text
-      // from previous turns. Restrict the substring check to chunks long enough
-      // that an accidental match against a tiny streaming delta (e.g. " yes")
-      // is implausible.
-      const REPLAY_MIN_LEN = 32;
-      if (
-        chunkText.length >= REPLAY_MIN_LEN
-        && entry.historyText.length > 0
-        && entry.historyText.includes(chunkText)
-      ) {
-        return true;
-      }
-
-      // Also catch the case where this chunk replays the current turn's
-      // own streamed text (the original dedup scenario).
-      if (
-        chunkText.length >= REPLAY_MIN_LEN
-        && entry.currentTurnText.length > 0
-        && entry.currentTurnText.includes(chunkText)
-      ) {
-        return true;
-      }
-
-      // Genuine streaming delta — accumulate.
-      entry.currentTurnText += chunkText;
-      return false;
-    }
-
-    if (u.sessionUpdate === "current_mode_update") {
-      const modeId = String(u.currentModeId ?? "");
-      let entry = droidSessionDedup.get(sessionId);
-      if (!entry) {
-        entry = { historyText: "", currentTurnText: "", currentTurnId: turnId, seenModes: new Set() };
-        droidSessionDedup.set(sessionId, entry);
-      }
-      if (entry.currentTurnId !== turnId) {
-        entry.historyText += entry.currentTurnText;
-        entry.currentTurnText = "";
-        entry.currentTurnId = turnId;
-        entry.seenModes.clear();
-      }
-      if (entry.seenModes.has(modeId)) {
-        return true;
-      }
-      entry.seenModes.add(modeId);
-      return false;
-    }
-
-    return false;
-  }
-
-  function clearDroidSessionDedup(sessionId: string): void {
-    droidSessionDedup.delete(sessionId);
-  }
-  /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the pooled CLI. */
+  /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
@@ -7124,8 +7004,8 @@ export function createAgentChatService(args: {
       ...(managed.session.completion ? { completion: managed.session.completion } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
-      ...(managed.runtime?.kind === "droid" && managed.runtime.acpSessionId
-        ? { acpSessionId: managed.runtime.acpSessionId }
+      ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
+        ? { droidSdkSessionId: managed.runtime.sdkSessionId }
         : {}),
       ...(managed.session.provider === "claude" && claudePersistedSdkSessionId
         ? { sdkSessionId: claudePersistedSdkSessionId }
@@ -7299,6 +7179,11 @@ export function createAgentChatService(args: {
       const sdkSessionId = typeof record.sdkSessionId === "string" && record.sdkSessionId.trim().length
         ? record.sdkSessionId.trim()
         : claudePointer?.sessionId;
+      const droidSdkSessionId = provider === "droid" && typeof record.droidSdkSessionId === "string" && record.droidSdkSessionId.trim().length
+        ? record.droidSdkSessionId.trim()
+        : provider === "droid" && typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
+          ? record.acpSessionId.trim()
+          : undefined;
       const forkFromSdkSessionId = typeof record.forkFromSdkSessionId === "string" && record.forkFromSdkSessionId.trim().length
         ? record.forkFromSdkSessionId.trim()
         : undefined;
@@ -7396,6 +7281,7 @@ export function createAgentChatService(args: {
         ...(typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
           ? { acpSessionId: record.acpSessionId.trim() }
           : {}),
+        ...(droidSdkSessionId ? { droidSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
         ...(forkFromSdkSessionId ? { forkFromSdkSessionId } : {}),
         ...(providerSessionId ? { providerSessionId } : {}),
@@ -8210,16 +8096,11 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
-      if (rt.acpSessionId) {
-        acpHostSessionOwners.delete(rt.acpSessionId);
-        clearDroidSessionDedup(rt.acpSessionId);
-        void closeAcpSession(rt.pooled?.connection, rt.acpSessionId).catch(() => {});
-      }
       for (const [, w] of rt.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Tool approval was cancelled because the session closed.");
+        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the session closed.");
       }
       rt.permissionWaiters.clear();
-      if (rt.pooled) releaseDroidAcpConnection(rt.poolKey, rt.poolGeneration);
+      releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveClaudeResumeState;
@@ -14432,9 +14313,9 @@ export function createAgentChatService(args: {
       await runDroidTurn(managed, {
         promptText,
         displayText: trimmed,
-        attachments: [],
+        attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
-        resolvedAttachments: [],
+        resolvedAttachments: nextSteer.resolvedAttachments,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -15103,6 +14984,9 @@ export function createAgentChatService(args: {
       }
       if (effectiveProvider === "droid") {
         return {
+          interactionMode: effectiveInteractionMode === "plan" || effectivePermissionMode === "plan"
+            ? "plan" as const
+            : "default" as const,
           droidPermissionMode: requestedDroidPermissionMode
             ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
             ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode)
@@ -15594,15 +15478,7 @@ export function createAgentChatService(args: {
     const { managed } = prepared;
     if (managed.closed) return;
 
-    const descriptor = resolveSessionModelDescriptor(managed.session);
-    const acpError = managed.session.provider === "droid"
-      ? classifyAcpHostError(
-        error,
-        "Factory Droid",
-        descriptor?.displayName ?? managed.session.model,
-      )
-      : null;
-    const message = acpError?.message ?? (error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
     const turnId = prepared.turnId ?? randomUUID();
 
     // If the failure is "turn already active", the original turn is still running.
@@ -15644,8 +15520,6 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "error",
       message,
-      ...(acpError?.detail ? { detail: acpError.detail } : {}),
-      ...(acpError?.errorInfo ? { errorInfo: acpError.errorInfo } : {}),
       turnId,
     });
     emitChatEvent(managed, {
@@ -15805,35 +15679,6 @@ export function createAgentChatService(args: {
         return kind;
     }
   };
-
-  const buildAcpHostPendingInputRequest = (
-    itemId: string,
-    req: RequestPermissionRequest,
-    source: "cursor" | "droid",
-    turnId?: string | null,
-  ): PendingInputRequest => ({
-    requestId: itemId,
-    itemId,
-    source,
-    kind: "permissions",
-    title: req.toolCall.title ?? (source === "droid" ? "Droid permission required" : "Cursor permission required"),
-    description: req.toolCall.title
-      ?? (source === "droid" ? "Droid needs approval before continuing." : "Cursor needs approval before continuing."),
-    questions: [],
-    allowsFreeform: false,
-    blocking: true,
-    canProceedWithoutAnswer: false,
-    options: req.options.map((option) => ({
-      label: cursorPermissionOptionLabel(option.kind),
-      value: option.optionId,
-      ...(option.kind === "allow_always" ? { recommended: true } : {}),
-    })),
-    providerMetadata: {
-      toolCall: req.toolCall,
-      options: req.options,
-    },
-    turnId: turnId ?? null,
-  });
 
   const buildCursorSdkPendingInputRequest = (
     itemId: string,
@@ -16327,145 +16172,47 @@ export function createAgentChatService(args: {
     }
   };
 
-  const updateDroidAcpModelLookups = (
-    runtime: DroidRuntime,
-    entries: Array<{ modelId?: string | null; name?: string | null } | null> | null | undefined,
-  ): void => {
-    for (const entry of entries ?? []) {
-      const rawModelId = String(entry?.modelId ?? "").trim();
-      if (!rawModelId.length) continue;
-      const displayKey = normalizeDroidDisplayKey(entry?.name)
-        ?? resolveDroidDisplayKeyForModelId(rawModelId);
-      if (!displayKey) continue;
-      runtime.acpModelIdByDisplayKey.set(displayKey, rawModelId);
-      runtime.displayKeyByAcpModelId.set(rawModelId, displayKey);
-    }
-  };
-
-  const resolveDroidAcpModelId = (
-    runtime: DroidRuntime,
-    canonicalModelId: string,
-  ): string => {
-    const trimmed = canonicalModelId.trim();
-    if (!trimmed.length) return trimmed;
-    const displayKey = resolveDroidDisplayKeyForModelId(trimmed);
-    if (displayKey) {
-      return runtime.acpModelIdByDisplayKey.get(displayKey) ?? trimmed;
-    }
-    return trimmed;
-  };
-
-  const resolveCanonicalDroidModelId = (
+  const buildDroidSdkSessionSettings = (
     managed: ManagedChatSession,
-    runtime: DroidRuntime,
-    acpModelId: string | null | undefined,
-  ): string | null => {
-    const trimmed = String(acpModelId ?? "").trim();
-    if (!trimmed.length) return null;
-
-    const direct = getModelById(`droid/${trimmed}`) ?? resolveModelDescriptorForProvider(trimmed, "droid");
-    if (direct?.family === "factory") {
-      const selectedCanonicalModelId = runtime.modelId.trim() || resolveDroidRuntimeModelId(managed.session);
-      const selectedDisplayKey = resolveDroidDisplayKeyForModelId(selectedCanonicalModelId);
-      const currentDisplayKey = runtime.displayKeyByAcpModelId.get(trimmed)
-        ?? resolveDroidDisplayKeyForModelId(trimmed);
-      if (selectedDisplayKey && currentDisplayKey && selectedDisplayKey === currentDisplayKey) {
-        return selectedCanonicalModelId;
-      }
-      return direct.providerModelId;
-    }
-
-    return /^[\w.:()+-]+$/i.test(trimmed) ? trimmed : null;
-  };
-
-  const applyDroidModelSnapshot = (
-    _managed: ManagedChatSession,
-    runtime: DroidRuntime,
-    payload: {
-      models?: {
-        currentModelId?: string | null;
-        availableModels?: Array<{ modelId?: string | null; name?: string | null } | null> | null;
-      } | null;
-      configOptions?: Parameters<typeof readAcpConfigSnapshot>[0];
-    } | null | undefined,
-  ): {
-    currentModelId: string | null;
-    modelConfigId: string | null;
-  } => {
-    const configSnapshot = readAcpConfigSnapshot(payload?.configOptions);
-    updateDroidAcpModelLookups(runtime, payload?.models?.availableModels);
-    for (const modelId of configSnapshot.availableModelIds) {
-      const rawModelId = String(modelId ?? "").trim();
-      if (!rawModelId.length) continue;
-      const displayKey = resolveDroidDisplayKeyForModelId(rawModelId);
-      if (!displayKey) continue;
-      runtime.acpModelIdByDisplayKey.set(displayKey, rawModelId);
-      runtime.displayKeyByAcpModelId.set(rawModelId, displayKey);
-    }
-    const reportedAvailableModelIds = payload?.models?.availableModels
-      ?.map((entry) => normalizeDroidReportedModelId(entry?.modelId ?? null))
-      .filter((entry): entry is string => Boolean(entry)) ?? [];
-    const availableModelIds = Array.from(new Set([
-      ...runtime.availableModelIds,
-      ...reportedAvailableModelIds,
-      ...configSnapshot.availableModelIds
-        .map((entry) => normalizeDroidReportedModelId(entry))
-        .filter((entry): entry is string => Boolean(entry)),
-    ]));
-    runtime.availableModelIds = availableModelIds;
-    const currentModelId = normalizeDroidReportedModelId(
-      payload?.models?.currentModelId ?? configSnapshot.currentModelId,
-      availableModelIds,
-    );
-    if (currentModelId) {
-      runtime.currentModelId = currentModelId;
-    }
+    modelId: string,
+  ): DroidSdkSessionSettings => {
+    const reasoningEffort = normalizeDroidSdkReasoningEffort(managed.session.reasoningEffort);
+    const interactionMode = resolveDroidSdkInteractionMode(managed.session);
     return {
-      currentModelId,
-      modelConfigId: configSnapshot.modelConfigId,
+      modelId,
+      autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
+      interactionMode,
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(interactionMode === "spec"
+        ? {
+            specModeModelId: modelId,
+            ...(reasoningEffort ? { specModeReasoningEffort: reasoningEffort } : {}),
+          }
+        : {}),
     };
   };
 
-  const refreshDroidSessionState = async (
+  const applyDroidSdkReadyState = (
     managed: ManagedChatSession,
     runtime: DroidRuntime,
-    reason: "after_prompt" | "manual_sync" | "session_update" | "ensure_before_sync" | "set_model_failed",
-  ): Promise<{
-    currentModelId: string | null;
-    modelConfigId: string | null;
-  }> => {
-    const sessionId = runtime.acpSessionId?.trim();
-    if (!sessionId || !runtime.pooled) {
-      return { currentModelId: runtime.currentModelId, modelConfigId: null };
+    ready: {
+      sessionId?: string | null;
+      currentModelId?: string | null;
+      availableModels?: Array<{ id?: string | null; modelId?: string | null } | null>;
+    } | null | undefined,
+  ): void => {
+    const sdkSessionId = ready?.sessionId?.trim();
+    if (sdkSessionId) runtime.sdkSessionId = sdkSessionId;
+    const availableModelIds = ready?.availableModels
+      ?.map((entry) => normalizeDroidReportedModelId(entry?.id ?? entry?.modelId ?? null))
+      .filter((entry): entry is string => Boolean(entry)) ?? [];
+    if (availableModelIds.length) {
+      runtime.availableModelIds = Array.from(new Set([...runtime.availableModelIds, ...availableModelIds]));
     }
-
-    const loadSession = runtime.pooled.connection.loadSession?.bind(runtime.pooled.connection);
-    if (!loadSession) {
-      return { currentModelId: runtime.currentModelId, modelConfigId: null };
-    }
-
-    try {
-      const loaded = await loadSession(acpSessionRequest({
-        sessionId,
-        cwd: managed.laneWorktreePath,
-      }) as Parameters<typeof loadSession>[0]);
-      const snapshot = applyDroidModelSnapshot(managed, runtime, loaded);
-      if ((reason === "after_prompt" || reason === "set_model_failed") && snapshot.currentModelId) {
-        const canonicalModelId = resolveCanonicalDroidModelId(managed, runtime, snapshot.currentModelId);
-        if (canonicalModelId) {
-          syncDroidSessionDescriptor(managed, canonicalModelId, { runtime });
-          runtime.currentModelId = snapshot.currentModelId;
-        }
-      }
-      return snapshot;
-    } catch (error) {
-      logger.warn("agent_chat.droid_load_session_failed", {
-        sessionId: managed.session.id,
-        acpSessionId: sessionId,
-        reason,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return { currentModelId: runtime.currentModelId, modelConfigId: null };
+    const currentModelId = normalizeDroidReportedModelId(ready?.currentModelId ?? null, runtime.availableModelIds);
+    if (currentModelId) {
+      runtime.currentModelId = currentModelId;
+      syncDroidSessionDescriptor(managed, currentModelId, { runtime, updateCurrent: true });
     }
   };
 
@@ -16473,89 +16220,14 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: DroidRuntime,
   ): Promise<void> => {
-    const sessionId = runtime.acpSessionId?.trim();
-    if (!sessionId || !runtime.pooled) return;
-
-    if (!runtime.currentModelId) {
-      await refreshDroidSessionState(managed, runtime, "ensure_before_sync");
-    }
-
     const desiredModelId = runtime.modelId.trim() || resolveDroidRuntimeModelId(managed.session);
-    const desiredAcpModelId = resolveDroidAcpModelId(runtime, desiredModelId);
-    if (!desiredModelId.length || !desiredAcpModelId.length) return;
-
-    if (runtime.currentModelId === desiredAcpModelId) {
-      syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
-      runtime.currentModelId = desiredAcpModelId;
-      return;
-    }
-
-    let modelUpdated = false;
-    const loadSnapshot = await refreshDroidSessionState(managed, runtime, "manual_sync");
-    if (loadSnapshot.currentModelId === desiredAcpModelId) {
-      syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
-      runtime.currentModelId = desiredAcpModelId;
-      return;
-    }
-
-    if (
-      loadSnapshot.modelConfigId
-      && runtime.availableModelIds.includes(desiredAcpModelId)
-      && typeof runtime.pooled.connection.setSessionConfigOption === "function"
-    ) {
-      try {
-        const response = await runtime.pooled.connection.setSessionConfigOption({
-          sessionId,
-          configId: loadSnapshot.modelConfigId,
-          value: desiredAcpModelId,
-        });
-        const applied = applyDroidModelSnapshot(managed, runtime, response);
-        if (!applied.currentModelId) {
-          runtime.currentModelId = desiredAcpModelId;
-        }
-        syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
-        modelUpdated = true;
-      } catch (error) {
-        logger.warn("agent_chat.droid_set_session_model_config_failed", {
-          sessionId: managed.session.id,
-          acpSessionId: sessionId,
-          desiredModelId,
-          configId: loadSnapshot.modelConfigId,
-          currentModelId: runtime.currentModelId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (!modelUpdated && typeof runtime.pooled.connection.unstable_setSessionModel === "function") {
-      try {
-        await runtime.pooled.connection.unstable_setSessionModel({
-          sessionId,
-          modelId: desiredAcpModelId,
-        });
-        syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
-        runtime.currentModelId = desiredAcpModelId;
-        modelUpdated = true;
-      } catch (error) {
-        logger.warn("agent_chat.droid_set_session_model_failed", {
-          sessionId: managed.session.id,
-          acpSessionId: sessionId,
-          desiredModelId,
-          currentModelId: runtime.currentModelId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (!modelUpdated) {
-      const refreshed = await refreshDroidSessionState(managed, runtime, "set_model_failed");
-      if (refreshed.currentModelId) {
-        const canonicalModelId = resolveCanonicalDroidModelId(managed, runtime, refreshed.currentModelId);
-        if (canonicalModelId) {
-          syncDroidSessionDescriptor(managed, canonicalModelId, { runtime });
-          runtime.currentModelId = refreshed.currentModelId;
-        }
-      }
+    if (!desiredModelId.length) return;
+    const ready = await runtime.sdk.updateSettings(buildDroidSdkSessionSettings(managed, desiredModelId));
+    runtime.modelId = desiredModelId;
+    syncDroidSessionDescriptor(managed, desiredModelId, { runtime });
+    applyDroidSdkReadyState(managed, runtime, ready);
+    if (!runtime.currentModelId) {
+      runtime.currentModelId = desiredModelId;
     }
   };
 
@@ -16624,167 +16296,139 @@ export function createAgentChatService(args: {
     return blocks;
   };
 
-  const emitAcpHostTerminalCommandIfBound = (
-    pooled: DroidAcpPooled,
-    acpSessionId: string,
-    terminalId: string,
-  ): void => {
-    const owner = acpHostSessionOwners.get(acpSessionId);
-    if (!owner?.runtime || owner.runtime.kind !== "droid") return;
-    const binding = pooled.terminalWorkLogBindings.get(terminalId);
-    if (!binding) return;
-    const t = pooled.terminals.get(terminalId);
-    if (!t) return;
-    const output = t.truncated ? `${t.output}\n…(output truncated)` : t.output;
-    const cmdStatus = t.exited ? (t.exitCode === 0 ? "completed" : "failed") : "running";
-    emitChatEvent(owner, {
-      type: "command",
-      command: binding.command,
-      cwd: binding.cwd,
-      output,
-      itemId: binding.itemId,
-      turnId: binding.turnId,
-      status: cmdStatus,
-      ...(t.exited ? { exitCode: t.exitCode } : {}),
-    });
+  const mapChatDecisionToDroidPermission = (
+    decision: AgentChatApprovalDecision | undefined,
+    request: DroidSdkPermissionRequest,
+    answers?: Record<string, string | string[]>,
+  ): DroidSdkPermissionDecision => {
+    if (answers) {
+      const explicit = Object.values(answers).flat()[0];
+      if (typeof explicit === "string" && request.options.some((option) => option.value === explicit)) {
+        return { selectedOption: explicit };
+      }
+    }
+    const options = request.options.map((option) => option.value);
+    const pick = (...candidates: string[]) => candidates.find((candidate) => options.includes(candidate));
+    if (decision === "accept_for_session") {
+      return { selectedOption: pick("proceed_always", "proceed_auto_run", "proceed_once") ?? "proceed_always" };
+    }
+    if (decision === "accept") {
+      return { selectedOption: pick("proceed_once", "proceed_always", "proceed_auto_run") ?? "proceed_once" };
+    }
+    return { selectedOption: "cancel" };
   };
 
-  const scheduleAcpHostTerminalEmit = (
-    pooled: DroidAcpPooled,
-    terminalId: string,
-    acpSessionId: string,
-  ): void => {
-    const existing = pooled.terminalOutputTimers.get(terminalId);
-    if (existing) clearTimeout(existing);
-    const DEBOUNCE_MS = 80;
-    pooled.terminalOutputTimers.set(
-      terminalId,
-      setTimeout(() => {
-        pooled.terminalOutputTimers.delete(terminalId);
-        emitAcpHostTerminalCommandIfBound(pooled, acpSessionId, terminalId);
-      }, DEBOUNCE_MS),
-    );
-  };
+  const buildDroidSdkPendingInputRequest = (
+    itemId: string,
+    req: DroidSdkPermissionRequest,
+    turnId?: string | null,
+  ): PendingInputRequest => ({
+    requestId: itemId,
+    itemId,
+    source: "droid",
+    kind: "permissions",
+    title: "Droid permission required",
+    description: req.summary || req.title || "Droid wants to use a tool.",
+    questions: [],
+    allowsFreeform: false,
+    blocking: true,
+    canProceedWithoutAnswer: false,
+    options: req.options.map((option) => ({
+      label: option.label,
+      value: option.value,
+      ...(option.value === "proceed_always" || option.value === "proceed_auto_run" ? { recommended: true } : {}),
+    })),
+    providerMetadata: {
+      droidSdk: true,
+      toolName: req.toolName,
+      title: req.title,
+      summary: req.summary,
+      raw: req.raw,
+      toolInput: req.toolInput,
+    },
+    turnId: turnId ?? null,
+  });
 
-  const wireAcpHostBridgeHandlers = (pooled: DroidAcpPooled): void => {
-    if (acpHostBridgeWired.has(pooled)) return;
-    acpHostBridgeWired.add(pooled);
-    pooled.bridge.onSessionUpdate = (note) => {
-      const owner = acpHostSessionOwners.get(note.sessionId);
-      if (!owner?.runtime) return;
-      const rt = owner.runtime;
-      if (rt.kind !== "droid") return;
-
-      // Droid exec sends streaming chunks + a final complete-text replay, and
-      // duplicate current_mode_update notifications.  Suppress the duplicates.
-      if (rt.kind === "droid" && isDuplicateDroidNotification(note.sessionId, rt.activeTurnId ?? "", note as { update: Record<string, unknown> })) {
-        return;
-      }
-
-      const previousModeId: string | null = null;
-      if (note.update.sessionUpdate === "config_option_update") {
-        void refreshDroidSessionState(owner, rt, "session_update").then(() => {
-          persistChatState(owner);
-        });
-      } else if (note.update.sessionUpdate === "session_info_update") {
-        adoptRuntimeSessionTitle(owner, note.update, "droid_session_info_update");
-      }
-      const turnId = rt.activeTurnId ?? "";
-      const resolveTerminal = (tid: string) => {
-        const t = pooled.terminals.get(tid);
-        if (!t) return null;
-        return {
-          output: t.output,
-          cwd: t.cwd,
-          commandLine: t.command,
-          exited: t.exited,
-          exitCode: t.exitCode,
-          truncated: t.truncated,
-        };
-      };
-      const events = mapAcpSessionNotificationToChatEvents(note, { turnId, previousModeId }, resolveTerminal);
-      for (const ev of events) {
-        if (ev.type === "command") {
-          const termId = parseAcpTerminalIdFromCommandItemId(ev.itemId);
-          if (termId && pooled.terminals.has(termId)) {
-            pooled.terminalWorkLogBindings.set(termId, {
-              itemId: ev.itemId,
-              turnId: ev.turnId ?? "",
-              command: ev.command,
-              cwd: ev.cwd,
-            });
-          }
-        }
-        emitChatEvent(owner, ev);
-      }
+  const wireDroidSdkBridgeHandlers = (managed: ManagedChatSession, runtime: DroidRuntime): void => {
+    runtime.sdk.bridge.onReady = (ready) => {
+      if (managed.runtime !== runtime) return;
+      applyDroidSdkReadyState(managed, runtime, ready);
+      persistChatState(managed);
     };
-    pooled.bridge.onTerminalOutputDelta = (terminalId, acpSessionId) => {
-      scheduleAcpHostTerminalEmit(pooled, terminalId, acpSessionId);
+    runtime.sdk.bridge.onEvent = (event) => {
+      if (managed.runtime !== runtime) return;
+      const record = asRecord(event);
+      if (record?.type === "session_title_updated") {
+        adoptRuntimeSessionTitle(managed, { title: record.title }, "droid_sdk_session_title_updated");
+      }
+      const events = mapDroidSdkMessageToChatEvents(event, {
+        turnId: runtime.activeTurnId ?? "",
+        cwd: managed.laneWorktreePath,
+        state: runtime.eventMapperState,
+      });
+      for (const ev of events) emitChatEvent(managed, ev);
     };
-    pooled.bridge.flushTerminalOutput = (terminalId, acpSessionId) => {
-      const pending = pooled.terminalOutputTimers.get(terminalId);
-      if (pending) {
-        clearTimeout(pending);
-        pooled.terminalOutputTimers.delete(terminalId);
+    runtime.sdk.bridge.onPermissionRequest = async (req) => {
+      if (!managed.runtime || managed.runtime !== runtime) {
+        return { selectedOption: "cancel", comment: "Droid tool approval is no longer active." };
       }
-      emitAcpHostTerminalCommandIfBound(pooled, acpSessionId, terminalId);
-    };
-    pooled.bridge.onTerminalDisposed = (terminalId) => {
-      const pending = pooled.terminalOutputTimers.get(terminalId);
-      if (pending) {
-        clearTimeout(pending);
-        pooled.terminalOutputTimers.delete(terminalId);
+      if (isAutoAllowAskUserEnabled() && isAskUserToolName(req.toolName)) {
+        const allow = req.options.find((option) => option.value === "proceed_once" || option.value === "proceed_always");
+        if (allow) return { selectedOption: allow.value };
       }
-      pooled.terminalWorkLogBindings.delete(terminalId);
-    };
-    pooled.bridge.onPermission = async (req) => {
-      const owner = acpHostSessionOwners.get(req.sessionId);
-      if (!owner || owner.runtime?.kind !== "droid") {
-        return { outcome: { outcome: "cancelled" } };
-      }
-      const acpRt = owner.runtime;
-      // Auto-allow the ADE `ask_user` tool — the inline question card
-      // provides its own answer UI, and the permission prompt just hides it.
-      const rawInput = req.toolCall.rawInput as Record<string, unknown> | null | undefined;
-      const rawToolCandidate = rawInput?.name ?? rawInput?.tool ?? rawInput?.toolName;
-      const rawToolName = typeof rawToolCandidate === "string" ? rawToolCandidate : null;
-      const toolCallTitle = typeof req.toolCall.title === "string" ? req.toolCall.title : "";
-      if (isAutoAllowAskUserEnabled() && (isAskUserToolName(rawToolName) || isAskUserToolName(toolCallTitle))) {
-        const allow = req.options.find((option) => option.kind === "allow_once" || option.kind === "allow_always");
-        if (allow) {
-          return { outcome: { outcome: "selected", optionId: allow.optionId } };
-        }
-      }
-      const itemId = randomUUID();
-      const source = "droid";
-      return new Promise<RequestPermissionResponse>((outerResolve) => {
-        acpRt.permissionWaiters.set(itemId, {
-          options: req.options,
-          resolve: (resp: RequestPermissionResponse) => {
-            acpRt.permissionWaiters.delete(itemId);
-            outerResolve(resp);
+      const itemId = req.id || randomUUID();
+      return new Promise<DroidSdkPermissionDecision>((outerResolve) => {
+        runtime.permissionWaiters.set(itemId, {
+          toolName: req.toolName,
+          request: req,
+          resolve: (decision) => {
+            runtime.permissionWaiters.delete(itemId);
+            outerResolve(decision);
           },
         });
-        const request = buildAcpHostPendingInputRequest(
-          itemId,
-          req,
-          source,
-          acpRt.activeTurnId ?? null,
-        );
-        emitChatEvent(owner, {
+        const request = buildDroidSdkPendingInputRequest(itemId, req, runtime.activeTurnId ?? null);
+        emitChatEvent(managed, {
           type: "approval_request",
           itemId,
           kind: "tool_call",
-          description: req.toolCall.title ?? "Permission required",
-          turnId: acpRt.activeTurnId ?? undefined,
+          description: req.summary || req.title || "Droid SDK permission required",
+          turnId: runtime.activeTurnId ?? undefined,
           detail: {
-            acpHost: source,
+            droidSdk: true,
             request,
-            toolCall: req.toolCall,
-            options: req.options,
+            hook: req,
           },
         });
       });
+    };
+    runtime.sdk.bridge.onAskUserRequest = async (req: DroidSdkAskUserRequest): Promise<DroidSdkAskUserResponse> => {
+      if (!managed.runtime || managed.runtime !== runtime) {
+        return { cancelled: true, answers: [] };
+      }
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title: req.title,
+        body: req.questions[0]?.question ?? "Droid needs input before it can continue.",
+        source: "droid",
+        providerMetadata: { droidSdk: true, toolCallId: req.toolCallId, raw: req.raw },
+        eventDescription: req.title,
+        eventDetail: { droidSdk: true, askUser: req },
+        questions: req.questions.map((question) => ({
+          id: question.id,
+          header: question.header,
+          question: question.question,
+          options: question.options,
+          allowsFreeform: true,
+        })),
+      });
+      return {
+        cancelled: response.decision !== "accept" && response.decision !== "accept_for_session",
+        answers: req.questions.map((question, index) => ({
+          index,
+          question: question.question,
+          answer: response.answers[question.id]?.join(", ") ?? response.responseText ?? "",
+        })),
+      };
     };
   };
 
@@ -17990,19 +17634,16 @@ export function createAgentChatService(args: {
     return { sessionId: created.id, session: created };
   };
 
-  const droidPoolKeyFor = (managed: ManagedChatSession, resolvedModelId: string): string => {
-    const launch = resolveDroidAcpLaunchSettings(managed.session);
-    return [
-      managed.session.laneId,
-      managed.laneWorktreePath,
-      resolvedModelId,
-      launch.autonomy,
-    ].join(":");
-  };
+  const droidPoolKeyFor = (managed: ManagedChatSession): string => [
+    "sdk",
+    managed.session.id,
+    managed.session.laneId,
+    managed.laneWorktreePath,
+  ].join(":");
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
     const launchModelId = resolveDroidRuntimeModelId(managed.session);
-    const poolKey = droidPoolKeyFor(managed, launchModelId);
+    const poolKey = droidPoolKeyFor(managed);
     const shouldSyncSessionModel = managed.session.model !== launchModelId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
       syncDroidSessionDescriptor(managed, launchModelId);
@@ -18011,26 +17652,16 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       const existing = managed.runtime;
       if (existing.poolKey !== poolKey) {
-        if (existing.acpSessionId) {
-          acpHostSessionOwners.delete(existing.acpSessionId);
-          try {
-            await closeAcpSession(existing.pooled?.connection, existing.acpSessionId);
-          } catch {
-            // ignore
-          }
-        }
         for (const [, w] of existing.permissionWaiters) {
-          cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the runtime restarted.");
+          cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the runtime restarted.");
         }
         existing.permissionWaiters.clear();
-        if (existing.pooled) releaseDroidAcpConnection(existing.poolKey, existing.poolGeneration);
+        releaseDroidSdkConnection(existing.poolKey, existing.poolGeneration);
         managed.runtime = null;
       } else {
-        if (!existing.pooled) throw new Error("Droid ACP connection not available");
         droidRuntimeSetupInterruptRequested.delete(managed);
-        wireAcpHostBridgeHandlers(existing.pooled);
-        existing.pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-        existing.pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
+        existing.modelId = launchModelId;
+        wireDroidSdkBridgeHandlers(managed, existing);
         await ensureDroidSessionState(managed, existing);
         persistChatState(managed);
         return existing;
@@ -18052,76 +17683,61 @@ export function createAgentChatService(args: {
     };
 
     throwIfDroidSetupInterrupted();
-    let pooled: DroidAcpPooled | null = null;
+    let pooled: DroidSdkPooled | null = null;
     let poolGeneration = 0;
     let released = false;
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
-      const acquired = await acquireDroidAcpConnection({
+      const persisted = readPersistedState(managed.session.id);
+      const acquired = await acquireDroidSdkConnection({
         poolKey,
         droidPath: resolveDroidExecutable({ auth }).path,
         workspacePath: managed.laneWorktreePath,
-        modelId: launchModelId,
-        launchSettings: resolveDroidAcpLaunchSettings(managed.session),
-        appVersion,
+        sessionId: managed.session.id,
+        resumeSessionId: persisted?.droidSdkSessionId ?? null,
+        settings: buildDroidSdkSessionSettings(managed, launchModelId),
+        logger,
       });
       pooled = acquired.pooled;
       poolGeneration = acquired.generation;
       throwIfDroidSetupInterrupted();
-      wireAcpHostBridgeHandlers(pooled);
-      pooled.bridge.getRootPath = () => managed.laneWorktreePath;
-      pooled.bridge.getDirtyFileText = getDirtyFileTextForPath;
 
       const rt: DroidRuntime = {
         kind: "droid",
         poolKey,
         poolGeneration,
-        pooled,
-        acpSessionId: null,
+        sdk: pooled,
+        sdkSessionId: pooled.sdkSessionId,
         activeTurnId: null,
         busy: false,
         interrupted: false,
         modelId: launchModelId,
-        currentModelId: null,
-        availableModelIds: [],
-        acpModelIdByDisplayKey: new Map(),
-        displayKeyByAcpModelId: new Map(),
+        currentModelId: pooled.currentModelId ?? launchModelId,
+        availableModelIds: pooled.availableModels
+          .map((entry) => normalizeDroidReportedModelId(entry.id ?? entry.modelId ?? null))
+          .filter((entry): entry is string => Boolean(entry)),
         pendingSteers: [],
         permissionWaiters: new Map(),
+        eventMapperState: createDroidSdkEventMapperState(),
       };
-
-      const persistedAcp = readPersistedState(managed.session.id)?.acpSessionId?.trim();
-      if (persistedAcp) {
-        try {
-          const resumed = await resumeAcpSession(pooled.connection, acpSessionRequest({
-            sessionId: persistedAcp,
-            cwd: managed.laneWorktreePath,
-          }) as ResumeSessionRequest);
-          if (!resumed) throw new Error("Droid ACP agent does not support session resume");
-          rt.acpSessionId = persistedAcp;
-          applyDroidModelSnapshot(managed, rt, resumed);
-          acpHostSessionOwners.set(persistedAcp, managed);
-        } catch {
-          // stale session id — create a new ACP session on first prompt
-        }
-      }
 
       throwIfDroidSetupInterrupted();
       if (managed.closed) {
-        releaseDroidAcpConnection(poolKey, poolGeneration);
+        releaseDroidSdkConnection(poolKey, poolGeneration);
         released = true;
         droidRuntimeSetupInterruptRequested.delete(managed);
         throw new Error("Droid session closed during setup.");
       }
       managed.runtime = rt;
+      wireDroidSdkBridgeHandlers(managed, rt);
       await ensureDroidSessionState(managed, rt);
       persistChatState(managed);
       droidRuntimeSetupInterruptRequested.delete(managed);
       return rt;
     } catch (err) {
       if (!released && pooled && managed.runtime?.kind !== "droid") {
-        releaseDroidAcpConnection(poolKey, poolGeneration);
+        releaseDroidSdkConnection(poolKey, poolGeneration);
       }
       droidRuntimeSetupInterruptRequested.delete(managed);
       throw err;
@@ -18240,20 +17856,6 @@ export function createAgentChatService(args: {
         return;
       }
 
-      const promptBlocks = buildAgentPromptBlocks(composed, args.resolvedAttachments);
-
-      if (!runtime.acpSessionId) {
-        if (!runtime.pooled) throw new Error("Droid ACP connection not available");
-        const created = await runtime.pooled.connection.newSession(acpSessionRequest({
-          cwd: managed.laneWorktreePath,
-        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
-        const sid = created.sessionId;
-        runtime.acpSessionId = sid;
-        applyDroidModelSnapshot(managed, runtime, created);
-        acpHostSessionOwners.set(sid, managed);
-        persistChatState(managed);
-      }
-
       await ensureDroidSessionState(managed, runtime);
       if (runtime.interrupted) {
         managed.session.status = "idle";
@@ -18278,62 +17880,69 @@ export function createAgentChatService(args: {
         durationMs: Date.now() - turnStartedAt,
       });
 
-      if (!runtime.pooled) throw new Error("Droid ACP connection not available");
-
       if (args.onDispatched) {
         args.onDispatched();
         args.onDispatched = undefined;
       }
 
-      const promptRes = await runtime.pooled.connection.prompt({
-        sessionId: runtime.acpSessionId!,
-        prompt: promptBlocks,
+      runtime.eventMapperState = createDroidSdkEventMapperState();
+      const droidHarnessPrompt = buildCodingAgentSystemPrompt({
+        cwd: managed.laneWorktreePath,
+        mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
+        permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+        interactive: true,
+        runtime: "droid-sdk",
+        adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
       });
-
-      await refreshDroidSessionState(managed, runtime, "after_prompt");
-
+      const sdkInput = [
+        droidHarnessPrompt,
+        "",
+        "## User Request",
+        composed,
+      ].join("\n");
+      const promptBlocks = buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
+      const sdkPromptText = promptBlocks
+        .filter((block): block is { type: "text"; text: string } => block.type === "text")
+        .map((block) => block.text)
+        .join("\n\n");
+      const images = promptBlocks
+        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
+        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
+      const result = await runtime.sdk.sendPrompt({
+        promptText: sdkPromptText,
+        ...(images.length ? { images } : {}),
+        settings: buildDroidSdkSessionSettings(managed, runtime.modelId),
+      });
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
 
       const descriptor = resolveSessionModelDescriptor(managed.session);
-      const usage = promptRes.usage
-        ? {
-            inputTokens: promptRes.usage.inputTokens,
-            outputTokens: promptRes.usage.outputTokens,
-            cacheReadTokens: promptRes.usage.cachedReadTokens ?? null,
-            cacheCreationTokens: promptRes.usage.cachedWriteTokens ?? null,
-          }
-        : undefined;
+      const doneEvent = mapDroidSdkRunResultToDoneEvent(result, {
+        turnId,
+        model: managed.session.model,
+        ...(managed.session.modelId
+          ? { modelId: managed.session.modelId }
+          : descriptor
+            ? { modelId: descriptor.id }
+            : {}),
+        state: runtime.eventMapperState,
+        interrupted: runtime.interrupted,
+      });
 
       void emitTurnDiffSummaryIfChanged(managed, turnId);
-      if (runtime.interrupted || promptRes.stopReason === "cancelled") {
+      if (runtime.interrupted || doneEvent.status === "interrupted") {
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        for (const ev of mapStopReasonToTerminalEvents({
-          stopReason: "cancelled",
-          turnId,
-          model: managed.session.model,
-          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
-          usage,
-        })) {
-          emitChatEvent(managed, ev);
-        }
+        emitChatEvent(managed, { ...doneEvent, status: "interrupted" });
+      } else if (doneEvent.status === "failed") {
+        markSessionIdleWithFreshCache(managed);
+        cancelQueuedSteers(managed, runtime, "failed");
+        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
+        emitChatEvent(managed, doneEvent);
       } else {
         markSessionIdleWithFreshCache(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "completed", turnId });
-        for (const ev of mapStopReasonToTerminalEvents({
-          stopReason: promptRes.stopReason,
-          turnId,
-          model: managed.session.model,
-          ...(managed.session.modelId
-            ? { modelId: managed.session.modelId }
-            : descriptor
-              ? { modelId: descriptor.id }
-              : {}),
-          usage,
-        })) {
-          emitChatEvent(managed, ev);
-        }
+        emitChatEvent(managed, doneEvent);
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
@@ -18345,17 +17954,20 @@ export function createAgentChatService(args: {
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const descriptor = resolveSessionModelDescriptor(managed.session);
-      const acpError = classifyAcpHostError(
+      const classified = classifyAcpHostError(
         error,
         "Factory Droid",
-        descriptor?.displayName ?? managed.session.model,
+        descriptor?.displayName ?? managed.session.model ?? "Droid",
       );
-      const msg = acpError.message;
+      const msg = classified.message;
       const treatAsInterrupt =
-        runtime.interrupted || msg === "Droid session closed during setup.";
+        runtime.interrupted
+        || msg === "Droid session closed during setup."
+        || msg.toLowerCase().includes("abort")
+        || msg.toLowerCase().includes("interrupt");
 
       for (const [, w] of runtime.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the turn failed.");
+        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn failed.");
       }
       runtime.permissionWaiters.clear();
 
@@ -18376,8 +17988,8 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, {
           type: "error",
           message: msg,
-          ...(acpError.detail ? { detail: acpError.detail } : {}),
-          errorInfo: acpError.errorInfo,
+          ...(classified.detail ? { detail: classified.detail } : {}),
+          errorInfo: classified.errorInfo,
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -19358,15 +18970,13 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      if (rt.acpSessionId) {
-        try {
-          await rt.pooled?.connection.cancel({ sessionId: rt.acpSessionId });
-        } catch {
-          // ignore
-        }
+      try {
+        await rt.sdk.cancel();
+      } catch {
+        // ignore
       }
       for (const [, w] of rt.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
+        cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
       cancelQueuedSteers(managed, rt, "interrupted");
@@ -20070,8 +19680,9 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.runtime?.kind === "cursor" || managed.runtime?.kind === "droid") {
-      const pending = managed.runtime.permissionWaiters.get(itemId);
+    const cursorRuntime = managed.runtime?.kind === "cursor" ? managed.runtime : null;
+    if (cursorRuntime) {
+      const pending = cursorRuntime.permissionWaiters.get(itemId);
       if (!pending) {
         // Treat missing waiter as a benign race (e.g. the Cursor turn already
         // resolved or was cancelled before the user responded). Simply no-op.
@@ -20081,29 +19692,43 @@ export function createAgentChatService(args: {
         });
         return;
       }
-      managed.runtime.permissionWaiters.delete(itemId);
+      cursorRuntime.permissionWaiters.delete(itemId);
       if (pending.sdkHook) {
-        if (managed.runtime.kind !== "cursor") {
-          pending.resolve(denyCursorHook("ADE no longer has an active Cursor SDK runtime for this tool approval."));
-          emitPendingInputResolved(managed, {
-            itemId,
-            decision: "cancel",
-            turnId: managed.runtime.activeTurnId ?? null,
-          });
-          return;
-        }
         if (resolvedDecision === "accept_for_session") {
-          managed.runtime.sdkApprovedTools.add(normalizeCursorSdkToolName(pending.toolName));
+          cursorRuntime.sdkApprovedTools.add(normalizeCursorSdkToolName(pending.toolName));
         }
         pending.resolve(mapChatDecisionToCursorSdkHook(resolvedDecision));
         emitPendingInputResolved(managed, {
           itemId,
           decision: resolvedDecision,
-          turnId: managed.runtime.activeTurnId ?? null,
+          turnId: cursorRuntime.activeTurnId ?? null,
         });
         return;
       }
       pending.resolve(mapChatDecisionToCursorPermission(resolvedDecision, pending.options, answers));
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: resolvedDecision,
+        turnId: cursorRuntime.activeTurnId ?? null,
+      });
+      return;
+    }
+
+    if (managed.runtime?.kind === "droid") {
+      const pending = managed.runtime.permissionWaiters.get(itemId);
+      if (!pending) {
+        logger.debug("agent_chat.droid_permission_waiter_missing", {
+          sessionId,
+          itemId,
+        });
+        return;
+      }
+      managed.runtime.permissionWaiters.delete(itemId);
+      pending.resolve(mapChatDecisionToDroidPermission(
+        resolvedDecision,
+        pending.request,
+        answers,
+      ));
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
@@ -20195,12 +19820,12 @@ export function createAgentChatService(args: {
       try {
         const auth = await detectAuth();
         const droidPath = resolveDroidExecutable({ auth }).path;
-        const ordered = await discoverDroidCliModelDescriptors(droidPath);
+        const ordered = await discoverDroidSdkModelDescriptors(droidPath);
         const preferred = pickDefaultDroidDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
           displayName: d.displayName,
-          description: `${d.displayName} (Factory Droid CLI)`,
+          description: `${d.displayName} (Factory Droid SDK)`,
           isDefault: preferred ? d.id === preferred.id : false,
           reasoningEfforts: d.reasoningTiers?.map((tier) => ({
             effort: tier,
@@ -20510,12 +20135,10 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       managed.runtime.interrupted = true;
       cancelQueuedSteers(managed, managed.runtime, "disposed");
-      if (managed.runtime.acpSessionId) {
-        try {
-          await managed.runtime.pooled?.connection.cancel({ sessionId: managed.runtime.acpSessionId });
-        } catch {
-          // ignore
-        }
+      try {
+        await managed.runtime.sdk.cancel();
+      } catch {
+        // ignore
       }
     }
 
@@ -21093,16 +20716,6 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind === "droid" && managed.runtime.busy) return;
 
       const runtime = await ensureDroidRuntime(managed);
-      if (!runtime.pooled) return;
-      if (!runtime.acpSessionId) {
-        const created = await runtime.pooled.connection.newSession(acpSessionRequest({
-          cwd: managed.laneWorktreePath,
-        }) as Parameters<typeof runtime.pooled.connection.newSession>[0]);
-        const sid = created.sessionId;
-        runtime.acpSessionId = sid;
-        applyDroidModelSnapshot(managed, runtime, created);
-        acpHostSessionOwners.set(sid, managed);
-      }
       await ensureDroidSessionState(managed, runtime);
       persistChatState(managed);
       return;

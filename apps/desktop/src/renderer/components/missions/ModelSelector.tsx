@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 
 type ModelSelectorProps = {
   value: ModelConfig;
@@ -11,6 +11,8 @@ type ModelSelectorProps = {
   /** When provided, only models whose registry id is in this set are shown. */
   availableModelIds?: string[];
   onOpenAiSettings?: () => void;
+  /** Stable id used by the picker to remember per-surface defaults. */
+  surfaceKey?: string;
 };
 
 function providerFromFamily(modelId: string): ModelProvider | undefined {
@@ -37,7 +39,8 @@ export function ModelSelector({
   compact,
   showRecommendedBadge: _showRecommendedBadge,
   availableModelIds,
-  onOpenAiSettings,
+  onOpenAiSettings: _onOpenAiSettings,
+  surfaceKey = "missions/phase-or-action",
 }: ModelSelectorProps) {
   const resolvedModelId = useMemo(() => normalizeModelId(value.modelId), [value.modelId]);
   const selectedDescriptor = useMemo(() => getModelById(resolvedModelId), [resolvedModelId]);
@@ -62,15 +65,15 @@ export function ModelSelector({
   }, [onChange, resolvedModelId]);
 
   return (
-    <ProviderModelSelector
+    <ModelPicker
       value={selectedDescriptor?.id ?? resolvedModelId}
       onChange={handleModelChange}
-      availableModelIds={availableModelIds}
-      className={compact ? "scale-[0.95] origin-left" : undefined}
+      surfaceKey={surfaceKey}
+      compact={compact ?? false}
+      {...(availableModelIds ? { availableModelIds } : {})}
       showReasoning
       reasoningEffort={value.thinkingLevel ?? null}
       onReasoningEffortChange={handleReasoningChange}
-      onOpenAiSettings={onOpenAiSettings}
     />
   );
 }

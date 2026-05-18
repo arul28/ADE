@@ -73,7 +73,7 @@ const CLI_TOOLS: Array<{
   {
     cli: "droid",
     label: "Factory Droid",
-    description: "Factory Droid CLI, ACP work chat",
+    description: "Factory Droid SDK via local CLI",
     loginCmd: "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)",
     installHint: "Install from https://docs.factory.ai/cli/getting-started/quickstart — ensure `droid` is on PATH",
   },
@@ -905,7 +905,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                 <div>
                   <div style={{ fontSize: 13, fontFamily: SANS_FONT, fontWeight: 700, color: COLORS.textPrimary }}>Factory Droid</div>
                   <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.35 }}>
-                    Factory Droid native runtime via Droid CLI
+                    Factory Droid SDK runtime via local Droid CLI
                   </div>
                 </div>
               </div>

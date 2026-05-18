@@ -131,9 +131,9 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("Cursor SDK");
     });
 
-    it("describes the Droid ACP runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "droid-acp" });
-      expect(result).toContain("Factory Droid agent via ACP");
+    it("describes the Droid SDK runtime", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "droid-sdk" });
+      expect(result).toContain("Factory Droid SDK");
     });
 
     it("describes the OpenCode runtime", () => {

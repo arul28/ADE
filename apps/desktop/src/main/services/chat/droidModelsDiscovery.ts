@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createSession } from "@factory/droid-sdk";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
@@ -181,6 +182,57 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
   return [];
 }
 
+function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
+  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
+  const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
+  const seen = new Set<string>();
+  const rows: DroidExecHelpModelRow[] = [];
+  for (const entry of raw) {
+    const model = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    if (!model) continue;
+    const id = typeof model.id === "string" && model.id.trim().length
+      ? model.id.trim()
+      : typeof model.modelId === "string"
+        ? model.modelId.trim()
+        : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const displayName = typeof model.displayName === "string" && model.displayName.trim().length
+      ? model.displayName.trim()
+      : typeof model.shortDisplayName === "string" && model.shortDisplayName.trim().length
+        ? model.shortDisplayName.trim()
+        : id;
+    rows.push({
+      id,
+      displayName,
+      customProxy: model.isCustom === true,
+    });
+  }
+  return rows;
+}
+
+async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
+  const now = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const session = await createSession({
+      execPath: droidPath,
+      cwd: process.cwd(),
+      abortSignal: controller.signal,
+    });
+    try {
+      const rows = readSdkModelRows(session.initResult);
+      cached = { at: now, models: rows };
+      return rows;
+    } finally {
+      await session.close().catch(() => undefined);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function clearDroidCliModelsCache(): void {
   cached = null;
   inflight = null;
@@ -230,11 +282,11 @@ export async function discoverDroidCliModelDescriptors(
   droidPath: string,
   options?: { mode?: DroidCliModelDiscoveryMode },
 ): Promise<ModelDescriptor[]> {
-  const fromCli = options?.mode === "cached-or-fallback"
+  const fromSdk = options?.mode === "cached-or-fallback"
     ? getCachedDroidModels() ?? []
-    : await listDroidModelsFromCli(droidPath);
-  const baseRows: DroidExecHelpModelRow[] = fromCli.length
-    ? fromCli
+    : await listDroidModelsFromSdk(droidPath).catch(() => []);
+  const baseRows: DroidExecHelpModelRow[] = fromSdk.length
+    ? fromSdk
     : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));
 
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected
@@ -251,3 +303,5 @@ export async function discoverDroidCliModelDescriptors(
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }
+
+export const discoverDroidSdkModelDescriptors = discoverDroidCliModelDescriptors;

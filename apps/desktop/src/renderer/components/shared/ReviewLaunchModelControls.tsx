@@ -1,8 +1,7 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import type { AiSettingsStatus } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { ProviderModelSelector } from "./ProviderModelSelector";
+import { ModelPicker } from "./ModelPicker/ModelPicker";
 
 type ReviewLaunchModelControlsProps = {
   modelId: string;
@@ -21,7 +20,6 @@ export function ReviewLaunchModelControls({
   disabled = false,
   className,
 }: ReviewLaunchModelControlsProps) {
-  const navigate = useNavigate();
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
 
   React.useEffect(() => {
@@ -52,16 +50,16 @@ export function ReviewLaunchModelControls({
   }, []);
 
   return (
-    <ProviderModelSelector
+    <ModelPicker
       value={modelId}
       onChange={onModelChange}
+      surfaceKey="review-launch"
       availableModelIds={availableModelIds}
       disabled={disabled}
       showReasoning
       reasoningEffort={reasoningEffort || null}
       onReasoningEffortChange={(next) => onReasoningEffortChange(next ?? "")}
-      onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
-      className={className}
+      {...(className ? { className } : {})}
     />
   );
 }

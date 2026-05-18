@@ -6,13 +6,13 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrAgentPermissionMode } from "../../../../shared/types";
-import type { ProviderModelSelector } from "../../shared/ProviderModelSelector";
+import type { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 
-type ProviderModelSelectorProps = React.ComponentProps<typeof ProviderModelSelector>;
+type ModelPickerProps = React.ComponentProps<typeof ModelPicker>;
 
-vi.mock("../../shared/ProviderModelSelector", () => ({
-  ProviderModelSelector: (props: ProviderModelSelectorProps) => (
+vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
+  ModelPicker: (props: ModelPickerProps) => (
     <div>
       <button type="button" onClick={() => props.onChange("anthropic/claude-sonnet-4-6")}>
         Pick Sonnet

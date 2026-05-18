@@ -14,7 +14,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
 
 type FeatureInfo = {
@@ -412,15 +412,15 @@ export function AiFeaturesSection() {
                 </div>
 
                 <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
-                  <ProviderModelSelector
+                  <ModelPicker
                     value={selectedModel}
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
+                    surfaceKey={`ai-feature-${feature.key}`}
                     availableModelIds={availableModelIds}
                     disabled={!enabled}
                     showReasoning
                     reasoningEffort={featureReasoning[feature.key] ?? null}
                     onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
-                    onOpenAiSettings={openAiProvidersSettings}
                   />
                 </div>
 
@@ -509,12 +509,13 @@ export function AiFeaturesSection() {
             </div>
 
             <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
-              <ProviderModelSelector
+              <ModelPicker
                 value={utilityModel}
                 onChange={(modelId) => {
                   setUtilityModel(modelId);
                   void saveChatTitleSettings({ modelId });
                 }}
+                surfaceKey="ai-feature-chat-auto-title"
                 availableModelIds={availableModelIds}
                 disabled={!chatAutoTitleEnabled}
                 showReasoning
@@ -523,7 +524,6 @@ export function AiFeaturesSection() {
                   setChatAutoTitleReasoning(effort);
                   void saveChatTitleSettings({ reasoningEffort: effort });
                 }}
-                onOpenAiSettings={openAiProvidersSettings}
               />
             </div>
 

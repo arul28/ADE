@@ -776,7 +776,7 @@ export function sortCursorCliDescriptorsForPicker(descriptors: ModelDescriptor[]
 }
 
 // ---------------------------------------------------------------------------
-// Factory Droid CLI — dynamic descriptors (`droid/<modelId>`)
+// Factory Droid SDK — dynamic descriptors (`droid/<modelId>`) backed by the local Droid CLI.
 // ---------------------------------------------------------------------------
 
 export type DroidCliLineGroup = "anthropic" | "openai" | "google" | "other" | "custom";

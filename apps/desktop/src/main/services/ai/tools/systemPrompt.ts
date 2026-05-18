@@ -15,7 +15,7 @@ export type AdeRuntimeKind =
   | "codex-app-server"
   | "codex-cli"
   | "cursor-sdk"
-  | "droid-acp"
+  | "droid-sdk"
   | "opencode";
 
 function describeRuntime(runtime: AdeRuntimeKind): string[] {
@@ -41,10 +41,10 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
         "**Wake-up semantics:** Each turn is driven by ADE through the SDK agent run. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
       ];
-    case "droid-acp":
+    case "droid-sdk":
       return [
-        "**Runtime:** ADE Work chat wrapping the Factory Droid agent via ACP.",
-        "**Wake-up semantics:** Each turn is a discrete ACP `prompt` request. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+        "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
+        "**Wake-up semantics:** Each turn is driven by ADE through the Droid SDK stream. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
       ];
     case "opencode":
       return [

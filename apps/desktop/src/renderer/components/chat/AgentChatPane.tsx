@@ -100,7 +100,7 @@ import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useAppStore } from "../../state/appStore";
@@ -6054,15 +6054,14 @@ export function AgentChatPane({
                     ) : null}
                   </div>
                   <div className="mt-3">
-                    <ProviderModelSelector
+                    <ModelPicker
                       value={handoffModelId}
                       onChange={setHandoffModelId}
-                      onOpen={refreshCursorModelInventory}
-                      availableModelIds={handoffAvailableModelIds}
+                      surfaceKey="chat-handoff"
+                      {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
                       showReasoning
                       reasoningEffort={handoffReasoningEffort}
                       onReasoningEffortChange={setHandoffReasoningEffort}
-                      onOpenAiSettings={openAiProvidersSettings}
                     />
                   </div>
                   {handoffTargetProvider ? (

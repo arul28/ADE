@@ -13,7 +13,7 @@ import {
   Sparkle,
   X,
 } from "@phosphor-icons/react";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
@@ -647,13 +647,14 @@ function NewReportTab({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={LABEL_STYLE}>AI assist (optional)</span>
-        <ProviderModelSelector
+        <ModelPicker
           value={modelId}
           onChange={(id) => {
             setModelId(id);
             setReasoningEffort(null);
             clearPreparedDraft();
           }}
+          surfaceKey="feedback-reporter"
           availableModelIds={availableModelIds}
           showReasoning
           reasoningEffort={reasoningEffort}
@@ -661,7 +662,6 @@ function NewReportTab({
             setReasoningEffort(value);
             clearPreparedDraft();
           }}
-          onOpenAiSettings={openAiProvidersSettings}
         />
         {helperText("Leave this empty to build a fully deterministic draft. If you pick a model, ADE only uses it to suggest the title and labels.")}
       </div>

@@ -1,5 +1,4 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import {
   getModelById,
   resolveProviderGroupForModel,
@@ -8,7 +7,7 @@ import {
 } from "../../../../shared/modelRegistry";
 import type { AiPermissionMode, AgentChatPermissionMode, PrAgentPermissionMode } from "../../../../shared/types";
 import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
-import { ProviderModelSelector } from "../../shared/ProviderModelSelector";
+import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { cn } from "../../ui/cn";
 import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
 
@@ -137,7 +136,6 @@ export function PrResolverLaunchControls({
   className,
   permissionValueMode = "chat",
 }: PrResolverLaunchControlsProps) {
-  const navigate = useNavigate();
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
 
   React.useEffect(() => {
@@ -186,15 +184,15 @@ export function PrResolverLaunchControls({
 
   return (
     <div className={cn("flex flex-wrap items-center gap-3", className)}>
-      <ProviderModelSelector
+      <ModelPicker
         value={modelId}
         onChange={handleModelChange}
+        surfaceKey="pr-resolver-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}
         showReasoning
         reasoningEffort={reasoningEffort}
         onReasoningEffortChange={(next) => onReasoningEffortChange(next ?? "")}
-        onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
       />
       <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
         {permissionOptions.map((option) => {

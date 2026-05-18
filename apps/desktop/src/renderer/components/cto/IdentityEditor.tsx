@@ -6,7 +6,7 @@ import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { cardCls, labelCls, recessedPanelCls, textareaCls } from "./shared/designTokens";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 
@@ -167,9 +167,10 @@ export function IdentityEditor({
 
         <div className="space-y-2">
           <div className={labelCls}>Model</div>
-          <ProviderModelSelector
+          <ModelPicker
             value={draft.modelId ?? ""}
             availableModelIds={availableModelIds}
+            surfaceKey="cto-identity"
             showReasoning
             reasoningEffort={draft.reasoningEffort}
             onReasoningEffortChange={(effort) => setDraft((current) => ({
@@ -180,7 +181,6 @@ export function IdentityEditor({
               setDraft((current) => applyModelSelection(current, modelId));
               setError(null);
             }}
-            onOpenAiSettings={openAiProvidersSettings}
           />
           {loadingModels ? (
             <div className="text-[11px] text-muted-fg/40">Checking configured models...</div>
