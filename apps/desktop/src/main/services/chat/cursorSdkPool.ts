@@ -8,6 +8,7 @@ import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkHookDecision,
   CursorSdkHookRequest,
+  CursorSdkModelParameterValue,
   CursorSdkPermissionPolicy,
   CursorSdkRuntime,
   CursorSdkSendPrompt,
@@ -187,6 +188,7 @@ export async function acquireCursorSdkConnection(args: {
   projectRoot: string;
   workspacePath: string;
   modelSdkId: string;
+  modelParams?: CursorSdkModelParameterValue[];
   apiKey?: string | null;
   agentId?: string | null;
   agentName?: string | null;
@@ -422,6 +424,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     stateRoot: paths.stateRoot,
     socketPath: paths.socketPath,
     modelSdkId: args.modelSdkId,
+    ...(args.modelParams?.length ? { modelParams: args.modelParams } : {}),
     apiKey: args.apiKey ?? null,
     agentId: args.agentId ?? null,
     agentName: args.agentName ?? null,

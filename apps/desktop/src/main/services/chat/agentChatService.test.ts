@@ -378,6 +378,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
   peekOpenCodeInventoryCache: vi.fn(() => null),
   probeOpenCodeProviderInventory: vi.fn(async () => ({
     modelIds: ["opencode/openai/gpt-5.4"],
+    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -783,24 +784,24 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return undefined;
     }),
-	    reloadPlugins: vi.fn(async () => {
-	      if (typeof session.reloadPlugins === "function") {
-	        return session.reloadPlugins();
-	      }
-	      if (typeof session.query?.reloadPlugins === "function") {
-	        return session.query.reloadPlugins();
-	      }
-	      return { commands: [], agents: [], plugins: [], error_count: 0 };
-	    }),
-	    applyFlagSettings: vi.fn(async (settings: unknown) => {
-	      if (typeof session.applyFlagSettings === "function") {
-	        return session.applyFlagSettings(settings);
-	      }
-	      if (typeof session.query?.applyFlagSettings === "function") {
-	        return session.query.applyFlagSettings(settings);
-	      }
-	      return undefined;
-	    }),
+    reloadPlugins: vi.fn(async () => {
+      if (typeof session.reloadPlugins === "function") {
+        return session.reloadPlugins();
+      }
+      if (typeof session.query?.reloadPlugins === "function") {
+        return session.query.reloadPlugins();
+      }
+      return { commands: [], agents: [], plugins: [], error_count: 0 };
+    }),
+    applyFlagSettings: vi.fn(async (settings: unknown) => {
+      if (typeof session.applyFlagSettings === "function") {
+        return session.applyFlagSettings(settings);
+      }
+      if (typeof session.query?.applyFlagSettings === "function") {
+        return session.query.applyFlagSettings(settings);
+      }
+      return undefined;
+    }),
     setModel: vi.fn(async (model: string) => {
       if (typeof session.setModel === "function") {
         return session.setModel(model);
@@ -1319,6 +1320,7 @@ beforeEach(() => {
   vi.mocked(probeOpenCodeProviderInventory).mockReset();
   vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
     modelIds: ["opencode/openai/gpt-5.4"],
+    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -4232,35 +4234,35 @@ describe("createAgentChatService", () => {
       ]));
     });
 
-	    it("does not advertise /login as a Claude SDK command", async () => {
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+    it("does not advertise /login as a Claude SDK command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      const commands = service.getSlashCommands({ sessionId: session.id });
-	      const loginCmd = commands.find((c: any) => c.name === "/login");
-	      expect(loginCmd).toBeUndefined();
-	    });
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      const loginCmd = commands.find((c: any) => c.name === "/login");
+      expect(loginCmd).toBeUndefined();
+    });
 
-	    it("advertises the ADE-hosted Claude output-style command", async () => {
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+    it("advertises the ADE-hosted Claude output-style command", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      const commands = service.getSlashCommands({ sessionId: session.id });
-	      expect(commands).toEqual(expect.arrayContaining([
-	        expect.objectContaining({
-	          name: "/output-style",
-	          source: "sdk",
-	        }),
-	      ]));
-	    });
+      const commands = service.getSlashCommands({ sessionId: session.id });
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/output-style",
+          source: "sdk",
+        }),
+      ]));
+    });
 
     it("removes dead-listed Codex slash commands from the palette", async () => {
       const { service } = createService();
@@ -4445,57 +4447,57 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
-	  });
+  });
 
-	  describe("Claude output styles", () => {
-	    it("lists built-in and project-local output styles for a Claude session", async () => {
-	      const stylesDir = path.join(tmpRoot, ".claude", "output-styles");
-	      fs.mkdirSync(stylesDir, { recursive: true });
-	      fs.writeFileSync(path.join(stylesDir, "reviewer.md"), [
-	        "---",
-	        "name: Reviewer",
-	        "description: Review first",
-	        "---",
-	        "",
-	        "Review first.",
-	        "",
-	      ].join("\n"));
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+  describe("Claude output styles", () => {
+    it("lists built-in and project-local output styles for a Claude session", async () => {
+      const stylesDir = path.join(tmpRoot, ".claude", "output-styles");
+      fs.mkdirSync(stylesDir, { recursive: true });
+      fs.writeFileSync(path.join(stylesDir, "reviewer.md"), [
+        "---",
+        "name: Reviewer",
+        "description: Review first",
+        "---",
+        "",
+        "Review first.",
+        "",
+      ].join("\n"));
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      expect(service.listClaudeOutputStyles({ sessionId: session.id })).toEqual(expect.arrayContaining([
-	        expect.objectContaining({ name: "Default", source: "builtin" }),
-	        expect.objectContaining({ name: "Reviewer", source: "project", description: "Review first" }),
-	      ]));
-	    });
+      expect(service.listClaudeOutputStyles({ sessionId: session.id })).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "Default", source: "builtin" }),
+        expect.objectContaining({ name: "Reviewer", source: "project", description: "Review first" }),
+      ]));
+    });
 
-	    it("persists and applies an output style to a live Claude query", async () => {
-	      const applyFlagSettings = vi.fn(async () => undefined);
-	      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-	        ...makeDefaultClaudeSession(),
-	        applyFlagSettings,
-	      });
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+    it("persists and applies an output style to a live Claude query", async () => {
+      const applyFlagSettings = vi.fn(async () => undefined);
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        applyFlagSettings,
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      await service.sendMessage({ sessionId: session.id, text: "hello" });
-	      const updated = await service.setClaudeOutputStyle({ sessionId: session.id, outputStyle: "Learning" });
+      await service.sendMessage({ sessionId: session.id, text: "hello" });
+      const updated = await service.setClaudeOutputStyle({ sessionId: session.id, outputStyle: "Learning" });
 
-	      expect(updated.claudeOutputStyle).toBe("Learning");
-	      expect(applyFlagSettings).toHaveBeenCalledWith({ outputStyle: "Learning" });
-	      expect(JSON.parse(fs.readFileSync(path.join(tmpRoot, ".claude", "settings.local.json"), "utf8"))).toMatchObject({
-	        outputStyle: "Learning",
-	      });
-	    });
-	  });
+      expect(updated.claudeOutputStyle).toBe("Learning");
+      expect(applyFlagSettings).toHaveBeenCalledWith({ outputStyle: "Learning" });
+      expect(JSON.parse(fs.readFileSync(path.join(tmpRoot, ".claude", "settings.local.json"), "utf8"))).toMatchObject({
+        outputStyle: "Learning",
+      });
+    });
+  });
 
   describe("Claude context usage", () => {
     it("normalizes used and free context categories against the full context window", async () => {
@@ -4537,67 +4539,67 @@ describe("createAgentChatService", () => {
   });
 
   describe("Claude plugins", () => {
-	    it("lists discovered local Claude plugins", async () => {
-	      const pluginRoot = path.join(tmpRoot, ".claude", "plugins", "team-tools", "review-plugin");
-		      fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
-		      fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
-		        name: "review-plugin",
-		        description: "Review helpers",
-		      }));
-		      fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
-		        enabledPlugins: { "review-plugin@local": true },
-		      }));
-		      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+    it("lists discovered local Claude plugins", async () => {
+      const pluginRoot = path.join(tmpRoot, ".claude", "plugins", "team-tools", "review-plugin");
+      fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+      fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), JSON.stringify({
+        name: "review-plugin",
+        description: "Review helpers",
+      }));
+      fs.writeFileSync(path.join(tmpRoot, ".claude", "settings.json"), JSON.stringify({
+        enabledPlugins: { "review-plugin@local": true },
+      }));
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      expect(service.listClaudePlugins({ sessionId: session.id })).toEqual([
-	        expect.objectContaining({
-	          name: "review-plugin",
-	          description: "Review helpers",
-	          path: fs.realpathSync(pluginRoot),
-	        }),
-	      ]);
-	    });
+      expect(service.listClaudePlugins({ sessionId: session.id })).toEqual([
+        expect.objectContaining({
+          name: "review-plugin",
+          description: "Review helpers",
+          path: fs.realpathSync(pluginRoot),
+        }),
+      ]);
+    });
 
-	    it("reloads plugins through the live Claude query", async () => {
-		      const reloadPlugins = vi.fn(async () => ({
-		        plugins: [{ name: "review-plugin", path: "/tmp/review-plugin" }],
-		        commands: [{ name: "review-plugin:audit", description: "Audit" }],
-		        agents: [{ name: "reviewer", description: "Review code" }],
-		        error_count: 0,
-		      }));
-	      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-	        ...makeDefaultClaudeSession(),
-	        reloadPlugins,
-	      });
-	      const { service } = createService();
-	      const session = await service.createSession({
-	        laneId: "lane-1",
-	        provider: "claude",
-	        model: "sonnet",
-	      });
+    it("reloads plugins through the live Claude query", async () => {
+      const reloadPlugins = vi.fn(async () => ({
+        plugins: [{ name: "review-plugin", path: "/tmp/review-plugin" }],
+        commands: [{ name: "review-plugin:audit", description: "Audit" }],
+        agents: [{ name: "reviewer", description: "Review code" }],
+        error_count: 0,
+      }));
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+        reloadPlugins,
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
 
-	      await service.sendMessage({ sessionId: session.id, text: "hello" });
-	      const result = await service.reloadClaudePlugins({ sessionId: session.id });
+      await service.sendMessage({ sessionId: session.id, text: "hello" });
+      const result = await service.reloadClaudePlugins({ sessionId: session.id });
 
-	      expect(reloadPlugins).toHaveBeenCalled();
+      expect(reloadPlugins).toHaveBeenCalled();
       expect(result).toEqual(expect.objectContaining({
-	        plugins: [expect.objectContaining({ name: "review-plugin", path: "/tmp/review-plugin" })],
-	        commands: [expect.objectContaining({ name: "review-plugin:audit", description: "Audit" })],
-	        agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
-	        errorCount: 0,
-	      }));
+        plugins: [expect.objectContaining({ name: "review-plugin", path: "/tmp/review-plugin" })],
+        commands: [expect.objectContaining({ name: "review-plugin:audit", description: "Audit" })],
+        agents: [expect.objectContaining({ name: "reviewer", description: "Review code" })],
+        errorCount: 0,
+      }));
       expect(service.getSlashCommands({ sessionId: session.id })).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "/review-plugin:audit", description: "Audit" }),
       ]));
     });
   });
 
-	  it("sends Claude provider slash commands as the raw SDK prompt", async () => {
+  it("sends Claude provider slash commands as the raw SDK prompt", async () => {
     const send = vi.fn().mockResolvedValue(undefined);
     let streamCall = 0;
     const stream = vi.fn(() => (async function* () {
@@ -8295,12 +8297,21 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("getAvailableModels", () => {
-    it("warms OpenCode models on a passive cache miss", async () => {
+    it("keeps OpenCode model discovery passive on a cache miss", async () => {
       clearOpenCodeInventoryCache();
       const { service } = createService();
       const models = await service.getAvailableModels({ provider: "opencode" });
 
       expect(peekOpenCodeInventoryCache).toHaveBeenCalled();
+      expect(probeOpenCodeProviderInventory).not.toHaveBeenCalled();
+      expect(models).toEqual([]);
+    });
+
+    it("refreshes OpenCode models only when runtime activation is requested", async () => {
+      clearOpenCodeInventoryCache();
+      const { service } = createService();
+      const models = await service.getAvailableModels({ provider: "opencode", activateRuntime: true });
+
       expect(probeOpenCodeProviderInventory).toHaveBeenCalled();
       expect(models.map((model) => model.id)).toContain("opencode/openai/gpt-5.4");
     });

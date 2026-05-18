@@ -36,22 +36,18 @@ struct WorkModelPickerSheet: View {
 
   @StateObject private var picker = ModelPickerStore()
   @State private var selection: ModelPickerRailSelection = .favorites
-  @State private var searchText: String = ""
-  @State private var liveCatalog: [WorkModelCatalogGroup]?
-  @State private var isLoadingCatalog = false
-  @State private var usingCuratedFallback = false
-  @State private var didPickInitialSelection = false
+	  @State private var searchText: String = ""
+	  @State private var liveCatalog: [WorkModelCatalogGroup]?
+	  @State private var isLoadingCatalog = false
+	  @State private var didPickInitialSelection = false
+	  @State private var selectedProviderTabKey: String?
 
-  private var curatedCatalog: [WorkModelCatalogGroup] {
-    workModelCatalogGroups(currentModelId: currentModelId, currentProvider: currentProvider)
-  }
-
-  private var catalog: [WorkModelCatalogGroup] {
-    if let liveCatalog {
-      return liveCatalog
-    }
-    return usingCuratedFallback ? curatedCatalog : []
-  }
+	  private var catalog: [WorkModelCatalogGroup] {
+	    if let liveCatalog {
+	      return liveCatalog
+	    }
+	    return []
+	  }
 
   private var flattenedModels: [WorkModelOption] {
     var seen = Set<String>()
@@ -99,25 +95,34 @@ struct WorkModelPickerSheet: View {
         } else {
           Divider().overlay(ADEColor.glassBorder)
           HStack(spacing: 0) {
-            ModelPickerRail(
+	            ModelPickerRail(
               entries: railEntries,
               selected: effectiveSelection,
               favoritesCount: picker.favorites.count,
               recentsCount: picker.recents.count,
-              onSelect: { selection = $0 }
-            )
+	              onSelect: { next in
+	                selection = next
+	                selectedProviderTabKey = nil
+	                if case .providerGroup(let key, _) = next {
+	                  Task { await refreshCatalog(for: key) }
+	                }
+	              }
+	            )
             Divider().overlay(ADEColor.glassBorder)
             ModelPickerContentPane(
               selection: effectiveSelection,
               isSearching: isSearching,
               searchText: searchText,
               models: visibleModels,
-              groupedRows: groupedRows,
-              currentModelId: currentModelId,
+	              groupedRows: groupedRows,
+	              providerTabs: providerTabs,
+	              selectedProviderTabKey: selectedProviderTabKey,
+	              currentModelId: currentModelId,
               currentReasoningEffort: currentReasoningEffort,
               favorites: picker.favorites,
               isBusy: isBusy,
-              onSelect: { model, effort in commit(model: model, effort: effort) },
+	              onSelect: { model, effort in commit(model: model, effort: effort) },
+	              onSelectProviderTab: { selectedProviderTabKey = $0 },
               onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) }
             )
           }
@@ -143,10 +148,13 @@ struct WorkModelPickerSheet: View {
     .onAppear {
       picker.load(syncService: syncService)
     }
-    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
-      await loadLiveCatalog()
-      pickInitialSelectionIfNeeded()
-    }
+	    .task(id: "\(currentModelId)\u{0}\(currentProvider)") {
+	      await loadLiveCatalog()
+	      pickInitialSelectionIfNeeded()
+	      if case .providerGroup(let key, _) = selection {
+	        await refreshCatalog(for: key)
+	      }
+	    }
   }
 
   /// Falls back to the first available provider entry only when the user's
@@ -202,8 +210,10 @@ struct WorkModelPickerSheet: View {
       case .recents:
         let lookup = modelById
         pool = picker.recents.compactMap { lookup[$0] }
-      case .providerGroup(let key, _):
-        pool = catalog.first(where: { $0.key == key })?.providers.flatMap { $0.models } ?? []
+	      case .providerGroup(let key, _):
+	        let group = catalog.first(where: { $0.key == key })
+	        let providers = filteredProviders(for: group)
+	        pool = providers.flatMap { $0.models }
       }
     }
 
@@ -226,25 +236,28 @@ struct WorkModelPickerSheet: View {
     switch effectiveSelection {
     case .favorites, .recents:
       return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
-    case .providerGroup(let key, _):
-      guard let group = catalog.first(where: { $0.key == key }) else {
-        return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
-      }
-      let providers = group.providers
-      // Single-provider groups (Claude, Codex) skip sub-headers entirely.
-      if providers.count <= 1 {
-        return [ModelPickerRowGroup(id: "_only", title: nil, models: visibleModels)]
-      }
-      return providers.compactMap { provider -> ModelPickerRowGroup? in
-        guard !provider.models.isEmpty else { return nil }
-        return ModelPickerRowGroup(
-          id: provider.key,
-          title: provider.displayName,
-          models: provider.models
-        )
-      }
+    case .providerGroup:
+      return [ModelPickerRowGroup(id: "_root", title: nil, models: visibleModels)]
     }
   }
+
+	  private var providerTabs: [WorkModelProvider] {
+	    guard !isSearching else { return [] }
+	    guard case .providerGroup(let key, _) = effectiveSelection else { return [] }
+	    return catalog.first(where: { $0.key == key })?.providers.filter { !$0.models.isEmpty } ?? []
+	  }
+
+	  private func filteredProviders(for group: WorkModelCatalogGroup?) -> [WorkModelProvider] {
+	    guard let group else { return [] }
+	    let providers = group.providers.filter { !$0.models.isEmpty }
+	    guard providers.count > 1 else { return providers }
+	    let activeKey = selectedProviderTabKey
+	      ?? providers.first(where: { provider in provider.models.contains(where: { workModelIdsEquivalent($0.id, currentModelId) }) })?.key
+	      ?? providers.first(where: { provider in provider.models.contains(where: { $0.isAvailable }) })?.key
+	      ?? providers.first?.key
+	    guard let activeKey else { return providers }
+	    return providers.filter { $0.key == activeKey }
+	  }
 
   private func catalogGroupContaining(modelId: String) -> String? {
     for group in catalog {
@@ -263,9 +276,13 @@ struct WorkModelPickerSheet: View {
         provider.models.contains { $0.id == model.id }
       }
     }) {
+      if group.key == "lmstudio" || group.key == "ollama" {
+        return "opencode"
+      }
       return group.key
     }
-    return workModelCatalogGroupKey(for: model.id, currentProvider: currentProvider)
+    let fallback = workModelCatalogGroupKey(for: model.id, currentProvider: currentProvider)
+    return fallback == "lmstudio" || fallback == "ollama" ? "opencode" : fallback
   }
 
   private func groupLabel(_ group: WorkModelCatalogGroup) -> String {
@@ -346,38 +363,63 @@ struct WorkModelPickerSheet: View {
 
   // MARK: Behavior
 
-  @MainActor
-  private func loadLiveCatalog() async {
-    isLoadingCatalog = true
-    defer { isLoadingCatalog = false }
-    usingCuratedFallback = false
+	  @MainActor
+	  private func loadLiveCatalog() async {
+	    isLoadingCatalog = true
+	    defer { isLoadingCatalog = false }
 
-    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
+	    if liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
       liveCatalog = workModelCatalogGroups(
         hostCatalog: cached,
         currentModelId: currentModelId,
         currentProvider: currentProvider
       )
-    }
+	    }
 
-    do {
-      let hostCatalog = try await syncService.getChatModelCatalog()
+	    do {
+	      let hostCatalog = try await syncService.getChatModelCatalog(mode: "cached")
       guard !Task.isCancelled else { return }
-      liveCatalog = workModelCatalogGroups(
-        hostCatalog: hostCatalog,
-        currentModelId: currentModelId,
-        currentProvider: currentProvider
-      )
-      usingCuratedFallback = false
-    } catch {
-      guard !Task.isCancelled else { return }
-      if liveCatalog == nil {
-        usingCuratedFallback = true
-      }
-    }
-  }
+	      apply(hostCatalog: hostCatalog)
+	    } catch {
+	      guard !Task.isCancelled else { return }
+	    }
+	  }
 
-  private func commit(model: WorkModelOption, effort: String?) {
+	  @MainActor
+	  private func refreshCatalog(for groupKey: String) async {
+	    let refreshProvider: String?
+	    switch groupKey {
+	    case "opencode", "cursor", "droid", "lmstudio", "ollama":
+	      refreshProvider = groupKey
+	    default:
+	      refreshProvider = nil
+	    }
+		    guard let refreshProvider else { return }
+		    do {
+		      let hostCatalog = try await syncService.getChatModelCatalog(mode: "refresh-stale", refreshProvider: refreshProvider)
+	      guard !Task.isCancelled else { return }
+	      apply(hostCatalog: hostCatalog)
+	      if hostCatalog.stale == true {
+	        let freshCatalog = try await syncService.getChatModelCatalog(mode: "force", refreshProvider: refreshProvider)
+	        guard !Task.isCancelled else { return }
+	        apply(hostCatalog: freshCatalog)
+	      }
+		    } catch {
+		      // Keep stale catalog visible.
+		    }
+		  }
+
+	  @MainActor
+	  private func apply(hostCatalog: AgentChatModelCatalog) {
+	    liveCatalog = workModelCatalogGroups(
+	      hostCatalog: hostCatalog,
+	      currentModelId: currentModelId,
+	      currentProvider: currentProvider
+	    )
+	  }
+
+	  private func commit(model: WorkModelOption, effort: String?) {
+	    guard model.isAvailable else { return }
     let normalizedEffort = effort?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased() ?? ""
@@ -561,11 +603,14 @@ struct ModelPickerContentPane: View {
   let searchText: String
   let models: [WorkModelOption]
   let groupedRows: [ModelPickerRowGroup]
+  let providerTabs: [WorkModelProvider]
+  let selectedProviderTabKey: String?
   let currentModelId: String
   let currentReasoningEffort: String
   let favorites: [String]
   let isBusy: Bool
   let onSelect: (WorkModelOption, String?) -> Void
+  let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
 
   private var favoritesSet: Set<String> { Set(favorites) }
@@ -573,6 +618,7 @@ struct ModelPickerContentPane: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
+      providerTabStrip
       Divider().overlay(ADEColor.glassBorder)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
         emptyState
@@ -609,6 +655,45 @@ struct ModelPickerContentPane: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  @ViewBuilder
+  private var providerTabStrip: some View {
+    if providerTabs.count > 1 {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(providerTabs) { provider in
+            let selected = provider.key == activeProviderTabKey
+            Button {
+              onSelectProviderTab(provider.key)
+            } label: {
+              Text(provider.displayName)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(selected ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.55), in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+          }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
+      }
+    }
+  }
+
+  private var activeProviderTabKey: String? {
+    selectedProviderTabKey
+      ?? providerTabs.first(where: { tab in
+        tab.models.contains { workModelIdsEquivalent($0.id, currentModelId) }
+      })?.key
+      ?? providerTabs.first(where: { tab in
+        tab.models.contains(where: { $0.isAvailable })
+      })?.key
+      ?? providerTabs.first?.key
   }
 
   @ViewBuilder
@@ -742,16 +827,16 @@ struct ModelPickerListRow: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Button {
-        guard supportedTiers.isEmpty else { return }
-        onSelect(nil)
+	      Button {
+	        guard supportedTiers.isEmpty else { return }
+	        onSelect(nil)
       } label: {
         headerRow
           .frame(maxWidth: .infinity, alignment: .leading)
           .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .disabled(isBusy || !supportedTiers.isEmpty)
+	      }
+	      .buttonStyle(.plain)
+	      .disabled(isBusy || !model.isAvailable || !supportedTiers.isEmpty)
 
       if !supportedTiers.isEmpty {
         reasoningPills(tiers: supportedTiers)
@@ -762,7 +847,7 @@ struct ModelPickerListRow: View {
     .padding(.vertical, 10)
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(isActive ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(0.55))
+	        .fill(isActive ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.55 : 0.32))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -777,9 +862,9 @@ struct ModelPickerListRow: View {
       WorkProviderLogo(provider: model.provider, size: 28)
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 6) {
-          Text(model.displayName)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+	          Text(model.displayName)
+	            .font(.subheadline.weight(.semibold))
+	            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
           if isActive {
             Text("active")
@@ -798,9 +883,9 @@ struct ModelPickerListRow: View {
             .foregroundStyle(workModelTierTint(model.tier))
           Text("·")
             .foregroundStyle(ADEColor.textMuted)
-          Text(model.tagline)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
+	          Text(model.tagline)
+	            .font(.caption)
+	            .foregroundStyle(model.isAvailable ? ADEColor.textSecondary : ADEColor.textMuted)
             .lineLimit(1)
         }
       }
@@ -864,7 +949,7 @@ struct ModelPickerListRow: View {
                 )
             }
             .buttonStyle(.plain)
-            .disabled(isBusy)
+	            .disabled(isBusy || !model.isAvailable)
             .accessibilityLabel("\(model.displayName) · reasoning \(reasoningLabel(for: tier))")
             .accessibilityAddTraits(isActiveTier ? .isSelected : [])
           }

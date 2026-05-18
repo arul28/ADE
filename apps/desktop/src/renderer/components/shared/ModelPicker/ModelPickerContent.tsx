@@ -20,6 +20,7 @@ import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
+import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
 
 const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Anthropic",
@@ -68,6 +69,28 @@ function modelSubProvider(model: ModelDescriptor): string {
   return "";
 }
 
+function modelSubProviderKey(model: ModelDescriptor): string {
+  const key = (model as ModelDescriptor & { subProviderKey?: string }).subProviderKey;
+  if (typeof key === "string" && key.trim().length) return key.trim();
+  if (model.providerRoute === "opencode" && model.openCodeProviderId) return model.openCodeProviderId;
+  return modelSubProvider(model) || "__default__";
+}
+
+function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
+  if (family === "opencode") return "opencode";
+  if (family === "ollama") return "ollama";
+  if (family === "lmstudio") return "lmstudio";
+  if (family === "cursor") return "cursor";
+  if (family === "factory") return "droid";
+  return null;
+}
+
+function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): string {
+  if (provider === "lmstudio") return "LM Studio";
+  if (provider === "droid") return "Droid";
+  return providerLabel(provider);
+}
+
 export type ModelPickerContentProps = {
   value: string;
   surfaceKey: string;
@@ -76,6 +99,8 @@ export type ModelPickerContentProps = {
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onSelect: (modelId: string) => void;
   onRequestClose: () => void;
+  onProviderRailSelect?: (family: ProviderFamily) => void;
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
 };
 
@@ -87,6 +112,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   providerAuthStatus,
   onSelect,
   onRequestClose,
+  onProviderRailSelect,
+  refreshingProvider,
   onOpenSignIn,
 }: ModelPickerContentProps) {
   const [query, setQuery] = useState("");
@@ -227,7 +254,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [favoriteSet],
   );
 
-  const visibleModels = useMemo<ModelDescriptor[]>(() => {
+  const candidateModels = useMemo<ModelDescriptor[]>(() => {
     let pool: ModelDescriptor[] = [];
     if (searchActive) {
       pool = expandedModels.filter(filterAvailable);
@@ -273,25 +300,62 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     toSearchItem,
   ]);
 
-  const groupedRows = useMemo(() => {
-    if (selection === "favorites" || selection === "recents" || searchActive) {
-      return [{ subProvider: "", models: visibleModels }];
-    }
-    const groups = new Map<string, ModelDescriptor[]>();
-    for (const m of visibleModels) {
-      const key = modelSubProvider(m);
-      const list = groups.get(key);
-      if (list) list.push(m);
-      else groups.set(key, [m]);
-    }
-    const arr = [...groups.entries()].map(([subProvider, modelsInGroup]) => ({
-      subProvider,
-      models: modelsInGroup,
-    }));
-    return arr;
-  }, [selection, searchActive, visibleModels]);
+  const activeProviderFamily = useMemo<ProviderFamily | null>(() => {
+    if (searchActive) return null;
+    if (selection === "favorites" || selection === "recents") return null;
+    return selection.slice("provider:".length) as ProviderFamily;
+  }, [searchActive, selection]);
 
-  const showSubHeaders = groupedRows.length > 1;
+  useEffect(() => {
+    if (!activeProviderFamily) return;
+    onProviderRailSelect?.(activeProviderFamily);
+  }, [activeProviderFamily, onProviderRailSelect]);
+
+  const activeRefreshProvider = activeProviderFamily ? refreshProviderForFamily(activeProviderFamily) : null;
+  const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;
+
+  const providerTabs = useMemo(() => {
+    if (!activeProviderFamily) return [];
+    const byKey = new Map<string, { key: string; label: string; models: ModelDescriptor[]; hasAvailable: boolean }>();
+    for (const model of candidateModels) {
+      const key = modelSubProviderKey(model);
+      const label = modelSubProvider(model) || providerLabel(activeProviderFamily);
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.models.push(model);
+        existing.hasAvailable = existing.hasAvailable || isAvailable(model.id);
+      } else {
+        byKey.set(key, { key, label, models: [model], hasAvailable: isAvailable(model.id) });
+      }
+    }
+    return [...byKey.values()];
+  }, [activeProviderFamily, candidateModels, isAvailable]);
+
+  const [activeProviderTabKey, setActiveProviderTabKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (providerTabs.length <= 1) {
+      setActiveProviderTabKey(null);
+      return;
+    }
+    setActiveProviderTabKey((current) => {
+      if (current && providerTabs.some((tab) => tab.key === current)) return current;
+      const activeModel = expandedModels.find((model) => model.id === value);
+      const activeKey = activeModel && activeProviderFamily === activeModel.family
+        ? modelSubProviderKey(activeModel)
+        : null;
+      if (activeKey && providerTabs.some((tab) => tab.key === activeKey)) return activeKey;
+      return providerTabs.find((tab) => tab.hasAvailable)?.key ?? providerTabs[0]?.key ?? null;
+    });
+  }, [activeProviderFamily, expandedModels, providerTabs, value]);
+
+  const visibleModels = useMemo<ModelDescriptor[]>(() => {
+    if (providerTabs.length <= 1 || !activeProviderTabKey) return candidateModels;
+    return providerTabs.find((tab) => tab.key === activeProviderTabKey)?.models ?? candidateModels;
+  }, [activeProviderTabKey, candidateModels, providerTabs]);
+
+  const groupedRows = useMemo(() => {
+    return [{ subProvider: "", models: visibleModels }];
+  }, [visibleModels]);
 
   const [focusedIndex, setFocusedIndex] = useState(0);
   useEffect(() => {
@@ -384,14 +448,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
 
   const isEmpty = visibleModels.length === 0;
 
-  // Family of the active provider rail (null when on Favorites/Recents/search)
-  // — used to decide whether to render the inline "Set up {Provider}" banner.
-  const activeProviderFamily = useMemo<ProviderFamily | null>(() => {
-    if (searchActive) return null;
-    if (selection === "favorites" || selection === "recents") return null;
-    return selection.slice("provider:".length) as ProviderFamily;
-  }, [searchActive, selection]);
-
   // Show the setup banner only when the active provider rail is unauthed AND
   // the caller has wired a sign-in handler. Auth status of `undefined` (no
   // signal yet) is treated as "not unauthed" so the banner doesn't flash
@@ -409,7 +465,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     activeProviderFamily != null
     && onOpenSignIn != null
     && effectiveAuth[activeProviderFamily] === "unauthed"
-    && !activeFamilyNeedsOpencode;
+    && !activeFamilyNeedsOpencode
+    && !activeProviderRefreshing;
 
   // Sticky "Currently using" detection — show when active row is not in the visible window.
   const activeRowVisibleRef = useRef(true);
@@ -510,13 +567,36 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             </button>
           </div>
 
-          <div
-            ref={listRef}
-            role="listbox"
-            aria-label="Models"
-            className="relative flex-1 overflow-y-auto px-1.5 py-1"
-          >
-            {activeOutOfView && activeModel ? (
+	          <div
+	            ref={listRef}
+	            role="listbox"
+	            aria-label="Models"
+	            className="relative flex-1 overflow-y-auto px-1.5 py-1"
+	          >
+	            {providerTabs.length > 1 ? (
+	              <div className="sticky top-0 z-[6] mb-1 flex gap-1 overflow-x-auto border-b border-white/[0.05] bg-[#13111A]/95 px-0.5 pb-1 backdrop-blur">
+	                {providerTabs.map((tab) => {
+	                  const active = tab.key === activeProviderTabKey;
+	                  return (
+	                    <button
+	                      key={tab.key}
+	                      type="button"
+	                      className={cn(
+	                        "h-6 shrink-0 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
+	                        active
+	                          ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
+	                          : "border-white/[0.07] bg-white/[0.02] text-muted-fg/65 hover:border-white/[0.12] hover:text-fg/85",
+	                      )}
+	                      onClick={() => setActiveProviderTabKey(tab.key)}
+	                    >
+	                      {tab.label}
+	                    </button>
+	                  );
+	                })}
+	              </div>
+	            ) : null}
+
+	            {activeOutOfView && activeModel ? (
               <div
                 className={cn(
                   "sticky top-0 z-[5] mx-0.5 mb-1 rounded-md border border-violet-400/15 bg-violet-500/[0.08] px-2 py-1",
@@ -538,23 +618,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 searchActive={searchActive}
                 opencodeBinaryInstalled={opencodeBinaryInstalled}
                 opencodeBinaryKnown={opencodeBinaryKnown}
+                refreshingProvider={activeProviderRefreshing ? activeRefreshProvider : null}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
               <div className="flex flex-col gap-px">
-                {groupedRows.map((group, gi) => (
-                  <div key={group.subProvider || `g${gi}`}>
-                    {showSubHeaders && group.subProvider ? (
-                      <div
-                        className={cn(
-                          "sticky top-0 z-[4] px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
-                          "bg-[#13111A]/95 text-muted-fg/55 backdrop-blur",
-                        )}
-                      >
-                        {group.subProvider}
-                      </div>
-                    ) : null}
-                    {group.models.map((m) => {
+	                {groupedRows.map((group, gi) => (
+	                  <div key={group.subProvider || `g${gi}`}>
+	                    {group.models.map((m) => {
                       const indexInFlat = flatVisibleIds.indexOf(m.id);
                       const isFocused = indexInFlat === focusedIndex;
                       const isActive = m.id === value;
@@ -601,12 +672,14 @@ function EmptyState({
   searchActive,
   opencodeBinaryInstalled,
   opencodeBinaryKnown,
+  refreshingProvider,
   onOpenSignIn,
 }: {
   selection: RailSelection;
   searchActive: boolean;
   opencodeBinaryInstalled: boolean;
   opencodeBinaryKnown: boolean;
+  refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
@@ -622,6 +695,21 @@ function EmptyState({
           family={family}
           {...(onOpenSignIn ? { onOpenSignIn } : {})}
         />
+      );
+    }
+    if (refreshingProvider) {
+      const label = refreshProviderLabel(refreshingProvider);
+      return (
+        <div
+          data-empty-state-mode="runtime-loading"
+          data-refresh-provider={refreshingProvider}
+          className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1.5 px-4 py-6 text-center"
+        >
+          <span className="text-[12px] font-semibold text-fg/80">Checking {label}</span>
+          <span className="max-w-[260px] text-[11px] leading-relaxed text-muted-fg/60">
+            Loading the cached catalog and refreshing it in the background.
+          </span>
+        </div>
       );
     }
     return <ProviderEmptyState family={family} {...(onOpenSignIn ? { onOpenSignIn } : {})} />;

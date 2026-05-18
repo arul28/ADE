@@ -53,12 +53,18 @@ vi.mock("./useReasoningByFamily", () => ({
 }));
 
 import { ReasoningEffortPicker } from "./ReasoningEffortPicker";
+import {
+  descriptorsFromAgentChatModelCatalog,
+  resetRuntimeCatalogDescriptorCacheForTests,
+} from "./modelCatalog";
+import type { AgentChatModelCatalog } from "../../../../shared/types";
 
 const ANTHROPIC_MODEL_ID = "anthropic/claude-sonnet-4-6";
 const OPENCODE_MODEL_ID = "opencode/some-model-without-reasoning";
 
 beforeEach(() => {
   for (const key of Object.keys(reasoningByFamilyStore)) delete reasoningByFamilyStore[key];
+  resetRuntimeCatalogDescriptorCacheForTests();
 });
 
 afterEach(() => {
@@ -132,6 +138,58 @@ describe("ReasoningEffortPicker", () => {
     expect(group).toBeTruthy();
     const radios = screen.getAllByRole("radio");
     expect(radios.length).toBeGreaterThan(0);
+  });
+
+  it("uses cached runtime catalog reasoning tiers for dynamic runtime models", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: new Date().toISOString(),
+      groups: [
+        {
+          key: "droid",
+          displayName: "Droid",
+          providers: [
+            {
+              key: "factory",
+              displayName: "Factory",
+              badgeColor: "#60A5FA",
+              modelCount: 1,
+              subsections: [
+                {
+                  key: "factory",
+                  label: "Factory",
+                  models: [
+                    {
+                      id: "droid/gpt-5.4",
+                      runtimeModelId: "droid/gpt-5.4",
+                      provider: "droid",
+                      providerKey: "factory",
+                      groupKey: "droid",
+                      displayName: "GPT-5.4",
+                      isDefault: true,
+                      isAvailable: true,
+                      reasoningEfforts: [{ effort: "max", description: "Max" }],
+                      supportsReasoning: true,
+                      supportsTools: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    descriptorsFromAgentChatModelCatalog(catalog);
+
+    render(
+      <ReasoningEffortPicker
+        modelId="droid/gpt-5.4"
+        reasoningEffort="max"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain("MAX");
   });
 
   it("calls onChange and persists the tier when a tier is selected", async () => {

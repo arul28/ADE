@@ -975,6 +975,12 @@ export type AgentChatModelCatalogModel = AgentChatModelInfo & {
   providerKey: string;
   groupKey: AgentChatProvider;
   isAvailable: boolean;
+  connected?: boolean;
+  requiresConfiguration?: boolean;
+  sourceRuntime?: AgentChatProvider;
+  providerId?: string;
+  providerName?: string;
+  stale?: boolean;
 };
 
 export type AgentChatModelCatalogSubsection = {
@@ -1000,6 +1006,21 @@ export type AgentChatModelCatalogGroup = {
 export type AgentChatModelCatalog = {
   groups: AgentChatModelCatalogGroup[];
   fetchedAt: string;
+  stale?: boolean;
+};
+
+export type AgentChatModelCatalogRefreshProvider =
+  | "opencode"
+  | "cursor"
+  | "droid"
+  | "lmstudio"
+  | "ollama";
+
+export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
+
+export type AgentChatModelCatalogArgs = {
+  mode?: AgentChatModelCatalogMode;
+  refreshProvider?: AgentChatModelCatalogRefreshProvider;
 };
 
 export type AgentChatCreateArgs = {

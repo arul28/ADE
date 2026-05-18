@@ -9,8 +9,28 @@ import {
   parseLocalProviderFromModelId,
   resolveModelDescriptor,
   type ModelDescriptor,
+  type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import type { AgentChatModelCatalog } from "../../../../shared/types";
 import { PROVIDER_BADGE_COLORS } from "../providerModelSelectorGrouping";
+
+const runtimeCatalogDescriptorsById = new Map<string, ModelDescriptor>();
+
+export function resetRuntimeCatalogDescriptorCacheForTests(): void {
+  runtimeCatalogDescriptorsById.clear();
+}
+
+export function getRuntimeCatalogModelDescriptor(modelId: string | null | undefined): ModelDescriptor | undefined {
+  const id = modelId?.trim();
+  if (!id) return undefined;
+  return runtimeCatalogDescriptorsById.get(id);
+}
+
+export function resolveModelDescriptorWithRuntimeCatalog(modelId: string | null | undefined): ModelDescriptor | undefined {
+  const id = modelId?.trim();
+  if (!id) return undefined;
+  return getRuntimeCatalogModelDescriptor(id) ?? resolveModelDescriptor(id);
+}
 
 export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor {
   const openCode = parseDynamicOpenCodeModelRef(modelId);
@@ -118,7 +138,7 @@ export function mergeSelectorModels(
   }
 
   for (const rawId of availableIdSet) {
-    const descriptor = resolveModelDescriptor(rawId);
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(rawId);
     if (descriptor) {
       if (descriptor.deprecated) continue;
       if (filter && !filter(descriptor)) continue;
@@ -131,7 +151,7 @@ export function mergeSelectorModels(
   }
 
   if (selectedId && !merged.has(selectedId)) {
-    const selectedDescriptor = resolveModelDescriptor(selectedId);
+    const selectedDescriptor = resolveModelDescriptorWithRuntimeCatalog(selectedId);
     if (selectedDescriptor && !selectedDescriptor.deprecated && (!filter || filter(selectedDescriptor))) {
       merged.set(selectedDescriptor.id, rebucketOpenCodeFamily(selectedDescriptor));
     } else if (!selectedDescriptor) {
@@ -142,4 +162,84 @@ export function mergeSelectorModels(
     }
   }
   return [...merged.values()];
+}
+
+export type RuntimeCatalogModelDescriptor = ModelDescriptor & {
+  subProvider?: string;
+  subProviderKey?: string;
+  catalogGroupKey?: string;
+  catalogAvailable?: boolean;
+  catalogRequiresConfiguration?: boolean;
+};
+
+function pickerFamilyForCatalogGroup(groupKey: string, fallbackFamily?: string): ProviderFamily {
+  if (groupKey === "claude") return "anthropic";
+  if (groupKey === "codex") return "openai";
+  if (groupKey === "droid") return "factory";
+  if (groupKey === "cursor") return "cursor";
+  if (groupKey === "opencode") return "opencode";
+  if (groupKey === "ollama") return "ollama";
+  if (groupKey === "lmstudio") return "lmstudio";
+  if (fallbackFamily === "ollama" || fallbackFamily === "lmstudio" || fallbackFamily === "cursor" || fallbackFamily === "factory") {
+    return fallbackFamily;
+  }
+  if (fallbackFamily === "anthropic" || fallbackFamily === "openai" || fallbackFamily === "opencode") {
+    return fallbackFamily;
+  }
+  return "opencode";
+}
+
+export function descriptorsFromAgentChatModelCatalog(
+  catalog: AgentChatModelCatalog | null | undefined,
+  filter?: (model: ModelDescriptor) => boolean,
+): { models: RuntimeCatalogModelDescriptor[]; availableModelIds: string[] } {
+  if (!catalog) return { models: [], availableModelIds: [] };
+  const merged = new Map<string, RuntimeCatalogModelDescriptor>();
+  const available = new Set<string>();
+  for (const group of catalog.groups ?? []) {
+    for (const provider of group.providers ?? []) {
+      for (const subsection of provider.subsections ?? []) {
+        for (const model of subsection.models ?? []) {
+          const base = resolveModelDescriptor(model.id) ?? createUnknownModelPlaceholder(model.id);
+          const family = pickerFamilyForCatalogGroup(String(model.groupKey || group.key), model.family);
+          const runtimeReasoningTiers = model.reasoningEfforts
+            ?.map((entry) => entry.effort.trim().toLowerCase())
+            .filter(Boolean);
+          const serviceTiers = model.serviceTiers
+            ?.map((entry) => entry.trim().toLowerCase())
+            .filter(Boolean);
+          const capabilities = {
+            ...base.capabilities,
+            ...(typeof model.supportsReasoning === "boolean" ? { reasoning: model.supportsReasoning } : {}),
+            ...(typeof model.supportsTools === "boolean" ? { tools: model.supportsTools } : {}),
+          };
+          const descriptor: RuntimeCatalogModelDescriptor = {
+            ...rebucketOpenCodeFamily(base),
+            id: model.id,
+            displayName: model.displayName || base.displayName,
+            shortId: base.shortId,
+            family,
+            color: model.color ?? base.color,
+            capabilities,
+            ...(runtimeReasoningTiers?.length ? { reasoningTiers: runtimeReasoningTiers } : {}),
+            ...(model.serviceTiers !== undefined
+              ? { serviceTiers }
+              : base.serviceTiers?.length
+                ? { serviceTiers: base.serviceTiers }
+                : {}),
+            subProvider: model.providerName || provider.displayName || subsection.label || undefined,
+            subProviderKey: model.providerId || provider.key || subsection.key || undefined,
+            catalogGroupKey: String(model.groupKey || group.key),
+            catalogAvailable: model.isAvailable,
+            catalogRequiresConfiguration: model.requiresConfiguration,
+          };
+          if (filter && !filter(descriptor)) continue;
+          merged.set(descriptor.id, descriptor);
+          runtimeCatalogDescriptorsById.set(descriptor.id, descriptor);
+          if (model.isAvailable) available.add(descriptor.id);
+        }
+      }
+    }
+  }
+  return { models: [...merged.values()], availableModelIds: [...available] };
 }

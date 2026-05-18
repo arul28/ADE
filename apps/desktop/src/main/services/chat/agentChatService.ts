@@ -75,6 +75,7 @@ import {
   nowIso,
   readFileWithinRootSecure,
   resolvePathWithinRoot,
+  stableStringify,
 } from "../shared/utils";
 import {
   resolveCliSpawnInvocation,
@@ -121,6 +122,8 @@ import type {
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
   AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
+  AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
   AgentChatProvider,
   AgentChatRespondToInputArgs,
@@ -263,7 +266,10 @@ import {
   releaseDroidSdkConnection,
   type DroidSdkPooled,
 } from "./droidSdkPool";
-import { discoverCursorSdkModelDescriptors } from "./cursorModelsDiscovery";
+import {
+  discoverCursorSdkModelDescriptors,
+  resolveCursorSdkModelSelectionParams,
+} from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
 import {
   mapCursorSdkMessageToChatEvents,
@@ -1855,7 +1861,7 @@ function normalizeCodexFastMode(value: unknown): boolean {
 }
 
 function catalogDescriptorInfoKey(
-  group: ModelProviderGroup,
+  group: string,
   providerKey: string,
   descriptorId: string,
 ): string {
@@ -2121,6 +2127,18 @@ function validateReasoningEffortForDescriptor(
     return null;
   }
   return validated;
+}
+
+function validateRuntimeReasoningEffortForDescriptor(
+  effort: string | null | undefined,
+  descriptor?: ModelDescriptor | null,
+): string | null {
+  const normalized = normalizeReasoningEffort(effort);
+  if (!normalized) return null;
+  if (descriptor?.reasoningTiers?.length && !descriptor.reasoningTiers.includes(normalized)) {
+    return null;
+  }
+  return normalized;
 }
 
 function resolveCodexReasoningEffortForRuntime(
@@ -3995,6 +4013,7 @@ function normalizeDroidSdkReasoningEffort(value: string | null | undefined): Dro
     case "medium":
     case "high":
     case "xhigh":
+    case "max":
       return normalized;
     case "extra-high":
     case "extra_high":
@@ -10856,19 +10875,30 @@ export function createAgentChatService(args: {
         }))
         .filter((entry) => fs.existsSync(entry.path));
       const toolSelection = await refreshOpenCodeSessionToolSelection(runtime.handle);
+      const openCodeReasoningVariant =
+        managed.session.reasoningEffort
+        && runtime.modelDescriptor.reasoningTiers?.includes(managed.session.reasoningEffort)
+          ? managed.session.reasoningEffort
+          : null;
+      const openCodeVariant =
+        managed.session.codexFastMode === true && modelSupportsFastMode(runtime.modelDescriptor)
+          ? "fast"
+          : openCodeReasoningVariant;
+      const openCodePromptBody = {
+        agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
+        model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
+        ...(toolSelection ? { tools: toolSelection } : {}),
+        ...(openCodeVariant ? { variant: openCodeVariant } : {}),
+        parts: buildOpenCodePromptParts({
+          prompt: userContent,
+          files: toPromptFiles,
+        }),
+      };
 
       const promptAccepted = runtime.handle.client.session.promptAsync({
         path: { id: runtime.handle.sessionId },
         query: { directory: runtime.handle.directory },
-        body: {
-          agent: mapPermissionModeToOpenCodeAgent(runtime.permissionMode),
-          model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
-          ...(toolSelection ? { tools: toolSelection } : {}),
-          parts: buildOpenCodePromptParts({
-            prompt: userContent,
-            files: toPromptFiles,
-          }),
-        },
+        body: openCodePromptBody,
       });
 
       const eventStream = await openCodeEventStream({
@@ -14895,11 +14925,9 @@ export function createAgentChatService(args: {
     const rawEffort = effectiveProvider === "codex"
       ? normalizeReasoningEffort(reasoningEffort) ?? DEFAULT_REASONING_EFFORT
       : normalizeReasoningEffort(reasoningEffort);
-    const normalizedReasoningEffort = effectiveProvider === "opencode"
-      ? rawEffort
-      : effectiveProvider === "cursor" || effectiveProvider === "droid"
-        ? null
-        : validateReasoningEffortForDescriptor(
+    const normalizedReasoningEffort = effectiveProvider === "opencode" || effectiveProvider === "cursor" || effectiveProvider === "droid"
+      ? validateRuntimeReasoningEffortForDescriptor(rawEffort, resolvedDescriptor)
+      : validateReasoningEffortForDescriptor(
           effectiveProvider === "claude" ? "claude" : "codex",
           rawEffort,
           resolvedDescriptor,
@@ -15030,7 +15058,7 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
-          ...(effectiveProvider === "codex" && requestedCodexFastMode === true ? { codexFastMode: true } : {}),
+          ...(requestedCodexFastMode === true ? { codexFastMode: true } : {}),
           ...nativePermissionFields,
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
@@ -15197,7 +15225,7 @@ export function createAgentChatService(args: {
       modelId: targetDescriptor.id,
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      codexFastMode: targetProvider === "codex"
+      codexFastMode: modelSupportsFastMode(targetDescriptor)
         ? args.codexFastMode ?? managed.session.codexFastMode === true
         : undefined,
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
@@ -15548,16 +15576,28 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     policy: CursorSdkPermissionPolicy,
     modelSdkId: string,
+    modelParams?: Array<{ id: string; value: string }>,
   ): string => [
     "sdk",
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
     modelSdkId,
+    stableStringify((modelParams ?? []).map((entry) => [entry.id, entry.value])),
     policy.chatMode,
     policy.approvalPolicy,
     policy.force ? "force" : "guarded",
   ].join(":");
+
+  const resolveCursorSdkModelParamsForSession = (
+    session: Pick<AgentChatSession, "reasoningEffort" | "codexFastMode">,
+    modelSdkId: string,
+  ): Array<{ id: string; value: string }> | undefined =>
+    resolveCursorSdkModelSelectionParams({
+      modelSdkId,
+      reasoningEffort: session.reasoningEffort,
+      fastMode: session.codexFastMode === true,
+    });
 
   const normalizeCursorSdkToolName = (name: string): string =>
     name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -15663,21 +15703,6 @@ export function createAgentChatService(args: {
       return `System context: Cursor Full auto is active. Continue autonomously inside the active lane while respecting ADE hard safety guards. ${cursorSdkAdeControlDirective()}`;
     }
     return `System context: Cursor Agent mode is active. Use ADE approval outcomes from approval messages. ${cursorSdkAdeControlDirective()}`;
-  };
-
-  const cursorPermissionOptionLabel = (kind: PermissionOption["kind"]): string => {
-    switch (kind) {
-      case "allow_once":
-        return "Allow once";
-      case "allow_always":
-        return "Allow for session";
-      case "reject_once":
-        return "Reject once";
-      case "reject_always":
-        return "Reject for session";
-      default:
-        return kind;
-    }
   };
 
   const buildCursorSdkPendingInputRequest = (
@@ -16571,7 +16596,8 @@ export function createAgentChatService(args: {
     const policy = resolveCursorSdkPolicy(managed.session);
     const displayModeId = resolveCursorDisplayModeId(managed.session, policy);
     const launchModelSdkId = resolveCursorRuntimeModelSdkId(managed.session);
-    const poolKey = cursorSdkPoolKeyFor(managed, policy, launchModelSdkId);
+    const launchModelParams = resolveCursorSdkModelParamsForSession(managed.session, launchModelSdkId);
+    const poolKey = cursorSdkPoolKeyFor(managed, policy, launchModelSdkId, launchModelParams);
     const shouldSyncSessionModel = managed.session.model !== launchModelSdkId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
       syncCursorSessionDescriptor(managed, launchModelSdkId);
@@ -16618,6 +16644,7 @@ export function createAgentChatService(args: {
         projectRoot,
         workspacePath: managed.laneWorktreePath,
         modelSdkId: launchModelSdkId,
+        ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
         apiKey,
         agentId: persistedCursorSdkAgentId,
         agentName: manualSessionTitleForRuntime(managed),
@@ -16798,6 +16825,7 @@ export function createAgentChatService(args: {
         promptText,
         images,
         modelSdkId: runtime.modelSdkId,
+        modelParams: resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId),
         force: policy.force,
       });
 
@@ -17130,11 +17158,15 @@ export function createAgentChatService(args: {
     try {
       let result: unknown;
       if (isFollowUp && managed.session.cursorCloudAgentId) {
+        const modelParams = runtime.modelSdkId
+          ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
+          : undefined;
         const payload: CursorSdkCloudFollowupPayload = {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
           promptText,
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+          ...(modelParams?.length ? { modelParams } : {}),
         };
         result = await runtime.sdk.request<CursorSdkCloudRunStartedResult & { result?: unknown }>(
           "cloud.followup",
@@ -17143,12 +17175,16 @@ export function createAgentChatService(args: {
       } else {
         const repoUrl = await resolveCloudRepoUrl(managed, args.cloudOverrides);
         const manualAgentName = manualSessionTitleForRuntime(managed);
+        const modelParams = runtime.modelSdkId
+          ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
+          : undefined;
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,
           repoUrl,
           ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
+          ...(modelParams?.length ? { modelParams } : {}),
           ...(args.cloudOverrides?.startingRef ? { startingRef: args.cloudOverrides.startingRef } : {}),
           ...(args.cloudOverrides?.prUrl !== undefined ? { prUrl: args.cloudOverrides.prUrl } : {}),
           ...(args.cloudOverrides?.workOnCurrentBranch !== undefined
@@ -19775,6 +19811,80 @@ export function createAgentChatService(args: {
   };
 
   const availableModelsRequests = new Map<string, Promise<AgentChatModelInfo[]>>();
+  const modelCatalogRequests = new Map<string, Promise<AgentChatModelCatalog>>();
+  const modelCatalogProviderRefreshedAt = new Map<AgentChatModelCatalogRefreshProvider, number>();
+  const MODEL_CATALOG_REFRESH_TTL_MS = 30 * 60_000;
+  const MODEL_CATALOG_LOCAL_REFRESH_TTL_MS = 30_000;
+  const MODEL_CATALOG_REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
+    "opencode",
+    "cursor",
+    "droid",
+    "lmstudio",
+    "ollama",
+  ];
+  let modelCatalogCache: AgentChatModelCatalog | null = null;
+
+  const modelCatalogRefreshTtlMs = (provider?: AgentChatModelCatalogRefreshProvider): number =>
+    provider === "lmstudio" || provider === "ollama"
+      ? MODEL_CATALOG_LOCAL_REFRESH_TTL_MS
+      : MODEL_CATALOG_REFRESH_TTL_MS;
+
+  const markModelCatalogProviderFresh = (
+    refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
+    refreshedAt: number,
+  ): void => {
+    if (refreshProvider) {
+      modelCatalogProviderRefreshedAt.set(refreshProvider, refreshedAt);
+      return;
+    }
+    for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
+      modelCatalogProviderRefreshedAt.set(provider, refreshedAt);
+    }
+  };
+
+  const isModelCatalogRefreshStale = (refreshProvider?: AgentChatModelCatalogRefreshProvider): boolean => {
+    if (!modelCatalogCache) return true;
+    if (refreshProvider) {
+      const refreshedAt = modelCatalogProviderRefreshedAt.get(refreshProvider);
+      return !refreshedAt || Date.now() - refreshedAt > modelCatalogRefreshTtlMs(refreshProvider);
+    }
+    const fetchedAt = Date.parse(modelCatalogCache.fetchedAt);
+    return !Number.isFinite(fetchedAt) || Date.now() - fetchedAt > MODEL_CATALOG_REFRESH_TTL_MS;
+  };
+
+  const withModelCatalogStaleFlag = (
+    catalog: AgentChatModelCatalog,
+    stale: boolean,
+  ): AgentChatModelCatalog => ({
+    ...catalog,
+    stale,
+  });
+
+  const discoverOpenCodeLocalModels = async (): Promise<DiscoveredLocalModelEntry[]> => {
+    const auth = await detectAuth();
+    const snapshot = projectConfigService.get();
+    const localProviderConfigs = snapshot.effective.ai?.localProviders ?? {};
+    const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
+    for (const family of ["ollama", "lmstudio"] as const) {
+      const providerSettings = localProviderConfigs[family];
+      if (providerSettings?.enabled === false) continue;
+      const localAuth = auth.find(
+        (a): a is Extract<typeof a, { type: "local" }> =>
+          a.type === "local" && a.provider === family,
+      );
+      const endpoint = localAuth?.endpoint ?? providerSettings?.endpoint ?? getLocalProviderDefaultEndpoint(family);
+      try {
+        const inspection = await inspectLocalProvider(family, endpoint);
+        for (const m of inspection.loadedModels) {
+          discoveredLocalModels.push({ provider: m.provider, modelId: m.modelId });
+        }
+      } catch {
+        // Local runtime may be offline. The picker should show no local rows
+        // rather than falling back to static OpenCode provider data.
+      }
+    }
+    return discoveredLocalModels;
+  };
 
   const loadAvailableModels = async (args: {
     provider: AgentChatProvider;
@@ -19793,7 +19903,7 @@ export function createAgentChatService(args: {
       if (!apiKey) return [];
       try {
         const ordered = await discoverCursorSdkModelDescriptors(apiKey, {
-          mode: args.activateRuntime ? "probe" : "cached-or-fallback",
+          mode: args.activateRuntime ? "probe" : "cached-only",
         });
         const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
@@ -19809,6 +19919,7 @@ export function createAgentChatService(args: {
           family: d.family,
           supportsReasoning: d.capabilities.reasoning,
           supportsTools: d.capabilities.tools,
+          ...(d.serviceTiers?.length ? { serviceTiers: d.serviceTiers } : {}),
           color: d.color,
         }));
       } catch {
@@ -19820,7 +19931,9 @@ export function createAgentChatService(args: {
       try {
         const auth = await detectAuth();
         const droidPath = resolveDroidExecutable({ auth }).path;
-        const ordered = await discoverDroidSdkModelDescriptors(droidPath);
+        const ordered = await discoverDroidSdkModelDescriptors(droidPath, {
+          mode: args.activateRuntime ? "probe" : "cached-or-fallback",
+        });
         const preferred = pickDefaultDroidDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
@@ -19835,6 +19948,7 @@ export function createAgentChatService(args: {
           family: d.family,
           supportsReasoning: d.capabilities.reasoning,
           supportsTools: d.capabilities.tools,
+          ...(d.serviceTiers?.length ? { serviceTiers: d.serviceTiers } : {}),
           color: d.color,
         }));
       } catch {
@@ -19848,11 +19962,13 @@ export function createAgentChatService(args: {
         let modelIds: string[];
         let error: string | null;
         if (args.activateRuntime) {
+          const discoveredLocalModels = await discoverOpenCodeLocalModels();
           const inventory = await probeOpenCodeProviderInventory({
             projectRoot,
             projectConfig: effectiveConfig,
             logger,
             force: false,
+            discoveredLocalModels,
           });
           modelIds = inventory.modelIds;
           error = inventory.error;
@@ -19865,14 +19981,8 @@ export function createAgentChatService(args: {
             modelIds = peeked.modelIds;
             error = peeked.error;
           } else {
-            const inventory = await probeOpenCodeProviderInventory({
-              projectRoot,
-              projectConfig: effectiveConfig,
-              logger,
-              force: false,
-            });
-            modelIds = inventory.modelIds;
-            error = inventory.error;
+            modelIds = [];
+            error = null;
           }
         }
         if (error) {
@@ -19978,20 +20088,68 @@ export function createAgentChatService(args: {
     }
   };
 
-  const getModelCatalog = async (): Promise<AgentChatModelCatalog> => {
-    const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
+  const modelCatalogRequestKey = (catalogArgs?: AgentChatModelCatalogArgs): string => {
+    const mode = catalogArgs?.mode ?? "refresh-stale";
+    const refreshProvider = catalogArgs?.refreshProvider;
+    return `${mode}:${refreshProvider ?? "all"}`;
+  };
+
+  const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    const mode = catalogArgs?.mode ?? "refresh-stale";
+    const refreshProvider = catalogArgs?.refreshProvider;
+    if (mode === "cached" && modelCatalogCache) {
+      return withModelCatalogStaleFlag(modelCatalogCache, isModelCatalogRefreshStale());
+    }
+
+    const activateAllDynamic = mode === "force" && !refreshProvider;
+    const shouldRefreshProvider = (provider: AgentChatModelCatalogRefreshProvider): boolean =>
+      mode !== "cached" && (activateAllDynamic || refreshProvider === provider);
+    const shouldRefreshOpenCode =
+      shouldRefreshProvider("opencode")
+      || shouldRefreshProvider("lmstudio")
+      || shouldRefreshProvider("ollama");
+
+    const catalogProviders: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid"];
     const modelsByProvider = await Promise.all(
       catalogProviders.map(async (provider) => {
         try {
           return {
             provider,
-            models: await getAvailableModels({ provider, activateRuntime: provider === "cursor" }),
+            models: await getAvailableModels({
+              provider,
+              activateRuntime:
+                (provider === "cursor" && shouldRefreshProvider("cursor"))
+                || (provider === "droid" && shouldRefreshProvider("droid")),
+            }),
           };
         } catch {
           return { provider, models: [] };
         }
       }),
     );
+
+    const effectiveConfig = projectConfigService.get().effective;
+    const opencodeInventory = await (async () => {
+      if (shouldRefreshOpenCode) {
+        return await probeOpenCodeProviderInventory({
+          projectRoot,
+          projectConfig: effectiveConfig,
+          logger,
+          force: mode === "force",
+          discoveredLocalModels: await discoverOpenCodeLocalModels(),
+        });
+      }
+      const peeked = peekOpenCodeInventoryCache({
+        projectRoot,
+        projectConfig: effectiveConfig,
+      });
+      return peeked ?? {
+        modelIds: [] as string[],
+        catalogModelIds: [] as string[],
+        providers: [],
+        error: null as string | null,
+      };
+    })();
 
     const descriptorInfo = new Map<string, { provider: ModelProviderGroup; info: AgentChatModelInfo }>();
     const descriptors: ModelDescriptor[] = [];
@@ -20025,16 +20183,45 @@ export function createAgentChatService(args: {
       }
     }
 
-    const opencodeInventory = peekOpenCodeInventoryCache({
-      projectRoot,
-      projectConfig: projectConfigService.get().effective,
-    });
-    const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory?.providers);
+    const availableOpenCodeIds = new Set(opencodeInventory.modelIds);
+    for (const id of opencodeInventory.catalogModelIds) {
+      const descriptor = getModelById(id);
+      if (!descriptor) continue;
+      descriptors.push(descriptor);
+      if (!availableOpenCodeIds.has(id)) continue;
+      const groupKey =
+        descriptor.providerRoute === "opencode" && (descriptor.family === "ollama" || descriptor.family === "lmstudio")
+          ? descriptor.family
+          : "opencode";
+      const providerKey = groupKey === "opencode" && descriptor.openCodeProviderId
+        ? descriptor.openCodeProviderId
+        : descriptor.family;
+      const info: AgentChatModelInfo = {
+        id: descriptor.id,
+        displayName: descriptor.displayName,
+        description: `${descriptor.displayName} (OpenCode)`,
+        isDefault: false,
+        reasoningEfforts: descriptor.reasoningTiers?.map((tier) => ({
+          effort: tier,
+          description: `${tier} reasoning`,
+        })) ?? [],
+        modelId: descriptor.id,
+        family: descriptor.family,
+        supportsReasoning: descriptor.capabilities.reasoning,
+        supportsTools: descriptor.capabilities.tools,
+        ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
+        color: descriptor.color,
+      };
+      descriptorInfo.set(catalogDescriptorInfoKey(groupKey, providerKey, descriptor.id), { provider: "opencode", info });
+    }
 
-    return {
+    const opencodeProviderById = new Map(opencodeInventory.providers.map((provider) => [provider.id, provider]));
+    const blocks = buildProviderGroupBlocks(descriptors, createModelOrderMap(), opencodeInventory.providers);
+
+    const catalog: AgentChatModelCatalog = {
       fetchedAt: nowIso(),
       groups: blocks.map((group) => ({
-        key: group.key,
+        key: group.key as AgentChatProvider,
         displayName: group.label,
         providers: group.providers.map((provider) => ({
           key: provider.key,
@@ -20048,6 +20235,11 @@ export function createAgentChatService(args: {
               const entry = descriptorInfo.get(catalogDescriptorInfoKey(group.key, provider.key, descriptor.id));
               const runtimeProvider = entry?.provider ?? resolveProviderGroupForModel(descriptor);
               const runtimeModelId = entry?.info.id ?? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider);
+              const providerMeta = descriptor.openCodeProviderId
+                ? opencodeProviderById.get(descriptor.openCodeProviderId)
+                : group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"
+                  ? opencodeProviderById.get(provider.key)
+                  : undefined;
               const reasoningEfforts = entry?.info.reasoningEfforts
                 ?? descriptor.reasoningTiers?.map((tier) => ({
                   effort: tier,
@@ -20075,12 +20267,59 @@ export function createAgentChatService(args: {
                     : {}),
                 color: descriptor.color,
                 isAvailable: Boolean(entry),
+                connected: providerMeta?.connected ?? Boolean(entry),
+                requiresConfiguration: !entry && (group.key === "opencode" || group.key === "ollama" || group.key === "lmstudio"),
+                sourceRuntime: runtimeProvider,
+                providerId: providerMeta?.id ?? provider.key,
+                providerName: providerMeta?.name ?? provider.label,
               };
             }),
           })),
         })),
       })),
     };
+    modelCatalogCache = catalog;
+    if (mode !== "cached") {
+      markModelCatalogProviderFresh(refreshProvider, Date.now());
+    }
+    return catalog;
+  };
+
+  const loadModelCatalogRequest = (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    const key = modelCatalogRequestKey(catalogArgs);
+    const existing = modelCatalogRequests.get(key);
+    if (existing) return existing;
+
+    const request = buildModelCatalog(catalogArgs).finally(() => {
+      if (modelCatalogRequests.get(key) === request) {
+        modelCatalogRequests.delete(key);
+      }
+    });
+    modelCatalogRequests.set(key, request);
+    return request;
+  };
+
+  const scheduleModelCatalogRefresh = (catalogArgs?: AgentChatModelCatalogArgs): void => {
+    void loadModelCatalogRequest(catalogArgs).catch((error) => {
+      logger.debug("agent_chat.model_catalog_background_refresh_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const getModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
+    const mode = catalogArgs?.mode ?? "refresh-stale";
+    if (mode === "refresh-stale" && modelCatalogCache) {
+      const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider);
+      if (stale) {
+        scheduleModelCatalogRefresh({
+          mode: "force",
+          ...(catalogArgs?.refreshProvider ? { refreshProvider: catalogArgs.refreshProvider } : {}),
+        });
+      }
+      return withModelCatalogStaleFlag(modelCatalogCache, stale);
+    }
+    return await loadModelCatalogRequest(catalogArgs);
   };
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
@@ -20394,7 +20633,7 @@ export function createAgentChatService(args: {
       managed.session.provider = nextProvider;
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
-      if (nextProvider !== "codex") {
+      if (nextProvider === "claude") {
         delete managed.session.codexFastMode;
       }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
@@ -20431,9 +20670,7 @@ export function createAgentChatService(args: {
           ? validateReasoningEffortForDescriptor("codex", requested, descriptor)
           : nextProvider === "claude"
             ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
-            : nextProvider === "opencode"
-              ? requested
-              : null;
+            : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
       }
 
       // Pre-warm the Claude query when the user selects an Anthropic model.
@@ -20462,9 +20699,7 @@ export function createAgentChatService(args: {
         ? validateReasoningEffortForDescriptor("codex", requested, descriptor)
         : managed.session.provider === "claude"
           ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
-          : managed.session.provider === "opencode"
-            ? requested
-            : null;
+          : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
       const next = managed.session.reasoningEffort ?? null;
       // When reasoning effort changes on a Claude session with an active query,
       // invalidate the query so it is recreated on the next turn
@@ -20517,7 +20752,7 @@ export function createAgentChatService(args: {
     }
 
     if (codexFastMode !== undefined) {
-      if (managed.session.provider === "codex" && normalizeCodexFastMode(codexFastMode)) {
+      if (normalizeCodexFastMode(codexFastMode)) {
         managed.session.codexFastMode = true;
       } else {
         delete managed.session.codexFastMode;

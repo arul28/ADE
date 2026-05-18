@@ -87,32 +87,6 @@ async function probeBinary(): Promise<void> {
   }
 }
 
-async function fetchStatus(): Promise<void> {
-  const store = useProviderAuthStore.getState();
-  if (store.inFlight) return store.inFlight;
-  const ade = (window as unknown as { ade?: { ai?: { getStatus?: (args?: unknown) => Promise<unknown> } } }).ade;
-  const getStatus = ade?.ai?.getStatus;
-  if (typeof getStatus !== "function") {
-    store.setStatus({}, false);
-    return;
-  }
-  const promise = (async () => {
-    try {
-      const raw = (await getStatus()) as Parameters<typeof familiesFromStatus>[0] & {
-        opencodeBinaryInstalled?: unknown;
-      };
-      const safe = raw ?? {};
-      useProviderAuthStore
-        .getState()
-        .setStatus(familiesFromStatus(safe), opencodeBinaryInstalledFromStatus(safe));
-    } catch {
-      useProviderAuthStore.getState().setStatus({}, false);
-    }
-  })();
-  store.setInFlight(promise);
-  return promise;
-}
-
 export function useProviderAuthStatus(): {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
@@ -128,13 +102,10 @@ export function useProviderAuthStatus(): {
       loaded: state.loaded,
     })),
   );
-  // Run BOTH on mount in parallel: cheap binary probe (ms) gives us the
-  // opencode-installed signal immediately so the picker doesn't flash the
-  // wrong empty state; the full fetchStatus continues in the background to
-  // populate connected providers + their model lists.
+  // Keep picker open cheap: only resolve the OpenCode binary here. Runtime
+  // catalog refreshes are triggered by selecting the relevant rail.
   useEffect(() => {
     void probeBinary();
-    void fetchStatus();
   }, []);
   return slice;
 }

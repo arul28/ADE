@@ -36,6 +36,7 @@ import {
 import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
@@ -663,7 +664,7 @@ function CodexFastModeToggle({
     <SmartTooltip
       content={{
         label: "Fast mode",
-        description: active ? "Fast mode is on for the next Codex turn." : "Use Fast mode for supported Codex models.",
+        description: active ? "Fast mode is on for the next turn." : "Use Fast mode for supported runtime models.",
         effect: active ? "Next turn uses the fast service tier." : "Standard mode is selected.",
       }}
     >
@@ -785,7 +786,6 @@ export function AgentChatComposer({
   hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
-  onModelCatalogOpen,
   onReasoningEffortChange,
   onCodexFastModeChange,
   onDraftChange,
@@ -905,7 +905,6 @@ export function AgentChatComposer({
   hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
-  onModelCatalogOpen?: () => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
@@ -1773,7 +1772,9 @@ export function AgentChatComposer({
     parallelChatMode && parallelConfiguringIndex != null
       ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
       : (modelId ?? "");
-  const fastModeSupported = sp === "codex" && modelSupportsFastMode(getModelById(fastModeModelId));
+  const fastModeSupported = modelSupportsFastMode(
+    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId) ?? getModelById(fastModeModelId),
+  );
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
       ? parallelModelSlots[parallelConfiguringIndex]?.codexFastMode === true
@@ -2402,7 +2403,7 @@ export function AgentChatComposer({
     if (parallelChatMode) return false;
     const id = modelId?.trim();
     if (!id) return false;
-    return (getModelById(id)?.reasoningTiers?.length ?? 0) > 0;
+    return (resolveModelDescriptorWithRuntimeCatalog(id)?.reasoningTiers?.length ?? 0) > 0;
   }, [parallelChatMode, modelId]);
 
   const composerToolbarGridMode = useMemo<"flex" | "grid2" | "grid3">(() => {

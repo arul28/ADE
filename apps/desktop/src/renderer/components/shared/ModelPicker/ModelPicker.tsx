@@ -1,9 +1,8 @@
-import { forwardRef, memo, useCallback, useMemo, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown, Lightning } from "@phosphor-icons/react";
 import {
   modelSupportsFastMode,
-  resolveModelDescriptor,
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
@@ -11,8 +10,22 @@ import { ModelRowLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
 import { ModelPickerContent } from "./ModelPickerContent";
 import type { AuthStatus } from "./ModelPickerRail";
-import { createUnknownModelPlaceholder, mergeSelectorModels } from "./modelCatalog";
+import {
+  createUnknownModelPlaceholder,
+  descriptorsFromAgentChatModelCatalog,
+  mergeSelectorModels,
+  resolveModelDescriptorWithRuntimeCatalog,
+} from "./modelCatalog";
 import { useModelRecents } from "./useModelRecents";
+import type { AgentChatModelCatalog, AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import {
+  clearRuntimeCatalogRequest,
+  getRuntimeCatalogRequest,
+  getSharedRuntimeCatalog,
+  rememberRuntimeCatalog,
+  runtimeCatalogProviderIsFresh,
+  setRuntimeCatalogRequest,
+} from "./runtimeCatalogCache";
 
 export type ModelPickerProps = {
   value: string;
@@ -52,12 +65,106 @@ export const ModelPicker = memo(function ModelPicker({
   triggerClassName,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
+  const [runtimeCatalog, setRuntimeCatalog] = useState<AgentChatModelCatalog | null>(() => getSharedRuntimeCatalog());
+  const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents();
+
+  const loadRuntimeCatalog = useCallback(async (args: {
+    mode: "cached" | "refresh-stale" | "force";
+    refreshProvider?: AgentChatModelCatalogRefreshProvider;
+  }): Promise<AgentChatModelCatalog | null> => {
+    const shared = getSharedRuntimeCatalog();
+    if (args.mode === "cached" && shared) {
+      setRuntimeCatalog(shared);
+      return shared;
+    }
+    if (args.mode === "refresh-stale" && args.refreshProvider && shared) {
+      setRuntimeCatalog(shared);
+      if (runtimeCatalogProviderIsFresh(args.refreshProvider)) {
+        return { ...shared, stale: false };
+      }
+    }
+
+    const bridge = window.ade?.agentChat?.modelCatalog;
+    if (typeof bridge !== "function") return null;
+    const requestKey = `${args.mode}:${args.refreshProvider ?? "all"}`;
+    const existingRequest = getRuntimeCatalogRequest(requestKey);
+    if (existingRequest) {
+      const next = await existingRequest;
+      if (next) setRuntimeCatalog(next);
+      return next;
+    }
+
+    const request = (async () => {
+      try {
+        const next = await bridge(args);
+        const visible = rememberRuntimeCatalog(next, args);
+        setRuntimeCatalog(visible);
+        return visible;
+      } catch {
+        // Keep the last catalog visible; renderer fallbacks cover older runtimes.
+        return null;
+      }
+    })();
+    setRuntimeCatalogRequest(requestKey, request);
+    void request.finally(() => {
+      clearRuntimeCatalogRequest(requestKey, request);
+    });
+    return await request;
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadRuntimeCatalog({ mode: "cached" });
+  }, [loadRuntimeCatalog, open]);
+
+  const handleProviderRailSelect = useCallback((family: ProviderFamily) => {
+    const refreshProvider: AgentChatModelCatalogRefreshProvider | null =
+      family === "opencode"
+        ? "opencode"
+        : family === "ollama"
+          ? "ollama"
+          : family === "lmstudio"
+            ? "lmstudio"
+            : family === "cursor"
+              ? "cursor"
+              : family === "factory"
+                ? "droid"
+                : null;
+    if (refreshProvider) {
+      void (async () => {
+        const shared = getSharedRuntimeCatalog();
+        if (shared) {
+          setRuntimeCatalog(shared);
+          if (runtimeCatalogProviderIsFresh(refreshProvider)) return;
+        }
+        setRefreshingProvider(refreshProvider);
+        try {
+          const immediate = await loadRuntimeCatalog({ mode: "refresh-stale", refreshProvider });
+          if (immediate?.stale === true) {
+            await loadRuntimeCatalog({ mode: "force", refreshProvider });
+          }
+        } finally {
+          setRefreshingProvider((current) => current === refreshProvider ? null : current);
+        }
+      })();
+    }
+  }, [loadRuntimeCatalog]);
+
+  const catalogModels = useMemo(
+    () => descriptorsFromAgentChatModelCatalog(runtimeCatalog, filter),
+    [filter, runtimeCatalog],
+  );
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
     if (models && models.length) return models;
-    return mergeSelectorModels(availableModelIds, value, filter, catalogMode);
-  }, [models, availableModelIds, value, filter, catalogMode]);
+    const fallbackModels = mergeSelectorModels(availableModelIds, value, filter, catalogMode);
+    if (catalogModels.models.length === 0) return fallbackModels;
+    const merged = new Map<string, ModelDescriptor>();
+    for (const model of fallbackModels) merged.set(model.id, model);
+    for (const model of catalogModels.models) merged.set(model.id, model);
+    return [...merged.values()];
+  }, [models, availableModelIds, value, filter, catalogMode, catalogModels.models]);
 
   const effectiveValue = useMemo<string>(() => {
     if (value && value.length > 0) return value;
@@ -72,13 +179,14 @@ export const ModelPicker = memo(function ModelPicker({
 
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
     if (!effectiveValue) return undefined;
-    return resolveModelDescriptor(effectiveValue) ?? createUnknownModelPlaceholder(effectiveValue);
+    return resolveModelDescriptorWithRuntimeCatalog(effectiveValue) ?? createUnknownModelPlaceholder(effectiveValue);
   }, [effectiveValue]);
 
   const availableSet = useMemo(() => {
-    if (!availableModelIds) return null;
-    return new Set(availableModelIds.map((id) => id.trim()).filter(Boolean));
-  }, [availableModelIds]);
+    const ids = runtimeCatalog ? catalogModels.availableModelIds : availableModelIds;
+    if (!ids) return null;
+    return new Set(ids.map((id) => id.trim()).filter(Boolean));
+  }, [availableModelIds, catalogModels.availableModelIds, runtimeCatalog]);
 
   const isAvailable = useCallback(
     (modelId: string): boolean => {
@@ -100,6 +208,11 @@ export const ModelPicker = memo(function ModelPicker({
     setOpen(false);
   }, []);
 
+  const handleOpenSignIn = useCallback(() => {
+    setOpen(false);
+    onOpenSignIn?.();
+  }, [onOpenSignIn]);
+
   const triggerFastSupported =
     typeof fastModeSupported === "boolean"
       ? fastModeSupported
@@ -114,6 +227,10 @@ export const ModelPicker = memo(function ModelPicker({
           if (disabled) {
             setOpen(false);
             return;
+          }
+          const shared = getSharedRuntimeCatalog();
+          if (next && shared) {
+            setRuntimeCatalog(shared);
           }
           setOpen(next);
         }}
@@ -149,7 +266,9 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
                 onSelect={handleSelect}
                 onRequestClose={handleRequestClose}
-                {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                onProviderRailSelect={handleProviderRailSelect}
+                refreshingProvider={refreshingProvider}
+                {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />
             ) : null}
           </Popover.Content>

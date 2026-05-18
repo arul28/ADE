@@ -192,6 +192,7 @@ export const IPC = {
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",
   agentChatModels: "ade.agentChat.models",
+  agentChatModelCatalog: "ade.agentChat.modelCatalog",
   agentChatDelete: "ade.agentChat.delete",
   agentChatArchive: "ade.agentChat.archive",
   agentChatUnarchive: "ade.agentChat.unarchive",

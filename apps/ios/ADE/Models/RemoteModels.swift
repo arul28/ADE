@@ -1913,8 +1913,14 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var family: String?
   var supportsReasoning: Bool?
   var supportsTools: Bool?
-  var color: String?
-  var isAvailable: Bool
+	  var color: String?
+	  var isAvailable: Bool
+	  var connected: Bool?
+	  var requiresConfiguration: Bool?
+	  var sourceRuntime: String?
+	  var providerId: String?
+	  var providerName: String?
+	  var stale: Bool?
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {
@@ -1943,6 +1949,7 @@ struct AgentChatModelCatalogGroup: Codable, Equatable, Identifiable {
 struct AgentChatModelCatalog: Codable, Equatable {
   var groups: [AgentChatModelCatalogGroup]
   var fetchedAt: String
+  var stale: Bool?
 }
 
 /// Response envelopes for the cross-surface ModelPicker favorites/recents

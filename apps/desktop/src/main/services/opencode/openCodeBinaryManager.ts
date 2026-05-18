@@ -33,7 +33,7 @@ function bundledBinaryCandidatePaths(): string[] {
   return fileNames.map((fileName) => join(__dirname, "..", "..", "..", "..", "node_modules", ".bin", fileName));
 }
 
-function canRunBundledBinary(filePath: string): boolean {
+function canRunBinaryCandidate(filePath: string): boolean {
   try {
     accessSync(filePath, process.platform === "win32" ? constants.F_OK : constants.X_OK);
     return true;
@@ -43,7 +43,10 @@ function canRunBundledBinary(filePath: string): boolean {
 }
 
 export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
-  if (cachedInfo) return cachedInfo;
+  if (cachedInfo?.path && canRunBinaryCandidate(cachedInfo.path)) {
+    return cachedInfo;
+  }
+  cachedInfo = null;
 
   // Ensure PATH includes shell paths and known CLI dirs before searching.
   // On Windows, `process.env.PATH = …` can create a duplicate `PATH` key
@@ -59,14 +62,16 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   }
 
   // 2. Fall back to bundled binary
-  const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBundledBinary(candidate));
+  const bundled = bundledBinaryCandidatePaths().find((candidate) => canRunBinaryCandidate(candidate));
   if (bundled) {
     cachedInfo = { path: bundled, source: "bundled" };
     return cachedInfo;
   }
 
-  cachedInfo = { path: null, source: "missing" };
-  return cachedInfo;
+  // Do not cache misses. Users can install OpenCode or fix PATH while ADE is
+  // running, and the picker/settings cheap probe should pick that up without
+  // requiring a main-process restart.
+  return { path: null, source: "missing" };
 }
 
 export function resolveOpenCodeBinaryPath(): string | null {

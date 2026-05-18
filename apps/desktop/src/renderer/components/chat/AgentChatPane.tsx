@@ -71,6 +71,7 @@ import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
@@ -1351,11 +1352,6 @@ function orderAvailableModelIds(ids: Iterable<string>): string[] {
   return [...ordered, ...extra];
 }
 
-function isCursorModelId(id: string): boolean {
-  return id.startsWith("cursor/")
-    || getModelById(id)?.family === "cursor";
-}
-
 function completionBadgeClass(status: NonNullable<AgentChatSessionSummary["completion"]>["status"]): string {
   switch (status) {
     case "completed": return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300";
@@ -1578,12 +1574,7 @@ export function AgentChatPane({
   const [availableModelIds, setAvailableModelIds] = useState<string[]>(() =>
     seedAiStatus ? deriveConfiguredModelIds(seedAiStatus, { includeDroid: true }) : [],
   );
-  const availableModelIdsRef = useRef(availableModelIds);
   const availableModelsRefreshSeqRef = useRef(0);
-  const cursorInventoryRefreshSeqRef = useRef(0);
-  useEffect(() => {
-    availableModelIdsRef.current = availableModelIds;
-  }, [availableModelIds]);
   const [claudePermissionMode, setClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(initialNativeControls.claudePermissionMode);
   const [codexApprovalPolicy, setCodexApprovalPolicy] = useState<AgentChatCodexApprovalPolicy>(initialNativeControls.codexApprovalPolicy);
   const [codexSandbox, setCodexSandbox] = useState<AgentChatCodexSandbox>(initialNativeControls.codexSandbox);
@@ -2267,7 +2258,7 @@ export function AgentChatPane({
     return ids;
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
-  const selectedModelDesc = getModelById(modelId);
+  const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
@@ -2819,46 +2810,6 @@ export function AgentChatPane({
       return [];
     }
   }, [modelId, projectRoot, selectedSession?.provider, sessionProvider]);
-
-  const refreshCursorModelInventory = useCallback(async () => {
-    const cursorRefreshSeq = ++cursorInventoryRefreshSeqRef.current;
-    const status = aiStatus;
-    const cursorExplicitlyUnavailable =
-      status != null
-      && status.availableProviders?.cursor !== true
-      && status.providerConnections?.cursor?.runtimeAvailable !== true;
-    if (cursorExplicitlyUnavailable) return;
-    if (availableModelIdsRef.current.some(isCursorModelId)) return;
-    const refreshSeq = availableModelsRefreshSeqRef.current;
-    let cursorModels: Awaited<ReturnType<typeof getAgentChatModelsCached>>;
-    try {
-      cursorModels = await getAgentChatModelsCached({
-        projectRoot,
-        provider: "cursor",
-        activateRuntime: true,
-      });
-    } catch {
-      return;
-    }
-    if (
-      availableModelsRefreshSeqRef.current !== refreshSeq
-      || cursorInventoryRefreshSeqRef.current !== cursorRefreshSeq
-    ) {
-      return;
-    }
-    if (!cursorModels.length) {
-      setAvailableModelIds((prev) => prev.filter((id) => !isCursorModelId(id)));
-      return;
-    }
-    setAvailableModelIds((prev) => {
-      const merged = new Set<string>(prev);
-      for (const model of cursorModels) {
-        const resolved = resolveCliRegistryModelId("cursor", model.id);
-        if (resolved) merged.add(resolved);
-      }
-      return orderAvailableModelIds(merged);
-    });
-  }, [aiStatus, projectRoot]);
 
   const touchSession = useCallback((sessionId: string | null | undefined, touchedAt = new Date().toISOString()) => {
     if (!sessionId) return;
@@ -4166,7 +4117,7 @@ export function AgentChatPane({
   }, []);
   const buildModelSelectionSnapshot = useCallback((nextModelId: string) => {
     const previousDesc = prevModelDescRef.current;
-    const nextDesc = getModelById(nextModelId);
+    const nextDesc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
     const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
     const nextProvider = resolveChatRuntimeProvider(nextDesc);
     const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
@@ -4228,7 +4179,7 @@ export function AgentChatPane({
     targetLaneId: string,
     options: { select?: boolean; notify?: boolean; notifyOptions?: AgentChatSessionCreatedOptions } = {},
   ): Promise<AgentChatSession> => {
-      const desc = getModelById(modelId);
+      const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? modelId : runtimeFacingModelId(desc, modelId);
@@ -4252,7 +4203,7 @@ export function AgentChatPane({
         modelId,
         sessionProfile,
         reasoningEffort,
-        ...(provider === "codex" ? { codexFastMode } : {}),
+        ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
         ...nativeControlPayload,
       });
       loadedHistoryRef.current.delete(created.id);
@@ -4788,7 +4739,7 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
-            ...(provider === "codex" ? { codexFastMode: slot.codexFastMode } : {}),
+            ...(modelSupportsFastMode(desc) ? { codexFastMode: slot.codexFastMode } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           });
           sessionByLane.set(childLane.id, created.id);
@@ -5144,13 +5095,13 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticOutgoingMessageSynced({ sessionId, envelope: optimisticEnvelope(sessionId) });
-        const desc = getModelById(modelId);
+        const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
         const provider = resolveChatRuntimeProvider(desc);
         await window.ade.agentChat.updateSession({
           sessionId,
           modelId,
           reasoningEffort,
-          ...(provider === "codex" ? { codexFastMode } : {}),
+          ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
           ...buildNativeControlPayload(provider),
         });
         void refreshSessions().catch(() => {});
@@ -6403,7 +6354,6 @@ export function AgentChatPane({
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
             onExecutionModeChange={setExecutionMode}
-            onModelCatalogOpen={refreshCursorModelInventory}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
             onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}
@@ -6468,7 +6418,7 @@ export function AgentChatPane({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
-                ...(snapshot.nextProvider === "codex" ? { codexFastMode } : {}),
+                ...(modelSupportsFastMode(snapshot.nextDesc) ? { codexFastMode } : {}),
                 ...nextNativeControlPayload,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -6674,7 +6624,7 @@ export function AgentChatPane({
               });
             }}
             onParallelSlotModelChange={(index, nextModelId) => {
-              const desc = getModelById(nextModelId);
+              const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
               const nextEffort = selectReasoningEffort({ tiers, preferred });

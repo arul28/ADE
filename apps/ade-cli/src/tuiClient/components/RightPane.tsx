@@ -12,7 +12,7 @@ import { theme } from "../theme";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
-import type { AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -699,9 +699,10 @@ export function RightPane({
   activeProvider?: AdeCodeProvider | null;
   width?: number;
   /** Data passed in by app.tsx for the model-picker content kind. */
-  modelPickerInputs?: {
-    models: AgentChatModelInfo[];
-    favorites: string[];
+	  modelPickerInputs?: {
+	    models: AgentChatModelInfo[];
+	    catalog?: AgentChatModelCatalog | null;
+	    favorites: string[];
     recents: string[];
     activeModelId: string | null;
   };
@@ -801,14 +802,16 @@ export function RightPane({
 
       {content.kind === "model-picker" && modelPickerInputs ? (
         <ModelPickerPane
-          state={buildModelPickerLayout({
-            models: modelPickerInputs.models,
-            favorites: modelPickerInputs.favorites,
-            recents: modelPickerInputs.recents,
-            activeModelId: modelPickerInputs.activeModelId,
-            query: content.query,
-            selection: content.selection,
-            focusedIndex: content.focusedIndex,
+	          state={buildModelPickerLayout({
+	            models: modelPickerInputs.models,
+	            catalog: modelPickerInputs.catalog,
+	            favorites: modelPickerInputs.favorites,
+	            recents: modelPickerInputs.recents,
+	            activeModelId: modelPickerInputs.activeModelId,
+	            query: content.query,
+	            selection: content.selection,
+	            providerTabKey: content.providerTabKey ?? null,
+	            focusedIndex: content.focusedIndex,
             searchMode: content.searchMode,
           })}
           width={paneWidth}

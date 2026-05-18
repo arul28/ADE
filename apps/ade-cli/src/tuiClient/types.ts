@@ -58,7 +58,7 @@ export type AdeCodeConnection = {
   close(): Promise<void>;
 };
 
-export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid">;
+export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid"> | "ollama" | "lmstudio";
 
 export type AdeCodeModelState = {
   provider: AdeCodeProvider;
@@ -160,6 +160,7 @@ export type ModelPickerRightPaneContent = {
   query: string;
   searchMode: boolean;
   selection: ModelPickerRightPaneSelection;
+  providerTabKey?: string | null;
   focusedIndex: number;
 };
 

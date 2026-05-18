@@ -45,6 +45,38 @@ vi.mock("./ChatAppControlPanel", () => {
   };
 });
 
+vi.mock("@lobehub/icons", () => {
+  const brand = () => {
+    const Component = () => null;
+    Object.assign(Component, {
+      Avatar: () => null,
+      Color: () => null,
+      Combine: () => null,
+      Text: () => null,
+      colorPrimary: "#888",
+      title: "stub",
+    });
+    return Component;
+  };
+  return {
+    Anthropic: brand(),
+    Claude: brand(),
+    Codex: brand(),
+    Cursor: brand(),
+    Gemini: brand(),
+    Google: brand(),
+    Grok: brand(),
+    Groq: brand(),
+    Kimi: brand(),
+    LmStudio: brand(),
+    Ollama: brand(),
+    OpenAI: brand(),
+    OpenCode: brand(),
+    OpenRouter: brand(),
+    XAI: brand(),
+  };
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -748,9 +780,10 @@ describe("AgentChatPane submit recovery", () => {
       availableModelIdsOverride: ["anthropic/claude-sonnet-4-6"],
     });
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
 
     await waitFor(() => {
@@ -1535,9 +1568,10 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.change(await screen.findByLabelText("Reasoning effort"), {
-      target: { value: "high" },
-    });
+    const reasoningTrigger = await screen.findByLabelText("Reasoning effort");
+    fireEvent.pointerDown(reasoningTrigger, { button: 0 });
+    fireEvent.click(reasoningTrigger);
+    fireEvent.click(await screen.findByRole("radio", { name: /^High/i }));
 
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith({
@@ -1759,14 +1793,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
     const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
+    fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -1775,7 +1810,7 @@ describe("AgentChatPane submit recovery", () => {
         modelId: "anthropic/claude-sonnet-4-6",
       }));
     });
-    expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(currentLabel);
+    expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     expect(warmupModel).not.toHaveBeenCalled();
 
     const updatedSession: AgentChatSessionSummary = {
@@ -1792,7 +1827,7 @@ describe("AgentChatPane submit recovery", () => {
     resolveUpdateSession(updatedSession);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(nextLabel);
+      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(nextLabel);
     });
     await waitFor(() => {
       expect(warmupModel).toHaveBeenCalledWith({
@@ -1815,14 +1850,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
     const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
+    fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(nextLabelPattern);
 
     await waitFor(() => {
@@ -1832,7 +1868,7 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Select model" }).textContent ?? "").toContain(currentLabel);
+      expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     });
     expect(warmupModel).not.toHaveBeenCalled();
   });
@@ -1995,9 +2031,9 @@ describe("AgentChatPane submit recovery", () => {
 
     const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
     expect(handoffMenu).toBeTruthy();
-    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: "Select model" }));
+    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
     expect(screen.getByText("Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message.")).toBeTruthy();
 
@@ -2039,9 +2075,9 @@ describe("AgentChatPane submit recovery", () => {
 
     const handoffMenu = (await screen.findByText("Start a sibling chat on another model")).closest("[data-chat-handoff-menu='true']");
     expect(handoffMenu).toBeTruthy();
-    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: "Select model" }));
+    fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
     fireEvent.click(await screen.findByRole("button", { name: "Fork full history" }));
 
@@ -2068,11 +2104,12 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
+    fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     const textbox = await screen.findByRole("textbox");
@@ -2108,11 +2145,12 @@ describe("AgentChatPane submit recovery", () => {
         </MemoryRouter>,
       );
 
-      const trigger = await screen.findByRole("button", { name: "Select model" });
+      const trigger = await screen.findByRole("button", { name: /^Select model/ });
       const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
-      fireEvent.click(trigger);
-      fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+      fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
       await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
       const textbox = await screen.findByRole("textbox");
@@ -2149,10 +2187,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderAutoCreateDraftPane({ onSessionCreated });
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -2203,10 +2242,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderAutoCreateDraftPane({ onSessionCreated });
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -2250,10 +2290,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderAutoCreateDraftPane({ onSessionCreated });
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -2292,10 +2333,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderAutoCreateDraftPane({ onSessionCreated });
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -2322,10 +2364,11 @@ describe("AgentChatPane submit recovery", () => {
 
     renderAutoCreateDraftPane();
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
@@ -2368,11 +2411,12 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
+    fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     const textbox = await screen.findByRole("textbox");
@@ -2439,11 +2483,12 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    const trigger = await screen.findByRole("button", { name: "Select model" });
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
 
+    fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     const textbox = await screen.findByRole("textbox");
@@ -2924,19 +2969,21 @@ describe("AgentChatPane submit recovery", () => {
       ],
     });
 
-    const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
 
-    const modelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
@@ -3090,16 +3137,17 @@ describe("AgentChatPane submit recovery", () => {
       ],
     });
 
-    const baseModelTrigger = await screen.findByRole("button", { name: "Select model" });
+    const baseModelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(baseModelTrigger, { button: 0 });
     fireEvent.click(baseModelTrigger);
-    fireEvent.click(await screen.findByRole("button", { name: /^Codex$/i }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
 
     fireEvent.click(await screen.findByRole("button", { name: /Parallel models/i }));
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
-    fireEvent.click(await screen.findByRole("button", { name: "Select model" }));
-    fireEvent.click(await screen.findByRole("button", { name: /^Claude$/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Select model/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });

@@ -13,6 +13,7 @@ import type {
   CursorSdkCloudSendStreamPayload,
   CursorSdkHookDecision,
   CursorSdkHookRequest,
+  CursorSdkModelParameterValue,
   CursorSdkPermissionPolicy,
   CursorSdkWorkerInit,
   CursorSdkWorkerRequest,
@@ -169,6 +170,29 @@ function requestHookDecision(request: CursorSdkHookRequest): Promise<CursorSdkHo
   });
 }
 
+function normalizeCursorModelParams(params: CursorSdkModelParameterValue[] | undefined): CursorSdkModelParameterValue[] | undefined {
+  const out: CursorSdkModelParameterValue[] = [];
+  const seen = new Set<string>();
+  for (const param of params ?? []) {
+    const id = param.id.trim();
+    const value = param.value.trim();
+    if (!id || !value || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, value });
+  }
+  return out.length ? out : undefined;
+}
+
+function buildCursorModelSelection(
+  modelSdkId: string | null | undefined,
+  params?: CursorSdkModelParameterValue[],
+): { id: string; params?: CursorSdkModelParameterValue[] } | undefined {
+  const id = modelSdkId?.trim();
+  if (!id) return undefined;
+  const normalizedParams = normalizeCursorModelParams(params);
+  return normalizedParams ? { id, params: normalizedParams } : { id };
+}
+
 async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string; modelSdkId: string }> {
   initState = init;
   process.env.HOME = init.userHomeDir;
@@ -192,7 +216,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   // state, sandboxOptions is terminal policy, and hooks gate tool execution.
   const agentOptions: AgentOptions = {
     apiKey: init.apiKey?.trim() || undefined,
-    model: { id: init.modelSdkId },
+    model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
     name: init.agentName ?? undefined,
     local: {
       cwd: init.laneRoot,
@@ -223,13 +247,19 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   return { agentId: agent.agentId, modelSdkId: init.modelSdkId };
 }
 
-async function sendPrompt(payload: { promptText: string; images?: Array<{ data: string; mimeType: string }>; modelSdkId?: string | null; force?: boolean }): Promise<unknown> {
+async function sendPrompt(payload: {
+  promptText: string;
+  images?: Array<{ data: string; mimeType: string }>;
+  modelSdkId?: string | null;
+  modelParams?: CursorSdkModelParameterValue[];
+  force?: boolean;
+}): Promise<unknown> {
   if (!agent || !initState) throw new Error("Cursor SDK worker is not initialized.");
   const message = payload.images?.length
     ? { text: payload.promptText, images: payload.images }
     : payload.promptText;
   currentRun = await agent.send(message, {
-    model: payload.modelSdkId?.trim() ? { id: payload.modelSdkId.trim() } : undefined,
+    model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
     local: { force: payload.force === true },
   });
   post({
@@ -330,7 +360,8 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
     name: payload.agentName?.trim() || undefined,
     cloud,
   };
-  if (payload.modelSdkId?.trim()) options.model = { id: payload.modelSdkId.trim() };
+  const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
+  if (modelSelection) options.model = modelSelection;
   return options;
 }
 
@@ -338,7 +369,8 @@ function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partia
   const options: Partial<AgentOptions> = {
     apiKey: payload.apiKey?.trim() || undefined,
   };
-  if (payload.modelSdkId?.trim()) options.model = { id: payload.modelSdkId.trim() };
+  const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
+  if (modelSelection) options.model = modelSelection;
   return options;
 }
 
@@ -478,7 +510,8 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
   }
   if (req.type === "cloud.send.stream") {
     const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
-    const sendOpts = req.payload.modelSdkId?.trim() ? { model: { id: req.payload.modelSdkId.trim() } } : undefined;
+    const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
+    const sendOpts = modelSelection ? { model: modelSelection } : undefined;
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,
@@ -498,7 +531,8 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
   }
   if (req.type === "cloud.followup") {
     const cloudAgent = await Agent.resume(req.payload.agentId, buildCloudResumeOptions(req.payload));
-    const sendOpts = req.payload.modelSdkId?.trim() ? { model: { id: req.payload.modelSdkId.trim() } } : undefined;
+    const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
+    const sendOpts = modelSelection ? { model: modelSelection } : undefined;
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,

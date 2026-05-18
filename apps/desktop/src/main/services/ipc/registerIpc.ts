@@ -6693,6 +6693,11 @@ export function registerIpc({
     return await ctx.agentChatService.getAvailableModels(arg);
   });
 
+  ipcMain.handle(IPC.agentChatModelCatalog, async (_event, arg: unknown) => {
+    const ctx = getCtx();
+    return await ctx.agentChatService.getModelCatalog(arg && typeof arg === "object" ? arg as never : undefined);
+  });
+
   ipcMain.handle(IPC.agentChatArchive, async (_event, arg: AgentChatArchiveArgs): Promise<void> => {
     const ctx = getCtx();
     await ctx.agentChatService.archiveSession(arg);

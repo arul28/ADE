@@ -137,3 +137,19 @@ export function createModelPickerStore(options: CreateModelPickerStoreOptions = 
 }
 
 export const MODEL_PICKER_MAX_RECENTS = MAX_RECENTS;
+
+// Process-wide singleton shared across the JSON-RPC server (adeRpcServer) and
+// the sync host (syncRemoteCommandService) so favorites + recents stay
+// consistent for desktop/TUI/iOS without coordination races. Lazy-init so
+// tests can avoid touching the user's real ~/.ade/modelPicker.json by
+// supplying their own store instance via `createModelPickerStore`.
+let sharedStoreInstance: ModelPickerStore | null = null;
+export function getSharedModelPickerStore(): ModelPickerStore {
+  if (!sharedStoreInstance) {
+    sharedStoreInstance = createModelPickerStore();
+  }
+  return sharedStoreInstance;
+}
+export function resetSharedModelPickerStoreForTests(): void {
+  sharedStoreInstance = null;
+}

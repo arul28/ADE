@@ -80,6 +80,8 @@ import type {
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
@@ -1487,6 +1489,7 @@ declare global {
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
+        modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
         archive: (args: AgentChatArchiveArgs) => Promise<void>;
         unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
         delete: (args: AgentChatDeleteArgs) => Promise<void>;

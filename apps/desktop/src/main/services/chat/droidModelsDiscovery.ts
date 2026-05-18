@@ -5,6 +5,7 @@ import { createSession } from "@factory/droid-sdk";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
+  type ModelCapabilities,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
@@ -14,6 +15,9 @@ export type DroidExecHelpModelRow = {
   displayName: string;
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
@@ -158,6 +162,50 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
   return [];
 }
 
+function addUnique(out: string[], value: string | null | undefined): void {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return;
+  if (!out.includes(normalized)) out.push(normalized);
+}
+
+function normalizeDroidReasoningEffort(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (normalized) {
+    case "none":
+    case "dynamic":
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
+      return normalized;
+    case "extra-high":
+    case "extra_high":
+      return "xhigh";
+    default:
+      return null;
+  }
+}
+
+function normalizeDroidReasoningEfforts(value: unknown, defaultValue: unknown): string[] | undefined {
+  const out: string[] = [];
+  addUnique(out, normalizeDroidReasoningEffort(defaultValue));
+  if (Array.isArray(value)) {
+    for (const entry of value) addUnique(out, normalizeDroidReasoningEffort(entry));
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeDroidServiceTiers(model: Record<string, unknown>): string[] | undefined {
+  const out: string[] = [];
+  const tier = typeof model.tier === "string" ? model.tier.trim().toLowerCase() : "";
+  const promo = typeof model.promoLabel === "string" ? model.promoLabel.trim().toLowerCase() : "";
+  if (tier === "fast" || /\bfast\b/.test(promo)) out.push("fast");
+  return out.length ? out : undefined;
+}
+
 function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
   const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
@@ -178,10 +226,21 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
       : typeof model.shortDisplayName === "string" && model.shortDisplayName.trim().length
         ? model.shortDisplayName.trim()
         : id;
+    const reasoningTiers = normalizeDroidReasoningEfforts(
+      model.supportedReasoningEfforts,
+      model.defaultReasoningEffort,
+    );
+    const serviceTiers = normalizeDroidServiceTiers(model);
     rows.push({
       id,
       displayName,
       customProxy: model.isCustom === true,
+      ...(reasoningTiers?.length ? { reasoningTiers } : {}),
+      ...(serviceTiers?.length ? { serviceTiers } : {}),
+      capabilities: {
+        vision: model.noImageSupport !== true,
+        reasoning: Boolean(reasoningTiers?.length),
+      },
     });
   }
   return rows;
@@ -273,7 +332,12 @@ export async function discoverDroidCliModelDescriptors(
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
-    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, { customProxy: row.customProxy }));
+    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
+      customProxy: row.customProxy,
+      ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+      ...(row.capabilities ? { capabilities: row.capabilities } : {}),
+    }));
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }

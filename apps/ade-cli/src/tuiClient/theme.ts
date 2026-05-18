@@ -43,6 +43,8 @@ const CODEX = "#22C55E";
 const CURSOR = "#0EA5E9";
 const OPENCODE = "#6366F1";
 const DROID = "#06B6D4";
+const OLLAMA = "#10B981";
+const LMSTUDIO = "#F97316";
 const SHELL = "#F59E0B";
 const COPILOT = "#A855F7";
 
@@ -83,6 +85,8 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   cursor: { glyph: "▰", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
   droid: { glyph: "◉", wordmark: "Droid", color: DROID, label: "Droid" },
   opencode: { glyph: "▲", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
+  ollama: { glyph: "●", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
+  lmstudio: { glyph: "◆", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };
 
 const FALLBACK_PROVIDER: ProviderTheme = { glyph: "•", wordmark: "Agent", color: T4, label: "Agent" };

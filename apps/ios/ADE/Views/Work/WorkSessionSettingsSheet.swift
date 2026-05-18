@@ -61,7 +61,7 @@ struct WorkSessionSettingsSheet: View {
   }
 
   var supportsCodexFastModeToggle: Bool {
-    summary.provider == "codex" && (selectedModel?.supportsCodexFastMode == true)
+    selectedModel?.supportsCodexFastMode == true
   }
 
   var runtimeOptions: [WorkRuntimeOption] {

@@ -74,7 +74,7 @@ import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../c
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
-import { probeClaudeRuntimeHealth, resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
+import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 
@@ -145,7 +145,7 @@ export type AiIntegrationStatus = {
   /** Last inventory probe error, if any (empty models when set after a failed probe). */
   opencodeInventoryError?: string | null;
   /** All providers reported by OpenCode's provider.list() — used to dynamically populate the settings UI and model picker. */
-  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+  opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number; availableModelCount?: number }>;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -1800,6 +1800,7 @@ export function createAiIntegrationService(args: {
               return {
                 error: null as string | null,
                 modelIds: [] as string[],
+                catalogModelIds: [] as string[],
                 providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
               };
             }
@@ -1817,18 +1818,15 @@ export function createAiIntegrationService(args: {
               projectConfig: effectiveConfig,
             });
             if (peeked) return peeked;
-            // Cold path: binary is installed but we have never probed for this
-            // project+config. Warm the cache so the model picker surfaces every
-            // connected OpenCode provider without requiring the user to enter
-            // an OpenCode chat first. Uses force=false so the in-flight
-            // dedup + TTL still apply, preventing repeated server boots.
-            return await probeOpenCodeProviderInventory({
-              projectRoot,
-              projectConfig: effectiveConfig,
-              logger,
-              force: false,
-              discoveredLocalModels,
-            });
+            // Cold status reads stay cheap. Runtime catalog refreshes are owned
+            // by agentChatService.getModelCatalog() and only run when a client
+            // opens a dynamic runtime rail.
+            return {
+              error: null as string | null,
+              modelIds: [] as string[],
+              catalogModelIds: [] as string[],
+              providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
+            };
           });
 
           // When OpenCode inventory has models for a local provider, remove the

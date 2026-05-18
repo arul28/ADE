@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { mergeSelectorModels } from "./modelCatalog";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  descriptorsFromAgentChatModelCatalog,
+  mergeSelectorModels,
+  resetRuntimeCatalogDescriptorCacheForTests,
+  resolveModelDescriptorWithRuntimeCatalog,
+} from "./modelCatalog";
+import type { AgentChatModelCatalog } from "../../../../shared/types";
 
 describe("mergeSelectorModels", () => {
+  beforeEach(() => {
+    resetRuntimeCatalogDescriptorCacheForTests();
+  });
+
   it("re-buckets OpenCode-routed models into the 'opencode' family so they appear under one rail", () => {
     const ids = [
       "opencode/anthropic/claude-sonnet-4-6",
@@ -54,5 +64,56 @@ describe("mergeSelectorModels", () => {
     const droidModels = merged.filter((m) => m.family === "factory");
     expect(droidModels.length).toBe(1);
     expect(droidModels[0]!.id).toBe("droid/some-custom-model");
+  });
+
+  it("preserves runtime catalog reasoning and service tiers as a descriptor overlay", () => {
+    const catalog: AgentChatModelCatalog = {
+      fetchedAt: new Date().toISOString(),
+      groups: [
+        {
+          key: "cursor",
+          displayName: "Cursor",
+          providers: [
+            {
+              key: "cursor",
+              displayName: "Cursor",
+              badgeColor: "#60A5FA",
+              modelCount: 1,
+              subsections: [
+                {
+                  key: "cursor",
+                  label: "Cursor",
+                  models: [
+                    {
+                      id: "cursor/composer-2",
+                      runtimeModelId: "cursor/composer-2",
+                      provider: "cursor",
+                      providerKey: "cursor",
+                      groupKey: "cursor",
+                      displayName: "Composer 2",
+                      isDefault: true,
+                      isAvailable: true,
+                      reasoningEfforts: [{ effort: "high", description: "High" }],
+                      serviceTiers: ["fast"],
+                      supportsReasoning: true,
+                      supportsTools: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = descriptorsFromAgentChatModelCatalog(catalog);
+    expect(result.models[0]).toMatchObject({
+      id: "cursor/composer-2",
+      reasoningTiers: ["high"],
+      serviceTiers: ["fast"],
+      capabilities: expect.objectContaining({ reasoning: true, tools: true }),
+    });
+    expect(resolveModelDescriptorWithRuntimeCatalog("cursor/composer-2")?.reasoningTiers).toEqual(["high"]);
   });
 });

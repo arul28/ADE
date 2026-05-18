@@ -1,8 +1,9 @@
 import { forwardRef, memo, useCallback, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { CaretDown } from "@phosphor-icons/react";
-import { resolveModelDescriptor, type ModelDescriptor } from "../../../../shared/modelRegistry";
+import type { ModelDescriptor } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { resolveModelDescriptorWithRuntimeCatalog } from "./modelCatalog";
 import { useReasoningByFamily } from "./useReasoningByFamily";
 
 export type ReasoningEffortPickerProps = {
@@ -47,7 +48,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   const { rememberReasoning, getReasoningForFamily } = useReasoningByFamily();
 
   const descriptor = useMemo<ModelDescriptor | undefined>(
-    () => (modelId ? resolveModelDescriptor(modelId) : undefined),
+    () => resolveModelDescriptorWithRuntimeCatalog(modelId),
     [modelId],
   );
 

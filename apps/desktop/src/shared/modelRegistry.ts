@@ -501,8 +501,10 @@ export type DynamicOpenCodeModelDescriptorOptions = {
   maxOutputTokens?: number;
   capabilities?: Partial<ModelCapabilities>;
   reasoningTiers?: string[];
+  serviceTiers?: string[];
   aliases?: string[];
   color?: string;
+  harnessProfile?: LocalModelHarnessProfile;
   /** When set with openCodeModelId, registry id is derived so model ids may contain `/`. */
   openCodeProviderId?: string;
   openCodeModelId?: string;
@@ -621,7 +623,9 @@ export function createDynamicOpenCodeModelDescriptor(
     providerModelId,
     ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
     ...(aliases.length ? { aliases } : {}),
+    ...(isLocal || options?.harnessProfile ? { harnessProfile: options?.harnessProfile ?? "guarded" } : {}),
     isCliWrapped: false,
   };
 }
@@ -736,6 +740,11 @@ export function parseDynamicCursorModelRef(modelId: string): { providerModelId: 
 export function createDynamicCursorCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
+  options?: {
+    reasoningTiers?: string[];
+    serviceTiers?: string[];
+    capabilities?: Partial<ModelCapabilities>;
+  },
 ): ModelDescriptor {
   const id = `cursor/${providerModelId}`;
   const display =
@@ -750,11 +759,16 @@ export function createDynamicCursorCliModelDescriptor(
     authTypes: ["api-key"],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
-    capabilities: ALL_CAPS,
+    capabilities: {
+      ...ALL_CAPS,
+      ...(options?.capabilities ?? {}),
+    },
     color: colorForCursorSdkId(providerModelId),
     providerRoute: "cursor-sdk",
     providerModelId,
     cliCommand: "cursor",
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
     isCliWrapped: false,
   };
 }
@@ -942,7 +956,12 @@ export function parseDynamicDroidModelRef(modelId: string): { providerModelId: s
 export function createDynamicDroidCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
-  options?: { customProxy?: boolean },
+  options?: {
+    customProxy?: boolean;
+    reasoningTiers?: string[];
+    serviceTiers?: string[];
+    capabilities?: Partial<ModelCapabilities>;
+  },
 ): ModelDescriptor {
   const trimmedProviderModelId = providerModelId.trim();
   const id = `droid/${trimmedProviderModelId}`;
@@ -961,11 +980,16 @@ export function createDynamicDroidCliModelDescriptor(
     authTypes: ["cli-subscription"],
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
-    capabilities: ALL_CAPS,
+    capabilities: {
+      ...ALL_CAPS,
+      ...(options?.capabilities ?? {}),
+    },
     color: colorForDroidModelId(trimmedProviderModelId),
     providerRoute: "droid-cli",
     providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
+    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
+    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
     isCliWrapped: true,
     ...(options?.customProxy ? { customProxy: true } : {}),
   };

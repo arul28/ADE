@@ -17,9 +17,11 @@ struct WorkModelOption: Identifiable, Hashable {
   /// (e.g. "claude" for the CLAUDE brand avatar). For OpenCode-routed
   /// models this is still the upstream family so the logo stays brand-true.
   let provider: String
-  /// Reasoning efforts supplied by the paired desktop host. Empty means the
-  /// host did not advertise a selectable reasoning control for this model.
-  let reasoningEfforts: [AgentChatModelReasoningEffort]
+	  /// Reasoning efforts supplied by the paired desktop host. Empty means the
+	  /// host did not advertise a selectable reasoning control for this model.
+	  let reasoningEfforts: [AgentChatModelReasoningEffort]
+  let serviceTiers: [String]
+	  let isAvailable: Bool
 
   init(
     id: String,
@@ -27,19 +29,31 @@ struct WorkModelOption: Identifiable, Hashable {
     tier: Tier,
     tagline: String,
     provider: String,
-    reasoningEfforts: [AgentChatModelReasoningEffort] = []
-  ) {
+	    reasoningEfforts: [AgentChatModelReasoningEffort] = [],
+    serviceTiers: [String] = [],
+	    isAvailable: Bool = true
+	  ) {
     self.id = id
     self.displayName = displayName
     self.tier = tier
     self.tagline = tagline
-    self.provider = provider
-    self.reasoningEfforts = reasoningEfforts
-  }
+	    self.provider = provider
+	    self.reasoningEfforts = reasoningEfforts
+    self.serviceTiers = serviceTiers
+	    self.isAvailable = isAvailable
+	  }
 }
 
 extension WorkModelOption {
   enum Tier: String { case fast, balanced, flagship, reasoning }
+
+  func supportsServiceTier(_ tier: String) -> Bool {
+    let needle = tier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard !needle.isEmpty else { return false }
+    return serviceTiers.contains { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == needle }
+  }
+
+  var supportsCodexFastMode: Bool { supportsServiceTier("fast") }
 }
 
 /// One provider inside a group. Claude/Codex/Cursor groups almost always
@@ -80,7 +94,7 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
   let models: [WorkModelOption]
 }
 
-private let workModelGroupOrder = ["claude", "codex", "cursor", "droid", "opencode"]
+private let workModelGroupOrder = ["claude", "codex", "cursor", "droid", "opencode", "ollama", "lmstudio"]
 
 /// Flat view of the curated catalog: every model in a single provider tab so
 /// legacy call sites keep functioning. Prefer `workModelCatalogGroups` for
@@ -275,20 +289,6 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           WorkModelOption(id: "opencode/deepseek/deepseek-chat", displayName: "DeepSeek Chat", tier: .balanced, tagline: "DeepSeek chat", provider: "deepseek"),
           WorkModelOption(id: "opencode/deepseek/deepseek-coder", displayName: "DeepSeek Coder", tier: .balanced, tagline: "DeepSeek coder", provider: "deepseek"),
         ]
-      ),
-      WorkModelProvider(
-        key: "lmstudio",
-        displayName: "LM Studio",
-        models: [
-          WorkModelOption(id: "opencode/lmstudio/auto", displayName: "LM Studio · Auto", tier: .fast, tagline: "Local LM Studio provider", provider: "lmstudio"),
-        ]
-      ),
-      WorkModelProvider(
-        key: "ollama",
-        displayName: "Ollama",
-        models: [
-          WorkModelOption(id: "opencode/ollama/auto", displayName: "Ollama · Auto", tier: .fast, tagline: "Local Ollama provider", provider: "ollama"),
-        ]
       )
     ]
   ))
@@ -305,9 +305,8 @@ func workModelCatalogGroups(currentModelId: String, currentProvider: String) -> 
   )
 }
 
-/// Live host-driven catalog used by the mobile Work picker. This mirrors the
-/// desktop wiring more closely: the host decides which models are currently
-/// available per runtime, while the curated catalog only fills in friendly
+/// Live host-driven catalog used by the mobile Work picker. The host decides
+/// which models exist per runtime; the local metadata only fills in friendly
 /// tiers/taglines and ordering.
 func workModelCatalogGroups(
   availableModelsByProvider: [String: [AgentChatModelInfo]],
@@ -379,8 +378,7 @@ func workModelCatalogGroups(
       providers: group.providers.map { provider in
         let models = provider.subsections
           .flatMap(\.models)
-          .filter(\.isAvailable)
-          .map { model in
+	          .map { model in
             workCatalogModelOption(
               from: model,
               topLevelProvider: group.key,
@@ -393,7 +391,7 @@ func workModelCatalogGroups(
           models: workDeduplicatedModelOptions(models)
         )
       }
-      .filter { !$0.models.isEmpty || group.key == "opencode" }
+	      .filter { !$0.models.isEmpty }
     )
   }
   .filter { !$0.providers.isEmpty }
@@ -428,17 +426,21 @@ private func workCatalogModelOption(
     if model.supportsTools == true {
       parts.append("Tools")
     }
-    tagline = parts.isEmpty ? "Available on the paired machine" : parts.joined(separator: " · ")
+	    tagline = model.isAvailable
+	      ? (parts.isEmpty ? "Available on the paired machine" : parts.joined(separator: " · "))
+	      : "Configure this provider on the paired machine"
   }
 
   return WorkModelOption(
     id: model.id,
     displayName: displayName,
     tier: workDynamicModelTier(for: model.id),
-    tagline: tagline,
+	    tagline: tagline,
     provider: workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
-    reasoningEfforts: model.reasoningEfforts ?? []
-  )
+	    reasoningEfforts: model.reasoningEfforts ?? [],
+    serviceTiers: model.serviceTiers ?? [],
+	    isAvailable: model.isAvailable
+	  )
 }
 
 private func workCuratedModelLookup(from groups: [WorkModelCatalogGroup]) -> [String: WorkModelOption] {
@@ -771,7 +773,8 @@ private func workDynamicModelOption(
     tier: workDynamicModelTier(for: model.id, curated: curated),
     tagline: tagline,
     provider: curated?.provider ?? workModelBrandKey(topLevelProvider: topLevelProvider, providerKey: providerKey),
-    reasoningEfforts: model.reasoningEfforts ?? []
+    reasoningEfforts: model.reasoningEfforts ?? [],
+    serviceTiers: model.serviceTiers ?? []
   )
 }
 
@@ -874,8 +877,11 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   let provider = currentProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let modelId = currentModelId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
-  if modelId.hasPrefix("opencode/") || provider == "opencode" {
-    return "opencode"
+  if provider == "lmstudio" || modelId.hasPrefix("opencode/lmstudio/") {
+    return "lmstudio"
+  }
+  if provider == "ollama" || modelId.hasPrefix("opencode/ollama/") {
+    return "ollama"
   }
   if provider == "droid" || provider == "factory" || modelId.hasPrefix("droid/") {
     return "droid"
@@ -889,7 +895,10 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   if provider == "openai" || provider == "codex" || modelId.hasPrefix("openai/") || modelId.contains("gpt") || modelId.contains("codex") {
     return "codex"
   }
-  if ["google", "xai", "deepseek", "lmstudio", "ollama"].contains(provider) {
+  if modelId.hasPrefix("opencode/") || provider == "opencode" {
+    return "opencode"
+  }
+  if ["google", "xai", "deepseek"].contains(provider) {
     return "opencode"
   }
   return provider.isEmpty ? "claude" : provider

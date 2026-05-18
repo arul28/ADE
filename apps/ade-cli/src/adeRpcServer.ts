@@ -67,18 +67,12 @@ import {
 import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { createModelPickerStore, type ModelPickerStore } from "./services/modelPickerStore";
+import { getSharedModelPickerStore } from "./services/modelPickerStore";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
-// Process-singleton so concurrent JSON-RPC sessions see the same in-memory state.
+// Backed by a process-wide singleton (see services/modelPickerStore.ts) so the
+// JSON-RPC server and the sync host share the same in-memory state.
 // Persistence path is ~/.ade/modelPicker.json — see modelPickerStore.ts for schema.
-let sharedModelPickerStore: ModelPickerStore | null = null;
-function getSharedModelPickerStore(): ModelPickerStore {
-  if (!sharedModelPickerStore) {
-    sharedModelPickerStore = createModelPickerStore();
-  }
-  return sharedModelPickerStore;
-}
 
 type ToolSpec = {
   name: string;

@@ -473,21 +473,18 @@ describe("aiIntegrationService", () => {
     expect(secondStatus).toEqual(firstStatus);
   });
 
-  it("warms OpenCode inventory on first getStatus when the cache is empty", async () => {
+  it("skips OpenCode probe on cold getStatus — cold reads stay cheap", async () => {
+    // Cold reads only peek the cache. Runtime catalog refreshes are owned by
+    // agentChatService.getModelCatalog() and fire when a client opens a
+    // dynamic runtime rail, not on every status read.
     const { service } = makeService();
 
     const status = await service.getStatus();
 
     expect(status.opencodeBinaryInstalled).toBe(true);
-    expect(status.opencodeProviders).toEqual([
-      { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
-    ]);
-    expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
+    expect(status.opencodeProviders).toEqual([]);
     expect(mockState.peekOpenCodeInventoryCache).toHaveBeenCalledTimes(1);
-    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledTimes(1);
-    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledWith(
-      expect.objectContaining({ force: false }),
-    );
+    expect(mockState.probeOpenCodeProviderInventory).not.toHaveBeenCalled();
   });
 
   it("uses peeked OpenCode inventory without re-probing when cache is warm", async () => {

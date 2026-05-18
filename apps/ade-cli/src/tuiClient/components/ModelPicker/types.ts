@@ -16,8 +16,14 @@ export type ModelPickerEntry = {
   family: AdeCodeProvider;
   /** Optional sub-provider label (e.g. "anthropic via OpenCode"). */
   subProvider?: string;
+  subProviderKey?: string;
   isFavorite: boolean;
   isAvailable: boolean;
+};
+
+export type ModelPickerProviderTab = {
+  key: string;
+  label: string;
 };
 
 export type ModelPickerState = {
@@ -26,6 +32,8 @@ export type ModelPickerState = {
   railEntries: ModelPickerRailEntry[];
   railIndex: number;
   entries: ModelPickerEntry[];
+  providerTabs: ModelPickerProviderTab[];
+  providerTabIndex: number;
   focusedIndex: number;
   activeModelId: string | null;
 };

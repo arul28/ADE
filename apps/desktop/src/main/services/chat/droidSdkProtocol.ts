@@ -8,7 +8,8 @@ export type DroidSdkReasoningEffort =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 
 export type DroidSdkSessionSettings = {
   modelId: string;

@@ -34,7 +34,8 @@ stream plus session metadata.
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping Brain lottie for `thinking` once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context. Automatic macOS VM capability context is attached only when the outgoing prompt asks for ADE VM / macOS VM / Lume / isolated macOS GUI use, unless a caller forces it. |
-| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS` and parallel launch state types. |
+| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). |
+| `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx`, `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
 
 ## Pane layout
 
@@ -120,16 +121,21 @@ and a footer that contains the composer.
 - **Model selection.** `ProviderModelSelector` is embedded and filters
   the registry via `filterChatModelIdsForSession`. Switching within the
   allowed family is a normal update; crossing families triggers a
-  handoff. The Cursor model inventory (`getAgentChatModelsCached` with
-  `provider: "cursor"`, `activateRuntime: true`) is no longer fetched
-  on chat boot — the selector exposes an `onOpen` callback that fires
-  the first time the user actually opens the model catalog, and
-  `AgentChatPane.refreshCursorModelInventory` is the only path that
-  performs the active probe. It also no-ops when the latest
-  `availableModelIds` already contains a Cursor entry, so re-opening
-  the catalog after a successful inventory does not refire the probe.
-- **Reasoning effort.** Dropdown for models that support reasoning
-  tiers.
+  handoff. Backed by the modular `ModelPicker` under
+  `renderer/components/shared/ModelPicker/` (see
+  [ModelPicker structure](#modelpicker-structure)). Dynamic-runtime
+  inventories (Cursor / Droid / OpenCode / Ollama / LM Studio) are no
+  longer fetched on chat boot — the picker calls
+  `window.ade.agentChat.modelCatalog({ mode: "cached" | "refresh-stale" |
+  "force", refreshProvider? })` and only triggers a runtime probe when
+  the user actually opens the corresponding rail and the per-provider
+  freshness TTL has lapsed (`runtimeCatalogCache.ts`: 30 min for
+  Cursor / Droid / OpenCode, 30 s for `lmstudio` / `ollama`).
+- **Reasoning effort.** A standalone `ReasoningEffortPicker` (extracted
+  from the model row) is rendered next to the model trigger when the
+  active descriptor exposes `reasoningTiers`. The picker remembers the
+  last-used effort per model family via the `useReasoningByFamily`
+  hook.
 - **Fast mode (Codex).** A yellow Lightning chip next to the model
   selector that toggles `codexFastMode` for the selected session.
   Renders only when `modelSupportsFastMode(getModelById(modelId))`
@@ -232,6 +238,36 @@ and a footer that contains the composer.
 - `"standard"` -- full-width composer (default).
 - `"grid-tile"` -- constrained for packed grid tiles; `composerMaxHeightPx`
   limits auto-grow.
+
+### ModelPicker structure
+
+The desktop ModelPicker under
+`apps/desktop/src/renderer/components/shared/ModelPicker/` is split into
+focused modules. Each piece is independently testable; the same modules
+power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
+
+| Module | Role |
+|---|---|
+| `ModelPicker.tsx` | Trigger + popover entry point. Owns runtime-catalog loading via `runtimeCatalogCache`, fast-mode chip, and the favorites/recents fan-out. |
+| `ModelPickerContent.tsx` | The popover body: search bar, rail, list, empty state. |
+| `ModelPickerRail.tsx` | Left-rail tabs (Favorites / Recents / per-provider groups). Reads `AuthStatus` per family to render auth gates and the OpenCode "Install OpenCode" CTA from `providerEmptyState`. |
+| `ModelListRow.tsx` | A single model row (favorite star, brand logo, display name, sub-provider chip, availability tone). |
+| `ReasoningEffortPicker.tsx` | Standalone reasoning-effort dropdown, mounted next to the model trigger and inside per-slot parallel-launch controls. |
+| `modelCatalog.ts` | `descriptorsFromAgentChatModelCatalog`, `mergeSelectorModels`, `resolveModelDescriptorWithRuntimeCatalog`, `createUnknownModelPlaceholder` — pure helpers that flatten the IPC catalog into a `ModelDescriptor[]` and reconcile it with the static registry. |
+| `modelOrdering.ts` | `sortModelItems` — provider/group ordering and intra-group ranking (favorites first, then recents, then default registry order). |
+| `modelPickerSearch.ts` | `scoreModelPickerSearch` — fuzzy search across display name, family, provider, and ids; ranks favorites/recents above strict matches. |
+| `providerEmptyState.tsx` | Per-provider empty/auth/install CTA copy. Surfaces "Install OpenCode" when the binary is missing, "Sign in to Cursor" when auth is missing, etc. |
+| `runtimeCatalogCache.ts` | Renderer-side shared catalog cache. Tracks per-provider freshness (30 min for `opencode`/`cursor`/`droid`, 30 s for `lmstudio`/`ollama`) and dedupes concurrent `modelCatalog` requests by `${mode}:${refreshProvider}` keys. |
+| `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`authenticated` / `missing` / `unknown`) per `ProviderFamily` from the AI integration status. |
+| `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
+| `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to `~/.ade/modelPicker.json` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. The TUI shares the same store. |
+| `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, mission planning, etc.) — keyed by surface so each call site can have its own remembered default. |
+| `useReasoningByFamily.ts` | Last-used reasoning effort per model family. |
+
+Renderer state and the TUI share descriptors and ordering: the TUI
+`ModelPicker/modelPickerLayout.ts` imports
+`modelPickerSearch`/`modelOrdering` from the desktop package directly,
+so behaviour stays in lockstep.
 
 ### Attachment handling
 

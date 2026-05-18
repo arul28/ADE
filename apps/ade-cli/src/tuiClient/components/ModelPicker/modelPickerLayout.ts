@@ -1,6 +1,6 @@
 import { scoreModelPickerSearch } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelPickerSearch";
 import { sortModelItems } from "../../../../../desktop/src/renderer/components/shared/ModelPicker/modelOrdering";
-import type { AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
+import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../../desktop/src/shared/types/chat";
 import {
   getModelById,
   resolveProviderGroupForModel,
@@ -20,6 +20,8 @@ const PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
   opencode: "OpenCode",
   cursor: "Cursor",
   droid: "Droid",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
 };
 
 function providerLabel(provider: AdeCodeProvider): string {
@@ -33,14 +35,53 @@ function normalizeProvider(value: ProviderFamily | string | undefined): AdeCodeP
   if (value === "claude" || value === "anthropic") return "claude";
   if (value === "codex" || value === "openai") return "codex";
   if (value === "opencode") return "opencode";
+  if (value === "ollama") return "ollama";
+  if (value === "lmstudio") return "lmstudio";
   if (value === "cursor") return "cursor";
   if (value === "droid" || value === "factory") return "droid";
   return "codex";
 }
 
+function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): AdeCodeProvider {
+  if (groupKey === "claude" || groupKey === "codex" || groupKey === "opencode" || groupKey === "cursor" || groupKey === "droid") {
+    return groupKey;
+  }
+  if (groupKey === "ollama" || groupKey === "lmstudio") return groupKey;
+  return normalizeProvider(fallbackFamily);
+}
+
 function descriptorFor(modelInfo: AgentChatModelInfo): ModelDescriptor | undefined {
   const id = modelInfo.modelId ?? modelInfo.id;
   return getModelById(id);
+}
+
+function entriesFromCatalog(
+  catalog: AgentChatModelCatalog,
+  favoritesSet: Set<string>,
+): ModelPickerEntry[] {
+  const entries: ModelPickerEntry[] = [];
+  const seen = new Set<string>();
+  for (const group of catalog.groups ?? []) {
+    for (const provider of group.providers ?? []) {
+      for (const subsection of provider.subsections ?? []) {
+        for (const model of subsection.models ?? []) {
+          if (seen.has(model.id)) continue;
+          seen.add(model.id);
+          entries.push({
+            modelId: model.id,
+            runtimeModelId: model.runtimeModelId || model.id,
+            displayName: model.displayName,
+            family: providerFromCatalogGroup(String(model.groupKey || group.key), model.family),
+            subProvider: model.providerName || provider.displayName || subsection.label || undefined,
+            subProviderKey: model.providerId || provider.key || subsection.key || undefined,
+            isFavorite: favoritesSet.has(model.id),
+            isAvailable: model.isAvailable,
+          });
+        }
+      }
+    }
+  }
+  return entries;
 }
 
 function entryFromModelInfo(
@@ -68,18 +109,22 @@ function entryFromModelInfo(
 
 export type BuildLayoutInput = {
   models: AgentChatModelInfo[];
+  catalog?: AgentChatModelCatalog | null;
   favorites: string[];
   recents: string[];
   activeModelId: string | null;
   query: string;
   selection: { kind: "favorites" } | { kind: "recents" } | { kind: "provider"; provider: AdeCodeProvider };
+  providerTabKey?: string | null;
   focusedIndex: number;
   searchMode: boolean;
 };
 
 export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
   const favoritesSet = new Set(input.favorites);
-  const allEntries = input.models.map((m) => entryFromModelInfo(m, favoritesSet));
+  const allEntries = input.catalog
+    ? entriesFromCatalog(input.catalog, favoritesSet)
+    : input.models.map((m) => entryFromModelInfo(m, favoritesSet));
 
   // Providers actually present in the registry-filtered model list.
   const providersPresent = Array.from(
@@ -112,6 +157,37 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
   } else {
     const target = input.selection.provider;
     pool = allEntries.filter((entry) => entry.family === target);
+  }
+
+  const providerTabs = (() => {
+    if (searchActive || input.selection.kind !== "provider") return [];
+    const groups = new Map<string, { key: string; label: string; entries: ModelPickerEntry[]; hasAvailable: boolean }>();
+    for (const entry of pool) {
+      const key = entry.subProviderKey || entry.subProvider || "__default__";
+      const label = entry.subProvider || providerLabel(input.selection.provider);
+      const existing = groups.get(key);
+      if (existing) {
+        existing.entries.push(entry);
+        existing.hasAvailable = existing.hasAvailable || entry.isAvailable;
+      } else {
+        groups.set(key, { key, label, entries: [entry], hasAvailable: entry.isAvailable });
+      }
+    }
+    return [...groups.values()];
+  })();
+  const activeProviderTabKey = (() => {
+    if (providerTabs.length <= 1) return null;
+    if (input.providerTabKey && providerTabs.some((tab) => tab.key === input.providerTabKey)) {
+      return input.providerTabKey;
+    }
+    const active = input.activeModelId ? allEntries.find((entry) => entry.modelId === input.activeModelId) : null;
+    if (active?.subProviderKey && providerTabs.some((tab) => tab.key === active.subProviderKey)) {
+      return active.subProviderKey;
+    }
+    return providerTabs.find((tab) => tab.hasAvailable)?.key ?? providerTabs[0]?.key ?? null;
+  })();
+  if (providerTabs.length > 1 && activeProviderTabKey) {
+    pool = providerTabs.find((tab) => tab.key === activeProviderTabKey)?.entries ?? pool;
   }
 
   let entries: ModelPickerEntry[];
@@ -168,8 +244,10 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
     searchMode: input.searchMode,
     railEntries,
     railIndex,
-    entries,
-    focusedIndex,
+	    entries,
+	    providerTabs: providerTabs.map((tab) => ({ key: tab.key, label: tab.label })),
+	    providerTabIndex: Math.max(0, providerTabs.findIndex((tab) => tab.key === activeProviderTabKey)),
+	    focusedIndex,
     activeModelId: input.activeModelId,
   };
 }

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelDescriptor } from "../../../../shared/modelRegistry";
 
@@ -129,6 +129,8 @@ vi.mock("./modelOrdering", () => ({
 }));
 
 import { ModelPicker } from "./ModelPicker";
+import { resetModelPickerRuntimeCatalogForTests } from "./runtimeCatalogCache";
+import { resetRuntimeCatalogDescriptorCacheForTests } from "./modelCatalog";
 
 const SONNET: ModelDescriptor = {
   id: "anthropic/claude-sonnet-4-6",
@@ -181,6 +183,24 @@ const GPT: ModelDescriptor = {
   isCliWrapped: true,
 };
 
+const OPENCODE_MODEL: ModelDescriptor = {
+  id: "opencode/anthropic/claude-sonnet-4-6",
+  shortId: "claude-sonnet-4-6",
+  displayName: "Claude Sonnet 4.6 via OpenCode",
+  family: "opencode",
+  authTypes: ["api-key"],
+  contextWindow: 200_000,
+  maxOutputTokens: 32_000,
+  capabilities: { tools: true, vision: true, reasoning: true, streaming: true },
+  reasoningTiers: ["low", "medium", "high"],
+  color: "#D97706",
+  providerRoute: "opencode",
+  providerModelId: "anthropic/claude-sonnet-4-6",
+  openCodeProviderId: "anthropic",
+  openCodeModelId: "claude-sonnet-4-6",
+  isCliWrapped: false,
+};
+
 const MODELS: ModelDescriptor[] = [SONNET, OPUS, GPT];
 
 beforeEach(() => {
@@ -190,6 +210,13 @@ beforeEach(() => {
   for (const key of Object.keys(reasoningByFamilyStore)) delete reasoningByFamilyStore[key];
   providerAuthStatusInternal = {};
   opencodeBinaryInstalledInternal = true;
+  resetModelPickerRuntimeCatalogForTests();
+  resetRuntimeCatalogDescriptorCacheForTests();
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    writable: true,
+    value: undefined,
+  });
 });
 
 afterEach(() => {
@@ -399,6 +426,7 @@ describe("ModelPicker", () => {
     expect(banner.getAttribute("data-provider-family")).toBe("anthropic");
     await user.click(banner);
     expect(onOpenSignIn).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("does not render the Set up banner when the active rail is authed", async () => {
@@ -446,6 +474,174 @@ describe("ModelPicker", () => {
   });
 
   describe("OpenCode binary gating", () => {
+    it("refreshes the initially selected OpenCode rail on first open", async () => {
+      const user = userEvent.setup();
+      const modelCatalog = vi.fn(async () => ({
+        groups: [],
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+      }));
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: {
+          agentChat: {
+            modelCatalog,
+          },
+        },
+      });
+
+      renderPicker({ value: OPENCODE_MODEL.id, models: [OPENCODE_MODEL] });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
+      });
+    });
+
+    it("shows a runtime loading empty state instead of setup while OpenCode is refreshing", async () => {
+      const user = userEvent.setup();
+      providerAuthStatusInternal = { opencode: "unauthed" };
+      let resolveRefresh: ((value: { groups: []; fetchedAt: string; stale: false }) => void) | null = null;
+      const refreshPromise = new Promise<{ groups: []; fetchedAt: string; stale: false }>((resolve) => {
+        resolveRefresh = resolve;
+      });
+      const modelCatalog = vi.fn((args: { mode?: string }) => {
+        if (args.mode === "refresh-stale") return refreshPromise;
+        return Promise.resolve({ groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: false });
+      });
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: {
+          agentChat: {
+            modelCatalog,
+          },
+        },
+      });
+
+      renderPicker({ onOpenSignIn: vi.fn() });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(document.querySelector('[data-rail-selection="provider:opencode"]') as HTMLButtonElement);
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-empty-state-mode="runtime-loading"][data-refresh-provider="opencode"]')).toBeTruthy();
+      });
+      expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+
+      await act(async () => {
+        resolveRefresh?.({ groups: [], fetchedAt: "2026-05-18T00:00:01.000Z", stale: false });
+        await refreshPromise;
+      });
+    });
+
+    it("returns a stale runtime catalog immediately and forces refresh in the background when a runtime rail is selected", async () => {
+      const user = userEvent.setup();
+      const staleCatalog = { groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: true };
+      const freshCatalog = { groups: [], fetchedAt: "2026-05-18T00:00:01.000Z" };
+      const modelCatalog = vi.fn(async (args: { mode?: string }) => {
+        if (args.mode === "refresh-stale") return staleCatalog;
+        return freshCatalog;
+      });
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: {
+          agentChat: {
+            modelCatalog,
+          },
+        },
+      });
+
+      renderPicker();
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      const opencodeRail = document.querySelector(
+        '[data-rail-selection="provider:opencode"]',
+      ) as HTMLButtonElement;
+      await user.click(opencodeRail);
+
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
+      });
+      await waitFor(() => {
+        expect(modelCatalog).toHaveBeenCalledWith({ mode: "force", refreshProvider: "opencode" });
+      });
+
+      modelCatalog.mockClear();
+      await user.click(opencodeRail);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(modelCatalog).not.toHaveBeenCalled();
+    });
+
+    it("renders a fresh shared runtime catalog immediately on a later picker mount", async () => {
+      const user = userEvent.setup();
+      const freshCatalog = {
+        groups: [
+          {
+            key: "opencode" as const,
+            displayName: "OpenCode",
+            providers: [
+              {
+                key: "anthropic",
+                displayName: "Anthropic",
+                badgeColor: "#D97706",
+                modelCount: 1,
+                subsections: [
+                  {
+                    key: "anthropic",
+                    label: "Anthropic",
+                    models: [
+                      {
+                        id: OPENCODE_MODEL.id,
+                        runtimeModelId: "claude-sonnet-4-6",
+                        provider: "opencode" as const,
+                        providerKey: "opencode",
+                        groupKey: "opencode" as const,
+                        displayName: OPENCODE_MODEL.displayName,
+                        isDefault: false,
+                        isAvailable: true,
+                        providerId: "anthropic",
+                        providerName: "Anthropic",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+      };
+      const modelCatalog = vi.fn(async () => freshCatalog);
+      Object.defineProperty(window, "ade", {
+        configurable: true,
+        writable: true,
+        value: {
+          agentChat: {
+            modelCatalog,
+          },
+        },
+      });
+
+      const first = renderPicker({ models: undefined });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(document.querySelector('[data-rail-selection="provider:opencode"]') as HTMLButtonElement);
+      await waitFor(() => {
+        expect(screen.getByText(OPENCODE_MODEL.displayName)).toBeTruthy();
+      });
+      first.unmount();
+
+      modelCatalog.mockClear();
+      renderPicker({ models: undefined });
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+      await user.click(document.querySelector('[data-rail-selection="provider:opencode"]') as HTMLButtonElement);
+
+      expect(screen.getByText(OPENCODE_MODEL.displayName)).toBeTruthy();
+      expect(modelCatalog).not.toHaveBeenCalled();
+    });
+
     it("shows the same Install OpenCode copy for opencode, ollama, and lmstudio panes when the binary is missing", async () => {
       const user = userEvent.setup();
       opencodeBinaryInstalledInternal = false;
@@ -502,6 +698,32 @@ describe("ModelPicker", () => {
       ) as HTMLButtonElement;
       await user.click(opencodeRail);
       expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+    });
+
+    it("closes before opening Settings from the OpenCode-required empty state", async () => {
+      const user = userEvent.setup();
+      opencodeBinaryInstalledInternal = false;
+      const onOpenSignIn = vi.fn();
+      render(
+        <ModelPicker
+          value={SONNET.id}
+          onChange={vi.fn()}
+          surfaceKey="test"
+          models={MODELS}
+          onOpenSignIn={onOpenSignIn}
+        />,
+      );
+
+      const trigger = screen.getByRole("button", { name: /Select model/i });
+      await user.click(trigger);
+      const opencodeRail = document.querySelector(
+        '[data-rail-selection="provider:opencode"]',
+      ) as HTMLButtonElement;
+      await user.click(opencodeRail);
+      await user.click(screen.getByRole("button", { name: /Open Settings/i }));
+
+      expect(onOpenSignIn).toHaveBeenCalledOnce();
+      expect(trigger.getAttribute("aria-expanded")).toBe("false");
     });
   });
 });

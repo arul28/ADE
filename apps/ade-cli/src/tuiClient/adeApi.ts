@@ -21,6 +21,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatFileRef,
   AgentChatInteractionMode,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
@@ -315,6 +317,13 @@ export async function getAvailableModels(
     provider,
     activateRuntime: false,
   });
+}
+
+export async function getModelCatalog(
+  connection: AdeCodeConnection,
+  args: AgentChatModelCatalogArgs = {},
+): Promise<AgentChatModelCatalog> {
+  return await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
 }
 
 export async function getAiSettingsStatus(

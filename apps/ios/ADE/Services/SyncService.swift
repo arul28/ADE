@@ -3637,22 +3637,35 @@ final class SyncService: ObservableObject {
     }
   }
 
-  @MainActor
-  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
-    let cacheKey = chatModelsCacheKey(provider: "catalog")
-    guard let cached = chatModelCatalogCache[cacheKey] else { return nil }
-    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
-    return cached.catalog
-  }
+	  @MainActor
+	  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
+	    guard let cached = chatModelCatalogCache.values.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
+	    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
+	    return cached.catalog
+	  }
 
   @MainActor
-  func getChatModelCatalog() async throws -> AgentChatModelCatalog {
-    let cacheKey = chatModelsCacheKey(provider: "catalog")
+  func getChatModelCatalog(
+    mode: String = "refresh-stale",
+    refreshProvider: String? = nil
+  ) async throws -> AgentChatModelCatalog {
+    let cacheKey = chatModelsCacheKey(provider: "catalog:\(mode):\(refreshProvider ?? "")")
     let now = Date()
 
-    if let cached = chatModelCatalogCache[cacheKey],
+    if mode != "force",
+       let cached = chatModelCatalogCache[cacheKey],
        now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
       return cached.catalog
+    }
+
+    if mode == "cached" {
+      if let cached = chatModelCatalogCache[cacheKey],
+         now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
+        return cached.catalog
+      }
+      if let cached = cachedChatModelCatalog() {
+        return cached
+      }
     }
 
     if let task = chatModelCatalogInFlight[cacheKey] {
@@ -3660,24 +3673,35 @@ final class SyncService: ObservableObject {
     }
 
     let task = Task { @MainActor [weak self] in
-      guard let self else { throw CancellationError() }
-      return try await self.sendDecodableCommand(
-        action: "chat.modelCatalog",
-        args: [:],
-        as: AgentChatModelCatalog.self
-      )
+	      guard let self else { throw CancellationError() }
+	      var args: [String: Any] = ["mode": mode]
+	      if let refreshProvider {
+	        args["refreshProvider"] = refreshProvider
+	      }
+	      return try await self.sendDecodableCommand(
+	        action: "chat.modelCatalog",
+	        args: args,
+	        as: AgentChatModelCatalog.self
+	      )
     }
     chatModelCatalogInFlight[cacheKey] = task
 
     do {
       let catalog = try await task.value
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
+      if mode == "force", let refreshProvider {
+        let refreshStaleKey = chatModelsCacheKey(provider: "catalog:refresh-stale:\(refreshProvider)")
+        chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
+      }
       chatModelCatalogInFlight[cacheKey] = nil
       return catalog
     } catch {
       chatModelCatalogInFlight[cacheKey] = nil
       if let cached = chatModelCatalogCache[cacheKey] {
         return cached.catalog
+      }
+      if let cached = cachedChatModelCatalog() {
+        return cached
       }
       throw error
     }

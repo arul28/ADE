@@ -10,6 +10,8 @@ const PROVIDER_GLYPHS: Record<AdeCodeProvider, string> = {
   opencode: "○",
   cursor: "◈",
   droid: "▲",
+  ollama: "●",
+  lmstudio: "■",
 };
 
 function railGlyph(entry: ModelPickerRailEntry): string {
@@ -101,7 +103,16 @@ function ModelListRow({
           {entry.isFavorite ? " ★" : " ☆"}
         </Text>
         <Text
-          color={selected ? theme.color.violet : active ? theme.color.t1 : theme.color.t2}
+          color={
+            !entry.isAvailable
+              ? theme.color.t5
+              : selected
+                ? theme.color.violet
+                : active
+                  ? theme.color.t1
+                  : theme.color.t2
+          }
+          dimColor={!entry.isAvailable}
           bold={selected || active}
         >
           {" "}
@@ -118,6 +129,13 @@ function ModelListRow({
         <Box marginLeft={4}>
           <Text color={theme.color.t4} dimColor>
             {endTruncate(entry.subProvider, labelMax - 2)}
+          </Text>
+        </Box>
+      ) : null}
+      {!entry.isAvailable ? (
+        <Box marginLeft={4}>
+          <Text color={theme.color.t4} dimColor>
+            Configure provider in ADE/OpenCode
           </Text>
         </Box>
       ) : null}
@@ -172,10 +190,29 @@ export function ModelPickerPane({
           width={Math.max(10, Math.floor(innerWidth / 3))}
         />
 
-        <Box flexDirection="column" flexGrow={1}>
-          <Text color={theme.color.t3} bold>
-            {headingLabel}
-          </Text>
+	        <Box flexDirection="column" flexGrow={1}>
+	          <Text color={theme.color.t3} bold>
+	            {headingLabel}
+	          </Text>
+	          {state.providerTabs.length > 1 ? (
+	            <Box flexDirection="row" flexWrap="wrap">
+	              {state.providerTabs.map((tab, index) => {
+	                const selected = index === state.providerTabIndex;
+	                return (
+	                  <Text
+	                    key={tab.key}
+	                    color={selected ? theme.color.violet : theme.color.t4}
+	                    bold={selected}
+	                  >
+	                    {selected ? "[" : " "}
+	                    {endTruncate(tab.label, 12)}
+	                    {selected ? "]" : " "}
+	                    {" "}
+	                  </Text>
+	                );
+	              })}
+	            </Box>
+	          ) : null}
           {state.entries.length === 0 ? (
             <Text color={theme.color.t4} dimColor>
               {state.query.trim()
@@ -184,7 +221,13 @@ export function ModelPickerPane({
                   ? "Press f on a model to pin it here."
                   : railEntry?.kind === "recents"
                     ? "Models you switch to will appear here."
-                    : "No models available."}
+                    : railEntry?.kind === "provider" && railEntry.provider === "opencode"
+                      ? "Install OpenCode to use these models."
+                      : railEntry?.kind === "provider" && railEntry.provider === "ollama"
+                        ? "Install OpenCode to use Ollama models."
+                        : railEntry?.kind === "provider" && railEntry.provider === "lmstudio"
+                          ? "Install OpenCode to use LM Studio models."
+                          : "No models available."}
             </Text>
           ) : (
             <>
@@ -215,8 +258,8 @@ export function ModelPickerPane({
 
       <Box marginTop={1}>
         <Text color={theme.color.t4} dimColor>
-          ↑↓ pick · ↵ select · tab rail · f fav · / search · esc close
-        </Text>
+	          ↑↓ pick · ↵ select · tab rail · [ ] providers · f fav · / search · esc close
+	        </Text>
       </Box>
     </Box>
   );

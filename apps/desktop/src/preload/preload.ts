@@ -289,6 +289,8 @@ import type {
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
@@ -1071,6 +1073,11 @@ const allowLocalRuntimeFallback =
     process.env.ADE_PACKAGE_CHANNEL === "alpha"
   );
 
+function isLocalRuntimeActionNotCallableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Action '[^']+\.[^']+' is not callable/i.test(message);
+}
+
 function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -1078,6 +1085,7 @@ function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
     /Local runtime daemon is not available/i.test(message) ||
     /ADE service connection (?:closed|failed)/i.test(message) ||
     /IPC handler for 'ade\.localRuntime\.(?:callAction|callSync|streamEvents)' timed out/i.test(message) ||
+    isLocalRuntimeActionNotCallableError(error) ||
     /Timed out waiting for remote ADE service method /i.test(message) ||
     /Timed out connecting to ADE service socket/i.test(message) ||
     /Unsupported database value/i.test(message) ||
@@ -1178,10 +1186,12 @@ async function callLocalProjectActionIfBound<T>(
   try {
     const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
       request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
+  })) as RemoteRuntimeActionResult;
     return { handled: true, result: response.result as T };
   } catch (error) {
-    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+    const canUseFallback =
+      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
+    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn(
@@ -5234,6 +5244,16 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModels, args);
+    },
+    modelCatalog: async (
+      args?: AgentChatModelCatalogArgs,
+    ): Promise<AgentChatModelCatalog> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        AgentChatModelCatalog
+      >("chat", "modelCatalog", { args: args ?? {} });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatModelCatalog, args ?? {});
     },
     archive: async (args: AgentChatArchiveArgs): Promise<void> => {
       agentChatSummaryCache.clear();

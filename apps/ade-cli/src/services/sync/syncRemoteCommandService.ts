@@ -6,6 +6,9 @@ import type {
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
+  AgentChatModelCatalogArgs,
+  AgentChatModelCatalogMode,
+  AgentChatModelCatalogRefreshProvider,
   AgentChatProvider,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
@@ -150,6 +153,7 @@ import type { PathToMergeOrchestrator } from "../../../../desktop/src/main/servi
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
+import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
 
 type SyncRemoteCommandServiceArgs = {
   laneService: ReturnType<typeof createLaneService>;
@@ -191,6 +195,14 @@ type SyncRemoteCommandServiceArgs = {
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
+  /**
+   * Lazy accessor for the process-wide model picker store (favorites + recents
+   * persisted to `~/.ade/modelPicker.json`). iOS hits these via the
+   * `modelPicker.*` sync commands so favorites/recents stay in sync with
+   * desktop + TUI. Optional so older callers without the accessor wired keep
+   * compiling — handlers reject with a clear error when missing.
+   */
+  getModelPickerStore?: () => ModelPickerStore | null;
   logger: Logger;
 };
 
@@ -935,6 +947,23 @@ function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentC
   return {
     provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatProvider,
     ...(value.activateRuntime === true ? { activateRuntime: true } : {}),
+  };
+}
+
+function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
+  const mode = asTrimmedString(value.mode) as AgentChatModelCatalogMode | null;
+  const refreshProvider = asTrimmedString(value.refreshProvider) as AgentChatModelCatalogRefreshProvider | null;
+  return {
+    ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
+    ...(
+      refreshProvider === "opencode"
+      || refreshProvider === "cursor"
+      || refreshProvider === "droid"
+      || refreshProvider === "lmstudio"
+      || refreshProvider === "ollama"
+        ? { refreshProvider }
+        : {}
+    ),
   };
 }
 
@@ -2000,8 +2029,43 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("chat.models", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getAvailableModels(parseChatModelsArgs(payload)));
-  register("chat.modelCatalog", { viewerAllowed: true }, async () =>
-    requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog());
+  register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
+
+  // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
+  // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
+  // (which routes through the WebSocket sync command envelope) shares the
+  // same persisted store at ~/.ade/modelPicker.json.
+  // Falls back to the process-wide singleton when no accessor is wired —
+  // older bootstraps (tests, embedded uses) still get a working store without
+  // having to thread the accessor explicitly.
+  const requireModelPickerStore = (): ModelPickerStore =>
+    args.getModelPickerStore?.() ?? getSharedModelPickerStore();
+  register("modelPicker.getFavorites", { viewerAllowed: true }, async () => ({
+    favorites: requireModelPickerStore().getFavorites(),
+  }), "runtime");
+  register("modelPicker.setFavorites", { viewerAllowed: true }, async (payload) => {
+    const rawFavorites = (payload as { favorites?: unknown }).favorites;
+    const favoritesInput = Array.isArray(rawFavorites)
+      ? rawFavorites.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    return { favorites: requireModelPickerStore().setFavorites(favoritesInput) };
+  }, "runtime");
+  register("modelPicker.toggleFavorite", { viewerAllowed: true }, async (payload) => {
+    const modelId = typeof (payload as { modelId?: unknown }).modelId === "string"
+      ? ((payload as { modelId?: string }).modelId as string)
+      : "";
+    return requireModelPickerStore().toggleFavorite(modelId);
+  }, "runtime");
+  register("modelPicker.getRecents", { viewerAllowed: true }, async () => ({
+    recents: requireModelPickerStore().getRecents(),
+  }), "runtime");
+  register("modelPicker.pushRecent", { viewerAllowed: true }, async (payload) => {
+    const modelId = typeof (payload as { modelId?: unknown }).modelId === "string"
+      ? ((payload as { modelId?: string }).modelId as string)
+      : "";
+    return { recents: requireModelPickerStore().pushRecent(modelId) };
+  }, "runtime");
 
   register("cto.getRoster", { viewerAllowed: true }, async () => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

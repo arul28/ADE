@@ -125,6 +125,37 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
   });
 
+  it("preserves Droid SDK reasoning and media metadata", async () => {
+    const close = vi.fn(async () => {});
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [
+          {
+            id: "gpt-5.4",
+            displayName: "GPT-5.4",
+            supportedReasoningEfforts: ["low", "high", "max"],
+            defaultReasoningEffort: "high",
+            tier: "fast",
+            noImageSupport: true,
+          },
+        ],
+      },
+      close,
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors[0]).toMatchObject({
+      id: "droid/gpt-5.4",
+      reasoningTiers: ["high", "low", "max"],
+      serviceTiers: ["fast"],
+      capabilities: expect.objectContaining({
+        vision: false,
+        reasoning: true,
+      }),
+    });
+  });
+
   it("merges existing Factory config custom models with SDK models", async () => {
     fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
     fs.writeFileSync(
