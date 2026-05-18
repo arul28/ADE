@@ -19,6 +19,7 @@ const mockState = vi.hoisted(() => ({
   clearOpenCodeInventoryCache: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(),
   probeOpenCodeProviderInventory: vi.fn(),
+  clearOpenCodeBinaryCache: vi.fn(),
   resolveOpenCodeBinary: vi.fn(),
 }));
 
@@ -68,6 +69,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
 }));
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({
+  clearOpenCodeBinaryCache: (...args: unknown[]) => mockState.clearOpenCodeBinaryCache(...args),
   resolveOpenCodeBinary: (...args: unknown[]) => mockState.resolveOpenCodeBinary(...args),
 }));
 
@@ -276,6 +278,7 @@ beforeEach(() => {
     error: null,
     descriptors: [],
   });
+  mockState.clearOpenCodeBinaryCache.mockImplementation(() => undefined);
   mockState.resolveOpenCodeBinary.mockReturnValue({
     path: "/Users/admin/.opencode/bin/opencode",
     source: "user-installed",
@@ -403,6 +406,48 @@ describe("aiIntegrationService", () => {
     expect(ollama?.blocker).toBe(`Ollama did not respond at ${getLocalProviderDefaultEndpoint("ollama")}.`);
   });
 
+  it("surfaces LM Studio OpenAI-compatible models as loaded local runtime models", async () => {
+    const modelId = "qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2";
+    const endpoint = getLocalProviderDefaultEndpoint("lmstudio");
+    const { service } = makeService({
+      providerMode: "guest",
+      availability: { claude: false, codex: false, cursor: false, droid: false },
+    });
+
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "local", provider: "lmstudio", endpoint, endpointSource: "auto" },
+    ]);
+    mockState.inspectLocalProvider.mockImplementation(async (provider: string, inspectedEndpoint: string) => ({
+      provider,
+      endpoint: inspectedEndpoint,
+      reachable: provider === "lmstudio",
+      health: provider === "lmstudio" ? "ready" : "unreachable",
+      loadedModels: provider === "lmstudio"
+        ? [{
+            provider: "lmstudio",
+            modelId,
+            displayName: modelId,
+            discoverySource: "lmstudio-openai",
+            loaded: true,
+          }]
+        : [],
+    }));
+    mockState.probeOpenCodeProviderInventory.mockResolvedValue({
+        modelIds: [`opencode/lmstudio/${modelId}`],
+        providers: [{ id: "lmstudio", name: "LM Studio", connected: true, modelCount: 1 }],
+        error: null,
+        descriptors: [],
+    });
+
+    const status = await service.getStatus({ refreshOpenCodeInventory: true });
+
+    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledWith(expect.objectContaining({
+      discoveredLocalModels: expect.arrayContaining([{ provider: "lmstudio", modelId }]),
+    }));
+    expect(status.runtimeConnections?.lmstudio?.loadedModelIds).toContain(`lmstudio/${modelId}`);
+    expect(status.availableModelIds).toContain(`opencode/lmstudio/${modelId}`);
+  });
+
   it("coalesces concurrent getStatus calls for the same request shape", async () => {
     const { service } = makeService();
     let resolveAuth: ((value: Array<Record<string, unknown>>) => void) | null = null;
@@ -450,6 +495,14 @@ describe("aiIntegrationService", () => {
       { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
     ]);
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
+  });
+
+  it("clears the OpenCode binary cache on forced status refresh", async () => {
+    const { service } = makeService();
+
+    await service.getStatus({ force: true });
+
+    expect(mockState.clearOpenCodeBinaryCache).toHaveBeenCalledTimes(1);
   });
 
   it("keeps forced status refresh non-interactive for Claude", async () => {
