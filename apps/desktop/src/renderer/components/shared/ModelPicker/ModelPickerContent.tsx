@@ -59,7 +59,11 @@ function modelSubProvider(model: ModelDescriptor): string {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
-    return `${model.openCodeProviderId} via OpenCode`;
+    // Sub-header text used in grouped lists. Already inside the OpenCode rail
+    // when this fires, so "via OpenCode" was redundant — show the underlying
+    // provider name only. Title-case so "anthropic" reads as "Anthropic".
+    const id = model.openCodeProviderId;
+    return id.charAt(0).toUpperCase() + id.slice(1);
   }
   return "";
 }
@@ -105,15 +109,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     return internalAuth.status;
   }, [providerAuthStatus, internalAuth.status]);
 
-  // Treat OpenCode as installed until the auth status loads — the initial
-  // store value is `false` and the fetch can take ~2s on cold-start while
-  // the OpenCode server boots and provider.list responds. Showing the
-  // "Install OpenCode" empty state during that window is wrong for users
-  // who DO have it installed; we only want to flip to the empty state
-  // after a real "loaded && not installed" signal.
-  const opencodeBinaryInstalled = internalAuth.loaded
-    ? internalAuth.opencodeBinaryInstalled
-    : true;
+  // The cheap binary probe answers "is OpenCode installed?" in ms (separate
+  // from the slow full getStatus probe). Until that lands we don't render
+  // the OpenCode-required empty state — we just show an empty list so we
+  // don't make a false "Install OpenCode" claim during the brief unknown
+  // window.
+  const opencodeBinaryInstalled = internalAuth.opencodeBinaryInstalled;
+  const opencodeBinaryKnown = internalAuth.binaryProbed;
   const isOpencodeRequiredFamily = useCallback(
     (family: ProviderFamily): family is "opencode" | "ollama" | "lmstudio" =>
       family === "opencode" || family === "ollama" || family === "lmstudio",
@@ -193,9 +195,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const filterAvailable = useCallback(
     (m: ModelDescriptor): boolean => {
       // Models for opencode/ollama/lmstudio require the OpenCode CLI runtime.
-      // When OpenCode isn't installed, hide them across all views so the panes
-      // surface a unified "Install OpenCode" empty state.
-      if (!opencodeBinaryInstalled && isOpencodeRequiredFamily(m.family)) {
+      // When the cheap binary check has completed AND OpenCode isn't installed,
+      // hide them so the panes surface the "Install OpenCode" empty state.
+      // While the probe is still in-flight (binaryKnown === false) we don't
+      // hide anything — the alternative would flash "Install OpenCode" briefly
+      // for users who do have it.
+      if (opencodeBinaryKnown && !opencodeBinaryInstalled && isOpencodeRequiredFamily(m.family)) {
         return false;
       }
       if (!authOnly) return true;
@@ -205,7 +210,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       return isAvailable(m.id);
     },
-    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, opencodeBinaryInstalled],
+    [authOnly, effectiveAuth, familyIsReady, isAvailable, isOpencodeRequiredFamily, opencodeBinaryInstalled, opencodeBinaryKnown],
   );
 
   const searchActive = query.trim().length > 0;
@@ -398,6 +403,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const activeFamilyNeedsOpencode =
     activeProviderFamily != null
     && isOpencodeRequiredFamily(activeProviderFamily)
+    && opencodeBinaryKnown
     && !opencodeBinaryInstalled;
   const showSetupBanner =
     activeProviderFamily != null
@@ -531,6 +537,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 selection={selection}
                 searchActive={searchActive}
                 opencodeBinaryInstalled={opencodeBinaryInstalled}
+                opencodeBinaryKnown={opencodeBinaryKnown}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
@@ -593,17 +600,20 @@ function EmptyState({
   selection,
   searchActive,
   opencodeBinaryInstalled,
+  opencodeBinaryKnown,
   onOpenSignIn,
 }: {
   selection: RailSelection;
   searchActive: boolean;
   opencodeBinaryInstalled: boolean;
+  opencodeBinaryKnown: boolean;
   onOpenSignIn?: () => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
     const family = selection.slice("provider:".length) as ProviderFamily;
     if (
-      !opencodeBinaryInstalled
+      opencodeBinaryKnown
+      && !opencodeBinaryInstalled
       && (family === "opencode" || family === "ollama" || family === "lmstudio")
     ) {
       return (

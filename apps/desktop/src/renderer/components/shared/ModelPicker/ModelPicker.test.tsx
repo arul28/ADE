@@ -101,6 +101,7 @@ vi.mock("./useProviderAuthStatus", () => ({
   useProviderAuthStatus: () => ({
     status: { ...providerAuthStatusInternal },
     opencodeBinaryInstalled: opencodeBinaryInstalledInternal,
+    binaryProbed: true,
     loaded: true,
   }),
 }));

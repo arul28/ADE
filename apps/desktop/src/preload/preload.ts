@@ -2950,6 +2950,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
       ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
+    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> =>
+      ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       clearAround(
         () => aiStatusCache.clear(),

@@ -4170,6 +4170,15 @@ export function registerIpc({
     return getOpenCodeRuntimeSnapshot();
   });
 
+  // Cheap binary-only check (no probe, no server boot). Used by the renderer
+  // for instant first-paint of OpenCode-gated UI without waiting on the full
+  // ~2s getStatus() roundtrip.
+  ipcMain.handle(IPC.aiIsOpenCodeInstalled, async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> => {
+    const { resolveOpenCodeBinary } = await import("../opencode/openCodeBinaryManager");
+    const info = resolveOpenCodeBinary();
+    return { installed: Boolean(info.path), source: info.source };
+  });
+
   ipcMain.handle(IPC.aiStoreApiKey, async (_event, arg: { provider: string; key: string }): Promise<void> => {
     const ctx = getCtx();
     const { storeApiKey } = await import("../ai/apiKeyStore");

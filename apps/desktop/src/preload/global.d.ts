@@ -900,6 +900,7 @@ declare global {
           refreshOpenCodeInventory?: boolean;
         }) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
+        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;

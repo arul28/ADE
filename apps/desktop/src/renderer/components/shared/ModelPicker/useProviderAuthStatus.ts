@@ -9,19 +9,24 @@ type AuthStatusMap = Partial<Record<ProviderFamily, AuthStatus>>;
 type ProviderAuthStore = {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
+  /** True once the cheap binary check has completed; independent of the slower full-status fetch. */
+  binaryProbed: boolean;
   loaded: boolean;
   inFlight: Promise<void> | null;
   setStatus: (status: AuthStatusMap, opencodeBinaryInstalled: boolean) => void;
+  setBinaryProbed: (installed: boolean) => void;
   setInFlight: (promise: Promise<void> | null) => void;
 };
 
 const useProviderAuthStore = create<ProviderAuthStore>((set) => ({
   status: {},
   opencodeBinaryInstalled: false,
+  binaryProbed: false,
   loaded: false,
   inFlight: null,
   setStatus: (status, opencodeBinaryInstalled) =>
-    set({ status, opencodeBinaryInstalled, loaded: true, inFlight: null }),
+    set({ status, opencodeBinaryInstalled, binaryProbed: true, loaded: true, inFlight: null }),
+  setBinaryProbed: (installed) => set({ opencodeBinaryInstalled: installed, binaryProbed: true }),
   setInFlight: (promise) => set({ inFlight: promise }),
 }));
 
@@ -64,6 +69,24 @@ export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstal
   return status.opencodeBinaryInstalled === true;
 }
 
+/**
+ * Cheap synchronous-ish IPC call that only resolves whether the OpenCode
+ * binary exists on PATH/known dirs. Returns in milliseconds — no server boot,
+ * no probe. Used to flip the OpenCode-gated empty state without waiting on
+ * the slow getStatus() roundtrip.
+ */
+async function probeBinary(): Promise<void> {
+  const ade = (window as unknown as { ade?: { ai?: { isOpenCodeInstalled?: () => Promise<{ installed: boolean }> } } }).ade;
+  const check = ade?.ai?.isOpenCodeInstalled;
+  if (typeof check !== "function") return;
+  try {
+    const result = await check();
+    useProviderAuthStore.getState().setBinaryProbed(result.installed === true);
+  } catch {
+    /* leave binaryProbed false; consumers fall back to the full fetch */
+  }
+}
+
 async function fetchStatus(): Promise<void> {
   const store = useProviderAuthStore.getState();
   if (store.inFlight) return store.inFlight;
@@ -93,19 +116,24 @@ async function fetchStatus(): Promise<void> {
 export function useProviderAuthStatus(): {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
+  /** True once we have a definitive answer for opencodeBinaryInstalled (cheap probe done). */
+  binaryProbed: boolean;
   loaded: boolean;
 } {
   const slice = useProviderAuthStore(
     useShallow((state) => ({
       status: state.status,
       opencodeBinaryInstalled: state.opencodeBinaryInstalled,
+      binaryProbed: state.binaryProbed,
       loaded: state.loaded,
     })),
   );
-  // Refetch on every mount — picker mounts on popover open, so the user
-  // signing into a provider in Settings then reopening the picker gets fresh
-  // status without polling. Concurrent calls are dedup'd via `inFlight`.
+  // Run BOTH on mount in parallel: cheap binary probe (ms) gives us the
+  // opencode-installed signal immediately so the picker doesn't flash the
+  // wrong empty state; the full fetchStatus continues in the background to
+  // populate connected providers + their model lists.
   useEffect(() => {
+    void probeBinary();
     void fetchStatus();
   }, []);
   return slice;

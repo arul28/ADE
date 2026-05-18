@@ -15,7 +15,9 @@ function subProviderLabel(model: ModelDescriptor): string | null {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
-    return `${model.openCodeProviderId} via OpenCode`;
+    // Rows shown inside the OpenCode rail; "via OpenCode" was redundant.
+    const id = model.openCodeProviderId;
+    return id.charAt(0).toUpperCase() + id.slice(1);
   }
   return null;
 }

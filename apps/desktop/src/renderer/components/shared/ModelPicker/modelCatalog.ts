@@ -78,15 +78,21 @@ export function createUnknownModelPlaceholder(modelId: string): ModelDescriptor 
 }
 
 /**
- * Models reached via the OpenCode runtime are family-mapped to their underlying
- * vendor ("anthropic", "openai", etc.) so they show the correct logo elsewhere
- * in the app. The picker groups them under a single "OpenCode" rail entry, so
- * we override `family` to `"opencode"` here while keeping `openCodeProviderId`
- * intact for sub-provider sub-headers and row logos.
+ * Models reached via the OpenCode runtime are family-mapped for picker display:
+ * - Local-provider models (lmstudio, ollama) keep their native family so they
+ *   appear in their own rail entry, not lumped under OpenCode. Routing through
+ *   OpenCode is an implementation detail; semantically the user thinks of these
+ *   as LM Studio / Ollama models.
+ * - Cloud-provider models routed through OpenCode (e.g. anthropic-via-opencode)
+ *   get rebucketed to family "opencode" so they group under the OpenCode rail
+ *   alongside other OpenCode-routed providers. openCodeProviderId stays intact
+ *   for the sub-provider header + row logo.
  */
 function rebucketOpenCodeFamily(model: ModelDescriptor): ModelDescriptor {
   if (model.providerRoute !== "opencode") return model;
   if (model.family === "opencode") return model;
+  // Local providers retain their own family so they get their own rail.
+  if (model.family === "lmstudio" || model.family === "ollama") return model;
   return { ...model, family: "opencode" };
 }
 
