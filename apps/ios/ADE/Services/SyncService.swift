@@ -3637,22 +3637,35 @@ final class SyncService: ObservableObject {
     }
   }
 
-  @MainActor
-  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
-    let cacheKey = chatModelsCacheKey(provider: "catalog")
-    guard let cached = chatModelCatalogCache[cacheKey] else { return nil }
-    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
-    return cached.catalog
-  }
+	  @MainActor
+	  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
+	    guard let cached = chatModelCatalogCache.values.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
+	    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
+	    return cached.catalog
+	  }
 
   @MainActor
-  func getChatModelCatalog() async throws -> AgentChatModelCatalog {
-    let cacheKey = chatModelsCacheKey(provider: "catalog")
+  func getChatModelCatalog(
+    mode: String = "refresh-stale",
+    refreshProvider: String? = nil
+  ) async throws -> AgentChatModelCatalog {
+    let cacheKey = chatModelsCacheKey(provider: "catalog:\(mode):\(refreshProvider ?? "")")
     let now = Date()
 
-    if let cached = chatModelCatalogCache[cacheKey],
+    if mode != "force",
+       let cached = chatModelCatalogCache[cacheKey],
        now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
       return cached.catalog
+    }
+
+    if mode == "cached" {
+      if let cached = chatModelCatalogCache[cacheKey],
+         now.timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL {
+        return cached.catalog
+      }
+      if let cached = cachedChatModelCatalog() {
+        return cached
+      }
     }
 
     if let task = chatModelCatalogInFlight[cacheKey] {
@@ -3660,24 +3673,35 @@ final class SyncService: ObservableObject {
     }
 
     let task = Task { @MainActor [weak self] in
-      guard let self else { throw CancellationError() }
-      return try await self.sendDecodableCommand(
-        action: "chat.modelCatalog",
-        args: [:],
-        as: AgentChatModelCatalog.self
-      )
+	      guard let self else { throw CancellationError() }
+	      var args: [String: Any] = ["mode": mode]
+	      if let refreshProvider {
+	        args["refreshProvider"] = refreshProvider
+	      }
+	      return try await self.sendDecodableCommand(
+	        action: "chat.modelCatalog",
+	        args: args,
+	        as: AgentChatModelCatalog.self
+	      )
     }
     chatModelCatalogInFlight[cacheKey] = task
 
     do {
       let catalog = try await task.value
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
+      if mode == "force", let refreshProvider {
+        let refreshStaleKey = chatModelsCacheKey(provider: "catalog:refresh-stale:\(refreshProvider)")
+        chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
+      }
       chatModelCatalogInFlight[cacheKey] = nil
       return catalog
     } catch {
       chatModelCatalogInFlight[cacheKey] = nil
       if let cached = chatModelCatalogCache[cacheKey] {
         return cached.catalog
+      }
+      if let cached = cachedChatModelCatalog() {
+        return cached
       }
       throw error
     }
@@ -3698,6 +3722,60 @@ final class SyncService: ObservableObject {
     ].joined(separator: "\u{1f}")
   }
 
+  // MARK: - Cross-surface model picker (favorites + recents)
+  //
+  // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
+  // TUI implementation. Backed by `~/.ade/modelPicker.json` on the ade-cli
+  // host so favorites and recents follow the user across worktrees, projects,
+  // and surfaces (desktop, TUI, iOS). Recents are capped at 10 server-side
+  // — the client should not pre-trim.
+
+  func getModelFavorites() async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.getFavorites",
+      args: [:],
+      as: ModelPickerFavorites.self
+    )
+    return payload.favorites
+  }
+
+  func setModelFavorites(_ favorites: [String]) async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.setFavorites",
+      args: ["favorites": favorites],
+      as: ModelPickerFavorites.self
+    )
+    return payload.favorites
+  }
+
+  @discardableResult
+  func toggleModelFavorite(_ modelId: String) async throws -> ModelPickerToggleFavoriteResult {
+    try await sendDecodableCommand(
+      action: "modelPicker.toggleFavorite",
+      args: ["modelId": modelId],
+      as: ModelPickerToggleFavoriteResult.self
+    )
+  }
+
+  func getModelRecents() async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.getRecents",
+      args: [:],
+      as: ModelPickerRecents.self
+    )
+    return payload.recents
+  }
+
+  @discardableResult
+  func pushModelRecent(_ modelId: String) async throws -> [String] {
+    let payload = try await sendDecodableCommand(
+      action: "modelPicker.pushRecent",
+      args: ["modelId": modelId],
+      as: ModelPickerRecents.self
+    )
+    return payload.recents
+  }
+
   func listChatSessions(laneId: String) async throws -> [AgentChatSessionSummary] {
     try await sendDecodableCommand(action: "chat.listSessions", args: ["laneId": laneId, "includeAutomation": true], as: [AgentChatSessionSummary].self)
   }
@@ -3716,6 +3794,7 @@ final class SyncService: ObservableObject {
     codexSandbox: String? = nil,
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
@@ -3759,6 +3838,9 @@ final class SyncService: ObservableObject {
     }
     if let opencodePermissionMode, !opencodePermissionMode.isEmpty {
       args["opencodePermissionMode"] = opencodePermissionMode
+    }
+    if let droidPermissionMode, !droidPermissionMode.isEmpty {
+      args["droidPermissionMode"] = droidPermissionMode
     }
     if let cursorModeId, !cursorModeId.isEmpty {
       args["cursorModeId"] = cursorModeId
@@ -3887,6 +3969,7 @@ final class SyncService: ObservableObject {
     codexSandbox: String? = nil,
     codexConfigSource: String? = nil,
     opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     unifiedPermissionMode: String? = nil,
@@ -3908,6 +3991,7 @@ final class SyncService: ObservableObject {
         codexSandbox: codexSandbox,
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
+        droidPermissionMode: droidPermissionMode,
         cursorModeId: cursorModeId,
         cursorConfigValues: cursorConfigValues,
         unifiedPermissionMode: unifiedPermissionMode,

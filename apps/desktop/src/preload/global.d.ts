@@ -80,6 +80,8 @@ import type {
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
@@ -900,6 +902,7 @@ declare global {
           refreshOpenCodeInventory?: boolean;
         }) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
+        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }>;
         storeApiKey: (provider: string, key: string) => Promise<void>;
         deleteApiKey: (provider: string) => Promise<void>;
         listApiKeys: () => Promise<string[]>;
@@ -945,6 +948,15 @@ declare global {
         cursorCloudOpenChat: (
           args: CursorCloudOpenChatRequest,
         ) => Promise<CursorCloudOpenChatResult>;
+      };
+      modelPicker: {
+        getFavorites: () => Promise<{ favorites: string[] }>;
+        setFavorites: (favorites: string[]) => Promise<{ favorites: string[] }>;
+        toggleFavorite: (
+          modelId: string,
+        ) => Promise<{ favorites: string[]; isFavorite: boolean }>;
+        getRecents: () => Promise<{ recents: string[] }>;
+        pushRecent: (modelId: string) => Promise<{ recents: string[] }>;
       };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
@@ -1477,6 +1489,7 @@ declare global {
         approve: (args: AgentChatApproveArgs) => Promise<void>;
         respondToInput: (args: AgentChatRespondToInputArgs) => Promise<void>;
         models: (args: AgentChatModelsArgs) => Promise<AgentChatModelInfo[]>;
+        modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
         archive: (args: AgentChatArchiveArgs) => Promise<void>;
         unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
         delete: (args: AgentChatDeleteArgs) => Promise<void>;

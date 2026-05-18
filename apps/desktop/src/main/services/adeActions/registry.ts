@@ -434,6 +434,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listClaudeSessions",
     "listSessions",
     "listSubagents",
+    "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
     "fileSearch",
@@ -1031,6 +1032,8 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         parentLaneId,
       );
     },
+    modelCatalog: (args?: unknown) =>
+      agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);

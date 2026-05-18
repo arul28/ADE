@@ -143,7 +143,15 @@ uses the selected parent lane's current branch.
 - `listSessions`, `getSummary`, `getTranscript`
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
-- `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`
+- `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
+  `modelCatalog`
+
+`chat.modelCatalog` accepts `{ mode?, refreshProvider? }` where `mode`
+is `"cached" | "refresh-stale" | "force"` (default `"cached"`) and
+`refreshProvider` is `"opencode" | "cursor" | "droid" | "lmstudio" |
+"ollama"`. The host returns the full provider-grouped catalog used by
+the desktop and TUI ModelPickers and the iOS Work model sheet; only
+explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
 `chat.dispatchSteer` (Claude SDK only) takes
 `{ sessionId, steerId, mode: "inline" | "interrupt" }` and either folds

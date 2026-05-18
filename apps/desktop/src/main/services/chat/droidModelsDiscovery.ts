@@ -1,42 +1,23 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createSession } from "@factory/droid-sdk";
 import {
   createDynamicDroidCliModelDescriptor,
   sortDroidCliDescriptorsForPicker,
+  type ModelCapabilities,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
-
-/** Default catalog when `droid` does not expose a machine-readable model list. */
-export const DROID_DEFAULT_MODEL_IDS: string[] = [
-  "claude-opus-4-6",
-  "claude-opus-4-6-fast",
-  "claude-opus-4-5-20251101",
-  "claude-sonnet-4-5-20250929",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "gpt-5.1",
-  "gpt-5.2",
-  "gpt-5.3-codex",
-  "gpt-5.4",
-  "gpt-5.4-fast",
-  "gpt-5.4-mini",
-  "gemini-3-pro-preview",
-  "gemini-3.1-pro-preview",
-  "gemini-3-flash-preview",
-  "glm-4.7",
-  "glm-5",
-  "glm-5.1",
-  "kimi-k2.5",
-  "minimax-m2.5",
-];
 
 export type DroidExecHelpModelRow = {
   id: string;
   displayName: string;
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
@@ -181,6 +162,112 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
   return [];
 }
 
+function addUnique(out: string[], value: string | null | undefined): void {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return;
+  if (!out.includes(normalized)) out.push(normalized);
+}
+
+function normalizeDroidReasoningEffort(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  switch (normalized) {
+    case "none":
+    case "dynamic":
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
+      return normalized;
+    case "extra-high":
+    case "extra_high":
+      return "xhigh";
+    default:
+      return null;
+  }
+}
+
+function normalizeDroidReasoningEfforts(value: unknown, defaultValue: unknown): string[] | undefined {
+  const out: string[] = [];
+  addUnique(out, normalizeDroidReasoningEffort(defaultValue));
+  if (Array.isArray(value)) {
+    for (const entry of value) addUnique(out, normalizeDroidReasoningEffort(entry));
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeDroidServiceTiers(model: Record<string, unknown>): string[] | undefined {
+  const out: string[] = [];
+  const tier = typeof model.tier === "string" ? model.tier.trim().toLowerCase() : "";
+  const promo = typeof model.promoLabel === "string" ? model.promoLabel.trim().toLowerCase() : "";
+  if (tier === "fast" || /\bfast\b/.test(promo)) out.push("fast");
+  return out.length ? out : undefined;
+}
+
+function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
+  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
+  const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
+  const seen = new Set<string>();
+  const rows: DroidExecHelpModelRow[] = [];
+  for (const entry of raw) {
+    const model = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    if (!model) continue;
+    const id = typeof model.id === "string" && model.id.trim().length
+      ? model.id.trim()
+      : typeof model.modelId === "string"
+        ? model.modelId.trim()
+        : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const displayName = typeof model.displayName === "string" && model.displayName.trim().length
+      ? model.displayName.trim()
+      : typeof model.shortDisplayName === "string" && model.shortDisplayName.trim().length
+        ? model.shortDisplayName.trim()
+        : id;
+    const reasoningTiers = normalizeDroidReasoningEfforts(
+      model.supportedReasoningEfforts,
+      model.defaultReasoningEffort,
+    );
+    const serviceTiers = normalizeDroidServiceTiers(model);
+    rows.push({
+      id,
+      displayName,
+      customProxy: model.isCustom === true,
+      ...(reasoningTiers?.length ? { reasoningTiers } : {}),
+      ...(serviceTiers?.length ? { serviceTiers } : {}),
+      capabilities: {
+        vision: model.noImageSupport !== true,
+        reasoning: Boolean(reasoningTiers?.length),
+      },
+    });
+  }
+  return rows;
+}
+
+async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
+  const now = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const session = await createSession({
+      execPath: droidPath,
+      cwd: process.cwd(),
+      abortSignal: controller.signal,
+    });
+    try {
+      const rows = readSdkModelRows(session.initResult);
+      cached = { at: now, models: rows };
+      return rows;
+    } finally {
+      await session.close().catch(() => undefined);
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export function clearDroidCliModelsCache(): void {
   cached = null;
   inflight = null;
@@ -230,12 +317,10 @@ export async function discoverDroidCliModelDescriptors(
   droidPath: string,
   options?: { mode?: DroidCliModelDiscoveryMode },
 ): Promise<ModelDescriptor[]> {
-  const fromCli = options?.mode === "cached-or-fallback"
+  const fromSdk = options?.mode === "cached-or-fallback"
     ? getCachedDroidModels() ?? []
-    : await listDroidModelsFromCli(droidPath);
-  const baseRows: DroidExecHelpModelRow[] = fromCli.length
-    ? fromCli
-    : DROID_DEFAULT_MODEL_IDS.map((id) => ({ id, displayName: id }));
+    : await listDroidModelsFromSdk(droidPath).catch(() => []);
+  const baseRows: DroidExecHelpModelRow[] = fromSdk;
 
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected
   // models appear even when the CLI help output doesn't list them.
@@ -247,7 +332,14 @@ export async function discoverDroidCliModelDescriptors(
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);
-    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, { customProxy: row.customProxy }));
+    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
+      customProxy: row.customProxy,
+      ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+      ...(row.capabilities ? { capabilities: row.capabilities } : {}),
+    }));
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }
+
+export const discoverDroidSdkModelDescriptors = discoverDroidCliModelDescriptors;

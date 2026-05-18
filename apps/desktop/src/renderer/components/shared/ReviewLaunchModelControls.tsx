@@ -1,8 +1,9 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import type { AiSettingsStatus } from "../../../shared/types";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { ProviderModelSelector } from "./ProviderModelSelector";
+import { ModelPicker } from "./ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
+import { cn } from "../ui/cn";
 
 type ReviewLaunchModelControlsProps = {
   modelId: string;
@@ -21,7 +22,6 @@ export function ReviewLaunchModelControls({
   disabled = false,
   className,
 }: ReviewLaunchModelControlsProps) {
-  const navigate = useNavigate();
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
 
   React.useEffect(() => {
@@ -52,16 +52,20 @@ export function ReviewLaunchModelControls({
   }, []);
 
   return (
-    <ProviderModelSelector
-      value={modelId}
-      onChange={onModelChange}
-      availableModelIds={availableModelIds}
-      disabled={disabled}
-      showReasoning
-      reasoningEffort={reasoningEffort || null}
-      onReasoningEffortChange={(next) => onReasoningEffortChange(next ?? "")}
-      onOpenAiSettings={() => navigate("/settings?tab=ai#ai-providers")}
-      className={className}
-    />
+    <div className={cn("inline-flex items-center gap-1.5", className)}>
+      <ModelPicker
+        value={modelId}
+        onChange={onModelChange}
+        surfaceKey="review-launch"
+        availableModelIds={availableModelIds}
+        disabled={disabled}
+      />
+      <ReasoningEffortPicker
+        modelId={modelId}
+        reasoningEffort={reasoningEffort || null}
+        onChange={(next) => onReasoningEffortChange(next ?? "")}
+        disabled={disabled}
+      />
+    </div>
   );
 }

@@ -9,7 +9,7 @@ import {
   Wrench,
 } from "@phosphor-icons/react";
 import type { AgentIdentity, AgentRole, WorkerTemplate } from "../../../shared/types";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -198,9 +198,10 @@ export function WorkerCreationWizard({
           <SmartTooltip content={{ label: "Model", description: "Which AI model this worker uses. Affects capability, speed, and cost." }} side="bottom">
             <div className={labelCls}>Model</div>
           </SmartTooltip>
-          <ProviderModelSelector
+          <ModelPicker
             value={draft.model}
             onChange={(modelId) => setDraft((d) => ({ ...d, model: modelId }))}
+            surfaceKey="cto-worker-creation"
           />
         </div>
 

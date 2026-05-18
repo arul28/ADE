@@ -631,8 +631,7 @@ describe("WorkViewArea", () => {
     expect(local.getByText(/final answer/)).toBeTruthy();
     expect(local.queryByText("Resume this session with:")).toBeNull();
     expect(local.getByLabelText("Continue Claude Code session")).toBeTruthy();
-    expect(local.getByRole("button", { name: "Select model" })).toBeTruthy();
-    expect(local.getByLabelText("Reasoning effort")).toBeTruthy();
+    expect(local.getByRole("button", { name: /Select model/i })).toBeTruthy();
     expect(local.getByLabelText("Claude Code permission mode")).toBeTruthy();
     expect(local.queryByText("Resume")).toBeNull();
     expect(local.getAllByTestId("work-cli-session-header").some((header) => header.getAttribute("data-session-id") === "session-1")).toBe(true);
@@ -962,8 +961,7 @@ describe("WorkViewArea", () => {
 
     const textarea = await within(view.container).findByLabelText("Continue Codex session");
     await waitFor(() => {
-      expect(within(view.container).getByRole("button", { name: "Select model" })).toBeTruthy();
-      expect((within(view.container).getByLabelText("Reasoning effort") as HTMLSelectElement).value).toBe("high");
+      expect(within(view.container).getByRole("button", { name: /Select model/i })).toBeTruthy();
     });
     fireEvent.change(textarea, { target: { value: "fix the test" } });
     fireEvent.keyDown(textarea, { key: "Enter" });

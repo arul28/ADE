@@ -48,7 +48,7 @@ extension WorkSessionSettingsSheet {
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning
     let reasoningChanged = reasoningPayload != resolvedInitialReasoningEffort
     let effectiveCodexFastMode = supportsCodexFastModeToggle ? selectedCodexFastMode : false
-    let codexFastModeChanged = summary.provider == "codex" && effectiveCodexFastMode != resolvedInitialCodexFastMode
+    let codexFastModeChanged = effectiveCodexFastMode != resolvedInitialCodexFastMode
     let initialRuntimeMode = workInitialRuntimeMode(summary)
     let initialCursorModeId = workInitialCursorModeId(summary)
 

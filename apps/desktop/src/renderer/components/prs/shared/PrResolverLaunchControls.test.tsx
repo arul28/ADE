@@ -6,19 +6,26 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrAgentPermissionMode } from "../../../../shared/types";
-import type { ProviderModelSelector } from "../../shared/ProviderModelSelector";
+import type { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
+import type { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 
-type ProviderModelSelectorProps = React.ComponentProps<typeof ProviderModelSelector>;
+type ModelPickerProps = React.ComponentProps<typeof ModelPicker>;
+type ReasoningPickerProps = React.ComponentProps<typeof ReasoningEffortPicker>;
 
-vi.mock("../../shared/ProviderModelSelector", () => ({
-  ProviderModelSelector: (props: ProviderModelSelectorProps) => (
+vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
+  ModelPicker: (props: ModelPickerProps) => (
     <div>
       <button type="button" onClick={() => props.onChange("anthropic/claude-sonnet-4-6")}>
         Pick Sonnet
       </button>
-      <span data-testid="reasoning-effort">{props.reasoningEffort ?? ""}</span>
     </div>
+  ),
+}));
+
+vi.mock("../../shared/ModelPicker/ReasoningEffortPicker", () => ({
+  ReasoningEffortPicker: (props: ReasoningPickerProps) => (
+    <span data-testid="reasoning-effort">{props.reasoningEffort ?? ""}</span>
   ),
 }));
 

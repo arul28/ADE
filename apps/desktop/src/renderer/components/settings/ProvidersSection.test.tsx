@@ -29,6 +29,8 @@ vi.mock("@lobehub/icons", () => {
     Grok: brand(),
     Groq: brand(),
     Kimi: brand(),
+    LmStudio: brand(),
+    Ollama: brand(),
     OpenAI: brand(),
     OpenCode: brand(),
     OpenRouter: brand(),

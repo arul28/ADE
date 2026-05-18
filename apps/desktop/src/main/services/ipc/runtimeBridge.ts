@@ -69,6 +69,11 @@ const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "sync.generatePin",
   "sync.clearPin",
   "sync.setActiveLanePresence",
+  "modelPicker.getFavorites",
+  "modelPicker.setFavorites",
+  "modelPicker.toggleFavorite",
+  "modelPicker.getRecents",
+  "modelPicker.pushRecent",
 ]);
 
 type RuntimeEventWindowSubscription = {

@@ -12,7 +12,7 @@ import {
   type ModelProviderGroup,
 } from "./modelRegistry";
 
-export type ProviderGroupKey = ModelProviderGroup;
+export type ProviderGroupKey = ModelProviderGroup | "ollama" | "lmstudio";
 
 export type ProviderCategory = "cloud-api" | "local" | "router";
 
@@ -120,6 +120,8 @@ const PROVIDER_GROUP_ORDER: Record<ProviderGroupKey, number> = {
   cursor: 30,
   droid: 35,
   opencode: 40,
+  ollama: 50,
+  lmstudio: 60,
 };
 
 export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
@@ -128,6 +130,8 @@ export const PROVIDER_GROUP_COLORS: Record<ProviderGroupKey, string> = {
   cursor: "#A78BFA",
   droid: "#6B7280",
   opencode: "#2563EB",
+  ollama: "#71717A",
+  lmstudio: "#64748B",
 };
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
@@ -144,6 +148,9 @@ export function providerBadgeColor(provider: string, models: ModelDescriptor[]):
 
 export function classifyProviderGroup(model: ModelDescriptor): ProviderGroupKey {
   if (model.family === "cursor") return "cursor";
+  if (model.family === "ollama" || model.family === "lmstudio") {
+    return model.family;
+  }
   if (model.isCliWrapped) {
     if (model.family === "anthropic" || model.cliCommand === "claude") return "claude";
     if (model.family === "openai" || model.cliCommand === "codex") return "codex";
@@ -164,6 +171,10 @@ export function providerGroupLabel(group: ProviderGroupKey): string {
       return "Droid";
     case "opencode":
       return "OpenCode";
+    case "ollama":
+      return "Ollama";
+    case "lmstudio":
+      return "LM Studio";
   }
 }
 
@@ -247,21 +258,6 @@ function compareProviderKeys(a: string, b: string): number {
   return (ia === -1 ? Number.MAX_SAFE_INTEGER : ia) - (ib === -1 ? Number.MAX_SAFE_INTEGER : ib);
 }
 
-export const OPENCODE_FALLBACK_PROVIDERS: string[] = [
-  "opencode",
-  "anthropic",
-  "openai",
-  "google",
-  "deepseek",
-  "mistral",
-  "xai",
-  "groq",
-  "together",
-  "openrouter",
-  "ollama",
-  "lmstudio",
-];
-
 export function sortOpenCodeProvidersByCategory(providers: ModelProviderBlock[]): {
   cloud: ModelProviderBlock[];
   local: ModelProviderBlock[];
@@ -286,11 +282,16 @@ export function buildProviderGroupBlocks(
   includeEmptyOpenCodeProviders = true,
 ): ModelProviderGroupBlock[] {
   const byGroup = new Map<ProviderGroupKey, Map<string, Map<string, ModelDescriptor[]>>>();
+  const opencodeProviderNameById = new Map((opencodeProviders ?? []).map((provider) => [provider.id, provider.name] as const));
 
   for (const model of models) {
     const group = classifyProviderGroup(model);
-    const family = model.family;
-    const subKey = subsectionKeyForModel(model, group);
+    const family = group === "opencode" && model.openCodeProviderId
+      ? model.openCodeProviderId
+      : model.family;
+    const subKey = group === "opencode" && model.openCodeProviderId
+      ? "__default__"
+      : subsectionKeyForModel(model, group);
     let famMap = byGroup.get(group);
     if (!famMap) {
       famMap = new Map();
@@ -338,7 +339,9 @@ export function buildProviderGroupBlocks(
       const modelCount = subsections.reduce((acc, sub) => acc + sub.models.length, 0);
       providers.push({
         key: family,
-        label: providerLabel(family),
+        label: groupKey === "opencode"
+          ? opencodeProviderNameById.get(family) ?? providerLabel(family)
+          : providerLabel(family),
         badgeColor: providerBadgeColor(family, subsections.flatMap((s) => s.models)),
         subsections,
         modelCount,
@@ -347,10 +350,9 @@ export function buildProviderGroupBlocks(
 
     if (groupKey === "opencode" && includeEmptyOpenCodeProviders) {
       const existingFamilies = new Set(providers.map((p) => p.key));
-      const potentialProviders = opencodeProviders?.length
-        ? opencodeProviders.map((p) => ({ id: p.id, name: p.name }))
-        : OPENCODE_FALLBACK_PROVIDERS.map((id) => ({ id, name: providerLabel(id) }));
+      const potentialProviders = opencodeProviders?.map((p) => ({ id: p.id, name: p.name })) ?? [];
       for (const { id, name } of potentialProviders) {
+        if (id === "ollama" || id === "lmstudio") continue;
         if (!existingFamilies.has(id)) {
           providers.push({
             key: id,

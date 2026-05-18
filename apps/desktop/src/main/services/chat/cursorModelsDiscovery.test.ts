@@ -23,6 +23,7 @@ import {
   listCursorModelsFromSdk,
   parseCursorCliModelsStdout,
   probeCursorSdkModelDiscovery,
+  resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 
 beforeEach(() => {
@@ -60,15 +61,15 @@ describe("parseCursorCliModelsStdout", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("returns safe Cursor SDK fallbacks immediately while warming exact models", async () => {
+  it("warms exact Cursor SDK models only in cached-or-fallback mode", async () => {
     let resolveModels!: (rows: Array<{ id: string; displayName?: string }>) => void;
     cursorModelsListMock.mockReturnValue(new Promise<Array<{ id: string; displayName?: string }>>((resolve) => {
       resolveModels = resolve;
     }));
 
-    const initial = await discoverCursorSdkModelDescriptors("crsr_test");
+    const initial = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
 
-    expect(initial.map((descriptor) => descriptor.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
+    expect(initial).toEqual([]);
     await vi.waitFor(() => {
       expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     });
@@ -87,7 +88,7 @@ describe("parseCursorCliModelsStdout", () => {
     expect(cursorModelsListMock).toHaveBeenCalledTimes(1);
   });
 
-  it("can warm exact Cursor SDK models without returning fallback rows", async () => {
+  it("does not probe Cursor SDK models in cached-only mode", async () => {
     let resolveModels!: (rows: Array<{ id: string; displayName?: string }>) => void;
     cursorModelsListMock.mockReturnValue(new Promise<Array<{ id: string; displayName?: string }>>((resolve) => {
       resolveModels = resolve;
@@ -96,10 +97,12 @@ describe("parseCursorCliModelsStdout", () => {
     const initial = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-only" });
 
     expect(initial).toEqual([]);
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
+
+    void discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
     await vi.waitFor(() => {
       expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     });
-
     resolveModels([
       { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 4.6 Medium" },
       { id: "auto", displayName: "Auto" },
@@ -131,6 +134,55 @@ describe("parseCursorCliModelsStdout", () => {
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
   });
 
+  it("preserves Cursor SDK parameters and variants as runtime reasoning and service tiers", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      {
+        id: "composer-2",
+        displayName: "Composer 2",
+        parameters: [
+          {
+            id: "reasoning_effort",
+            displayName: "Reasoning effort",
+            values: [
+              { value: "low", displayName: "Low" },
+              { value: "high", displayName: "High" },
+            ],
+          },
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [{ value: "fast", displayName: "Fast" }],
+          },
+        ],
+        variants: [
+          {
+            displayName: "Fast High",
+            params: [
+              { id: "reasoning_effort", value: "high" },
+              { id: "speed", value: "fast" },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(descriptors[0]).toMatchObject({
+      id: "cursor/composer-2",
+      reasoningTiers: ["low", "high"],
+      serviceTiers: ["fast"],
+    });
+    expect(resolveCursorSdkModelSelectionParams({
+      modelSdkId: "composer-2",
+      reasoningEffort: "high",
+      fastMode: true,
+    })).toEqual([
+      { id: "reasoning_effort", value: "high" },
+      { id: "speed", value: "fast" },
+    ]);
+  });
+
   it("falls back to Cursor's official models API when SDK model listing fails", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     const fetchMock = vi.fn(async () => ({
@@ -159,12 +211,12 @@ describe("parseCursorCliModelsStdout", () => {
     expect(reportProviderRuntimeReadyMock).not.toHaveBeenCalled();
   });
 
-  it("uses only conservative fallback rows when Cursor model APIs cannot enumerate", async () => {
+  it("returns no Cursor SDK rows when model APIs cannot enumerate", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 503 })));
 
     const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
+    expect(descriptors).toEqual([]);
   });
 
   it("does not show fallback models when Cursor rejects agent/model auth", async () => {
@@ -203,8 +255,8 @@ describe("parseCursorCliModelsStdout", () => {
     const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const initial = await discoverCursorSdkModelDescriptors("crsr_test");
-    expect(initial.map((descriptor) => descriptor.id)).toEqual(["cursor/auto", "cursor/composer-2"]);
+    const initial = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
+    expect(initial).toEqual([]);
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalled();
     });

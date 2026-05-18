@@ -703,7 +703,12 @@ export type SyncRemoteCommandAction =
   | "prs.pipelineSettings.delete"
   | "prs.pathToMerge.start"
   | "prs.pathToMerge.stop"
-  | "prs.getMobileSnapshot";
+  | "prs.getMobileSnapshot"
+  | "modelPicker.getFavorites"
+  | "modelPicker.setFavorites"
+  | "modelPicker.toggleFavorite"
+  | "modelPicker.getRecents"
+  | "modelPicker.pushRecent";
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;

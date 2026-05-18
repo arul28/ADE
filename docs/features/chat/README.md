@@ -23,12 +23,20 @@ machinery layered on top.
 | `apps/desktop/src/main/services/chat/claudeSlashCommandDiscovery.ts` | Discovers project and user Claude slash surfaces by walking ancestor `.claude` roots, reading `.claude/commands/**/*.md`, `~/.claude/commands/**/*.md`, and `.claude/skills/*/SKILL.md` / `~/.claude/skills/*/SKILL.md` entries with command frontmatter. Consumed by `agentChatService` to enrich both the `chat.slashCommands` response and Claude system prompt with local command/skill metadata. |
 | `apps/desktop/src/main/services/chat/chatTextBatching.ts` | Batches streaming assistant text fragments (100 ms) before emission to reduce renderer re-renders. |
 | `apps/desktop/src/main/services/chat/sessionRecovery.ts` | Version-2 persisted-state reconstruction when sessions resume from disk. |
-| `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. |
+| `apps/desktop/src/main/services/chat/cursorSdkPool.ts` | Cursor SDK adapter: spawns and pools `cursorSdkWorker.ts` Node workers per session, sends turns, brokers permission/hook callbacks, maps SDK events to chat events, and handles teardown. The connection envelope now carries `modelParams` (a list of `CursorSdkModelParameterValue`s — e.g. `{ id: "reasoning", value: "high" }`) so per-model variant parameters discovered through `cursorModelsDiscovery` flow into the SDK boot. |
 | `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | Node worker that hosts the official `@cursor/sdk` and bridges it to the main process via the JSON line protocol in `cursorSdkProtocol.ts`. |
-| `apps/desktop/src/main/services/chat/cursorSdkProtocol.ts` | Shared types for the worker IPC: chat mode, approval policy, sandbox mode, hook decisions, hook requests, and `CursorSdkWorkerInit` boot envelope. |
+| `apps/desktop/src/main/services/chat/cursorSdkProtocol.ts` | Shared types for the worker IPC: chat mode, approval policy, sandbox mode, hook decisions, hook requests, `CursorSdkModelParameterValue`, and `CursorSdkWorkerInit` boot envelope. |
 | `apps/desktop/src/main/services/chat/cursorSdkPolicy.ts` | Maps ADE permission modes onto Cursor SDK chat mode + approval policy + sandbox mode (`ade` / `cursor-native` / `off`); decides which tool calls auto-approve and which require a user prompt. |
 | `apps/desktop/src/main/services/chat/cursorSdkSystemPrompt.ts` | Builds the system prompt the Cursor worker injects (lane context, ADE CLI guidance, persona overlays). |
 | `apps/desktop/src/main/services/chat/cursorSdkEventMapper.ts` | Translates `@cursor/sdk` stream events into the ADE `AgentChatEventEnvelope` shape consumed by the renderer. |
+| `apps/desktop/src/main/services/chat/cursorModelsDiscovery.ts` | Probes the live `@cursor/sdk` for model rows; reads `parameters[]` + `variants[]` and classifies per-parameter values into `reasoningTiers` (`none`/`dynamic`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`thinking`) and `serviceTiers` (`fast`). `resolveCursorSdkModelSelectionParams` rebuilds the matching `CursorSdkModelParameterValue[]` so the SDK boot can target the right variant. The previous minimal `auto` / `composer-2` fallback list has been removed. |
+| `apps/desktop/src/main/services/chat/droidSdkPool.ts` | Droid SDK adapter. Forks `droidSdkWorker.cjs` per session, exposes `acquireDroidSdkConnection` / `releaseDroidSdkConnection`, and proxies prompt sends, settings updates, permission decisions, ask-user responses, and cancellation through the worker. Resolves the Droid SDK CLI executable via `resolveDroidExecutable` (PATH + bundle + configured install paths). |
+| `apps/desktop/src/main/services/chat/droidSdkWorker.ts` | Node worker that hosts `@factory/droid-sdk`. Streams SDK events back to the main process and forwards permission / ask-user prompts back through the JSON-line protocol. |
+| `apps/desktop/src/main/services/chat/droidSdkProtocol.ts` | Worker IPC types: `DroidSdkSessionSettings` (autonomy level, interaction mode, reasoning effort), `DroidSdkReasoningEffort`, `DroidSdkPermissionRequest`/`Decision`, `DroidSdkAskUserRequest`/`Response`, `DroidSdkReady` (handshake with `availableModels`), and `DroidSdkSendPrompt`. |
+| `apps/desktop/src/main/services/chat/droidSdkEventMapper.ts` | Per-session `DroidSdkEventMapperState` + `mapDroidSdkMessageToChatEvents` / `mapDroidSdkRunResultToDoneEvent`. Tracks streaming text/thinking item ids, maps tool calls and results, and surfaces token usage. Replaces the deleted `droidAcpPool.ts` + `droidAcpEventMapper` path. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | SDK-driven model probe (`listDroidModelsFromSdk`) plus the `~/.factory/config.json` custom-proxy merge. Exposes `discoverDroidSdkModelDescriptors` (alias for the legacy `discoverDroidCliModelDescriptors` while callers migrate). |
+| `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | Resolves the OpenCode CLI: PATH first, then the bundled `node_modules/.bin/opencode`. Cache entries are re-validated with `canRunBinaryCandidate` on every lookup so user installs after launch are picked up; missing-binary lookups are intentionally not cached. `clearOpenCodeBinaryCache()` is wired into the AI integration's full cache reset. |
+| `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and tracks both `modelIds` (connected providers only) and `catalogModelIds` (the full browseable catalog). `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/types/chat.ts` | All chat types: `AgentChatSession`, `AgentChatEvent` union, `AgentChatEventHistorySnapshot` (with optional `sessionFound` for stale-session detection), permission modes, pending input, completion reports, `PARALLEL_CHAT_MAX_ATTACHMENTS`, and parallel launch state DTOs. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` | Top-level renderer surface: state derivation, IPC wiring, composer mount, message-list mount, End/Delete chat controls in the header, parallel multi-model lane launch orchestration, transient-lane cleanup, and multi-lane deep-link navigation. Mounts `AgentQuestionModal` when the active pending input is a question/structured-question. Resolves the surface accent colour through `providerChatAccent(provider)` so Claude/Codex/Cursor stay visually consistent regardless of model variant. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts when IPC misses an event, even when the tile is not focused. Event-history snapshots with `sessionFound: false` clear stale locked-pane state instead of rendering a dead transcript. During project transitions the pane blocks send/model/permission mutations and shows a "Project is switching..." composer placeholder so chat calls do not hit the wrong runtime binding. On macOS, polls `ade.iosSimulator.getStatus` and renders the iOS Simulator drawer toggle in the header when the platform is supported (see [iOS Simulator feature](../ios-simulator/README.md)); selecting elements inside the drawer flows back through the pane as `IosElementContextItem` chips on the composer. Polls `ade.appControl.getStatus` and exposes the App Control drawer toggle when the platform is supported, mounting `ChatAppControlPanel`; selections become `AppControlContextItem` chips + attachments on the composer. See [App Control](../computer-use/app-control.md). When mounted as a Work tile (`SessionSurface` passes `hideLaneToolDrawers={true}`) the iOS, App Control, and chat terminal drawer toggles are suppressed because the Work right-edge sidebar owns those lane-scoped drawers; hidden lane-tool mode also skips App Control status polling and terminal listing. The pane still listens on `ade:agent-chat:add-attachment` / `add-ios-context` / `add-app-control-context` / `add-builtin-browser-context` / `insert-draft` window events so selections from the sidebar flow into the active chat composer when the sidebar's `attachChatSessionId` matches. Work-tab CLI launches pass the active lane worktree into the shared launcher so the spawned CLI sees lane-aware ADE skill roots. Proof remains chat-scoped and stays on the chat header. |
@@ -85,16 +93,19 @@ render them, but neither one *runs* them.
   rewindFiles, forkSession, and output-style selection all run through the SDK control channel surfaced on the active
   `Query` handle.
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
-  `codex`, `opencode`, `cursor`, or a free-form string reserved for local
-  providers. The service owns a pluggable adapter per provider (Claude Agent
-  SDK query stream, Codex JSON-RPC app-server, OpenCode runtime, Cursor SDK pool via
-  `cursorSdkPool.ts`). The Cursor adapter runs the official `@cursor/sdk`
-  in a Node worker (`cursorSdkWorker.ts`) over the JSON line protocol
-  defined in `cursorSdkProtocol.ts`; permissions, hooks, and the system
-  prompt are assembled by `cursorSdkPolicy.ts` and
-  `cursorSdkSystemPrompt.ts`, and SDK events are translated into
-  ADE chat events by `cursorSdkEventMapper.ts`. Cursor is SDK-backed here;
-  ACP is only used by providers that still expose an ACP host, such as Droid.
+  `codex`, `opencode`, `cursor`, `droid`, or a free-form string reserved for
+  local providers. The service owns a pluggable adapter per provider (Claude
+  Agent SDK query stream, Codex JSON-RPC app-server, OpenCode runtime, Cursor
+  SDK pool via `cursorSdkPool.ts`, Droid SDK pool via `droidSdkPool.ts`). Both
+  Cursor and Droid run their official SDKs (`@cursor/sdk`, `@factory/droid-sdk`)
+  in dedicated Node worker children over JSON-line protocols
+  (`cursorSdkProtocol.ts`, `droidSdkProtocol.ts`). ADE owns permissions,
+  hooks, ask-user prompts, and the system prompt; the SDK owns model + tool
+  execution. SDK events are translated to ADE chat events by
+  `cursorSdkEventMapper.ts` / `droidSdkEventMapper.ts`. The previous
+  ACP-based Droid bridge (`droidAcpPool.ts` / `acpEventMapper`) has been
+  retired — only `mapStopReasonToTerminalEvents` is still imported from
+  `acpEventMapper.ts` for terminal lifecycle parity.
 - **Lane-scoped.** Every session carries `laneId`; lane context (branch,
   worktree path) is injected into the system prompt, and working-directory
   resolution runs through `resolveLaneLaunchContext`.
@@ -298,6 +309,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.saveTempAttachment` | invoke | Write pasted/dropped image bytes to a temp file (10 MB cap). Native clipboard image paste prefers `ade.app.saveClipboardImageAttachment` so Electron can save the clipboard PNG directly and return a compact preview. |
 | `ade.agentChat.listSubagents` | invoke | Claude subagent snapshot list. Snapshots are re-keyed on `agentId + parentToolUseId` (not just `taskId`) so multiple subagents spawned from the same parent tool call don't collide, and the renderer panel separates them into three tabs: Subagents, Teammates, and Background. |
 | `ade.agentChat.models` | invoke | `{ provider, activateRuntime? }`. For OpenCode `activateRuntime: true` is required to *launch* a probe server; otherwise the main process only returns the cached inventory (via `peekOpenCodeInventoryCache`) and an empty list until a real probe has been run. The renderer cache (`aiDiscoveryCache.ts`) keys on `(projectRoot, provider, activateRuntime)` so passive and active reads don't collide. |
+| `ade.agentChat.modelCatalog` | invoke | `{ mode?, refreshProvider? }` → `AgentChatModelCatalog`. Returns the full provider-grouped catalog (claude / codex / cursor / droid / opencode plus the local `ollama` / `lmstudio` groups when OpenCode-routed) for the desktop and TUI ModelPickers. `mode: "cached"` returns the in-memory snapshot, `"refresh-stale"` reuses the cache but optionally re-probes the named runtime when its per-provider freshness TTL is expired, and `"force"` re-probes unconditionally. `refreshProvider` is one of `"opencode" | "cursor" | "droid" | "lmstudio" | "ollama"`. The catalog carries an optional `stale: true` flag and per-model `connected` / `requiresConfiguration` / `sourceRuntime` / `providerId` / `providerName` annotations that the renderer/TUI use to render auth gates. |
 | `ade.agentChat.getSessionCapabilities` | invoke | Discover supported subagent/review features. |
 | `ade.agentChat.getTurnFileDiff` | invoke | Lazy diff expansion for a turn-file-summary row. |
 | `ade.agentChat.event` | push | Stream of `AgentChatEventEnvelope` into the renderer. |
@@ -383,6 +395,25 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   request key in `availableModelsRequests` is `${provider}:${mode}`
   so an active probe and a passive peek can be in flight concurrently
   without cross-resolving.
+- **OpenCode binary gating.** `ade.ai.isOpenCodeInstalled` is a cheap
+  IPC (no probe, just a `resolveOpenCodeBinary` lookup) used by the
+  ModelPicker / Settings to gate the OpenCode rail and surface an
+  "Install OpenCode" CTA without flashing before auth/install status
+  loads. `openCodeBinaryManager.resolveOpenCodeBinary` re-validates the
+  cached path on every call (so a fresh user install during the same
+  session is picked up) and intentionally does not cache misses.
+  `clearOpenCodeBinaryCache()` is wired into the AI integration's full
+  cache reset alongside `clearOpenCodeInventoryCache` and the dynamic
+  descriptor reset.
+- **OpenCode inventory cache shape.** `probeOpenCodeProviderInventory`
+  returns `{ modelIds, catalogModelIds, providers, error, descriptors }`.
+  `modelIds` is the selectable list (connected providers only);
+  `catalogModelIds` is the full browseable catalog including unconnected
+  cloud providers. `OpenCodeProviderInfo` carries both `modelCount` and
+  `availableModelCount`. Variant keys are classified into
+  `reasoningTiers` (alias map handles `mini`/`med`/`extra-high`/etc.)
+  and `serviceTiers` (`fast`) instead of a flat `variantKeys` array; the
+  Settings page UI consumes this when drawing per-provider model rails.
 - **OpenCode shared server pool compaction.** Acquiring a shared
   OpenCode server (`acquireSharedOpenCodeServer`) now calls
   `pruneIdleSharedEntries(excludeKey)` which shuts down every other

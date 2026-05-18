@@ -26,6 +26,7 @@ export type OpenCodeProviderInfo = {
   name: string;
   connected: boolean;
   modelCount: number;
+  availableModelCount?: number;
 };
 
 type CacheEntry = {
@@ -33,13 +34,24 @@ type CacheEntry = {
   projectRoot: string;
   configFingerprint: string;
   passiveConfigFingerprint: string;
+  catalogModelIds: string[];
   modelIds: string[];
   providers: OpenCodeProviderInfo[];
   error: string | null;
 };
 
 let inventoryCache: CacheEntry | null = null;
-const probeInFlightMap = new Map<string, Promise<{ modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null; descriptors: ModelDescriptor[] }>>();
+const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
+
+export type OpenCodeInventoryResult = {
+  /** Selectable model ids for connected providers only. */
+  modelIds: string[];
+  /** Browseable catalog model ids. Unconnected cloud providers appear here but not in modelIds. */
+  catalogModelIds: string[];
+  providers: OpenCodeProviderInfo[];
+  error: string | null;
+  descriptors: ModelDescriptor[];
+};
 
 export function clearOpenCodeInventoryCache(): void {
   inventoryCache = null;
@@ -63,12 +75,80 @@ function fingerprintOpenCodeConfig(
   });
 }
 
-function extractVariantKeys(model: Record<string, unknown>): string[] {
+const OPENCODE_REASONING_VARIANT_ALIASES: Record<string, string> = {
+  none: "none",
+  dynamic: "dynamic",
+  off: "off",
+  minimal: "minimal",
+  mini: "minimal",
+  low: "low",
+  medium: "medium",
+  med: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  "extra-high": "xhigh",
+  extra_high: "xhigh",
+  max: "max",
+};
+
+const OPENCODE_SERVICE_VARIANT_ALIASES: Record<string, string> = {
+  fast: "fast",
+};
+
+function addUnique(out: string[], value: string): void {
+  if (!out.some((entry) => entry.trim().toLowerCase() === value)) out.push(value);
+}
+
+function normalizeVariantKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+function classifyOpenCodeVariants(model: Record<string, unknown>): {
+  reasoningTiers: string[];
+  serviceTiers: string[];
+} {
   const v = model.variants;
+  const reasoningTiers: string[] = [];
+  const serviceTiers: string[] = [];
   if (v && typeof v === "object" && !Array.isArray(v)) {
-    return Object.keys(v as Record<string, unknown>).filter(Boolean);
+    for (const [rawKey, rawValue] of Object.entries(v as Record<string, unknown>)) {
+      const key = normalizeVariantKey(rawKey);
+      if (!key) continue;
+      if (rawValue && typeof rawValue === "object" && (rawValue as { disabled?: unknown }).disabled === true) {
+        continue;
+      }
+      const serviceTier = OPENCODE_SERVICE_VARIANT_ALIASES[key];
+      if (serviceTier) {
+        addUnique(serviceTiers, serviceTier);
+        continue;
+      }
+      addUnique(reasoningTiers, OPENCODE_REASONING_VARIANT_ALIASES[key] ?? key);
+    }
   }
-  return [];
+  return { reasoningTiers, serviceTiers };
+}
+
+function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
+  tools: boolean;
+  vision: boolean;
+  reasoning: boolean;
+  streaming: boolean;
+} {
+  const capabilities = model.capabilities && typeof model.capabilities === "object"
+    ? model.capabilities as {
+        reasoning?: unknown;
+        toolcall?: unknown;
+        tools?: unknown;
+        input?: { image?: unknown };
+      }
+    : null;
+  const modalities = model.modalities as { input?: string[] } | undefined;
+  return {
+    tools: model.tool_call !== false && capabilities?.toolcall !== false && capabilities?.tools !== false,
+    vision: Boolean(modalities?.input?.includes("image") || capabilities?.input?.image === true),
+    reasoning: model.reasoning !== false && capabilities?.reasoning !== false,
+    streaming: true,
+  };
 }
 
 /**
@@ -82,11 +162,11 @@ export async function probeOpenCodeProviderInventory(args: {
   force?: boolean;
   /** Dynamically discovered models from local provider endpoints (LM Studio, Ollama). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
-}): Promise<{ modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null; descriptors: ModelDescriptor[] }> {
+}): Promise<OpenCodeInventoryResult> {
   if (!resolveOpenCodeExecutablePath()) {
     replaceDynamicOpenCodeModelDescriptors([]);
     inventoryCache = null;
-    return { modelIds: [], providers: [], error: null, descriptors: [] };
+    return { modelIds: [], catalogModelIds: [], providers: [], error: null, descriptors: [] };
   }
 
   const fp = fingerprintOpenCodeConfig(args.projectConfig, args.discoveredLocalModels);
@@ -99,11 +179,12 @@ export async function probeOpenCodeProviderInventory(args: {
     && inventoryCache.configFingerprint === fp
     && now - inventoryCache.cachedAt < TTL_MS
   ) {
-    return {
-      modelIds: inventoryCache.modelIds,
-      providers: inventoryCache.providers,
-      error: inventoryCache.error,
-      descriptors: [],
+      return {
+        modelIds: inventoryCache.modelIds,
+        catalogModelIds: inventoryCache.catalogModelIds,
+        providers: inventoryCache.providers,
+        error: inventoryCache.error,
+        descriptors: [],
     };
   }
 
@@ -149,16 +230,7 @@ export async function probeOpenCodeProviderInventory(args: {
         }
         const connected = new Set(data.connected);
         const descriptors: ModelDescriptor[] = [];
-        const providerInfos: OpenCodeProviderInfo[] = data.all.map((p: {
-          id: string;
-          name?: string;
-          models?: Record<string, Record<string, unknown>>;
-        }) => ({
-          id: p.id,
-          name: typeof p.name === "string" ? p.name : p.id,
-          connected: connected.has(p.id),
-          modelCount: Object.keys(p.models ?? {}).length,
-        }));
+        const availableProviderModelCounts = new Map<string, number>();
 
         // Build a set of loaded local model IDs so we can filter out unloaded models
         // that OpenCode discovers independently from the local provider endpoints.
@@ -178,10 +250,12 @@ export async function probeOpenCodeProviderInventory(args: {
         }
 
         for (const provider of data.all) {
-          if (!connected.has(provider.id)) continue;
           const isLocal = isLocalProviderFamily(provider.id);
           const discoveryExists = isLocal && discoveredLocalProviderIds.has(provider.id);
           const allowedModels = discoveryExists ? loadedLocalModelIds.get(provider.id) : undefined;
+          // Local runtime catalogs are volatile. Do not surface OpenCode's static
+          // local-provider catalog; only show models ADE just discovered as loaded.
+          if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
@@ -189,7 +263,7 @@ export async function probeOpenCodeProviderInventory(args: {
             if (!mid.length) continue;
             // For local providers, only include models that are actively loaded.
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
-            const variantKeys = extractVariantKeys(modelRecord);
+            const variants = classifyOpenCodeVariants(modelRecord);
             const displayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
@@ -200,7 +274,6 @@ export async function probeOpenCodeProviderInventory(args: {
             const out = typeof limit?.output === "number"
               ? Number(limit.output)
               : undefined;
-            const modalities = modelRecord.modalities as { input?: string[] } | undefined;
             descriptors.push(
               createDynamicOpenCodeModelDescriptor("", {
                 openCodeProviderId: provider.id,
@@ -208,30 +281,55 @@ export async function probeOpenCodeProviderInventory(args: {
                 ...(displayName ? { displayName } : {}),
                 ...(Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
                 ...(Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
-                ...(variantKeys.length ? { reasoningTiers: variantKeys } : {}),
-                capabilities: {
-                  tools: modelRecord.tool_call !== false,
-                  vision: Boolean(modalities?.input?.includes("image")),
-                  reasoning: modelRecord.reasoning !== false,
-                  streaming: true,
-                },
+                ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
+                ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
+                capabilities: readOpenCodeModelCapabilities(modelRecord),
               }),
             );
+            if (connected.has(provider.id)) {
+              availableProviderModelCounts.set(
+                provider.id,
+                (availableProviderModelCounts.get(provider.id) ?? 0) + 1,
+              );
+            }
           }
         }
 
         replaceDynamicOpenCodeModelDescriptors(descriptors);
-        const modelIds = [...descriptors.map((d) => d.id)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        const catalogModelIds = [...descriptors.map((d) => d.id)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        const modelIds = descriptors
+          .filter((d) => d.openCodeProviderId ? connected.has(d.openCodeProviderId) : true)
+          .map((d) => d.id)
+          .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+        const catalogCounts = new Map<string, number>();
+        for (const descriptor of descriptors) {
+          const providerId = descriptor.openCodeProviderId ?? "opencode";
+          catalogCounts.set(providerId, (catalogCounts.get(providerId) ?? 0) + 1);
+        }
+        const providerInfos: OpenCodeProviderInfo[] = data.all.map((p: {
+          id: string;
+          name?: string;
+          models?: Record<string, Record<string, unknown>>;
+        }) => ({
+          id: p.id,
+          name: typeof p.name === "string" ? p.name : p.id,
+          connected: connected.has(p.id),
+          modelCount: isLocalProviderFamily(p.id)
+            ? catalogCounts.get(p.id) ?? 0
+            : Object.keys(p.models ?? {}).length,
+          availableModelCount: availableProviderModelCounts.get(p.id) ?? 0,
+        }));
         inventoryCache = {
           cachedAt: Date.now(),
           projectRoot: args.projectRoot,
           configFingerprint: fp,
           passiveConfigFingerprint: passiveFp,
+          catalogModelIds,
           modelIds,
           providers: providerInfos,
           error: null,
         };
-        return { modelIds, providers: providerInfos, error: null, descriptors };
+        return { modelIds, catalogModelIds, providers: providerInfos, error: null, descriptors };
       } finally {
         lease.release("handle_close");
       }
@@ -244,11 +342,12 @@ export async function probeOpenCodeProviderInventory(args: {
         projectRoot: args.projectRoot,
         configFingerprint: fp,
         passiveConfigFingerprint: passiveFp,
+        catalogModelIds: [],
         modelIds: [],
         providers: [],
         error: message,
       };
-      return { modelIds: [], providers: [], error: message, descriptors: [] };
+      return { modelIds: [], catalogModelIds: [], providers: [], error: message, descriptors: [] };
     } finally {
       probeInFlightMap.delete(probeKey);
     }
@@ -262,10 +361,15 @@ export async function probeOpenCodeProviderInventory(args: {
 export function peekOpenCodeInventoryCache(args: {
   projectRoot: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
-}): { modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
+}): { modelIds: string[]; catalogModelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
   const fp = fingerprintOpenCodeConfig(args.projectConfig);
   if (!inventoryCache) return null;
   if (inventoryCache.projectRoot !== args.projectRoot) return null;
   if (inventoryCache.passiveConfigFingerprint !== fp && inventoryCache.configFingerprint !== fp) return null;
-  return { modelIds: inventoryCache.modelIds, providers: inventoryCache.providers, error: inventoryCache.error };
+  return {
+    modelIds: inventoryCache.modelIds,
+    catalogModelIds: inventoryCache.catalogModelIds,
+    providers: inventoryCache.providers,
+    error: inventoryCache.error,
+  };
 }

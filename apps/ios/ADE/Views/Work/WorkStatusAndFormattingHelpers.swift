@@ -58,6 +58,8 @@ func providerLabel(_ provider: String) -> String {
   case "opencode": return "OpenCode"
   case "cursor": return "Cursor"
   case "droid": return "Droid"
+  case "ollama": return "Ollama"
+  case "lmstudio": return "LM Studio"
   default: return provider.capitalized
   }
 }
@@ -129,6 +131,10 @@ func providerTint(_ provider: String?) -> Color {
     return .indigo
   case "droid":
     return .gray
+  case "ollama":
+    return .green
+  case "lmstudio":
+    return .orange
   case "google":
     return .yellow
   case "factory":

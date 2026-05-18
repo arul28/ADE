@@ -9,6 +9,8 @@ import {
   Grok,
   Groq,
   Kimi,
+  LmStudio,
+  Ollama,
   OpenAI,
   OpenCode,
   OpenRouter,
@@ -165,6 +167,10 @@ export function ProviderLogo({
       return <OpenRouter.Avatar size={size} className={c} />;
     case "google":
       return <Google.Avatar size={size} className={c} />;
+    case "ollama":
+      return <Ollama.Avatar size={size} className={c} />;
+    case "lmstudio":
+      return <LmStudio.Avatar size={size} className={c} />;
     default: {
       const lobeSrc = lobeProviderIconSrc(raw);
       if (lobeSrc) {
@@ -181,6 +187,7 @@ export function ModelRowLogo({
   cliCommand,
   modelId,
   providerModelId,
+  openCodeProviderId,
   size = 13,
   className,
 }: {
@@ -188,12 +195,29 @@ export function ModelRowLogo({
   cliCommand?: string;
   modelId?: string;
   providerModelId?: string;
+  openCodeProviderId?: string;
   size?: number;
   className?: string;
 }) {
   const fam = String(modelFamily ?? "").toLowerCase();
   const cli = String(cliCommand ?? "").toLowerCase();
   const c = lobeMarkClass(className);
+
+  // OpenCode-routed models: route the row logo by their underlying sub-provider
+  // (Anthropic, OpenAI, etc.) rather than the generic OpenCode mark so each row
+  // is visually distinguishable inside the OpenCode rail.
+  if (fam === "opencode" && openCodeProviderId) {
+    const sub = openCodeProviderId.trim().toLowerCase();
+    if (sub === "anthropic") return <Claude.Avatar size={size} className={c} />;
+    if (sub === "openai") return <OpenAI size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
+    if (sub === "google") return <Gemini.Color size={size} className={c} />;
+    if (sub === "xai") return <XAI.Avatar size={size} className={c} />;
+    if (sub === "groq") return <Groq.Avatar size={size} className={c} />;
+    if (sub === "openrouter") return <OpenRouter.Avatar size={size} className={c} />;
+    if (sub === "ollama") return <Ollama.Avatar size={size} className={c} />;
+    if (sub === "lmstudio") return <LmStudio.Avatar size={size} className={c} />;
+    return <OpenCode.Avatar size={size} className={c} />;
+  }
 
   if (fam === "cursor" || cli === "cursor") {
     const providerModel = resolveCursorProviderModelId(modelId, providerModelId);
@@ -237,6 +261,14 @@ export function ModelRowLogo({
       return <Grok.Avatar size={size} className={c} />;
     }
     return <XAI.Avatar size={size} className={c} />;
+  }
+
+  if (fam === "ollama") {
+    return <Ollama.Avatar size={size} className={c} />;
+  }
+
+  if (fam === "lmstudio") {
+    return <LmStudio.Avatar size={size} className={c} />;
   }
 
   return <ProviderLogo family={fam} size={size} className={className} />;

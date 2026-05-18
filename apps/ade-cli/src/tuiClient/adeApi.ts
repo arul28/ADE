@@ -21,6 +21,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatFileRef,
   AgentChatInteractionMode,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
@@ -317,6 +319,13 @@ export async function getAvailableModels(
   });
 }
 
+export async function getModelCatalog(
+  connection: AdeCodeConnection,
+  args: AgentChatModelCatalogArgs = {},
+): Promise<AgentChatModelCatalog> {
+  return await connection.action<AgentChatModelCatalog>("chat", "modelCatalog", args);
+}
+
 export async function getAiSettingsStatus(
   connection: AdeCodeConnection,
   args: { force?: boolean; refreshOpenCodeInventory?: boolean } = {},
@@ -363,7 +372,7 @@ export async function createChatSession(args: {
       : provider === "cursor"
         ? "auto"
         : provider === "droid"
-          ? "claude-sonnet-4-5-20250929"
+          ? (getDefaultModelDescriptor("droid")?.providerModelId ?? "claude-sonnet-4-5-20250929")
           : "gpt-5.5";
   const reasoningEffort = args.reasoningEffort ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null);
   return await args.connection.action<AgentChatSession>("chat", "createSession", {
@@ -531,6 +540,44 @@ export async function updateChatModel(args: {
 
 export async function navigateDesktop(connection: AdeCodeConnection, request: NavigateRequest): Promise<NavigateResult> {
   return await connection.request<NavigateResult>("app/navigate", request);
+}
+
+// ---------------------------------------------------------------------------
+// Model picker: cross-surface favorites + recents persisted in ade-cli.
+// ---------------------------------------------------------------------------
+
+export async function getModelPickerFavorites(connection: AdeCodeConnection): Promise<string[]> {
+  const result = await connection.request<{ favorites: string[] }>("modelPicker.getFavorites", {});
+  return Array.isArray(result?.favorites) ? result.favorites : [];
+}
+
+export async function toggleModelPickerFavorite(
+  connection: AdeCodeConnection,
+  modelId: string,
+): Promise<{ favorites: string[]; isFavorite: boolean }> {
+  const result = await connection.request<{ favorites: string[]; isFavorite: boolean }>(
+    "modelPicker.toggleFavorite",
+    { modelId },
+  );
+  return {
+    favorites: Array.isArray(result?.favorites) ? result.favorites : [],
+    isFavorite: Boolean(result?.isFavorite),
+  };
+}
+
+export async function getModelPickerRecents(connection: AdeCodeConnection): Promise<string[]> {
+  const result = await connection.request<{ recents: string[] }>("modelPicker.getRecents", {});
+  return Array.isArray(result?.recents) ? result.recents : [];
+}
+
+export async function pushModelPickerRecent(
+  connection: AdeCodeConnection,
+  modelId: string,
+): Promise<string[]> {
+  const result = await connection.request<{ recents: string[] }>("modelPicker.pushRecent", {
+    modelId,
+  });
+  return Array.isArray(result?.recents) ? result.recents : [];
 }
 
 export function newestSession(sessions: AgentChatSessionSummary[]): AgentChatSessionSummary | null {

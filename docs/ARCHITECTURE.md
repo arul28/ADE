@@ -386,7 +386,13 @@ ade.memory.*                 # memory CRUD, search, health, embeddings
 ade.missions.* / ade.orchestrator.*
 ade.cto.*                    # identity, core memory, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
-ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state
+ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state.
+                             # Includes ade.agentChat.modelCatalog (provider-grouped catalog
+                             # used by desktop + TUI + iOS ModelPickers; accepts
+                             # `{ mode: "cached"|"refresh-stale"|"force", refreshProvider?: "opencode"|"cursor"|"droid"|"lmstudio"|"ollama" }`).
+ade.ai.*                     # AI integration status + provider auth (storeApiKey/deleteApiKey/getStatus/...).
+                             # ade.ai.isOpenCodeInstalled is a cheap probe (no runtime spin-up)
+                             # used to gate the ModelPicker OpenCode rail + Settings install CTA.
 ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session)
 ade.automations.*
 ade.processes.* / ade.tests.* # processes also expose group bulk ops:

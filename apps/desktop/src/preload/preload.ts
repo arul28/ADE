@@ -289,6 +289,8 @@ import type {
   AgentChatHandoffResult,
   AgentChatInterruptArgs,
   AgentChatListArgs,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogArgs,
   AgentChatModelInfo,
   AgentChatModelsArgs,
   AgentChatParallelLaunchState,
@@ -1071,6 +1073,11 @@ const allowLocalRuntimeFallback =
     process.env.ADE_PACKAGE_CHANNEL === "alpha"
   );
 
+function isLocalRuntimeActionNotCallableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Action '[^']+\.[^']+' is not callable/i.test(message);
+}
+
 function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -1078,6 +1085,7 @@ function isSafeLocalRuntimeFallbackError(error: unknown): boolean {
     /Local runtime daemon is not available/i.test(message) ||
     /ADE service connection (?:closed|failed)/i.test(message) ||
     /IPC handler for 'ade\.localRuntime\.(?:callAction|callSync|streamEvents)' timed out/i.test(message) ||
+    isLocalRuntimeActionNotCallableError(error) ||
     /Timed out waiting for remote ADE service method /i.test(message) ||
     /Timed out connecting to ADE service socket/i.test(message) ||
     /Unsupported database value/i.test(message) ||
@@ -1178,10 +1186,12 @@ async function callLocalProjectActionIfBound<T>(
   try {
     const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
       request: { domain, action, ...request },
-    })) as RemoteRuntimeActionResult;
+  })) as RemoteRuntimeActionResult;
     return { handled: true, result: response.result as T };
   } catch (error) {
-    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+    const canUseFallback =
+      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
+    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn(
@@ -1347,7 +1357,9 @@ async function callLocalProjectSyncIfBound<T>(
     })) as T;
     return { handled: true, result };
   } catch (error) {
-    if (!allowLocalRuntimeFallback || !isSafeLocalRuntimeFallbackError(error)) {
+    const canUseFallback =
+      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
+    if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
     console.warn(
@@ -2950,6 +2962,8 @@ contextBridge.exposeInMainWorld("ade", {
     },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
       ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
+    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> =>
+      ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       clearAround(
         () => aiStatusCache.clear(),
@@ -3101,6 +3115,27 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ai", "openCursorCloudChat", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
+  },
+  modelPicker: {
+    getFavorites: async (): Promise<{ favorites: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.getFavorites", {}, async () => ({ favorites: [] })),
+    setFavorites: async (favorites: string[]): Promise<{ favorites: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.setFavorites", { favorites }, async () => ({
+        favorites,
+      })),
+    toggleFavorite: async (
+      modelId: string,
+    ): Promise<{ favorites: string[]; isFavorite: boolean }> =>
+      callProjectRuntimeSyncOr("modelPicker.toggleFavorite", { modelId }, async () => ({
+        favorites: [],
+        isFavorite: false,
+      })),
+    getRecents: async (): Promise<{ recents: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.getRecents", {}, async () => ({ recents: [] })),
+    pushRecent: async (modelId: string): Promise<{ recents: string[] }> =>
+      callProjectRuntimeSyncOr("modelPicker.pushRecent", { modelId }, async () => ({
+        recents: [],
+      })),
   },
   sync: {
     getStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
@@ -5211,6 +5246,16 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModels, args);
+    },
+    modelCatalog: async (
+      args?: AgentChatModelCatalogArgs,
+    ): Promise<AgentChatModelCatalog> => {
+      const runtime = await callProjectRuntimeActionIfBound<
+        AgentChatModelCatalog
+      >("chat", "modelCatalog", { args: args ?? {} });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatModelCatalog, args ?? {});
     },
     archive: async (args: AgentChatArchiveArgs): Promise<void> => {
       agentChatSummaryCache.clear();

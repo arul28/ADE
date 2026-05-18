@@ -13,7 +13,8 @@ import {
   Sparkle,
   X,
 } from "@phosphor-icons/react";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
@@ -647,22 +648,27 @@ function NewReportTab({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={LABEL_STYLE}>AI assist (optional)</span>
-        <ProviderModelSelector
-          value={modelId}
-          onChange={(id) => {
-            setModelId(id);
-            setReasoningEffort(null);
-            clearPreparedDraft();
-          }}
-          availableModelIds={availableModelIds}
-          showReasoning
-          reasoningEffort={reasoningEffort}
-          onReasoningEffortChange={(value) => {
-            setReasoningEffort(value);
-            clearPreparedDraft();
-          }}
-          onOpenAiSettings={openAiProvidersSettings}
-        />
+        <div className="inline-flex items-center gap-1.5">
+          <ModelPicker
+            value={modelId}
+            onChange={(id) => {
+              setModelId(id);
+              setReasoningEffort(null);
+              clearPreparedDraft();
+            }}
+            surfaceKey="feedback-reporter"
+            availableModelIds={availableModelIds}
+            onOpenSignIn={openAiProvidersSettings}
+          />
+          <ReasoningEffortPicker
+            modelId={modelId}
+            reasoningEffort={reasoningEffort}
+            onChange={(value) => {
+              setReasoningEffort(value);
+              clearPreparedDraft();
+            }}
+          />
+        </div>
         {helperText("Leave this empty to build a fully deterministic draft. If you pick a model, ADE only uses it to suggest the title and labels.")}
       </div>
 

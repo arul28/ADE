@@ -35,7 +35,9 @@ import {
 } from "../../../shared/chatContextAttachments";
 import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
 import { ChatAttachmentTray, type ChatAttachmentPendingImage } from "./ChatAttachmentTray";
@@ -459,6 +461,20 @@ function resolveCodexPermissionPreset(args: {
   return "custom";
 }
 
+function safetyDotClass(safety: "safe" | "semi-auto" | "full-auto" | "danger" | "custom"): string {
+  switch (safety) {
+    case "safe":
+      return "bg-emerald-400/80";
+    case "semi-auto":
+      return "bg-amber-400/80";
+    case "full-auto":
+    case "danger":
+      return "bg-red-400/80";
+    case "custom":
+      return "bg-violet-400/80";
+  }
+}
+
 const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
   { value: "plan", label: "Plan" },
   { value: "edit", label: "Edit" },
@@ -648,7 +664,7 @@ function CodexFastModeToggle({
     <SmartTooltip
       content={{
         label: "Fast mode",
-        description: active ? "Fast mode is on for the next Codex turn." : "Use Fast mode for supported Codex models.",
+        description: active ? "Fast mode is on for the next turn." : "Use Fast mode for supported runtime models.",
         effect: active ? "Next turn uses the fast service tier." : "Standard mode is selected.",
       }}
     >
@@ -770,7 +786,6 @@ export function AgentChatComposer({
   hideNativeControls = false,
   messagePlaceholder,
   onModelChange,
-  onModelCatalogOpen,
   onReasoningEffortChange,
   onCodexFastModeChange,
   onDraftChange,
@@ -890,7 +905,6 @@ export function AgentChatComposer({
   hideNativeControls?: boolean;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
-  onModelCatalogOpen?: () => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
@@ -1758,7 +1772,9 @@ export function AgentChatComposer({
     parallelChatMode && parallelConfiguringIndex != null
       ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
       : (modelId ?? "");
-  const fastModeSupported = sp === "codex" && modelSupportsFastMode(getModelById(fastModeModelId));
+  const fastModeSupported = modelSupportsFastMode(
+    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId) ?? getModelById(fastModeModelId),
+  );
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
       ? parallelModelSlots[parallelConfiguringIndex]?.codexFastMode === true
@@ -1967,6 +1983,7 @@ export function AgentChatComposer({
           <div ref={claudeModePickerRef} className="relative">
             <button
               type="button"
+              data-state={claudeModePickerOpen ? "open" : "closed"}
               aria-haspopup="listbox"
               aria-expanded={claudeModePickerOpen}
               aria-label="Claude permission mode"
@@ -1976,26 +1993,24 @@ export function AgentChatComposer({
                 setClaudeModePickerOpen((open) => !open);
               }}
               className={cn(
-                "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                plainComposerToolbarChrome
-                  ? cn(
-                      "border border-transparent bg-transparent px-2",
-                      selectedTone.activeText,
-                      nativeControlsDisabled ? "cursor-not-allowed opacity-50" : selectedTone.hoverBg,
-                    )
-                  : cn(
-                      "border px-2.5 py-1.5",
-                      selectedTone.activeBorder,
-                      selectedTone.activeBg,
-                      selectedTone.activeText,
-                      nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
-                    ),
+                "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md border px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none transition-colors duration-150",
+                "border-white/[0.06] bg-white/[0.03] text-fg/80",
+                "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+                claudeModePickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+                nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
               )}
               title={selectedOption.detail}
             >
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", selectedTone.dot)} aria-hidden />
-              <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none">{selectedOption.label}</span>
-              <CaretDown size={10} weight="bold" className="opacity-70" />
+              <span className="font-medium leading-none">{selectedOption.label}</span>
+              <CaretDown
+                size={10}
+                weight="bold"
+                className={cn(
+                  "shrink-0 text-muted-fg/60 transition-transform duration-150",
+                  claudeModePickerOpen && "rotate-180 text-fg/80",
+                )}
+              />
             </button>
             {claudeModePickerOpen && claudeModePickerRef.current ? createPortal(
               (() => {
@@ -2005,7 +2020,7 @@ export function AgentChatComposer({
                     role="listbox"
                     aria-label="Claude permission mode"
                     data-claude-mode-picker-dropdown
-                    className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                    className="fixed z-[100] w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                     style={{
                       left: rect.left,
                       bottom: window.innerHeight - rect.top + 8,
@@ -2063,11 +2078,11 @@ export function AgentChatComposer({
       const presetLabel = codexPreset === "custom"
         ? "Custom"
         : activePreset?.label ?? "Plan";
-      const activeColors = activePreset ? safetyColors(activePreset.safety) : null;
       return (
         <div ref={codexPresetPickerRef} className="relative">
           <button
             type="button"
+            data-state={codexPresetPickerOpen ? "open" : "closed"}
             aria-haspopup="listbox"
             aria-expanded={codexPresetPickerOpen}
             aria-label="Codex approval preset"
@@ -2077,22 +2092,29 @@ export function AgentChatComposer({
               setCodexPresetPickerOpen((open) => !open);
             }}
             className={cn(
-              "inline-flex h-8 min-h-8 items-center gap-2 rounded-md font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-              plainComposerToolbarChrome
-                ? cn(
-                    "border border-transparent bg-transparent px-2 text-fg/80",
-                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-white/[0.05] hover:text-fg/88",
-                  )
-                : cn(
-                    "border px-2.5 py-1.5",
-                    activeColors ? `${activeColors.activeBg} text-fg/88 border-white/[0.08]` : "bg-white/[0.06] text-fg/80 border-white/[0.08]",
-                    nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:brightness-110",
-                  ),
+              "inline-flex h-8 min-w-0 items-center gap-1.5 rounded-md border px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none transition-colors duration-150",
+              "border-white/[0.06] bg-white/[0.03] text-fg/80",
+              "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+              codexPresetPickerOpen && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+              nativeControlsDisabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
             )}
             title={activePreset?.detail ?? codexCustomSummary ?? "Codex approval preset"}
           >
-            <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-none">{presetLabel}</span>
-            <CaretDown size={10} weight="bold" className="opacity-70" />
+            {activePreset ? (
+              <span
+                className={cn("h-1.5 w-1.5 shrink-0 rounded-full", safetyDotClass(activePreset.safety))}
+                aria-hidden
+              />
+            ) : null}
+            <span className="font-medium leading-none">{presetLabel}</span>
+            <CaretDown
+              size={10}
+              weight="bold"
+              className={cn(
+                "shrink-0 text-muted-fg/60 transition-transform duration-150",
+                codexPresetPickerOpen && "rotate-180 text-fg/80",
+              )}
+            />
           </button>
           {codexPresetPickerOpen && codexPresetPickerRef.current ? createPortal(
             (() => {
@@ -2102,7 +2124,7 @@ export function AgentChatComposer({
                   role="listbox"
                   aria-label="Codex approval preset"
                   data-codex-preset-picker-dropdown
-                  className="fixed z-[80] w-56 overflow-hidden rounded-lg border border-white/[0.08] bg-[#15151c] shadow-lg shadow-black/40"
+                  className="fixed z-[100] w-56 overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={{
                     left: rect.left,
                     bottom: window.innerHeight - rect.top + 8,
@@ -2381,7 +2403,7 @@ export function AgentChatComposer({
     if (parallelChatMode) return false;
     const id = modelId?.trim();
     if (!id) return false;
-    return (getModelById(id)?.reasoningTiers?.length ?? 0) > 0;
+    return (resolveModelDescriptorWithRuntimeCatalog(id)?.reasoningTiers?.length ?? 0) > 0;
   }, [parallelChatMode, modelId]);
 
   const composerToolbarGridMode = useMemo<"flex" | "grid2" | "grid3">(() => {
@@ -3383,18 +3405,24 @@ export function AgentChatComposer({
               </div>
             ) : null}
             {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
-              <ProviderModelSelector
-                value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
-                onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
-                onOpen={onModelCatalogOpen}
-                availableModelIds={availableModelIds}
-                disabled={parallelLaunchBusy}
-                showReasoning
-                reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
-                onReasoningEffortChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
-                onOpenAiSettings={onOpenAiSettings}
-                compactToolbar
-              />
+              <>
+                <ModelPicker
+                  value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                  onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                  surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
+                  {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  disabled={parallelLaunchBusy}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                  reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
+                  onChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
+                  disabled={parallelLaunchBusy}
+                  compact
+                />
+              </>
             ) : null}
             {parallelChatMode && parallelConfiguringIndex != null && fastModeSupported ? (
               <CodexFastModeToggle
@@ -3404,18 +3432,24 @@ export function AgentChatComposer({
               />
             ) : null}
             {!parallelChatMode ? (
-              <ProviderModelSelector
-                value={modelId}
-                onChange={onModelChange}
-                onOpen={onModelCatalogOpen}
-                availableModelIds={availableModelIds}
-                disabled={modelSelectionLocked}
-                showReasoning
-                reasoningEffort={reasoningEffort}
-                onReasoningEffortChange={onReasoningEffortChange}
-                onOpenAiSettings={onOpenAiSettings}
-                compactToolbar
-              />
+              <>
+                <ModelPicker
+                  value={modelId}
+                  onChange={onModelChange}
+                  surfaceKey="chat-composer"
+                  {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  disabled={modelSelectionLocked}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={modelId}
+                  reasoningEffort={reasoningEffort}
+                  onChange={onReasoningEffortChange}
+                  disabled={modelSelectionLocked}
+                  compact
+                />
+              </>
             ) : null}
             {!parallelChatMode && fastModeSupported ? (
               <CodexFastModeToggle

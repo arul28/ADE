@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 
 type ModelSelectorProps = {
   value: ModelConfig;
@@ -11,6 +12,8 @@ type ModelSelectorProps = {
   /** When provided, only models whose registry id is in this set are shown. */
   availableModelIds?: string[];
   onOpenAiSettings?: () => void;
+  /** Stable id used by the picker to remember per-surface defaults. */
+  surfaceKey?: string;
 };
 
 function providerFromFamily(modelId: string): ModelProvider | undefined {
@@ -38,6 +41,7 @@ export function ModelSelector({
   showRecommendedBadge: _showRecommendedBadge,
   availableModelIds,
   onOpenAiSettings,
+  surfaceKey = "missions/phase-or-action",
 }: ModelSelectorProps) {
   const resolvedModelId = useMemo(() => normalizeModelId(value.modelId), [value.modelId]);
   const selectedDescriptor = useMemo(() => getModelById(resolvedModelId), [resolvedModelId]);
@@ -61,16 +65,24 @@ export function ModelSelector({
     });
   }, [onChange, resolvedModelId]);
 
+  const effectiveModelId = selectedDescriptor?.id ?? resolvedModelId;
+
   return (
-    <ProviderModelSelector
-      value={selectedDescriptor?.id ?? resolvedModelId}
-      onChange={handleModelChange}
-      availableModelIds={availableModelIds}
-      className={compact ? "scale-[0.95] origin-left" : undefined}
-      showReasoning
-      reasoningEffort={value.thinkingLevel ?? null}
-      onReasoningEffortChange={handleReasoningChange}
-      onOpenAiSettings={onOpenAiSettings}
-    />
+    <div className="inline-flex items-center gap-1.5">
+      <ModelPicker
+        value={effectiveModelId}
+        onChange={handleModelChange}
+        surfaceKey={surfaceKey}
+        compact={compact ?? false}
+        {...(availableModelIds ? { availableModelIds } : {})}
+        {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+      />
+      <ReasoningEffortPicker
+        modelId={effectiveModelId}
+        reasoningEffort={value.thinkingLevel ?? null}
+        onChange={handleReasoningChange}
+        compact={compact ?? false}
+      />
+    </div>
   );
 }

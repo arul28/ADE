@@ -198,7 +198,28 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(chatActions).toContain("ensureCtoSession");
     expect(chatActions).toContain("ensureAgentIdentitySession");
+    expect(chatActions).toContain("modelCatalog");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
+  });
+
+  it("exposes chat.modelCatalog as a runtime action alias", async () => {
+    const getModelCatalog = vi.fn(async (args?: unknown) => ({ args, groups: [] }));
+    const runtime = {
+      agentChatService: {
+        getModelCatalog,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      modelCatalog?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.modelCatalog?.({ mode: "cached" })).resolves.toEqual({
+      args: { mode: "cached" },
+      groups: [],
+    });
+    expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("modelCatalog");
+    expect(getModelCatalog).toHaveBeenCalledWith({ mode: "cached" });
   });
 
   it("exposes the browser panel and tab control surface", () => {

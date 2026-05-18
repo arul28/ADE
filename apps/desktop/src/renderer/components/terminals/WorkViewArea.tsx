@@ -1,5 +1,4 @@
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
@@ -43,7 +42,8 @@ import { LaneChip } from "./LaneChip";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
-import { ProviderModelSelector } from "../shared/ProviderModelSelector";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
@@ -393,47 +393,25 @@ function WorkCliPermissionPicker({
   value,
   onChange,
   disabled,
+  compact = false,
 }: {
   provider: TerminalResumeProvider | null;
   value: AgentChatPermissionMode;
   onChange: (mode: AgentChatPermissionMode) => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const options = useMemo(() => continuationPermissionOptions(provider), [provider]);
   const selected = options.find((option) => option.value === value) ?? options[0] ?? null;
   const providerLabel = continuationProviderLabel(provider);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
   const [open, setOpen] = useState(false);
-  const updatePanelStyle = useCallback(() => {
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const viewportPadding = 8;
-    const panelWidth = Math.min(352, Math.max(240, window.innerWidth - viewportPadding * 2));
-    const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const availableAbove = rect.top - viewportPadding;
-    const openAbove = availableBelow < 180 && availableAbove > availableBelow;
-    const maxHeight = Math.max(160, Math.min(360, (openAbove ? availableAbove : availableBelow) - 6));
-    const left = Math.min(
-      Math.max(viewportPadding, rect.right - panelWidth),
-      Math.max(viewportPadding, window.innerWidth - panelWidth - viewportPadding),
-    );
-    const top = openAbove
-      ? Math.max(viewportPadding, rect.top - maxHeight - 6)
-      : Math.max(viewportPadding, Math.min(window.innerHeight - viewportPadding - maxHeight, rect.bottom + 6));
-    setPanelStyle({ top, left, width: panelWidth, maxHeight });
-  }, []);
 
   useEffect(() => {
     if (!open) return;
-    updatePanelStyle();
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
       if (containerRef.current?.contains(target)) return;
-      const panels = document.querySelectorAll("[data-cli-permission-picker-panel='true']");
-      for (const panel of panels) {
-        if (panel.contains(target)) return;
-      }
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -441,15 +419,11 @@ function WorkCliPermissionPicker({
     };
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("resize", updatePanelStyle);
-    window.addEventListener("scroll", updatePanelStyle, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("resize", updatePanelStyle);
-      window.removeEventListener("scroll", updatePanelStyle, true);
     };
-  }, [open, updatePanelStyle]);
+  }, [open]);
 
   useEffect(() => {
     if (disabled && open) setOpen(false);
@@ -457,18 +431,47 @@ function WorkCliPermissionPicker({
 
   if (!selected) return null;
 
-  const panel = createPortal(
-    <AnimatePresence>
+  return (
+    <div ref={containerRef} className="relative min-w-0 shrink-0">
+      <button
+        type="button"
+        disabled={disabled}
+        data-state={open ? "open" : "closed"}
+        onClick={() => {
+          if (!disabled) setOpen((current) => !current);
+        }}
+        className={cn(
+          "inline-flex min-w-0 max-w-[11rem] items-center gap-1.5 rounded-md border font-sans transition-colors duration-150",
+          compact ? "h-7 px-1.5 text-[10px]" : "h-8 px-2 text-[11px] sm:text-[12px]",
+          "border-white/[0.06] bg-white/[0.03] text-fg/80",
+          "hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg",
+          open && "border-violet-400/30 bg-violet-500/[0.08] text-fg",
+          disabled && "cursor-not-allowed opacity-60 hover:border-white/[0.06] hover:bg-white/[0.03]",
+        )}
+        aria-label={`${providerLabel} permission mode`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Permission mode: ${selected.label}`}
+      >
+        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", permissionSafetyDotClass(selected))} />
+        <span className="min-w-0 truncate font-medium leading-none">{selected.label}</span>
+        <CaretDown
+          size={compact ? 9 : 10}
+          weight="bold"
+          className={cn(
+            "shrink-0 text-muted-fg/60 transition-transform duration-150",
+            open && "rotate-180 text-fg/80",
+          )}
+        />
+      </button>
       {open ? (
-        <motion.div
-          key="cli-permission-picker"
-          data-cli-permission-picker-panel="true"
-          className="fixed z-[82] overflow-y-auto rounded-xl border border-white/[0.10] bg-popover/95 p-1 shadow-2xl shadow-black/35 backdrop-blur-xl"
-          style={panelStyle ?? undefined}
-          initial={{ opacity: 0, y: 6, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 6, scale: 0.98 }}
-          transition={{ duration: 0.14 }}
+        <div
+          role="menu"
+          aria-label={`${providerLabel} permission mode`}
+          className={cn(
+            "absolute right-0 top-full z-[100] mt-1.5 w-[280px] overflow-y-auto rounded-xl border border-white/[0.08] p-1",
+            "bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
+          )}
         >
           {options.map((option) => {
             const optionColors = safetyColors(option.safety);
@@ -477,15 +480,16 @@ function WorkCliPermissionPicker({
               <button
                 key={option.value}
                 type="button"
-                className={cn(
-                  "flex w-full items-start gap-2 rounded-lg border-l-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
-                  optionColors.border,
-                  active && optionColors.activeBg,
-                )}
+                role="menuitem"
                 onClick={() => {
                   onChange(option.value);
                   setOpen(false);
                 }}
+                className={cn(
+                  "flex w-full cursor-pointer items-start gap-2 rounded-md border-l-2 px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.05]",
+                  optionColors.border,
+                  active && optionColors.activeBg,
+                )}
               >
                 <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-white/[0.10] bg-white/[0.03]">
                   {active ? <Check size={10} weight="bold" className="text-accent" /> : null}
@@ -502,38 +506,8 @@ function WorkCliPermissionPicker({
               </button>
             );
           })}
-        </motion.div>
+        </div>
       ) : null}
-    </AnimatePresence>,
-    document.body,
-  );
-
-  return (
-    <div ref={containerRef} className="relative min-w-0 shrink-0">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => {
-          if (!disabled) {
-            if (!open) updatePanelStyle();
-            setOpen((current) => !current);
-          }
-        }}
-        className={cn(
-          "inline-flex h-8 min-h-8 max-w-[11rem] items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 text-[10px] font-medium text-fg/70 transition-colors hover:bg-white/[0.05]",
-          open && "bg-white/[0.06]",
-          disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
-        )}
-        aria-label={`${providerLabel} permission mode`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={`Permission mode: ${selected.label}`}
-      >
-        <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", permissionSafetyDotClass(selected))} />
-        <span className="min-w-0 truncate">{selected.label}</span>
-        <CaretDown size={10} weight="bold" className="shrink-0 text-muted-fg/45" />
-      </button>
-      {panel}
     </div>
   );
 }
@@ -700,22 +674,29 @@ function WorkCliContinuationComposer({
               <span className="font-medium text-fg/70">{providerLabel}</span>
             </div>
             {modelProvider ? (
-              <ProviderModelSelector
-                value={selectedModel}
-                disabled={sending || modelsLoading || models.length === 0}
-                onChange={setSelectedModel}
-                availableModelIds={availableModelIds}
-                catalogMode="available-only"
-                filter={(model) => (
-                  modelProvider === "claude"
-                    ? model.family === "anthropic" && model.isCliWrapped
-                    : model.family === "openai" && model.isCliWrapped
-                )}
-                compactToolbar
-                showReasoning
-                reasoningEffort={selectedReasoningEffort}
-                onReasoningEffortChange={setSelectedReasoningEffort}
-              />
+              <div className="inline-flex items-center gap-1.5">
+                <ModelPicker
+                  value={selectedModel}
+                  disabled={sending || modelsLoading || models.length === 0}
+                  onChange={setSelectedModel}
+                  surfaceKey="work-view-cli"
+                  availableModelIds={availableModelIds}
+                  catalogMode="available-only"
+                  filter={(model) => (
+                    modelProvider === "claude"
+                      ? model.family === "anthropic" && model.isCliWrapped
+                      : model.family === "openai" && model.isCliWrapped
+                  )}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={selectedModel}
+                  reasoningEffort={selectedReasoningEffort}
+                  onChange={setSelectedReasoningEffort}
+                  compact
+                  disabled={sending || modelsLoading || models.length === 0}
+                />
+              </div>
             ) : null}
             <WorkCliPermissionPicker
               provider={provider}

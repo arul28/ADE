@@ -4475,6 +4475,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       approve: resolvedArg(undefined),
       respondToInput: resolvedArg(undefined),
       models: resolvedArg([]),
+      modelCatalog: resolvedArg({ groups: [], fetchedAt: new Date(0).toISOString() }),
       archive: resolvedArg(undefined),
       unarchive: resolvedArg(undefined),
       delete: resolvedArg(undefined),

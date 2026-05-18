@@ -480,6 +480,59 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
   });
 
+  it("falls back to in-process IPC when the local runtime does not expose a new action yet", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const catalog = {
+      generatedAt: "2026-05-18T18:00:00.000Z",
+      stale: false,
+      availableModelIds: [],
+      models: [],
+      providers: [],
+      groups: [],
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        throw new Error("Action 'chat.modelCatalog' is not callable.");
+      }
+      if (channel === IPC.agentChatModelCatalog) return catalog;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" })).resolves.toEqual(catalog);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.agentChatModelCatalog, { mode: "cached" });
+  });
+
   it("uses in-process IPC for local PR tab reads instead of waiting on the runtime daemon", async () => {
     const binding = {
       kind: "local",

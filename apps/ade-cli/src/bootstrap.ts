@@ -65,6 +65,7 @@ import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore"
 import { createMissionBudgetService } from "../../desktop/src/main/services/orchestrator/missionBudgetService";
 import type { createSyncService } from "./services/sync/syncService";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
+import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
@@ -1088,6 +1089,7 @@ export async function createAdeRuntime(args: {
       forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? true,
       projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
+      getModelPickerStore: () => getSharedModelPickerStore(),
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
   }

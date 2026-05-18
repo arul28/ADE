@@ -11,7 +11,27 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 
-export type CursorCliModelRow = { id: string; displayName?: string };
+export type CursorModelParameterValue = { id: string; value: string };
+export type CursorModelParameterDefinition = {
+  id: string;
+  displayName?: string;
+  values: Array<{ value: string; displayName?: string }>;
+};
+export type CursorModelVariant = {
+  params: CursorModelParameterValue[];
+  displayName: string;
+  description?: string;
+  isDefault?: boolean;
+};
+export type CursorCliModelRow = {
+  id: string;
+  displayName?: string;
+  description?: string;
+  parameters?: CursorModelParameterDefinition[];
+  variants?: CursorModelVariant[];
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+};
 type CursorCliModelDiscoveryMode = "probe" | "cached-or-fallback" | "cached-only";
 export type CursorModelDiscoveryFailureKind = "auth" | "timeout" | "unavailable";
 export type CursorSdkModelDiscoveryResult = {
@@ -40,15 +60,6 @@ class CursorModelDiscoveryError extends Error {
     this.name = "CursorModelDiscoveryError";
     this.kind = kind;
   }
-}
-
-const MINIMAL_FALLBACK_SDK_ROWS: CursorCliModelRow[] = [
-  { id: "auto", displayName: "Auto" },
-  { id: "composer-2", displayName: "Composer 2" },
-];
-
-function fallbackCursorSdkRows(): CursorCliModelRow[] {
-  return MINIMAL_FALLBACK_SDK_ROWS;
 }
 
 function stripAnsi(text: string): string {
@@ -105,6 +116,151 @@ function readErrorMessage(error: unknown): string {
     if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
   }
   return String(error ?? "Unknown Cursor model discovery error.");
+}
+
+function normalizeCursorMetadataText(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+}
+
+function addUnique(out: string[], value: string | null | undefined): void {
+  const normalized = normalizeCursorMetadataText(value);
+  if (!normalized) return;
+  if (!out.some((entry) => normalizeCursorMetadataText(entry) === normalized)) {
+    out.push(normalized);
+  }
+}
+
+function isReasoningParameterLike(parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">): boolean {
+  const hay = `${parameter.id} ${parameter.displayName ?? ""}`.toLowerCase();
+  return /\b(reason|reasoning|thinking|think|effort)\b/.test(hay);
+}
+
+function isServiceTierParameterLike(parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">): boolean {
+  const hay = `${parameter.id} ${parameter.displayName ?? ""}`.toLowerCase();
+  return /\b(speed|service|tier|mode|latency)\b/.test(hay);
+}
+
+function normalizeCursorReasoningValue(value: unknown): string | null {
+  const normalized = normalizeCursorMetadataText(value);
+  if (!normalized) return null;
+  if (normalized === "extra-high" || normalized === "extra_high") return "xhigh";
+  if ([
+    "none",
+    "dynamic",
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "thinking",
+  ].includes(normalized)) {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeCursorServiceTierValue(value: unknown): string | null {
+  const normalized = normalizeCursorMetadataText(value);
+  return normalized === "fast" ? "fast" : null;
+}
+
+function normalizeCursorParameterDefinitions(value: unknown): CursorModelParameterDefinition[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: CursorModelParameterDefinition[] = [];
+  for (const entry of value) {
+    const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    const id = typeof record?.id === "string" ? record.id.trim() : "";
+    const rawValues = Array.isArray(record?.values) ? record.values : [];
+    if (!id || !rawValues.length) continue;
+    const values = rawValues.flatMap((rawValue): Array<{ value: string; displayName?: string }> => {
+      if (typeof rawValue === "string") return rawValue.trim() ? [{ value: rawValue.trim() }] : [];
+      const valueRecord = rawValue && typeof rawValue === "object" ? rawValue as Record<string, unknown> : null;
+      const value = typeof valueRecord?.value === "string" ? valueRecord.value.trim() : "";
+      if (!value) return [];
+      const displayName = typeof valueRecord?.displayName === "string" && valueRecord.displayName.trim().length
+        ? valueRecord.displayName.trim()
+        : undefined;
+      return displayName ? [{ value, displayName }] : [{ value }];
+    });
+    if (!values.length) continue;
+    const displayName = typeof record?.displayName === "string" && record.displayName.trim().length
+      ? record.displayName.trim()
+      : undefined;
+    out.push(displayName ? { id, displayName, values } : { id, values });
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeCursorModelVariants(value: unknown): CursorModelVariant[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: CursorModelVariant[] = [];
+  for (const entry of value) {
+    const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    const displayName = typeof record?.displayName === "string" ? record.displayName.trim() : "";
+    const rawParams = Array.isArray(record?.params) ? record.params : [];
+    if (!displayName || !rawParams.length) continue;
+    const params = rawParams.flatMap((param): CursorModelParameterValue[] => {
+      const paramRecord = param && typeof param === "object" ? param as Record<string, unknown> : null;
+      const id = typeof paramRecord?.id === "string" ? paramRecord.id.trim() : "";
+      const value = typeof paramRecord?.value === "string" ? paramRecord.value.trim() : "";
+      return id && value ? [{ id, value }] : [];
+    });
+    if (!params.length) continue;
+    const description = typeof record?.description === "string" && record.description.trim().length
+      ? record.description.trim()
+      : undefined;
+    const isDefault = record?.isDefault === true;
+    out.push({
+      params,
+      displayName,
+      ...(description ? { description } : {}),
+      ...(isDefault ? { isDefault } : {}),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "variants">): {
+  reasoningTiers: string[];
+  serviceTiers: string[];
+} {
+  const reasoningTiers: string[] = [];
+  const serviceTiers: string[] = [];
+  const reasoningParameterIds = new Set(
+    (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
+  );
+  const serviceTierParameterIds = new Set(
+    (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
+  );
+
+  for (const parameter of row.parameters ?? []) {
+    if (reasoningParameterIds.has(parameter.id)) {
+      for (const value of parameter.values) {
+        addUnique(reasoningTiers, normalizeCursorReasoningValue(value.value) ?? normalizeCursorReasoningValue(value.displayName));
+      }
+    }
+    if (serviceTierParameterIds.has(parameter.id)) {
+      for (const value of parameter.values) {
+        addUnique(serviceTiers, normalizeCursorServiceTierValue(value.value) ?? normalizeCursorServiceTierValue(value.displayName));
+      }
+    }
+  }
+
+  for (const variant of row.variants ?? []) {
+    const label = `${variant.displayName} ${variant.description ?? ""}`;
+    for (const param of variant.params) {
+      if (reasoningParameterIds.has(param.id) || /\b(reason|thinking|effort)\b/i.test(label)) {
+        addUnique(reasoningTiers, normalizeCursorReasoningValue(param.value) ?? normalizeCursorReasoningValue(label));
+      }
+      if (serviceTierParameterIds.has(param.id) || /\bfast\b/i.test(label)) {
+        addUnique(serviceTiers, normalizeCursorServiceTierValue(param.value) ?? normalizeCursorServiceTierValue(label));
+      }
+    }
+  }
+
+  return { reasoningTiers, serviceTiers };
 }
 
 function readErrorStatus(error: unknown): number | null {
@@ -175,7 +331,21 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
-    rows.push(displayName ? { id, displayName } : { id });
+    const description = typeof model.description === "string" && model.description.trim().length
+      ? model.description.trim()
+      : undefined;
+    const parameters = normalizeCursorParameterDefinitions((model as { parameters?: unknown }).parameters);
+    const variants = normalizeCursorModelVariants((model as { variants?: unknown }).variants);
+    const tiers = deriveCursorRuntimeTiers({ parameters, variants });
+    rows.push({
+      id,
+      ...(displayName ? { displayName } : {}),
+      ...(description ? { description } : {}),
+      ...(parameters ? { parameters } : {}),
+      ...(variants ? { variants } : {}),
+      ...(tiers.reasoningTiers.length ? { reasoningTiers: tiers.reasoningTiers } : {}),
+      ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
+    });
   }
   return rows;
 }
@@ -206,7 +376,17 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
       : typeof record.name === "string"
         ? record.name.trim()
         : "";
-    rows.push(displayName ? { id, displayName } : { id });
+    const parameters = normalizeCursorParameterDefinitions(record.parameters);
+    const variants = normalizeCursorModelVariants(record.variants);
+    const tiers = deriveCursorRuntimeTiers({ parameters, variants });
+    rows.push({
+      id,
+      ...(displayName ? { displayName } : {}),
+      ...(parameters ? { parameters } : {}),
+      ...(variants ? { variants } : {}),
+      ...(tiers.reasoningTiers.length ? { reasoningTiers: tiers.reasoningTiers } : {}),
+      ...(tiers.serviceTiers.length ? { serviceTiers: tiers.serviceTiers } : {}),
+    });
   }
   return rows;
 }
@@ -394,9 +574,79 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
     const id = String(row.id ?? "").trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName));
+    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName, {
+      ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+    }));
   }
   return sortCursorCliDescriptorsForPicker(descriptors);
+}
+
+export function resolveCursorSdkModelSelectionParams(args: {
+  modelSdkId: string;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+}): CursorModelParameterValue[] | undefined {
+  const modelSdkId = args.modelSdkId.trim();
+  if (!modelSdkId || !sdkCached?.models.length) return undefined;
+  const row = sdkCached.models.find((entry) => entry.id === modelSdkId);
+  if (!row) return undefined;
+  const reasoning = normalizeCursorMetadataText(args.reasoningEffort);
+  const wantsFast = args.fastMode === true;
+  const out = new Map<string, string>();
+  const applyParams = (params: readonly CursorModelParameterValue[]): void => {
+    for (const param of params) {
+      if (param.id.trim() && param.value.trim()) out.set(param.id.trim(), param.value.trim());
+    }
+  };
+
+  const reasoningParameterIds = new Set(
+    (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
+  );
+  const serviceTierParameterIds = new Set(
+    (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
+  );
+
+  if (reasoning) {
+    const matchingVariant = (row.variants ?? []).find((variant) => {
+      const label = normalizeCursorMetadataText(`${variant.displayName} ${variant.description ?? ""}`);
+      return variant.params.some((param) =>
+        reasoningParameterIds.has(param.id)
+        && normalizeCursorMetadataText(param.value) === reasoning,
+      ) || label.includes(reasoning);
+    });
+    if (matchingVariant) applyParams(matchingVariant.params);
+    for (const parameter of row.parameters ?? []) {
+      if (!reasoningParameterIds.has(parameter.id)) continue;
+      const value = parameter.values.find((entry) =>
+        normalizeCursorMetadataText(entry.value) === reasoning
+        || normalizeCursorMetadataText(entry.displayName) === reasoning,
+      );
+      if (value) out.set(parameter.id, value.value);
+    }
+  }
+
+  if (wantsFast) {
+    const matchingVariant = (row.variants ?? []).find((variant) => {
+      const label = normalizeCursorMetadataText(`${variant.displayName} ${variant.description ?? ""}`);
+      return variant.params.some((param) =>
+        serviceTierParameterIds.has(param.id)
+        && normalizeCursorServiceTierValue(param.value) === "fast",
+      ) || label.includes("fast");
+    });
+    if (matchingVariant) applyParams(matchingVariant.params);
+    for (const parameter of row.parameters ?? []) {
+      if (!serviceTierParameterIds.has(parameter.id)) continue;
+      const value = parameter.values.find((entry) =>
+        normalizeCursorServiceTierValue(entry.value) === "fast"
+        || normalizeCursorServiceTierValue(entry.displayName) === "fast",
+      );
+      if (value) out.set(parameter.id, value.value);
+    }
+  }
+
+  const params = [...out.entries()].map(([id, value]) => ({ id, value }));
+  return params.length ? params : undefined;
 }
 
 /**
@@ -470,11 +720,10 @@ export async function discoverCursorCliModelDescriptors(
   agentPath: string,
   options?: { mode?: CursorCliModelDiscoveryMode },
 ): Promise<ModelDescriptor[]> {
-  const rows = options?.mode === "cached-or-fallback"
+  const rows = options?.mode === "cached-or-fallback" || options?.mode === "cached-only"
     ? getCachedCursorModels() ?? []
     : await listCursorModelsFromCli(agentPath);
-  const useRows: CursorCliModelRow[] = rows.length ? rows : fallbackCursorSdkRows();
-  return cursorRowsToDescriptors(useRows);
+  return cursorRowsToDescriptors(rows);
 }
 
 export async function discoverCursorSdkModelDescriptors(
@@ -487,13 +736,9 @@ export async function discoverCursorSdkModelDescriptors(
   const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
   const recentFailure = getRecentCursorSdkFailure(apiKey);
   const knownAuthFailure = result?.failureKind === "auth" || recentFailure?.kind === "auth";
-  if (!rows.length && options?.mode !== "probe") {
+  if (!rows.length && options?.mode === "cached-or-fallback") {
     warmCursorModelsFromSdk(apiKey);
   }
-  const useRows: CursorCliModelRow[] = rows.length
-    ? rows
-    : options?.mode === "cached-only" || knownAuthFailure
-      ? []
-      : fallbackCursorSdkRows();
-  return cursorRowsToDescriptors(useRows);
+  void knownAuthFailure;
+  return cursorRowsToDescriptors(rows);
 }

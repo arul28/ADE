@@ -10,6 +10,11 @@ export type CursorSdkPermissionPolicy = {
   hardGuards: boolean;
 };
 
+export type CursorSdkModelParameterValue = {
+  id: string;
+  value: string;
+};
+
 export type CursorSdkHookDecision =
   | {
       permission: "allow";
@@ -39,6 +44,7 @@ export type CursorSdkWorkerInit = {
   stateRoot: string;
   socketPath: string;
   modelSdkId: string;
+  modelParams?: CursorSdkModelParameterValue[];
   apiKey?: string | null;
   agentId?: string | null;
   agentName?: string | null;
@@ -54,6 +60,7 @@ export type CursorSdkSendPrompt = {
   promptText: string;
   images?: CursorSdkUserImage[];
   modelSdkId?: string | null;
+  modelParams?: CursorSdkModelParameterValue[];
   force?: boolean;
 };
 
@@ -67,6 +74,7 @@ export type CursorSdkCloudSendStreamPayload = {
   apiKey?: string | null;
   promptText: string;
   modelSdkId?: string | null;
+  modelParams?: CursorSdkModelParameterValue[];
   agentName?: string | null;
   repoUrl: string;
   startingRef?: string | null;
@@ -83,6 +91,7 @@ export type CursorSdkCloudFollowupPayload = {
   agentId: string;
   promptText: string;
   modelSdkId?: string | null;
+  modelParams?: CursorSdkModelParameterValue[];
 };
 
 export type CursorSdkCloudRunCancelPayload = {

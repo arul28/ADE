@@ -559,6 +559,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var codexSandbox: String?
   var codexConfigSource: String?
   var opencodePermissionMode: String?
+  var droidPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -1083,6 +1084,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var codexSandbox: String?
   var codexConfigSource: String?
   var opencodePermissionMode: String?
+  var droidPermissionMode: String?
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
@@ -1120,6 +1122,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case codexSandbox
     case codexConfigSource
     case opencodePermissionMode
+    case droidPermissionMode
     case cursorModeSnapshot
     case cursorModeId
     case cursorConfigValues
@@ -1159,6 +1162,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     codexSandbox = try container.decodeIfPresent(String.self, forKey: .codexSandbox)
     codexConfigSource = try container.decodeIfPresent(String.self, forKey: .codexConfigSource)
     opencodePermissionMode = try container.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
+    droidPermissionMode = try container.decodeIfPresent(String.self, forKey: .droidPermissionMode)
     cursorModeSnapshot = try container.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
     cursorModeId = try container.decodeIfPresent(String.self, forKey: .cursorModeId)
     cursorConfigValues = try container.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
@@ -1197,6 +1201,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(codexSandbox, forKey: .codexSandbox)
     try container.encodeIfPresent(codexConfigSource, forKey: .codexConfigSource)
     try container.encodeIfPresent(opencodePermissionMode, forKey: .opencodePermissionMode)
+    try container.encodeIfPresent(droidPermissionMode, forKey: .droidPermissionMode)
     try container.encodeIfPresent(cursorModeSnapshot, forKey: .cursorModeSnapshot)
     try container.encodeIfPresent(cursorModeId, forKey: .cursorModeId)
     try container.encodeIfPresent(cursorConfigValues, forKey: .cursorConfigValues)
@@ -1836,6 +1841,7 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var codexSandbox: String?
   var codexConfigSource: String?
   var opencodePermissionMode: String?
+  var droidPermissionMode: String?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
   var unifiedPermissionMode: String?
@@ -1907,8 +1913,14 @@ struct AgentChatModelCatalogModel: Codable, Equatable, Identifiable {
   var family: String?
   var supportsReasoning: Bool?
   var supportsTools: Bool?
-  var color: String?
-  var isAvailable: Bool
+	  var color: String?
+	  var isAvailable: Bool
+	  var connected: Bool?
+	  var requiresConfiguration: Bool?
+	  var sourceRuntime: String?
+	  var providerId: String?
+	  var providerName: String?
+	  var stale: Bool?
 }
 
 struct AgentChatModelCatalogSubsection: Codable, Equatable, Identifiable {
@@ -1937,6 +1949,38 @@ struct AgentChatModelCatalogGroup: Codable, Equatable, Identifiable {
 struct AgentChatModelCatalog: Codable, Equatable {
   var groups: [AgentChatModelCatalogGroup]
   var fetchedAt: String
+  var stale: Bool?
+}
+
+/// Response envelopes for the cross-surface ModelPicker favorites/recents
+/// RPC. Each method returns its own keyed wrapper (`{ favorites: [...] }` for
+/// favorites methods, `{ recents: [...] }` for recents methods, plus
+/// `toggleFavorite` adds an `isFavorite` boolean). Persistence lives at
+/// `~/.ade/modelPicker.json` on the ade-cli host; `MAX_RECENTS = 10`.
+struct ModelPickerFavorites: Codable, Equatable {
+  var favorites: [String]
+
+  init(favorites: [String] = []) {
+    self.favorites = favorites
+  }
+}
+
+struct ModelPickerToggleFavoriteResult: Codable, Equatable {
+  var favorites: [String]
+  var isFavorite: Bool
+
+  init(favorites: [String] = [], isFavorite: Bool = false) {
+    self.favorites = favorites
+    self.isFavorite = isFavorite
+  }
+}
+
+struct ModelPickerRecents: Codable, Equatable {
+  var recents: [String]
+
+  init(recents: [String] = []) {
+    self.recents = recents
+  }
 }
 
 struct LaneListSnapshot: Codable, Identifiable, Equatable {

@@ -63,6 +63,7 @@ import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { ModelPickerStore } from "../modelPickerStore";
 
 type SyncServiceArgs = {
   db: AdeDb;
@@ -141,6 +142,13 @@ type SyncServiceArgs = {
     ) => Promise<void>;
   };
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  /**
+   * Lazy accessor for the process-wide model picker store. iOS uses the
+   * `modelPicker.*` sync commands to share favorites + recents with desktop
+   * and the TUI; the store is a process singleton so all surfaces see the
+   * same in-memory state and persist to `~/.ade/modelPicker.json`.
+   */
+  getModelPickerStore?: () => ModelPickerStore | null;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -558,6 +566,7 @@ export function createSyncService(args: SyncServiceArgs) {
     laneTemplateService: args.laneTemplateService,
     rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
     autoRebaseService: args.autoRebaseService ?? undefined,
+    getModelPickerStore: args.getModelPickerStore,
     logger: args.logger,
   });
 

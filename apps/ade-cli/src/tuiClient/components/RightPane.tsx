@@ -10,6 +10,9 @@ import type {
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { theme } from "../theme";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
+import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
+import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
+import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desktop/src/shared/types/chat";
 
 // ---------------------------------------------------------------------------
 // Right-pane width / focus chrome
@@ -656,6 +659,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: "MODEL" };
     case "chat-info":
       return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
+    case "model-picker":
+      return { title: content.surface === "new-chat" ? "MODEL · NEW CHAT" : "MODEL" };
     case "help":
       return { title: "HELP" };
     case "status":
@@ -684,6 +689,7 @@ export function RightPane({
   selectedIndex = 0,
   focused = false,
   width = DEFAULT_PANE_WIDTH,
+  modelPickerInputs,
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
@@ -692,6 +698,14 @@ export function RightPane({
   focused?: boolean;
   activeProvider?: AdeCodeProvider | null;
   width?: number;
+  /** Data passed in by app.tsx for the model-picker content kind. */
+	  modelPickerInputs?: {
+	    models: AgentChatModelInfo[];
+	    catalog?: AgentChatModelCatalog | null;
+	    favorites: string[];
+    recents: string[];
+    activeModelId: string | null;
+  };
 }) {
   const { title, hint, branch } = paneTitle(content);
   const paneWidth = Math.max(30, width);
@@ -786,12 +800,28 @@ export function RightPane({
         <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} />
       ) : null}
 
-      {content.kind === "new-chat-setup" || content.kind === "model-setup" ? (
+      {content.kind === "model-picker" && modelPickerInputs ? (
+        <ModelPickerPane
+	          state={buildModelPickerLayout({
+	            models: modelPickerInputs.models,
+	            catalog: modelPickerInputs.catalog,
+	            favorites: modelPickerInputs.favorites,
+	            recents: modelPickerInputs.recents,
+	            activeModelId: modelPickerInputs.activeModelId,
+	            query: content.query,
+	            selection: content.selection,
+	            providerTabKey: content.providerTabKey ?? null,
+	            focusedIndex: content.focusedIndex,
+            searchMode: content.searchMode,
+          })}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "new-chat-setup" ? (
         <Box flexDirection="column">
-          {content.kind === "new-chat-setup" ? (
-            <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
-          ) : null}
-          <Box flexDirection="column" marginTop={content.kind === "new-chat-setup" ? 1 : 0}>
+          <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
+          <Box flexDirection="column" marginTop={1}>
             {content.rows.map((row, index) => {
               const selected = index === selectedIndex;
               return (
@@ -809,7 +839,7 @@ export function RightPane({
               );
             })}
           </Box>
-          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ {content.kind === "model-setup" ? "done" : "prompt"} · cmd+↵ background</Text>
+          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background</Text>
         </Box>
       ) : null}
 

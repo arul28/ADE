@@ -616,7 +616,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(descriptors).toHaveLength(actions.length);
       for (const desc of descriptors) {
         expect(desc).toHaveProperty("action");
-        expect(desc.scope).toBe("project");
+        expect(["project", "runtime"]).toContain(desc.scope);
         expect(desc).toHaveProperty("policy");
         expect(desc.policy).toHaveProperty("viewerAllowed");
       }

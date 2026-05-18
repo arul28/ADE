@@ -91,7 +91,7 @@ describe("openCodeInventory", () => {
     expect(mockState.shutdownOpenCodeServers).toHaveBeenCalledWith({ leaseKind: "shared", ownerKind: "inventory" });
   });
 
-  it("does not filter local providers when discovery data is absent", async () => {
+  it("filters local providers when discovery data is absent", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({
       data: {
@@ -121,8 +121,103 @@ describe("openCodeInventory", () => {
       force: true,
     });
 
-    expect(result.modelIds).toContain("opencode/ollama/llama-3.1");
-    expect(result.descriptors).toHaveLength(1);
+    expect(result.modelIds).not.toContain("opencode/ollama/llama-3.1");
+    expect(result.catalogModelIds).not.toContain("opencode/ollama/llama-3.1");
+    expect(result.descriptors).toHaveLength(0);
+  });
+
+  it("keeps unconnected cloud providers in the browseable catalog", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["openai"],
+        all: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            models: {
+              "gpt-5.4": {
+                id: "gpt-5.4",
+                name: "GPT-5.4",
+                tool_call: true,
+                reasoning: true,
+              },
+            },
+          },
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-6": {
+                id: "claude-sonnet-4-6",
+                name: "Claude Sonnet 4.6",
+                tool_call: true,
+                reasoning: true,
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.providers.find((provider) => provider.id === "anthropic")?.connected).toBe(false);
+  });
+
+  it("classifies OpenCode SDK model variants and v2 capabilities", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["openai"],
+        all: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            models: {
+              "gpt-5.4": {
+                id: "gpt-5.4",
+                name: "GPT-5.4",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  low: {},
+                  high: {},
+                  fast: {},
+                  disabled: { disabled: true },
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/openai/gpt-5.4");
+    expect(descriptor?.reasoningTiers).toEqual(["low", "high"]);
+    expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    expect(descriptor?.capabilities).toMatchObject({
+      tools: true,
+      vision: true,
+      reasoning: true,
+    });
   });
 
   it("allows passive cache reads after a probe warmed inventory with discovered local models", async () => {
