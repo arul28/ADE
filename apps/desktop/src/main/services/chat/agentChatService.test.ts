@@ -7637,6 +7637,84 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("reports stopped Codex subagents without error severity", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            prompt: "Inspect the shared chat renderer",
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            status: "cancelled",
+            result: "User cancelled",
+          },
+        },
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "subagent_result",
+            taskId: "call-spawn-1",
+            status: "stopped",
+            summary: "User cancelled",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "system_notice",
+            noticeKind: "info",
+            severity: "info",
+            message: "Codex parallel agent stopped: User cancelled",
+          }),
+        }),
+      ]));
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.noticeKind === "error"
+        && event.event.message === "Codex parallel agent stopped: User cancelled"
+      )).toBe(false);
+    });
+
     it("stops foreground Codex subagents when the parent turn completes without a terminal subagent event", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

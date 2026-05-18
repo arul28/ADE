@@ -12444,6 +12444,7 @@ export function createAgentChatService(args: {
         const spawnStatus = mapCodexCollabAgentStatus(item.status)
           ?? (codexCollabItemHasFailure(item) ? "failed" : null);
         if (spawnStatus === "failed" || spawnStatus === "stopped") {
+          const stopped = spawnStatus === "stopped";
           const failedTaskIds = runtime.activeSubagents.has(itemId)
             ? [itemId]
             : (receiverIds.length ? receiverIds : [itemId]);
@@ -12463,9 +12464,9 @@ export function createAgentChatService(args: {
           }
           emitChatEvent(managed, {
             type: "system_notice",
-            noticeKind: "error",
-            severity: "error",
-            message: `Codex parallel agent ${spawnStatus === "stopped" ? "stopped" : "failed"}: ${summary}`,
+            noticeKind: stopped ? "info" : "error",
+            severity: stopped ? "info" : "error",
+            message: `Codex parallel agent ${stopped ? "stopped" : "failed"}: ${summary}`,
             turnId,
           });
         } else {

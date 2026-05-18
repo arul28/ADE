@@ -1530,6 +1530,10 @@ export function isChatTextSelectionRange(selection: ChatTextSelection | null | u
   return selection.startRow !== selection.endRow || selection.startColumn !== selection.endColumn;
 }
 
+export function isCtrlCCopyPlatform(platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32";
+}
+
 export function chatSelectionPointFromVisibleRows(
   rows: ChatVisibleSelectionRow[],
   visibleRow: number,
@@ -6522,7 +6526,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if ((key.ctrl && input === "c") || input === "\x03") {
-      if (isChatTextSelectionRange(chatMouseSelectionRef.current)) {
+      if (isCtrlCCopyPlatform() && isChatTextSelectionRange(chatMouseSelectionRef.current)) {
         copyChatSelection();
         return;
       }

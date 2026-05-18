@@ -10,6 +10,7 @@ import {
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
+  isCtrlCCopyPlatform,
   chatSelectionEdgeDirectionForMouseY,
   chatSelectionFromAnchor,
   chatSelectionPointFromVisibleRows,
@@ -216,6 +217,12 @@ describe("chat text selection helpers", () => {
     expect(isChatTextSelectionRange(null)).toBe(false);
     expect(isChatTextSelectionRange({ startRow: 1, startColumn: 2, endRow: 1, endColumn: 2 })).toBe(false);
     expect(isChatTextSelectionRange({ startRow: 1, startColumn: 2, endRow: 2, endColumn: 0 })).toBe(true);
+  });
+
+  it("only lets Windows use Ctrl+C as copy when chat text is selected", () => {
+    expect(isCtrlCCopyPlatform("win32")).toBe(true);
+    expect(isCtrlCCopyPlatform("darwin")).toBe(false);
+    expect(isCtrlCCopyPlatform("linux")).toBe(false);
   });
 });
 

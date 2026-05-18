@@ -6,7 +6,8 @@ import {
   parseTrackedCliLaunchConfig,
   parseTrackedCliResumeCommand,
   normalizeResumeCommand,
-  runtimeStateFromOsc133Chunk
+  runtimeStateFromOsc133Chunk,
+  sanitizeResumeTargetId,
 } from "./terminalSessionSignals";
 
 describe("terminalSessionSignals", () => {
@@ -26,6 +27,12 @@ describe("terminalSessionSignals", () => {
     expect(extractResumeCommandFromOutput(chunk, "codex")).toBe(
       "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume",
     );
+  });
+
+  it("sanitizes resume target ids through the shared CLI launch helper", () => {
+    expect(sanitizeResumeTargetId(" thread_abc123 ")).toBe("thread_abc123");
+    expect(sanitizeResumeTargetId("-dangerous")).toBeNull();
+    expect(sanitizeResumeTargetId("bad\nid")).toBeNull();
   });
 
   it("does not treat Codex prompt glyphs as resume targets", () => {
