@@ -2,6 +2,7 @@ import React, { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 
 type ModelSelectorProps = {
   value: ModelConfig;
@@ -39,7 +40,7 @@ export function ModelSelector({
   compact,
   showRecommendedBadge: _showRecommendedBadge,
   availableModelIds,
-  onOpenAiSettings: _onOpenAiSettings,
+  onOpenAiSettings,
   surfaceKey = "missions/phase-or-action",
 }: ModelSelectorProps) {
   const resolvedModelId = useMemo(() => normalizeModelId(value.modelId), [value.modelId]);
@@ -64,16 +65,24 @@ export function ModelSelector({
     });
   }, [onChange, resolvedModelId]);
 
+  const effectiveModelId = selectedDescriptor?.id ?? resolvedModelId;
+
   return (
-    <ModelPicker
-      value={selectedDescriptor?.id ?? resolvedModelId}
-      onChange={handleModelChange}
-      surfaceKey={surfaceKey}
-      compact={compact ?? false}
-      {...(availableModelIds ? { availableModelIds } : {})}
-      showReasoning
-      reasoningEffort={value.thinkingLevel ?? null}
-      onReasoningEffortChange={handleReasoningChange}
-    />
+    <div className="inline-flex items-center gap-1.5">
+      <ModelPicker
+        value={effectiveModelId}
+        onChange={handleModelChange}
+        surfaceKey={surfaceKey}
+        compact={compact ?? false}
+        {...(availableModelIds ? { availableModelIds } : {})}
+        {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+      />
+      <ReasoningEffortPicker
+        modelId={effectiveModelId}
+        reasoningEffort={value.thinkingLevel ?? null}
+        onChange={handleReasoningChange}
+        compact={compact ?? false}
+      />
+    </div>
   );
 }

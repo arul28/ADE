@@ -101,6 +101,7 @@ import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useAppStore } from "../../state/appStore";
@@ -6053,15 +6054,18 @@ export function AgentChatPane({
                       </div>
                     ) : null}
                   </div>
-                  <div className="mt-3">
+                  <div className="mt-3 inline-flex items-center gap-1.5">
                     <ModelPicker
                       value={handoffModelId}
                       onChange={setHandoffModelId}
                       surfaceKey="chat-handoff"
                       {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
-                      showReasoning
+                      onOpenSignIn={openAiProvidersSettings}
+                    />
+                    <ReasoningEffortPicker
+                      modelId={handoffModelId}
                       reasoningEffort={handoffReasoningEffort}
-                      onReasoningEffortChange={setHandoffReasoningEffort}
+                      onChange={setHandoffReasoningEffort}
                     />
                   </div>
                   {handoffTargetProvider ? (

@@ -36,6 +36,7 @@ import {
 import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
 import { ChatAttachmentTray, type ChatAttachmentPendingImage } from "./ChatAttachmentTray";
@@ -3403,17 +3404,24 @@ export function AgentChatComposer({
               </div>
             ) : null}
             {parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
-              <ModelPicker
-                value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
-                onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
-                surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
-                {...(availableModelIds ? { availableModelIds } : {})}
-                disabled={parallelLaunchBusy}
-                showReasoning
-                reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
-                onReasoningEffortChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
-                compact
-              />
+              <>
+                <ModelPicker
+                  value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                  onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
+                  surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
+                  {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  disabled={parallelLaunchBusy}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+                  reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
+                  onChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
+                  disabled={parallelLaunchBusy}
+                  compact
+                />
+              </>
             ) : null}
             {parallelChatMode && parallelConfiguringIndex != null && fastModeSupported ? (
               <CodexFastModeToggle
@@ -3423,17 +3431,24 @@ export function AgentChatComposer({
               />
             ) : null}
             {!parallelChatMode ? (
-              <ModelPicker
-                value={modelId}
-                onChange={onModelChange}
-                surfaceKey="chat-composer"
-                {...(availableModelIds ? { availableModelIds } : {})}
-                disabled={modelSelectionLocked}
-                showReasoning
-                reasoningEffort={reasoningEffort}
-                onReasoningEffortChange={onReasoningEffortChange}
-                compact
-              />
+              <>
+                <ModelPicker
+                  value={modelId}
+                  onChange={onModelChange}
+                  surfaceKey="chat-composer"
+                  {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  disabled={modelSelectionLocked}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={modelId}
+                  reasoningEffort={reasoningEffort}
+                  onChange={onReasoningEffortChange}
+                  disabled={modelSelectionLocked}
+                  compact
+                />
+              </>
             ) : null}
             {!parallelChatMode && fastModeSupported ? (
               <CodexFastModeToggle

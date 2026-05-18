@@ -7,9 +7,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrAgentPermissionMode } from "../../../../shared/types";
 import type { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
+import type { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { PrResolverLaunchControls } from "./PrResolverLaunchControls";
 
 type ModelPickerProps = React.ComponentProps<typeof ModelPicker>;
+type ReasoningPickerProps = React.ComponentProps<typeof ReasoningEffortPicker>;
 
 vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: (props: ModelPickerProps) => (
@@ -17,8 +19,13 @@ vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
       <button type="button" onClick={() => props.onChange("anthropic/claude-sonnet-4-6")}>
         Pick Sonnet
       </button>
-      <span data-testid="reasoning-effort">{props.reasoningEffort ?? ""}</span>
     </div>
+  ),
+}));
+
+vi.mock("../../shared/ModelPicker/ReasoningEffortPicker", () => ({
+  ReasoningEffortPicker: (props: ReasoningPickerProps) => (
+    <span data-testid="reasoning-effort">{props.reasoningEffort ?? ""}</span>
   ),
 }));
 

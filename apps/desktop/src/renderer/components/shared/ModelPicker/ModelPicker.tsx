@@ -13,7 +13,6 @@ import { ModelPickerContent } from "./ModelPickerContent";
 import type { AuthStatus } from "./ModelPickerRail";
 import { createUnknownModelPlaceholder, mergeSelectorModels } from "./modelCatalog";
 import { useModelRecents } from "./useModelRecents";
-import { useReasoningByFamily } from "./useReasoningByFamily";
 
 export type ModelPickerProps = {
   value: string;
@@ -21,9 +20,6 @@ export type ModelPickerProps = {
   surfaceKey: string;
   compact?: boolean;
   disabled?: boolean;
-  showReasoning?: boolean;
-  reasoningEffort?: string | null;
-  onReasoningEffortChange?: (effort: string | null) => void;
   availableModelIds?: string[];
   catalogMode?: "all" | "available-only";
   filter?: (model: ModelDescriptor) => boolean;
@@ -37,28 +33,12 @@ export type ModelPickerProps = {
   triggerClassName?: string;
 };
 
-function reasoningChipLabel(effort: string | null | undefined): string | null {
-  if (!effort) return null;
-  const lower = effort.trim().toLowerCase();
-  if (!lower) return null;
-  if (lower === "minimal") return "MIN";
-  if (lower === "low") return "LOW";
-  if (lower === "medium") return "MED";
-  if (lower === "high") return "HI";
-  if (lower === "xhigh") return "XH";
-  if (lower === "max") return "MAX";
-  return lower.slice(0, 3).toUpperCase();
-}
-
 export const ModelPicker = memo(function ModelPicker({
   value,
   onChange,
   surfaceKey,
   compact = false,
   disabled = false,
-  showReasoning,
-  reasoningEffort = null,
-  onReasoningEffortChange,
   availableModelIds,
   catalogMode,
   filter,
@@ -73,7 +53,6 @@ export const ModelPicker = memo(function ModelPicker({
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false);
   const { recents } = useModelRecents();
-  const { getReasoningForFamily } = useReasoningByFamily();
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
     if (models && models.length) return models;
@@ -111,33 +90,15 @@ export const ModelPicker = memo(function ModelPicker({
 
   const handleSelect = useCallback(
     (modelId: string) => {
-      // When selecting a model from a different family, restore that family's
-      // remembered reasoning effort so callers don't carry stale state across providers.
-      if (onReasoningEffortChange) {
-        const previous = selectedModel?.family;
-        const nextDescriptor = resolveModelDescriptor(modelId);
-        const nextFamily = nextDescriptor?.family;
-        if (nextFamily && previous && nextFamily !== previous) {
-          const remembered = getReasoningForFamily(nextFamily);
-          onReasoningEffortChange(remembered);
-        }
-      }
       onChange(modelId);
       setOpen(false);
     },
-    [getReasoningForFamily, onChange, onReasoningEffortChange, selectedModel],
+    [onChange],
   );
 
   const handleRequestClose = useCallback(() => {
     setOpen(false);
   }, []);
-
-  const triggerReasoning =
-    showReasoning && selectedModel && (selectedModel.reasoningTiers?.length ?? 0) > 0
-      ? reasoningChipLabel(
-          (value && reasoningEffort) || getReasoningForFamily(selectedModel.family),
-        )
-      : null;
 
   const triggerFastSupported =
     typeof fastModeSupported === "boolean"
@@ -164,7 +125,6 @@ export const ModelPicker = memo(function ModelPicker({
             compact={compact}
             disabled={disabled}
             open={open}
-            reasoningLabel={triggerReasoning}
             className={triggerClassName}
           />
         </Popover.Trigger>
@@ -189,9 +149,6 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
                 onSelect={handleSelect}
                 onRequestClose={handleRequestClose}
-                {...(showReasoning ? { showReasoning: true } : {})}
-                reasoningEffort={reasoningEffort}
-                {...(onReasoningEffortChange ? { onReasoningEffortChange } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : null}
@@ -216,14 +173,13 @@ type TriggerProps = {
   compact: boolean;
   disabled: boolean;
   open: boolean;
-  reasoningLabel: string | null;
   className?: string;
 };
 
 const ModelPickerTrigger = memo(
   forwardRef<HTMLButtonElement, TriggerProps & React.ButtonHTMLAttributes<HTMLButtonElement>>(
     function ModelPickerTrigger(
-      { model, value, compact, disabled, open, reasoningLabel, className, ...rest },
+      { model, value, compact, disabled, open, className, ...rest },
       ref,
     ) {
       const label = model?.displayName ?? value ?? "Select model";
@@ -260,17 +216,6 @@ const ModelPickerTrigger = memo(
             />
           ) : null}
           <span className="min-w-0 truncate font-medium leading-none">{label}</span>
-          {reasoningLabel ? (
-            <span
-              data-model-picker-reasoning-chip="true"
-              className={cn(
-                "shrink-0 rounded border border-violet-400/25 bg-violet-500/[0.12] px-1 font-semibold uppercase leading-none tracking-wide text-violet-100/90",
-                compact ? "py-[1px] text-[8px]" : "py-[2px] text-[9px]",
-              )}
-            >
-              {reasoningLabel}
-            </span>
-          ) : null}
           <CaretDown
             size={compact ? 9 : 10}
             weight="bold"

@@ -7,6 +7,7 @@ import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { cardCls, labelCls, recessedPanelCls, textareaCls } from "./shared/designTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 
@@ -167,21 +168,26 @@ export function IdentityEditor({
 
         <div className="space-y-2">
           <div className={labelCls}>Model</div>
-          <ModelPicker
-            value={draft.modelId ?? ""}
-            availableModelIds={availableModelIds}
-            surfaceKey="cto-identity"
-            showReasoning
-            reasoningEffort={draft.reasoningEffort}
-            onReasoningEffortChange={(effort) => setDraft((current) => ({
-              ...current,
-              reasoningEffort: effort,
-            }))}
-            onChange={(modelId) => {
-              setDraft((current) => applyModelSelection(current, modelId));
-              setError(null);
-            }}
-          />
+          <div className="inline-flex items-center gap-1.5">
+            <ModelPicker
+              value={draft.modelId ?? ""}
+              availableModelIds={availableModelIds}
+              surfaceKey="cto-identity"
+              onChange={(modelId) => {
+                setDraft((current) => applyModelSelection(current, modelId));
+                setError(null);
+              }}
+              onOpenSignIn={openAiProvidersSettings}
+            />
+            <ReasoningEffortPicker
+              modelId={draft.modelId ?? ""}
+              reasoningEffort={draft.reasoningEffort}
+              onChange={(effort) => setDraft((current) => ({
+                ...current,
+                reasoningEffort: effort,
+              }))}
+            />
+          </div>
           {loadingModels ? (
             <div className="text-[11px] text-muted-fg/40">Checking configured models...</div>
           ) : availableModelIds.length === 0 ? (

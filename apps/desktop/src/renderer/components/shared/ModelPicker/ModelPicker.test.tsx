@@ -301,15 +301,11 @@ describe("ModelPicker", () => {
     expect(trigger.textContent).toContain(SONNET.displayName);
   });
 
-  it("renders the reasoning chip on the trigger when showReasoning is set and effort exists", () => {
-    renderPicker({
-      showReasoning: true,
-      reasoningEffort: "medium",
-    });
+  it("does not render any reasoning chip on the trigger", () => {
+    renderPicker();
     const trigger = screen.getByRole("button", { name: /Select model/i });
     const chip = trigger.querySelector('[data-model-picker-reasoning-chip="true"]');
-    expect(chip).toBeTruthy();
-    expect(chip!.textContent).toContain("MED");
+    expect(chip).toBeNull();
   });
 
   it("renders the fast-mode toggle outside the trigger when supported", async () => {
@@ -352,59 +348,6 @@ describe("ModelPicker", () => {
     expect(trigger.textContent).toContain(OPUS.displayName);
   });
 
-  it("remembers reasoning per family and restores when switching families", async () => {
-    const user = userEvent.setup();
-    const onChange = vi.fn();
-    const onReasoningEffortChange = vi.fn();
-    // Pre-set memory for openai family
-    reasoningByFamilyStore.openai = "high";
-    render(
-      <ModelPicker
-        value={SONNET.id}
-        onChange={onChange}
-        surfaceKey="test"
-        models={MODELS}
-        showReasoning
-        reasoningEffort="low"
-        onReasoningEffortChange={onReasoningEffortChange}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /Select model/i }));
-    // Search for the GPT model to make sure it's visible regardless of active rail.
-    const search = screen.getByLabelText(/Search models/i) as HTMLInputElement;
-    await user.type(search, "gpt");
-    const gptRow = screen
-      .getAllByRole("option")
-      .find((el) => el.getAttribute("data-model-id") === GPT.id)!;
-    expect(gptRow).toBeDefined();
-    await user.click(gptRow);
-    expect(onChange).toHaveBeenCalledWith(GPT.id);
-    expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
-  });
-
-  it("persists reasoning to family memory when the footer control changes", async () => {
-    const user = userEvent.setup();
-    const onReasoningEffortChange = vi.fn();
-    render(
-      <ModelPicker
-        value={SONNET.id}
-        onChange={vi.fn()}
-        surfaceKey="test"
-        models={MODELS}
-        showReasoning
-        reasoningEffort="low"
-        onReasoningEffortChange={onReasoningEffortChange}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /Select model/i }));
-    const radios = screen.getAllByRole("radio");
-    const medium = radios.find((el) => el.textContent === "Medium");
-    expect(medium).toBeTruthy();
-    await user.click(medium!);
-    expect(onReasoningEffortChange).toHaveBeenCalledWith("medium");
-    expect(reasoningByFamilyStore.anthropic).toBe("medium");
-  });
-
   it("shows the correct tooltip on the authOnly toggle and calls toggle on click", async () => {
     const user = userEvent.setup();
     authOnlyState = true;
@@ -414,8 +357,8 @@ describe("ModelPicker", () => {
       '[data-model-picker-auth-toggle="true"]',
     ) as HTMLButtonElement;
     expect(toggle).toBeTruthy();
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expect(toggle.getAttribute("title")).toMatch(/click to show all/i);
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.getAttribute("title")).toMatch(/include unauthenticated providers/i);
     await user.click(toggle);
     expect(authOnlyState).toBe(false);
   });
@@ -433,43 +376,64 @@ describe("ModelPicker", () => {
     expect(ids).not.toContain(GPT.id);
   });
 
-  it("shows inline reasoning chips in Recents view and cycles effort without selecting the row", async () => {
+  it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {
     const user = userEvent.setup();
-    recentStore.unshift(SONNET.id);
-    reasoningByFamilyStore.anthropic = "low";
-    const onChange = vi.fn();
-    const onReasoningEffortChange = vi.fn();
+    providerAuthStatusInternal = { anthropic: "unauthed", openai: "unauthed" };
+    const onOpenSignIn = vi.fn();
     render(
       <ModelPicker
         value={SONNET.id}
-        onChange={onChange}
+        onChange={vi.fn()}
         surfaceKey="test"
         models={MODELS}
-        showReasoning
-        reasoningEffort="low"
-        onReasoningEffortChange={onReasoningEffortChange}
+        onOpenSignIn={onOpenSignIn}
       />,
     );
     await user.click(screen.getByRole("button", { name: /Select model/i }));
-    const sonnetRow = screen
-      .getAllByRole("option")
-      .find((el) => el.getAttribute("data-model-id") === SONNET.id)!;
-    const chip = sonnetRow.querySelector('button[aria-label*="Reasoning effort"]') as HTMLButtonElement;
-    expect(chip).toBeTruthy();
-    expect(chip.textContent).toMatch(/Low/i);
-    await user.click(chip);
-    // Cycle from "low" -> "medium" (tiers = ["low","medium","high"])
-    expect(reasoningByFamilyStore.anthropic).toBe("medium");
-    // Should not select the model
-    expect(onChange).not.toHaveBeenCalled();
+    const banner = document.querySelector('[data-model-picker-setup-banner="true"]') as HTMLButtonElement;
+    expect(banner).toBeTruthy();
+    expect(banner.getAttribute("data-provider-family")).toBe("anthropic");
+    await user.click(banner);
+    expect(onOpenSignIn).toHaveBeenCalledOnce();
   });
 
-  it("does not show inline reasoning chips in a provider rail view", async () => {
+  it("does not render the Set up banner when the active rail is authed", async () => {
     const user = userEvent.setup();
+    providerAuthStatusInternal = { anthropic: "ok", openai: "unauthed" };
+    render(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={MODELS}
+        onOpenSignIn={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+  });
+
+  it("does not render the Set up banner when onOpenSignIn is not provided", async () => {
+    const user = userEvent.setup();
+    providerAuthStatusInternal = { anthropic: "unauthed" };
+    render(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={MODELS}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+  });
+
+  it("does not render inline reasoning chips inside model rows", async () => {
+    const user = userEvent.setup();
+    recentStore.unshift(SONNET.id);
     reasoningByFamilyStore.anthropic = "low";
     renderPicker();
     await user.click(screen.getByRole("button", { name: /Select model/i }));
-    // No recents -> initial selection is the active model's provider rail (anthropic).
     const sonnetRow = screen
       .getAllByRole("option")
       .find((el) => el.getAttribute("data-model-id") === SONNET.id)!;

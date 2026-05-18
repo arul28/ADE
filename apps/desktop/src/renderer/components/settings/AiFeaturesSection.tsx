@@ -15,6 +15,7 @@ import {
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
 
 type FeatureInfo = {
@@ -411,16 +412,22 @@ export function AiFeaturesSection() {
                   </div>
                 </div>
 
-                <div style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}>
+                <div
+                  style={{ opacity: enabled ? 1 : 0.4, pointerEvents: enabled ? "auto" : "none" }}
+                  className="inline-flex items-center gap-1.5"
+                >
                   <ModelPicker
                     value={selectedModel}
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
                     surfaceKey={`ai-feature-${feature.key}`}
                     availableModelIds={availableModelIds}
                     disabled={!enabled}
-                    showReasoning
+                  />
+                  <ReasoningEffortPicker
+                    modelId={selectedModel}
                     reasoningEffort={featureReasoning[feature.key] ?? null}
-                    onReasoningEffortChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                    onChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                    disabled={!enabled}
                   />
                 </div>
 
@@ -508,7 +515,10 @@ export function AiFeaturesSection() {
               </div>
             </div>
 
-            <div style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}>
+            <div
+              style={{ opacity: chatAutoTitleEnabled ? 1 : 0.4, pointerEvents: chatAutoTitleEnabled ? "auto" : "none" }}
+              className="inline-flex items-center gap-1.5"
+            >
               <ModelPicker
                 value={utilityModel}
                 onChange={(modelId) => {
@@ -518,12 +528,15 @@ export function AiFeaturesSection() {
                 surfaceKey="ai-feature-chat-auto-title"
                 availableModelIds={availableModelIds}
                 disabled={!chatAutoTitleEnabled}
-                showReasoning
+              />
+              <ReasoningEffortPicker
+                modelId={utilityModel}
                 reasoningEffort={chatAutoTitleReasoning}
-                onReasoningEffortChange={(effort) => {
+                onChange={(effort) => {
                   setChatAutoTitleReasoning(effort);
                   void saveChatTitleSettings({ reasoningEffort: effort });
                 }}
+                disabled={!chatAutoTitleEnabled}
               />
             </div>
 

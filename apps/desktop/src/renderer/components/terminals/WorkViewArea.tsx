@@ -43,6 +43,7 @@ import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/Agen
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
@@ -673,23 +674,29 @@ function WorkCliContinuationComposer({
               <span className="font-medium text-fg/70">{providerLabel}</span>
             </div>
             {modelProvider ? (
-              <ModelPicker
-                value={selectedModel}
-                disabled={sending || modelsLoading || models.length === 0}
-                onChange={setSelectedModel}
-                surfaceKey="work-view-cli"
-                availableModelIds={availableModelIds}
-                catalogMode="available-only"
-                filter={(model) => (
-                  modelProvider === "claude"
-                    ? model.family === "anthropic" && model.isCliWrapped
-                    : model.family === "openai" && model.isCliWrapped
-                )}
-                compact
-                showReasoning
-                reasoningEffort={selectedReasoningEffort}
-                onReasoningEffortChange={setSelectedReasoningEffort}
-              />
+              <div className="inline-flex items-center gap-1.5">
+                <ModelPicker
+                  value={selectedModel}
+                  disabled={sending || modelsLoading || models.length === 0}
+                  onChange={setSelectedModel}
+                  surfaceKey="work-view-cli"
+                  availableModelIds={availableModelIds}
+                  catalogMode="available-only"
+                  filter={(model) => (
+                    modelProvider === "claude"
+                      ? model.family === "anthropic" && model.isCliWrapped
+                      : model.family === "openai" && model.isCliWrapped
+                  )}
+                  compact
+                />
+                <ReasoningEffortPicker
+                  modelId={selectedModel}
+                  reasoningEffort={selectedReasoningEffort}
+                  onChange={setSelectedReasoningEffort}
+                  compact
+                  disabled={sending || modelsLoading || models.length === 0}
+                />
+              </div>
             ) : null}
             <WorkCliPermissionPicker
               provider={provider}

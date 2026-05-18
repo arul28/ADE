@@ -12,15 +12,15 @@ import { MODEL_REGISTRY, type ModelDescriptor, type ProviderFamily } from "../..
 import { cn } from "../../ui/cn";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
-import { ReasoningEffortControl } from "./ReasoningEffortControl";
 import { useModelFavorites } from "./useModelFavorites";
 import { useModelRecents } from "./useModelRecents";
 import { useAuthOnlyFilter } from "./useAuthOnlyFilter";
 import { usePerSurfaceModelDefaults } from "./usePerSurfaceModelDefaults";
-import { useReasoningByFamily } from "./useReasoningByFamily";
 import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
+import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
+import { dynamicCanonicalDescriptors } from "./modelCatalog";
 
 const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   anthropic: "Anthropic",
@@ -73,9 +73,6 @@ export type ModelPickerContentProps = {
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onSelect: (modelId: string) => void;
   onRequestClose: () => void;
-  showReasoning?: boolean;
-  reasoningEffort?: string | null;
-  onReasoningEffortChange?: (effort: string | null) => void;
   onOpenSignIn?: () => void;
 };
 
@@ -87,9 +84,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   providerAuthStatus,
   onSelect,
   onRequestClose,
-  showReasoning,
-  reasoningEffort = null,
-  onReasoningEffortChange,
   onOpenSignIn,
 }: ModelPickerContentProps) {
   const [query, setQuery] = useState("");
@@ -100,7 +94,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const { recents, recordUsage } = useModelRecents();
   const { authOnly, toggleAuthOnly } = useAuthOnlyFilter();
   const { setDefault: setSurfaceDefault } = usePerSurfaceModelDefaults();
-  const { rememberReasoning, getReasoningForFamily } = useReasoningByFamily();
   const internalAuth = useProviderAuthStatus();
 
   const recentSet = useMemo(() => new Set(recents), [recents]);
@@ -129,6 +122,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     for (const m of MODEL_REGISTRY) {
       if (m.deprecated) continue;
       if (!merged.has(m.id)) merged.set(m.id, m);
+    }
+    // Also include canonical descriptors for dynamic-only providers (Droid,
+    // Cursor, OpenCode) so the picker shows the full catalog when "Show all
+    // models" is on. Only inject when that family has no real discovered
+    // models in `models` — otherwise discovery output wins.
+    const familiesWithRealModels = new Set<ProviderFamily>();
+    for (const m of models) familiesWithRealModels.add(m.family);
+    for (const descriptor of dynamicCanonicalDescriptors()) {
+      if (familiesWithRealModels.has(descriptor.family)) continue;
+      if (!merged.has(descriptor.id)) merged.set(descriptor.id, descriptor);
     }
     return [...merged.values()];
   }, [authOnly, models]);
@@ -364,61 +367,24 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [expandedModels, value],
   );
 
-  // Pick a "presentation model" used for the reasoning footer when no value is selected
-  // or the active model has no reasoning tiers.
-  const reasoningPresentationModel = useMemo<ModelDescriptor | null>(() => {
-    if (activeModel && (activeModel.reasoningTiers?.length ?? 0) > 0) {
-      return activeModel;
-    }
-    const firstWithReasoning = visibleModels.find((m) => (m.reasoningTiers?.length ?? 0) > 0);
-    if (firstWithReasoning) return firstWithReasoning;
-    const anyWithReasoning = expandedModels.find((m) => (m.reasoningTiers?.length ?? 0) > 0);
-    return anyWithReasoning ?? null;
-  }, [activeModel, expandedModels, visibleModels]);
-
-  const reasoningTiers = reasoningPresentationModel?.reasoningTiers ?? [];
-
-  const reasoningFamily = reasoningPresentationModel?.family ?? null;
-  const displayedReasoningEffort = useMemo<string | null>(() => {
-    // If the picker is tied to a real active model with explicit effort, use it.
-    if (activeModel && reasoningEffort) return reasoningEffort;
-    // Otherwise, fall back to the family-remembered effort for the presentation model.
-    if (reasoningFamily) return getReasoningForFamily(reasoningFamily);
-    return reasoningEffort;
-  }, [activeModel, reasoningEffort, reasoningFamily, getReasoningForFamily]);
-
-  const handleReasoningChange = useCallback(
-    (next: string | null) => {
-      if (reasoningFamily) {
-        rememberReasoning(reasoningFamily, next);
-      }
-      onReasoningEffortChange?.(next);
-    },
-    [onReasoningEffortChange, reasoningFamily, rememberReasoning],
-  );
-
-  // Inline per-row reasoning chips appear only in Favorites/Recents (and search results),
-  // never in provider rail views (the dedicated footer covers those).
-  const showInlineReasoningChips =
-    !searchActive && (selection === "favorites" || selection === "recents");
-
-  const cycleReasoningForModel = useCallback(
-    (model: ModelDescriptor) => {
-      const tiers = model.reasoningTiers;
-      if (!tiers || tiers.length === 0) return;
-      const current = getReasoningForFamily(model.family);
-      const idx = current ? tiers.indexOf(current) : -1;
-      const nextIdx = idx < 0 ? 0 : (idx + 1) % tiers.length;
-      const next = tiers[nextIdx] ?? null;
-      rememberReasoning(model.family, next);
-      if (activeModel?.family === model.family) {
-        onReasoningEffortChange?.(next);
-      }
-    },
-    [activeModel, getReasoningForFamily, onReasoningEffortChange, rememberReasoning],
-  );
-
   const isEmpty = visibleModels.length === 0;
+
+  // Family of the active provider rail (null when on Favorites/Recents/search)
+  // — used to decide whether to render the inline "Set up {Provider}" banner.
+  const activeProviderFamily = useMemo<ProviderFamily | null>(() => {
+    if (searchActive) return null;
+    if (selection === "favorites" || selection === "recents") return null;
+    return selection.slice("provider:".length) as ProviderFamily;
+  }, [searchActive, selection]);
+
+  // Show the setup banner only when the active provider rail is unauthed AND
+  // the caller has wired a sign-in handler. Auth status of `undefined` (no
+  // signal yet) is treated as "not unauthed" so the banner doesn't flash
+  // before status loads.
+  const showSetupBanner =
+    activeProviderFamily != null
+    && onOpenSignIn != null
+    && effectiveAuth[activeProviderFamily] === "unauthed";
 
   // Sticky "Currently using" detection — show when active row is not in the visible window.
   const activeRowVisibleRef = useRef(true);
@@ -537,8 +503,16 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               </div>
             ) : null}
 
+            {showSetupBanner && activeProviderFamily ? (
+              <ProviderSetupBanner family={activeProviderFamily} onOpenSignIn={onOpenSignIn} />
+            ) : null}
+
             {isEmpty ? (
-              <EmptyState selection={selection} searchActive={searchActive} />
+              <EmptyState
+                selection={selection}
+                searchActive={searchActive}
+                {...(onOpenSignIn ? { onOpenSignIn } : {})}
+              />
             ) : (
               <div className="flex flex-col gap-px">
                 {groupedRows.map((group, gi) => (
@@ -573,16 +547,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                             onCopyId={handleCopyId}
                             onSetSurfaceDefault={handleSetSurfaceDefault}
                             {...(onOpenSignIn ? { onSignIn: onOpenSignIn } : {})}
-                            {...(showInlineReasoningChips && m.reasoningTiers?.length
-                              ? {
-                                  inlineReasoningChip: {
-                                    visible: true,
-                                    effort: getReasoningForFamily(m.family),
-                                    tiers: m.reasoningTiers,
-                                    onCycle: () => cycleReasoningForModel(m),
-                                  },
-                                }
-                              : {})}
                           />
                         </div>
                       );
@@ -592,14 +556,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               </div>
             )}
           </div>
-
-          {showReasoning && onReasoningEffortChange && reasoningTiers.length > 0 ? (
-            <ReasoningEffortControl
-              effort={displayedReasoningEffort}
-              onChange={handleReasoningChange}
-              tiers={reasoningTiers}
-            />
-          ) : null}
         </div>
       </div>
     </div>
@@ -616,10 +572,16 @@ function cssEscape(value: string): string {
 function EmptyState({
   selection,
   searchActive,
+  onOpenSignIn,
 }: {
   selection: RailSelection;
   searchActive: boolean;
+  onOpenSignIn?: () => void;
 }) {
+  if (!searchActive && selection !== "favorites" && selection !== "recents") {
+    const family = selection.slice("provider:".length) as ProviderFamily;
+    return <ProviderEmptyState family={family} {...(onOpenSignIn ? { onOpenSignIn } : {})} />;
+  }
   let body = "No models match this view.";
   if (searchActive) body = "No models match your search.";
   else if (selection === "favorites") body = "Star a model to pin it here.";

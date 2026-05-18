@@ -8,6 +8,7 @@ import {
 import type { AiPermissionMode, AgentChatPermissionMode, PrAgentPermissionMode } from "../../../../shared/types";
 import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
+import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../../ui/cn";
 import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
 
@@ -190,9 +191,12 @@ export function PrResolverLaunchControls({
         surfaceKey="pr-resolver-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}
-        showReasoning
-        reasoningEffort={reasoningEffort}
-        onReasoningEffortChange={(next) => onReasoningEffortChange(next ?? "")}
+      />
+      <ReasoningEffortPicker
+        modelId={modelId}
+        reasoningEffort={reasoningEffort || null}
+        onChange={(next) => onReasoningEffortChange(next ?? "")}
+        disabled={disabled}
       />
       <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
         {permissionOptions.map((option) => {
