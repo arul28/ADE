@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { MagnifyingGlass, Funnel } from "@phosphor-icons/react";
+import { MagnifyingGlass } from "@phosphor-icons/react";
 import { MODEL_REGISTRY, type ModelDescriptor, type ProviderFamily } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { ModelListRow } from "./ModelListRow";
@@ -38,6 +38,19 @@ const PROVIDER_LABELS: Partial<Record<ProviderFamily, string>> = {
   cursor: "Cursor",
   factory: "Droid",
 };
+
+// Order matters for rail layout — top-tier providers first, then routers,
+// then local runtimes. Listed here (not derived from PROVIDER_LABELS) because
+// PROVIDER_LABELS may include experimental entries we don't want surfaced.
+const ALL_PROVIDER_FAMILIES: readonly ProviderFamily[] = [
+  "anthropic",
+  "openai",
+  "factory",
+  "cursor",
+  "opencode",
+  "ollama",
+  "lmstudio",
+];
 
 function providerLabel(family: ProviderFamily): string {
   return PROVIDER_LABELS[family] ?? family;
@@ -123,8 +136,18 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     const set = new Set<ProviderFamily>();
     for (const m of expandedModels) set.add(m.family);
+    if (!authOnly) {
+      // Show every provider family ADE supports — including dynamic-only
+      // providers (opencode, lmstudio) that have no static registry entries —
+      // so the user can see the rail entry + empty state instead of wondering
+      // why a provider is missing.
+      for (const family of ALL_PROVIDER_FAMILIES) set.add(family);
+      // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
+      return ALL_PROVIDER_FAMILIES.filter((family) => set.has(family))
+        .concat([...set].filter((family) => !ALL_PROVIDER_FAMILIES.includes(family)));
+    }
     return [...set];
-  }, [expandedModels]);
+  }, [authOnly, expandedModels]);
 
   const railEntries = useMemo<RailEntry[]>(() => {
     const out: RailEntry[] = [{ kind: "favorites" }, { kind: "recents" }];
@@ -462,22 +485,37 @@ export const ModelPickerContent = memo(function ModelPickerContent({
             />
             <button
               type="button"
-              aria-pressed={authOnly}
+              role="switch"
+              aria-checked={!authOnly}
               data-model-picker-auth-toggle="true"
               title={
                 authOnly
-                  ? "Showing authenticated providers — click to show all"
-                  : "Showing all providers — click to show authenticated only"
+                  ? "Only providers you have keys / subscriptions for. Click to include unauthenticated providers."
+                  : "Including providers you haven't signed in to. Click to hide them."
               }
               onClick={toggleAuthOnly}
               className={cn(
-                "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded transition-colors",
-                authOnly
-                  ? "bg-violet-500/[0.18] text-violet-200"
-                  : "text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg/85",
+                "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium leading-none transition-colors",
+                !authOnly
+                  ? "border-violet-400/30 bg-violet-500/[0.10] text-violet-100"
+                  : "border-white/[0.08] bg-white/[0.02] text-muted-fg/70 hover:border-white/[0.12] hover:text-fg/85",
               )}
             >
-              <Funnel size={12} weight={authOnly ? "fill" : "regular"} />
+              <span
+                aria-hidden
+                className={cn(
+                  "relative inline-block h-3 w-5 rounded-full transition-colors",
+                  !authOnly ? "bg-violet-400/70" : "bg-white/[0.10]",
+                )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-[1px] inline-block h-2.5 w-2.5 rounded-full bg-fg shadow-sm transition-all duration-150",
+                    !authOnly ? "left-[9px]" : "left-[2px]",
+                  )}
+                />
+              </span>
+              <span>Show all models</span>
             </button>
           </div>
 
