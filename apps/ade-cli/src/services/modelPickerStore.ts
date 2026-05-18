@@ -92,6 +92,15 @@ export function createModelPickerStore(options: CreateModelPickerStoreOptions = 
     writePersisted(filePath, { ...state, version: STORE_VERSION });
   };
 
+  // Flush pending debounced pushRecent on process exit so the latest model
+  // selection isn't lost when the user closes the TUI within the debounce window.
+  // exit handler runs synchronously and flush uses writeFileSync.
+  if (!options.filePath) {
+    process.once("exit", () => {
+      if (persistTimer != null) flush();
+    });
+  }
+
   return {
     getFavorites: () => state.favorites.slice(),
     setFavorites: (favorites) => {
