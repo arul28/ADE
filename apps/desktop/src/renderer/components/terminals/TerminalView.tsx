@@ -1016,13 +1016,14 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
     runtime.hydrationBackfillTimer = null;
   }
 
-  runtime.hydrationBackfillAttempts += 1;
   const delayMs = options.delayMs
     ?? (runtime.visible && runtime.active ? HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS : HYDRATION_BACKFILL_RETRY_MS);
   const snapshotOnly = options.snapshotOnly ?? runtime.displayedLiveDataBeforeHydration;
   runtime.hydrationBackfillTimer = setTimeout(() => {
     runtime.hydrationBackfillTimer = null;
     if (!needsHydrationBackfill(runtime)) return;
+    runtime.hydrationBackfillAttempts += 1;
+    if (runtime.hydrationBackfillAttempts > HYDRATION_BACKFILL_MAX_ATTEMPTS) return;
 
     readPreviewHydrationData(runtime, { snapshotOnly })
       .then((data) => {

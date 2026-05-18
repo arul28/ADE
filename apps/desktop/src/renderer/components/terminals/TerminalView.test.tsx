@@ -1516,6 +1516,89 @@ describe("TerminalView", () => {
     expect(writes.some((value) => value.includes("Fast snapshot paint"))).toBe(true);
   });
 
+  it("does not spend the backfill retry budget on replaced timers", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock
+      .mockResolvedValueOnce({
+        terminalId: "session-churn-blank-snapshot",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        terminalId: "session-churn-blank-snapshot",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      })
+      .mockResolvedValue({
+        terminalId: "session-churn-blank-snapshot",
+        session: null,
+        source: "snapshot",
+        snapshot: {
+          version: 1,
+          terminalId: "session-churn-blank-snapshot",
+          cols: 120,
+          rows: 2,
+          capturedAt: new Date().toISOString(),
+          status: "running",
+          runtimeState: "running",
+          bufferType: "normal",
+          cursorX: 0,
+          cursorY: 1,
+          baseY: 0,
+          viewportY: 0,
+          serialized: "",
+          visibleRows: [
+            {
+              text: "Snapshot after timer churn",
+              wrapped: false,
+              cells: "Snapshot after timer churn".split("").map((text) => ({
+                text,
+                fg: null,
+                bg: null,
+                fgMode: "default" as const,
+                bgMode: "default" as const,
+              })),
+            },
+          ],
+        },
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      });
+
+    render(<TerminalView ptyId="pty-churn-blank-snapshot" sessionId="session-churn-blank-snapshot" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    terminal?.write.mockClear();
+
+    for (let index = 0; index < 130; index += 1) {
+      for (const listener of mockState.ptyDataListeners) {
+        listener({
+          ptyId: "pty-churn-blank-snapshot",
+          sessionId: "session-churn-blank-snapshot",
+          data: `\x1b[29;3HStarting MCP server ${index}`,
+        });
+      }
+    }
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    await flushAllTimers();
+
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("Snapshot after timer churn"))).toBe(true);
+  });
+
   it("does not mask the terminal while waiting for the first xterm text frame", async () => {
     const view = render(<TerminalView ptyId="pty-startup-loading" sessionId="session-startup-loading" isActive />);
     await flushAnimationFrame();
