@@ -432,18 +432,18 @@ describe("aiIntegrationService", () => {
           }]
         : [],
     }));
-    mockState.probeOpenCodeProviderInventory.mockImplementation(async (args: any) => {
-      expect(args.discoveredLocalModels).toContainEqual({ provider: "lmstudio", modelId });
-      return {
+    mockState.probeOpenCodeProviderInventory.mockResolvedValue({
         modelIds: [`opencode/lmstudio/${modelId}`],
         providers: [{ id: "lmstudio", name: "LM Studio", connected: true, modelCount: 1 }],
         error: null,
         descriptors: [],
-      };
     });
 
     const status = await service.getStatus({ refreshOpenCodeInventory: true });
 
+    expect(mockState.probeOpenCodeProviderInventory).toHaveBeenCalledWith(expect.objectContaining({
+      discoveredLocalModels: expect.arrayContaining([{ provider: "lmstudio", modelId }]),
+    }));
     expect(status.runtimeConnections?.lmstudio?.loadedModelIds).toContain(`lmstudio/${modelId}`);
     expect(status.availableModelIds).toContain(`opencode/lmstudio/${modelId}`);
   });
