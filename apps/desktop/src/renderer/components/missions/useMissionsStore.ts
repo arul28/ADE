@@ -1,4 +1,7 @@
-import { create } from "zustand";
+import React, { createContext, useContext, type ReactNode } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
+import type { StateCreator } from "zustand";
 import type {
   MissionDetail,
   MissionSummary,
@@ -261,10 +264,6 @@ function isRendererVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState === "visible";
 }
 
-/* ── Toast timer registry (module-scoped, not per-render) ── */
-const toastTimers = new Map<string, number>();
-let missionSelectionRequestSeq = 0;
-
 function buildClearedSelectionState(): Partial<MissionsState> {
   return {
     selectedMissionId: null,
@@ -283,7 +282,11 @@ function buildClearedSelectionState(): Partial<MissionsState> {
 
 /* ════════════════════ STORE CREATION ════════════════════ */
 
-export const useMissionsStore = create<MissionsStore>((set, get) => ({
+const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
+  const toastTimers = new Map<string, number>();
+  let missionSelectionRequestSeq = 0;
+
+  return ({
   ...initialMissionsState,
 
   /* ── Simple setters ── */
@@ -705,7 +708,47 @@ export const useMissionsStore = create<MissionsStore>((set, get) => ({
 
   /* ── Selection reset ── */
   clearSelection: () => set(buildClearedSelectionState()),
-}));
+  });
+};
+
+export type MissionsStoreApi = StoreApi<MissionsStore>;
+
+const rootMissionsStore = createStore<MissionsStore>()(createMissionsState);
+const MissionsStoreContext = createContext<MissionsStoreApi | null>(null);
+
+export function createMissionsStore(): MissionsStoreApi {
+  return createStore<MissionsStore>()(createMissionsState);
+}
+
+export function MissionsStoreProvider({
+  store,
+  children,
+}: {
+  store: MissionsStoreApi;
+  children: ReactNode;
+}) {
+  return React.createElement(MissionsStoreContext.Provider, { value: store }, children);
+}
+
+export function useMissionsStoreApi(): MissionsStoreApi {
+  return useContext(MissionsStoreContext) ?? rootMissionsStore;
+}
+
+type MissionsStoreHook = {
+  <T>(selector: (state: MissionsStore) => T): T;
+  getState: MissionsStoreApi["getState"];
+  setState: MissionsStoreApi["setState"];
+  subscribe: MissionsStoreApi["subscribe"];
+};
+
+export const useMissionsStore = ((selector: (state: MissionsStore) => unknown) => {
+  const store = useMissionsStoreApi();
+  return useStore(store, selector);
+}) as MissionsStoreHook;
+
+useMissionsStore.getState = rootMissionsStore.getState;
+useMissionsStore.setState = rootMissionsStore.setState;
+useMissionsStore.subscribe = rootMissionsStore.subscribe;
 
 /* ════════════════════ FINE-GRAINED SELECTORS ════════════════════ */
 

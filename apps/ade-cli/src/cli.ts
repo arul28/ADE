@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -7839,15 +7840,17 @@ function automationsExampleText(): string {
         laneMode: "create",
         laneNamePreset: "issue-num-title",
         session: {
-          prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",
+          title: "Issue fix",
+          codexFastMode: true,
         },
       },
-      actions: [
-        {
-          type: "agent-session",
-          modelId: "claude-opus-4-7",
+      prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",
+      modelConfig: {
+        orchestratorModel: {
+          modelId: "openai/gpt-5.5",
+          thinkingLevel: "xhigh",
         },
-      ],
+      },
     },
     null,
     2,
@@ -10256,6 +10259,14 @@ function shouldReplaceMachineRuntimeVersion(runtimeVersion: string | null): bool
   return runtimeVersion == null || runtimeVersion !== VERSION;
 }
 
+function computeRuntimeBuildHash(filePath: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
 async function initializeMachineRuntimeDaemon(
   client: SocketJsonRpcClient,
   options: GlobalOptions,
@@ -10291,6 +10302,7 @@ async function spawnMachineRuntimeDaemon(
   const { resolveAdeServeCommand } = await import("./serviceManager/common");
   const serviceCommand = resolveAdeServeCommand();
   const args = [...serviceCommand.args];
+  let runtimeBuildHash: string | null = null;
   if (
     serviceCommand.command === process.execPath &&
     args.length === 1 &&
@@ -10298,19 +10310,27 @@ async function spawnMachineRuntimeDaemon(
     fs.existsSync(CLI_DIST_PATH)
   ) {
     args.splice(0, 1, CLI_DIST_PATH, "serve");
+    runtimeBuildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
+  } else if (serviceCommand.command === process.execPath && args[0]) {
+    runtimeBuildHash = computeRuntimeBuildHash(path.resolve(args[0]));
   }
   args.push("--socket", socketPath);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...(serviceCommand.env ?? {}),
+    ADE_DEFAULT_ROLE: options.role,
+    ADE_RPC_SOCKET_PATH: socketPath,
+    ADE_RUNTIME_SOCKET_PATH: socketPath,
+  };
+  if (runtimeBuildHash) {
+    env.ADE_RUNTIME_BUILD_HASH = runtimeBuildHash;
+  }
 
   const child = spawn(serviceCommand.command, args, {
     detached: true,
     stdio: "ignore",
-    env: {
-      ...process.env,
-      ...(serviceCommand.env ?? {}),
-      ADE_DEFAULT_ROLE: options.role,
-      ADE_RPC_SOCKET_PATH: socketPath,
-      ADE_RUNTIME_SOCKET_PATH: socketPath,
-    },
+    env,
   });
   child.once("error", () => {});
   child.unref();

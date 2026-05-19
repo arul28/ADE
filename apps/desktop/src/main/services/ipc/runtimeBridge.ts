@@ -44,6 +44,7 @@ type RuntimeBridgeArgs = {
     windowId: number | null;
     project: ProjectInfo | null;
     binding: OpenProjectBinding | null;
+    openProjectTabs?: ProjectInfo[];
   };
   bindRemoteProject?: (
     windowId: number | null,

@@ -289,8 +289,19 @@ the General settings tab via `AdeCliSection`:
 1. Bring up the runtime daemon. The pool tries to attach to
    `~/.ade/sock/ade.sock`; if that fails it spawns
    `ade serve --socket <path>` from the bundled CLI and waits for the
-   socket. A version mismatch between the running daemon and the desktop
-   build forces a clean restart.
+   socket. Compatibility is checked at `initialize` time using both the
+   reported version and a SHA-256 build hash of the CLI script
+   (`ADE_RUNTIME_BUILD_HASH` is set by `apps/ade-cli/src/cli.ts` before
+   spawning the daemon, and `LocalRuntimeConnectionPool.connectClient`
+   compares the runtime's `buildHash` against the desktop's expected
+   value). A dev build that reports the placeholder version `0.0.0` is
+   accepted when its build hash matches the bundled CLI. Mismatches
+   are surfaced as a `LocalRuntimeCompatibilityError` and the **existing
+   daemon is left running** so the user's active work is preserved —
+   the previous behaviour of force-shutting the daemon and reconnecting
+   has been retired because it killed live PTYs / chats during a stale
+   reattach window. The desktop reports the incompatibility back to the
+   user instead.
 2. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in

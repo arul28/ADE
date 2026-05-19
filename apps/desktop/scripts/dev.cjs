@@ -207,7 +207,23 @@ async function ensureDevIcon() {
   }
 }
 
+async function ensureAdeCliBuild() {
+  const builder = path.join(__dirname, "ensure-ade-cli-build.cjs");
+  if (!fs.existsSync(builder)) return;
+  const result = cp.spawnSync(process.execPath, [builder], {
+    cwd: projectRoot,
+    stdio: "inherit",
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`ADE CLI build check failed with exit code ${result.status ?? "unknown"}`);
+  }
+}
+
 async function main() {
+  await ensureAdeCliBuild();
   await ensureDevIcon();
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;

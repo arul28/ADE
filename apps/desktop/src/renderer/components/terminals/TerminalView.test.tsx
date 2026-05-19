@@ -146,6 +146,7 @@ import {
   __resetTerminalRuntimesForTests,
   disposeTerminalRuntimesForProjectChange,
   getTerminalRuntimeSnapshot,
+  stripFullScreenRedrawSequences,
 } from "./TerminalView";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 
@@ -172,6 +173,7 @@ function installWindowAde() {
     },
     sessions: {
       readTranscriptTail: vi.fn().mockResolvedValue(""),
+      get: vi.fn().mockResolvedValue(null),
     },
     terminal: {
       preview: vi.fn().mockResolvedValue({
@@ -181,6 +183,11 @@ function installWindowAde() {
         snapshot: null,
         transcript: null,
         capturedAt: new Date().toISOString(),
+      }),
+      read: vi.fn().mockResolvedValue({
+        terminalId: "session",
+        data: "",
+        nextSince: 0,
       }),
     },
   };
@@ -1717,5 +1724,276 @@ describe("TerminalView", () => {
       cols: 132,
       rows: 42,
     });
+  });
+
+  it("replays the full transcript for disposed chat-CLI sessions with scrollback enlarged", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const sessionsGetMock = window.ade.sessions.get as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+
+    sessionsGetMock.mockResolvedValue({
+      id: "session-replay",
+      laneId: "lane",
+      laneName: "Lane",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude-chat",
+      title: "claude",
+      status: "disposed",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      exitCode: 0,
+      transcriptPath: "/tmp/session-replay.log",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "killed",
+      resumeCommand: null,
+    });
+    // terminal.preview must NOT be required for chat-CLI sessions (it throws in
+    // production); the replay path should fire purely off sessions.get. Make
+    // preview reject here so we'd fail loudly if the code regressed.
+    previewMock.mockRejectedValue(new Error("agent chat session, not a terminal"));
+
+    const transcript =
+      "\x1b[?1049h\x1b[2J\x1b[31mHello\x1b[0m\nuser: hi\n\x1b[32massistant: hello!\x1b[0m\n\x1b[?1049l";
+    readTranscriptTailMock.mockResolvedValue(transcript);
+
+    render(<TerminalView ptyId="pty-replay" sessionId="session-replay" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+      options: Record<string, unknown>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    expect(readTranscriptTailMock).toHaveBeenCalledWith({
+      sessionId: "session-replay",
+      maxBytes: 8_000_000,
+      raw: true,
+    });
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    const replayWrite = writes.find((value) => value.includes("assistant: hello!"));
+    expect(replayWrite).toBeTruthy();
+    // Alt-screen + clear-screen sequences are stripped; SGR colors and text
+    // survive untouched so the replay matches the live ANSI render.
+    expect(replayWrite).not.toContain("\x1b[?1049h");
+    expect(replayWrite).not.toContain("\x1b[?1049l");
+    expect(replayWrite).not.toContain("\x1b[2J");
+    expect(replayWrite).toContain("\x1b[31mHello\x1b[0m");
+    expect(replayWrite).toContain("\x1b[32massistant: hello!\x1b[0m");
+    // Scrollback is enlarged so the entire conversation stays scrollable.
+    expect(terminal?.options.scrollback).toBe(100_000);
+  });
+
+  it("falls back to snapshot hydration when transcript.read returns no data for a disposed session", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const sessionsGetMock = window.ade.sessions.get as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+
+    sessionsGetMock.mockResolvedValue({
+      id: "session-replay-empty",
+      laneId: "lane",
+      laneName: "Lane",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude",
+      title: "claude",
+      status: "disposed",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      exitCode: 1,
+      transcriptPath: "/tmp/session-replay-empty.log",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "exited",
+      resumeCommand: null,
+    });
+    previewMock.mockResolvedValue({
+      terminalId: "session-replay-empty",
+      session: {
+        terminalId: "session-replay-empty",
+        ptyId: null,
+        chatSessionId: null,
+        laneId: "lane",
+        laneName: "Lane",
+        title: "claude",
+        toolType: "claude",
+        goal: null,
+        status: "disposed",
+        runtimeState: "exited",
+        active: false,
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        exitCode: 1,
+        pid: null,
+        resumeCommand: null,
+        resumeMetadata: null,
+        lastOutputPreview: null,
+        summary: null,
+      },
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-replay-empty",
+        cols: 12,
+        rows: 1,
+        capturedAt: new Date().toISOString(),
+        status: "disposed",
+        runtimeState: "exited",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [
+          {
+            text: "Snapshot tail",
+            wrapped: false,
+            cells: "Snapshot tail".split("").map((text) => ({
+              text,
+              fg: null,
+              bg: null,
+              fgMode: "default" as const,
+              bgMode: "default" as const,
+            })),
+          },
+        ],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+    // Empty transcript on the replay path forces the snapshot fallback.
+    readTranscriptTailMock.mockResolvedValue("");
+
+    render(<TerminalView ptyId="pty-replay-empty" sessionId="session-replay-empty" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+      options: Record<string, unknown>;
+    } | undefined;
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("Snapshot tail"))).toBe(true);
+    // No transcript = no replay-mode scrollback bump.
+    expect(terminal?.options.scrollback).toBe(10_000);
+  });
+
+  it("preserves live-session behavior and does not trigger replay transcript reads while the PTY is running", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const sessionsGetMock = window.ade.sessions.get as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+
+    sessionsGetMock.mockResolvedValue({
+      id: "session-live-running",
+      laneId: "lane",
+      laneName: "Lane",
+      ptyId: "pty-live-running",
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "claude",
+      title: "claude",
+      status: "running",
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "/tmp/session-live-running.log",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "running",
+      resumeCommand: null,
+    });
+    previewMock.mockResolvedValue({
+      terminalId: "session-live-running",
+      session: {
+        terminalId: "session-live-running",
+        ptyId: "pty-live-running",
+        chatSessionId: null,
+        laneId: "lane",
+        laneName: "Lane",
+        title: "claude",
+        toolType: "claude",
+        goal: null,
+        status: "running",
+        runtimeState: "running",
+        active: true,
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        exitCode: null,
+        pid: 1234,
+        resumeCommand: null,
+        resumeMetadata: null,
+        lastOutputPreview: null,
+        summary: null,
+      },
+      source: "empty",
+      snapshot: null,
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-live-running" sessionId="session-live-running" isActive />);
+    await flushAllTimers();
+
+    // No call to readTranscriptTail with the replay-sized cap (8 MB) means the
+    // replay path stayed off. Hydration backfills may still call it with the
+    // ordinary HYDRATE_TAIL_BYTES cap, so we assert by maxBytes.
+    const replaySized = readTranscriptTailMock.mock.calls.some(
+      ([call]) => (call as { maxBytes?: number })?.maxBytes === 8_000_000,
+    );
+    expect(replaySized).toBe(false);
+  });
+});
+
+describe("stripFullScreenRedrawSequences", () => {
+  it("strips alt-screen enter/leave sequences (1049 + the older 47 variant)", () => {
+    expect(
+      stripFullScreenRedrawSequences("before\x1b[?1049hmiddle\x1b[?1049lafter"),
+    ).toBe("beforemiddleafter");
+    expect(
+      stripFullScreenRedrawSequences("\x1b[?47h<TUI body>\x1b[?47l"),
+    ).toBe("<TUI body>");
+  });
+
+  it("strips clear-screen / hard-reset sequences that would erase prior content", () => {
+    expect(stripFullScreenRedrawSequences("keep\x1b[2Jdrop")).toBe("keepdrop");
+    expect(stripFullScreenRedrawSequences("keep\x1b[3Jdrop")).toBe("keepdrop");
+    expect(stripFullScreenRedrawSequences("keep\x1bcdrop")).toBe("keepdrop");
+    // The compound \x1b[H\x1b[2J ("home + erase") is stripped wholesale so a
+    // bare cursor-home doesn't linger and snap subsequent output to row 1.
+    expect(stripFullScreenRedrawSequences("keep\x1b[H\x1b[2Jdrop")).toBe(
+      "keepdrop",
+    );
+    // A bare cursor-home outside the compound is preserved (general layout).
+    expect(stripFullScreenRedrawSequences("keep\x1b[Hdrop")).toBe("keep\x1b[Hdrop");
+  });
+
+  it("preserves ordinary ANSI color (SGR) and OSC sequences verbatim", () => {
+    const input = "\x1b[31mred\x1b[0m \x1b[1;38;2;200;100;50mtrue-color\x1b[0m";
+    expect(stripFullScreenRedrawSequences(input)).toBe(input);
+
+    const osc = "\x1b]0;title text\x07rest of line";
+    expect(stripFullScreenRedrawSequences(osc)).toBe(osc);
+  });
+
+  it("preserves cursor-position sequences so per-line layout is unchanged", () => {
+    const input = "\x1b[5;10HHello\x1b[7;1Hsecond line";
+    expect(stripFullScreenRedrawSequences(input)).toBe(input);
+  });
+
+  it("returns the empty string unchanged", () => {
+    expect(stripFullScreenRedrawSequences("")).toBe("");
   });
 });

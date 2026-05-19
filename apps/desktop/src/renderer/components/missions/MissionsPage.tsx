@@ -16,7 +16,14 @@ import { useAppStore } from "../../state/appStore";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 
 /* ── Store & extracted components ── */
-import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import {
+  MissionsStoreProvider,
+  createMissionsStore,
+  useMissionsStore,
+  useMissionsStoreApi,
+  type MissionsStore,
+  type MissionsStoreApi,
+} from "./useMissionsStore";
 import { MissionSidebar } from "./MissionSidebar";
 import { MissionDetailView } from "./MissionDetailView";
 import { ManageMissionDialog, MissionContextMenu } from "./ManageMissionDialog";
@@ -25,6 +32,7 @@ import { MissionSettingsDialog } from "./MissionSettingsDialog";
 import { useMissionPolling } from "./useMissionPolling";
 import { useMissionRunView } from "./useMissionRunView";
 import { filterExecutionSteps } from "./missionHelpers";
+import { MissionActiveProvider } from "./MissionActiveContext";
 
 import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
 import { buildMissionLaunchRequest, prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
@@ -123,10 +131,11 @@ function ProductionMissionsComingSoon() {
   );
 }
 
-function MissionsProductionGate({ children }: { children: React.ReactElement }) {
+function MissionsProductionGate({ active = true, children }: { active?: boolean; children: React.ReactElement }) {
   const [state, setState] = useState<AppPackagingState>("checking");
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     window.ade.app.getInfo().then(
       (info) => {
@@ -139,7 +148,7 @@ function MissionsProductionGate({ children }: { children: React.ReactElement }) 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [active]);
 
   if (state === "checking") {
     return (
@@ -197,8 +206,9 @@ const selectPageData = (s: MissionsStore) => ({
 
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
-function MissionsWorkspace() {
+function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
   const [searchParams] = useSearchParams();
+  const missionsStore = useMissionsStoreApi();
   const lanes = useAppStore((s) => s.lanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
   const appliedQueryMissionIdRef = useRef<string | null>(null);
@@ -229,8 +239,9 @@ function MissionsWorkspace() {
 
   /* ── Initial data load ── */
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
-    const store = useMissionsStore.getState();
+    const store = missionsStore.getState();
     void store.refreshMissionList({ preserveSelection: true });
     const dashboardTimer = window.setTimeout(() => {
       if (cancelled) return;
@@ -240,35 +251,38 @@ function MissionsWorkspace() {
       cancelled = true;
       window.clearTimeout(dashboardTimer);
     };
-  }, []);
+  }, [active, missionsStore]);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       if (cancelled) return;
-      void useMissionsStore.getState().loadMissionSettings();
+      void missionsStore.getState().loadMissionSettings();
     }, 900);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [active, missionsStore]);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       window.ade.orchestrator.getModelCapabilities().then(
-        (result) => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(result); },
-        () => { if (!cancelled) useMissionsStore.getState().setModelCapabilities(null); },
+        (result) => { if (!cancelled) missionsStore.getState().setModelCapabilities(result); },
+        () => { if (!cancelled) missionsStore.getState().setModelCapabilities(null); },
       );
     }, 1_200);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [active, missionsStore]);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       if (cancelled) return;
@@ -290,21 +304,24 @@ function MissionsWorkspace() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [active]);
 
   /* ── Event subscriptions — delegated to store (VAL-ARCH-007) ── */
   useEffect(() => {
-    const cleanup = useMissionsStore.getState().initEventSubscriptions();
+    if (!active) return;
+    const cleanup = missionsStore.getState().initEventSubscriptions();
     return cleanup;
-  }, []);
+  }, [active, missionsStore]);
 
   /* ── Selection change via consolidated getFullMissionView (VAL-ARCH-004) ── */
   const selectedMissionId = useMissionsStore((s) => s.selectedMissionId);
   useEffect(() => {
-    void useMissionsStore.getState().selectMission(selectedMissionId);
-  }, [selectedMissionId]);
+    if (!active) return;
+    void missionsStore.getState().selectMission(selectedMissionId);
+  }, [active, missionsStore, selectedMissionId]);
 
   useEffect(() => {
+    if (!active) return;
     const missionParam = (searchParams.get("missionId") ?? "").trim();
     if (!missionParam) {
       appliedQueryMissionIdRef.current = null;
@@ -312,33 +329,35 @@ function MissionsWorkspace() {
     }
     if (appliedQueryMissionIdRef.current === missionParam) return;
     appliedQueryMissionIdRef.current = missionParam;
-    void useMissionsStore.getState().selectMission(missionParam);
-  }, [searchParams]);
+    void missionsStore.getState().selectMission(missionParam);
+  }, [active, missionsStore, searchParams]);
 
   /* ── Checkpoint polling via shared coordinator ── */
   const runGraph = useMissionsStore((s) => s.runGraph);
-  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null);
-  const checkpointPollEnabled = Boolean(runGraph && !TERMINAL_RUN_STATUSES.has(runGraph.run.status));
+  const { runView } = useMissionRunView(selectedMissionId, runGraph?.run.id ?? null, active);
+  const checkpointPollEnabled = active && Boolean(runGraph && !TERMINAL_RUN_STATUSES.has(runGraph.run.status));
   const checkpointRunId = runGraph?.run.id ?? null;
   const refreshCheckpointStatus = useCallback(() => {
-    const store = useMissionsStore.getState();
+    const store = missionsStore.getState();
     if (!checkpointRunId) { store.setCheckpointStatus(null); return; }
     void window.ade.orchestrator.getCheckpointStatus({ runId: checkpointRunId }).then(
       (next) => store.setCheckpointStatus(next),
       () => store.setCheckpointStatus(null),
     );
-  }, [checkpointRunId]);
+  }, [checkpointRunId, missionsStore]);
   useMissionPolling(refreshCheckpointStatus, 10_000, checkpointPollEnabled);
   useEffect(() => {
-    if (!checkpointPollEnabled) useMissionsStore.getState().setCheckpointStatus(null);
-  }, [checkpointPollEnabled]);
+    if (!active) return;
+    if (!checkpointPollEnabled) missionsStore.getState().setCheckpointStatus(null);
+  }, [active, checkpointPollEnabled, missionsStore]);
 
   /* ── Step selection reconciliation ── */
   useEffect(() => {
+    if (!active) return;
     const steps = runGraph?.steps ?? [];
     const selectableSteps = filterExecutionSteps(steps);
     const selectionPool = selectableSteps.length > 0 ? selectableSteps : steps;
-    const store = useMissionsStore.getState();
+    const store = missionsStore.getState();
     const currentStepId = store.selectedStepId;
     if (!steps.length) {
       if (currentStepId !== null) store.setSelectedStepId(null);
@@ -347,12 +366,13 @@ function MissionsWorkspace() {
     if (currentStepId && selectionPool.some((s) => s.id === currentStepId)) return;
     const running = selectionPool.find((s) => s.status === "running");
     store.setSelectedStepId((running ?? selectionPool[0]).id);
-  }, [runGraph]);
+  }, [active, missionsStore, runGraph]);
 
   useEffect(() => {
-    useMissionsStore.getState().setCoordinatorPromptInspector(null);
-    useMissionsStore.getState().setWorkerPromptInspector(null);
-  }, [selectedMissionId]);
+    if (!active) return;
+    missionsStore.getState().setCoordinatorPromptInspector(null);
+    missionsStore.getState().setWorkerPromptInspector(null);
+  }, [active, missionsStore, selectedMissionId]);
 
   /* ── Attention toast notifications (timers owned by store, VAL-ARCH-007) ── */
   const selectedMission = useMissionsStore((s) => s.selectedMission);
@@ -360,6 +380,7 @@ function MissionsWorkspace() {
   const prevOpenInterventionCountRef = useRef<number>(0);
 
   useEffect(() => {
+    if (!active) return;
     if (!selectedMission) {
       prevMissionStatusRef.current = null;
       prevOpenInterventionCountRef.current = 0;
@@ -373,7 +394,7 @@ function MissionsWorkspace() {
     prevOpenInterventionCountRef.current = currentOpenCount;
     if (prevStatus === null) return;
 
-    const store = useMissionsStore.getState();
+    const store = missionsStore.getState();
     if (currentStatus === "intervention_required" && prevStatus !== "intervention_required") {
       store.addAttentionToast("Mission requires intervention", "warning", selectedMission.title, selectedMission.id);
     } else if (currentStatus === "failed" && prevStatus !== "failed") {
@@ -386,11 +407,11 @@ function MissionsWorkspace() {
         selectedMission.id,
       );
     }
-  }, [selectedMission?.status, selectedMission?.openInterventions, selectedMission?.id, selectedMission?.title, selectedMission]);
+  }, [active, missionsStore, selectedMission?.status, selectedMission?.openInterventions, selectedMission?.id, selectedMission?.title, selectedMission]);
 
   useEffect(() => {
-    return () => useMissionsStore.getState().cleanupToastTimers();
-  }, []);
+    return () => missionsStore.getState().cleanupToastTimers();
+  }, [missionsStore]);
 
   /* ── Responsive sidebar collapse (VAL-UX-010) ── */
   const [collapsed, setCollapsed] = useState(false);
@@ -407,7 +428,7 @@ function MissionsWorkspace() {
   /* ── Mission launch handler ── */
   const handleLaunchMission = useCallback(
     async (draft: CreateDraft) => {
-      const store = useMissionsStore.getState();
+      const store = missionsStore.getState();
       const prompt = draft.prompt.trim();
       if (!prompt) { store.setError("Mission prompt is required."); return; }
       try {
@@ -428,7 +449,7 @@ function MissionsWorkspace() {
         throw err instanceof Error ? err : new Error(message);
       }
     },
-    [defaultCreateLaneId],
+    [defaultCreateLaneId, missionsStore],
   );
 
   /* ── Loading screen ── */
@@ -507,11 +528,11 @@ function MissionsWorkspace() {
           open={missionSettingsOpen}
           onClose={() => {
             if (missionSettingsBusy) return;
-            useMissionsStore.getState().setMissionSettingsOpen(false);
+            missionsStore.getState().setMissionSettingsOpen(false);
           }}
           draft={missionSettingsDraft}
-          onDraftChange={(update) => useMissionsStore.getState().setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
-          onSave={() => void useMissionsStore.getState().saveMissionSettings()}
+          onDraftChange={(update) => missionsStore.getState().setMissionSettingsDraft((prev) => ({ ...prev, ...update }))}
+          onSave={() => void missionsStore.getState().saveMissionSettings()}
           busy={missionSettingsBusy}
           error={missionSettingsError}
           notice={missionSettingsNotice}
@@ -522,11 +543,19 @@ function MissionsWorkspace() {
 }
 
 /* Re-export for compatibility: the page was previously a named export */
-export default function MissionsPage() {
+export default function MissionsPage({ active = true }: { active?: boolean } = {}) {
+  const storeRef = useRef<MissionsStoreApi | null>(null);
+  if (!storeRef.current) {
+    storeRef.current = createMissionsStore();
+  }
   return (
-    <MissionsProductionGate>
-      <MissionsWorkspace />
-    </MissionsProductionGate>
+    <MissionsStoreProvider store={storeRef.current}>
+      <MissionActiveProvider active={active}>
+        <MissionsProductionGate active={active}>
+          <MissionsWorkspace active={active} />
+        </MissionsProductionGate>
+      </MissionActiveProvider>
+    </MissionsStoreProvider>
   );
 }
 

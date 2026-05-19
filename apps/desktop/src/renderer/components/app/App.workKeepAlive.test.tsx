@@ -16,11 +16,43 @@ const appStoreState = vi.hoisted(() => ({
   showWelcome: false,
   project: { rootPath: "/fake/project" },
   theme: "dark",
+  openProjectTabRoots: [] as string[],
+  projectInfoByRoot: {} as Record<string, { rootPath: string }>,
 }));
 
-vi.mock("../../state/appStore", () => ({
-  useAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector(appStoreState)),
-}));
+vi.mock("../../state/appStore", async () => {
+  const ReactModule = await vi.importActual("react") as typeof ReactNamespace;
+  const createScopedState = (project = appStoreState.project) => ({
+    ...appStoreState,
+    project,
+    lanes: [],
+    lanesLoading: false,
+    keybindings: null,
+    refreshLanes: vi.fn(async () => undefined),
+    refreshKeybindings: vi.fn(async () => undefined),
+    refreshProviderMode: vi.fn(async () => undefined),
+  });
+  return {
+    useAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector(appStoreState)),
+    createProjectAppStore: vi.fn((project) => {
+      let state = createScopedState(project);
+      return {
+        getState: () => state,
+        setState: (partial: unknown) => {
+          state = {
+            ...state,
+            ...(typeof partial === "function" ? (partial as (prev: typeof state) => Partial<typeof state>)(state) : partial as Partial<typeof state>),
+          };
+        },
+        subscribe: vi.fn(() => () => {}),
+      };
+    }),
+    hydrateProjectAppStore: vi.fn((store, partial) => {
+      store.setState(partial);
+    }),
+    AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
+  };
+});
 
 vi.mock("../../lib/debugLog", () => ({
   logRendererDebugEvent: vi.fn(),
@@ -107,6 +139,9 @@ describe("App Work route keep-alive", () => {
     appStoreState.showWelcome = false;
     appStoreState.project = { rootPath: "/fake/project" };
     appStoreState.theme = "dark";
+    appStoreState.openProjectTabRoots = [];
+    appStoreState.projectInfoByRoot = {};
+    window.localStorage.clear();
     (window as Window & { __adeBrowserMock?: boolean }).__adeBrowserMock = true;
     window.history.replaceState({}, "", "/work");
   });
@@ -196,6 +231,19 @@ describe("App Work route keep-alive", () => {
     expect(workLifecycle.mounts).toBe(0);
   });
 
+  it("enters the project surface instead of preserving the project picker route", async () => {
+    window.history.replaceState({}, "", "/project");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/work");
+    });
+    expect(screen.queryByTestId("project-page")).toBeNull();
+  });
+
   it("does not render the Work surface on non-Work routes when the project is missing", async () => {
     appStoreState.project = { rootPath: "" };
     window.history.replaceState({}, "", "/files");
@@ -203,8 +251,8 @@ describe("App Work route keep-alive", () => {
 
     render(<App />);
 
-    // RequireProject on the /files route navigates to /project; the inactive
-    // PersistentWorkSurface must NOT also navigate (would race) or mount Work.
+    // The project host should route missing projects to the picker; the
+    // inactive Work surface must NOT also navigate (would race) or mount Work.
     await screen.findByTestId("project-page");
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(workLifecycle.mounts).toBe(0);

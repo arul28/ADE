@@ -30,9 +30,10 @@ import {
   getMissionStatusBadgeConfig,
   usagePercentColor,
 } from "./missionHelpers";
-import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import { useMissionsStore, useMissionsStoreApi, type MissionsStore } from "./useMissionsStore";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useShallow } from "zustand/react/shallow";
+import { useMissionPageActive } from "./MissionActiveContext";
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled"]);
 
@@ -55,6 +56,7 @@ const selectHeaderMissionSummary = (s: MissionsStore) => {
 /* ════════════════════ MISSION HEADER ════════════════════ */
 
 export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
+  const missionsStore = useMissionsStoreApi();
   /* ── Grouped selector for render data (VAL-ARCH-008) ── */
   const {
     selectedMission,
@@ -126,15 +128,15 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
 
   /* ── Actions (access store imperatively to avoid extra subscriptions) ── */
   const openManageMissionDialog = useCallback((mission: MissionSummary) => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     s.setManageMission(mission);
     s.setManageMissionCleanupLanes(false);
     s.setManageMissionError(null);
     s.setManageMissionOpen(true);
-  }, []);
+  }, [missionsStore]);
 
   const handleStartRun = useCallback(async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.selectedMission) return;
     s.setRunBusy(true);
     try {
@@ -173,10 +175,10 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
     } finally {
       s.setRunBusy(false);
     }
-  }, []);
+  }, [missionsStore]);
 
   const handlePauseRun = useCallback(async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.runGraph || !s.selectedMission) return;
     s.setRunBusy(true);
     try {
@@ -188,10 +190,10 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
     } finally {
       s.setRunBusy(false);
     }
-  }, []);
+  }, [missionsStore]);
 
   const handleCancelRun = useCallback(async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.runGraph || !s.selectedMission) return;
     s.setRunBusy(true);
     try {
@@ -203,10 +205,10 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
     } finally {
       s.setRunBusy(false);
     }
-  }, []);
+  }, [missionsStore]);
 
   const handleResumeRun = useCallback(async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.runGraph || !s.selectedMission) return;
     s.setRunBusy(true);
     try {
@@ -218,10 +220,10 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
     } finally {
       s.setRunBusy(false);
     }
-  }, []);
+  }, [missionsStore]);
 
   const handleArchiveMission = useCallback(async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.selectedMission) return;
     if (!TERMINAL_MISSION_STATUSES.has(s.selectedMission.status)) return;
     if (!window.confirm("Archive this mission? This will remove it from the active list.")) return;
@@ -248,7 +250,7 @@ export function MissionHeader({ runView }: { runView: MissionRunView | null }) {
     } finally {
       s.setCleanupBusy(false);
     }
-  }, []);
+  }, [missionsStore]);
 
   if (!selectedMission) return null;
   const statusBadgeConfig = getMissionStatusBadgeConfig(
@@ -403,11 +405,13 @@ export function MissionProgressBar({ pct }: { pct: number }) {
 /* ────────── Compact Usage Meter (VAL-USAGE-001, VAL-USAGE-004, VAL-USAGE-005) ────────── */
 
 function CompactUsageMeter() {
+  const active = useMissionPageActive();
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const selectedMission = useMissionsStore((s) => s.selectedMission);
   const [perMissionCost, setPerMissionCost] = useState<number>(0);
 
   useEffect(() => {
+    if (!active) return;
     if (!window.ade?.usage) return;
     // Initial load
     window.ade.usage.getSnapshot().then(setSnapshot).catch(() => {});
@@ -421,10 +425,11 @@ function CompactUsageMeter() {
       window.clearInterval(timer);
       try { unsub(); } catch { /* ignore */ }
     };
-  }, []);
+  }, [active]);
 
   // Per-mission cost sourced from missionBudgetService (VAL-USAGE-005 scrutiny fix)
   useEffect(() => {
+    if (!active) return;
     if (!selectedMission?.id) { setPerMissionCost(0); return; }
     let cancelled = false;
     const fetchBudget = () => {
@@ -440,7 +445,7 @@ function CompactUsageMeter() {
     fetchBudget();
     const timer = window.setInterval(fetchBudget, 120_000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [selectedMission?.id]);
+  }, [active, selectedMission?.id]);
 
   if (!snapshot || snapshot.windows.length === 0) return null;
 

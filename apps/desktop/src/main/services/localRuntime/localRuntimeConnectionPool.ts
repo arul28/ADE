@@ -61,6 +61,7 @@ type LocalRuntimeNodePathOptions = {
 const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 3_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
+const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 
 export function buildLocalRuntimeServeArgs(
   cliPath: string,
@@ -217,15 +218,32 @@ export function computeLocalRuntimeBuildHash(cliPath = resolveCliScriptPath()): 
   }
 }
 
-async function shutdownRuntimeClient(client: RuntimeRpcClient): Promise<void> {
-  try {
-    await client.call("shutdown", {});
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("socket closed")) throw error;
-  } finally {
-    try { client.close(); } catch {}
+function isCompatibleRuntimeVersion(args: {
+  runtimeVersion: string | null;
+  appVersion: string;
+  runtimeBuildHash: string | null;
+  expectedBuildHash: string | null;
+}): boolean {
+  if (!args.runtimeVersion) return true;
+  if (args.runtimeVersion === args.appVersion) return true;
+  return (
+    args.runtimeVersion === PLACEHOLDER_RUNTIME_VERSION &&
+    args.expectedBuildHash != null &&
+    args.runtimeBuildHash === args.expectedBuildHash
+  );
+}
+
+class LocalRuntimeCompatibilityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalRuntimeCompatibilityError";
   }
+}
+
+function closeRuntimeClient(client: RuntimeRpcClient): void {
+  try {
+    client.close();
+  } catch {}
 }
 
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
@@ -651,6 +669,9 @@ export class LocalRuntimeConnectionPool {
     try {
       return await this.connectClient(socketPath);
     } catch (error) {
+      if (error instanceof LocalRuntimeCompatibilityError) {
+        throw error;
+      }
       this.logger.debug("local_runtime.connect_existing_failed", {
         socketPath,
         error: error instanceof Error ? error.message : String(error),
@@ -662,26 +683,43 @@ export class LocalRuntimeConnectionPool {
   private async connectClient(socketPath: string): Promise<RuntimeRpcClient> {
     const transport = await openSocketTransport(socketPath);
     const client = new RuntimeRpcClient(transport);
-    const initializeResult = await client.initialize("ade-desktop-local", this.appVersion);
+    let initializeResult: unknown;
+    try {
+      initializeResult = await client.initialize("ade-desktop-local", this.appVersion);
+    } catch (error) {
+      closeRuntimeClient(client);
+      throw error;
+    }
     const runtimeInfo = readRuntimeInfo(initializeResult);
-    if (runtimeInfo.version && runtimeInfo.version !== this.appVersion) {
-      this.logger.info("local_runtime.version_mismatch_restart", {
+    const expectedBuildHash = computeLocalRuntimeBuildHash();
+    if (!isCompatibleRuntimeVersion({
+      runtimeVersion: runtimeInfo.version,
+      appVersion: this.appVersion,
+      runtimeBuildHash: runtimeInfo.buildHash,
+      expectedBuildHash,
+    })) {
+      this.logger.info("local_runtime.version_mismatch_blocked", {
         socketPath,
         runtimeVersion: runtimeInfo.version,
         appVersion: this.appVersion,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
       });
-      await shutdownRuntimeClient(client);
-      throw new Error(`ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`);
+      closeRuntimeClient(client);
+      throw new LocalRuntimeCompatibilityError(
+        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}. The existing ADE service was left running to preserve active work.`,
+      );
     }
-    const expectedBuildHash = computeLocalRuntimeBuildHash();
     if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
-      this.logger.info("local_runtime.build_mismatch_restart", {
+      this.logger.info("local_runtime.build_mismatch_blocked", {
         socketPath,
         runtimeBuildHash: runtimeInfo.buildHash,
         expectedBuildHash,
       });
-      await shutdownRuntimeClient(client);
-      throw new Error("ADE service build does not match the packaged desktop runtime.");
+      closeRuntimeClient(client);
+      throw new LocalRuntimeCompatibilityError(
+        "ADE service build does not match the packaged desktop runtime. The existing ADE service was left running to preserve active work.",
+      );
     }
     this.activeClient = client;
     client.onDisconnect((error) => {

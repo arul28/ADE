@@ -33,16 +33,24 @@ describe("TabNav", () => {
 
   beforeEach(() => {
     resetStore();
-    globalThis.window.ade = {
-      app: {
-        revealPath: async () => undefined,
-        getInfo: async () => ({ isPackaged: false }) as any,
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        app: {
+          revealPath: async () => undefined,
+          getInfo: async () => ({ isPackaged: false }) as any,
+        },
       },
-    } as any;
+    });
   });
 
   afterEach(() => {
-    globalThis.window.ade = originalAde;
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: originalAde,
+    });
   });
 
   it("places Review directly below PRs in the sidebar", () => {
@@ -57,4 +65,3 @@ describe("TabNav", () => {
     expect(prs.nextElementSibling).toBe(review);
   });
 });
-

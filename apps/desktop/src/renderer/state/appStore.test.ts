@@ -71,8 +71,13 @@ function resetStore() {
     laneInspectorTabs: {},
     workViewByProject: {},
     laneWorkViewByScope: {},
+    laneSelectionByProject: {},
+    laneCacheByProject: {},
+    sessionsCacheByProject: {},
     dismissedMissingAiBannerRoots: {},
     dismissedGithubBannerRoots: {},
+    openProjectTabRoots: [],
+    projectInfoByRoot: {},
   });
 }
 
@@ -531,9 +536,33 @@ describe("appStore", () => {
       expect(useAppStore.getState().selectedLaneId).toBe("lane-42");
     });
 
+    it("selectLane records the choice in laneSelectionByProject when a project is active", () => {
+      useAppStore.setState({ project: { rootPath: "/p/a" } as any });
+      useAppStore.getState().selectLane("lane-42");
+      expect(useAppStore.getState().laneSelectionByProject["/p/a"]).toEqual({
+        laneId: "lane-42",
+        sessionId: null,
+      });
+    });
+
+    it("selectLane does not write laneSelectionByProject when there is no project", () => {
+      useAppStore.getState().selectLane("lane-42");
+      expect(useAppStore.getState().laneSelectionByProject).toEqual({});
+    });
+
     it("focusSession updates focusedSessionId", () => {
       useAppStore.getState().focusSession("session-abc");
       expect(useAppStore.getState().focusedSessionId).toBe("session-abc");
+    });
+
+    it("focusSession records the choice in laneSelectionByProject without clobbering laneId", () => {
+      useAppStore.setState({ project: { rootPath: "/p/a" } as any });
+      useAppStore.getState().selectLane("lane-7");
+      useAppStore.getState().focusSession("session-abc");
+      expect(useAppStore.getState().laneSelectionByProject["/p/a"]).toEqual({
+        laneId: "lane-7",
+        sessionId: "session-abc",
+      });
     });
 
     it("clearProjectTransitionError clears project action errors", () => {
@@ -763,6 +792,126 @@ describe("appStore", () => {
       expect(useAppStore.getState().project).toEqual(nextProject);
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toBeNull();
+    });
+
+    it("stashes the outgoing project's lane/session selection and restores the incoming project's on switch", async () => {
+      // Seed: user is on project A with lane-A1 and session-A1 selected.
+      useAppStore.setState({
+        project: { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any,
+        selectedLaneId: "lane-A1",
+        focusedSessionId: "session-A1",
+        // Project B has prior selection saved.
+        laneSelectionByProject: {
+          "/p/b": { laneId: "lane-B2", sessionId: "session-B2" },
+        },
+      });
+
+      const projectB = { rootPath: "/p/b", displayName: "B", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectB);
+
+      await useAppStore.getState().switchProjectToPath("/p/b");
+
+      // Outgoing /p/a stashed.
+      expect(useAppStore.getState().laneSelectionByProject["/p/a"]).toEqual({
+        laneId: "lane-A1",
+        sessionId: "session-A1",
+      });
+      // Incoming /p/b restored.
+      expect(useAppStore.getState().selectedLaneId).toBe("lane-B2");
+      expect(useAppStore.getState().focusedSessionId).toBe("session-B2");
+    });
+
+    it("restores null selection when switching to a project that has no saved selection", async () => {
+      useAppStore.setState({
+        project: { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any,
+        selectedLaneId: "lane-A1",
+        focusedSessionId: "session-A1",
+      });
+
+      const projectFresh = { rootPath: "/p/fresh", displayName: "Fresh", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectFresh);
+
+      await useAppStore.getState().switchProjectToPath("/p/fresh");
+
+      expect(useAppStore.getState().selectedLaneId).toBeNull();
+      expect(useAppStore.getState().focusedSessionId).toBeNull();
+    });
+
+    it("applies cached lanes immediately on switch back to a warm project (no loading flicker)", async () => {
+      const cachedLanes = [{ id: "lane-A1", name: "Primary", status: "idle" }] as any[];
+      const cachedSnapshots = [{ lane: cachedLanes[0] }] as any[];
+      useAppStore.setState({
+        project: { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any,
+        laneCacheByProject: {
+          "/p/b": { lanes: cachedLanes, laneSnapshots: cachedSnapshots },
+        },
+      });
+
+      const projectB = { rootPath: "/p/b", displayName: "B", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectB);
+
+      await useAppStore.getState().switchProjectToPath("/p/b");
+
+      // Cached lanes applied immediately — no empty state, no spinner.
+      expect(useAppStore.getState().lanes).toBe(cachedLanes);
+      expect(useAppStore.getState().laneSnapshots).toBe(cachedSnapshots);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
+    });
+
+    it("activates a warm project tab before the backend switch round trip finishes", async () => {
+      const projectA = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
+      const projectB = { rootPath: "/p/b", displayName: "B", baseRef: "main" } as any;
+      let resolveSwitch!: (project: typeof projectB) => void;
+      (window.ade.project.switchToPath as any).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSwitch = resolve;
+        }),
+      );
+      useAppStore.setState({
+        project: projectA,
+        selectedLaneId: "lane-A1",
+        focusedSessionId: "session-A1",
+        openProjectTabRoots: ["/p/a", "/p/b"],
+        projectInfoByRoot: {
+          "/p/a": projectA,
+          "/p/b": projectB,
+        },
+        laneSelectionByProject: {
+          "/p/b": { laneId: "lane-B2", sessionId: "session-B2" },
+        },
+      });
+
+      const pending = useAppStore.getState().switchProjectToPath("/p/b");
+
+      expect(useAppStore.getState().project).toEqual(projectB);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expect(useAppStore.getState().projectBinding).toEqual(
+        expect.objectContaining({ kind: "local", rootPath: "/p/b" }),
+      );
+      expect(useAppStore.getState().selectedLaneId).toBe("lane-B2");
+      expect(useAppStore.getState().focusedSessionId).toBe("session-B2");
+      expect(useAppStore.getState().laneSelectionByProject["/p/a"]).toEqual({
+        laneId: "lane-A1",
+        sessionId: "session-A1",
+      });
+
+      resolveSwitch(projectB);
+      await pending;
+    });
+
+    it("shows the loading spinner only when switching to a cold project (no cache)", async () => {
+      useAppStore.setState({
+        project: { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any,
+        laneCacheByProject: {},
+      });
+
+      const projectFresh = { rootPath: "/p/fresh", displayName: "Fresh", baseRef: "main" } as any;
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectFresh);
+
+      await useAppStore.getState().switchProjectToPath("/p/fresh");
+
+      expect(useAppStore.getState().lanes).toEqual([]);
+      expect(useAppStore.getState().lanesLoading).toBe(true);
     });
 
     it("stores a friendly timeout error when switching projects fails", async () => {

@@ -37,6 +37,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
+  AgentChatSubagentTranscriptMessage,
   ChatSurfaceChipTone,
   FilesWorkspace,
   ChatSurfaceProfile,
@@ -856,12 +857,12 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   return (
     <div
       className={cn(
-        "ade-prose-themed prose prose-invert min-w-0 max-w-full text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
+        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
         neu
           ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
           : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
         "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
-        "prose-p:my-3 prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:pl-1",
+        "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
         "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
       )}
     >
@@ -948,8 +949,8 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               <code
                 className={
                   neu
-                    ? "rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
-                    : "rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+                    ? "break-all whitespace-normal rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
+                    : "break-all whitespace-normal rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
                 }
               >
                 {children}
@@ -3490,18 +3491,38 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
   useLayoutEffect(() => {
     const el = rowRef.current;
     if (!el) return;
+    let raf: number | null = null;
+    const measureNow = (fallbackHeight = 0) => {
+      const height = Math.max(el.offsetHeight, el.getBoundingClientRect().height, fallbackHeight);
+      if (height > 0) onMeasure(index, height);
+    };
+
+    measureNow();
+    raf = requestAnimationFrame(() => measureNow());
+
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        if (raf !== null) cancelAnimationFrame(raf);
+      };
+    }
+
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
-      const height = entry.target instanceof HTMLElement ? entry.target.offsetHeight : entry.contentRect.height;
-      if (height > 0) onMeasure(index, height);
+      const measuredHeight = entry.target instanceof HTMLElement
+        ? Math.max(entry.target.offsetHeight, entry.target.getBoundingClientRect().height, entry.contentRect.height)
+        : entry.contentRect.height;
+      measureNow(measuredHeight);
     });
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
   }, [index, onMeasure]);
 
   return (
-    <div ref={rowRef} className="min-w-0 max-w-full overflow-hidden">
+    <div ref={rowRef} data-chat-virtualized-row="true" className="min-w-0 max-w-full overflow-visible">
       <EventRow {...rest} />
     </div>
   );
@@ -3626,7 +3647,125 @@ export function reconcileMeasuredScrollTop({
   return scrollTop;
 }
 
-export function AgentChatMessageList({
+function extractSubagentMessageText(
+  message: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
+): string {
+  if (typeof message.text === "string" && message.text.trim().length > 0) return message.text;
+  const raw = message.message;
+  if (raw && typeof raw === "object") {
+    const content = (raw as { content?: unknown }).content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+      const parts: string[] = [];
+      for (const part of content) {
+        if (part && typeof part === "object") {
+          const text = (part as { text?: unknown }).text;
+          if (typeof text === "string") parts.push(text);
+          const toolName = (part as { name?: unknown }).name;
+          const toolUse = (part as { type?: unknown }).type;
+          if (typeof toolUse === "string" && toolUse === "tool_use" && typeof toolName === "string") {
+            parts.push(`tool: ${toolName}`);
+          }
+        }
+      }
+      if (parts.length) return parts.join("\n");
+    }
+  }
+  return "";
+}
+
+function SubagentTranscriptView({
+  snapshotName,
+  messages,
+  loading,
+  unsupported,
+  className,
+}: {
+  snapshotName: string;
+  messages: import("../../../shared/types").AgentChatSubagentTranscriptMessage[] | null;
+  loading: boolean;
+  unsupported: boolean;
+  className?: string;
+}) {
+  if (unsupported || messages === null) {
+    return (
+      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
+        <p className="text-[13.5px] leading-6 text-fg/70">
+          Transcript not available for this provider yet.
+        </p>
+        {snapshotName ? (
+          <p className="mt-2 max-w-md text-[12px] leading-5 text-fg/40">
+            Activity for{" "}
+            <span className="text-fg/60">{snapshotName}</span>{" "}
+            still streams to the side panel — open it from the toolbar to follow along.
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (messages.length === 0) {
+    return (
+      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
+        <p className="text-[13.5px] leading-6 text-fg/55">
+          {loading ? "Listening for the first message…" : "No messages from this subagent yet."}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col overflow-y-auto font-sans",
+        className,
+      )}
+    >
+      <ol className="mx-auto w-full max-w-3xl px-6 pb-10 pt-6">
+        {messages.map((message, index) => {
+          const text = extractSubagentMessageText(message);
+          const role: string = message.type;
+          const isUser = role === "user";
+          const isSystem = role === "system";
+          const roleLabel = isUser ? "you" : isSystem ? "system" : "agent";
+          const accentClass = isUser
+            ? "text-fg/65"
+            : isSystem
+              ? "text-fg/40"
+              : "text-[color:var(--color-accent-bright,#C4B5FD)]";
+
+          return (
+            <li
+              key={message.uuid ?? `${index}-${role}`}
+              className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-5 border-b border-white/[0.03] py-3 last:border-b-0"
+            >
+              <div className="pt-1 text-right">
+                <span
+                  className={cn(
+                    "text-[10.5px] font-medium tracking-[0.04em]",
+                    accentClass,
+                  )}
+                >
+                  {roleLabel}
+                </span>
+              </div>
+              <div
+                className={cn(
+                  "min-w-0 whitespace-pre-wrap break-words text-[13px] leading-[1.6]",
+                  isSystem ? "text-fg/55" : "text-fg/85",
+                )}
+              >
+                {text || <span className="text-fg/35">No content recorded.</span>}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
     className,
@@ -3808,6 +3947,15 @@ export function AgentChatMessageList({
     stickToBottomRef.current = stickToBottom;
   }, [stickToBottom]);
 
+  const measureScrollContainerHeight = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nextHeight = el.clientHeight;
+    setContainerHeight((current) => (
+      Math.abs(current - nextHeight) >= 1 ? nextHeight : current
+    ));
+  }, []);
+
   // Unified stick-to-bottom autoscroll:
   // - scrollToBottomSoon coalesces every scroll-to-bottom request into a
   //   single rAF per frame so rapid streaming updates can't produce
@@ -3886,20 +4034,31 @@ export function AgentChatMessageList({
     if (!el) return;
     if (typeof ResizeObserver === "undefined") {
       // Fallback for test environments / old browsers
-      setContainerHeight(el.clientHeight);
+      measureScrollContainerHeight();
       return;
     }
     const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setContainerHeight(entry.contentRect.height);
-      }
+      const entry = entries[0];
+      const nextHeight = Math.max(entry?.contentRect.height ?? 0, el.clientHeight);
+      setContainerHeight((current) => (
+        Math.abs(current - nextHeight) >= 1 ? nextHeight : current
+      ));
     });
     ro.observe(el);
-    setContainerHeight(el.clientHeight);
+    measureScrollContainerHeight();
     return () => ro.disconnect();
-  }, []);
+  }, [measureScrollContainerHeight]);
 
   const shouldVirtualize = groupedRows.length >= VIRTUALIZATION_THRESHOLD;
+
+  useLayoutEffect(() => {
+    measureScrollContainerHeight();
+    const raf = requestAnimationFrame(() => {
+      measureScrollContainerHeight();
+      if (stickToBottomRef.current) scrollToBottomSoon(2);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [groupedRows.length, measureScrollContainerHeight, scrollToBottomSoon, shouldVirtualize]);
 
   /** Returns the best-known height for a given row index. */
   const rowHeight = useCallback((index: number) => {
@@ -4200,7 +4359,7 @@ export function AgentChatMessageList({
         className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
         onScroll={handleScroll}
       >
-        <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-hidden">
+        <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-visible">
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (
@@ -4243,4 +4402,31 @@ export function AgentChatMessageList({
       ) : null}
     </div>
   );
+}
+
+type AgentChatMessageListMainProps = Parameters<typeof AgentChatMessageListMain>[0];
+
+export function AgentChatMessageList(
+  props: AgentChatMessageListMainProps & {
+    subagentTranscript?: {
+      messages: AgentChatSubagentTranscriptMessage[] | null;
+      loading: boolean;
+      unsupported: boolean;
+      snapshotName: string;
+    };
+  },
+) {
+  if (props.subagentTranscript) {
+    return (
+      <SubagentTranscriptView
+        snapshotName={props.subagentTranscript.snapshotName}
+        messages={props.subagentTranscript.messages}
+        loading={props.subagentTranscript.loading}
+        unsupported={props.subagentTranscript.unsupported}
+        className={props.className}
+      />
+    );
+  }
+  const { subagentTranscript: _subagentTranscript, ...mainProps } = props;
+  return <AgentChatMessageListMain {...mainProps} />;
 }

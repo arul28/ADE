@@ -8,6 +8,7 @@ import readline from "node:readline";
 import {
   getSessionInfo as getClaudeSdkSessionInfo,
   getSessionMessages as getClaudeSdkSessionMessages,
+  getSubagentMessages as getClaudeSdkSubagentMessages,
   listSessions as listClaudeSdkSessions,
   query,
   renameSession as renameClaudeSession,
@@ -152,6 +153,8 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatSubagentTranscriptArgs,
+  AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
@@ -479,6 +482,13 @@ type CodexRuntime = {
     background: boolean;
     parentToolUseId: string | null;
   }>;
+  /**
+   * Per-turn 1-based index assigned to each new codex collab agent threadId
+   * the first time it is announced (`subagent_started`). Used to surface
+   * `Agent #N` labels in the desktop subagent panel; the raw threadId still
+   * lives on the snapshot via `agentId`. Cleared at turn boundaries.
+   */
+  codexAgentIndexByTurn: Map<string, Map<string, number>>;
   interruptedTurnIds: Set<string>;
   ignoredTurnIds: Set<string>;
   terminalTurnIds: Set<string>;
@@ -538,6 +548,20 @@ type ClaudeRuntime = {
     parentToolUseId?: string | null;
     background?: boolean;
     finalSummary?: string;
+    agentType?: string;
+    agentId?: string;
+  }>;
+  /**
+   * Stash for Task-tool inputs captured at the assistant tool_use boundary,
+   * keyed by the Task tool_use_id. Lets the `system:task_*` system-message
+   * path enrich its envelopes with the `subagent_type` the model picked
+   * (e.g. "code-reviewer", "Explore") instead of falling back to "subagent".
+   */
+  taskToolInputByToolUseId: Map<string, {
+    subagentType?: string;
+    name?: string;
+    description?: string;
+    isBackground?: boolean;
   }>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
@@ -2513,6 +2537,43 @@ function taskParentToolUseId(item: Record<string, unknown>): string | null {
   return typeof parentToolUseId === "string" && parentToolUseId.trim().length
     ? parentToolUseId.trim()
     : null;
+}
+
+/**
+ * Extract the `subagent_type` / `name` / `description` from a Task-tool input.
+ * Returns null when the block is not a Task tool or input is malformed.
+ *
+ * Why: the Claude Agent SDK's Task tool is the canonical way users spawn a
+ * subagent. Its `input.subagent_type` (e.g. "code-reviewer", "Explore") is
+ * the only place at spawn time where the chosen agent's name surfaces in the
+ * stream — the SubagentStart hook also has it, but downstream `task_started`
+ * system messages do not. Stashing it lets us enrich those envelopes.
+ */
+function extractTaskToolInput(input: unknown): {
+  subagentType?: string;
+  name?: string;
+  description?: string;
+  isBackground?: boolean;
+} | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const subagentType = typeof record.subagent_type === "string" && record.subagent_type.trim().length
+    ? record.subagent_type.trim()
+    : undefined;
+  const name = typeof record.name === "string" && record.name.trim().length
+    ? record.name.trim()
+    : undefined;
+  const description = typeof record.description === "string" && record.description.trim().length
+    ? record.description.trim()
+    : undefined;
+  const isBackground = isBackgroundTask(record);
+  if (!subagentType && !name && !description && !isBackground) return null;
+  return {
+    ...(subagentType ? { subagentType } : {}),
+    ...(name ? { name } : {}),
+    ...(description ? { description } : {}),
+    ...(isBackground ? { isBackground } : {}),
+  };
 }
 
 function normalizePreview(text: string, maxChars = 220): string | null {
@@ -8040,6 +8101,7 @@ export function createAgentChatService(args: {
         });
       }
       runtime.approvals.clear();
+      runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted) {
         emitChatEvent(managed, {
           type: "system_notice",
@@ -8081,6 +8143,7 @@ export function createAgentChatService(args: {
       managed.runtime.warmQuery = null;
       managed.runtime.warmupDone = null;
       managed.runtime.activeSubagents.clear();
+      managed.runtime.taskToolInputByToolUseId.clear();
       for (const pending of managed.runtime.approvals.values()) {
         pending.resolve({ decision: "cancel" });
       }
@@ -9172,7 +9235,7 @@ export function createAgentChatService(args: {
     };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
-    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string }>();
+    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string }>();
     const emittedClaudeTodoIds = new Set<string>();
     const emitClaudeToolCompletion = (
       itemId: string,
@@ -9585,16 +9648,24 @@ export function createAgentChatService(args: {
           const existing = runtime.activeSubagents.get(taskId);
           const description = String(taskMsg.description ?? existing?.description ?? "");
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
+          const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+          const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
+          const agentId = existing?.agentId
+            ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
           runtime.activeSubagents.set(taskId, {
             taskId,
             description,
             parentToolUseId,
             background: existing?.background,
             finalSummary: existing?.finalSummary,
+            ...(agentType ? { agentType } : {}),
+            ...(agentId ? { agentId } : {}),
           });
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId,
+            ...(agentId ? { agentId } : {}),
+            ...(agentType ? { agentType } : {}),
             parentToolUseId,
             description,
             summary: String(taskMsg.summary ?? ""),
@@ -9614,18 +9685,33 @@ export function createAgentChatService(args: {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? randomUUID());
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>);
+          const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+          const description = String(
+            taskMsg.description
+              ?? stashed?.description
+              ?? "",
+          );
+          const agentType = stashed?.subagentType ?? stashed?.name;
+          const agentId = typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length
+            ? taskMsg.agent_id.trim()
+            : undefined;
+          const background = isBackgroundTask(taskMsg as Record<string, unknown>) || stashed?.isBackground === true;
           runtime.activeSubagents.set(taskId, {
             taskId,
-            description: String(taskMsg.description ?? ""),
+            description,
             parentToolUseId,
-            background: isBackgroundTask(taskMsg as Record<string, unknown>),
+            background,
+            ...(agentType ? { agentType } : {}),
+            ...(agentId ? { agentId } : {}),
           });
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
+            ...(agentId ? { agentId } : {}),
+            ...(agentType ? { agentType } : {}),
             parentToolUseId,
-            description: String(taskMsg.description ?? ""),
-            background: isBackgroundTask(taskMsg as Record<string, unknown>),
+            description,
+            background,
             turnId,
           });
           continue;
@@ -9639,10 +9725,17 @@ export function createAgentChatService(args: {
           const existing = runtime.activeSubagents.get(taskId);
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const summary = String(taskMsg.summary ?? existing?.finalSummary ?? "");
+          const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+          const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
+          const agentId = existing?.agentId
+            ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
           runtime.activeSubagents.delete(taskId);
+          if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId,
+            ...(agentId ? { agentId } : {}),
+            ...(agentType ? { agentType } : {}),
             parentToolUseId,
             status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
             summary,
@@ -9743,6 +9836,12 @@ export function createAgentChatService(args: {
                 if (!emittedClaudeToolIds.has(itemId)) {
                   emittedClaudeToolIds.add(itemId);
                   openClaudeToolUses.set(itemId, { toolName });
+                  // Stash Task-tool input so the system:task_* envelopes that
+                  // arrive later can be enriched with agentType.
+                  if (toolName === "Task" && typeof block.id === "string" && block.id.length) {
+                    const taskInput = extractTaskToolInput(block.input);
+                    if (taskInput) runtime.taskToolInputByToolUseId.set(block.id, taskInput);
+                  }
                   emitChatEvent(managed, {
                     type: "activity",
                     activity: nextActivity.activity,
@@ -9898,7 +9997,12 @@ export function createAgentChatService(args: {
                       ? JSON.stringify(block.input)
                       : "";
                   toolInputJsonByContentIndex.set(contentIndex, initial);
-                  toolUseMetaByContentIndex.set(contentIndex, { toolName, itemId });
+                  const toolUseId = typeof block.id === "string" && block.id.length ? block.id : undefined;
+                  toolUseMetaByContentIndex.set(contentIndex, {
+                    toolName,
+                    itemId,
+                    ...(toolUseId ? { toolUseId } : {}),
+                  });
                 }
               }
             }
@@ -9917,6 +10021,13 @@ export function createAgentChatService(args: {
                   } catch {
                     parsed = {};
                   }
+                }
+                // Stash Task-tool input so the system:task_* envelopes that
+                // arrive later can be enriched with agentType. Stream-event
+                // path: input arrives via input_json_delta and lands in `raw`.
+                if (meta.toolName === "Task" && meta.toolUseId) {
+                  const taskInput = extractTaskToolInput(parsed);
+                  if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
                 }
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
                 if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
@@ -10972,12 +11083,15 @@ export function createAgentChatService(args: {
             const ensureSubagentStarted = (): void => {
               if (runtime.subagentSessionIds.has(childKey)) return;
               runtime.subagentSessionIds.add(childKey);
+              // We intentionally do NOT set `agentType` here. OpenCode encodes
+              // the human-readable identity in `session.title`, which we surface
+              // as `description`. The renderer prefers `agentType` when present,
+              // so omitting it lets the description drive the row label.
               emitChatEvent(managed, {
                 type: "subagent_started",
                 taskId: childKey,
                 parentToolUseId: null,
                 description: childDescription,
-                agentType: "opencode-subagent",
                 turnId,
               });
             };
@@ -11992,6 +12106,31 @@ export function createAgentChatService(args: {
     summary: string;
   };
 
+  /**
+   * Assigns (and remembers) a 1-based codex collab-agent index for the given
+   * threadId within the given turn. The Codex app-server wire format does not
+   * carry a human-friendly name for parallel agents — we surface them as
+   * `Agent #N` to mirror the official codex desktop reference and keep the raw
+   * threadId in the snapshot's agentId for filtering / drill-in.
+   */
+  const assignCodexAgentLabel = (
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    threadId: string,
+  ): string => {
+    const key = typeof turnId === "string" && turnId.length ? turnId : "__no_turn__";
+    let perTurn = runtime.codexAgentIndexByTurn.get(key);
+    if (!perTurn) {
+      perTurn = new Map<string, number>();
+      runtime.codexAgentIndexByTurn.set(key, perTurn);
+    }
+    const existing = perTurn.get(threadId);
+    if (existing !== undefined) return `Agent #${existing}`;
+    const next = perTurn.size + 1;
+    perTurn.set(threadId, next);
+    return `Agent #${next}`;
+  };
+
   const normalizeCodexCollabToolName = (value: unknown): string => {
     const raw = typeof value === "string" ? value.trim() : "";
     const compact = raw.replace(/[_-]/g, "").toLowerCase();
@@ -12340,9 +12479,14 @@ export function createAgentChatService(args: {
             background,
             parentToolUseId: itemId,
           });
+          const agentType = receiverIds.length
+            ? assignCodexAgentLabel(runtime, turnId, taskId)
+            : undefined;
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
+            ...(receiverIds.length ? { agentId: taskId } : {}),
+            ...(agentType ? { agentType } : {}),
             parentToolUseId: itemId,
             description: prompt.slice(0, 120) || "Parallel agent",
             background,
@@ -12393,9 +12537,12 @@ export function createAgentChatService(args: {
                 taskId,
                 parentToolUseId: placeholder.parentToolUseId ?? itemId,
               });
+              const agentType = assignCodexAgentLabel(runtime, turnId, taskId);
               emitChatEvent(managed, {
                 type: "subagent_started",
                 taskId,
+                agentId: taskId,
+                agentType,
                 parentToolUseId: placeholder.parentToolUseId ?? itemId,
                 description: placeholder.description,
                 background: placeholder.background,
@@ -12782,6 +12929,7 @@ export function createAgentChatService(args: {
       runtime.webSearchActionsByItemId.clear();
       runtime.itemTurnIdByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
+      runtime.codexAgentIndexByTurn.delete(turnId);
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
@@ -13367,6 +13515,7 @@ export function createAgentChatService(args: {
       planningApprovalGuardByTurnId: new Map<string, boolean>(),
       pendingTurnPlanningApprovalGuarded: null,
       activeSubagents: new Map(),
+      codexAgentIndexByTurn: new Map<string, Map<string, number>>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
       terminalTurnIds: new Set<string>(managed.codexTerminalTurnIds),
@@ -14596,6 +14745,7 @@ export function createAgentChatService(args: {
       warmupCancel: null,
       warmupCancelled: false,
       activeSubagents: new Map(),
+      taskToolInputByToolUseId: new Map(),
       slashCommands: [],
       busy: false,
       activeTurnId: null,
@@ -19394,6 +19544,19 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  // Broader than hasActiveWorkloads: a session that's between turns still
+  // owns a live agent runtime (Claude SDK client, Codex app-server, etc.) the
+  // user expects to keep using after switching away and back. Project context
+  // rebalancing must NOT evict a project that has any such session — losing
+  // the runtime forces a cold-start the next time the user types.
+  const hasRetainableSessions = (): boolean => {
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted) continue;
+      return true;
+    }
+    return false;
+  };
+
   const ensureIdentitySession = async (args: {
     identityKey: AgentChatIdentityKey;
     laneId: string;
@@ -21263,6 +21426,158 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Fetch the transcript of a subagent run within an existing chat session.
+   *
+   * Dispatch by runtime kind:
+   *
+   * - **Claude / ade-code**: SDK `getSubagentMessages` reads the per-subagent
+   *   JSONL at `~/.claude/projects/<projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl`.
+   * - **OpenCode**: child session id is the agentId; we call
+   *   `runtime.handle.client.session.messages({ path: { id }, query: { directory }})`
+   *   and translate the returned `{info, parts}[]` rows into the renderer's
+   *   transcript message shape.
+   * - **Codex**: codex's app-server never streams per-thread activity into the
+   *   parent session, so the transcript is the subset of parent envelopes whose
+   *   `subagent_*` event carries `taskId === threadId` (the codex agentId).
+   * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
+   *   subagent's `agentId`; we filter the parent stream by that value.
+   * - **Everything else (droid, lmstudio, …)**: `null`.
+   */
+  const getSubagentTranscript = async ({
+    sessionId,
+    agentId,
+    laneId,
+    limit,
+    offset,
+  }: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedAgentId = agentId.trim();
+    if (!normalizedSessionId.length) throw new Error("sessionId is required.");
+    if (!normalizedAgentId.length) throw new Error("agentId is required.");
+    const managed = managedSessions.get(normalizedSessionId);
+    const runtimeKind = managed?.runtime?.kind ?? null;
+    const provider = managed?.session.provider ?? null;
+
+    const normalizedLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? Math.min(Math.trunc(limit), 500)
+      : undefined;
+    const normalizedOffset = typeof offset === "number" && Number.isFinite(offset) && offset > 0
+      ? Math.trunc(offset)
+      : undefined;
+
+    if (runtimeKind === "opencode" && managed?.runtime?.kind === "opencode") {
+      try {
+        const response = await managed.runtime.handle.client.session.messages({
+          path: { id: normalizedAgentId },
+          query: { directory: managed.runtime.handle.directory },
+        });
+        const rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
+          ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
+        if (!Array.isArray(rows)) return [];
+        const mapped = rows.map((row): AgentChatSubagentTranscriptMessage | null => {
+          const info = row?.info && typeof row.info === "object"
+            ? (row.info as Record<string, unknown>)
+            : null;
+          if (!info) return null;
+          const role = typeof info.role === "string" ? info.role : "";
+          const messageType: AgentChatSubagentTranscriptMessage["type"] =
+            role === "user" ? "user" : role === "assistant" ? "assistant" : "system";
+          const id = typeof info.id === "string" ? info.id : "";
+          const sId = typeof info.sessionID === "string" ? info.sessionID : normalizedAgentId;
+          const parts = Array.isArray(row.parts) ? row.parts : [];
+          const textBlocks: string[] = [];
+          for (const part of parts) {
+            if (!part || typeof part !== "object") continue;
+            const block = part as { type?: unknown; text?: unknown };
+            if (typeof block.text === "string" && block.text.length
+                && (block.type === "text" || block.type === "reasoning")) {
+              textBlocks.push(block.text);
+            }
+          }
+          const text = textBlocks.join("");
+          return {
+            type: messageType,
+            uuid: id,
+            sessionId: sId,
+            parentToolUseId: null,
+            message: { info, parts },
+            ...(text.length ? { text } : {}),
+          };
+        }).filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
+        const sliced = normalizedOffset !== undefined ? mapped.slice(normalizedOffset) : mapped;
+        return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`OpenCode session.messages failed for ${normalizedAgentId}: ${message}`);
+      }
+    }
+
+    if (runtimeKind === "codex" || runtimeKind === "cursor") {
+      const envelopes = eventHistoryBySession.get(normalizedSessionId) ?? [];
+      const matchKey = runtimeKind === "codex" ? "taskId" : "agentId";
+      const matched: AgentChatSubagentTranscriptMessage[] = [];
+      for (const envelope of envelopes) {
+        const event = envelope.event as Record<string, unknown> & { type: string };
+        const candidate = event[matchKey];
+        if (typeof candidate !== "string" || candidate !== normalizedAgentId) continue;
+        const text = (() => {
+          if (typeof event.summary === "string" && event.summary.length) return event.summary;
+          if (typeof event.description === "string" && event.description.length) return event.description;
+          if (typeof event.text === "string" && event.text.length) return event.text;
+          return "";
+        })();
+        const role: AgentChatSubagentTranscriptMessage["type"] =
+          event.type === "subagent_result" || event.type === "subagent.completed"
+            ? "assistant"
+            : "system";
+        matched.push({
+          type: role,
+          uuid: `${envelope.sequence ?? envelope.timestamp}:${event.type}`,
+          sessionId: normalizedSessionId,
+          parentToolUseId: typeof event.parentToolUseId === "string" ? event.parentToolUseId : null,
+          message: event,
+          ...(text.length ? { text } : {}),
+        });
+      }
+      const sliced = normalizedOffset !== undefined ? matched.slice(normalizedOffset) : matched;
+      return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
+    }
+
+    if (provider !== "claude" && provider !== null) {
+      // Droid, LM Studio, and any provider without subagent semantics.
+      return null;
+    }
+
+    // Resolve the on-disk Claude session id and project dir the same way
+    // getClaudeSessionMessages does — works whether the chat is live or
+    // resolved purely from the persisted pointer.
+    const claudeSessionId = managed?.runtime?.kind === "claude"
+      ? (managed.runtime.sdkSessionId ?? normalizedSessionId)
+      : normalizedSessionId;
+    const pointer = sessionService.getClaudeSessionPointer(claudeSessionId);
+    const laneFallback = await resolveClaudeSessionLaneFallback(
+      laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
+    );
+    const messages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
+      ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
+      ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+      ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+    });
+    return messages.map((message: ClaudeSdkSessionMessage) => {
+      const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
+      const text = extractClaudeSessionMessageText(message.message);
+      return {
+        type: message.type,
+        uuid: message.uuid,
+        sessionId: message.session_id,
+        parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
+        message: message.message,
+        ...(text ? { text } : {}),
+      };
+    });
+  };
+
   const normalizeClaudeContextUsage = (
     usage: SDKControlGetContextUsageResponse,
   ): AgentChatContextUsage => {
@@ -21869,6 +22184,7 @@ export function createAgentChatService(args: {
     listSessions,
     getSessionSummary,
     hasActiveWorkloads,
+    hasRetainableSessions,
     getChatTranscript,
     getCodexResumeContext,
     getChatEventHistory,
@@ -21886,6 +22202,7 @@ export function createAgentChatService(args: {
     listClaudeSessions,
     getClaudeSessionInfo,
     getClaudeSessionMessages,
+    getSubagentTranscript,
     getContextUsage,
     rewindFiles,
     codexFuzzyFileSearch,

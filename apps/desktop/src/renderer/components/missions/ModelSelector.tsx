@@ -14,6 +14,9 @@ type ModelSelectorProps = {
   onOpenAiSettings?: () => void;
   /** Stable id used by the picker to remember per-surface defaults. */
   surfaceKey?: string;
+  fastModeActive?: boolean;
+  onFastModeToggle?: (next: boolean) => void;
+  fastModeSupported?: boolean;
 };
 
 function providerFromFamily(modelId: string): ModelProvider | undefined {
@@ -42,6 +45,9 @@ export function ModelSelector({
   availableModelIds,
   onOpenAiSettings,
   surfaceKey = "missions/phase-or-action",
+  fastModeActive,
+  onFastModeToggle,
+  fastModeSupported,
 }: ModelSelectorProps) {
   const resolvedModelId = useMemo(() => normalizeModelId(value.modelId), [value.modelId]);
   const selectedDescriptor = useMemo(() => getModelById(resolvedModelId), [resolvedModelId]);
@@ -76,6 +82,9 @@ export function ModelSelector({
         compact={compact ?? false}
         {...(availableModelIds ? { availableModelIds } : {})}
         {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+        {...(fastModeActive !== undefined ? { fastModeActive } : {})}
+        {...(onFastModeToggle ? { onFastModeToggle } : {})}
+        {...(fastModeSupported !== undefined ? { fastModeSupported } : {})}
       />
       <ReasoningEffortPicker
         modelId={effectiveModelId}

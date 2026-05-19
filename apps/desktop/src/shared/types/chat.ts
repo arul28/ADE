@@ -950,6 +950,24 @@ export type AgentChatClaudeSessionMessage = {
   text?: string | null;
 };
 
+export type AgentChatSubagentTranscriptArgs = {
+  sessionId: string;
+  agentId: string;
+  /** Optional task id from the legacy `system:task_*` path; the SDK keys on agentId. */
+  taskId?: string | null;
+  laneId?: string | null;
+  limit?: number | null;
+  offset?: number | null;
+};
+
+/**
+ * One subagent transcript entry. Shape mirrors AgentChatClaudeSessionMessage
+ * (the SDK's `SessionMessage` is identical for parent sessions and subagent
+ * transcripts). Returns null for runtimes that don't surface subagent
+ * transcripts (LM Studio, Droid).
+ */
+export type AgentChatSubagentTranscriptMessage = AgentChatClaudeSessionMessage;
+
 export type AgentChatModelInfo = {
   id: string;
   displayName: string;

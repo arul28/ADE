@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   useAppStore,
+  useAppStoreApi,
   type WorkDraftKind,
   type WorkProjectViewState,
   type WorkSidebarTab,
@@ -318,6 +319,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const appStore = useAppStoreApi();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -734,7 +736,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const rows = (
         await listSessionsCached(
           { limit: 500 },
-          options.force ? { force: true } : undefined,
+          options.force
+            ? { force: true, projectRoot: requestedProjectRoot }
+            : { projectRoot: requestedProjectRoot },
         )
       ).filter((session) => !isRunOwnedSession(session));
       if (projectRootRef.current !== requestedProjectRoot) {
@@ -791,21 +795,44 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [isWorkRoute, refresh]);
 
   useEffect(() => {
-    invalidateSessionListCache();
-    setSessions([]);
+    // Apply the per-project sessions cache immediately so switching back to a
+    // warm project does NOT blank the chat tabs / terminal grid. Without this
+    // we wipe `sessions` to `[]`, which unmounts every chat and terminal pane
+    // until the IPC refresh returns — that's the "page goes blank for a
+    // couple seconds" the user sees. The underlying IPC cache
+    // (sessionListCache) is already keyed per project, so DON'T invalidate it
+    // either — leave each project's hot cache alone.
+    const cachedSessions =
+      (projectRoot ? (appStore.getState().sessionsCacheByProject[projectRoot] as TerminalSessionSummary[] | undefined) : undefined) ?? null;
+    setSessions(cachedSessions ?? []);
     setLoading(false);
     if (refreshQueuedRef.current) {
       refreshQueuedRef.current.deferred.reject(new Error("projectRoot changed"));
       refreshQueuedRef.current = null;
     }
-    hasLoadedOnceRef.current = false;
-    hasRunningSessionsRef.current = false;
+    // If we already have cached sessions, treat this as a "loaded" state so the
+    // upcoming refresh runs silently in the background (no spinner).
+    hasLoadedOnceRef.current = Boolean(cachedSessions && cachedSessions.length >= 0);
+    hasRunningSessionsRef.current = (cachedSessions ?? []).some((s) => s.status === "running");
     laneRecoveryRefreshProjectRef.current = null;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
     pendingOptimisticSessionsRef.current.clear();
-  }, [projectRoot]);
+  }, [appStore, projectRoot]);
+
+  // Mirror the locally-fetched sessions into the per-project cache in the
+  // global store. The next time the user switches BACK to this project the
+  // effect above can render these sessions instantly instead of blanking.
+  useEffect(() => {
+    if (!projectRoot) return;
+    appStore.setState((prev) => ({
+      sessionsCacheByProject: {
+        ...prev.sessionsCacheByProject,
+        [projectRoot]: sessions,
+      },
+    }));
+  }, [appStore, sessions, projectRoot]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;

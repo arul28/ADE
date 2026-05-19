@@ -58,6 +58,7 @@ import type {
   ProviderMode,
   LinearAutoDispatchAction,
   LinearSyncConfig,
+  ModelConfig,
   MissionModelConfig,
   MissionPermissionConfig,
   NotificationsConfig,
@@ -468,6 +469,17 @@ function coerceAutomationActiveHours(value: unknown): AutomationActiveHours | un
   return { start, end, timezone };
 }
 
+function coerceModelConfig(value: unknown): ModelConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const modelId = asString(value.modelId)?.trim();
+  if (!modelId) return undefined;
+  return {
+    ...(asString(value.provider)?.trim() ? { provider: asString(value.provider)!.trim() as ModelConfig["provider"] } : {}),
+    modelId,
+    ...(asString(value.thinkingLevel)?.trim() ? { thinkingLevel: asString(value.thinkingLevel)!.trim() as ModelConfig["thinkingLevel"] } : {}),
+  };
+}
+
 function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (!isRecord(value)) return null;
   const typeRaw = asString(value.type)?.trim() ?? "";
@@ -488,6 +500,9 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const adeAction = coerceRunAdeActionConfig(value.adeAction);
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
+  const modelConfig = coerceModelConfig(value.modelConfig);
+  const codexFastMode = asBool(value.codexFastMode);
+  const permissionConfig = coerceMissionPermissionConfig(value.permissionConfig);
 
   if (targetLaneId) out.targetLaneId = targetLaneId;
   if (suiteId != null) out.suiteId = suiteId;
@@ -500,6 +515,9 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (adeAction != null) out.adeAction = adeAction;
   if (prompt != null) out.prompt = prompt;
   if (sessionTitle != null) out.sessionTitle = sessionTitle;
+  if (modelConfig != null) out.modelConfig = modelConfig;
+  if (codexFastMode != null) out.codexFastMode = codexFastMode;
+  if (permissionConfig != null) out.permissionConfig = permissionConfig;
 
   return out;
 }
@@ -557,6 +575,7 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
           ...(asString(value.session.reasoningEffort)?.trim()
             ? { reasoningEffort: asString(value.session.reasoningEffort)!.trim() }
             : {}),
+          ...(asBool(value.session.codexFastMode) != null ? { codexFastMode: asBool(value.session.codexFastMode) } : {}),
         }
       : undefined;
     return {

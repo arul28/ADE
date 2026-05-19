@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { MissionLogChannel, MissionLogEntry } from "../../../shared/types";
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { useMissionPolling } from "./useMissionPolling";
+import { useMissionPageActive } from "./MissionActiveContext";
 
 type MissionLogsTabProps = {
   missionId: string;
@@ -56,6 +57,7 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
   focusInterventionId,
   onFocusHandled,
 }: MissionLogsTabProps) {
+  const active = useMissionPageActive();
   const [selectedChannels, setSelectedChannels] = useState<MissionLogChannel[]>(CHANNELS);
   const [entries, setEntries] = useState<MissionLogEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -98,23 +100,25 @@ export const MissionLogsTab = React.memo(function MissionLogsTab({
   }, [missionId, runId, selectedChannels]);
 
   useEffect(() => {
+    if (!active) return;
     void loadLogs(null);
-  }, [loadLogs, channelKey, missionId, runId]);
+  }, [active, loadLogs, channelKey, missionId, runId]);
 
   useMissionPolling(
     () => {
       void loadLogs(null);
     },
     3_000,
-    Boolean(missionId),
+    active && Boolean(missionId),
   );
 
   useEffect(() => {
+    if (!active) return;
     if (!focusInterventionId) return;
     setSelectedChannels(["interventions"]);
     setHighlightedInterventionId(focusInterventionId);
     onFocusHandled?.();
-  }, [focusInterventionId, onFocusHandled]);
+  }, [active, focusInterventionId, onFocusHandled]);
 
   useEffect(() => {
     focusedEntryRef.current?.scrollIntoView({

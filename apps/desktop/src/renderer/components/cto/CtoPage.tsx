@@ -73,7 +73,7 @@ function statusDotCls(status: AgentStatus): string {
 
 /* ── Main Page ── */
 
-export function CtoPage() {
+export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const lanes = useAppStore((s) => s.lanes);
 
   const [activeTab, setActiveTab] = useState<TabId>("chat");
@@ -86,6 +86,7 @@ export function CtoPage() {
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
 
   useEffect(() => {
+    if (!active) return;
     const onTourTab = (event: Event) => {
       const tab = (event as CustomEvent<TabId>).detail;
       if (tab === "chat" || tab === "team" || tab === "workflows" || tab === "settings") {
@@ -94,7 +95,7 @@ export function CtoPage() {
     };
     window.addEventListener("ade:tour-cto-tab", onTourTab);
     return () => window.removeEventListener("ade:tour-cto-tab", onTourTab);
-  }, []);
+  }, [active]);
 
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -206,15 +207,18 @@ export function CtoPage() {
   }, [budgetLoading, budgetSnapshot]);
 
   useEffect(() => {
+    if (!active) return;
     void loadCtoSummary();
-  }, [loadCtoSummary]);
+  }, [active, loadCtoSummary]);
 
   useEffect(() => {
+    if (!active) return;
     if (!onboardingState || needsOnboarding) return;
     void loadAgents();
-  }, [loadAgents, needsOnboarding, onboardingState]);
+  }, [active, loadAgents, needsOnboarding, onboardingState]);
 
   useEffect(() => {
+    if (!active) return;
     if (!onboardingState || needsOnboarding) return;
     if (activeTab !== "team" && activeTab !== "settings") return;
     let cancelled = false;
@@ -227,22 +231,25 @@ export function CtoPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [activeTab, loadBudgetSnapshot, needsOnboarding, onboardingState]);
+  }, [active, activeTab, loadBudgetSnapshot, needsOnboarding, onboardingState]);
 
   useEffect(() => {
+    if (!active) return;
     if ((activeTab !== "team" && activeTab !== "settings") || ctoHistoryLoadedRef.current) return;
     void loadCtoHistory();
-  }, [activeTab, loadCtoHistory]);
+  }, [active, activeTab, loadCtoHistory]);
 
   // Load revisions when worker selected
   useEffect(() => {
+    if (!active) return;
     if (!window.ade?.cto || !selectedAgentId) { setRevisions([]); return; }
     if (activeTab !== "team") return;
     void window.ade.cto.listAgentRevisions({ agentId: selectedAgentId, limit: 20 }).then(setRevisions).catch(() => setRevisions([]));
-  }, [activeTab, selectedAgentId]);
+  }, [active, activeTab, selectedAgentId]);
 
   // Load worker details when selected
   useEffect(() => {
+    if (!active) return;
     if (!window.ade?.cto || !selectedAgentId) {
       setWorkerCoreMemory(null); setWorkerSessionLogs([]); setWorkerRuns([]);
       setWorkerOpsError(null); setWorkerWakeStatus(null); setWorkerWakeError(null);
@@ -263,10 +270,11 @@ export function CtoPage() {
       setWorkerCoreMemory(null); setWorkerSessionLogs([]); setWorkerRuns([]);
     });
     return () => { cancelled = true; };
-  }, [activeTab, selectedAgentId]);
+  }, [active, activeTab, selectedAgentId]);
 
   // Establish chat session
   useEffect(() => {
+    if (!active) return;
     if (activeTab !== "chat") {
       setLoading(false);
       return;
@@ -293,10 +301,11 @@ export function CtoPage() {
       .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [activeTab, needsOnboarding, onboardingState, primaryLaneId, selectedAgentId, showOnboarding]);
+  }, [active, activeTab, needsOnboarding, onboardingState, primaryLaneId, selectedAgentId, showOnboarding]);
 
   // Deep links for guided setup flows
   useEffect(() => {
+    if (!active) return;
     const syncHash = () => {
       const hash = window.location.hash.toLowerCase();
       if (hash.includes("linear-sync")) {
@@ -308,7 +317,7 @@ export function CtoPage() {
     syncHash();
     window.addEventListener("hashchange", syncHash);
     return () => window.removeEventListener("hashchange", syncHash);
-  }, []);
+  }, [active]);
 
   useEffect(() => {
     console.info(`renderer.tab_change ${JSON.stringify({
@@ -674,14 +683,14 @@ export function CtoPage() {
               </div>
             )}
 
-            <div
-              className="min-h-0 flex-1 overflow-hidden rounded-[24px] border border-white/[0.07]"
-              style={{
-                background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
-              }}
-            >
+            <div className="min-h-0 flex-1 overflow-hidden">
               {showOnboarding || needsOnboarding ? (
-                <div className="flex h-full items-center justify-center p-6 text-center">
+                <div
+                  className="flex h-full items-center justify-center rounded-[24px] border border-white/[0.07] p-6 text-center"
+                  style={{
+                    background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
+                  }}
+                >
                   <div className="max-w-sm space-y-3">
                     <div className="text-sm font-semibold text-fg">Complete setup to unlock the CTO session</div>
                     <div className="text-[12px] leading-6 text-muted-fg/42">
@@ -693,7 +702,12 @@ export function CtoPage() {
                   </div>
                 </div>
               ) : !session ? (
-                <div className="flex h-full items-center justify-center p-6 text-center">
+                <div
+                  className="flex h-full items-center justify-center rounded-[24px] border border-white/[0.07] p-6 text-center"
+                  style={{
+                    background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
+                  }}
+                >
                   <div className="space-y-2">
                     <div className="text-sm font-medium text-fg/70">Connecting the persistent session…</div>
                     <div className="text-[12px] leading-6 text-muted-fg/40">

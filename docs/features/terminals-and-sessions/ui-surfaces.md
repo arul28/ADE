@@ -358,14 +358,18 @@ chat-scoped and stays on the chat header.
 ## Terminal renderer: `TerminalView.tsx`
 
 Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
-a module-level map keyed by `(ptyId, sessionId)` so a remount does not
-rebuild the emulator. Each cached entry also records the
-`(projectRoot, projectRevision)` it was created under; on mount,
-`disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` tears
-down any entries whose project context no longer matches, which is how
-terminal cache state gets cleared on project switch or close without
-ever leaking PTYs between projects. The `projectRevision` counter
-lives in `useAppStore` and is bumped on every real project change.
+a module-level map keyed by `(projectRoot, sessionId, ptyId)` (via
+`terminalRuntimeKey`) so a remount does not rebuild the emulator and so
+two different project tabs can each cache their own runtime against the
+same chat session id without colliding. Each cached entry also records
+the `(projectRoot, projectRevision)` it was created under; on mount,
+`disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` clears
+out-of-date entries. With multi-project tab hosting in `App.tsx`,
+project switching no longer evicts another project's terminals: an
+entry is only torn down (or scheduled for keepalive teardown) when its
+own project context has aged out, **not** when a different project
+becomes active. The `projectRevision` counter lives in `useAppStore`
+and is bumped on every real project change.
 
 Renderer strategy: WebGL-first, fall back to the DOM renderer on any
 init failure or context loss. Canvas renderer is intentionally skipped
@@ -413,17 +417,29 @@ Key behaviors:
   `ade.terminal.preview` (serialized snapshot of the visible rows
   rebuilt as SGR-bracketed ANSI through `serializeSnapshotVisibleRows`,
   falling back to the snapshot's `serialized` scrollback) and only uses
-  the transcript tail when no snapshot is available. The runtime
-  tracks `hasAppliedTerminalContent` and
-  `displayedLiveDataBeforeHydration`; if hydration returns nothing
+  the transcript tail when no snapshot is available. Before either path
+  runs, the runtime calls `sessions.get(sessionId)` to find out whether
+  the session is disposed; for any disposed session that hasn't
+  displayed live data yet, hydration first tries **replay mode** via
+  `sessions.readTranscriptTail({ raw: true })` (capped at
+  `REPLAY_TRANSCRIPT_MAX_BYTES = 8 MB`) and feeds the result through
+  `stripFullScreenRedrawSequences()` before writing. The strip removes
+  alt-screen enter/leave (`?1049h/l`, `?47h/l`), hard resets (`\x1bc`),
+  and full-screen erases (`\x1b[2J`, `\x1b[3J`, `\x1b[H\x1b[2J`) so each
+  TUI redraw appends to the main buffer's scrollback instead of
+  clobbering it. Replay-mode runtimes set `replayMode: true`, get
+  `REPLAY_SCROLLBACK_LINES = 100_000` scrollback regardless of user
+  preference, and skip the usual `trimToLikelyTerminalFrameBoundary`
+  hydration trim so the whole transcript stays scrollable. This is
+  what makes a disposed Claude / Codex chat session render as a
+  scrollable transcript instead of "the last alt-screen frame" or
+  "ANSI escape soup". The runtime tracks `hasAppliedTerminalContent`
+  and `displayedLiveDataBeforeHydration`; if hydration returns nothing
   renderable while live PTY data is already on screen,
   `scheduleHydrationBackfill` retries the preview every ~100 ms (up to
-  120 attempts) until the DOM reports renderable text. This is the fix
-  that keeps the Work-tab terminal from showing a blank black pane with
-  an orange cursor after sending a first prompt to a fast TUI like
-  Codex or Claude. The backfill also re-arms whenever the tile becomes
-  visible but the xterm rows are empty (e.g. after a webgl→dom
-  fallback).
+  120 attempts) until the DOM reports renderable text. The backfill
+  also re-arms whenever the tile becomes visible but the xterm rows
+  are empty (e.g. after a webgl→dom fallback).
 - **Mouse tracking forwarding** — `TerminalView` tracks DECSET 1000 /
   1002 / 1003 (SGR mouse modes) by scanning every PTY data chunk via
   `updateTerminalMouseTrackingModes`. When the embedded TUI has mouse
@@ -493,12 +509,10 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
     alias caused the TUI to drop straight into auto-approval and was
     surprising in the Work tab). `full-auto` keeps the explicit
     `--dangerously-bypass-approvals-and-sandbox` flag, and `config-toml`
-    mode defers to `.codex/config.toml`. Fresh Codex launches also
-    pass `-c mcp_servers.linear.enabled=false` (see
-    `ADE_CODEX_STARTUP_CONFIG_FLAGS` in `cliLaunch.ts`) to keep a stale
-    user-level Linear MCP OAuth handshake from blocking the TUI's
-    first paint — ADE has its own Linear surfaces, so the MCP wiring
-    is intentionally suppressed for the in-app launch.
+    mode defers to `.codex/config.toml`. ADE does not rewrite
+    `mcp_servers` for Codex CLI launches; Codex config remains
+    host-owned so ADE does not synthesize partial MCP tables that the
+    CLI rejects during config validation.
   - **Cursor** → `--mode plan|ask` for read-only modes and `--force`
     for full-auto. Sessions pre-allocate a chat id with
     `cursor-agent create-chat` so `--resume <id>` is always known.

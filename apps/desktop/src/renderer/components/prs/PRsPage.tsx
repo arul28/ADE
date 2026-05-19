@@ -491,13 +491,13 @@ function PRsPageInner() {
   );
 }
 
-export function PRsPage() {
+export function PRsPage({ active = true }: { active?: boolean } = {}) {
   const providerKey = useAppStore((state) =>
     state.projectBinding?.key ?? state.project?.rootPath ?? "__no_project__"
   );
 
   return (
-    <PrsProvider key={providerKey}>
+    <PrsProvider key={providerKey} active={active}>
       <PRsPageInner />
     </PrsProvider>
   );

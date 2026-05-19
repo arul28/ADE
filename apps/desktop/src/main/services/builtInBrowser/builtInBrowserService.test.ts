@@ -4,10 +4,26 @@ import { createBuiltInBrowserService } from "./builtInBrowserService";
 
 const fakes = vi.hoisted(() => {
   type DebuggerHandler = (...args: unknown[]) => void;
-  type WindowOpenHandler = (details: { url: string }) => { action: string };
+  type WindowOpenHandlerResponse = {
+    action: "allow" | "deny";
+    createWindow?: (options: Record<string, unknown>) => FakeWebContents;
+  };
+  type WindowOpenHandler = (details: { url: string }) => WindowOpenHandlerResponse;
   type BeforeSendHeadersHandler = (
     details: { requestHeaders: Record<string, string | string[] | undefined> },
     callback: (response: { requestHeaders: Record<string, string | string[] | undefined> }) => void,
+  ) => void;
+  type PermissionCheckHandler = (
+    webContents: FakeWebContents | null,
+    permission: string,
+    requestingOrigin: string,
+    details: { requestingUrl?: string; embeddingOrigin?: string; securityOrigin?: string; isMainFrame: boolean },
+  ) => boolean;
+  type PermissionRequestHandler = (
+    webContents: FakeWebContents,
+    permission: string,
+    callback: (granted: boolean) => void,
+    details: { requestingUrl: string; isMainFrame: boolean; requestingOrigin?: string },
   ) => void;
 
   class FakeDebugger {
@@ -70,7 +86,7 @@ const fakes = vi.hoisted(() => {
     setWindowOpenHandler = (handler: WindowOpenHandler): void => {
       this.windowOpenHandler = handler;
     };
-    openWindow = (url: string): { action: string } | null => this.windowOpenHandler?.({ url }) ?? null;
+    openWindow = (url: string): WindowOpenHandlerResponse | null => this.windowOpenHandler?.({ url }) ?? null;
     on = (event: string, fn: (...args: unknown[]) => void): void => {
       (this.listeners[event] ??= []).push(fn);
     };
@@ -92,6 +108,8 @@ const fakes = vi.hoisted(() => {
   const debuggerInstances: FakeDebugger[] = [];
   const webContentsInstances: FakeWebContents[] = [];
   const beforeSendHeadersHandlers: BeforeSendHeadersHandler[] = [];
+  let permissionCheckHandler: PermissionCheckHandler | null = null;
+  let permissionRequestHandler: PermissionRequestHandler | null = null;
   const OriginalFakeDebugger = FakeDebugger;
   class TrackedFakeDebugger extends OriginalFakeDebugger {
     constructor() {
@@ -152,6 +170,44 @@ const fakes = vi.hoisted(() => {
     clearBeforeSendHeadersHandlers: () => {
       beforeSendHeadersHandlers.length = 0;
     },
+    setPermissionCheckHandler: (handler: PermissionCheckHandler | null) => {
+      permissionCheckHandler = handler;
+    },
+    setPermissionRequestHandler: (handler: PermissionRequestHandler | null) => {
+      permissionRequestHandler = handler;
+    },
+    dispatchPermissionCheck: (
+      permission: string,
+      requestingOrigin: string,
+      details: { requestingUrl?: string; embeddingOrigin?: string; securityOrigin?: string; isMainFrame?: boolean } = {},
+    ): boolean | null => {
+      return permissionCheckHandler?.(webContentsInstances[0] ?? null, permission, requestingOrigin, {
+        isMainFrame: details.isMainFrame ?? true,
+        requestingUrl: details.requestingUrl,
+        embeddingOrigin: details.embeddingOrigin,
+        securityOrigin: details.securityOrigin,
+      }) ?? null;
+    },
+    dispatchPermissionRequest: (
+      permission: string,
+      details: { requestingUrl: string; isMainFrame?: boolean; requestingOrigin?: string },
+    ): boolean | null => {
+      let granted: boolean | null = null;
+      const wc = webContentsInstances[0];
+      if (!wc || !permissionRequestHandler) return null;
+      permissionRequestHandler(wc, permission, (nextGranted) => {
+        granted = nextGranted;
+      }, {
+        requestingUrl: details.requestingUrl,
+        isMainFrame: details.isMainFrame ?? true,
+        requestingOrigin: details.requestingOrigin,
+      });
+      return granted;
+    },
+    clearPermissionHandlers: () => {
+      permissionCheckHandler = null;
+      permissionRequestHandler = null;
+    },
   };
 });
 
@@ -165,8 +221,12 @@ vi.mock("electron", () => ({
           fakes.beforeSendHeadersHandlers.push(handler as Parameters<typeof fakes.beforeSendHeadersHandlers.push>[0]);
         },
       },
-      setPermissionCheckHandler: () => {},
-      setPermissionRequestHandler: () => {},
+      setPermissionCheckHandler: (handler: unknown) => {
+        fakes.setPermissionCheckHandler(handler as Parameters<typeof fakes.setPermissionCheckHandler>[0]);
+      },
+      setPermissionRequestHandler: (handler: unknown) => {
+        fakes.setPermissionRequestHandler(handler as Parameters<typeof fakes.setPermissionRequestHandler>[0]);
+      },
     }),
   },
   shell: { openExternal: fakes.openExternal },
@@ -212,6 +272,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     collector = captureStatusEvents();
     fakes.clearWebContentsInstances();
     fakes.clearBeforeSendHeadersHandlers();
+    fakes.clearPermissionHandlers();
     fakes.openExternal.mockClear();
   });
 
@@ -339,27 +400,65 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.openExternal).not.toHaveBeenCalled();
   });
 
-  it("uses a desktop Chrome user agent for ADE browser requests", async () => {
+  it("does not impersonate Chrome or rewrite browser request headers", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
 
     const wc = fakes.webContentsInstances[0];
-    expect(wc?.userAgentCalls.at(-1)).toMatch(/ Chrome\/\d+\.\d+\.\d+\.\d+ /);
-    expect(wc?.userAgentCalls.at(-1)).not.toMatch(/Electron|ADE/i);
+    expect(wc?.userAgentCalls).toEqual([]);
+    expect(fakes.beforeSendHeadersHandlers).toHaveLength(0);
+    expect(fakes.dispatchBeforeSendHeaders({
+      "User-Agent": "Electron/41",
+      "Sec-CH-UA": "\"Chromium\";v=\"140\", \"Electron\";v=\"41\"",
+    })).toBeNull();
+  });
 
-    const response = fakes.dispatchBeforeSendHeaders({
-      "User-Agent": "Electron/30",
-      "user-agent": "ADE/Electron",
-      "Sec-CH-UA": "\"Electron\";v=\"30\"",
-      "sec-ch-ua": "\"ADE\";v=\"1\"",
+  it("allows only narrow Google account auth permissions", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+
+    expect(fakes.dispatchPermissionCheck("storage-access", "https://accounts.google.com")).toBe(true);
+    expect(fakes.dispatchPermissionCheck("top-level-storage-access", "https://accounts.google.com")).toBe(true);
+    expect(fakes.dispatchPermissionCheck("hid", "https://accounts.google.com")).toBe(true);
+    expect(fakes.dispatchPermissionCheck("usb", "https://accounts.google.com")).toBe(true);
+    expect(fakes.dispatchPermissionCheck("serial", "https://accounts.google.com")).toBe(true);
+
+    expect(fakes.dispatchPermissionCheck("storage-access", "https://example.test")).toBe(false);
+    expect(fakes.dispatchPermissionCheck("media", "https://accounts.google.com")).toBe(false);
+
+    expect(fakes.dispatchPermissionRequest("storage-access", {
+      requestingUrl: "https://accounts.google.com/v3/signin/identifier",
+    })).toBe(true);
+    expect(fakes.dispatchPermissionRequest("top-level-storage-access", {
+      requestingUrl: "https://accounts.google.com/v3/signin/identifier",
+    })).toBe(true);
+    expect(fakes.dispatchPermissionRequest("media", {
+      requestingUrl: "https://accounts.google.com/v3/signin/identifier",
+    })).toBe(false);
+    expect(fakes.dispatchPermissionRequest("storage-access", {
+      requestingUrl: "https://example.test/login",
+    })).toBe(false);
+  });
+
+  it("opens popup requests as real ADE browser tabs", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const firstTabId = service.getStatus().activeTabId;
+    const firstWc = fakes.webContentsInstances[0];
+
+    const response = firstWc?.openWindow("https://accounts.google.com/gsi/select");
+
+    expect(response?.action).toBe("allow");
+    expect(service.getStatus().tabs).toHaveLength(2);
+    expect(service.getStatus().activeTabId).not.toBe(firstTabId);
+    expect(response?.createWindow?.({})).toBe(fakes.webContentsInstances[1]);
+
+    const openEvent = collector.events.findLast((event) => event.type === "open-request");
+    expect(openEvent).toMatchObject({
+      type: "open-request",
+      url: "https://accounts.google.com/gsi/select",
+      tabId: service.getStatus().activeTabId,
     });
-
-    expect(response?.requestHeaders["User-Agent"]).toMatch(/ Chrome\/\d+\.\d+\.\d+\.\d+ /);
-    expect(response?.requestHeaders["User-Agent"]).not.toMatch(/Electron|ADE/i);
-    expect(response?.requestHeaders["user-agent"]).toBeUndefined();
-    expect(response?.requestHeaders["Sec-CH-UA"]).toContain("Google Chrome");
-    expect(response?.requestHeaders["Sec-CH-UA"]).not.toContain("Electron");
-    expect(response?.requestHeaders["sec-ch-ua"]).toBeUndefined();
   });
 
   it("emits an open request so the Work sidebar can reveal the browser panel", async () => {
@@ -416,6 +515,7 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     fakes.clearDebuggerInstances();
     fakes.clearWebContentsInstances();
     fakes.clearBeforeSendHeadersHandlers();
+    fakes.clearPermissionHandlers();
     fakes.openExternal.mockClear();
   });
 

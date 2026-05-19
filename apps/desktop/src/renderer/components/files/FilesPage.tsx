@@ -524,9 +524,11 @@ function FilePreviewSurface({ tab }: { tab: OpenTab }) {
 export function FilesPage({
   preferredLaneId = null,
   embedded = false,
+  active = true,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
+  active?: boolean;
 } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -668,7 +670,7 @@ export function FilesPage({
   const activeTabPreviewKind = getFilePreviewKind(activeTab);
   const activeTabIsText = isTextTab(activeTab);
   const canEdit = Boolean(activeWorkspace) && (!activeWorkspace?.isReadOnlyByDefault || allowPrimaryEdit);
-  const liveWatchEnabled = Boolean(workspaceId);
+  const liveWatchEnabled = active && Boolean(workspaceId);
 
   useEffect(() => {
     if (!activeWorkspace?.rootPath) return;
@@ -893,6 +895,7 @@ export function FilesPage({
 
   useEffect(() => {
     const st = (location.state as FilesPageNavState | null) ?? null;
+    if (!active) return;
     const openFilePath = st?.openFilePath?.trim();
     if (!openFilePath) return;
     if (typeof st?.startLine === "number" && st.startLine > 0) {
@@ -912,7 +915,7 @@ export function FilesPage({
       startLine: st?.startLine,
       startColumn: st?.startColumn,
     };
-  }, [location.key, location.state]);
+  }, [active, location.key, location.state]);
 
   const refreshTreeNow = useCallback(async (parentPath?: string) => {
     if (!workspaceId) return;
@@ -1096,6 +1099,7 @@ export function FilesPage({
   }, [workspaceId, workspaceComparisonRoot, nodeByComparablePath]);
 
   useEffect(() => {
+    if (!active) return;
     const pending = pendingOpenRef.current;
     if (!pending) return;
     if (!workspaces.length) return;
@@ -1150,7 +1154,7 @@ export function FilesPage({
       cancelled = true;
       if (pendingTimer !== null) clearTimeout(pendingTimer);
     };
-  }, [workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, revealPendingLocation]);
+  }, [active, workspaces, workspaceId, switchWorkspace, openFile, navigate, location.pathname, revealPendingLocation]);
 
   const closeTab = useCallback((filePath: string) => {
     setOpenTabs((prev) => {
@@ -1283,6 +1287,7 @@ export function FilesPage({
   }, [canEdit, workspaceId, requestTextInput, refreshTree]);
 
   useEffect(() => {
+    if (!active) return;
     const startedAt = performance.now();
     logRendererDebugEvent("renderer.files.list_workspaces.begin");
     window.ade.files.listWorkspaces()
@@ -1311,7 +1316,7 @@ export function FilesPage({
       });
     // Workspaces are listed once on mount; lane changes are reconciled by the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [active]);
 
   // Reconcile the active workspace when the preferred lane changes (without refetching).
   useEffect(() => {
@@ -1338,6 +1343,7 @@ export function FilesPage({
   }, [selectedLaneId, unavailableWorkspaceIds, workspaceId, workspaces]);
 
   useEffect(() => {
+    if (!active) return;
     if (!workspaceId) return;
     logRendererDebugEvent("renderer.files.workspace_effect.begin", {
       workspaceId,
@@ -1348,7 +1354,7 @@ export function FilesPage({
     treeRefreshStateRef.current.queuedFull = false;
     treeRefreshStateRef.current.queuedParents.clear();
     void refreshTree();
-  }, [workspaceId, refreshTree]);
+  }, [active, workspaceId, refreshTree]);
 
   useEffect(() => {
     if (!workspaceId) return;
@@ -1528,12 +1534,13 @@ export function FilesPage({
   }, [hasUnsavedTabs]);
 
   useEffect(() => {
+    if (!active) return;
     const onWindowPointerDown = () => {
       if (contextMenu) setContextMenu(null);
     };
     window.addEventListener("pointerdown", onWindowPointerDown);
     return () => window.removeEventListener("pointerdown", onWindowPointerDown);
-  }, [contextMenu]);
+  }, [active, contextMenu]);
 
   useLayoutEffect(() => {
     if (!contextMenu) {
@@ -1563,6 +1570,7 @@ export function FilesPage({
   }, [contextMenu]);
 
   useEffect(() => {
+    if (!active) return;
     const onKeyDown = (e: KeyboardEvent) => {
       const isMac = navigator.platform.toLowerCase().includes("mac");
       const mod = isMac ? e.metaKey : e.ctrlKey;
@@ -1613,9 +1621,10 @@ export function FilesPage({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveActive, activeTabPath, closeTab, selectedNodePath, showQuickOpen, showContentSearch, openInMenuOpen]);
+  }, [active, saveActive, activeTabPath, closeTab, selectedNodePath, showQuickOpen, showContentSearch, openInMenuOpen]);
 
   useEffect(() => {
+    if (!active) return;
     if (!quickOpen.trim()) {
       setQuickOpenResults([]);
       return;
@@ -1635,18 +1644,20 @@ export function FilesPage({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [quickOpen, workspaceId, showQuickOpen]);
+  }, [active, quickOpen, workspaceId, showQuickOpen]);
 
   useEffect(() => {
+    if (!active) return;
     if (!showContentSearch) return;
     const frame = window.requestAnimationFrame(() => {
       contentSearchInputRef.current?.focus();
       contentSearchInputRef.current?.select();
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [showContentSearch]);
+  }, [active, showContentSearch]);
 
   useEffect(() => {
+    if (!active) return;
     if (!showContentSearch || !contentSearchQuery.trim()) {
       setContentSearchResults([]);
       return;
@@ -1657,7 +1668,7 @@ export function FilesPage({
         .catch(() => setContentSearchResults([]));
     }, 150);
     return () => clearTimeout(timer);
-  }, [contentSearchQuery, workspaceId, showContentSearch]);
+  }, [active, contentSearchQuery, workspaceId, showContentSearch]);
 
   useEffect(() => {
     if (!activeTab) return;
@@ -2048,7 +2059,7 @@ export function FilesPage({
               </div>
             ) : mode === "diff" ? (
               laneIdForDiff && activeTabPath ? (
-                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} diffViewRef={diffViewRef} />
+                <FilesDiffPanel laneId={laneIdForDiff} path={activeTabPath} theme={editorTheme} diffViewRef={diffViewRef} active={active} />
               ) : (
                 <div style={{ padding: 16, fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textMuted }}>
                   DIFF MODE REQUIRES A LANE WORKSPACE AND AN OPEN FILE.
@@ -2694,11 +2705,13 @@ export function FilesPage({
 }
 
 function FilesDiffPanel({
+  active = true,
   laneId,
   path,
   theme,
   diffViewRef,
 }: {
+  active?: boolean;
   laneId: string;
   path: string;
   theme: EditorThemeMode;
@@ -2712,6 +2725,7 @@ function FilesDiffPanel({
   const [compareRef, setCompareRef] = useState<string>("");
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     setCompareRef("");
     window.ade.git.listRecentCommits({ laneId, limit: 30 })
@@ -2728,9 +2742,10 @@ function FilesDiffPanel({
     return () => {
       cancelled = true;
     };
-  }, [laneId]);
+  }, [active, laneId]);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     setError(null);
 
@@ -2773,7 +2788,7 @@ function FilesDiffPanel({
     return () => {
       cancelled = true;
     };
-  }, [laneId, path, mode, compareRef]);
+  }, [active, laneId, path, mode, compareRef]);
 
   return (
     <div className="flex h-full flex-col" style={{ background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderRadius: 12 }}>

@@ -238,6 +238,7 @@ export type AutomationDraftAction =
       sessionTitle?: string;
       targetLaneId?: string | null;
       modelConfig?: ModelConfig;
+      codexFastMode?: boolean;
       permissionConfig?: MissionPermissionConfig;
     })
   | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })

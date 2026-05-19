@@ -12,7 +12,7 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
-import type { TerminalSerializedSnapshot, TerminalSnapshotCell, TerminalSnapshotRow } from "../../../shared/types";
+import type { TerminalSerializedSnapshot, TerminalSnapshotCell, TerminalSnapshotRow, TerminalSessionStatus } from "../../../shared/types";
 
 type XtermTheme = NonNullable<ConstructorParameters<typeof Terminal>[0]>["theme"];
 type TerminalRendererMode = "webgl" | "dom";
@@ -93,9 +93,17 @@ type CachedRuntime = {
   pendingWebGLRestore: boolean;
   invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
   fitWarningLogged: boolean;
+  replayMode: boolean;
 };
 
 const HYDRATE_TAIL_BYTES = 2_000_000;
+// Maximum transcript bytes loaded when replaying a disposed chat-CLI session
+// (~200k lines of typical CLI output). Bounded to keep replay-mode allocations
+// well under the main-process MAX_TRANSCRIPT_BYTES cap (64 MB).
+const REPLAY_TRANSCRIPT_MAX_BYTES = 8_000_000;
+// Scrollback override for replay-mode runtimes so the entire flattened
+// transcript stays scrollable in the chat pane.
+const REPLAY_SCROLLBACK_LINES = 100_000;
 const HYDRATION_BACKFILL_RETRY_MS = 250;
 const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
@@ -113,6 +121,14 @@ const TERMINAL_CTRL_V = "\x16";
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
 const runtimeCache = new Map<string, CachedRuntime>();
+
+function terminalRuntimeKey(args: {
+  sessionId: string;
+  ptyId?: string | null;
+  projectRoot?: string | null;
+}): string {
+  return `${args.projectRoot ?? "<no-project>"}::${args.sessionId}::${args.ptyId ?? "<no-pty>"}`;
+}
 let parkedRoot: HTMLDivElement | null = null;
 
 const terminalThemes: Record<"light" | "dark", XtermTheme> = {
@@ -213,7 +229,7 @@ type TerminalDims = {
 };
 
 type InitialHydrationData = {
-  source: "snapshot" | "transcript" | "empty";
+  source: "snapshot" | "transcript" | "replay" | "empty";
   text: string;
 };
 
@@ -248,6 +264,26 @@ function trimToLikelyTerminalFrameBoundary(raw: string): string {
   if (idx <= 0) return raw;
   if (raw.length - idx < 16) return raw;
   return raw.slice(idx);
+}
+
+// Flatten a transcript that contains repeated TUI redraws into a linear stream
+// the user can scroll through. We strip the alt-screen enter/leave toggles and
+// the "clear screen" sequences so each redraw of a Codex/Claude chat surface
+// appends to the main buffer's scrollback instead of clobbering it. Ordinary
+// SGR (color), cursor-position, and OSC sequences are preserved verbatim so
+// the ANSI colors and text layout match the live render.
+export function stripFullScreenRedrawSequences(raw: string): string {
+  if (!raw.length) return raw;
+  return raw
+    // Alt-screen enter/leave (1049 + the older 47 variant). Removing these
+    // forces xterm to stay in the main buffer for the whole replay so the
+    // scrollback captures every redraw.
+    .replace(/\x1b\[\?(?:1049|47)[hl]/g, "")
+    // Hard resets and full-screen erases that would otherwise wipe the buffer
+    // mid-replay.
+    .replace(/\x1b\[H\x1b\[2J/g, "")
+    .replace(/\x1b\[[23]J/g, "")
+    .replace(/\x1bc/g, "");
 }
 
 function hasRenderableTerminalText(data: string): boolean {
@@ -425,7 +461,11 @@ function applyRuntimeVisualOptions(
     runtime.term.options.fontFamily = args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
     runtime.term.options.fontSize = args.preferences.fontSize;
     runtime.term.options.lineHeight = args.preferences.lineHeight;
-    runtime.term.options.scrollback = args.preferences.scrollback;
+    // Replay mode owns its own scrollback budget so the flattened transcript
+    // stays available; ordinary preference updates must not clobber it.
+    runtime.term.options.scrollback = runtime.replayMode
+      ? Math.max(args.preferences.scrollback, REPLAY_SCROLLBACK_LINES)
+      : args.preferences.scrollback;
   } catch {
     // ignore updates after disposal
   }
@@ -507,11 +547,8 @@ function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRev
       continue;
     }
 
-    if (
-      !isLiveRuntime
-      && (runtime.projectRoot !== activeProjectRoot || runtime.projectRevision !== activeProjectRevision)
-    ) {
-      teardownRuntime(runtime);
+    if (!isLiveRuntime && runtime.refs === 0 && runtime.projectRoot === activeProjectRoot && runtime.projectRevision !== activeProjectRevision) {
+      scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
     }
   }
 }
@@ -933,9 +970,12 @@ function scheduleFrameWriteFlush(runtime: CachedRuntime) {
 function flushHydrationData(
   runtime: CachedRuntime,
   tail: string,
-  options: { appendPending?: boolean } = {},
+  options: { appendPending?: boolean; replay?: boolean } = {},
 ) {
-  const stabilizedTail = trimToLikelyTerminalFrameBoundary(tail);
+  // Replay mode already stripped alt-screen/clear-screen sequences before this
+  // point, so the entire transcript should be written verbatim. Trimming to a
+  // frame boundary here would discard everything before the last redraw.
+  const stabilizedTail = options.replay ? tail : trimToLikelyTerminalFrameBoundary(tail);
   const shouldAppendPending = options.appendPending ?? true;
   const pending = shouldAppendPending ? runtime.pendingHydrationChunks.join("") : "";
   runtime.pendingHydrationChunks.length = 0;
@@ -989,10 +1029,89 @@ async function readPreviewHydrationData(
   return { source: "empty", text: "" };
 }
 
-async function readInitialHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
+async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
+  // Use sessions.readTranscriptTail (not terminal.read) so this works for chat-CLI
+  // tool types — terminal.read/preview throws for isPersistedChatToolType sessions.
+  const data = await window.ade.sessions.readTranscriptTail({
+    sessionId: runtime.sessionId,
+    maxBytes: REPLAY_TRANSCRIPT_MAX_BYTES,
+    raw: true,
+  });
+  if (!data) return { source: "empty", text: "" };
+  return { source: "replay", text: stripFullScreenRedrawSequences(data) };
+}
+
+async function tryReadReplay(
+  runtime: CachedRuntime,
+  exitCodeHint: number | null,
+): Promise<InitialHydrationData | null> {
   try {
-    const previewData = await readPreviewHydrationData(runtime);
-    if (previewData.text) return previewData;
+    const replay = await readReplayHydrationData(runtime);
+    if (replay.text) {
+      runtime.replayMode = true;
+      if (runtime.exitCode == null) {
+        runtime.exitCode = exitCodeHint ?? 0;
+      }
+      return replay;
+    }
+  } catch {
+    // Fall through; caller will try other paths.
+  }
+  return null;
+}
+
+async function readInitialHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
+  // Determine disposed-ness via sessions.get so we work for chat-CLI sessions
+  // too (terminal.preview rejects isPersistedChatToolType records and would
+  // otherwise force us into the snapshot/transcript fallback).
+  let sessionStatus: TerminalSessionStatus | null = null;
+  let sessionExitCode: number | null = null;
+  try {
+    const detail = await window.ade.sessions.get(runtime.sessionId);
+    sessionStatus = detail?.status ?? null;
+    sessionExitCode = detail?.exitCode ?? null;
+  } catch {
+    // Best-effort; non-fatal.
+  }
+  const sessionDisposed = sessionStatus !== null && sessionStatus !== "running";
+
+  // Prefer replay for disposed sessions BEFORE attempting terminal.preview —
+  // preview throws for chat-CLI tool types and the throw would swallow the
+  // replay opportunity.
+  if (sessionDisposed && !runtime.displayedLiveDataBeforeHydration) {
+    const replay = await tryReadReplay(runtime, sessionExitCode);
+    if (replay) return replay;
+  }
+
+  try {
+    const preview = await window.ade.terminal.preview({
+      terminalId: runtime.sessionId,
+      maxBytes: HYDRATE_TAIL_BYTES,
+    });
+    const previewSessionStatus = preview?.session?.status ?? sessionStatus;
+    const previewSessionExitCode = preview?.session?.exitCode ?? sessionExitCode;
+
+    // Some surfaces hit this path without a prior sessions.get hit (e.g. when
+    // the renderer can't reach sessions.get but terminal.preview succeeds).
+    // Retry the replay opportunity from the preview-derived status.
+    if (
+      !sessionDisposed
+      && previewSessionStatus
+      && previewSessionStatus !== "running"
+      && !runtime.displayedLiveDataBeforeHydration
+    ) {
+      const replay = await tryReadReplay(runtime, previewSessionExitCode);
+      if (replay) return replay;
+    }
+
+    if (preview?.snapshot) {
+      const visibleRows = serializeSnapshotVisibleRows(preview.snapshot);
+      if (visibleRows) return { source: "snapshot", text: visibleRows };
+      if (preview.snapshot.serialized) {
+        return { source: "snapshot", text: preview.snapshot.serialized };
+      }
+    }
+    if (preview?.transcript) return { source: "transcript", text: preview.transcript };
   } catch {
     // Fall back to the transcript tail below.
   }
@@ -1049,6 +1168,31 @@ function startHydration(runtime: CachedRuntime) {
 
   const finalizeHydration = (data: InitialHydrationData) => {
     if (runtime.disposed) return;
+    if (data.source === "replay") {
+      // Replay mode: enlarge scrollback so the full transcript stays
+      // scrollable, then write the stripped bytes in one pass. There is no
+      // live PTY by definition, so pending live chunks (if any) are dropped.
+      runtime.replayMode = true;
+      runtime.pendingHydrationChunks.length = 0;
+      runtime.pendingHydrationBytes = 0;
+      discardScheduledFrameWrites(runtime);
+      try {
+        runtime.term.options.scrollback = REPLAY_SCROLLBACK_LINES;
+      } catch {
+        // ignore options assignment failures after disposal
+      }
+      flushHydrationData(runtime, data.text, { appendPending: false, replay: true });
+      runtime.hydrationCompleted = true;
+      // Surface the exited badge for disposed sessions that never fire
+      // pty.onExit (the PTY is already gone before this view mounted).
+      // readInitialHydrationData already pre-populated runtime.exitCode from
+      // the session record when entering replay mode; notify listeners so the
+      // local "exited N" state catches up.
+      notifyRuntime(runtime);
+      scheduleFit(runtime, true);
+      // Disposed sessions never receive live PTY data, so no backfill polling.
+      return;
+    }
     const preferLivePending = runtime.displayedLiveDataBeforeHydration && data.source !== "snapshot";
     if (preferLivePending) {
       runtime.pendingHydrationChunks.length = 0;
@@ -1247,7 +1391,7 @@ function createRuntime(args: {
     : null;
 
   const runtime: CachedRuntime = {
-    key: args.sessionId,
+    key: terminalRuntimeKey(args),
     ptyId: args.ptyId,
     sessionId: args.sessionId,
     projectRoot: args.projectRoot,
@@ -1300,7 +1444,8 @@ function createRuntime(args: {
     shiftMouseCleanup: null,
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
-    fitWarningLogged: false
+    fitWarningLogged: false,
+    replayMode: false
   };
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
@@ -1474,7 +1619,8 @@ function ensureRuntime(args: {
   theme: XtermTheme;
   preferences: TerminalRenderPreferences;
 }): CachedRuntime {
-  const existing = runtimeCache.get(args.sessionId);
+  const key = terminalRuntimeKey(args);
+  const existing = runtimeCache.get(key);
   if (existing && !existing.disposed) {
     if (
       existing.ptyId === args.ptyId
@@ -1492,12 +1638,12 @@ function ensureRuntime(args: {
   }
 
   const runtime = createRuntime(args);
-  runtimeCache.set(args.sessionId, runtime);
+  runtimeCache.set(key, runtime);
   return runtime;
 }
 
 export function getTerminalRuntimeSnapshot(sessionId: string): RuntimeSnapshot | null {
-  const runtime = runtimeCache.get(sessionId);
+  const runtime = Array.from(runtimeCache.values()).find((entry) => entry.sessionId === sessionId);
   if (!runtime || runtime.disposed) return null;
   return {
     exitCode: runtime.exitCode,
@@ -1783,7 +1929,7 @@ export function TerminalView({
   }, [runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
 
   useEffect(() => {
-    const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
+    const runtime = runtimeRef.current;
     if (!runtime || runtime.disposed) return;
 
     const wrapper = wrapperRef.current;
@@ -1844,7 +1990,7 @@ export function TerminalView({
   }, [isActive, isVisible, runtimeProjectRoot, sessionId]);
 
   useEffect(() => {
-    const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
+    const runtime = runtimeRef.current;
     if (!runtime || runtime.disposed) return;
     const id = requestAnimationFrame(() => {
       applyRuntimeVisualOptions(runtime, {
@@ -1860,7 +2006,7 @@ export function TerminalView({
   // When this terminal becomes the active tab, force fit + focus + scroll
   useEffect(() => {
     if (!isActive) return;
-    const runtime = runtimeRef.current ?? runtimeCache.get(sessionId);
+    const runtime = runtimeRef.current;
     if (!runtime || runtime.disposed) return;
 
     const raf = requestAnimationFrame(() => {

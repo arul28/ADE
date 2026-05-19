@@ -12,7 +12,7 @@ import type {
 import { cn } from "../ui/cn";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { type WorkspaceTab, isRecord } from "./missionHelpers";
-import { useMissionsStore, type MissionsStore } from "./useMissionsStore";
+import { useMissionsStore, useMissionsStoreApi, type MissionsStore } from "./useMissionsStore";
 import { useShallow } from "zustand/react/shallow";
 
 /* ── Imported tab content components ── */
@@ -115,6 +115,7 @@ const selectPromptInspectorData = (s: MissionsStore) => ({
 /* ════════════════════ TAB CONTENT ════════════════════ */
 
 export function MissionTabContent({ runView }: { runView: MissionRunView | null }) {
+  const missionsStore = useMissionsStoreApi();
   /* ── Grouped selectors (VAL-ARCH-008) ── */
   const {
     selectedMissionId,
@@ -201,7 +202,7 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
 
   /* ── Prompt inspectors (imperative store access to avoid extra subscriptions) ── */
   const loadCoordinatorPromptInspector = async () => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.runGraph) return;
     s.setCoordinatorPromptLoading(true);
     s.setCoordinatorPromptError(null);
@@ -219,7 +220,7 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
   };
 
   const loadWorkerPromptInspector = async (stepId: string) => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     if (!s.runGraph) return;
     s.setWorkerPromptLoading(true);
     s.setWorkerPromptError(null);
@@ -239,7 +240,7 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
 
   /* ── Intervention handling (imperative store access) ── */
   const handleOpenIntervention = (interventionId: string) => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     routeMissionIntervention(s, interventionId);
   };
 
@@ -301,10 +302,10 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
                 Review the planner summary, milestone or feature groupings, dependency graph, and phase-by-phase work breakdown below. Selected step details stay visible here instead of living in a separate split pane.
               </div>
             </div>
-            <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { useMissionsStore.getState().setChatJumpTarget(target); useMissionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
+            <StepDetailPanel step={selectedStep} attempts={selectedStepAttempts} allSteps={runSteps} claims={runClaims} onOpenWorkerThread={(target) => { missionsStore.getState().setChatJumpTarget(target); missionsStore.getState().setActiveTab("chat"); }} onInspectPrompt={(stepId) => void loadWorkerPromptInspector(stepId)} />
             {selectedStep ? <PromptInspectorCard inspector={workerPromptInspector} loading={workerPromptLoading} error={workerPromptError} title="Selected step effective prompt" /> : null}
             <div className="min-h-0 min-w-0 overflow-auto">
-              <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => useMissionsStore.getState().setSelectedStepId(id)} />
+              <PlanTab mission={selectedMission} runGraph={runGraph} attemptsByStep={attemptsByStep} selectedStepId={selectedStepId} onStepSelect={(id) => missionsStore.getState().setSelectedStepId(id)} />
             </div>
           </div>
         )}
@@ -349,7 +350,7 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
                     missionId={selectedMission.id}
                     runId={runGraph?.run.id ?? null}
                     focusInterventionId={logsFocusInterventionId}
-                    onFocusHandled={() => useMissionsStore.getState().setLogsFocusInterventionId(null)}
+                    onFocusHandled={() => missionsStore.getState().setLogsFocusInterventionId(null)}
                   />
                 ) : null}
               </div>
@@ -368,7 +369,7 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
               runView={runView}
               interventions={selectedMission?.interventions ?? []}
               jumpTarget={chatJumpTarget}
-              onJumpHandled={() => useMissionsStore.getState().setChatJumpTarget(null)}
+              onJumpHandled={() => missionsStore.getState().setChatJumpTarget(null)}
               onOpenIntervention={handleOpenIntervention}
             />
           </div>

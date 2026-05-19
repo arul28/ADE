@@ -3,12 +3,12 @@ import {
   BrowserRouter,
   HashRouter,
   Navigate,
-  Outlet,
   Route,
   Routes,
   useLocation,
   useNavigate
 } from "react-router-dom";
+import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
 import { RunPage } from "../run/RunPage";
@@ -54,11 +54,17 @@ const CtoPage = React.lazy(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
 
-import { useAppStore } from "../../state/appStore";
+import {
+  AppStoreProvider,
+  createProjectAppStore,
+  hydrateProjectAppStore,
+  useAppStore,
+  type AppStoreApi,
+} from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
-import type { AppNavigationRequest } from "../../../shared/types";
+import type { AppNavigationRequest, ProjectInfo } from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -156,67 +162,210 @@ function PageErrorBoundary({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function RequireProject({ children }: { children: React.ReactElement }): React.ReactElement {
-  const projectHydrated = useAppStore((s) => s.projectHydrated);
-  const showWelcome = useAppStore((s) => s.showWelcome);
-  const project = useAppStore((s) => s.project);
-  const location = useLocation();
-
-  if (!projectHydrated) {
-    return GuardLoadingFallback;
-  }
-
-  const hasActiveProject = Boolean(project?.rootPath);
-  if (
-    (!hasActiveProject || showWelcome) &&
-    location.pathname !== "/work" &&
-    location.pathname !== "/project" &&
-    location.pathname !== "/onboarding"
-  ) {
-    return <Navigate to="/work" replace />;
-  }
-
-  return children;
-}
-
 const LazyFallback = GuardLoadingFallback;
-
-function guarded(element: React.ReactElement): React.ReactElement {
-  return (
-    <RequireProject>
-      <PageErrorBoundary>{element}</PageErrorBoundary>
-    </RequireProject>
-  );
-}
-
-function guardedLazy(element: React.ReactElement): React.ReactElement {
-  return (
-    <RequireProject>
-      <PageErrorBoundary>
-        <React.Suspense fallback={LazyFallback}>{element}</React.Suspense>
-      </PageErrorBoundary>
-    </RequireProject>
-  );
-}
 
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
 }
 
-function PersistentWorkSurface({ active }: { active: boolean }) {
-  const projectHydrated = useAppStore((s) => s.projectHydrated);
-  const showWelcome = useAppStore((s) => s.showWelcome);
-  const project = useAppStore((s) => s.project);
-  const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
+const WARM_PROJECT_SURFACE_LIMIT = 8;
+const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
+const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
 
-  // Only fire the reveal once the surface is *actually* mounted with a
-  // project. On a cold `/work` boot the route renders before `projectHydrated`
-  // / `project.rootPath` settle; firing the reveal here would notify
-  // listeners about a surface that's still showing the loading fallback.
-  const hasActiveProject = Boolean(project?.rootPath);
-  const shouldReveal = active && projectHydrated && hasActiveProject && !showWelcome;
+function projectRouteStorageKey(projectRoot: string): string {
+  return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
+}
+
+function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
+  const pathname = location.pathname || "/work";
+  const allowedRoots = [
+    "/project",
+    "/lanes",
+    "/files",
+    "/work",
+    "/graph",
+    "/prs",
+    "/review",
+    "/history",
+    "/automations",
+    "/missions",
+    "/cto",
+    "/settings",
+    "/onboarding",
+  ];
+  if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
+    return null;
+  }
+  return `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
+}
+
+function readStoredProjectRoute(projectRoot: string): string | null {
+  try {
+    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
+    return value?.startsWith("/") ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredProjectRoute(projectRoot: string, route: string): void {
+  try {
+    window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
+
+function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
+  const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
+  const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
+  const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
+  const routeProps = { active } as { active?: boolean };
+  const shouldRenderWork = workMounted || isWorkRoute;
+  const visibleWorkRoute = isWorkRoute ? route : workRoute;
+
   React.useEffect(() => {
-    if (!shouldReveal) return;
+    if (!isWorkRoute) return;
+    setWorkRoute(route);
+    setWorkMounted(true);
+  }, [isWorkRoute, route]);
+
+  React.useEffect(() => {
+    const node = workSurfaceRef.current;
+    if (!node) return;
+    if (isWorkRoute) node.removeAttribute("inert");
+    else node.setAttribute("inert", "");
+  }, [isWorkRoute, shouldRenderWork]);
+
+  const workSurface = shouldRenderWork ? (
+    <Routes location={visibleWorkRoute}>
+      <Route path="/work/*" element={
+        <div
+          ref={workSurfaceRef}
+          className="h-full min-h-0 w-full"
+          aria-hidden={!isWorkRoute}
+          style={!isWorkRoute
+            ? {
+              position: "absolute",
+              inset: 0,
+              zIndex: -1,
+              opacity: 0,
+              pointerEvents: "none",
+            }
+            : undefined}
+        >
+          <PageErrorBoundary>
+            <React.Suspense fallback={LazyFallback}>
+              <TerminalsPage active={active && isWorkRoute} />
+            </React.Suspense>
+          </PageErrorBoundary>
+        </div>
+      } />
+    </Routes>
+  ) : null;
+
+  return (
+    <div className="relative h-full min-h-0 w-full">
+      {workSurface}
+      {!isWorkRoute ? (
+        <Routes location={route}>
+          <Route path="/" element={<Navigate to="/work" replace />} />
+          <Route path="/project" element={<PageErrorBoundary><RunPage /></PageErrorBoundary>} />
+          <Route path="/onboarding" element={<PageErrorBoundary><ProjectSetupPage /></PageErrorBoundary>} />
+          <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
+          <Route path="/lanes" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(LanesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/files" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(FilesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/graph" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(WorkspaceGraphPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/prs" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(PRsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/review" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(ReviewPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/history" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(HistoryPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/automations" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/automations/templates" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsTemplatesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/missions" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(MissionsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/cto" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/settings" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="*" element={<Navigate to="/work" replace />} />
+        </Routes>
+      ) : null}
+    </div>
+  );
+}
+
+function ProjectSurface({
+  active,
+  project,
+  route,
+  store,
+}: {
+  active: boolean;
+  project: ProjectInfo;
+  route: string;
+  store: AppStoreApi;
+}) {
+  const surfaceRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    hydrateProjectAppStore(store, {
+      project,
+      projectBinding: {
+        kind: "local",
+        key: `local:${project.rootPath}`,
+        rootPath: project.rootPath,
+        displayName: project.displayName,
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    });
+  }, [project, store]);
+
+  React.useEffect(() => {
+    if (!active || !isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work")) return;
     const raf = window.requestAnimationFrame(() => {
       dispatchWorkSurfaceRevealed();
     });
@@ -227,66 +376,208 @@ function PersistentWorkSurface({ active }: { active: boolean }) {
       window.cancelAnimationFrame(raf);
       window.clearTimeout(settleTimer);
     };
-  }, [shouldReveal]);
+  }, [active, route]);
 
   React.useEffect(() => {
-    const node = workSurfaceRef.current;
-    // The `<div ref={workSurfaceRef}>` below is gated by the `projectHydrated`
-    // / `hasActiveProject` / `showWelcome` early returns, so on a cold `/work`
-    // boot the ref is null on the first run when `active` flips true. Re-run
-    // once those guards settle so the inert state lands on the real node.
-    if (!node) return;
-    if (active) {
-      node.removeAttribute("inert");
-    } else {
-      node.setAttribute("inert", "");
+    if (!active) return;
+    const state = store.getState();
+    if (state.lanes.length === 0 && !state.lanesLoading) {
+      void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
-  }, [active, projectHydrated, hasActiveProject, showWelcome]);
+    if (!state.keybindings) {
+      void state.refreshKeybindings().catch(() => {});
+    }
+    void state.refreshProviderMode().catch(() => {});
+  }, [active, store]);
 
-  if (!projectHydrated && !hasActiveProject) {
-    return active ? GuardLoadingFallback : null;
+  React.useEffect(() => {
+    const node = surfaceRef.current;
+    if (!node) return;
+    if (active) node.removeAttribute("inert");
+    else node.setAttribute("inert", "");
+  }, [active]);
+
+  return (
+    <AppStoreProvider store={store}>
+      <div
+        ref={surfaceRef}
+        className="h-full min-h-0 w-full"
+        aria-hidden={!active}
+        data-project-root={project.rootPath}
+        style={!active
+          ? {
+            position: "absolute",
+            inset: 0,
+            zIndex: -1,
+            opacity: 0,
+            pointerEvents: "none",
+          }
+          : undefined}
+      >
+        <ProjectRouteContent active={active} route={route} />
+      </div>
+    </AppStoreProvider>
+  );
+}
+
+function ProjectTabHost() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeProject = useAppStore((s) => s.project);
+  const projectHydrated = useAppStore((s) => s.projectHydrated);
+  const showWelcome = useAppStore((s) => s.showWelcome);
+  const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
+  const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
+  const rootPrefs = useAppStore(useShallow((s) => ({
+    theme: s.theme,
+    terminalPreferences: s.terminalPreferences,
+    codeBlockCopyButtonPosition: s.codeBlockCopyButtonPosition,
+    agentTurnCompletionSound: s.agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume: s.agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused: s.agentTurnCompletionSoundQuietWhenFocused,
+    chatFontSizePx: s.chatFontSizePx,
+    chatUserMinimapEnabled: s.chatUserMinimapEnabled,
+    chatTranscriptDensity: s.chatTranscriptDensity,
+    chatChromeTint: s.chatChromeTint,
+    chatShellGeometry: s.chatShellGeometry,
+    smartTooltipsEnabled: s.smartTooltipsEnabled,
+    onboardingEnabled: s.onboardingEnabled,
+    didYouKnowEnabled: s.didYouKnowEnabled,
+  })));
+  const storesRef = React.useRef(new Map<string, AppStoreApi>());
+  const lruRef = React.useRef<string[]>([]);
+  const [routesByRoot, setRoutesByRoot] = React.useState<Record<string, string>>({});
+  const activeRoot = !showWelcome && activeProject?.rootPath ? activeProject.rootPath : null;
+  const previousActiveRootRef = React.useRef<string | null>(null);
+  const pendingNavigationRef = React.useRef<{ root: string; route: string } | null>(null);
+
+  React.useEffect(() => {
+    for (const store of storesRef.current.values()) {
+      hydrateProjectAppStore(store, rootPrefs);
+    }
+  }, [rootPrefs]);
+
+  React.useEffect(() => {
+    if (!activeRoot) return;
+    lruRef.current = [activeRoot, ...lruRef.current.filter((root) => root !== activeRoot)];
+  }, [activeRoot]);
+
+  React.useEffect(() => {
+    const previousRoot = previousActiveRootRef.current;
+    if (previousRoot === activeRoot) return;
+    const currentRoute = serializeProjectRoute(location);
+    if (previousRoot && currentRoute) {
+      writeStoredProjectRoute(previousRoot, currentRoute);
+      setRoutesByRoot((prev) => ({ ...prev, [previousRoot]: currentRoute }));
+    }
+    previousActiveRootRef.current = activeRoot;
+    if (!activeRoot) return;
+    const shouldKeepInitialRoute =
+      currentRoute &&
+      currentRoute !== "/project" &&
+      currentRoute !== "/onboarding";
+    if (!previousRoot && shouldKeepInitialRoute) {
+      writeStoredProjectRoute(activeRoot, currentRoute);
+      setRoutesByRoot((prev) => (prev[activeRoot] === currentRoute ? prev : { ...prev, [activeRoot]: currentRoute }));
+      return;
+    }
+    const nextRoute = routesByRoot[activeRoot] ?? readStoredProjectRoute(activeRoot) ?? "/work";
+    pendingNavigationRef.current = { root: activeRoot, route: nextRoute };
+    if (currentRoute !== nextRoute) {
+      navigate(nextRoute, { replace: true });
+    }
+  }, [activeRoot, location, navigate, routesByRoot]);
+
+  React.useEffect(() => {
+    if (!activeRoot) return;
+    const route = serializeProjectRoute(location);
+    if (!route) return;
+    const pending = pendingNavigationRef.current;
+    if (pending?.root === activeRoot && pending.route !== route) return;
+    if (pending?.root === activeRoot && pending.route === route) {
+      pendingNavigationRef.current = null;
+    }
+    writeStoredProjectRoute(activeRoot, route);
+    setRoutesByRoot((prev) => (prev[activeRoot] === route ? prev : { ...prev, [activeRoot]: route }));
+  }, [activeRoot, location]);
+
+  const projects = React.useMemo(() => {
+    const roots = openProjectTabRoots.length > 0
+      ? openProjectTabRoots
+      : activeProject?.rootPath
+        ? [activeProject.rootPath]
+        : [];
+    return roots
+      .map((root) => projectInfoByRoot[root] ?? (activeProject?.rootPath === root ? activeProject : null))
+      .filter((project): project is ProjectInfo => project != null);
+  }, [activeProject, openProjectTabRoots, projectInfoByRoot]);
+
+  const mountedProjects = React.useMemo(() => {
+    const lru = lruRef.current;
+    const openSet = new Set(projects.map((project) => project.rootPath));
+    const ordered = [...projects].sort((left, right) => {
+      const leftIndex = lru.indexOf(left.rootPath);
+      const rightIndex = lru.indexOf(right.rootPath);
+      return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex)
+        - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+    });
+    const warm = ordered.slice(0, WARM_PROJECT_SURFACE_LIMIT);
+    if (activeProject && openSet.has(activeProject.rootPath) && !warm.some((project) => project.rootPath === activeProject.rootPath)) {
+      warm.pop();
+      warm.unshift(activeProject);
+    }
+    return warm;
+  }, [activeProject, projects]);
+
+  for (const project of mountedProjects) {
+    if (!storesRef.current.has(project.rootPath)) {
+      storesRef.current.set(project.rootPath, createProjectAppStore(project));
+    }
   }
 
-  if (!hasActiveProject || showWelcome) {
-    return active ? (
+  React.useEffect(() => {
+    const mountedRoots = new Set(mountedProjects.map((project) => project.rootPath));
+    for (const root of storesRef.current.keys()) {
+      if (!mountedRoots.has(root)) storesRef.current.delete(root);
+    }
+  }, [mountedProjects]);
+
+  if (!projectHydrated && !activeProject) {
+    return GuardLoadingFallback;
+  }
+
+  if (!activeProject || showWelcome || mountedProjects.length === 0) {
+    return (
       <PageErrorBoundary>
         <RunPage />
       </PageErrorBoundary>
-    ) : null;
+    );
   }
 
   return (
-    <div
-      ref={workSurfaceRef}
-      className="h-full min-h-0 w-full"
-      aria-hidden={!active}
-      style={!active
-        ? {
-          position: "absolute",
-          inset: 0,
-          zIndex: -1,
-          opacity: 0,
-          pointerEvents: "none",
-        }
-        : undefined}
-    >
-      <PageErrorBoundary>
-        <React.Suspense fallback={LazyFallback}>
-          <TerminalsPage active={active} />
-        </React.Suspense>
-      </PageErrorBoundary>
+    <div className="relative h-full min-h-0 w-full">
+      {mountedProjects.map((project) => {
+        const store = storesRef.current.get(project.rootPath);
+        if (!store) return null;
+        const route = routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
+        return (
+          <ProjectSurface
+            key={project.rootPath}
+            active={project.rootPath === activeRoot}
+            project={project}
+            route={route}
+            store={store}
+          />
+        );
+      })}
     </div>
   );
 }
 
 function ShellLayout() {
-  const location = useLocation();
-  const isWorkRoute = isWorkRoutePath(location.pathname);
-
   return (
     <AppShell>
-      <PersistentWorkSurface active={isWorkRoute} />
-      {isWorkRoute ? null : <Outlet />}
+      <ProjectTabHost />
     </AppShell>
   );
 }
@@ -399,25 +690,7 @@ export function App() {
         {usesBrowserRouter ? <BrowserHashRouteBridge /> : null}
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />
-          <Route element={<ShellLayout />}>
-            <Route path="/" element={<Navigate to="/work" replace />} />
-            <Route path="/project" element={guarded(<RunPage />)} />
-            <Route path="/onboarding" element={guarded(<ProjectSetupPage />)} />
-            <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
-            <Route path="/lanes" element={guardedLazy(<LanesPage />)} />
-            <Route path="/files" element={guardedLazy(<FilesPage />)} />
-            <Route path="/work" element={null} />
-            <Route path="/graph" element={guardedLazy(<WorkspaceGraphPage />)} />
-            <Route path="/prs" element={guardedLazy(<PRsPage />)} />
-            <Route path="/review" element={guardedLazy(<ReviewPage />)} />
-            <Route path="/history" element={guardedLazy(<HistoryPage />)} />
-            <Route path="/automations" element={guardedLazy(<AutomationsPage />)} />
-            <Route path="/automations/templates" element={guardedLazy(<AutomationsTemplatesPage />)} />
-            <Route path="/missions" element={guardedLazy(<MissionsPage />)} />
-            <Route path="/cto" element={guardedLazy(<CtoPage />)} />
-            <Route path="/settings" element={guardedLazy(<SettingsPage />)} />
-            <Route path="*" element={<Navigate to="/work" replace />} />
-          </Route>
+          <Route path="*" element={<ShellLayout />} />
         </Routes>
       </div>
     </Router>

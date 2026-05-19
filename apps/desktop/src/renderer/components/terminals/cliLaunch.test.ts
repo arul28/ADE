@@ -150,15 +150,24 @@ describe("buildTrackedCliStartupCommand", () => {
     it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
       expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
-      expect(command).toContain("-c mcp_servers.linear.enabled=false");
+      expect(command).not.toContain("mcp_servers.linear");
       expect(command).toContain("only normal reason to skip ADE CLI");
+    });
+
+    it("does not synthesize Codex MCP server config for any permission preset", () => {
+      const modes = ["default", "plan", "edit", "full-auto", "config-toml"] as const;
+      for (const permissionMode of modes) {
+        const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode });
+        expect(launch.args.join("\n")).not.toContain("mcp_servers.");
+        expect(launch.startupCommand).not.toContain("mcp_servers.");
+      }
     });
 
     it("passes no extra flags for config-toml", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "config-toml" });
       expect(command).toContain("codex --no-alt-screen");
       expect(command).not.toContain("--full-auto");
-      expect(command).not.toContain("mcp_servers.linear.enabled=false");
+      expect(command).not.toContain("mcp_servers.linear");
       expect(command).toContain("only normal reason to skip ADE CLI");
     });
 

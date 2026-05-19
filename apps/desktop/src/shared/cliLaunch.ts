@@ -58,11 +58,6 @@ const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType
   shell: ["shell", "run-shell"],
 };
 
-const ADE_CODEX_STARTUP_CONFIG_FLAGS = [
-  "-c",
-  "mcp_servers.linear.enabled=false",
-] as const;
-
 export function isLaunchProfile(value: string | null | undefined): value is LaunchProfile {
   return typeof value === "string" && (LAUNCH_PROFILES as readonly string[]).includes(value);
 }
@@ -200,16 +195,11 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "codex") {
-    // ADE has native Linear surfaces and context attachment. Do not let a
-    // stale user-level Linear MCP OAuth/handshake block the Codex TUI's
-    // first paint inside Work. Skip when the user opted into raw config-toml.
-    const codexStartupConfigFlags = args.permissionMode === "config-toml" ? [] : ADE_CODEX_STARTUP_CONFIG_FLAGS;
     const commandArgs: string[] = [
       "--no-alt-screen",
       ...modelToCliFlag(args.model),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
-      ...codexStartupConfigFlags,
       workTabCliPrompt(initialPrompt, skillRoots),
     ];
     return {

@@ -3,7 +3,7 @@ import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
-import { useAppStore, type LaneInspectorTab } from "../../state/appStore";
+import { useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -247,7 +247,8 @@ function laneTilingLayoutIds(laneId: string): string[] {
 
 /* ---- Component ---- */
 
-export function LanesPage() {
+export function LanesPage({ active = true }: { active?: boolean } = {}) {
+  const appStore = useAppStoreApi();
   const [params] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -412,6 +413,7 @@ export function LanesPage() {
   }, []);
 
   useEffect(() => {
+    if (!active) return;
     const projectRoot = project?.rootPath ?? null;
     const previousProjectRoot = deleteProgressProjectRootRef.current;
     deleteProgressProjectRootRef.current = projectRoot;
@@ -665,7 +667,7 @@ export function LanesPage() {
     // — otherwise lane A's branches linger when the user switches to lane B
     // before the new fetch resolves.
     setLaneBranches([]);
-    if (!branchLane || !branchDropdownOpen) return;
+    if (!active || !branchLane || !branchDropdownOpen) return;
     let cancelled = false;
     setLaneBranchesLoading(true);
     window.ade.git.listBranches({ laneId: branchLane.id })
@@ -673,14 +675,14 @@ export function LanesPage() {
       .catch(() => { if (!cancelled) setLaneBranches([]); })
       .finally(() => { if (!cancelled) setLaneBranchesLoading(false); });
     return () => { cancelled = true; };
-  }, [branchDropdownOpen, branchLane?.id]);
+  }, [active, branchDropdownOpen, branchLane?.id]);
 
   useEffect(() => {
-    if (!branchLane) return;
+    if (!active || !branchLane) return;
     const current = laneBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
     if (!current || current === branchLane.branchRef) return;
     refreshLanes().catch(() => {});
-  }, [laneBranches, branchLane?.id, branchLane?.branchRef, refreshLanes]);
+  }, [active, laneBranches, branchLane?.id, branchLane?.branchRef, refreshLanes]);
 
   useEffect(() => {
     if (branchDropdownOpen) {
@@ -721,33 +723,33 @@ export function LanesPage() {
 
   const refreshLanePrTags = useCallback(async () => {
     const requestId = ++lanePrTagsRequestRef.current;
-    const startedRoot = useAppStore.getState().project?.rootPath ?? null;
+    const startedRoot = appStore.getState().project?.rootPath ?? null;
     try {
       const prs = await window.ade.prs.listAll();
       if (requestId !== lanePrTagsRequestRef.current) return;
-      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLanePrTags(prs);
     } catch {
       if (requestId !== lanePrTagsRequestRef.current) return;
-      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLanePrTags([]);
     }
-  }, []);
+  }, [appStore]);
 
   const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }) => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
-    const startedRoot = useAppStore.getState().project?.rootPath ?? null;
+    const startedRoot = appStore.getState().project?.rootPath ?? null;
     try {
       const snapshot = await window.ade.prs.getGitHubSnapshot({ force: options?.force === true });
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       setLaneGithubPrTags(snapshot.repoPullRequests);
     } catch {
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if ((useAppStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
       // Keep the last usable GitHub snapshot visible on transient refresh failures.
     }
-  }, []);
+  }, [appStore]);
 
   const pushConflictChips = useCallback((chips: ConflictChip[]) => {
     if (chips.length === 0) return;
@@ -822,6 +824,7 @@ export function LanesPage() {
   useEffect(() => { manageOpenRef.current = manageOpen; }, [manageOpen]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onDeleteEvent((event) => {
       const { laneId, overallStatus } = event.progress;
       setDeleteProgressByLaneId((prev) => {
@@ -870,9 +873,10 @@ export function LanesPage() {
       queueLaneDeleteRefresh([laneId]);
     });
     return unsubscribe;
-  }, [clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
+  }, [active, clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.conflicts.onEvent((event) => {
       if (event.type !== "prediction-complete") return;
       // Only refresh conflict statuses — avoid a full refreshLanes() which fires
@@ -881,37 +885,40 @@ export function LanesPage() {
         const conflictByLaneId = new Map(
           assessment.lanes.map((entry) => [entry.laneId, entry] as const),
         );
-        const prev = useAppStore.getState().laneSnapshots;
+        const prev = appStore.getState().laneSnapshots;
         const next = prev.map((snapshot) => {
           const updated = conflictByLaneId.get(snapshot.lane.id) ?? null;
           return updated !== snapshot.conflictStatus
             ? { ...snapshot, conflictStatus: updated }
             : snapshot;
         });
-        useAppStore.setState({ laneSnapshots: next });
+        appStore.setState({ laneSnapshots: next });
       }).catch((err) => { console.error("getBatchAssessment failed:", err); });
       pushConflictChips(event.chips);
     });
     return unsubscribe;
-  }, [pushConflictChips]);
+  }, [active, appStore, pushConflictChips]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onRebaseSuggestionsEvent((event) => {
       if (event.type !== "rebase-suggestions-updated") return;
       void refreshLanes().catch(() => {});
     });
     return unsubscribe;
-  }, [refreshLanes]);
+  }, [active, refreshLanes]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
       if (event.type !== "auto-rebase-updated") return;
       void refreshLanes().catch(() => {});
     });
     return unsubscribe;
-  }, [refreshLanes]);
+  }, [active, refreshLanes]);
 
   useEffect(() => {
+    if (!active) return;
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
       if (event.type !== "rebase-run-updated") return;
       if (event.run.state !== "failed" || !event.run.failedLaneId) return;
@@ -919,28 +926,30 @@ export function LanesPage() {
       setRebaseSuggestionError(`Rebase needs attention for ${failedLane}. ${event.run.error ?? ""}`.trim());
     });
     return unsubscribe;
-  }, [lanesById]);
+  }, [active, lanesById]);
 
   useEffect(() => {
+    if (!active) return;
     const timer = window.setTimeout(() => {
       void refreshAutoRebaseEnabled();
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [refreshAutoRebaseEnabled]);
+  }, [active, refreshAutoRebaseEnabled]);
 
   useEffect(() => {
+    if (!active) return;
     const timer = window.setTimeout(() => {
       void refreshIntegrationProposals();
     }, 140);
     return () => window.clearTimeout(timer);
-  }, [refreshIntegrationProposals, project?.rootPath]);
+  }, [active, refreshIntegrationProposals, project?.rootPath]);
 
   useEffect(() => {
     lanePrTagsRequestRef.current += 1;
     laneGithubPrTagsRequestRef.current += 1;
     setLanePrTags([]);
     setLaneGithubPrTags([]);
-    if (!project?.rootPath) {
+    if (!active || !project?.rootPath) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -952,9 +961,10 @@ export function LanesPage() {
       laneGithubPrTagsRequestRef.current += 1;
       window.clearTimeout(timer);
     };
-  }, [refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath, lanePrBranchSignature]);
+  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath, lanePrBranchSignature]);
 
   useEffect(() => {
+    if (!active) return;
     return window.ade.prs.onEvent((event) => {
       if (event.type === "prs-updated") {
         lanePrTagsRequestRef.current += 1;
@@ -966,9 +976,10 @@ export function LanesPage() {
         void refreshLaneGithubPrTags({ force: true });
       }
     });
-  }, [refreshLanePrTags, refreshLaneGithubPrTags]);
+  }, [active, refreshLanePrTags, refreshLaneGithubPrTags]);
 
   useEffect(() => {
+    if (!active) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const refreshRuntimeOnly = () =>
       refreshLanes({
@@ -1020,7 +1031,7 @@ export function LanesPage() {
       }
       window.clearInterval(intervalId);
     };
-  }, [project?.rootPath, refreshLanes]);
+  }, [active, project?.rootPath, refreshLanes]);
 
   useEffect(() => {
     hasActiveLaneRuntimeRef.current = laneSnapshots.some((snapshot) =>
@@ -1029,6 +1040,7 @@ export function LanesPage() {
   }, [laneSnapshots]);
 
   useEffect(() => {
+    if (!active) return;
     const onFocus = () => { void refreshAutoRebaseEnabled(); };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") void refreshAutoRebaseEnabled();
@@ -1039,7 +1051,7 @@ export function LanesPage() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [refreshAutoRebaseEnabled]);
+  }, [active, refreshAutoRebaseEnabled]);
 
   useEffect(() => {
     const pendingLaneDeleteRefreshIds = pendingLaneDeleteRefreshIdsRef.current;
@@ -1437,7 +1449,7 @@ export function LanesPage() {
     if (hydratedLaneDeleteProgressProjectRef.current === projectRoot) return;
     hydratedLaneDeleteProgressProjectRef.current = projectRoot;
     let cancelled = false;
-    const getStoredActiveLaneIds = () => Object.values(useAppStore.getState().laneDeleteProgressByLaneId)
+    const getStoredActiveLaneIds = () => Object.values(appStore.getState().laneDeleteProgressByLaneId)
       .filter(isLaneDeleteProgressActive)
       .map((progress) => progress.laneId);
     const recoverStoredActiveLaneDeletes = () => {
@@ -1489,7 +1501,7 @@ export function LanesPage() {
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
+  }, [active, appStore, project?.rootPath, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
   const deleteManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
@@ -1802,45 +1814,45 @@ export function LanesPage() {
   }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 
   const hideRebaseSuggestionLocally = useCallback((laneId: string) => {
-    useAppStore.setState((prev) => ({
+    appStore.setState((prev) => ({
       laneSnapshots: prev.laneSnapshots.map((snapshot) =>
         snapshot.lane.id === laneId ? { ...snapshot, rebaseSuggestion: null } : snapshot
       ),
     }));
-  }, []);
+  }, [appStore]);
 
   const hideAutoRebaseStatusLocally = useCallback((laneId: string) => {
-    useAppStore.setState((prev) => ({
+    appStore.setState((prev) => ({
       laneSnapshots: prev.laneSnapshots.map((snapshot) =>
         snapshot.lane.id === laneId ? { ...snapshot, autoRebaseStatus: null } : snapshot
       ),
     }));
-  }, []);
+  }, [appStore]);
 
   const restoreRebaseSuggestionLocally = useCallback((laneId: string, suggestion: LaneListSnapshot["rebaseSuggestion"]) => {
     if (!suggestion) return;
-    useAppStore.setState((prev) => ({
+    appStore.setState((prev) => ({
       laneSnapshots: prev.laneSnapshots.map((snapshot) =>
         snapshot.lane.id === laneId && snapshot.rebaseSuggestion == null
           ? { ...snapshot, rebaseSuggestion: suggestion }
           : snapshot
       ),
     }));
-  }, []);
+  }, [appStore]);
 
   const restoreAutoRebaseStatusLocally = useCallback((laneId: string, status: LaneListSnapshot["autoRebaseStatus"]) => {
     if (!status) return;
-    useAppStore.setState((prev) => ({
+    appStore.setState((prev) => ({
       laneSnapshots: prev.laneSnapshots.map((snapshot) =>
         snapshot.lane.id === laneId && snapshot.autoRebaseStatus == null
           ? { ...snapshot, autoRebaseStatus: status }
           : snapshot
       ),
     }));
-  }, []);
+  }, [appStore]);
 
   const dismissRebaseSuggestion = async (laneId: string) => {
-    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.rebaseSuggestion ?? null;
+    const previous = appStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.rebaseSuggestion ?? null;
     setRebaseSuggestionError(null);
     hideRebaseSuggestionLocally(laneId);
     try {
@@ -1852,7 +1864,7 @@ export function LanesPage() {
   };
 
   const dismissAutoRebaseStatus = async (laneId: string) => {
-    const previous = useAppStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.autoRebaseStatus ?? null;
+    const previous = appStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.autoRebaseStatus ?? null;
     setRebaseSuggestionError(null);
     hideAutoRebaseStatusLocally(laneId);
     try {

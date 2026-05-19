@@ -243,6 +243,59 @@ the same session with `terminal_subscribe`; unsubscribed
 mobile terminal control tied to the visible Work surface instead of
 making a bare session id sufficient to drive a shell.
 
+### Chat-CLI auto-reattach (`reattachChatCli` + `writeTerminal`)
+
+`ptyService.reattachChatCli({ chatSessionId, cols?, rows? })` is the
+single entry point for "spin a chat-CLI session back up because the
+user wants to send a message". It only accepts tracked chat-typed
+sessions (`isPersistedChatToolType(toolType)`) — non-chat sessions and
+untracked rows are rejected with a clear error.
+
+Behaviour:
+
+- Fast path: if a live PTY is already bound to the chat session, the
+  call returns `{ terminalId, ptyId, pid, relaunched: false }` without
+  any further work.
+- Otherwise resolve the resume command from `session.resumeMetadata`
+  (via `buildTrackedCliResumeCommand`, no overrides) or
+  `session.resumeCommand`, then `service.create({ sessionId, laneId,
+  chatSessionId, cols, rows, toolType, startupCommand })` to spawn a
+  fresh PTY in the same row and return `{ ..., relaunched: true }`.
+- Concurrent callers are deduped through `reattachChatCliFlights`
+  (one in-flight reattach per `chatSessionId`) so a chat composer +
+  App Control + a rapid send burst can't each race a separate
+  `claude --resume <same-id>` PTY into existence.
+
+`writeTerminal` was made async and now auto-reattaches before
+writing when:
+
+1. The caller did NOT pass an explicit `ptyId` (explicit `ptyId`
+   keeps the original "PTY not running" throw to surface programmer
+   errors), and
+2. `terminalId` / `chatSessionId` resolves to a tracked chat-CLI
+   session whose PTY is missing.
+
+In that case the service calls `reattachChatCli({ chatSessionId })`
+and writes to the freshly attached PTY. Any other "no live PTY"
+case still throws — the auto-reattach is intentionally scoped to
+chat CLIs so an active App Control terminal, a shell, or a non-chat
+agent CLI doesn't silently resurrect after the user stopped it.
+
+A new IPC channel `ade.terminal.reattachChatCli` exposes the
+service method to the renderer (consumed by `AgentChatPane` and the
+chat composer when sending into a chat whose PTY has been
+evicted), the `ade-cli` socket surface, and the ADE Action
+registry under `terminal.reattachChatCli`.
+
+### Live-session detection
+
+`ptyService.hasLiveSessions()` walks the PTY map and returns true if
+any entry is not disposed. `main.ts`'s
+`hasActiveProjectWorkloads(ctx)` calls it (alongside
+`agentChatService.hasRetainableSessions()` and the mission active-list
+check) so a project context with running CLIs / agents / shells is
+never evicted by the warm-idle cap.
+
 ### Send-or-continue (`sendToSession`)
 
 `ptyService.sendToSession({ sessionId, text, cols?, rows?, model?,

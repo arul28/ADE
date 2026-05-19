@@ -2,7 +2,7 @@ import { useMemo, useState, useCallback, useEffect } from "react";
 import { Clock, WarningCircle, Check, X, Copy, Eye } from "@phosphor-icons/react";
 import type { MissionIntervention, ClarificationQuestion } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, primaryButton, outlineButton } from "../lanes/laneDesignTokens";
-import { useMissionsStore } from "./useMissionsStore";
+import { useMissionsStore, useMissionsStoreApi } from "./useMissionsStore";
 import { getMissionInterventionOwnerLabel, isRecord } from "./missionHelpers";
 import { relativeWhen } from "../../lib/format";
 import { routeMissionIntervention } from "./missionInterventionRouting";
@@ -75,6 +75,7 @@ export { isQuizIntervention, isBlockingManualInputIntervention };
  * Replaces modal auto-open for a better inline UX. (VAL-UX-005)
  */
 export function InterventionPanel({ compact }: { compact: boolean }) {
+  const missionsStore = useMissionsStoreApi();
   const selectedMission = useMissionsStore((s) => s.selectedMission);
   const steerBusy = useMissionsStore((s) => s.steerBusy);
   const activeInterventionId = useMissionsStore((s) => s.activeInterventionId);
@@ -109,7 +110,7 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
 
   const handleResolve = useCallback(
     async (interventionId: string) => {
-      const s = useMissionsStore.getState();
+      const s = missionsStore.getState();
       if (!s.selectedMission) return;
       const intervention = s.selectedMission.interventions.find((entry) => entry.id === interventionId) ?? null;
       if (isQuizIntervention(intervention)) {
@@ -139,12 +140,12 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
         s.setSteerBusy(false);
       }
     },
-    [responseText, setActiveInterventionId],
+    [missionsStore, responseText, setActiveInterventionId],
   );
 
   const handleDismiss = useCallback(
     async (interventionId: string) => {
-      const s = useMissionsStore.getState();
+      const s = missionsStore.getState();
       if (!s.selectedMission) return;
       s.setSteerBusy(true);
       try {
@@ -163,7 +164,7 @@ export function InterventionPanel({ compact }: { compact: boolean }) {
         s.setSteerBusy(false);
       }
     },
-    [],
+    [missionsStore],
   );
 
   if (!selectedMission || !primaryIntervention) return null;
@@ -207,6 +208,7 @@ function InterventionCard({
   busy: boolean;
   remainingOpenCount: number;
 }) {
+  const missionsStore = useMissionsStoreApi();
   const isBlocking = isBlockingManualInputIntervention(intervention);
   const isSystemLaunchFailure = isSystemLaunchFailureIntervention(intervention);
   const borderColor = isBlocking ? COLORS.warning : COLORS.accentBorder;
@@ -225,9 +227,9 @@ function InterventionCard({
   const typeLabel = intervention.interventionType.replace(/_/g, " ");
 
   const handleViewDetails = useCallback(() => {
-    const s = useMissionsStore.getState();
+    const s = missionsStore.getState();
     routeMissionIntervention(s, intervention);
-  }, [intervention]);
+  }, [intervention, missionsStore]);
 
   const handleCopyError = useCallback(async () => {
     const parts = [

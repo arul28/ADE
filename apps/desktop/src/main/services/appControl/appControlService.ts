@@ -2015,10 +2015,10 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     });
   };
 
-  const writeTerminal = (terminalArgs: { data?: string | null }): { ok: true } => {
+  const writeTerminal = async (terminalArgs: { data?: string | null }): Promise<{ ok: true }> => {
     const terminalId = requireTerminalSessionId();
     if (typeof terminalArgs?.data !== "string") throw new Error("App Control terminal write requires data.");
-    return args.ptyService!.writeTerminal({ terminalId, data: terminalArgs.data });
+    return await args.ptyService!.writeTerminal({ terminalId, data: terminalArgs.data });
   };
 
   const signalTerminal = (terminalArgs: { signal?: "SIGINT" | "SIGTERM" | "SIGKILL" | null } = {}): { ok: true } => {

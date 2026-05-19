@@ -646,6 +646,14 @@ existing pairing credentials to reconnect against the now-active host.
 If the host is offline at switch time, it still records the requested
 project as active and the phone reconnects when the host returns.
 
+Before tearing down the old socket on a project switch, `SyncService`
+calls `resetChatEventState(clearHistory: false)` and
+`resetTerminalSubscriptionState(clearHistory: true)` so chat /
+terminal subscriptions bound to the previous project's session ids
+are dropped. Without this reset, the phone would resubscribe to stale
+ids after reconnect and either leak foreign chat events into the new
+project view or collide with newly-assigned session ids on the host.
+
 Rather than reconstructing lane detail surfaces client-side from
 primitive rows, the iOS app persists richer projections the host
 sends:

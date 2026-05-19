@@ -2912,7 +2912,7 @@ describe("ptyService", () => {
         chatSessionId: "chat-write",
       });
 
-      const result = service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
+      const result = await service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
       expect(result).toEqual({ ok: true });
       expect(mockPty.write).toHaveBeenCalledWith("y\n");
     });
@@ -2956,13 +2956,257 @@ describe("ptyService", () => {
       await expect(service.readTerminal({ chatSessionId: "no-such-chat" })).rejects.toThrow(
         /terminal\.read requires/,
       );
-      expect(() => service.writeTerminal({ chatSessionId: "no-such-chat", data: "x" })).toThrow(
+      await expect(service.writeTerminal({ chatSessionId: "no-such-chat", data: "x" })).rejects.toThrow(
         /terminal\.write requires/,
       );
       expect(() => service.signalTerminal({ chatSessionId: "no-such-chat", signal: "SIGINT" })).toThrow(
         /No running terminal/,
       );
       expect(service.activeForChat({ chatSessionId: "no-such-chat" })).toBeNull();
+    });
+
+    describe("reattachChatCli", () => {
+      it("returns the existing live PTY when one is already bound", async () => {
+        const { service } = createChatHarness();
+        // Use the same sessionId for chat session and terminal session, mirroring chat-CLI tracking
+        const created = await service.create({
+          sessionId: "chat-existing",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-existing",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+
+        const result = await service.reattachChatCli({ chatSessionId: "chat-existing" });
+
+        expect(result.relaunched).toBe(false);
+        expect(result.terminalId).toBe(created.sessionId);
+        expect(result.ptyId).toBe(created.ptyId);
+      });
+
+      it("relaunches a new PTY for a disposed chat-CLI session", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "chat-relaunch",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-relaunch",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+
+        // Persist a resume command on the session record so reattach can build a startup command.
+        const record = sessionStore.get("chat-relaunch");
+        if (record) {
+          record.resumeCommand = "claude --resume target";
+        }
+
+        // Dispose the live PTY entry to simulate a dead session after ADE crash/restart.
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        // Wire a fresh mock PTY for the relaunch.
+        const freshMockPty = createMockPty();
+        const freshSpawn = vi.fn(() => freshMockPty);
+        loadPty.mockImplementationOnce(() => ({ spawn: freshSpawn as any }));
+
+        const result = await service.reattachChatCli({ chatSessionId: "chat-relaunch" });
+
+        expect(result.relaunched).toBe(true);
+        expect(result.terminalId).toBe(created.sessionId);
+        expect(result.ptyId).not.toBe(created.ptyId);
+        expect(freshSpawn).toHaveBeenCalled();
+      });
+
+      it("throws when the chat-CLI session record is missing", async () => {
+        const { service } = createChatHarness();
+        await expect(service.reattachChatCli({ chatSessionId: "missing" })).rejects.toThrow(
+          /was not found/,
+        );
+      });
+
+      it("throws when the session is not a persisted chat tool type", async () => {
+        const { service } = createChatHarness();
+        await service.create({
+          sessionId: "plain-shell",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Shell",
+          cols: 80,
+          rows: 24,
+          tracked: true,
+          toolType: "shell",
+        });
+        // The activeTerminalByChatSession bypass key is the chatSessionId, which is null for shell sessions,
+        // so reattachChatCli falls through to the session-lookup branch directly even with a live PTY.
+
+        await expect(service.reattachChatCli({ chatSessionId: "plain-shell" })).rejects.toThrow(
+          /not a chat CLI session/,
+        );
+      });
+
+      it("throws when the chat-CLI session is untracked", async () => {
+        const { service, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "untracked-chat",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "untracked-chat",
+          toolType: "claude-chat",
+          tracked: false,
+        });
+        // Force tracked = false on the stored record (the chat harness defaults to tracked: true).
+        const record = sessionStore.get("untracked-chat");
+        if (record) {
+          record.tracked = false;
+        }
+        // Dispose the live PTY so reattachChatCli must take the lookup-and-relaunch path.
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        await expect(service.reattachChatCli({ chatSessionId: "untracked-chat" })).rejects.toThrow(
+          /not tracked/,
+        );
+      });
+
+      it("throws when the chat-CLI session has no resume command or metadata", async () => {
+        const { service, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "no-resume",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "no-resume",
+          tracked: true,
+          toolType: "claude-chat",
+        });
+
+        // Wipe out the resume hints so reattach has nothing to launch with.
+        const record = sessionStore.get("no-resume");
+        if (record) {
+          record.resumeCommand = null;
+          record.resumeMetadata = null;
+        }
+
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        await expect(service.reattachChatCli({ chatSessionId: "no-resume" })).rejects.toThrow(
+          /no resume command available/,
+        );
+      });
+
+      it("throws when called with an empty chatSessionId", async () => {
+        const { service } = createChatHarness();
+        await expect(service.reattachChatCli({ chatSessionId: "" })).rejects.toThrow(
+          /requires chatSessionId/,
+        );
+      });
+
+      it("dedupes concurrent reattach calls for the same chatSessionId to a single relaunch", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "chat-dedup",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-dedup",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+        const record = sessionStore.get("chat-dedup");
+        if (record) record.resumeCommand = "claude --resume target";
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        // Only one fresh spawn should happen even if multiple callers race.
+        const freshMockPty = createMockPty();
+        const freshSpawn = vi.fn(() => freshMockPty);
+        loadPty.mockImplementation(() => ({ spawn: freshSpawn as any }));
+
+        const [a, b, c] = await Promise.all([
+          service.reattachChatCli({ chatSessionId: "chat-dedup" }),
+          service.reattachChatCli({ chatSessionId: "chat-dedup" }),
+          service.reattachChatCli({ chatSessionId: "chat-dedup" }),
+        ]);
+
+        // All three resolve to the same new PTY; only one spawn happened.
+        expect(a.ptyId).toBe(b.ptyId);
+        expect(b.ptyId).toBe(c.ptyId);
+        expect(freshSpawn).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe("writeTerminal auto-reattach", () => {
+      it("auto-reattaches a dead chat-CLI session when writing by chatSessionId", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "chat-auto",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-auto",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "claude --resume target",
+        });
+
+        // Seed a resume command so the auto-reattach can launch.
+        const record = sessionStore.get("chat-auto");
+        if (record) {
+          record.resumeCommand = "claude --resume target";
+        }
+
+        // Simulate the PTY being dead (ADE crashed or quit).
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        // Wire a fresh PTY for the relaunch and capture its write calls.
+        const freshMockPty = createMockPty();
+        const freshSpawn = vi.fn(() => freshMockPty);
+        loadPty.mockImplementationOnce(() => ({ spawn: freshSpawn as any }));
+
+        const result = await service.writeTerminal({ chatSessionId: "chat-auto", data: "hello\n" });
+
+        expect(result).toEqual({ ok: true });
+        expect(freshSpawn).toHaveBeenCalled();
+        expect(freshMockPty.write).toHaveBeenCalledWith("hello\n");
+      });
+
+      it("still throws when called with a stale explicit ptyId", async () => {
+        const { service } = createChatHarness();
+        const created = await service.create({
+          sessionId: "chat-stale-pty",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-stale-pty",
+          tracked: true,
+          toolType: "claude-chat",
+        });
+
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        await expect(
+          service.writeTerminal({ ptyId: created.ptyId, data: "x" }),
+        ).rejects.toThrow(/Terminal PTY '.*' is not running/);
+      });
     });
   });
 });

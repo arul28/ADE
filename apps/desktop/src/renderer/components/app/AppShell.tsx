@@ -92,15 +92,6 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
   return route;
 }
 
-function readStoredProjectRoute(projectRoot: string): string | null {
-  try {
-    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
-    return value?.startsWith("/") ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 function writeStoredProjectRoute(projectRoot: string, route: string): void {
   try {
     window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
@@ -345,7 +336,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
-  const previousProjectRootRef = useRef<string | null | undefined>(undefined);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusProjectRootRef = useRef<string | null>(null);
   const githubBannerDismissedRef = useRef(false);
@@ -785,25 +775,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setProjectMissing(false);
   }, [project?.rootPath]);
-
-  useEffect(() => {
-    const previousProjectRoot = previousProjectRootRef.current;
-    const nextProjectRoot = project?.rootPath ?? null;
-    previousProjectRootRef.current = nextProjectRoot;
-
-    if (previousProjectRoot === undefined) return;
-    if (!nextProjectRoot || showWelcome) return;
-    if (previousProjectRoot === nextProjectRoot) return;
-    // First attach of a project (null → /path) must not restore localStorage, or we
-    // clobber a deep link / address-bar route (e.g. Vite, Cursor Simple Browser) with
-    // the last tab the user had for that project — often /graph.
-    if (previousProjectRoot == null) return;
-    if (previousProjectRoot) {
-      const previousRoute = serializeLocationRoute(location);
-      if (previousRoute) writeStoredProjectRoute(previousProjectRoot, previousRoute);
-    }
-    navigate(readStoredProjectRoute(nextProjectRoot) ?? "/work", { replace: true });
-  }, [location, navigate, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     const projectRoot = project?.rootPath ?? null;

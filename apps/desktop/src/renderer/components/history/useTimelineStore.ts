@@ -1,4 +1,7 @@
-import { create } from "zustand";
+import React, { createContext, useContext, type ReactNode } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
+import type { StateCreator } from "zustand";
 import type { OperationRecord } from "../../../shared/types";
 import type {
   ColumnConfig,
@@ -109,7 +112,7 @@ function passesFilters(
 
 // ── Store Type ───────────────────────────────────────────────────
 
-type TimelineStore = {
+export type TimelineStore = {
   // ── Raw data ────────────────────────────────────────────────
   rawEvents: OperationRecord[];
   /** Enriched + filtered events ready for rendering */
@@ -183,7 +186,7 @@ const DEFAULT_VISIBILITY: LaneVisibility = {
 
 // ── Store ────────────────────────────────────────────────────────
 
-export const useTimelineStore = create<TimelineStore>((set, get) => {
+const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
   /** Re-derive filtered events from raw data + current filters. */
   function refilter() {
     const { rawEvents, filters, visibility, scope } = get();
@@ -335,4 +338,39 @@ export const useTimelineStore = create<TimelineStore>((set, get) => {
       refilter();
     },
   };
-});
+};
+
+export type TimelineStoreApi = StoreApi<TimelineStore>;
+
+const rootTimelineStore = createStore<TimelineStore>()(createTimelineState);
+const TimelineStoreContext = createContext<TimelineStoreApi | null>(null);
+
+export function createTimelineStore(): TimelineStoreApi {
+  return createStore<TimelineStore>()(createTimelineState);
+}
+
+export function TimelineStoreProvider({
+  store,
+  children,
+}: {
+  store: TimelineStoreApi;
+  children: ReactNode;
+}) {
+  return React.createElement(TimelineStoreContext.Provider, { value: store }, children);
+}
+
+type TimelineStoreHook = {
+  <T>(selector: (state: TimelineStore) => T): T;
+  getState: TimelineStoreApi["getState"];
+  setState: TimelineStoreApi["setState"];
+  subscribe: TimelineStoreApi["subscribe"];
+};
+
+export const useTimelineStore = ((selector: (state: TimelineStore) => unknown) => {
+  const store = useContext(TimelineStoreContext) ?? rootTimelineStore;
+  return useStore(store, selector);
+}) as TimelineStoreHook;
+
+useTimelineStore.getState = rootTimelineStore.getState;
+useTimelineStore.setState = rootTimelineStore.setState;
+useTimelineStore.subscribe = rootTimelineStore.subscribe;

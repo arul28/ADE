@@ -363,6 +363,29 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("wraps long rendered assistant output instead of clipping it in narrow panes", () => {
+    const longToken = "cto-output-" + "x".repeat(180);
+    const rendered = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "text",
+          text: `Long rendered output ${longToken} with inline \`${longToken}\`.`,
+          itemId: "text-long-output",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const prose = rendered.container.querySelector(".ade-prose-themed");
+    expect(prose?.className).toContain("break-words");
+    expect(prose?.className).toContain("prose-p:break-words");
+    const inlineCode = rendered.container.querySelector("code");
+    expect(inlineCode?.className).toContain("break-all");
+    expect(inlineCode?.className).toContain("whitespace-normal");
+  });
+
   it("shows and collapses long grouped tool results", async () => {
     const longResult = `${"x".repeat(520)}THE_END`;
     renderMessageList([
@@ -1107,6 +1130,103 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     expect(updated.totalHeight).toBeGreaterThan(baseline.totalHeight);
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
+  });
+
+  it("does not vertically clip virtualized transcript rows while heights settle", () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    class ResizeObserverStub {
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: ResizeObserverStub,
+    });
+
+    try {
+      const rendered = renderMessageList(
+        Array.from({ length: 65 }, (_, index): AgentChatEventEnvelope => ({
+          sessionId: "session-1",
+          timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+          event: {
+            type: "user_message",
+            text: `message ${index}`,
+            messageId: `user-${index}`,
+            turnId: `turn-${index}`,
+          },
+        })),
+      );
+
+      const contentWrapper = rendered.container.querySelector(".ade-chat-timeline-pane > div");
+      const measuredRow = rendered.container.querySelector('[data-chat-virtualized-row="true"]');
+
+      expect(contentWrapper?.className).toContain("overflow-visible");
+      expect(measuredRow?.className).toContain("overflow-visible");
+      expect(measuredRow?.className).not.toContain("overflow-hidden");
+    } finally {
+      if (originalResizeObserver === undefined) {
+        delete (globalThis as any).ResizeObserver;
+      } else {
+        Object.defineProperty(globalThis, "ResizeObserver", {
+          configurable: true,
+          value: originalResizeObserver,
+        });
+      }
+    }
+  });
+
+  it("measures virtualized transcript rows on mount before resize observer callbacks", async () => {
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    class ResizeObserverStub {
+      observe() {}
+      disconnect() {}
+    }
+    Object.defineProperty(globalThis, "ResizeObserver", {
+      configurable: true,
+      value: ResizeObserverStub,
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get() {
+        return this instanceof HTMLElement && this.dataset.chatVirtualizedRow === "true" ? 220 : 0;
+      },
+    });
+
+    try {
+      const rendered = renderMessageList(
+        Array.from({ length: 65 }, (_, index): AgentChatEventEnvelope => ({
+          sessionId: "session-1",
+          timestamp: `2026-03-17T10:${String(index).padStart(2, "0")}:00.000Z`,
+          event: {
+            type: "user_message",
+            text: `message ${index}`,
+            messageId: `user-${index}`,
+            turnId: `turn-${index}`,
+          },
+        })),
+      );
+
+      await waitFor(() => {
+        const virtualSizer = Array.from(rendered.container.querySelectorAll("div"))
+          .find((el) => el.style.position === "relative" && el.style.height);
+        expect(Number.parseFloat(virtualSizer?.style.height ?? "0")).toBeGreaterThan(6_200);
+      });
+    } finally {
+      if (originalOffsetHeight) {
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+      } else {
+        delete (HTMLElement.prototype as any).offsetHeight;
+      }
+      if (originalResizeObserver === undefined) {
+        delete (globalThis as any).ResizeObserver;
+      } else {
+        Object.defineProperty(globalThis, "ResizeObserver", {
+          configurable: true,
+          value: originalResizeObserver,
+        });
+      }
+    }
   });
 
   it("keeps the current viewport anchored when rows above it grow", () => {

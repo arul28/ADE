@@ -1295,6 +1295,83 @@ describe("automationService integration", () => {
     }
   });
 
+  it("passes Codex fast mode to rule-level agent-session automations", async () => {
+    const { db } = createInMemoryAdeDb();
+    const logger = createLogger();
+    const projectId = "proj";
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-fast-rule-"));
+    const createSession = vi.fn(async () => ({ id: "session-fast-rule" }));
+    const runSessionTurn = vi.fn(async () => ({ outputText: "ok" }));
+
+    const rule = {
+      id: "agent-fast-rule",
+      name: "Agent fast rule",
+      enabled: true,
+      mode: "review",
+      reviewProfile: "quick",
+      trigger: { type: "manual" as const },
+      triggers: [{ type: "manual" as const }],
+      executor: { mode: "automation-bot", targetId: null },
+      modelConfig: {
+        orchestratorModel: { modelId: "openai/gpt-5.5", thinkingLevel: "xhigh" as const },
+      },
+      permissionConfig: { providers: { codex: "default" as const } },
+      toolPalette: [] as const,
+      contextSources: [],
+      memory: { mode: "project" as const },
+      guardrails: { maxDurationMin: 5 },
+      outputs: { disposition: "comment-only" as const, createArtifact: true },
+      verification: { verifyBeforePublish: false, mode: "intervention" as const },
+      billingCode: "auto:test",
+      execution: {
+        kind: "agent-session" as const,
+        session: { codexFastMode: true, reasoningEffort: "xhigh" },
+      },
+      prompt: "Summarize the current state.",
+    };
+
+    const projectConfigService = {
+      get: () => ({
+        trust: { requiresSharedTrust: false },
+        effective: { automations: [rule], providerMode: "guest" }
+      })
+    } as any;
+
+    const laneService = {
+      list: async () => [{ id: "lane-1", laneType: "primary" }],
+      getLaneWorktreePath: () => projectRoot,
+      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+    } as any;
+
+    const service = createAutomationService({
+      db: db as any,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      agentChatService: {
+        createSession,
+        runSessionTurn,
+      } as any,
+    });
+
+    try {
+      const run = await service.triggerManually({ id: "agent-fast-rule" });
+      expect(run.status).toBe("succeeded");
+      expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
+        modelId: "openai/gpt-5.5",
+        codexFastMode: true,
+        reasoningEffort: "xhigh",
+      }));
+      expect(runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
+        reasoningEffort: "xhigh",
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("blocks agent-session automations when the budget cap rejects the run", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
@@ -1537,8 +1614,9 @@ describe("automationService integration", () => {
               type: "agent-session" as const,
               prompt: "Summarize",
               sessionTitle: "Summary",
-              modelConfig: { modelId: "opencode/openai/gpt-5.4", thinkingLevel: "high" as const },
-              permissionConfig: { providers: { opencode: "full-auto" as const } },
+              modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" as const },
+              codexFastMode: true,
+              permissionConfig: { providers: { codex: "full-auto" as const } },
             },
           ],
         },
@@ -1576,7 +1654,8 @@ describe("automationService integration", () => {
       const run = await service.triggerManually({ id: "action-model" });
       expect(run.status).toBe("succeeded");
       expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
-        modelId: "opencode/openai/gpt-5.4",
+        modelId: "openai/gpt-5.5",
+        codexFastMode: true,
         reasoningEffort: "high",
         permissionMode: "full-auto",
       }));

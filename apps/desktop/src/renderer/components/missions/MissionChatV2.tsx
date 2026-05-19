@@ -24,8 +24,9 @@ import { ChatInput } from "./ChatInput";
 import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { useAppStore } from "../../state/appStore";
-import { useMissionsStore } from "./useMissionsStore";
+import { useMissionsStoreApi } from "./useMissionsStore";
 import { resolveWorkerThreadChannelStatus } from "./missionChatChannelModel";
+import { useMissionPageActive } from "./MissionActiveContext";
 
 const BG_PAGE = COLORS.pageBg;
 const THREAD_MESSAGE_PAGE_SIZE = 100;
@@ -133,6 +134,8 @@ type MissionChatV2Props = {
 export const MissionChatV2 = React.memo(function MissionChatV2({
   missionId, missionStatus, runId, runStatus, runMetadata, runView = null, interventions, jumpTarget, onJumpHandled, onOpenIntervention,
 }: MissionChatV2Props) {
+  const missionsStore = useMissionsStoreApi();
+  const active = useMissionPageActive();
   // ── State ──
   const [threads, setThreads] = useState<OrchestratorChatThread[]>([]);
   const [threadMessages, setThreadMessages] = useState<OrchestratorChatMessage[]>([]);
@@ -297,26 +300,28 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   }, [missionId]);
 
   useEffect(() => {
+    if (!active) return;
     void refreshThreads();
     void refreshWorkers();
-  }, [refreshThreads, refreshWorkers]);
+  }, [active, refreshThreads, refreshWorkers]);
   useEffect(() => {
+    if (!active) return;
     void refreshSelectedMessages();
-  }, [refreshSelectedMessages]);
+  }, [active, refreshSelectedMessages]);
   useMissionPolling(
     useCallback(() => {
       void refreshThreads();
       void refreshWorkers();
     }, [refreshThreads, refreshWorkers]),
     15_000,
-    true,
+    active,
   );
   useMissionPolling(
     useCallback(() => {
       void refreshSelectedMessages();
     }, [refreshSelectedMessages]),
     12_000,
-    Boolean(selectedChannel && selectedChannel.kind !== "global"),
+    active && Boolean(selectedChannel && selectedChannel.kind !== "global"),
   );
 
   // ── Real-time events ──
@@ -326,6 +331,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   useEffect(() => { refreshThreadMessagesRef.current = refreshThreadMessages; }, [refreshThreadMessages]);
 
   useEffect(() => {
+    if (!active) return;
     const unsub = window.ade.orchestrator.onThreadEvent((event) => {
       if (event.missionId !== missionId) return;
       if (event.type === "thread_updated" || event.type === "message_appended" || event.type === "message_updated" || event.type === "worker_replay") {
@@ -344,7 +350,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
       }
     });
     return () => { unsub(); if (threadRefreshTimerRef.current !== null) window.clearTimeout(threadRefreshTimerRef.current); if (messageRefreshTimerRef.current !== null) window.clearTimeout(messageRefreshTimerRef.current); };
-  }, [missionId]);
+  }, [active, missionId]);
 
   // ── Jump target handling ──
   useEffect(() => {
@@ -449,11 +455,11 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   }, [refreshThreadMessages, refreshThreads, selectedChannel]);
 
   const refreshMissionWorkspace = useCallback(async () => {
-    const store = useMissionsStore.getState();
+    const store = missionsStore.getState();
     await store.refreshMissionList({ preserveSelection: true, silent: true });
     await store.loadMissionDetail(missionId);
     await store.loadOrchestratorGraph(missionId);
-  }, [missionId]);
+  }, [missionId, missionsStore]);
 
   const handleRunControl = useCallback(async (action: "pause" | "resume" | "cancel") => {
     if (!runId || runActionBusy) return;

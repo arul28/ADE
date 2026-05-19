@@ -386,8 +386,35 @@ sibling Codex subagents distinct when they share a `parentToolUseId`:
 it pre-scans every envelope to count the resolved subagent ids per
 parent, only adopts the placeholder parent row when exactly one
 sibling resolves under that parent, and otherwise creates separate
-snapshots keyed by `agentId ?? taskId`. The TUI mirrors this in
-`subagentSnapshotsFromEvents`.
+snapshots keyed by `agentId ?? taskId`. The TUI now imports the same
+pure helpers from `apps/desktop/src/shared/chatSubagents.ts`
+(`buildSubagentPaneRows`, `selectedSubagentSnapshot`,
+`subagentIndexForPaneLine`, `subagentPaneSelectableLineOffsets`,
+`buildSubagentTranscriptEvents`, `isLifecycleEventForSnapshot`,
+`latestPlan`) — `apps/ade-cli/src/tuiClient/subagentPane.ts` and
+`chatInfo.ts` re-export them so desktop and TUI never drift.
+
+Subagent envelopes carry both an `agentId` (raw runtime id) and an
+`agentType` label that's used as the row title when present. The label
+sources differ per runtime:
+
+- **Claude / ade-code.** `agentType` comes from the Task tool's
+  `input.subagent_type` (e.g. `code-reviewer`, `Explore`). The service
+  stashes that input at the assistant `tool_use` boundary
+  (`runtime.taskToolInputByToolUseId`, keyed by `tool_use_id`) and
+  joins it onto the later `system:task_started` / `task_progress` /
+  `task_completed` envelopes via `parentToolUseId`. Stale entries are
+  cleared at turn boundaries and on subagent completion.
+- **Codex parallel agents.** The Codex wire format has no
+  human-friendly name for collab agents, so the service assigns
+  `Agent #N` labels via `assignCodexAgentLabel`: 1-based, per-turn,
+  remembered in `runtime.codexAgentIndexByTurn` (a
+  `Map<turnId, Map<threadId, index>>`), and cleared when the turn
+  ends. The raw threadId is kept on the snapshot as `agentId`.
+- **OpenCode subagents.** OpenCode encodes the agent's identity in
+  `session.title`, which already flows through as `description`; the
+  service intentionally does NOT set `agentType` so the renderer falls
+  back to that description for the row label.
 
 ## Terminal drawer
 

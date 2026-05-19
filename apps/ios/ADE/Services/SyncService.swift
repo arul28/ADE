@@ -1430,6 +1430,12 @@ final class SyncService: ObservableObject {
       if hadLiveSocket {
         teardownSocket(reason: "Switching project.")
       }
+      // Drop chat/terminal subscriptions tied to the previous project so we do
+      // not resubscribe to stale session ids after reconnecting to the new
+      // project. Stale subs cause foreign chat events to leak into the new
+      // project's view and may collide with new session ids on the host.
+      resetChatEventState(clearHistory: false)
+      resetTerminalSubscriptionState(clearHistory: true)
       connectionState = .connecting
       setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
       Task { @MainActor [weak self] in
@@ -1487,6 +1493,12 @@ final class SyncService: ObservableObject {
       keychain.saveToken(resolvedToken, hostKey: profileStorageKey(profile))
       saveProfile(profile)
       teardownSocket(reason: "Switching project.")
+      // Drop chat/terminal subscriptions tied to the previous project so we do
+      // not resubscribe to stale session ids after reconnecting to the new
+      // project. Stale subs cause foreign chat events to leak into the new
+      // project's view and may collide with new session ids on the host.
+      resetChatEventState(clearHistory: false)
+      resetTerminalSubscriptionState(clearHistory: true)
       let connectedEndpoint = try await connectUsingProfile(
         profile,
         token: resolvedToken,
@@ -6099,13 +6111,18 @@ final class SyncService: ObservableObject {
     case "chat_subscribe":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
-         let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self) {
+         let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
+         subscribedChatSessionIds.contains(snapshot.sessionId) {
         mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
       }
     case "chat_event":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
-         let envelope = try? decode(dict, as: AgentChatEventEnvelope.self) {
+         let envelope = try? decode(dict, as: AgentChatEventEnvelope.self),
+         subscribedChatSessionIds.contains(envelope.sessionId) {
+        // Gate chat events on the current subscription set so events from a
+        // previous project (still streaming on the host) do not leak into the
+        // newly-active project's view after a quick switch.
         recordChatEventEnvelope(envelope)
       }
     case "terminal_data":

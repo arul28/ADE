@@ -103,6 +103,8 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatSubagentTranscriptArgs,
+  AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatRewindFilesArgs,
@@ -735,6 +737,8 @@ import type {
   ChatTerminalPreviewResult,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
+  ChatTerminalReattachArgs,
+  ChatTerminalReattachResult,
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
@@ -758,7 +762,11 @@ declare global {
           windowId: number | null;
           project: ProjectInfo | null;
           binding: OpenProjectBinding | null;
+          openProjectTabs: ProjectInfo[];
         }>;
+        setWindowProjectTabs: (
+          rootPaths: string[],
+        ) => Promise<{ openProjectTabs: ProjectInfo[] }>;
         newWindow: () => Promise<{ windowId: number | null }>;
         openProjectInNewWindow: (
           rootPath: string,
@@ -1525,6 +1533,9 @@ declare global {
         getClaudeSessionMessages: (
           args: AgentChatClaudeSessionMessagesArgs,
         ) => Promise<AgentChatClaudeSessionMessage[]>;
+        getSubagentTranscript: (
+          args: AgentChatSubagentTranscriptArgs,
+        ) => Promise<AgentChatSubagentTranscriptMessage[] | null>;
         getContextUsage: (
           args: AgentChatContextUsageArgs,
         ) => Promise<AgentChatContextUsage | null>;
@@ -1762,6 +1773,9 @@ declare global {
         activeForChat: (
           args: ChatTerminalActiveForChatArgs,
         ) => Promise<ChatTerminalSession | null>;
+        reattachChatCli: (
+          args: ChatTerminalReattachArgs,
+        ) => Promise<ChatTerminalReattachResult>;
       };
       localhost: {
         probePort: (port: number) => Promise<boolean>;

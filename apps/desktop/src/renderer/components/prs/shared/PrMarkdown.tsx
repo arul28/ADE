@@ -13,7 +13,6 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { findAndReplace } from "mdast-util-find-and-replace";
-import type { Root } from "mdast";
 import { CaretRight, ArrowSquareOut } from "@phosphor-icons/react";
 
 import {
@@ -24,6 +23,7 @@ import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS } from "../../lanes/laneDesignTokens";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
+type MarkdownRoot = Parameters<typeof findAndReplace>[0];
 
 export type PrMarkdownProps = {
   children: string;
@@ -92,7 +92,7 @@ function remarkPrAutolinks({
   repoOwner: string;
   repoName: string;
 }) {
-  return (tree: Root) => {
+  return (tree: MarkdownRoot) => {
     findAndReplace(
       tree,
       [

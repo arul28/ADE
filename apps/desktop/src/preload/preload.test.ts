@@ -79,6 +79,53 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.lanesOAuthEvent, listener);
   });
 
+  it("exposes per-window project tab session IPC", async () => {
+    const project = { rootPath: "/repo/a", displayName: "A", baseRef: "main" };
+    const openProjectTabs = [
+      project,
+      { rootPath: "/repo/b", displayName: "B", baseRef: "main" },
+    ];
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 7, project, binding: null, openProjectTabs };
+      }
+      if (channel === IPC.appSetWindowProjectTabs) {
+        return { openProjectTabs: [openProjectTabs[1]] };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.app.getWindowSession()).resolves.toEqual({
+      windowId: 7,
+      project,
+      binding: null,
+      openProjectTabs,
+    });
+    await expect(bridge.app.setWindowProjectTabs(["/repo/b"])).resolves.toEqual({
+      openProjectTabs: [openProjectTabs[1]],
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.appSetWindowProjectTabs, { rootPaths: ["/repo/b"] });
+  });
+
   it("exposes review IPC methods and cleans up listeners", async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();
