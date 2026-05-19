@@ -16,6 +16,9 @@ extension WorkRootScreen {
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
     let searchTextSnapshot = searchText
+    let outputSearchBySessionId = workSessionOutputSearchIndexBySessionId(
+      buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
+    )
     let organization = WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
@@ -29,6 +32,7 @@ extension WorkRootScreen {
         selectedStatus: selectedStatusSnapshot,
         selectedLaneId: selectedLaneIdSnapshot,
         searchText: searchTextSnapshot,
+        outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
         orderedLanes: lanesSnapshot
       )
@@ -40,6 +44,26 @@ extension WorkRootScreen {
         sessionPresentationRebuildTask = nil
       }
     }
+  }
+
+  @MainActor
+  func hydrateSearchOutputBuffersIfNeeded() async {
+    guard isLive, isWorkRootActive else { return }
+    guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    let candidates = mergedSessions
+      .filter { session in
+        !isRunOwnedSession(session)
+          && syncService.terminalBuffers[session.id] == nil
+          && normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]) != "ended"
+      }
+      .prefix(8)
+    guard !candidates.isEmpty else { return }
+
+    for session in candidates {
+      guard isLive, !Task.isCancelled else { return }
+      try? await syncService.subscribeTerminal(sessionId: session.id)
+    }
+    scheduleSessionPresentationRebuild()
   }
 
   @MainActor
@@ -228,12 +252,11 @@ extension WorkRootScreen {
         if isChatSession(session) {
           if archivedSessionIds.contains(session.id) {
             try await syncService.unarchiveChatSession(sessionId: session.id)
+            applyArchivedSessionOverride(sessionIds: [session.id], archived: false)
           } else {
             try await syncService.archiveChatSession(sessionId: session.id)
+            applyArchivedSessionOverride(sessionIds: [session.id], archived: true)
           }
-          let localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-          let prunedLocal = localIds.subtracting([session.id])
-          archivedSessionIdsStorage = prunedLocal.sorted().joined(separator: "\n")
           await reload(refreshRemote: true)
           return
         }
@@ -269,21 +292,21 @@ extension WorkRootScreen {
   }
 
   @MainActor
-  func submitRename() async {
-    guard let renameTarget else { return }
-    let trimmedTitle = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+  func submitRename(target capturedTarget: TerminalSessionSummary? = nil, title capturedTitle: String? = nil) async {
+    guard let renameTarget = capturedTarget ?? renameTarget else { return }
+    let trimmedTitle = (capturedTitle ?? renameText).trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedTitle.isEmpty else {
       ADEHaptics.error()
       errorMessage = "Session title cannot be empty."
       return
     }
     do {
-      _ = try await syncService.updateChatSession(
+      try await syncService.updateSessionMeta(
         sessionId: renameTarget.id,
         title: trimmedTitle,
         manuallyNamed: true
       )
-      try await syncService.updateSessionMeta(
+      _ = try? await syncService.updateChatSession(
         sessionId: renameTarget.id,
         title: trimmedTitle,
         manuallyNamed: true
@@ -311,7 +334,13 @@ extension WorkRootScreen {
   }
 
   func goToLane(_ session: TerminalSessionSummary) {
-    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: session.laneId)
+    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    Task { @MainActor in
+      // Context-menu actions fire before iOS fully dismisses the menu. Publish
+      // the cross-tab request after that dismissal so Lanes can present detail.
+      try? await Task.sleep(for: .milliseconds(450))
+      syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+    }
   }
 
   func openSession(_ session: TerminalSessionSummary) {
@@ -323,6 +352,17 @@ extension WorkRootScreen {
       path.append(WorkSessionRoute(sessionId: session.id))
       navigationMutationPending = false
     }
+  }
+
+  @MainActor
+  func handleRequestedWorkSessionNavigation() async {
+    guard let request = syncService.requestedWorkSessionNavigation else { return }
+    navigationMutationPending = false
+    selectedSessionTransitionId = request.sessionId
+    var fresh = NavigationPath()
+    fresh.append(WorkSessionRoute(sessionId: request.sessionId))
+    path = fresh
+    syncService.requestedWorkSessionNavigation = nil
   }
 
   func deleteChatSession(_ session: TerminalSessionSummary) {

@@ -59,6 +59,9 @@ final class DeepLinkRouter {
       object: nil,
       userInfo: ["kind": kind, "identifier": identifier]
     )
+    if kind == "session" {
+      SyncService.shared?.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: identifier)
+    }
     if kind == "pr", let prId = resolvePrId(from: identifier) {
       SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId)
     }

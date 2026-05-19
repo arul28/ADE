@@ -7,7 +7,7 @@ import SwiftUI
 /// `NotificationsCenterView` onto its existing `NavigationStack`.
 struct SettingsNotificationsSection: View {
   var onPreferencesChanged: (NotificationPreferences) -> Void
-  var onSendTestPush: () -> Void
+  var onSendTestPush: () async -> SyncSendTestPushResult
 
   @State private var prefs = NotificationPreferences()
 

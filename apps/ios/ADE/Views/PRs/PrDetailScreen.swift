@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct PrDetailView: View {
+  @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
@@ -35,6 +36,8 @@ struct PrDetailView: View {
   @State private var aiResolution: AiResolutionState?
   @State private var isAiResolverBusy: Bool = false
   @State private var aiResolverSheetPresented: Bool = false
+  @State private var actionsSheetPresented: Bool = false
+  @State private var hasLoadedLiveSidecars = false
   /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
   /// is in flight. Used to disable the convergence toggle and show a spinner.
   @State private var isPathToMergeBusy: Bool = false
@@ -159,12 +162,20 @@ struct PrDetailView: View {
     prComputeMergeGate(
       status: snapshot?.status,
       checks: snapshot?.checks ?? [],
+      summaryChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
       reviewThreadsUnresolved: unresolvedThreadCount,
       reviewsNeeded: reviewsNeeded,
       reviewsHave: reviewsHave,
       capabilities: capabilities,
       isDraft: isCurrentPrDraft
     )
+  }
+
+  private var showsStickyActionBar: Bool {
+    // The Activity tab has its own comment/reply composer at the end of the
+    // content. A global merge bar in the same bottom slot hides that composer
+    // on phone-sized screens.
+    selectedTab != .activity
   }
 
   private var behindBaseBy: Int {
@@ -344,6 +355,7 @@ struct PrDetailView: View {
       case .checks:
         PrChecksTab(
           checks: snapshot?.checks ?? [],
+          overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
           actionRuns: actionRuns,
           deployments: deployments,
           canRerunChecks: canRerunChecks,
@@ -386,73 +398,15 @@ struct PrDetailView: View {
     .scrollContentBackground(.hidden)
     .background(prLiquidGlassBackdrop().ignoresSafeArea())
     .adeNavigationGlass()
-    .navigationTitle(currentPr.title)
-    .navigationBarTitleDisplayMode(.inline)
-    .safeAreaInset(edge: .bottom) {
-      stickyActionBar
+    .safeAreaInset(edge: .top, spacing: 0) {
+      detailNavigationHeader
     }
-    .toolbar {
-      ADERootToolbarLeadingItems()
-      ToolbarItem(placement: .topBarTrailing) {
-        Menu {
-          Button {
-            editorSheet = .title(currentPr.title)
-          } label: {
-            Label("Edit title", systemImage: "pencil")
-          }
-          .disabled(!canUpdateCurrentPrMetadata)
-          Button {
-            editorSheet = .body(snapshot?.detail?.body ?? "")
-          } label: {
-            Label("Edit description", systemImage: "text.alignleft")
-          }
-          .disabled(!canUpdateCurrentPrMetadata)
-          Button {
-            let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
-            editorSheet = .labels(labels)
-          } label: {
-            Label("Set labels", systemImage: "tag")
-          }
-          .disabled(!canUpdateCurrentPrMetadata)
-          Button {
-            editorSheet = .review
-          } label: {
-            Label("Submit review", systemImage: "checkmark.seal")
-          }
-          .disabled(!canRunPrActions)
-          if shouldShowCloseAction {
-            Button(role: .destructive, action: closeCurrentPr) {
-              Label("Close PR", systemImage: "xmark.circle")
-            }
-            .disabled(!canCloseCurrentPr)
-          }
-          if shouldShowReopenAction {
-            Button(action: reopenCurrentPr) {
-              Label("Reopen PR", systemImage: "arrow.counterclockwise")
-            }
-            .disabled(!canReopenCurrentPr)
-          }
-          Button(action: { openGitHub(urlString: currentPr.githubUrl) }) {
-            Label("Open in GitHub", systemImage: "arrow.up.right.square")
-          }
-          .disabled(!canOpenCurrentPrInGitHub)
-          Button {
-            UIPasteboard.general.string = currentPr.githubUrl
-            ADEHaptics.success()
-            actionMessage = "URL copied."
-          } label: {
-            Label("Copy URL", systemImage: "doc.on.doc")
-          }
-          .disabled(currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          Button {
-            Task { await reload(refreshRemote: true) }
-          } label: {
-            Label("Refresh", systemImage: "arrow.clockwise")
-          }
-        } label: {
-          Label("Pull request actions", systemImage: "ellipsis.circle")
-            .labelStyle(.iconOnly)
-        }
+    .navigationTitle("")
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar(.hidden, for: .navigationBar)
+    .safeAreaInset(edge: .bottom) {
+      if showsStickyActionBar {
+        stickyActionBar
       }
     }
     .refreshable {
@@ -460,7 +414,10 @@ struct PrDetailView: View {
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task(id: syncService.localStateRevision) {
-      await reload()
+      await reload(includeLiveSidecars: shouldFetchPrDetailLiveSidecars(
+        hasLoadedLiveSidecars: hasLoadedLiveSidecars,
+        refreshRemote: false
+      ))
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
       PrCleanupConfirmationSheet(
@@ -508,6 +465,12 @@ struct PrDetailView: View {
       } onStop: {
         stopAiResolver()
       }
+    }
+    .sheet(isPresented: $actionsSheetPresented) {
+      prActionsSheet
+        .presentationDetents([.height(560)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(.clear)
     }
     .sheet(item: $editorSheet) { sheet in
       switch sheet {
@@ -563,6 +526,106 @@ struct PrDetailView: View {
         }
       }
     }
+  }
+
+  private var detailNavigationHeader: some View {
+    HStack(spacing: 10) {
+      Button {
+        dismiss()
+      } label: {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 17, weight: .semibold))
+          .frame(width: 38, height: 38)
+      }
+      .buttonStyle(.glass)
+      .accessibilityLabel("Back to PRs")
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("#\(currentPr.githubPrNumber)")
+          .font(.system(size: 11, weight: .bold, design: .monospaced))
+          .foregroundStyle(prStateTint(currentPr.state))
+        Text(currentPr.title)
+          .font(.headline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Pull request \(currentPr.githubPrNumber), \(currentPr.title)")
+
+      Spacer(minLength: 0)
+
+      Button {
+        actionsSheetPresented = true
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.system(size: 17, weight: .semibold))
+          .frame(width: 38, height: 38)
+      }
+      .buttonStyle(.glass)
+      .accessibilityLabel("Pull request actions")
+    }
+    .padding(.horizontal, 16)
+    .padding(.bottom, 8)
+    .background {
+      ADEColor.pageBackground
+        .opacity(0.98)
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
+    }
+  }
+
+  private var prActionsSheet: some View {
+    PrDetailActionsSheet(
+      canUpdateMetadata: canUpdateCurrentPrMetadata,
+      canRunActions: canRunPrActions,
+      shouldShowClose: shouldShowCloseAction,
+      shouldShowReopen: shouldShowReopenAction,
+      canClose: canCloseCurrentPr,
+      canReopen: canReopenCurrentPr,
+      canOpenGitHub: canOpenCurrentPrInGitHub,
+      hasGitHubUrl: !currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      onDismiss: { actionsSheetPresented = false },
+      onEditTitle: {
+        actionsSheetPresented = false
+        editorSheet = .title(currentPr.title)
+      },
+      onEditDescription: {
+        actionsSheetPresented = false
+        editorSheet = .body(snapshot?.detail?.body ?? "")
+      },
+      onSetLabels: {
+        let labels = snapshot?.detail?.labels.map(\.name).joined(separator: ", ") ?? ""
+        actionsSheetPresented = false
+        editorSheet = .labels(labels)
+      },
+      onSubmitReview: {
+        actionsSheetPresented = false
+        editorSheet = .review
+      },
+      onClose: {
+        actionsSheetPresented = false
+        closeCurrentPr()
+      },
+      onReopen: {
+        actionsSheetPresented = false
+        reopenCurrentPr()
+      },
+      onOpenGitHub: {
+        actionsSheetPresented = false
+        openGitHub(urlString: currentPr.githubUrl)
+      },
+      onCopyUrl: {
+        actionsSheetPresented = false
+        UIPasteboard.general.string = currentPr.githubUrl
+        ADEHaptics.success()
+        actionMessage = "URL copied."
+      },
+      onRefresh: {
+        actionsSheetPresented = false
+        Task { await reload(refreshRemote: true) }
+      }
+    )
   }
 
   // MARK: - Hero
@@ -857,11 +920,12 @@ struct PrDetailView: View {
     }
   }
 
-  // MARK: - Data loading (unchanged)
+  // MARK: - Data loading
 
   @MainActor
-  private func reload(refreshRemote: Bool = false) async {
-    let capabilitiesTask: Task<PrActionCapabilities?, Never>? = isLive
+  private func reload(refreshRemote: Bool = false, includeLiveSidecars: Bool? = nil) async {
+    let shouldFetchLiveSidecars = isLive && (includeLiveSidecars ?? refreshRemote)
+    let capabilitiesTask: Task<PrActionCapabilities?, Never>? = shouldFetchLiveSidecars
       ? Task {
           do {
             let mobileSnapshot = try await syncService.fetchPrMobileSnapshot()
@@ -883,13 +947,13 @@ struct PrDetailView: View {
       }
       async let listItemsTask = syncService.fetchPullRequestListItems()
       async let snapshotTask = syncService.fetchPullRequestSnapshot(prId: prId)
-      let reviewThreadsTask = isLive ? Task { try? await syncService.fetchPullRequestReviewThreads(prId: prId) } : nil
-      let actionRunsTask = isLive ? Task { try? await syncService.fetchPullRequestActionRuns(prId: prId) } : nil
-      let activityTask = isLive ? Task { try? await syncService.fetchPullRequestActivity(prId: prId) } : nil
-      let deploymentsTask = isLive ? Task { try? await syncService.fetchPullRequestDeployments(prId: prId) } : nil
-      let aiSummaryTask = isLive ? Task { try? await syncService.fetchPullRequestAiSummary(prId: prId) } : nil
-      let issueInventoryTask = isLive ? Task { try? await syncService.fetchIssueInventory(prId: prId) } : nil
-      let pipelineSettingsTask = isLive ? Task { try? await syncService.fetchPipelineSettings(prId: prId) } : nil
+      let reviewThreadsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestReviewThreads(prId: prId) } : nil
+      let actionRunsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActionRuns(prId: prId) } : nil
+      let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: prId) } : nil
+      let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: prId) } : nil
+      let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: prId) } : nil
+      let issueInventoryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchIssueInventory(prId: prId) } : nil
+      let pipelineSettingsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPipelineSettings(prId: prId) } : nil
 
       let listItems = try await listItemsTask
       pr = listItems.first(where: { $0.id == prId })
@@ -899,16 +963,24 @@ struct PrDetailView: View {
       // lane-PR list. This keeps the hero card from collapsing into
       // "Pull request / @unknown" placeholders without resurrecting legacy
       // cross-repo snapshot items.
-      if pr == nil && isLive {
+      if pr == nil && shouldFetchLiveSidecars {
         if let github = try? await syncService.fetchGitHubPullRequestSnapshot() {
           githubItem = repoScopedGitHubPullRequests(from: github)
             .first { $0.linkedPrId == prId || $0.id == prId }
         }
       }
-      reviewThreads = await reviewThreadsTask?.value ?? []
-      actionRuns = await actionRunsTask?.value ?? []
-      activityEvents = await activityTask?.value ?? []
-      deployments = await deploymentsTask?.value ?? []
+      if let reviewThreadsTask {
+        reviewThreads = await reviewThreadsTask.value ?? []
+      }
+      if let actionRunsTask {
+        actionRuns = await actionRunsTask.value ?? []
+      }
+      if let activityTask {
+        activityEvents = await activityTask.value ?? []
+      }
+      if let deploymentsTask {
+        deployments = await deploymentsTask.value ?? []
+      }
       if let summary = await aiSummaryTask?.value {
         aiSummary = summary
       }
@@ -928,7 +1000,12 @@ struct PrDetailView: View {
       errorMessage = error.localizedDescription
     }
 
-    capabilities = await capabilitiesTask?.value
+    if shouldFetchLiveSidecars {
+      hasLoadedLiveSidecars = true
+    }
+    if let capabilitiesTask {
+      capabilities = await capabilitiesTask.value
+    }
   }
 
   @MainActor
@@ -1152,7 +1229,7 @@ struct PrDetailView: View {
       conflictStrategy: "pause",
       forceFinalizeMode: "off",
       forceFinalizeRequireNoCiFailures: true,
-      atCapPolicy: "stop",
+      atCapPolicy: "ci_retry_once",
       atCapWaitMinutes: 30,
       atCapCiRetryMax: 3,
       forceMergeRequiresConfirmation: true,
@@ -1442,6 +1519,158 @@ func prLiquidGlassBackdrop() -> some View {
       startPoint: .top,
       endPoint: .bottom
     )
+  }
+}
+
+private struct PrDetailActionsSheet: View {
+  let canUpdateMetadata: Bool
+  let canRunActions: Bool
+  let shouldShowClose: Bool
+  let shouldShowReopen: Bool
+  let canClose: Bool
+  let canReopen: Bool
+  let canOpenGitHub: Bool
+  let hasGitHubUrl: Bool
+  let onDismiss: () -> Void
+  let onEditTitle: () -> Void
+  let onEditDescription: () -> Void
+  let onSetLabels: () -> Void
+  let onSubmitReview: () -> Void
+  let onClose: () -> Void
+  let onReopen: () -> Void
+  let onOpenGitHub: () -> Void
+  let onCopyUrl: () -> Void
+  let onRefresh: () -> Void
+
+  var body: some View {
+    ZStack {
+      prLiquidGlassBackdrop().ignoresSafeArea()
+
+      VStack(spacing: 0) {
+        Capsule(style: .continuous)
+          .fill(Color.white.opacity(0.25))
+          .frame(width: 36, height: 5)
+          .padding(.top, 8)
+          .padding(.bottom, 8)
+
+        HStack {
+          Button("Done", action: onDismiss)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(PrGlassPalette.purpleBright)
+          Spacer(minLength: 0)
+          Text("Pull request actions")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+          Spacer(minLength: 0)
+          Button(action: onRefresh) {
+            Image(systemName: "arrow.clockwise")
+              .font(.system(size: 14, weight: .semibold))
+          }
+          .accessibilityLabel("Refresh pull request")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+          Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(height: 0.5)
+        }
+
+        ScrollView {
+          VStack(spacing: 10) {
+            PrDetailActionRow(title: "Edit title", symbol: "pencil", disabled: !canUpdateMetadata, action: onEditTitle)
+            PrDetailActionRow(title: "Edit description", symbol: "text.alignleft", disabled: !canUpdateMetadata, action: onEditDescription)
+            PrDetailActionRow(title: "Set labels", symbol: "tag", disabled: !canUpdateMetadata, action: onSetLabels)
+            PrDetailActionRow(title: "Submit review", symbol: "checkmark.seal", disabled: !canRunActions, action: onSubmitReview)
+            if shouldShowClose {
+              PrDetailActionRow(
+                title: "Close PR",
+                symbol: "xmark.circle",
+                tint: PrGlassPalette.danger,
+                disabled: !canClose,
+                isDestructive: true,
+                action: onClose
+              )
+            }
+            if shouldShowReopen {
+              PrDetailActionRow(
+                title: "Reopen PR",
+                symbol: "arrow.counterclockwise",
+                disabled: !canReopen,
+                action: onReopen
+              )
+            }
+            PrDetailActionRow(
+              title: "Open in GitHub",
+              symbol: "arrow.up.right.square",
+              disabled: !canOpenGitHub,
+              action: onOpenGitHub
+            )
+            PrDetailActionRow(
+              title: "Copy URL",
+              symbol: "doc.on.doc",
+              disabled: !hasGitHubUrl,
+              action: onCopyUrl
+            )
+            PrDetailActionRow(title: "Refresh", symbol: "arrow.clockwise", action: onRefresh)
+          }
+          .padding(16)
+        }
+      }
+    }
+  }
+}
+
+private struct PrDetailActionRow: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  let disabled: Bool
+  let isDestructive: Bool
+  let action: () -> Void
+
+  init(
+    title: String,
+    symbol: String,
+    tint: Color = PrGlassPalette.textSecondary,
+    disabled: Bool = false,
+    isDestructive: Bool = false,
+    action: @escaping () -> Void
+  ) {
+    self.title = title
+    self.symbol = symbol
+    self.tint = tint
+    self.disabled = disabled
+    self.isDestructive = isDestructive
+    self.action = action
+  }
+
+  var body: some View {
+    let button = Button(role: isDestructive ? .destructive : nil, action: action) {
+      HStack(spacing: 12) {
+        Image(systemName: symbol)
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(tint)
+          .frame(width: 28, height: 28)
+          .background(tint.opacity(0.13), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        Text(title)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(PrGlassPalette.textPrimary)
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(PrGlassPalette.textSecondary.opacity(0.7))
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .prGlassCard(cornerRadius: 14, shadow: false)
+      .opacity(disabled ? 0.45 : 1)
+    }
+    .buttonStyle(.plain)
+    .disabled(disabled)
+    .accessibilityLabel(title)
+
+    button
   }
 }
 

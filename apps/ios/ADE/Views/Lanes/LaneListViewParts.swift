@@ -444,13 +444,19 @@ extension LanesTabView {
   func handleRequestedLaneNavigation() async {
     guard let request = syncService.requestedLaneNavigation else { return }
 
+    // Let the context menu dismiss and the TabView finish presenting Lanes before
+    // attaching a sheet. Without this hop, cross-tab "Go to lane" can switch
+    // tabs while SwiftUI silently drops the detail presentation.
+    try? await Task.sleep(for: .milliseconds(650))
+    guard syncService.requestedLaneNavigation?.id == request.id else { return }
+
     var snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
     if snapshot == nil {
       await reload(refreshRemote: canRunLiveActions)
       snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
     }
 
-    guard let snapshot else {
+    guard let resolvedSnapshot = snapshot else {
       errorMessage = "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
       syncService.requestedLaneNavigation = nil
       return
@@ -462,7 +468,7 @@ extension LanesTabView {
     selectedLaneTransitionId = request.laneId
     detailSheetTarget = LaneDetailSheetTarget(
       laneId: request.laneId,
-      snapshot: snapshot,
+      snapshot: resolvedSnapshot,
       initialSection: .git
     )
     syncService.requestedLaneNavigation = nil

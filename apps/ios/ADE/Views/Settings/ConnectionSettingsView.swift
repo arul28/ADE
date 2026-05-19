@@ -1,23 +1,45 @@
+import Combine
 import SwiftUI
 
 struct ConnectionSettingsView: View {
-  @EnvironmentObject private var syncService: SyncService
-  @Environment(\.dismiss) private var dismiss
+  let syncService: SyncService
 
+  @Environment(\.dismiss) private var dismiss
+  @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
+
+  @StateObject private var presentationModel = SettingsConnectionPresentationModel()
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
+
+  private var colorSchemeChoice: ADEColorSchemeChoice {
+    ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
+  }
 
   var body: some View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 18) {
-          SettingsConnectionHeader()
-            .environmentObject(syncService)
+          SettingsConnectionHeader(
+            snapshot: presentationModel.connectionSnapshot,
+            onDisconnect: {
+              syncService.disconnect()
+            },
+            onReconnect: { preferTailnet in
+              Task {
+                await syncService.reconnectIfPossible(
+                  userInitiated: true,
+                  preferTailnet: preferTailnet
+                )
+              }
+            }
+          )
             .padding(.horizontal, 16)
             .padding(.top, 4)
 
-          SettingsPairingSection(presentedSheet: $presentedSheet)
-            .environmentObject(syncService)
+          SettingsPairingSection(
+            snapshot: presentationModel.pairingSnapshot,
+            presentedSheet: $presentedSheet
+          )
             .padding(.horizontal, 16)
 
           SettingsTailscaleHelpSection()
@@ -28,7 +50,7 @@ struct ConnectionSettingsView: View {
               syncService.uploadNotificationPrefs(prefs)
             },
             onSendTestPush: {
-              syncService.sendTestPush()
+              await syncService.sendTestPush()
             }
           )
           .padding(.horizontal, 16)
@@ -36,8 +58,7 @@ struct ConnectionSettingsView: View {
           SettingsAppearanceSection()
             .padding(.horizontal, 16)
 
-          SettingsDiagnosticsSection()
-            .environmentObject(syncService)
+          SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
             .padding(.horizontal, 16)
 
           Spacer(minLength: 20)
@@ -65,6 +86,10 @@ struct ConnectionSettingsView: View {
         SettingsPinSheet(preset: preset, syncService: syncService)
           .presentationDetents([.large])
       }
+      .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
+      .onAppear {
+        presentationModel.bind(to: syncService)
+      }
     }
   }
 
@@ -86,6 +111,149 @@ struct ConnectionSettingsView: View {
       }
       .presentationDetents([.medium])
     }
+  }
+}
+
+struct SettingsConnectionSnapshot: Equatable {
+  var health: SyncConnectionHealth
+  var connectionState: RemoteConnectionState
+  var hostDisplayName: String?
+  var pendingHostName: String?
+  var routeLine: String?
+  var canReconnectToSavedHost: Bool
+  var savedReconnectPrefersTailnet: Bool
+  var errorMessage: String?
+}
+
+struct SettingsPairingSnapshot: Equatable {
+  var discoveredHostCount = 0
+  var savedReconnectHostCount = 0
+}
+
+struct SettingsDiagnosticsSnapshot: Equatable {
+  var pairedMachineIdentity: String?
+  var lastSyncDescription: String?
+  var deviceIdentity: String?
+}
+
+@MainActor
+private final class SettingsConnectionPresentationModel: ObservableObject {
+  @Published private(set) var connectionSnapshot = SettingsConnectionSnapshot(
+    health: syncConnectionHealth(
+      connectionState: .disconnected,
+      prefersReducedSyncLoad: false,
+      lastError: nil
+    ),
+    connectionState: .disconnected,
+    hostDisplayName: nil,
+    pendingHostName: nil,
+    routeLine: nil,
+    canReconnectToSavedHost: false,
+    savedReconnectPrefersTailnet: false,
+    errorMessage: nil
+  )
+  @Published private(set) var pairingSnapshot = SettingsPairingSnapshot()
+  @Published private(set) var diagnosticsSnapshot = SettingsDiagnosticsSnapshot()
+
+  private weak var boundService: SyncService?
+  private var cancellable: AnyCancellable?
+
+  func bind(to syncService: SyncService) {
+    guard boundService !== syncService else {
+      refresh(from: syncService)
+      return
+    }
+
+    boundService = syncService
+    refresh(from: syncService)
+    cancellable = syncService.objectWillChange
+      .throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)
+      .sink { [weak self, weak syncService] _ in
+        Task { @MainActor in
+          guard let syncService else { return }
+          self?.refresh(from: syncService)
+        }
+      }
+  }
+
+  private func refresh(from syncService: SyncService) {
+    let activeProfile = syncService.activeHostProfile
+    let savedReconnectHost = syncService.savedReconnectHost
+    let health = syncService.connectionHealth
+    let hostDisplayName = Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName)
+    let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
+    let displayedDiscovery = syncDiscoveredHostsForDisplay(
+      savedHosts: syncService.savedReconnectHosts,
+      liveHosts: syncService.discoveredHosts
+    )
+
+    update(
+      &connectionSnapshot,
+      to: SettingsConnectionSnapshot(
+        health: health,
+        connectionState: syncService.connectionState,
+        hostDisplayName: hostDisplayName,
+        pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
+        routeLine: Self.routeLine(address: address, port: activeProfile?.port),
+        canReconnectToSavedHost: syncService.canReconnectToSavedHost,
+        savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
+        errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil
+      )
+    )
+
+    update(
+      &pairingSnapshot,
+      to: SettingsPairingSnapshot(
+        discoveredHostCount: displayedDiscovery.liveHosts.count,
+        savedReconnectHostCount: displayedDiscovery.savedHosts.count
+      )
+    )
+
+    update(
+      &diagnosticsSnapshot,
+      to: SettingsDiagnosticsSnapshot(
+        pairedMachineIdentity: activeProfile?.hostIdentity.map(Self.shortIdentity),
+        lastSyncDescription: syncService.lastSyncAt.map(Self.relativeSyncDescription),
+        deviceIdentity: activeProfile?.pairedDeviceId.map(Self.shortIdentity)
+      )
+    )
+  }
+
+  private func update<Value: Equatable>(_ value: inout Value, to nextValue: Value) {
+    guard value != nextValue else { return }
+    value = nextValue
+  }
+
+  private static func routeLine(address: String?, port: Int?) -> String? {
+    guard let address else { return nil }
+    let prefix = syncIsTailscaleIPv4Address(address) ? "Tailscale " : ""
+    if let port {
+      return "\(prefix)\(address) · :\(port)"
+    }
+    return "\(prefix)\(address)"
+  }
+
+  private static func trimmedNonEmpty(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private static func relativeSyncDescription(_ date: Date) -> String {
+    let age = abs(Date().timeIntervalSince(date))
+    guard age >= 5 else { return "just now" }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .short
+    return formatter.localizedString(for: date, relativeTo: Date())
+  }
+
+  private static func shortIdentity(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count > 12 else { return trimmed }
+    let prefix = trimmed.prefix(6)
+    let suffix = trimmed.suffix(4)
+    return "\(prefix)…\(suffix)"
   }
 }
 

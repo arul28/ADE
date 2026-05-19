@@ -360,7 +360,7 @@ type PtyDataListener = (event: PtyDataEvent & { laneId: string }) => void;
 
 type PtyExitListener = (event: PtyExitEvent & { laneId: string }) => void;
 
-type ShellSpec = { file: string; args: string[] };
+type ShellSpec = { file: string; args: string[]; env?: Record<string, string> };
 
 type HeadlessTerminalInstance = InstanceType<typeof HeadlessTerminal>;
 type SerializeAddonInstance = InstanceType<typeof SerializeAddon>;
@@ -372,19 +372,32 @@ type TerminalSnapshotMirror = {
   lastErrorAt: number;
 };
 
-function resolveShellCandidates(): ShellSpec[] {
+function cleanShellSpec(file: string): ShellSpec {
+  const name = path.basename(file).toLowerCase();
+  if (name === "zsh") return { file, args: ["-f"], env: { ZDOTDIR: "/var/empty" } };
+  if (name === "bash") return { file, args: ["--noprofile", "--norc"], env: { BASH_ENV: "" } };
+  if (name === "fish") return { file, args: ["--no-config"] };
+  return { file, args: [], env: { ENV: "" } };
+}
+
+function resolveShellCandidates(options: { clean?: boolean } = {}): ShellSpec[] {
   if (process.platform === "win32") {
-    return [
-      { file: "powershell.exe", args: [] },
-      { file: "cmd.exe", args: [] }
-    ];
+    return options.clean
+      ? [
+          { file: "powershell.exe", args: ["-NoLogo", "-NoProfile"] },
+          { file: "cmd.exe", args: ["/d"] },
+        ]
+      : [
+          { file: "powershell.exe", args: [] },
+          { file: "cmd.exe", args: [] },
+        ];
   }
   const candidates: string[] = [];
   const fromEnv = process.env.SHELL?.trim();
   if (fromEnv) candidates.push(fromEnv);
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
   const uniq = Array.from(new Set(candidates.filter(Boolean)));
-  return uniq.map((file) => ({ file, args: [] }));
+  return uniq.map((file) => options.clean ? cleanShellSpec(file) : { file, args: [] });
 }
 
 function quotePosixShellArg(value: string): string {
@@ -2470,11 +2483,12 @@ export function createPtyService({
         }
       }
 
-      const shellCandidates = resolveShellCandidates();
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
       const directCommand = typeof args.command === "string" ? args.command.trim() : "";
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+      const useCleanInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
+      const shellCandidates = resolveShellCandidates({ clean: useCleanInteractiveShell });
       let launchedDirectCommand = false;
       try {
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -2513,7 +2527,10 @@ export function createPtyService({
         if (!created && (!directCommand || startupCommand)) {
           for (const shell of shellCandidates) {
             try {
-              created = ptyLib.spawn(shell.file, shell.args, opts);
+              created = ptyLib.spawn(shell.file, shell.args, {
+                ...opts,
+                env: shell.env ? { ...launchEnv, ...shell.env } : launchEnv,
+              });
               selectedShell = shell;
               launchedDirectCommand = false;
               break;

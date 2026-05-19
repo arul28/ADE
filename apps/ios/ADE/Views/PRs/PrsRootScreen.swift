@@ -36,6 +36,7 @@ struct PRsTabView: View {
   @State private var rootActionTask: Task<Void, Never>?
   @State private var githubDetailRequest: PrGitHubLaneLinkRequest?
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
+  @State private var pendingLaneLinkRequest: PrGitHubLaneLinkRequest?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
   @SceneStorage("ade.prs.githubStatusFilter") private var githubStatusFilterRawValue = PrGitHubStatusFilter.open.rawValue
@@ -425,15 +426,13 @@ struct PRsTabView: View {
         PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
           .environmentObject(syncService)
       }
-      .sheet(item: $githubDetailRequest) { request in
+      .sheet(item: $githubDetailRequest, onDismiss: presentPendingLaneLinkRequest) { request in
         PrGitHubReadDetailSheet(
           item: request.item,
           canLink: canLinkGitHubPullRequests,
           onLink: {
+            pendingLaneLinkRequest = request
             githubDetailRequest = nil
-            DispatchQueue.main.async {
-              laneLinkRequest = request
-            }
           },
           onOpenGitHub: {
             openGitHub(urlString: request.item.githubUrl)
@@ -463,6 +462,12 @@ struct PRsTabView: View {
         }
       }
     }
+  }
+
+  private func presentPendingLaneLinkRequest() {
+    guard let request = pendingLaneLinkRequest else { return }
+    pendingLaneLinkRequest = nil
+    laneLinkRequest = request
   }
 
   /// Count shown in the hero-header chip — matches whichever surface the user
@@ -1311,6 +1316,9 @@ struct PRsTabView: View {
       onCreateIntegration: handleCreateIntegrationPr
     )
     .environmentObject(syncService)
+    .presentationDetents([.large])
+    .presentationDragIndicator(.visible)
+    .presentationContentInteraction(.scrolls)
   }
 
   private func handleCreateSinglePr(
@@ -1720,8 +1728,15 @@ private struct PrLaneLinkSheet: View {
   @State private var selectedLaneId = ""
 
   private var availableLanes: [LaneSummary] {
-    lanes
-      .filter { $0.archivedAt == nil && $0.laneType != "primary" }
+    let expectedBranch = normalizedPrBranchName(item.headBranch)
+    return lanes
+      .filter { lane in
+        guard lane.archivedAt == nil, lane.laneType != "primary" else { return false }
+        guard !expectedBranch.isEmpty else { return false }
+        // Git refs are case-sensitive — case-insensitive matching can offer or
+        // preselect the wrong lane when two branches differ only by case.
+        return normalizedPrBranchName(lane.branchRef) == expectedBranch
+      }
       .sorted { lhs, rhs in lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending }
   }
 
@@ -1795,9 +1810,10 @@ private struct PrLaneLinkSheet: View {
               Image(systemName: "tray")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(PrsGlass.textMuted)
-              Text("No eligible lanes are available to link.")
+              Text(emptyLaneMessage)
                 .font(.system(size: 12))
                 .foregroundStyle(PrsGlass.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
               Spacer(minLength: 0)
             }
             .padding(14)
@@ -1840,7 +1856,12 @@ private struct PrLaneLinkSheet: View {
     }
     .onAppear {
       if selectedLaneId.isEmpty {
-        selectedLaneId = item.linkedLaneId ?? exactBranchMatchedLane?.id ?? ""
+        // Only honor linkedLaneId if it is still in the visible option set; otherwise
+        // the primary action stays enabled with no rendered selection.
+        let linkedIfVisible = item.linkedLaneId.flatMap { id in
+          availableLanes.contains(where: { $0.id == id }) ? id : nil
+        }
+        selectedLaneId = linkedIfVisible ?? exactBranchMatchedLane?.id ?? availableLanes.first?.id ?? ""
       }
     }
   }
@@ -1853,14 +1874,32 @@ private struct PrLaneLinkSheet: View {
     if let exactBranchMatchedLane, selectedLaneId == exactBranchMatchedLane.id {
       return "Preselected because the PR branch matches \(exactBranchMatchedLane.branchRef)."
     }
+    if !canLink {
+      return "Reconnect before linking this PR."
+    }
+    let expectedBranch = normalizedPrBranchName(item.headBranch)
+    if expectedBranch.isEmpty {
+      return "This PR is missing a head branch, so ADE cannot choose a lane."
+    }
+    if availableLanes.isEmpty {
+      return "Create or import a lane on \(expectedBranch), then refresh PRs."
+    }
     if selectedLaneId.isEmpty {
-      return "No lane was preselected because the PR branch does not exactly match an ADE lane."
+      return "Choose the lane on \(expectedBranch)."
     }
     return "Confirm this lane before linking; ADE will attach this GitHub PR to the selected lane."
   }
 
   private var laneSelectionTint: Color {
     selectedLaneId.isEmpty ? PrGlassPalette.warning : PrsGlass.textSecondary
+  }
+
+  private var emptyLaneMessage: String {
+    let expectedBranch = normalizedPrBranchName(item.headBranch)
+    guard !expectedBranch.isEmpty else {
+      return "This PR does not include a head branch."
+    }
+    return "No ADE lane is on \(expectedBranch)."
   }
 }
 

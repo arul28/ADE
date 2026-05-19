@@ -75,6 +75,17 @@ public struct NotificationPreferences: Codable, Equatable, Hashable {
 }
 
 public extension NotificationPreferences {
+  /// Returns a copy without inactive per-session entries. Rows with both
+  /// switches off are equivalent to no override, and keeping them around causes
+  /// needless payload growth as users toggle agents on and back off.
+  var pruningInactivePerSessionOverrides: NotificationPreferences {
+    var next = self
+    next.perSessionOverrides = perSessionOverrides.filter { _, override in
+      override.muted || override.awaitingInputOnly
+    }
+    return next
+  }
+
   /// Decodes stored preferences. Returns a default-initialised struct when no
   /// blob exists yet or decoding fails — this keeps the Settings screen usable
   /// on first launch.
@@ -95,7 +106,7 @@ public extension NotificationPreferences {
   func save(to defaults: UserDefaults) {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
-    guard let data = try? encoder.encode(self) else { return }
+    guard let data = try? encoder.encode(pruningInactivePerSessionOverrides) else { return }
     defaults.set(data, forKey: NotificationPreferences.defaultKey)
   }
 }

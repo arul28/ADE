@@ -1,13 +1,16 @@
 import SwiftUI
 
 struct SettingsConnectionHeader: View {
-  @EnvironmentObject private var syncService: SyncService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  let snapshot: SettingsConnectionSnapshot
+  let onDisconnect: () -> Void
+  let onReconnect: (Bool) -> Void
 
   @State private var pulsing = false
 
   private var health: SyncConnectionHealth {
-    syncService.connectionHealth
+    snapshot.health
   }
 
   var body: some View {
@@ -29,13 +32,20 @@ struct SettingsConnectionHeader: View {
           }
         }
         Spacer(minLength: 0)
-        SettingsConnectionQuickAction()
-          .environmentObject(syncService)
+        SettingsConnectionQuickAction(
+          connectionState: snapshot.connectionState,
+          canReconnectToSavedHost: snapshot.canReconnectToSavedHost,
+          savedReconnectPrefersTailnet: snapshot.savedReconnectPrefersTailnet,
+          onDisconnect: onDisconnect,
+          onReconnect: onReconnect
+        )
       }
 
       if health.transport.isConnected {
-        SettingsConnectedHostDetails()
-          .environmentObject(syncService)
+        SettingsConnectedHostDetails(
+          hostDisplayName: snapshot.hostDisplayName,
+          routeLine: snapshot.routeLine
+        )
       } else if let hostName = pendingHostName {
         Text(pendingDescription(hostName: hostName))
           .font(.subheadline)
@@ -113,23 +123,11 @@ struct SettingsConnectionHeader: View {
   }
 
   private var errorMessage: String? {
-    health.lastFailureMessage
+    snapshot.errorMessage
   }
 
   private var pendingHostName: String? {
-    switch health.transport {
-    case .connecting, .unreachable:
-      return displayHostName
-    default:
-      return nil
-    }
-  }
-
-  private var displayHostName: String? {
-    if let name = syncService.hostName, !name.isEmpty {
-      return name
-    }
-    return syncService.activeHostProfile?.hostName
+    snapshot.pendingHostName
   }
 
   private var stateDetailLine: String? {
@@ -138,7 +136,7 @@ struct SettingsConnectionHeader: View {
       if health.load == .strained {
         return "Live · machine responding slowly"
       }
-      if syncService.connectionState == .syncing {
+      if snapshot.connectionState == .syncing {
         return "Live · syncing changes"
       }
       return "Live · ready to sync"
@@ -147,10 +145,10 @@ struct SettingsConnectionHeader: View {
     case .unreachable:
       return "Unable to reach your machine"
     case .disconnected:
-      if syncService.savedReconnectHost?.tailscaleAddress != nil {
+      if snapshot.savedReconnectPrefersTailnet {
         return "Saved machine · Tailscale route ready"
       }
-      if syncService.canReconnectToSavedHost {
+      if snapshot.canReconnectToSavedHost {
         return "Saved machine · not connected"
       }
       return "No paired machine"
@@ -170,11 +168,12 @@ struct SettingsConnectionHeader: View {
 }
 
 private struct SettingsConnectedHostDetails: View {
-  @EnvironmentObject private var syncService: SyncService
+  let hostDisplayName: String?
+  let routeLine: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
-      if let hostName = displayHostName {
+      if let hostName = hostDisplayName {
         Text(hostName)
           .font(.title3.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -189,38 +188,24 @@ private struct SettingsConnectedHostDetails: View {
       }
     }
   }
-
-  private var displayHostName: String? {
-    if let name = syncService.hostName, !name.isEmpty {
-      return name
-    }
-    return syncService.activeHostProfile?.hostName
-  }
-
-  private var routeLine: String? {
-    guard let address = syncService.currentAddress ?? syncService.activeHostProfile?.lastSuccessfulAddress else {
-      return nil
-    }
-    let prefix = syncIsTailscaleIPv4Address(address) ? "Tailscale " : ""
-    if let port = syncService.activeHostProfile?.port {
-      return "\(prefix)\(address) · :\(port)"
-    }
-    return "\(prefix)\(address)"
-  }
 }
 
 private struct SettingsConnectionQuickAction: View {
-  @EnvironmentObject private var syncService: SyncService
+  let connectionState: RemoteConnectionState
+  let canReconnectToSavedHost: Bool
+  let savedReconnectPrefersTailnet: Bool
+  let onDisconnect: () -> Void
+  let onReconnect: (Bool) -> Void
 
   var body: some View {
-    switch syncService.connectionState {
+    switch connectionState {
     case .connected, .syncing:
       ADEGlassActionButton(
         title: "Disconnect",
         symbol: "power",
         tint: ADEColor.textSecondary
       ) {
-        syncService.disconnect()
+        onDisconnect()
       }
       .accessibilityLabel("Disconnect from machine")
 
@@ -237,18 +222,13 @@ private struct SettingsConnectionQuickAction: View {
       .glassEffect()
 
     case .error, .disconnected:
-      if syncService.canReconnectToSavedHost {
+      if canReconnectToSavedHost {
         ADEGlassActionButton(
           title: "Reconnect",
           symbol: "arrow.clockwise",
           tint: ADEColor.purpleAccent
         ) {
-          Task {
-            await syncService.reconnectIfPossible(
-              userInitiated: true,
-              preferTailnet: syncService.savedReconnectHost?.tailscaleAddress != nil
-            )
-          }
+          onReconnect(savedReconnectPrefersTailnet)
         }
         .accessibilityLabel("Reconnect to saved machine")
       }

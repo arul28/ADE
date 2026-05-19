@@ -131,13 +131,9 @@ struct WorkTerminalSessionView: View {
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
 
-  /// Termius-style char-by-char input: as the user types, each new character
-  /// is forwarded to the live PTY and the field is immediately cleared so the
-  /// PTY's own echo (rendered in the scrollback) is the only source of truth.
-  /// We never buffer a command on-device — `↵` and the keyboard return both
-  /// just send `\r` to the shell.
-  @State private var inputBuffer = ""
-  @FocusState private var inputFocused: Bool
+  /// Phone-friendly terminal input: keep the text visible while the user types,
+  /// then send the whole buffer on Return. The shortcut bar still sends raw
+  /// bytes immediately for shell/TUI controls like Esc, Tab, arrows, and ^C.
   @State private var sendingFeedback = 0
   @State private var lastSentTerminalSize: WorkTerminalViewport?
   @State private var currentTerminalViewport: WorkTerminalViewport?
@@ -174,6 +170,13 @@ struct WorkTerminalSessionView: View {
     .task(id: session.id) {
       subscriptionLifecycle.markVisible()
       try? await syncService.subscribeTerminal(sessionId: session.id)
+      if let currentTerminalViewport {
+        lastSentTerminalSize = nil
+        sendTerminalResize(currentTerminalViewport)
+      }
+    }
+    .task(id: terminalSnapshotBackstopKey) {
+      await runTerminalSnapshotBackstop()
     }
     .onDisappear {
       subscriptionLifecycle.scheduleUnsubscribe(sessionId: session.id, syncService: syncService)
@@ -263,57 +266,20 @@ struct WorkTerminalSessionView: View {
     .buttonStyle(.plain)
   }
 
-  /// Slim composer. Each typed character streams straight to the PTY and we
-  /// then clear the field so it acts as a keyboard mount, not a buffer. The
-  /// `↵` button (and keyboard Return) explicitly send `\r` so the remote
-  /// shell submits — works for plain shells AND for TUI prompts that read
-  /// input character-by-character.
+  /// Slim composer. The `↵` button and keyboard Return send any visible buffer,
+  /// then `\r`, so the remote shell/TUI submits exactly what the phone shows.
   private var terminalInputBar: some View {
-    HStack(spacing: 8) {
-      TextField("Type to send keystrokes", text: $inputBuffer)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .submitLabel(.return)
-        .focused($inputFocused)
-        .font(.system(size: 13, design: .monospaced))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .frame(minHeight: 32)
-        .frame(maxWidth: .infinity)
-        .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-        .onChange(of: inputBuffer) { _, newValue in
-          guard !newValue.isEmpty, canSendInput else {
-            if !newValue.isEmpty { inputBuffer = "" }
-            return
-          }
-          syncService.sendTerminalInput(sessionId: session.id, data: newValue)
-          inputBuffer = ""
-        }
-        .onSubmit { submitReturn() }
-        .disabled(!canSendInput)
-
-      Button(action: submitReturn) {
-        Image(systemName: "return")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(canSendInput ? ADEColor.accent : ADEColor.textMuted)
-          .frame(width: 36, height: 32)
-      }
-      .buttonStyle(.plain)
-      .background(
-        (canSendInput ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5)),
-        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+    TerminalInputComposer(
+        placeholder: "Type to send keystrokes",
+        isEnabled: canSendInput,
+        accentColor: UIColor(ADEColor.accent),
+        disabledColor: UIColor(ADEColor.textMuted),
+        surfaceColor: UIColor(ADEColor.surfaceBackground),
+        borderColor: UIColor(ADEColor.glassBorder),
+        onSubmit: submitReturn(input:)
       )
-      .overlay(
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-      .accessibilityLabel("Send Return")
-      .disabled(!canSendInput)
-    }
+      .frame(height: 32)
+      .frame(maxWidth: .infinity)
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
     .background(.ultraThinMaterial)
@@ -322,15 +288,55 @@ struct WorkTerminalSessionView: View {
     }
   }
 
-  private func submitReturn() {
+  private func submitReturn(input: String) {
     guard canSendInput else { return }
-    if !inputBuffer.isEmpty {
-      syncService.sendTerminalInput(sessionId: session.id, data: inputBuffer)
-      inputBuffer = ""
-    }
-    syncService.sendTerminalInput(sessionId: session.id, data: "\r")
+    let sessionId = session.id
+    // Send buffered text + Return as a single write so the carriage return
+    // can't arrive after later keystrokes (or be dropped entirely if the
+    // connection state flips during a delay).
+    syncService.sendTerminalInput(sessionId: sessionId, data: input + "\r")
     sendingFeedback &+= 1
-    inputFocused = true
+  }
+
+  private var terminalSnapshotBackstopKey: String {
+    "\(session.id)-\(session.status)-\(session.runtimeState)-\(canSendInput)-\(syncService.prefersReducedSyncLoad)"
+  }
+
+  private var shouldBackstopTerminalSnapshots: Bool {
+    guard canSendInput else { return false }
+    let status = session.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return status != "ended" && status != "exited" && status != "stopped"
+  }
+
+  @MainActor
+  private func runTerminalSnapshotBackstop() async {
+    guard shouldBackstopTerminalSnapshots else { return }
+    let initialDelay: UInt64 = 650_000_000
+    let pollDelay: UInt64 = syncService.prefersReducedSyncLoad ? 2_500_000_000 : 1_250_000_000
+    let staleInterval: TimeInterval = syncService.prefersReducedSyncLoad ? 4.5 : 2.0
+    let snapshotBytes = syncService.prefersReducedSyncLoad ? 80_000 : 140_000
+
+    try? await Task.sleep(nanoseconds: initialDelay)
+    guard !Task.isCancelled, shouldBackstopTerminalSnapshots else { return }
+    if terminalVisibleBufferIsEmpty() {
+      try? await syncService.refreshTerminalSnapshot(sessionId: session.id, maxBytes: snapshotBytes)
+    }
+
+    while !Task.isCancelled, shouldBackstopTerminalSnapshots {
+      try? await Task.sleep(nanoseconds: pollDelay)
+      guard !Task.isCancelled, shouldBackstopTerminalSnapshots else { return }
+      let lastUpdate = syncService.terminalBufferUpdatedAt[session.id] ?? Date.distantPast
+      if terminalVisibleBufferIsEmpty() || Date().timeIntervalSince(lastUpdate) >= staleInterval {
+        try? await syncService.refreshTerminalSnapshot(sessionId: session.id, maxBytes: snapshotBytes)
+      }
+    }
+  }
+
+  private func terminalVisibleBufferIsEmpty() -> Bool {
+    let buffered = syncService.terminalBuffers[session.id] ?? ""
+    let fallback = session.lastOutputPreview ?? ""
+    return buffered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   private func handleTerminalViewportChange(_ viewport: WorkTerminalViewport) {
@@ -343,6 +349,153 @@ struct WorkTerminalSessionView: View {
     guard viewport != lastSentTerminalSize else { return }
     lastSentTerminalSize = viewport
     syncService.sendTerminalResize(sessionId: session.id, cols: viewport.cols, rows: viewport.rows)
+  }
+}
+
+private struct TerminalInputComposer: UIViewRepresentable {
+  let placeholder: String
+  let isEnabled: Bool
+  let accentColor: UIColor
+  let disabledColor: UIColor
+  let surfaceColor: UIColor
+  let borderColor: UIColor
+  let onSubmit: (String) -> Void
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(parent: self)
+  }
+
+  func makeUIView(context: Context) -> TerminalInputComposerView {
+    let view = TerminalInputComposerView()
+    view.textField.delegate = context.coordinator
+    return view
+  }
+
+  func updateUIView(_ view: TerminalInputComposerView, context: Context) {
+    context.coordinator.parent = self
+    view.onSubmit = { [weak view] in
+      let text = view?.textField.text ?? ""
+      view?.textField.text = ""
+      onSubmit(text)
+      view?.textField.becomeFirstResponder()
+    }
+    view.configure(
+      placeholder: placeholder,
+      isEnabled: isEnabled,
+      accentColor: accentColor,
+      disabledColor: disabledColor,
+      surfaceColor: surfaceColor,
+      borderColor: borderColor
+    )
+  }
+
+  final class Coordinator: NSObject, UITextFieldDelegate {
+    var parent: TerminalInputComposer
+
+    init(parent: TerminalInputComposer) {
+      self.parent = parent
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+      let text = textField.text ?? ""
+      textField.text = ""
+      parent.onSubmit(text)
+      return false
+    }
+  }
+}
+
+private final class TerminalInputComposerView: UIView {
+  let textField = UITextField()
+  private let returnButton = UIButton(type: .system)
+  var onSubmit: (() -> Void)?
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+
+    textField.borderStyle = .none
+    textField.backgroundColor = .clear
+    textField.font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    textField.textColor = UIColor.label
+    textField.returnKeyType = .default
+    textField.keyboardType = .asciiCapable
+    textField.autocorrectionType = .no
+    textField.autocapitalizationType = .none
+    textField.spellCheckingType = .no
+    textField.smartQuotesType = .no
+    textField.smartDashesType = .no
+    textField.smartInsertDeleteType = .no
+    textField.textContentType = .none
+    textField.accessibilityLabel = "Terminal input"
+
+    returnButton.setImage(UIImage(systemName: "return"), for: .normal)
+    returnButton.accessibilityLabel = "Send Return"
+    returnButton.layer.cornerRadius = 9
+    returnButton.addTarget(self, action: #selector(submit), for: .touchUpInside)
+
+    let fieldContainer = UIView()
+    fieldContainer.layer.cornerRadius = 9
+    fieldContainer.layer.borderWidth = 0.5
+    fieldContainer.translatesAutoresizingMaskIntoConstraints = false
+    textField.translatesAutoresizingMaskIntoConstraints = false
+    fieldContainer.addSubview(textField)
+
+    returnButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(fieldContainer)
+    addSubview(returnButton)
+
+    NSLayoutConstraint.activate([
+      fieldContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
+      fieldContainer.topAnchor.constraint(equalTo: topAnchor),
+      fieldContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
+      returnButton.leadingAnchor.constraint(equalTo: fieldContainer.trailingAnchor, constant: 8),
+      returnButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+      returnButton.topAnchor.constraint(equalTo: topAnchor),
+      returnButton.bottomAnchor.constraint(equalTo: bottomAnchor),
+      returnButton.widthAnchor.constraint(equalToConstant: 36),
+
+      textField.leadingAnchor.constraint(equalTo: fieldContainer.leadingAnchor, constant: 10),
+      textField.trailingAnchor.constraint(equalTo: fieldContainer.trailingAnchor, constant: -10),
+      textField.topAnchor.constraint(equalTo: fieldContainer.topAnchor),
+      textField.bottomAnchor.constraint(equalTo: fieldContainer.bottomAnchor),
+    ])
+  }
+
+  required init?(coder: NSCoder) {
+    return nil
+  }
+
+  override var intrinsicContentSize: CGSize {
+    CGSize(width: UIView.noIntrinsicMetric, height: 32)
+  }
+
+  func configure(
+    placeholder: String,
+    isEnabled: Bool,
+    accentColor: UIColor,
+    disabledColor: UIColor,
+    surfaceColor: UIColor,
+    borderColor: UIColor
+  ) {
+    textField.placeholder = placeholder
+    textField.tintColor = accentColor
+    textField.isEnabled = isEnabled
+    textField.alpha = isEnabled ? 1 : 0.55
+
+    if let fieldContainer = textField.superview {
+      fieldContainer.backgroundColor = surfaceColor.withAlphaComponent(isEnabled ? 0.55 : 0.38)
+      fieldContainer.layer.borderColor = borderColor.cgColor
+    }
+
+    returnButton.isEnabled = isEnabled
+    returnButton.tintColor = isEnabled ? accentColor : disabledColor
+    returnButton.backgroundColor = (isEnabled ? accentColor : surfaceColor).withAlphaComponent(isEnabled ? 0.14 : 0.50)
+    returnButton.layer.borderWidth = 0.5
+    returnButton.layer.borderColor = borderColor.cgColor
+  }
+
+  @objc private func submit() {
+    onSubmit?()
   }
 }
 

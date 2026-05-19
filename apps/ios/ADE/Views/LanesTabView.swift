@@ -171,6 +171,18 @@ struct LanesTabView: View {
         guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
       }
+      .onAppear {
+        guard isActive, syncService.requestedLaneNavigation != nil else { return }
+        Task { await handleRequestedLaneNavigation() }
+      }
+      .onChange(of: isActive) { _, active in
+        guard active, syncService.requestedLaneNavigation != nil else { return }
+        Task { await handleRequestedLaneNavigation() }
+      }
+      .onChange(of: syncService.requestedLaneNavigation?.id) { _, requestId in
+        guard isActive, requestId != nil else { return }
+        Task { await handleRequestedLaneNavigation() }
+      }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         guard isActive else { return }
         let wasOnline = oldValue == .connected || oldValue == .syncing

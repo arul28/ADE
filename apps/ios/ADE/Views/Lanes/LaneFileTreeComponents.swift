@@ -307,25 +307,27 @@ private struct LaneFileRow: View {
         }
         Spacer()
       }
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
-            .disabled(!allowsDiffInspection)
-          if let onOpenFiles {
-            LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
-          }
-          LaneActionButton(title: primaryActionTitle, symbol: primaryActionSymbol, tint: primaryActionTint) {
-            onPrimaryAction()
-          }
-          .disabled(!allowsLiveActions)
-          LaneActionButton(title: secondaryActionTitle, symbol: secondaryActionSymbol, tint: secondaryActionTint) {
-            onSecondaryAction()
-          }
-          .disabled(!allowsLiveActions)
+      LazyVGrid(columns: actionColumns, alignment: .leading, spacing: 6) {
+        LaneActionButton(title: "Diff", symbol: "doc.text.magnifyingglass") { onDiff() }
+          .disabled(!allowsDiffInspection)
+        if let onOpenFiles {
+          LaneActionButton(title: "Open in Files", symbol: "folder") { onOpenFiles() }
         }
+        LaneActionButton(title: primaryActionTitle, symbol: primaryActionSymbol, tint: primaryActionTint) {
+          onPrimaryAction()
+        }
+        .disabled(!allowsLiveActions)
+        LaneActionButton(title: secondaryActionTitle, symbol: secondaryActionSymbol, tint: secondaryActionTint) {
+          onSecondaryAction()
+        }
+        .disabled(!allowsLiveActions)
       }
     }
     .adeGlassCard(cornerRadius: 10, padding: 10)
+  }
+
+  private var actionColumns: [GridItem] {
+    [GridItem(.adaptive(minimum: 92), spacing: 6, alignment: .leading)]
   }
 
   private func fileKindTint(_ kind: String) -> Color {

@@ -113,13 +113,15 @@ struct LaneDetailScreen: View {
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .task {
       syncService.announceLaneOpen(laneId: laneId)
-      await loadDetail(refreshRemote: false)
-      if detail == nil, canRunLiveActions {
-        await loadDetail(refreshRemote: true)
-      }
+      await loadDetail(refreshRemote: canRunLiveActions)
     }
     .task(id: syncService.localStateRevision) {
-      guard busyAction == nil, detail != nil else { return }
+      guard busyAction == nil else { return }
+      if detail == nil, canRunLiveActions {
+        await loadDetail(refreshRemote: true)
+        return
+      }
+      guard detail != nil else { return }
       let now = Date()
       guard now.timeIntervalSince(lastLaneDetailLocalReload) >= 0.35 else { return }
       lastLaneDetailLocalReload = now
@@ -199,10 +201,10 @@ struct LaneDetailScreen: View {
           Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
         },
         onDiscardFile: { file in
-          pendingFileConfirmation = .discardUnstaged(file)
+          Task { await performConfirmedFileAction(.discardUnstaged(file)) }
         },
         onRestoreStaged: { file in
-          pendingFileConfirmation = .restoreStaged(file)
+          Task { await performConfirmedFileAction(.restoreStaged(file)) }
         },
         onStageAll: {
           let paths = (detail?.diffChanges?.unstaged ?? []).map(\.path)
@@ -217,12 +219,12 @@ struct LaneDetailScreen: View {
         onDiscardAllUnstaged: {
           let files = detail?.diffChanges?.unstaged ?? []
           guard !files.isEmpty else { return }
-          pendingFileConfirmation = .discardAllUnstaged(files)
+          Task { await performConfirmedFileAction(.discardAllUnstaged(files)) }
         },
         onRestoreAllStaged: {
           let files = detail?.diffChanges?.staged ?? []
           guard !files.isEmpty else { return }
-          pendingFileConfirmation = .restoreAllStaged(files)
+          Task { await performConfirmedFileAction(.restoreAllStaged(files)) }
         },
         onOpenDiff: { file, isStaged in
           selectedDiffRequest = LaneDiffRequest(
@@ -351,16 +353,13 @@ struct LaneDetailScreen: View {
   @MainActor
   func loadDetail(refreshRemote: Bool) async {
     do {
-      async let cachedDetailTask = syncService.fetchLaneDetail(laneId: laneId)
-      async let pullRequestsTask = syncService.fetchPullRequestListItems(laneId: laneId)
-
-      if let cachedDetail = try await cachedDetailTask {
+      if let cachedDetail = try await syncService.fetchLaneDetail(laneId: laneId) {
         if detail != cachedDetail {
           detail = cachedDetail
         }
       }
 
-      let cachedPullRequests = try await pullRequestsTask
+      let cachedPullRequests = try await syncService.fetchPullRequestListItems(laneId: laneId)
       if lanePullRequests != cachedPullRequests {
         lanePullRequests = cachedPullRequests
       }

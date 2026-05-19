@@ -224,18 +224,24 @@ struct WorkSessionSettingsSheet: View {
           if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
             GlassSection(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
-                Picker("Reasoning", selection: $selectedReasoningEffort) {
-                  Text("Default").tag("")
-                  ForEach(reasoningEfforts) { effort in
-                    Text(effort.effort.capitalized).tag(effort.effort)
-                  }
+                ADEOptionButton(
+                  title: "Default",
+                  subtitle: "Use the runtime default for this model.",
+                  systemImage: "sparkle",
+                  isSelected: selectedReasoningEffort.isEmpty
+                ) {
+                  selectedReasoningEffort = ""
                 }
-                .pickerStyle(.segmented)
 
-                if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
-                  Text(effort.description)
-                    .font(.caption)
-                    .foregroundStyle(ADEColor.textSecondary)
+                ForEach(reasoningEfforts) { effort in
+                  ADEOptionButton(
+                    title: effort.effort.capitalized,
+                    subtitle: effort.description,
+                    systemImage: "brain.head.profile",
+                    isSelected: selectedReasoningEffort == effort.effort
+                  ) {
+                    selectedReasoningEffort = effort.effort
+                  }
                 }
               }
             }

@@ -518,6 +518,8 @@ struct DiffChanges: Codable, Equatable {
 struct DiffSide: Codable, Equatable {
   var exists: Bool
   var text: String
+  var size: Int?
+  var isTruncated: Bool?
 }
 
 struct FileDiff: Codable, Equatable {
@@ -579,6 +581,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var lastOutputPreview: String?
   var summary: String?
   var awaitingInput: Bool?
+  var pendingInputItemId: String? = nil
   var threadId: String?
   var requestedCwd: String?
 }
@@ -2209,6 +2212,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var status: String
   var startedAt: String
   var endedAt: String?
+  var archivedAt: String? = nil
   var exitCode: Int?
   var transcriptPath: String
   var headShaStart: String?
@@ -2222,6 +2226,8 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   /// Parent chat session id when this terminal was launched from a chat (e.g. App Control,
   /// in-chat terminal drawer). Mirrors the desktop `TerminalSessionSummary.chatSessionId`.
   var chatSessionId: String? = nil
+  /// Current pending approval/input item id when the backing chat is waiting on the user.
+  var pendingInputItemId: String? = nil
 }
 
 struct ProcessReadinessConfig: Codable, Equatable {

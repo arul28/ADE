@@ -38,11 +38,24 @@ struct LaneChatLaunchSheet: View {
         VStack(spacing: 14) {
           GlassSection(title: "Provider") {
             VStack(alignment: .leading, spacing: 12) {
-              Picker("Provider", selection: $provider) {
-                Text("Codex").tag("codex")
-                Text("Claude").tag("claude")
+              HStack(spacing: 8) {
+                LaneOptionButton(
+                  title: "Codex",
+                  subtitle: "OpenAI CLI runtime",
+                  systemImage: "sparkle",
+                  isSelected: provider == "codex"
+                ) {
+                  provider = "codex"
+                }
+                LaneOptionButton(
+                  title: "Claude",
+                  subtitle: "Claude Code runtime",
+                  systemImage: "brain.head.profile",
+                  isSelected: provider == "claude"
+                ) {
+                  provider = "claude"
+                }
               }
-              .pickerStyle(.segmented)
 
               Text("Session stays lane-scoped.")
                 .font(.caption)
@@ -78,15 +91,15 @@ struct LaneChatLaunchSheet: View {
           if !models.isEmpty {
             GlassSection(title: "Model") {
               VStack(alignment: .leading, spacing: 12) {
-                Picker("Model", selection: $selectedModelId) {
-                  ForEach(models) { model in
-                    Text(model.displayName).tag(model.id)
+                if models.count > 5 {
+                  ScrollView {
+                    modelOptionStack
                   }
+                  .frame(maxHeight: 340)
+                  .scrollBounceBehavior(.basedOnSize)
+                } else {
+                  modelOptionStack
                 }
-                .pickerStyle(.menu)
-                .padding(EdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .glassEffect(in: .rect(cornerRadius: 10))
 
                 if let selectedModel {
                   VStack(alignment: .leading, spacing: 8) {
@@ -115,13 +128,26 @@ struct LaneChatLaunchSheet: View {
           if let reasoningEfforts = selectedModel?.reasoningEfforts, !reasoningEfforts.isEmpty {
             GlassSection(title: "Reasoning") {
               VStack(alignment: .leading, spacing: 12) {
-                Picker("Reasoning", selection: $selectedReasoningEffort) {
-                  Text("Default").tag("")
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], alignment: .leading, spacing: 8) {
+                  LaneOptionButton(
+                    title: "Default",
+                    subtitle: "Runtime default",
+                    systemImage: "circle.dashed",
+                    isSelected: selectedReasoningEffort.isEmpty
+                  ) {
+                    selectedReasoningEffort = ""
+                  }
                   ForEach(reasoningEfforts) { effort in
-                    Text(effort.effort.capitalized).tag(effort.effort)
+                    LaneOptionButton(
+                      title: effort.effort.capitalized,
+                      subtitle: effort.description,
+                      systemImage: "brain",
+                      isSelected: selectedReasoningEffort == effort.effort
+                    ) {
+                      selectedReasoningEffort = effort.effort
+                    }
                   }
                 }
-                .pickerStyle(.segmented)
 
                 if let effort = reasoningEfforts.first(where: { $0.effort == selectedReasoningEffort }) {
                   Text(effort.description)
@@ -189,6 +215,21 @@ struct LaneChatLaunchSheet: View {
         selectedModelId = ""
         selectedReasoningEffort = ""
         await loadModels(resetSelection: true)
+      }
+    }
+  }
+
+  private var modelOptionStack: some View {
+    LazyVStack(spacing: 8) {
+      ForEach(models) { model in
+        LaneOptionButton(
+          title: model.displayName,
+          subtitle: model.description,
+          systemImage: model.supportsReasoning == true ? "brain" : "circle.grid.2x2.fill",
+          isSelected: selectedModelId == model.id
+        ) {
+          selectedModelId = model.id
+        }
       }
     }
   }

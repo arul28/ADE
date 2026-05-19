@@ -5,6 +5,21 @@ import AVKit
 
 let workDateFormatter = ISO8601DateFormatter()
 
+func resolvedWorkArchivedSessionIds(
+  localStorage: String,
+  chatSummaries: [String: AgentChatSessionSummary],
+  sessions: [TerminalSessionSummary] = []
+) -> Set<String> {
+  let local = Set(localStorage.split(separator: "\n").map(String.init))
+  let archivedChats = Set(chatSummaries.values.compactMap { summary in
+    summary.archivedAt == nil ? nil : summary.sessionId
+  })
+  let archivedSessions = Set(sessions.compactMap { session in
+    session.archivedAt == nil ? nil : session.id
+  })
+  return local.union(archivedChats).union(archivedSessions)
+}
+
 struct WorkSessionRoute: Hashable {
   let sessionId: String
   var openingPrompt: String? = nil
@@ -23,6 +38,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let selectedLaneId: String
   let selectedStatus: WorkSessionStatusFilter
   let searchText: String
+  let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
 }
@@ -85,18 +101,11 @@ struct WorkRootScreen: View {
   }
 
   var archivedSessionIds: Set<String> {
-    let local = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-    var result = Set<String>()
-    for summary in chatSummaries.values {
-      if summary.archivedAt != nil {
-        result.insert(summary.sessionId)
-      }
-    }
-    let remoteKnownIds = Set(chatSummaries.values.map { $0.sessionId })
-    for id in local where !remoteKnownIds.contains(id) {
-      result.insert(id)
-    }
-    return result
+    resolvedWorkArchivedSessionIds(
+      localStorage: archivedSessionIdsStorage,
+      chatSummaries: chatSummaries,
+      sessions: sessions + Array(optimisticSessions.values)
+    )
   }
 
   var laneById: [String: LaneSummary] {
@@ -196,6 +205,7 @@ struct WorkRootScreen: View {
       selectedLaneId: selectedLaneId,
       selectedStatus: selectedStatus,
       searchText: searchText,
+      searchOutputRevision: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : syncService.terminalBufferRevision,
       archivedSessionIdsStorage: archivedSessionIdsStorage,
       sessionOrganizationRaw: sessionOrganizationRaw
     )
@@ -203,6 +213,10 @@ struct WorkRootScreen: View {
 
   var workProjectionReloadKey: Int? {
     isWorkRootActive ? syncService.localStateRevision : nil
+  }
+
+  var workSessionNavigationRequestKey: String? {
+    syncService.requestedWorkSessionNavigation?.id
   }
 
   var body: some View {
@@ -452,18 +466,37 @@ struct WorkRootScreen: View {
       }
       .task(id: sessionPresentationTaskKey) {
         scheduleSessionPresentationRebuild()
+        await hydrateSearchOutputBuffersIfNeeded()
       }
       .task(id: pollingKey) {
         await pollRunningChats()
+      }
+      .task(id: workSessionNavigationRequestKey) {
+        guard isTabActive, workSessionNavigationRequestKey != nil else { return }
+        await handleRequestedWorkSessionNavigation()
+      }
+      .onAppear {
+        guard isTabActive, syncService.requestedWorkSessionNavigation != nil else { return }
+        Task { await handleRequestedWorkSessionNavigation() }
+      }
+      .onChange(of: isTabActive) { _, active in
+        guard active, syncService.requestedWorkSessionNavigation != nil else { return }
+        Task { await handleRequestedWorkSessionNavigation() }
+      }
+      .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
+        guard isTabActive, requestId != nil else { return }
+        Task { await handleRequestedWorkSessionNavigation() }
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId
           ? (ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil)
           : nil
+        let initialSession = optimisticSessions[route.sessionId]
+          ?? mergedSessions.first(where: { $0.id == route.sessionId })
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
-          initialSession: mergedSessions.first(where: { $0.id == route.sessionId }),
+          initialSession: initialSession,
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: transcriptCache[route.sessionId],
           transitionNamespace: routeTransitionNamespace,
@@ -516,7 +549,9 @@ struct WorkRootScreen: View {
           renameTarget = nil
         }
         Button("Save") {
-          Task { await submitRename() }
+          let target = renameTarget
+          let title = renameText
+          Task { await submitRename(target: target, title: title) }
         }
       } message: {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsPairingSection: View {
-  @EnvironmentObject private var syncService: SyncService
+  let snapshot: SettingsPairingSnapshot
   @Binding var presentedSheet: SettingsPairSheetRoute?
 
   var body: some View {
@@ -34,8 +34,8 @@ struct SettingsPairingSection: View {
   }
 
   private var discoverSubtitle: String? {
-    let count = syncService.discoveredHosts.count
-    let savedCount = syncService.savedReconnectHosts.count
+    let count = snapshot.discoveredHostCount
+    let savedCount = snapshot.savedReconnectHostCount
     if count == 0, savedCount > 0 {
       return savedCount == 1 ? "1 saved machine" : "\(savedCount) saved machines"
     }
@@ -46,7 +46,7 @@ struct SettingsPairingSection: View {
   }
 
   private var pairingHint: String? {
-    guard !syncService.savedReconnectHosts.isEmpty else {
+    guard snapshot.savedReconnectHostCount > 0 else {
       return "Pick how to reach your machine"
     }
     return "Add another machine or switch saved machines"
@@ -206,18 +206,37 @@ func syncDiscoveredHostsForDisplay(
   savedHosts: [DiscoveredSyncHost],
   liveHosts: [DiscoveredSyncHost]
 ) -> (savedHosts: [DiscoveredSyncHost], liveHosts: [DiscoveredSyncHost]) {
+  let coalescedLiveHosts = syncCoalescedLiveDiscoveredHosts(liveHosts)
   let saved = savedHosts.map { savedHost in
-    guard let liveHost = liveHosts.first(where: { syncDiscoveredHostsReferToSameMachine(savedHost, $0) }) else {
+    guard let liveHost = coalescedLiveHosts.first(where: { syncDiscoveredHostsReferToSameMachine(savedHost, $0) }) else {
       return savedHost
     }
     return syncMergeSavedDiscoveredHost(savedHost, withLiveHost: liveHost)
   }
-  let live = liveHosts.filter { liveHost in
+  let live = coalescedLiveHosts.filter { liveHost in
     !savedHosts.contains { savedHost in
       syncDiscoveredHostsReferToSameMachine(savedHost, liveHost)
     }
   }
   return (savedHosts: saved, liveHosts: live)
+}
+
+func syncCoalescedLiveDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) -> [DiscoveredSyncHost] {
+  var byKey: [String: DiscoveredSyncHost] = [:]
+  var orderedKeys: [String] = []
+
+  for host in hosts {
+    let key = syncExistingDiscoveredHostDisplayKey(for: host, in: orderedKeys, byKey: byKey)
+      ?? syncDiscoveredHostDisplayKey(host)
+    if let existing = byKey[key] {
+      byKey[key] = syncMergeLiveDiscoveredHost(existing, with: host)
+    } else {
+      byKey[key] = host
+      orderedKeys.append(key)
+    }
+  }
+
+  return orderedKeys.compactMap { byKey[$0] }
 }
 
 func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix: String?) -> String {
@@ -257,6 +276,93 @@ private func syncDiscoveredHostsReferToSameMachine(
     return leftIdentity == rightIdentity
   }
   return left.id == right.id
+}
+
+private func syncExistingDiscoveredHostDisplayKey(
+  for host: DiscoveredSyncHost,
+  in orderedKeys: [String],
+  byKey: [String: DiscoveredSyncHost]
+) -> String? {
+  guard let hostRoute = syncDiscoveredHostDisplayPrimaryRouteKey(host) else { return nil }
+  return orderedKeys.first { key in
+    guard let existing = byKey[key] else { return false }
+    return syncDiscoveredHostDisplayPrimaryRouteKey(existing) == hostRoute
+  }
+}
+
+private func syncDiscoveredHostDisplayKey(_ host: DiscoveredSyncHost) -> String {
+  if let route = syncDiscoveredHostDisplayPrimaryRouteKey(host) {
+    return "route:\(route):\(host.port)"
+  }
+  if let identity = syncTrimmedNonEmpty(host.hostIdentity) {
+    return "identity:\(identity)"
+  }
+  if let name = syncTrimmedNonEmpty(host.hostName)?.lowercased() {
+    return "name:\(name):\(host.port)"
+  }
+  return "id:\(host.id)"
+}
+
+private func syncDiscoveredHostDisplayPrimaryRouteKey(_ host: DiscoveredSyncHost) -> String? {
+  let lanRoute = host.addresses
+    .map(syncNormalizedRouteHost)
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .first(where: { !$0.isEmpty && !syncIsLoopbackAddress($0) && !syncIsTailscaleRoute($0) && !$0.hasSuffix(".local") })
+  if let lanRoute {
+    return lanRoute
+  }
+
+  let bonjourRoute = host.addresses
+    .map(syncNormalizedRouteHost)
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .first(where: { !$0.isEmpty && !syncIsLoopbackAddress($0) && !syncIsTailscaleRoute($0) })
+  if let bonjourRoute {
+    return bonjourRoute
+  }
+
+  return (host.tailscaleAddress.map { [$0] } ?? host.addresses)
+    .map(syncNormalizedRouteHost)
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .first(where: { !$0.isEmpty && !syncIsLoopbackAddress($0) })
+}
+
+private func syncMergeLiveDiscoveredHost(
+  _ left: DiscoveredSyncHost,
+  with right: DiscoveredSyncHost
+) -> DiscoveredSyncHost {
+  let preferred = syncPreferDiscoveredHostForDisplay(right, over: left) ? right : left
+  let fallback = preferred.id == right.id ? left : right
+  return DiscoveredSyncHost(
+    id: preferred.id,
+    serviceName: syncTrimmedNonEmpty(preferred.serviceName) ?? fallback.serviceName,
+    hostName: syncTrimmedNonEmpty(preferred.hostName) ?? fallback.hostName,
+    hostIdentity: syncTrimmedNonEmpty(preferred.hostIdentity) ?? syncTrimmedNonEmpty(fallback.hostIdentity),
+    port: preferred.port > 0 ? preferred.port : fallback.port,
+    addresses: syncUniqueNonEmptyStrings(preferred.addresses + fallback.addresses),
+    tailscaleAddress: syncTrimmedNonEmpty(preferred.tailscaleAddress) ?? syncTrimmedNonEmpty(fallback.tailscaleAddress),
+    runtimeKind: syncTrimmedNonEmpty(preferred.runtimeKind) ?? syncTrimmedNonEmpty(fallback.runtimeKind),
+    runtimeVersion: syncTrimmedNonEmpty(preferred.runtimeVersion) ?? syncTrimmedNonEmpty(fallback.runtimeVersion),
+    projectIds: syncUniqueNonEmptyStrings(preferred.projectIds + fallback.projectIds),
+    projectNames: syncUniqueNonEmptyStrings(preferred.projectNames + fallback.projectNames),
+    projectCount: max(preferred.projectCount ?? 0, fallback.projectCount ?? 0) > 0
+      ? max(preferred.projectCount ?? 0, fallback.projectCount ?? 0)
+      : nil,
+    lastResolvedAt: max(preferred.lastResolvedAt, fallback.lastResolvedAt)
+  )
+}
+
+private func syncPreferDiscoveredHostForDisplay(
+  _ candidate: DiscoveredSyncHost,
+  over existing: DiscoveredSyncHost
+) -> Bool {
+  let candidateName = syncTrimmedNonEmpty(candidate.hostName) ?? ""
+  let existingName = syncTrimmedNonEmpty(existing.hostName) ?? ""
+  let candidateLooksLikeDeviceName = !candidateName.localizedCaseInsensitiveContains(".local")
+  let existingLooksLikeDeviceName = !existingName.localizedCaseInsensitiveContains(".local")
+  if candidateLooksLikeDeviceName != existingLooksLikeDeviceName {
+    return candidateLooksLikeDeviceName
+  }
+  return candidate.lastResolvedAt >= existing.lastResolvedAt
 }
 
 private func syncMergeSavedDiscoveredHost(

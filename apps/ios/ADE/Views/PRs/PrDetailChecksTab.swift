@@ -1,7 +1,73 @@
 import SwiftUI
 
+struct PrChecksSummaryStats: Equatable {
+  let fail: Int
+  let pending: Int
+  let pass: Int
+  let total: Int
+}
+
+func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> PrChecksSummaryStats {
+  var fail = 0, pending = 0, pass = 0
+  for check in checks {
+    switch prCheckConclusionKind(check) {
+    case .success: pass += 1
+    case .failure: fail += 1
+    case .pending: pending += 1
+    // Neutral/skipped checks are non-failing outcomes; bucket them with pass so the
+    // stat strip's total always equals the sum of pass + fail + pending.
+    case .neutral: pass += 1
+    }
+  }
+  if !checks.isEmpty {
+    return .init(fail: fail, pending: pending, pass: pass, total: checks.count)
+  }
+
+  switch overallChecksStatus?.lowercased() {
+  case "failing", "failure", "failed":
+    return .init(fail: 1, pending: 0, pass: 0, total: 1)
+  case "pending", "running", "in_progress":
+    return .init(fail: 0, pending: 1, pass: 0, total: 1)
+  case "passing", "success", "passed":
+    return .init(fail: 0, pending: 0, pass: 1, total: 1)
+  default:
+    return .init(fail: 0, pending: 0, pass: 0, total: 0)
+  }
+}
+
+func prChecksHasFailedSignal(checks: [PrCheck], overallChecksStatus: String?) -> Bool {
+  checks.contains { prCheckConclusionKind($0) == .failure }
+    || prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus).fail > 0
+}
+
+func prChecksEmptyStateCopy(overallChecksStatus: String?) -> (title: String, message: String) {
+  switch overallChecksStatus?.lowercased() {
+  case "failing", "failure", "failed":
+    return (
+      "Checks failing",
+      "The PR summary reports failing checks, but individual check runs have not synced yet."
+    )
+  case "pending", "running", "in_progress":
+    return (
+      "Checks pending",
+      "The PR summary reports pending checks, but individual check runs have not synced yet."
+    )
+  case "passing", "success", "passed":
+    return (
+      "Checks passing",
+      "The PR summary reports passing checks, but individual check runs have not synced yet."
+    )
+  default:
+    return (
+      "No CI checks",
+      "No check runs were synced for this PR yet."
+    )
+  }
+}
+
 struct PrChecksTab: View {
   let checks: [PrCheck]
+  let overallChecksStatus: String?
   let actionRuns: [PrActionRun]
   let deployments: [PrDeployment]
   let canRerunChecks: Bool
@@ -14,6 +80,7 @@ struct PrChecksTab: View {
 
   init(
     checks: [PrCheck],
+    overallChecksStatus: String? = nil,
     actionRuns: [PrActionRun],
     deployments: [PrDeployment] = [],
     canRerunChecks: Bool,
@@ -25,6 +92,7 @@ struct PrChecksTab: View {
     onStopAiResolver: @escaping () -> Void = {}
   ) {
     self.checks = checks
+    self.overallChecksStatus = overallChecksStatus
     self.actionRuns = actionRuns
     self.deployments = deployments
     self.canRerunChecks = canRerunChecks
@@ -36,17 +104,8 @@ struct PrChecksTab: View {
     self.onStopAiResolver = onStopAiResolver
   }
 
-  private var stats: PrChecksStatStrip.Stats {
-    var fail = 0, pending = 0, pass = 0
-    for check in checks {
-      switch prCheckConclusionKind(check) {
-      case .success: pass += 1
-      case .failure: fail += 1
-      case .pending: pending += 1
-      case .neutral: break
-      }
-    }
-    return .init(fail: fail, pending: pending, pass: pass, total: checks.count)
+  private var stats: PrChecksSummaryStats {
+    prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus)
   }
 
   private var groups: [PrCheckGroup] {
@@ -54,7 +113,11 @@ struct PrChecksTab: View {
   }
 
   private var hasFailedChecks: Bool {
-    checks.contains { prCheckConclusionKind($0) == .failure }
+    prChecksHasFailedSignal(checks: checks, overallChecksStatus: overallChecksStatus)
+  }
+
+  private var emptyStateCopy: (title: String, message: String) {
+    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus)
   }
 
   private var aiResolverRunning: Bool {
@@ -64,7 +127,7 @@ struct PrChecksTab: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      if !checks.isEmpty {
+      if stats.total > 0 {
         PrChecksProgressBar(stats: stats)
       }
       PrChecksStatStrip(stats: stats)
@@ -72,8 +135,8 @@ struct PrChecksTab: View {
       if checks.isEmpty {
         ADEEmptyStateView(
           symbol: "checklist",
-          title: "No CI checks",
-          message: "No check runs were synced for this PR yet."
+          title: emptyStateCopy.title,
+          message: emptyStateCopy.message
         )
       } else {
         ForEach(groups, id: \.kind) { group in
@@ -135,7 +198,7 @@ struct PrChecksTab: View {
 /// segment width is proportional to its share of the run set; the layout uses
 /// GeometryReader so it tracks the parent width even on rotation.
 private struct PrChecksProgressBar: View {
-  let stats: PrChecksStatStrip.Stats
+  let stats: PrChecksSummaryStats
 
   private var passSummary: String {
     let total = stats.total
@@ -182,14 +245,7 @@ private struct PrChecksProgressBar: View {
 // MARK: - Stat strip
 
 private struct PrChecksStatStrip: View {
-  struct Stats {
-    let fail: Int
-    let pending: Int
-    let pass: Int
-    let total: Int
-  }
-
-  let stats: Stats
+  let stats: PrChecksSummaryStats
 
   var body: some View {
     HStack(spacing: 8) {

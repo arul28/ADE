@@ -631,6 +631,17 @@ project scope split.
   wire format is identical; cr-sqlite feature parity is **not**
   guaranteed — any desktop-only cr-sqlite feature that ADE grows to
   depend on must also be implementable in SQL triggers on iOS.
+- **iOS sends unpacked primary keys; the desktop daemon repacks
+  them.** The iOS emulation captures `crsql_changes.pk` as the raw
+  scalar (a string, integer, or already-bytes value) instead of the
+  cr-sqlite packed type-tagged byte string desktop emits. On the
+  receive side, `apps/desktop/src/main/services/state/kvDb.ts`
+  applies `normalizeIncomingCrsqlChange` to every inbound row before
+  the `crsql_changes` insert: bytes that already look packed are
+  passed through, while raw strings / ints / `0` / `1` are wrapped
+  into the matching `packedCrsqlPrimaryKey` byte layout the native
+  cr-sqlite extension expects. Skipping this step is how phone-side
+  edits silently fail to apply on the desktop.
 - **Controller command queues replay on reconnect.** If the host
   advertises `chat.send` as queueable and the user sends while the
   desktop is reconnecting, the iOS app stores the command locally with

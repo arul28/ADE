@@ -331,31 +331,32 @@ struct CtoSettingsScreen: View {
 
   // MARK: - Data loading
 
-  /// Fires all reads in parallel but tolerates partial failures — one endpoint
-  /// returning an error shouldn't blank the entire screen (e.g. Linear status
-  /// is optional and should never block the identity card from rendering).
+  /// Tolerates partial failures. Linear and budget status should never block
+  /// the identity card from rendering.
   private func reload() async {
     isLoading = true
     errorMessage = nil
     defer { isLoading = false }
 
-    async let snapshotTask = syncService.fetchCtoState()
-    async let budgetTask = syncService.fetchCtoBudget()
-    async let linearTask = syncService.fetchLinearConnectionStatus()
-
     do {
-      self.snapshot = try await snapshotTask
+      self.snapshot = try await syncService.fetchCtoState()
     } catch {
       if self.snapshot == nil {
         self.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
       }
     }
 
-    if let value = try? await budgetTask {
+    if let value = try? await syncService.fetchCtoBudget() {
       self.budget = value
+    } else {
+      // Drop stale budget rather than render outdated numbers under a fresh load.
+      self.budget = nil
     }
-    if let value = try? await linearTask {
+    if let value = try? await syncService.fetchLinearConnectionStatus() {
       self.linearStatus = value
+    } else {
+      // Same reasoning — a failed refresh should not preserve the previous integration state.
+      self.linearStatus = nil
     }
   }
 }

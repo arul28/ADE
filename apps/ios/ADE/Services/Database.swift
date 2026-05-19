@@ -86,6 +86,8 @@ final class DatabaseService {
     let resumeMetadata: TerminalResumeMetadata?
     let chatIdleSinceAt: String?
     let chatSessionId: String?
+    let pendingInputItemId: String?
+    let archivedAt: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -306,10 +308,12 @@ final class DatabaseService {
 
     var rows: [CrsqlChangeRow] = []
     while sqlite3_step(statement) == SQLITE_ROW {
+      let table = stringValue(statement, index: 0) ?? ""
+      let rawPk = scalarValue(statement, index: 1)
       rows.append(
         CrsqlChangeRow(
-          table: stringValue(statement, index: 0) ?? "",
-          pk: scalarValue(statement, index: 1),
+          table: table,
+          pk: encodeOutgoingCrsqlPrimaryKey(table: table, pk: rawPk),
           cid: stringValue(statement, index: 2) ?? "",
           val: scalarValue(statement, index: 3),
           colVersion: Int(sqlite3_column_int64(statement, 4)),
@@ -548,6 +552,10 @@ final class DatabaseService {
       )
     }).filter { orderedLaneIds.contains($0.lane.id) }
 
+    if laneSnapshotHydrationMatchesExisting(hydratedSnapshots) {
+      return
+    }
+
     try exec("begin")
     do {
       try exec("pragma defer_foreign_keys = on")
@@ -762,8 +770,10 @@ final class DatabaseService {
 
   func replaceLaneDetail(_ detail: LaneDetailPayload) throws {
     guard db != nil else { return }
-    let updatedAt = ISO8601DateFormatter().string(from: Date())
+    guard fetchLaneDetail(laneId: detail.lane.id) != detail else { return }
+
     let encodedDetail = try encodeJsonString(detail)
+    let updatedAt = ISO8601DateFormatter().string(from: Date())
     _ = try execute("""
       insert into lane_detail_snapshots(
         lane_id, detail_json, updated_at
@@ -777,6 +787,20 @@ final class DatabaseService {
       try bindText(updatedAt, to: statement, index: 3)
     }
     notifyDidChange()
+  }
+
+  private func laneSnapshotHydrationMatchesExisting(_ snapshots: [LaneListSnapshot]) -> Bool {
+    let existingSnapshots = fetchLaneListSnapshots(includeArchived: true)
+    guard existingSnapshots.count == snapshots.count else { return false }
+    let existingByLaneId = Dictionary(uniqueKeysWithValues: existingSnapshots.map { ($0.lane.id, $0) })
+    guard Set(existingByLaneId.keys) == Set(snapshots.map(\.lane.id)) else { return false }
+
+    for snapshot in snapshots {
+      guard existingByLaneId[snapshot.lane.id] == snapshot else {
+        return false
+      }
+    }
+    return true
   }
 
   func fetchLaneDetail(laneId: String) -> LaneDetailPayload? {
@@ -871,8 +895,9 @@ final class DatabaseService {
           insert into terminal_sessions(
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
-            last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id,
+            pending_input_item_id, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -897,7 +922,9 @@ final class DatabaseService {
             resume_metadata_json = excluded.resume_metadata_json,
             manually_named = excluded.manually_named,
             chat_idle_since_at = excluded.chat_idle_since_at,
-            chat_session_id = excluded.chat_session_id
+            chat_session_id = excluded.chat_session_id,
+            pending_input_item_id = excluded.pending_input_item_id,
+            archived_at = excluded.archived_at
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -971,6 +998,16 @@ final class DatabaseService {
             try bindText(chatSessionId, to: statement, index: 25)
           } else {
             sqlite3_bind_null(statement, 25)
+          }
+          if let pendingInputItemId = session.pendingInputItemId, !pendingInputItemId.isEmpty {
+            try bindText(pendingInputItemId, to: statement, index: 26)
+          } else {
+            sqlite3_bind_null(statement, 26)
+          }
+          if let archivedAt = session.archivedAt {
+            try bindText(archivedAt, to: statement, index: 27)
+          } else {
+            sqlite3_bind_null(statement, 27)
           }
         }
       }
@@ -1058,7 +1095,7 @@ final class DatabaseService {
             updated_at = excluded.updated_at
         """) { statement in
           try bindText(pr.id, to: statement, index: 1)
-          try bindText(pr.projectId.isEmpty ? projectId : pr.projectId, to: statement, index: 2)
+          try bindText(projectId, to: statement, index: 2)
           try bindText(pr.laneId, to: statement, index: 3)
           try bindText(pr.repoOwner, to: statement, index: 4)
           try bindText(pr.repoName, to: statement, index: 5)
@@ -1437,7 +1474,7 @@ final class DatabaseService {
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
-             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1472,7 +1509,9 @@ final class DatabaseService {
         resumeCommand: stringValue(statement, index: 20),
         resumeMetadata: decodeJson(stringValue(statement, index: 21), as: TerminalResumeMetadata.self),
         chatIdleSinceAt: stringValue(statement, index: 22),
-        chatSessionId: stringValue(statement, index: 23)
+        chatSessionId: stringValue(statement, index: 23),
+        pendingInputItemId: stringValue(statement, index: 24),
+        archivedAt: stringValue(statement, index: 25)
       )
     }.map { row in
       TerminalSessionSummary(
@@ -1489,6 +1528,7 @@ final class DatabaseService {
         status: row.status,
         startedAt: row.startedAt,
         endedAt: row.endedAt,
+        archivedAt: row.archivedAt,
         exitCode: row.exitCode,
         transcriptPath: row.transcriptPath,
         headShaStart: row.headShaStart,
@@ -1499,33 +1539,73 @@ final class DatabaseService {
         resumeCommand: row.resumeCommand,
         resumeMetadata: row.resumeMetadata,
         chatIdleSinceAt: row.chatIdleSinceAt,
-        chatSessionId: row.chatSessionId
+        chatSessionId: row.chatSessionId,
+        pendingInputItemId: row.pendingInputItemId
       )
     }
   }
 
   func updateSessionTitle(sessionId: String, title: String) throws {
-    guard db != nil else { return }
-    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-    _ = try execute("update terminal_sessions set title = ? where id = ?") { statement in
-      try bindText(trimmed, to: statement, index: 1)
-      try bindText(sessionId, to: statement, index: 2)
-    }
-    notifyDidChange()
+    try updateSessionMeta(sessionId: sessionId, title: title)
   }
 
   func setSessionPinned(sessionId: String, pinned: Bool) throws {
+    try updateSessionMeta(sessionId: sessionId, pinned: pinned)
+  }
+
+  func updateSessionMeta(
+    sessionId: String,
+    title: String? = nil,
+    pinned: Bool? = nil,
+    manuallyNamed: Bool? = nil
+  ) throws {
     guard db != nil else { return }
-    _ = try execute("update terminal_sessions set pinned = ? where id = ?") { statement in
-      sqlite3_bind_int(statement, 1, pinned ? 1 : 0)
-      try bindText(sessionId, to: statement, index: 2)
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+
+    var assignments: [String] = []
+    var binders: [((OpaquePointer, Int32) throws -> Void)] = []
+
+    if let title {
+      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+      // Skip just the title write when it's blank — other field updates
+      // (pinned, manually_named) must still apply on the same call.
+      if !trimmedTitle.isEmpty {
+        assignments.append("title = ?")
+        binders.append { statement, index in
+          try self.bindText(trimmedTitle, to: statement, index: index)
+        }
+      }
+    }
+
+    if let pinned {
+      assignments.append("pinned = ?")
+      binders.append { statement, index in
+        sqlite3_bind_int(statement, index, pinned ? 1 : 0)
+      }
+    }
+
+    if let manuallyNamed {
+      assignments.append("manually_named = ?")
+      binders.append { statement, index in
+        sqlite3_bind_int(statement, index, manuallyNamed ? 1 : 0)
+      }
+    }
+
+    guard !assignments.isEmpty else { return }
+    _ = try execute("update terminal_sessions set \(assignments.joined(separator: ", ")) where id = ?") { statement in
+      for (offset, binder) in binders.enumerated() {
+        try binder(statement, Int32(offset + 1))
+      }
+      try self.bindText(trimmedSessionId, to: statement, index: Int32(binders.count + 1))
     }
     notifyDidChange()
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
-    guard let projectId = currentProjectId() else { return [] }
+    let projectIds = currentProjectScopeIds()
+    guard !projectIds.isEmpty else { return [] }
+    let projectPlaceholders = Array(repeating: "?", count: projectIds.count).joined(separator: ", ")
 
     let sql = """
       select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
@@ -1533,18 +1613,26 @@ final class DatabaseService {
              l.owner_kind, l.owner_id, l.relation
         from computer_use_artifacts a
         inner join computer_use_artifact_links l on l.artifact_id = a.id
-       where a.project_id = ?
-         and l.project_id = ?
+       where a.project_id in (\(projectPlaceholders))
+         and l.project_id in (\(projectPlaceholders))
          and l.owner_kind = ?
          and l.owner_id = ?
        order by a.created_at asc
     """
 
     return query(sql, bind: { [self] statement in
-      try self.bindText(projectId, to: statement, index: 1)
-      try self.bindText(projectId, to: statement, index: 2)
-      try self.bindText(ownerKind, to: statement, index: 3)
-      try self.bindText(ownerId, to: statement, index: 4)
+      var index: Int32 = 1
+      for projectId in projectIds {
+        try self.bindText(projectId, to: statement, index: index)
+        index += 1
+      }
+      for projectId in projectIds {
+        try self.bindText(projectId, to: statement, index: index)
+        index += 1
+      }
+      try self.bindText(ownerKind, to: statement, index: index)
+      index += 1
+      try self.bindText(ownerId, to: statement, index: index)
     }, map: { statement in
       ComputerUseArtifactRow(
         id: stringValue(statement, index: 0) ?? "",
@@ -2225,6 +2313,16 @@ final class DatabaseService {
       columnName: "chat_session_id",
       definition: "text"
     )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "pending_input_item_id",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "archived_at",
+      definition: "text"
+    )
     try exec("""
       create table if not exists lane_list_snapshots (
         lane_id text primary key,
@@ -2612,9 +2710,10 @@ final class DatabaseService {
     // One-time cleanup: excluded cache/snapshot tables should not participate
     // in phone-side CRDT at all. Drop their CRR metadata and pending changes
     // so they only flow through explicit hydration commands.
-    for cacheTable in DatabaseService.excludedCrrTables where hasTable(named: "\(cacheTable)__crsql_clock") {
+    for cacheTable in DatabaseService.excludedCrrTables where hasTable(named: "\(cacheTable)__crsql_clock") || hasTable(named: "\(cacheTable)__crsql_pks") {
       try dropCrrTriggers(for: cacheTable)
       try exec("drop table if exists \(quoteIdentifier("\(cacheTable)__crsql_clock"))")
+      try exec("drop table if exists \(quoteIdentifier("\(cacheTable)__crsql_pks"))")
       _ = try execute("delete from crsql_master where tbl_name = ?") { statement in
         try bindText(cacheTable, to: statement, index: 1)
       }
@@ -2644,6 +2743,11 @@ final class DatabaseService {
   /// Treating them as CRDT tables is redundant and can break first-connect
   /// materialization when the incoming delta stream is not row-complete.
   private static let hydrationOwnedCrrExcludedTables: Set<String> = [
+    "files_workspaces",
+    "file_directory_snapshots",
+    "file_content_snapshots",
+    "file_diff_snapshots",
+    "file_history_snapshots",
     "lane_state_snapshots",
     "pull_request_snapshots",
   ]
@@ -2907,6 +3011,33 @@ final class DatabaseService {
       return activeProjectIdOverride
     }
     return queryString("select id from projects order by last_opened_at desc, created_at desc limit 1")
+  }
+
+  private func currentProjectScopeIds() -> [String] {
+    guard let projectId = currentProjectId() else { return [] }
+    let activeRootPath = queryString("select root_path from projects where id = ? limit 1") { [self] statement in
+      try self.bindText(projectId, to: statement, index: 1)
+    }
+    guard let activeRoot = normalizedProjectCacheRoot(activeRootPath) else {
+      return [projectId]
+    }
+    let matchingIds = query("select id, root_path from projects") { statement in
+      (
+        id: stringValue(statement, index: 0) ?? "",
+        rootPath: stringValue(statement, index: 1)
+      )
+    }
+    .filter { row in
+      guard !row.id.isEmpty else { return false }
+      return normalizedProjectCacheRoot(row.rootPath) == activeRoot
+    }
+    .map(\.id)
+
+    var ordered = [projectId]
+    for id in matchingIds where !ordered.contains(id) {
+      ordered.append(id)
+    }
+    return ordered
   }
 
   private func projectCount() -> Int {
@@ -3669,6 +3800,69 @@ final class DatabaseService {
   private func decodeCrsqlPk(_ pk: SyncScalarValue) -> SyncScalarValue {
     guard let cols = decodeCrsqlPkColumns(pk), cols.count == 1 else { return pk }
     return cols[0]
+  }
+
+  private func encodeOutgoingCrsqlPrimaryKey(table: String, pk: SyncScalarValue) -> SyncScalarValue {
+    guard let tableInfo = syncTableInfo(for: table),
+          tableInfo.primaryKeyColumns.count == 1
+    else {
+      return pk
+    }
+    return encodeCrsqlPrimaryKey(pk)
+  }
+
+  private func encodeCrsqlPrimaryKey(_ pk: SyncScalarValue) -> SyncScalarValue {
+    guard case .bytes = pk else {
+      return packedCrsqlPrimaryKey(pk) ?? pk
+    }
+    return pk
+  }
+
+  private func packedCrsqlPrimaryKey(_ value: SyncScalarValue) -> SyncScalarValue? {
+    var bytes = Data([0x01])
+
+    switch value {
+    case .string(let stringValue):
+      let utf8 = Array(stringValue.utf8)
+      guard utf8.count <= Int(UInt8.max) else { return nil }
+      bytes.append(0x0b)
+      bytes.append(UInt8(utf8.count))
+      bytes.append(contentsOf: utf8)
+    case .number(let numberValue):
+      guard numberValue.rounded(.towardZero) == numberValue else { return nil }
+      guard numberValue >= Double(Int64.min), numberValue <= Double(Int64.max) else { return nil }
+      let integer = Int64(numberValue)
+      if integer == 0 {
+        bytes.append(0x08)
+      } else if integer == 1 {
+        bytes.append(0x09)
+      } else if integer >= Int64(Int8.min), integer <= Int64(Int8.max) {
+        bytes.append(0x01)
+        bytes.append(UInt8(bitPattern: Int8(integer)))
+      } else if integer >= Int64(Int16.min), integer <= Int64(Int16.max) {
+        bytes.append(0x02)
+        let value = Int16(integer)
+        bytes.append(UInt8(truncatingIfNeeded: value >> 8))
+        bytes.append(UInt8(truncatingIfNeeded: value))
+      } else if integer >= Int64(Int32.min), integer <= Int64(Int32.max) {
+        bytes.append(0x04)
+        let value = Int32(integer)
+        for shift in stride(from: 24, through: 0, by: -8) {
+          bytes.append(UInt8(truncatingIfNeeded: value >> Int32(shift)))
+        }
+      } else {
+        bytes.append(0x06)
+        for shift in stride(from: 56, through: 0, by: -8) {
+          bytes.append(UInt8(truncatingIfNeeded: integer >> Int64(shift)))
+        }
+      }
+    case .bytes:
+      return value
+    case .null:
+      return nil
+    }
+
+    return .bytes(SyncScalarBytes(type: "bytes", base64: bytes.base64EncodedString()))
   }
 
   private func rowChangesRepresentDeletedRow(

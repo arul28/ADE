@@ -29,7 +29,13 @@ apps/ios/
 │   │   ├── ADEApp.swift             # SwiftUI app entry
 │   │   ├── AppDelegate.swift        # APNs registration, notification-category
 │   │   │                            # setup, response/action routing, deep-link dispatch
-│   │   ├── ContentView.swift        # slim 6-tab TabView
+│   │   ├── ContentView.swift        # 5-tab TabView with a custom
+│   │   │                            # `ADERootBottomTabBar` overlay
+│   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
+│   │   │                            # running-chat badge); the system tab
+│   │   │                            # strip is hidden and individual screens
+│   │   │                            # can hide the custom bar via
+│   │   │                            # `adeRootTabBarHidden()`
 │   │   ├── DeepLinkRouter.swift     # ade://session/<id> + ade://pr/<n> URL handler
 │   │   │                            # plus notification userInfo dispatch
 │   │   │                            # (sessionId / prId / prNumber → prId via
@@ -58,8 +64,12 @@ apps/ios/
 │   │   ├── LiveActivityIntentsForward.swift # ADEIntentCommandKind, ADEIntentCommandRegistry
 │   │   └── WidgetAppIntents.swift   # OpenADEIntent, ToggleMutePushIntent (iOS 18+)
 │   ├── Views/
-│   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot),
-│   │   │                            # haptics, shimmer, mobile primitives
+│   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
+│   │   │                            # ADEUIKitAppearance.configureTabBar(),
+│   │   │                            # ADERootTabBarHiddenPreferenceKey),
+│   │   │                            # haptics, ADEMobilePrimitives (incl.
+│   │   │                            # ADEOptionButton for selection rows)
+│   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
 │   │   │                            # LaneAdvancedScreen (gearshape destination),
@@ -456,7 +466,13 @@ over Apple Push Notification service. The full stack is implemented:
   Also sends Live Activity `liveactivity` pushes to per-activity
   update tokens when the notification maps to an attention value (chat
   awaiting input / failed, PR CI failing / review requested / merge
-  ready).
+  ready). `sendTestPush` has an explicit fallback: when APNs is not
+  configured but the target device is currently connected, the bus
+  delivers an in-app `system` notification and returns
+  `{ ok: true, reason: "in_app_only" }`, and the `ade serve` runtime's
+  `syncHostService` does the same when no notification bus is wired at
+  all, so "Send test push" on the phone always produces a visible
+  confirmation when the WebSocket is alive.
 
 **iOS client side**:
 
@@ -589,7 +605,55 @@ extension without importing the main app's heavier renderer code.
 - `UIImpactFeedbackGenerator` and `UINotificationFeedbackGenerator`
   on message send, intervention approval, mission launch, PR merge.
 
+### Attention Drawer
+
+Source: `apps/ios/ADE/Views/AttentionDrawer/`.
+
+The attention drawer is a single global sheet (`AttentionDrawerSheet`)
+opened from the navigation bar bell. `AttentionDrawerModel` rebuilds the
+roster from the App Group `WorkspaceSnapshot` whenever
+`SyncService.activeSessions` or `workspaceSnapshotRevision` changes, and
+projects each row into an `AttentionItem` that carries the originating
+session/PR ids plus an optional `itemId` lifted from
+`AgentChatSessionSummary.pendingInputItemId` / `AgentSnapshot.pendingInputItemId`.
+
+Each row renders inline actions sourced from the same surface the
+notification banners use:
+
+- **Awaiting input** — when an `itemId` is present, the row shows
+  Approve / Deny buttons backed by `ApproveSessionIntent` /
+  `DenySessionIntent`; otherwise the primary action is "Open session"
+  (which still routes through `Reply`-style behaviour via deep link).
+- **Failed** — "Open agent" plus a `RestartSessionIntent` chip.
+- **CI failing** — "Open #N" plus `RetryCheckIntent` to rerun checks.
+- **Review requested / merge ready** — "Review" / "Merge" /
+  "View" entries that deep-link into the PR detail surface.
+
+`AttentionDrawerModel.clearVisibleItems()` snapshots the current set of
+ids into `dismissedItemIDs` (persisted under
+`ade.attention.dismissedItemIDsKey` in App Group `UserDefaults`) and
+prunes the in-memory list. The pruning step in
+`pruneDismissedItems(activeIDs:)` runs on every rebuild, so a future
+regression — a chat re-entering awaiting-input, a PR going red again —
+re-surfaces the card automatically. The "Clear all" toolbar button calls
+this method; the cards do not silently come back until the underlying
+attention recurs.
+
 ## Tab structure
+
+The root shell is a `TabView` whose system tab bar is suppressed
+(`toolbar(.hidden, for: .tabBar)`) in favour of a hand-rolled
+`ADERootBottomTabBar` injected as a bottom safe-area inset. The custom
+bar exposes the five shipped tabs (Work / Lanes / PRs / Files / CTO),
+renders a per-tab selection highlight, and shows a red `Capsule` badge on
+the Work tab driven by `SyncService.runningChatSessionCount`
+(`min(count, 99)`). Detail screens that should claim the full height —
+new-chat / model-setup / advanced flows — opt out by emitting an
+`ADERootTabBarHiddenPreferenceKey` value via the `.adeRootTabBarHidden()`
+modifier. `ADEUIKitAppearance.configureTabBar()` (called from
+`ContentView.onAppear`) also tunes the underlying UIKit `UITabBar`
+appearance so any system surface that still falls through (sheets,
+push-controllers built from UIKit) matches the SwiftUI chrome.
 
 Before the tabs render, `ProjectHomeView` can take over the root screen
 when no active project is selected or the user taps the Projects toolbar
@@ -621,10 +685,10 @@ duplicate. Project list dedup runs as a final pass
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by host capability, and a setup-hint card surfaced when the host returns "AI commit messages are off". |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the host (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; the CLI mode submits `work.startCliSession` with the chosen provider, permission mode, and an optional opening message that the host types into the spawned PTY for non-shell providers. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and the live-count chip. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the host (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the host types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
-| **CTO** | `sparkles` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. |
+| **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. `sendTestPush` is now `async` and returns a `SyncSendTestPushResult` (`ok`, `message`); the Notifications section renders that message verbatim so APNs-not-configured / in-app-only / wire failure cases all surface to the user. |
 
 ### Planned
 
@@ -864,7 +928,52 @@ reflected in the phone's UI on the next descriptor read.
   — those come from the shared
   `apps/desktop/src/shared/cliLaunch.ts`. Adding a sixth provider
   means updating both the host registry and the phone's
-  `workCliProviderOptions` together.
+  `workCliProviderOptions` together. `SyncStartCliSessionArgs` also
+  carries an optional `reasoningEffort` field that the host forwards
+  to `buildTrackedCliLaunchCommand`, so the phone can launch a Codex
+  / Claude CLI session at a non-default effort tier without going
+  through the desktop.
+- **Codex CLI launches receive the initial prompt as argv, not PTY
+  echo.** Other providers still receive `initialInput` as bytes typed
+  into the spawned PTY (`writeBySessionId(sessionId, "${input}\\r")`),
+  but Codex receives it as the final positional argv on `codex` via
+  `buildTrackedCliLaunchCommand` so the model sees a clean first turn
+  instead of a typed shell line. Plain "Shell" launches go through
+  `resolveCleanShellLaunchFields` so the spawned shell never reads the
+  user's profile / rc / config files.
+- **Pending-input item id flows out through chat summaries.** Both
+  `AgentChatSessionSummary.pendingInputItemId` and
+  `TerminalSessionSummary.pendingInputItemId` are populated by the
+  host whenever a session is in `awaitingInput`, derived from the
+  live runtime's pending input map and (as fallback) from the recent
+  event history. iOS reads it into `AgentSnapshot.pendingInputItemId`
+  and `AttentionItem.itemId`, which is the value the AppIntents-backed
+  Approve / Deny / Reply buttons need to address a specific approval —
+  the phone can decide an awaiting-input row at the source instead of
+  forcing the user to open the session.
+- **`AttentionDrawerModel.clearVisibleItems()` persists dismissals
+  scoped to the active id set.** Ids are stored under
+  `ade.attention.dismissedItemIDs` and pruned on every rebuild
+  against the live active set, so a chat that re-enters
+  awaiting-input or a PR that goes red again resurfaces automatically.
+  Do not turn this into a permanent allowlist; recurrence visibility
+  is the whole point.
+- **`NotificationPreferences.save(to:)` writes the pruned struct.**
+  Per-session overrides with both switches off are equivalent to no
+  override; the iOS save path calls
+  `pruningInactivePerSessionOverrides` before encoding so toggling
+  agents on and then back off does not bloat the App Group
+  `UserDefaults` payload. The same pruning happens on the desktop
+  side in `normalizeNotificationPreferences` to keep both ends in
+  agreement after a round-trip.
+- **The runtime daemon's iOS sync wants `ADE_PROJECT_ROOT` for
+  preferred project.** `ade serve` reads `ADE_PROJECT_ROOT` and
+  pre-registers the project through `ProjectRegistry.add` so the sync
+  host opens with that project as the preferred one
+  (`scopeRegistry.ensureSyncHost(preferredSyncProjectId)`). Without
+  it, the daemon still starts the host but does not pin a project,
+  and the phone has to wait for the desktop to switch projects before
+  it can issue project-scoped commands.
 - **Continuing an ended agent CLI row goes through `work.sendToSession`.**
   The phone keeps the transcript visible, collects the user's next
   message, and sends it with the durable `sessionId`. The host writes

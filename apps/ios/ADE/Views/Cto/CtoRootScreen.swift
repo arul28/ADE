@@ -14,6 +14,7 @@ struct CtoRootScreen: View {
   @State private var snapshot: CtoSnapshot?
   @State private var isLoadingSnapshot = false
   @State private var snapshotLoadError: String?
+  @State private var lastLiveSnapshotReloadAt: Date?
 
   var body: some View {
     NavigationStack(path: $path) {
@@ -51,6 +52,9 @@ struct CtoRootScreen: View {
       }
       .task(id: ctoLiveReloadKey) {
         guard ctoLiveReloadKey != nil else { return }
+        let now = Date()
+        guard shouldRunCtoLiveReload(lastReloadAt: lastLiveSnapshotReloadAt, now: now) else { return }
+        lastLiveSnapshotReloadAt = now
         await loadSnapshot()
       }
       .navigationDestination(for: CtoSessionRoute.self) { route in

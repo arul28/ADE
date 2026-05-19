@@ -253,17 +253,25 @@ struct CtoWorkflowsScreen: View {
     errorMessage = nil
     defer { isLoading = false }
 
-    async let connR = CtoWorkflowsResult { try await syncService.fetchLinearConnectionStatus() }
-    async let dashR = CtoWorkflowsResult { try await syncService.fetchLinearSyncDashboard() }
-    async let policyR = CtoWorkflowsResult { try await syncService.fetchFlowPolicy() }
-    async let eventsR = CtoWorkflowsResult { try await syncService.listLinearIngressEvents(limit: 20) }
+    let connResult = await CtoWorkflowsResult { try await syncService.fetchLinearConnectionStatus() }
+    if case .success(let value) = connResult {
+      self.connection = value
+    }
 
-    let (connResult, dashResult, policyResult, eventsResult) = await (connR, dashR, policyR, eventsR)
+    let dashResult = await CtoWorkflowsResult { try await syncService.fetchLinearSyncDashboard() }
+    if case .success(let value) = dashResult {
+      self.dashboard = value
+    }
 
-    if case .success(let value) = connResult { self.connection = value }
-    if case .success(let value) = dashResult { self.dashboard = value }
-    if case .success(let value) = policyResult { self.policy = value }
-    if case .success(let value) = eventsResult { self.events = value }
+    let policyResult = await CtoWorkflowsResult { try await syncService.fetchFlowPolicy() }
+    if case .success(let value) = policyResult {
+      self.policy = value
+    }
+
+    let eventsResult = await CtoWorkflowsResult { try await syncService.listLinearIngressEvents(limit: 20) }
+    if case .success(let value) = eventsResult {
+      self.events = value
+    }
 
     // Only surface a top-level error if the connection fetch itself failed —
     // once we know Linear isn't connected, dashboard/policy failures are

@@ -14,7 +14,7 @@ extension WorkChatSessionView {
     let echoSnapshot = localEchoMessages
 
     timelineRebuildTask = Task.detached(priority: .utility) {
-      try? await Task.sleep(for: .milliseconds(80))
+      try? await Task.sleep(for: .milliseconds(220))
       guard !Task.isCancelled else { return }
       let nextSnapshot = buildWorkChatTimelineSnapshot(
         transcript: transcriptSnapshot,
@@ -71,9 +71,10 @@ extension WorkChatSessionView {
 
   @MainActor
   func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
+    let targetId = visibleTimeline.last?.id ?? "chat-end"
     if animated {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-        proxy.scrollTo("chat-end", anchor: .bottom)
+        proxy.scrollTo(targetId, anchor: .bottom)
       }
       return
     }
@@ -81,7 +82,7 @@ extension WorkChatSessionView {
     var transaction = Transaction()
     transaction.animation = nil
     withTransaction(transaction) {
-      proxy.scrollTo("chat-end", anchor: .bottom)
+      proxy.scrollTo(targetId, anchor: .bottom)
     }
   }
 

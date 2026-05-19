@@ -303,7 +303,18 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
       const activityUpdateToken = target.activityUpdateTokens ? Object.values(target.activityUpdateTokens)[0] : null;
       const token = kind === "alert" ? target.alertToken : activityUpdateToken ?? target.activityStartToken;
       if (!token) return { ok: false, reason: "no_token" };
-      if (!args.apnsService || !args.apnsService.isConfigured()) return { ok: false, reason: "apns_not_configured" };
+      if (!args.apnsService || !args.apnsService.isConfigured()) {
+        if (args.isDeviceConnected(deviceId)) {
+          args.sendInAppNotification(deviceId, {
+            category: "system",
+            title: "ADE test push",
+            body: "This device reached its paired ADE machine.",
+            collapseId: "ade:test",
+          });
+          return { ok: true, reason: "in_app_only" };
+        }
+        return { ok: false, reason: "apns_not_configured" };
+      }
 
       const topic = kind === "activity" ? `${target.bundleId}.push-type.liveactivity` : target.bundleId;
       const activityEvent = activityUpdateToken ? "update" : "start";

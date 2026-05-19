@@ -5,9 +5,10 @@ struct FilesHeaderStrip: View {
   @EnvironmentObject private var syncService: SyncService
 
   let relativePath: String
-  let language: FilesLanguage
+  let fileKindLabel: String
   let fileSize: Int
   let transitionNamespace: Namespace.ID?
+  var onShowDetails: (() -> Void)?
 
   private var filesBrowserStatusSuffix: String? {
     let phase = syncService.status(for: .files).phase
@@ -43,7 +44,7 @@ struct FilesHeaderStrip: View {
           .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-title-\(relativePath)", in: transitionNamespace)
 
         HStack(spacing: 6) {
-          Text(language.displayName.uppercased())
+          Text(fileKindLabel.uppercased())
             .font(.caption2.monospaced().weight(.semibold))
             .foregroundStyle(ADEColor.accent)
           Text("·").foregroundStyle(ADEColor.textMuted)
@@ -64,8 +65,17 @@ struct FilesHeaderStrip: View {
       }
 
       Spacer(minLength: 0)
+
+      if let onShowDetails {
+        Button(action: onShowDetails) {
+          Image(systemName: "info.circle")
+            .font(.system(size: 18, weight: .semibold))
+            .frame(width: 34, height: 34)
+        }
+        .buttonStyle(.glass)
+        .accessibilityLabel("File details")
+      }
     }
-    .accessibilityElement(children: .combine)
   }
 }
 

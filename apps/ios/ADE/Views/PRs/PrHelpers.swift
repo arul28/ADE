@@ -13,6 +13,14 @@ private let prIsoFallbackFormatter: ISO8601DateFormatter = {
   return formatter
 }()
 
+private let prDateFormatterLock = NSLock()
+
+private let prParsedDateCache: NSCache<NSString, NSDate> = {
+  let cache = NSCache<NSString, NSDate>()
+  cache.countLimit = 512
+  return cache
+}()
+
 private let prRelativeFormatter = RelativeDateTimeFormatter()
 
 private let prAbsoluteFormatter: DateFormatter = {
@@ -22,15 +30,33 @@ private let prAbsoluteFormatter: DateFormatter = {
   return formatter
 }()
 
+func normalizedPrBranchName(_ ref: String?) -> String {
+  var value = ref?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if value.hasPrefix("refs/heads/") {
+    value.removeFirst("refs/heads/".count)
+  } else if value.hasPrefix("refs/remotes/origin/") {
+    value.removeFirst("refs/remotes/origin/".count)
+  } else if value.hasPrefix("origin/") {
+    value.removeFirst("origin/".count)
+  }
+  return value
+}
+
 func matchedLaneForExactBranch(_ headBranch: String?, lanes: [LaneSummary]) -> LaneSummary? {
-  guard let headBranch = headBranch?.trimmingCharacters(in: .whitespacesAndNewlines),
-    !headBranch.isEmpty
+  let normalizedHead = normalizedPrBranchName(headBranch)
+  guard !normalizedHead.isEmpty
   else {
     return nil
   }
+  // Git refs are case-sensitive; matching case-insensitively could pick the wrong
+  // lane when two branches differ only by case (e.g. Feature-X vs feature-x).
   return lanes.first { lane in
-    lane.branchRef.caseInsensitiveCompare(headBranch) == .orderedSame
+    normalizedPrBranchName(lane.branchRef) == normalizedHead
   }
+}
+
+func shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: Bool, refreshRemote: Bool) -> Bool {
+  refreshRemote || !hasLoadedLiveSidecars
 }
 
 func parsePullRequestPatch(_ patch: String) -> [PrDiffDisplayLine] {
@@ -490,7 +516,19 @@ func titleCase(_ raw: String) -> String {
 
 func prParsedDate(_ iso: String?) -> Date? {
   guard let iso, !iso.isEmpty else { return nil }
-  return prIsoFormatter.date(from: iso) ?? prIsoFallbackFormatter.date(from: iso)
+  let key = iso as NSString
+  if let cached = prParsedDateCache.object(forKey: key) {
+    return cached as Date
+  }
+
+  prDateFormatterLock.lock()
+  let parsed = prIsoFormatter.date(from: iso) ?? prIsoFallbackFormatter.date(from: iso)
+  prDateFormatterLock.unlock()
+
+  if let parsed {
+    prParsedDateCache.setObject(parsed as NSDate, forKey: key)
+  }
+  return parsed
 }
 
 func prRelativeTime(_ iso: String?) -> String {

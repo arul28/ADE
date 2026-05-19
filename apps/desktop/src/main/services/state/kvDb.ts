@@ -675,6 +675,91 @@ function encodeSyncScalar(value: unknown): SyncScalar {
   throw new Error(`Unsupported sync scalar type: ${typeof value}`);
 }
 
+function isSyncScalarBytes(value: SyncScalar): value is { type: "bytes"; base64: string } {
+  return Boolean(
+    value
+    && typeof value === "object"
+    && "type" in value
+    && value.type === "bytes"
+    && typeof value.base64 === "string"
+  );
+}
+
+function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
+  if (isSyncScalarBytes(value)) {
+    const bytes = Buffer.from(value.base64, "base64");
+    return bytes.length >= 2 && bytes[0] > 0 ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const textBytes = Buffer.from(value, "utf8");
+    if (textBytes.length > 0xff) return null;
+    return {
+      type: "bytes",
+      base64: Buffer.concat([Buffer.from([0x01, 0x0b, textBytes.length]), textBytes]).toString("base64"),
+    };
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) return null;
+    if (value === 0) return { type: "bytes", base64: Buffer.from([0x01, 0x08]).toString("base64") };
+    if (value === 1) return { type: "bytes", base64: Buffer.from([0x01, 0x09]).toString("base64") };
+    if (value >= -0x80 && value <= 0x7f) {
+      const bytes = Buffer.alloc(3);
+      bytes[0] = 0x01;
+      bytes[1] = 0x01;
+      bytes.writeInt8(value, 2);
+      return { type: "bytes", base64: bytes.toString("base64") };
+    }
+    if (value >= -0x8000 && value <= 0x7fff) {
+      const bytes = Buffer.alloc(4);
+      bytes[0] = 0x01;
+      bytes[1] = 0x02;
+      bytes.writeInt16BE(value, 2);
+      return { type: "bytes", base64: bytes.toString("base64") };
+    }
+    if (value >= -0x80000000 && value <= 0x7fffffff) {
+      const bytes = Buffer.alloc(6);
+      bytes[0] = 0x01;
+      bytes[1] = 0x04;
+      bytes.writeInt32BE(value, 2);
+      return { type: "bytes", base64: bytes.toString("base64") };
+    }
+    const bytes = Buffer.alloc(10);
+    bytes[0] = 0x01;
+    bytes[1] = 0x06;
+    bytes.writeBigInt64BE(BigInt(value), 2);
+    return { type: "bytes", base64: bytes.toString("base64") };
+  }
+
+  return null;
+}
+
+function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {
+  const tableInfo = allRows<{ pk: number }>(
+    db,
+    `pragma table_info('${change.table.replace(/'/g, "''")}')`
+  );
+  const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
+  if (primaryKeyColumns.length !== 1) {
+    const shape = primaryKeyColumns.length === 0
+      ? "no primary key"
+      : `${primaryKeyColumns.length} primary key columns`;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
+  }
+
+  if (isSyncScalarBytes(change.pk)) {
+    const packedPk = packedCrsqlPrimaryKey(change.pk);
+    if (packedPk) return change;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
+  }
+
+  const packedPk = packedCrsqlPrimaryKey(change.pk);
+  if (packedPk) return { ...change, pk: packedPk };
+
+  throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: unsupported scalar shape.`);
+}
+
 function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {
   if (!rawHasTable(db, "unified_memories") || !rawHasTable(db, "unified_memories_fts")) {
     return;
@@ -3908,7 +3993,8 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const touchedTables = new Set<string>();
       runStatement(db, "begin");
       try {
-        for (const change of changes) {
+        for (const rawChange of changes) {
+          const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,
             `insert or ignore into crsql_changes ([table], pk, cid, val, col_version, db_version, site_id, cl, seq)

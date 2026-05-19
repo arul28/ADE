@@ -2237,6 +2237,28 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("accepts Claude auto permission mode for provider CLI launches", () => {
+    const plan = buildCliPlan([
+      "shell",
+      "start-cli",
+      "claude",
+      "--lane",
+      "lane-1",
+      "--permission-mode",
+      "auto",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "auto",
+      },
+    });
+  });
+
   it("accepts --provider on shell start as the CLI-session launcher", () => {
     const plan = buildCliPlan([
       "shell",

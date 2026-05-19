@@ -259,20 +259,18 @@ struct LaneManageSheet: View {
                   }
                 }
 
-                Picker("Parent lane", selection: $selectedParentLaneId) {
-                  if reparentCandidates.isEmpty {
-                    Text("No valid parent").tag("")
-                  } else {
-                    ForEach(reparentCandidates) { lane in
-                      Text(lane.laneType == "primary" ? "\(lane.name) (primary)" : "\(lane.name) (\(lane.branchRef))").tag(lane.id)
-                    }
+                if reparentCandidates.isEmpty {
+                  Text("No valid parent")
+                    .font(.caption)
+                    .foregroundStyle(ADEColor.textMuted)
+                } else if reparentCandidates.count > 4 {
+                  ScrollView {
+                    reparentCandidateStack
                   }
-                }
-                .pickerStyle(.menu)
-                .onChange(of: selectedParentLaneId) { _, _ in
-                  // Clear the override so the new parent's branch is used as
-                  // the default — matches desktop behavior on parent change.
-                  baseBranchOverride = ""
+                  .frame(maxHeight: 320)
+                  .scrollBounceBehavior(.basedOnSize)
+                } else {
+                  reparentCandidateStack
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -325,12 +323,19 @@ struct LaneManageSheet: View {
           if snapshot.lane.laneType != "primary" {
             GlassSection(title: "Danger zone") {
               VStack(alignment: .leading, spacing: 12) {
-                Picker("Delete mode", selection: $deleteMode) {
+                LazyVStack(spacing: 8) {
                   ForEach(LaneDeleteMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
+                    LaneOptionButton(
+                      title: mode.title,
+                      subtitle: mode.detail,
+                      systemImage: mode.symbol,
+                      isSelected: deleteMode == mode,
+                      tint: ADEColor.danger
+                    ) {
+                      deleteMode = mode
+                    }
                   }
                 }
-                .pickerStyle(.menu)
 
                 if deleteMode == .remoteBranch {
                   LaneTextField("Remote name", text: $deleteRemoteName)
@@ -396,6 +401,24 @@ struct LaneManageSheet: View {
         ToolbarItem(placement: .cancellationAction) {
           Button("Close") { dismiss() }
             .disabled(busyAction != nil)
+        }
+      }
+    }
+  }
+
+  private var reparentCandidateStack: some View {
+    LazyVStack(spacing: 8) {
+      ForEach(reparentCandidates) { lane in
+        LaneOptionButton(
+          title: lane.name,
+          subtitle: lane.laneType == "primary" ? "Primary root · \(lane.branchRef)" : lane.branchRef,
+          systemImage: lane.laneType == "primary" ? "house.fill" : "arrow.triangle.branch",
+          isSelected: selectedParentLaneId == lane.id
+        ) {
+          selectedParentLaneId = lane.id
+          // Clear the override so the new parent's branch is used as
+          // the default — matches desktop behavior on parent change.
+          baseBranchOverride = ""
         }
       }
     }

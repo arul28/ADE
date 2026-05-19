@@ -295,7 +295,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 
 | Channel | Direction | Purpose |
 |---|---|---|
-| `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`. |
+| `ade.agentChat.list` | invoke | List sessions with optional `includeIdentity`, `includeAutomation`, `includeArchived` (defaults to `true`; pass `false` to filter out archived rows). |
 | `ade.agentChat.getSummary` | invoke | Fetch `AgentChatSessionSummary` for a single session. |
 | `ade.agentChat.getEventHistory` | invoke | Return `AgentChatEventHistorySnapshot` for a session. `sessionFound: false` is the explicit stale-session signal used by renderer surfaces to clear dead locked panes. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `codexFastMode?: boolean` for Codex sessions to start with the `serviceTier: "fast"` default. |
@@ -340,6 +340,26 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   guard: when `getRecentEntries` is called, the service flushes pending
   buffered text first so transcript reads always reflect the latest
   streamed content.
+- **Transcript read merges streaming text fragments.** The
+  `MAX_TRANSCRIPT_READ_CHARS` budget is `120_000` (was `40_000`) and
+  the transcript reader collapses consecutive assistant text events
+  that share a `messageId` or `turnId` into one row instead of
+  emitting one row per fragment. The merge runs in two paths: a
+  keyed map indexed by `message:<id>` / `turn:<id>` for streamed
+  fragments that carry an id, and a running `assistantDraft` for
+  fragments that share state across events without an explicit id.
+  Both flush back to plain `AgentChatTranscriptEntry` rows before
+  returning so the on-wire shape is unchanged.
+- **`AgentChatSessionSummary.pendingInputItemId` is the addressable
+  pending input.** When a session is awaiting input, the service
+  resolves the latest pending item id from the live runtime's
+  approval / permission / structured-question maps and, as a
+  fallback, replays the last 512 events looking for an unresolved
+  `approval_request` / `structured_question`. The same id is mirrored
+  into `TerminalSessionSummary.pendingInputItemId` for sync clients
+  that key off the terminal session row. iOS uses it to back
+  Approve/Deny/Reply intents in the Attention Drawer without opening
+  the chat.
 - **Steer delivery vs. turn completion.** `deliverNextQueuedSteer()` is
   invoked on every turn-end code path (success, failure, interrupt,
   Claude SDK error). Missing any path can strand a queued steer.

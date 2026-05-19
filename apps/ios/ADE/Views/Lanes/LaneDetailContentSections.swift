@@ -37,7 +37,6 @@ struct LaneDetailHeaderCard<Footer: View>: View {
     }
     .adeGlassCard(cornerRadius: 18, padding: 16)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel(headerAccessibilityLabel)
   }
 
   private var headerTopRow: some View {
@@ -65,15 +64,22 @@ struct LaneDetailHeaderCard<Footer: View>: View {
   /// this is the everyday "I'm done, push it" affordance.
   @ViewBuilder
   private var syncActionsRow: some View {
-    let ahead = snapshot.lane.status.ahead
-    let behind = snapshot.lane.status.behind
-    let summary = syncSummaryText(ahead: ahead, behind: behind)
+    let syncStatus = detail?.syncStatus
+    let remoteAhead = syncStatus?.ahead ?? 0
+    let remoteBehind = syncStatus?.behind ?? 0
+    let hasUpstream = syncStatus?.hasUpstream ?? true
+    let diverged = syncStatus?.diverged ?? false
+    let shouldPull = hasUpstream && remoteBehind > 0 && !diverged
+    // While detail is still loading (syncStatus nil) we don't know the ahead count yet, so
+    // keep Push enabled instead of disabling an already-ahead lane until the fetch lands.
+    let syncStatusLoaded = syncStatus != nil
+    let shouldPush = !syncStatusLoaded || !hasUpstream || remoteAhead > 0
 
     HStack(spacing: 8) {
       Image(systemName: "arrow.triangle.2.circlepath")
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(ADEColor.textSecondary)
-      Text(summary)
+      Text(compactSyncSummary(syncStatus))
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
         .lineLimit(1)
@@ -86,29 +92,22 @@ struct LaneDetailHeaderCard<Footer: View>: View {
         // and Fetch (when we just want to refresh remote state). The label
         // and accessibility text must follow the action so VoiceOver users
         // hear what the button is actually about to do.
-        label: behind > 0 ? "Pull" : "Fetch",
-        tint: behind > 0 ? ADEColor.warning : ADEColor.textPrimary,
-        emphasize: behind > 0,
-        action: behind > 0 ? onPull : onFetch
+        label: shouldPull ? "Pull" : "Fetch",
+        tint: shouldPull ? ADEColor.warning : ADEColor.textPrimary,
+        emphasize: shouldPull,
+        isEnabled: canRunLiveActions,
+        action: shouldPull ? onPull : onFetch
       )
       syncActionButton(
         symbol: "arrow.up.to.line.compact",
         label: "Push",
-        tint: ahead > 0 ? ADEColor.success : ADEColor.textPrimary,
-        emphasize: ahead > 0,
+        tint: shouldPush ? ADEColor.success : ADEColor.textPrimary,
+        emphasize: shouldPush,
+        isEnabled: canRunLiveActions && shouldPush && !diverged,
         action: onPush
       )
     }
     .padding(.top, 2)
-  }
-
-  private func syncSummaryText(ahead: Int, behind: Int) -> String {
-    switch (ahead, behind) {
-    case (0, 0): return "In sync with remote"
-    case (let a, 0): return "\(a) ahead"
-    case (0, let b): return "\(b) behind"
-    case (let a, let b): return "\(a) ahead · \(b) behind"
-    }
   }
 
   @ViewBuilder
@@ -117,6 +116,7 @@ struct LaneDetailHeaderCard<Footer: View>: View {
     label: String,
     tint: Color,
     emphasize: Bool,
+    isEnabled: Bool,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
@@ -138,8 +138,8 @@ struct LaneDetailHeaderCard<Footer: View>: View {
       )
     }
     .buttonStyle(.plain)
-    .disabled(!canRunLiveActions)
-    .opacity(canRunLiveActions ? 1 : 0.5)
+    .disabled(!isEnabled)
+    .opacity(isEnabled ? 1 : 0.5)
     .accessibilityLabel(label)
   }
 
@@ -267,30 +267,24 @@ struct LaneDetailHeaderCard<Footer: View>: View {
       .buttonStyle(.plain)
       .accessibilityLabel("Open linked pull request")
     } else if linkedPullRequests.count > 1 {
-      Menu {
-        ForEach(Array(linkedPullRequests.enumerated()), id: \.offset) { _, pr in
-          Button(pr.title.isEmpty ? "PR #\(pr.githubPrNumber)" : pr.title) {
-            onOpenLinkedPullRequest(pr)
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(Array(linkedPullRequests.enumerated()), id: \.offset) { _, pr in
+            Button {
+              onOpenLinkedPullRequest(pr)
+            } label: {
+              LaneTypeBadge(
+                text: "#\(pr.githubPrNumber)",
+                tint: lanePullRequestTint(pr.state)
+              )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(pr.title.isEmpty ? "Open PR \(pr.githubPrNumber)" : "Open \(pr.title)")
           }
         }
-      } label: {
-        LaneTypeBadge(
-          text: "\(linkedPullRequests.count) PRs",
-          tint: lanePullRequestTint(linkedPullRequests.first?.state ?? "open")
-        )
       }
       .accessibilityLabel("\(linkedPullRequests.count) linked pull requests")
     }
-  }
-
-  private var headerAccessibilityLabel: String {
-    var pieces = [snapshot.lane.name, snapshot.lane.branchRef]
-    if snapshot.lane.status.dirty { pieces.append("dirty") } else { pieces.append("clean") }
-    if snapshot.lane.status.ahead > 0 { pieces.append("\(snapshot.lane.status.ahead) ahead") }
-    if snapshot.lane.status.behind > 0 { pieces.append("\(snapshot.lane.status.behind) behind") }
-    if snapshot.lane.childCount > 0 { pieces.append("\(snapshot.lane.childCount) child\(snapshot.lane.childCount == 1 ? "" : "ren")") }
-    if !linkedPullRequests.isEmpty { pieces.append("\(linkedPullRequests.count) linked pull request\(linkedPullRequests.count == 1 ? "" : "s")") }
-    return pieces.joined(separator: ", ")
   }
 
   private var headerSummaryText: String? {

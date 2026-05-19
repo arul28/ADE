@@ -57,8 +57,7 @@ struct WorkFiltersSection: View {
         .padding(.vertical, 8)
         .frame(minHeight: 32)
         .frame(maxWidth: .infinity)
-        .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 10))
+        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
             .stroke(ADEColor.glassBorder, lineWidth: 0.5)
@@ -74,10 +73,9 @@ struct WorkFiltersSection: View {
             .foregroundStyle(filterOpen ? ADEColor.accent : ADEColor.textSecondary)
             .frame(width: 32, height: 32)
             .background(
-              (filterOpen ? ADEColor.accent.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.55)),
+              (filterOpen ? ADEColor.accent.opacity(0.12) : ADEColor.composerBackground),
               in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
-            .glassEffect(in: .rect(cornerRadius: 10))
             .overlay(
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(filterOpen ? ADEColor.accent.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.5)
@@ -98,34 +96,34 @@ struct WorkFiltersSection: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 11)
         .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 12))
         .overlay(
           RoundedRectangle(cornerRadius: 12, style: .continuous)
             .stroke(.white.opacity(0.18), lineWidth: 0.6)
         )
-        .shadow(color: ADEColor.accent.opacity(0.35), radius: 12, x: 0, y: 4)
+        .shadow(color: ADEColor.accent.opacity(0.18), radius: 6, x: 0, y: 2)
       }
       .buttonStyle(.plain)
       .disabled(!isLive)
       .opacity(isLive ? 1 : 0.55)
       .accessibilityLabel("Start new chat")
 
-      HStack(spacing: 6) {
-        WorkFlatCountChip(icon: "bolt.fill", text: "\(liveCount) live", tint: ADEColor.success)
-        if needsInputCount > 0 {
-          WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
-        }
-        Spacer(minLength: 0)
-        if hasActiveFilters {
-          Button("Clear") {
-            withAnimation(.snappy(duration: 0.18)) {
-              onClear()
-            }
+      if needsInputCount > 0 || hasActiveFilters {
+        HStack(spacing: 6) {
+          if needsInputCount > 0 {
+            WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
           }
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-          .buttonStyle(.plain)
-          .accessibilityLabel("Clear Work filters")
+          Spacer(minLength: 0)
+          if hasActiveFilters {
+            Button("Clear") {
+              withAnimation(.snappy(duration: 0.18)) {
+                onClear()
+              }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clear Work filters")
+          }
         }
       }
 
@@ -154,40 +152,57 @@ struct WorkFiltersSection: View {
             .padding(.vertical, 1)
           }
 
-          HStack(spacing: 8) {
-            Menu {
+          VStack(alignment: .leading, spacing: 8) {
+            Text("Group")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .textCase(.uppercase)
+              .tracking(0.5)
+            ScrollView(.horizontal, showsIndicators: false) {
+              HStack(spacing: 6) {
               ForEach(WorkSessionOrganization.allCases) { option in
-                Button(option.title) {
-                  organization = option
+                WorkFilterChip(
+                  title: option.title,
+                  selected: organization == option,
+                  tint: ADEColor.accent
+                ) {
+                  withAnimation(.snappy(duration: 0.18)) {
+                    organization = option
+                  }
                 }
               }
-            } label: {
-              WorkFilterMenuLabel(
-                icon: "rectangle.stack",
-                title: "Group",
-                value: organization.title
-              )
             }
-            .buttonStyle(.plain)
+            }
 
-            Menu {
-              Button("All lanes") { selectedLaneId = "all" }
+            Text("Lane")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .textCase(.uppercase)
+              .tracking(0.5)
+            ScrollView(.horizontal, showsIndicators: false) {
+              HStack(spacing: 6) {
+                WorkFilterChip(
+                  title: "All lanes",
+                  selected: selectedLaneId == "all",
+                  tint: ADEColor.accent
+                ) {
+                  selectedLaneId = "all"
+                }
               ForEach(lanes) { lane in
-                Button(lane.name) { selectedLaneId = lane.id }
+                WorkFilterChip(
+                  title: lane.name,
+                  selected: selectedLaneId == lane.id,
+                  tint: ADEColor.accent
+                ) {
+                  selectedLaneId = lane.id
+                }
               }
-            } label: {
-              WorkFilterMenuLabel(
-                icon: "arrow.triangle.branch",
-                title: "Lane",
-                value: selectedLaneName
-              )
+              }
             }
-            .buttonStyle(.plain)
           }
         }
         .padding(12)
-        .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .glassEffect(in: .rect(cornerRadius: 14))
+        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
           RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(ADEColor.glassBorder, lineWidth: 0.5)
@@ -380,7 +395,6 @@ struct WorkLiveCountPill: View {
       .padding(.horizontal, 9)
       .padding(.vertical, 5)
       .background(tint.opacity(0.14), in: Capsule())
-      .glassEffect()
       .overlay(
         Capsule().stroke(tint.opacity(0.28), lineWidth: 0.5)
       )
@@ -496,6 +510,13 @@ struct WorkSessionListRow: View {
         }
     )
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+      if shouldShowStopRuntimeAction {
+        Button("Stop runtime", role: .destructive) {
+          onStopRuntime(session)
+        }
+        .tint(ADEColor.danger)
+      }
+
       Button(isArchived ? "Restore" : "Archive") {
         onArchive(session)
       }
@@ -545,8 +566,7 @@ struct WorkSessionListRow: View {
   }
 
   private var shouldShowStopRuntimeAction: Bool {
-    guard !isChatSession(session) else { return false }
-    return status == "active" || status == "awaiting-input"
+    isStoppableRuntimeSession(session, summary: chatSummary)
   }
 
   private var shouldShowDeleteAction: Bool {

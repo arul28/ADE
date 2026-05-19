@@ -20,6 +20,7 @@ function createTestGitOperationsService(
 ) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
+  const mockInvalidateListCache = vi.fn();
   const mockLogger = {
     info: vi.fn(),
     warn: vi.fn(),
@@ -35,6 +36,7 @@ function createTestGitOperationsService(
         worktreePath: overrides.worktreePath ?? "/tmp/ade-lane",
         laneType: "worktree",
       }),
+      invalidateListCache: mockInvalidateListCache,
     } as any,
     operationService: {
       start: mockStart,
@@ -55,6 +57,7 @@ function createTestGitOperationsService(
     service,
     mockStart,
     mockFinish,
+    mockInvalidateListCache,
     mockLogger,
   };
 }
@@ -67,7 +70,7 @@ describe("gitOperationsService.stashClear", () => {
   it("calls git stash clear with the lane worktree path and returns the action result", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
     mockGit.runGitOrThrow.mockResolvedValue(undefined);
-    const { service, mockStart, mockFinish } = createTestGitOperationsService();
+    const { service, mockStart, mockFinish, mockInvalidateListCache } = createTestGitOperationsService();
 
     const result = await service.stashClear({ laneId: "lane-1" });
 
@@ -92,6 +95,7 @@ describe("gitOperationsService.stashClear", () => {
         status: "succeeded",
       }),
     );
+    expect(mockInvalidateListCache).toHaveBeenCalledTimes(1);
   });
 });
 

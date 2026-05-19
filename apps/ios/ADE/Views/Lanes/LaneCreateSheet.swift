@@ -124,76 +124,63 @@ struct LaneCreateSheet: View {
           GlassSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
             VStack(alignment: .leading, spacing: 12) {
               if showsModePicker {
-                Picker("Create mode", selection: $createMode) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
                   ForEach(LaneCreateMode.allCases) { mode in
-                    Text(mode.title)
-                      .tag(mode)
-                      .accessibilityLabel(mode.fullTitle)
+                    LaneOptionButton(
+                      title: mode.title,
+                      subtitle: modeSubtitle(mode),
+                      systemImage: modeSymbol(mode),
+                      isSelected: createMode == mode
+                    ) {
+                      createMode = mode
+                    }
                   }
                 }
-                .pickerStyle(.segmented)
               }
 
               switch createMode {
               case .primary:
                 VStack(alignment: .leading, spacing: 12) {
-                  Picker("Base branch", selection: $selectedBaseBranch) {
-                    ForEach(branches.filter { !$0.isRemote }) { branch in
-                      Text(branch.isCurrent ? "\(branch.name) (current)" : branch.name).tag(branch.name)
-                    }
-                  }
-                  .pickerStyle(.menu)
-                  if branches.filter({ !$0.isRemote }).isEmpty {
-                    Text("No local branches found.")
-                      .font(.caption)
-                      .foregroundStyle(ADEColor.textMuted)
-                  }
+                  branchOptionList(
+                    branches: branches.filter { !$0.isRemote },
+                    emptyText: "No local branches found.",
+                    selection: $selectedBaseBranch
+                  )
                 }
               case .child:
                 VStack(alignment: .leading, spacing: 12) {
-                  Picker("Parent lane", selection: $selectedParentLaneId) {
-                    Text("Select parent lane…").tag("")
-                    ForEach(lanes.filter { $0.archivedAt == nil }) { lane in
-                      Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
-                    }
-                  }
-                  .pickerStyle(.menu)
+                  laneOptionList(
+                    lanes: lanes.filter { $0.archivedAt == nil },
+                    emptyText: "No lanes available.",
+                    selection: $selectedParentLaneId
+                  )
                 }
               case .importBranch:
                 VStack(alignment: .leading, spacing: 12) {
-                  Picker("Existing branch", selection: $selectedImportBranch) {
-                    Text("Select a branch…").tag("")
-                    ForEach(branches) { branch in
-                      Text(branch.isRemote ? "\(branch.name) (remote)" : branch.name).tag(branch.name)
-                    }
-                  }
-                  .pickerStyle(.menu)
-                  if branches.isEmpty {
-                    Text("No branches found.")
-                      .font(.caption)
-                      .foregroundStyle(ADEColor.textMuted)
-                  }
-                  Picker("Base branch", selection: $selectedBaseBranch) {
-                    ForEach(branches.filter { !$0.isRemote }) { branch in
-                      Text(branch.isCurrent ? "\(branch.name) (current)" : branch.name).tag(branch.name)
-                    }
-                  }
-                  .pickerStyle(.menu)
+                  Text("Existing branch")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textSecondary)
+                  branchOptionList(
+                    branches: branches,
+                    emptyText: "No branches found.",
+                    selection: $selectedImportBranch
+                  )
+                  Text("Base branch")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textSecondary)
+                  branchOptionList(
+                    branches: branches.filter { !$0.isRemote },
+                    emptyText: "No local base branches found.",
+                    selection: $selectedBaseBranch
+                  )
                 }
               case .rescueUnstaged:
                 VStack(alignment: .leading, spacing: 12) {
-                  Picker("Source lane", selection: $selectedRescueLaneId) {
-                    Text("Select lane").tag("")
-                    ForEach(lanes.filter { $0.archivedAt == nil && $0.status.dirty }) { lane in
-                      Text("\(lane.name) (\(lane.branchRef))").tag(lane.id)
-                    }
-                  }
-                  .pickerStyle(.menu)
-                  if lanes.filter({ $0.archivedAt == nil && $0.status.dirty }).isEmpty {
-                    Text("No lanes with unstaged changes.")
-                      .font(.caption)
-                      .foregroundStyle(ADEColor.textMuted)
-                  }
+                  laneOptionList(
+                    lanes: lanes.filter { $0.archivedAt == nil && $0.status.dirty },
+                    emptyText: "No lanes with unstaged changes.",
+                    selection: $selectedRescueLaneId
+                  )
                 }
               }
             }
@@ -275,6 +262,105 @@ struct LaneCreateSheet: View {
       .task {
         await loadOptions()
       }
+  }
+
+  @MainActor
+  private func modeSubtitle(_ mode: LaneCreateMode) -> String {
+    switch mode {
+    case .primary: return "Start from a base branch"
+    case .child: return "Stack under a parent lane"
+    case .importBranch: return "Adopt an existing branch"
+    case .rescueUnstaged: return "Move dirty changes"
+    }
+  }
+
+  private func modeSymbol(_ mode: LaneCreateMode) -> String {
+    switch mode {
+    case .primary: return "plus.square.on.square"
+    case .child: return "square.stack.3d.up"
+    case .importBranch: return "arrow.triangle.branch"
+    case .rescueUnstaged: return "cross.case"
+    }
+  }
+
+  @ViewBuilder
+  private func branchOptionList(
+    branches: [GitBranchSummary],
+    emptyText: String,
+    selection: Binding<String>
+  ) -> some View {
+    if branches.isEmpty {
+      Text(emptyText)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+    } else if branches.count > 4 {
+      ScrollView {
+        branchOptionStack(branches: branches, selection: selection)
+      }
+      .frame(maxHeight: 320)
+      .scrollBounceBehavior(.basedOnSize)
+    } else {
+      branchOptionStack(branches: branches, selection: selection)
+    }
+  }
+
+  @ViewBuilder
+  private func branchOptionStack(
+    branches: [GitBranchSummary],
+    selection: Binding<String>
+  ) -> some View {
+    LazyVStack(spacing: 8) {
+      ForEach(branches) { branch in
+        LaneOptionButton(
+          title: branch.name,
+          subtitle: branch.isRemote ? "Remote branch" : (branch.isCurrent ? "Current local branch" : "Local branch"),
+          systemImage: branch.isRemote ? "cloud" : "arrow.triangle.branch",
+          isSelected: selection.wrappedValue == branch.name
+        ) {
+          selection.wrappedValue = branch.name
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func laneOptionList(
+    lanes: [LaneSummary],
+    emptyText: String,
+    selection: Binding<String>
+  ) -> some View {
+    if lanes.isEmpty {
+      Text(emptyText)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+    } else if lanes.count > 4 {
+      ScrollView {
+        laneOptionStack(lanes: lanes, selection: selection)
+      }
+      .frame(maxHeight: 320)
+      .scrollBounceBehavior(.basedOnSize)
+    } else {
+      laneOptionStack(lanes: lanes, selection: selection)
+    }
+  }
+
+  @ViewBuilder
+  private func laneOptionStack(
+    lanes: [LaneSummary],
+    selection: Binding<String>
+  ) -> some View {
+    LazyVStack(spacing: 8) {
+      ForEach(lanes) { lane in
+        LaneOptionButton(
+          title: lane.name,
+          subtitle: lane.branchRef,
+          systemImage: lane.laneType == "primary" ? "house.fill" : "arrow.triangle.branch",
+          isSelected: selection.wrappedValue == lane.id
+        ) {
+          selection.wrappedValue = lane.id
+        }
+      }
+    }
   }
 
   @MainActor

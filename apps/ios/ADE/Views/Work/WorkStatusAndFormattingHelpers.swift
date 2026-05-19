@@ -20,6 +20,30 @@ func isRunOwnedSession(_ session: TerminalSessionSummary) -> Bool {
     .lowercased() == "run-shell"
 }
 
+func isStoppableRuntimeSession(_ session: TerminalSessionSummary, summary: AgentChatSessionSummary? = nil) -> Bool {
+  guard !isChatSession(session) else { return false }
+  let status = normalizedWorkChatSessionStatus(session: session, summary: summary)
+  return status == "active" || status == "awaiting-input" || status == "idle"
+}
+
+func workChatComposerBlocksFreeformInput(pendingInputCount: Int, sessionStatus: String) -> Bool {
+  pendingInputCount > 0 || sessionStatus == "awaiting-input"
+}
+
+func workChatAwaitingPromptDetailsMissing(pendingInputCount: Int, sessionStatus: String) -> Bool {
+  pendingInputCount == 0 && sessionStatus == "awaiting-input"
+}
+
+func workChatComposerPlaceholder(pendingInputCount: Int, sessionStatus: String) -> String {
+  if workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputCount, sessionStatus: sessionStatus) {
+    return "Waiting for prompt details..."
+  }
+  if workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputCount, sessionStatus: sessionStatus) {
+    return "Answer the prompt above..."
+  }
+  return "Type to vibecode..."
+}
+
 func terminalSessionHasResumeTarget(_ session: TerminalSessionSummary) -> Bool {
   if session.resumeMetadata != nil {
     return true
@@ -203,6 +227,31 @@ private func rawWorkChatSessionStatus(session: TerminalSessionSummary?, summary:
   if summary?.awaitingInput == true {
     return "awaiting-input"
   }
+  if let session {
+    let sessionStatus = session.status.lowercased()
+    let runtimeState = session.runtimeState.lowercased()
+    if sessionStatus == "awaiting-input" || sessionStatus == "awaiting_input" || runtimeState == "waiting-input" {
+      return "awaiting-input"
+    }
+    switch runtimeState {
+    case "idle":
+      return "idle"
+    case "running":
+      return "active"
+    case "stopped", "exited", "completed", "failed", "interrupted":
+      return "ended"
+    default:
+      if sessionStatus == "running" {
+        return "active"
+      }
+      if sessionStatus == "idle" || sessionStatus == "paused" {
+        return "idle"
+      }
+      if sessionStatus == "ended" || sessionStatus == "completed" || sessionStatus == "failed" || sessionStatus == "interrupted" || sessionStatus == "exited" {
+        return "ended"
+      }
+    }
+  }
   if let status = summary?.status.lowercased() {
     switch status {
     case "active", "running":
@@ -217,16 +266,7 @@ private func rawWorkChatSessionStatus(session: TerminalSessionSummary?, summary:
   }
 
   guard let session else { return "ended" }
-  switch session.runtimeState.lowercased() {
-  case "waiting-input":
-    return "awaiting-input"
-  case "idle":
-    return "idle"
-  case "running":
-    return "active"
-  default:
-    return session.status == "running" ? "active" : "ended"
-  }
+  return session.status.lowercased() == "running" ? "active" : "ended"
 }
 
 func normalizedRuntimeState(for summary: AgentChatSessionSummary) -> String {
@@ -286,6 +326,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
   case "claude":
     return [
       WorkRuntimeModeOption(id: "default", title: "Default"),
+      WorkRuntimeModeOption(id: "auto", title: "Auto"),
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "edit", title: "Auto edit"),
       WorkRuntimeModeOption(id: "full-auto", title: "Bypass"),
@@ -303,6 +344,20 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "edit", title: "Edit"),
       WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
     ]
+  case "cursor":
+    return [
+      WorkRuntimeModeOption(id: "agent", title: "Agent"),
+      WorkRuntimeModeOption(id: "ask", title: "Ask"),
+      WorkRuntimeModeOption(id: "plan", title: "Plan"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+    ]
+  case "droid", "factory":
+    return [
+      WorkRuntimeModeOption(id: "read-only", title: "Read-only"),
+      WorkRuntimeModeOption(id: "auto-low", title: "Auto low"),
+      WorkRuntimeModeOption(id: "auto-medium", title: "Auto medium"),
+      WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
+    ]
   default:
     return []
   }
@@ -312,6 +367,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
   switch provider.lowercased() {
   case "claude":
     switch mode {
+    case "auto": return "Auto"
     case "plan": return "Plan"
     case "edit": return "Auto edit"
     case "full-auto": return "Bypass"
@@ -326,6 +382,16 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     }
   case "opencode":
     return mode.isEmpty ? "Edit" : mode.capitalized
+  case "cursor":
+    return workCursorModeLabel(mode.isEmpty ? "agent" : mode)
+  case "droid", "factory":
+    switch mode {
+    case "read-only": return "Read-only"
+    case "auto-low": return "Auto low"
+    case "auto-medium": return "Auto medium"
+    case "auto-high": return "Auto high"
+    default: return mode.isEmpty ? "Auto low" : mode.capitalized
+    }
   default:
     return mode.isEmpty ? "Access" : mode.capitalized
   }
@@ -333,19 +399,22 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
 
 func workRuntimeModeTint(_ mode: String) -> Color {
   switch mode {
-  case "full-auto": return ADEColor.danger
-  case "edit": return ADEColor.warning
-  case "plan": return ADEColor.accent
+  case "full-auto", "auto-high": return ADEColor.danger
+  case "edit", "auto", "ask", "auto-low", "auto-medium": return ADEColor.warning
+  case "plan", "read-only": return ADEColor.accent
   default: return ADEColor.textSecondary
   }
 }
 
-/// Default runtime mode for a fresh chat given the provider. "default" for Claude/Codex,
-/// "edit" for OpenCode (matches desktop's new-session defaults).
+/// Default runtime mode for a fresh chat given the provider. Mirrors the
+/// desktop/TUI defaults: Default for Claude/Codex, Edit for OpenCode, Agent
+/// for Cursor, and Auto low for Droid.
 func workDefaultRuntimeMode(provider: String) -> String {
   switch provider.lowercased() {
   case "claude", "codex": return "default"
   case "opencode": return "edit"
+  case "cursor": return "agent"
+  case "droid", "factory": return "auto-low"
   default: return ""
   }
 }
@@ -359,6 +428,8 @@ struct WorkRuntimeWireFields {
   var codexSandbox: String?
   var codexConfigSource: String?
   var opencodePermissionMode: String?
+  var droidPermissionMode: String?
+  var cursorModeId: String?
 }
 
 func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFields {
@@ -366,6 +437,10 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
   switch provider.lowercased() {
   case "claude":
     switch mode {
+    case "auto":
+      fields.interactionMode = "default"
+      fields.claudePermissionMode = "auto"
+      fields.permissionMode = "auto"
     case "plan":
       fields.interactionMode = "plan"
       fields.claudePermissionMode = "default"
@@ -407,6 +482,30 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
   case "opencode":
     fields.opencodePermissionMode = mode
     fields.permissionMode = mode
+  case "cursor":
+    fields.cursorModeId = mode.isEmpty ? "agent" : mode
+    switch fields.cursorModeId {
+    case "plan":
+      fields.permissionMode = "plan"
+    case "ask":
+      fields.permissionMode = "edit"
+    case "full-auto":
+      fields.permissionMode = "full-auto"
+    default:
+      fields.permissionMode = "default"
+    }
+  case "droid", "factory":
+    fields.droidPermissionMode = mode.isEmpty ? "auto-low" : mode
+    switch fields.droidPermissionMode {
+    case "read-only":
+      fields.permissionMode = "plan"
+    case "auto-medium":
+      fields.permissionMode = "default"
+    case "auto-high":
+      fields.permissionMode = "full-auto"
+    default:
+      fields.permissionMode = "edit"
+    }
   default:
     break
   }
@@ -435,6 +534,9 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     if summary.interactionMode == "plan" || summary.permissionMode == "plan" {
       return "plan"
     }
+    if summary.claudePermissionMode == "auto" || summary.permissionMode == "auto" {
+      return "auto"
+    }
     if summary.claudePermissionMode == "bypassPermissions" || summary.permissionMode == "full-auto" {
       return "full-auto"
     }
@@ -455,8 +557,22 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     return "default"
   case "opencode":
     return summary.opencodePermissionMode ?? summary.permissionMode ?? "edit"
+  case "cursor":
+    return summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
+  case "droid", "factory":
+    return summary.droidPermissionMode ?? workDroidModeFromPermissionMode(summary.permissionMode) ?? "auto-low"
   default:
     return ""
+  }
+}
+
+func workDroidModeFromPermissionMode(_ permissionMode: String?) -> String? {
+  switch permissionMode {
+  case "plan": return "read-only"
+  case "edit": return "auto-low"
+  case "default": return "auto-medium"
+  case "full-auto": return "auto-high"
+  default: return nil
   }
 }
 

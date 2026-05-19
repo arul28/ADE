@@ -1400,6 +1400,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const writeBySessionId = vi.fn().mockReturnValue(true);
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const readTranscriptTail = vi.fn(async () => "prior output\n");
+    const updateSessionMeta = vi.fn();
 
     const host = createSyncHostService({
       db: brainDb,
@@ -1531,6 +1532,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
           summary: null,
           resumeCommand: "codex resume picker",
         }),
+        updateMeta: updateSessionMeta,
         readTranscriptTail: async () => "prior output\n",
       } as any,
       ptyService: {
@@ -1701,8 +1703,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const startCliResult = await client.queue.next("command_result");
     const startCliPayload = startCliResult.payload as {
       ok: boolean;
+      error?: { message?: string };
       result: { sessionId: string; ptyId: string; session: { id: string; toolType: string } };
     };
+    expect(startCliPayload.ok, startCliPayload.error?.message).toBe(true);
     expect(startCliPayload.result.sessionId).toBe("session-1");
     expect(startCliPayload.result.ptyId).toBe("pty-1");
     expect(startCliPayload.result.session).toEqual(expect.objectContaining({
@@ -1710,7 +1714,15 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       toolType: "codex",
     }));
     expect(createSpy).toHaveBeenCalledTimes(2);
-    expect(writeBySessionId).toHaveBeenCalledWith("session-1", "fix from phone\r");
+    const startCliCreateCall = createSpy.mock.calls.at(-1)?.[0];
+    expect(startCliCreateCall?.command).toBe("codex");
+    expect(startCliCreateCall?.args.at(-1)).toContain("fix from phone");
+    expect(writeBySessionId).toHaveBeenCalledTimes(1);
+    expect(updateSessionMeta).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      title: "Fix from phone",
+      manuallyNamed: false,
+    }));
 
     await waitFor(() => fs.readFileSync(commandLedgerPath, "utf8").includes("cmd-start-cli"));
     const startCliLedger = fs.readFileSync(commandLedgerPath, "utf8");
@@ -1738,8 +1750,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const startCliReplayResult = await client.queue.next("command_result");
     const startCliReplayPayload = startCliReplayResult.payload as {
       ok: boolean;
+      error?: { message?: string };
       result: { sessionId: string; ptyId: string; session: { id: string; toolType: string } };
     };
+    expect(startCliReplayPayload.ok, startCliReplayPayload.error?.message).toBe(true);
     expect(startCliReplayPayload.result.sessionId).toBe("session-1");
     expect(startCliReplayPayload.result.ptyId).toBe("pty-1");
     expect(startCliReplayPayload.result.session).toEqual(expect.objectContaining({

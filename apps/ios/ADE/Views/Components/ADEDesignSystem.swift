@@ -212,14 +212,16 @@ enum ADEColor {
   /// Per-model reasoning tiers mirroring desktop's `reasoningTiers` field in
   /// `apps/desktop/src/shared/modelRegistry.ts`. Keys cover both the registry
   /// id ("anthropic/claude-opus-4-7") and shortId ("opus") so lookups work
-  /// against either form of `chatSummary.modelId`. Models missing from this
-  /// map (e.g. Haiku) don't support effort tiers; callers should hide the
-  /// effort picker entirely in that case.
+  /// against either form of `chatSummary.modelId`. Keep this aligned with
+  /// `apps/desktop/src/shared/modelRegistry.ts` so the mobile composer exposes
+  /// the same effort actions as desktop and the ADE TUI.
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
-    "anthropic/claude-opus-4-7": ["low", "medium", "high", "max"],
-    "opus": ["low", "medium", "high", "max"],
+    "anthropic/claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
+    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
     "opus-1m": ["low", "medium", "high", "xhigh", "max"],
     "opus[1m]": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-4-7[1m]": ["low", "medium", "high", "xhigh", "max"],
@@ -235,6 +237,13 @@ enum ADEColor {
     "gpt-5.4-mini": ["low", "medium", "high", "xhigh"],
     "openai/gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
     "gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
+    "openai/gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
+    "gpt-5.3-codex-spark": ["low", "medium", "high", "xhigh"],
+    "gpt-5.3-spark": ["low", "medium", "high", "xhigh"],
+    "codex-spark": ["low", "medium", "high", "xhigh"],
+    "spark": ["low", "medium", "high", "xhigh"],
+    "openai/gpt-5.2": ["low", "medium", "high", "xhigh"],
+    "gpt-5.2": ["low", "medium", "high", "xhigh"],
   ]
 
   /// Return the reasoning tiers supported by a model, or nil when the model
@@ -321,6 +330,27 @@ enum ADEMotion {
 
   static func allowsMatchedGeometry(reduceMotion: Bool) -> Bool {
     !reduceMotion
+  }
+}
+
+enum ADEUIKitAppearance {
+  @MainActor
+  static func configureTabBar() {
+    let appearance = UITabBarAppearance()
+    appearance.configureWithOpaqueBackground()
+    appearance.backgroundEffect = nil
+    appearance.backgroundColor = UIColor { traits in
+      traits.userInterfaceStyle == .dark ? hex(0x16141e) : hex(0xfaf8f5)
+    }
+    appearance.shadowColor = UIColor { traits in
+      traits.userInterfaceStyle == .dark
+        ? hex(0xffffff, alpha: 0.10)
+        : hex(0x1a1a1e, alpha: 0.10)
+    }
+
+    let tabBar = UITabBar.appearance()
+    tabBar.standardAppearance = appearance
+    tabBar.scrollEdgeAppearance = appearance
   }
 }
 
@@ -689,7 +719,7 @@ struct ADERootToolbarControls: View {
       toolbarIconButton(
         icon: "square.grid.2x2.fill",
         tint: PrsGlass.accentTop,
-        isAlive: true,
+        isAlive: false,
         accessibilityLabel: "Projects",
         action: { syncService.showProjectHome() }
       )
@@ -707,12 +737,12 @@ struct ADERootToolbarControls: View {
 
         if hasUnread {
           Circle()
-            .fill(PrsGlass.glowPink)
+            .fill(ADEColor.warning)
             .frame(width: 7, height: 7)
             .overlay(
               Circle().stroke(PrsGlass.ink, lineWidth: 1.25)
             )
-            .shadow(color: PrsGlass.glowPink.opacity(0.85), radius: 5, x: 0, y: 0)
+            .shadow(color: ADEColor.warning.opacity(0.45), radius: 3, x: 0, y: 0)
             .offset(x: -7, y: 6)
             .transition(.scale.combined(with: .opacity))
             .accessibilityHidden(true)
@@ -723,7 +753,7 @@ struct ADERootToolbarControls: View {
     .padding(.vertical, 4)
     .background {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(.ultraThinMaterial)
+        .fill(ADEColor.glassBackground)
     }
     .overlay {
       // Soft vertical highlight (white 0.10 → 0).
@@ -755,7 +785,7 @@ struct ADERootToolbarControls: View {
         .allowsHitTesting(false)
     }
     .compositingGroup()
-    .shadow(color: Color.black.opacity(0.45), radius: 24, x: 0, y: 8)
+    .shadow(color: Color.black.opacity(0.28), radius: 12, x: 0, y: 5)
     .fixedSize(horizontal: true, vertical: false)
   }
 
@@ -778,14 +808,14 @@ struct ADERootToolbarControls: View {
       ZStack {
         if isAlive {
           Circle()
-            .fill(tint.opacity(0.45))
-            .frame(width: 26, height: 26)
-            .blur(radius: 8)
+            .fill(tint.opacity(0.18))
+            .frame(width: 24, height: 24)
+            .blur(radius: 3)
         }
         Image(systemName: icon)
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(tint)
-          .shadow(color: isAlive ? tint.opacity(0.6) : .clear, radius: 6, x: 0, y: 0)
+          .shadow(color: isAlive ? tint.opacity(0.28) : .clear, radius: 2, x: 0, y: 0)
       }
       .frame(width: 38, height: 34)
       .contentShape(Rectangle())
@@ -857,6 +887,20 @@ struct ADERootTopBar<Actions: View>: View {
     .padding(.horizontal, 16)
     .padding(.top, 2)
     .frame(height: 60)
+    .background {
+      LinearGradient(
+        colors: [
+          ADEColor.pageBackground,
+          ADEColor.pageBackground.opacity(0.98),
+          ADEColor.pageBackground.opacity(0.88),
+          ADEColor.pageBackground.opacity(0)
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+      .ignoresSafeArea(edges: .top)
+      .allowsHitTesting(false)
+    }
   }
 }
 
@@ -1011,6 +1055,14 @@ struct ADEGlassGroup<Content: View>: View {
   }
 }
 
+struct ADERootTabBarHiddenPreferenceKey: PreferenceKey {
+  static var defaultValue = false
+
+  static func reduce(value: inout Bool, nextValue: () -> Bool) {
+    value = value || nextValue()
+  }
+}
+
 private struct ADEGlassCardModifier: ViewModifier {
   let cornerRadius: CGFloat
   let padding: CGFloat
@@ -1049,7 +1101,7 @@ private struct ADENavigationGlassModifier: ViewModifier {
     content
       .toolbarBackground(.clear, for: .navigationBar)
       .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-      .toolbarBackground(.clear, for: .tabBar)
+      .toolbarBackground(ADEColor.surfaceBackground.opacity(0.96), for: .tabBar)
       .toolbarBackgroundVisibility(.visible, for: .tabBar)
   }
 }
@@ -1130,5 +1182,9 @@ extension View {
 
   func adeNavigationZoomTransition(id: String?, in namespace: Namespace.ID?) -> some View {
     modifier(ADENavigationZoomTransitionModifier(id: id, namespace: namespace))
+  }
+
+  func adeRootTabBarHidden(_ hidden: Bool = true) -> some View {
+    preference(key: ADERootTabBarHiddenPreferenceKey.self, value: hidden)
   }
 }

@@ -52,19 +52,27 @@ struct PrGitHubFiltersCard: View {
 
   @ViewBuilder
   private var sortMenu: some View {
-    Menu {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
       ForEach(PrGitHubSortOption.allCases) { option in
         Button(action: { sortOption = option }) {
           Text(option.title)
-          if option == sortOption {
-            Image(systemName: "checkmark")
-          }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(option == sortOption ? ADEColor.accent : ADEColor.textSecondary)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(option == sortOption ? ADEColor.accent.opacity(0.12) : ADEColor.surfaceBackground.opacity(0.45), in: Capsule())
+            .overlay(Capsule().stroke(option == sortOption ? ADEColor.accent.opacity(0.4) : ADEColor.border.opacity(0.16), lineWidth: 0.5))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sort by \(option.title)")
+        .accessibilityValue(option == sortOption ? "Selected" : "")
       }
-    } label: {
-      sortMenuLabel
     }
-    .menuStyle(.borderlessButton)
+    }
+    .frame(maxWidth: 220)
+    .accessibilityElement(children: .contain)
     .accessibilityLabel("Sort pull requests")
   }
 

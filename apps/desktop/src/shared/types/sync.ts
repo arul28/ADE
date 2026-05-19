@@ -506,6 +506,7 @@ export type SyncStartCliSessionArgs = {
   rows?: number;
   model?: string | null;
   modelId?: string | null;
+  reasoningEffort?: string | null;
 };
 
 export type SyncStartCliSessionResult = {
@@ -535,6 +536,7 @@ export type SyncRemoteCommandAction =
   | "lanes.importBranch"
   | "lanes.previewBranchSwitch"
   | "lanes.attach"
+  | "lanes.listUnregisteredWorktrees"
   | "lanes.adoptAttached"
   | "lanes.rename"
   | "lanes.reparent"
@@ -606,6 +608,7 @@ export type SyncRemoteCommandAction =
   | "cto.listLinearIngressEvents"
   | "cto.updateIdentity"
   | "cto.updateCoreMemory"
+  | "cto.removeAgent"
   | "cto.setAgentStatus"
   | "cto.triggerAgentWakeup"
   | "cto.rollbackAgentRevision"
@@ -658,6 +661,7 @@ export type SyncRemoteCommandAction =
   | "prs.getActivity"
   | "prs.getDeployments"
   | "prs.createFromLane"
+  | "prs.createQueue"
   | "prs.linkToLane"
   | "prs.draftDescription"
   | "prs.land"
@@ -674,6 +678,8 @@ export type SyncRemoteCommandAction =
   | "prs.setReviewThreadResolved"
   | "prs.reactToComment"
   | "prs.aiReviewSummary"
+  | "prs.simulateIntegration"
+  | "prs.commitIntegration"
   | "prs.listIntegrationWorkflows"
   | "prs.updateIntegrationProposal"
   | "prs.deleteIntegrationProposal"
@@ -683,6 +689,7 @@ export type SyncRemoteCommandAction =
   | "prs.startIntegrationResolution"
   | "prs.recheckIntegrationStep"
   | "prs.landQueueNext"
+  | "prs.startQueueAutomation"
   | "prs.pauseQueueAutomation"
   | "prs.resumeQueueAutomation"
   | "prs.cancelQueueAutomation"
@@ -1054,10 +1061,12 @@ export function normalizeNotificationPreferences(input: unknown): NotificationPr
   const perSessionOverrides: NonNullable<NotificationPreferences["perSessionOverrides"]> = {};
   for (const [sessionId, override] of Object.entries(perSessionRaw)) {
     if (!isRecord(override) || !sessionId.trim()) continue;
-    perSessionOverrides[sessionId] = {
+    const normalizedOverride = {
       muted: booleanOrDefault(override.muted, false),
       awaitingInputOnly: booleanOrDefault(override.awaitingInputOnly, false),
     };
+    if (!normalizedOverride.muted && !normalizedOverride.awaitingInputOnly) continue;
+    perSessionOverrides[sessionId] = normalizedOverride;
   }
   return {
     enabled: booleanOrDefault(raw.enabled, DEFAULT_NOTIFICATION_PREFERENCES.enabled),

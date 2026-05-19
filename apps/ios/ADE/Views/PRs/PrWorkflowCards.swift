@@ -32,6 +32,37 @@ private enum WorkflowLandingConfirmation {
   }
 }
 
+private struct PrMergeStrategyOptions: View {
+  @Binding var selection: PrMergeMethodOption
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(PrMergeMethodOption.allCases) { option in
+        ADEOptionButton(
+          title: option.shortTitle,
+          subtitle: option.description,
+          systemImage: icon(for: option),
+          isSelected: selection == option,
+          tint: PrGlassPalette.purple
+        ) {
+          selection = option
+        }
+      }
+    }
+  }
+
+  private func icon(for option: PrMergeMethodOption) -> String {
+    switch option {
+    case .squash:
+      return "square.stack.3d.down.right.fill"
+    case .merge:
+      return "arrow.triangle.merge"
+    case .rebase:
+      return "arrow.triangle.2.circlepath"
+    }
+  }
+}
+
 // MARK: - Legacy cards (unchanged surface, lightly restyled)
 
 struct IntegrationWorkflowCard: View {
@@ -142,13 +173,7 @@ struct QueueWorkflowCard: View {
       }
 
       if let activeEntry {
-        Picker("Merge strategy", selection: $mergeMethod) {
-          ForEach(PrMergeMethodOption.allCases) { option in
-            Text(option.shortTitle).tag(option)
-          }
-        }
-        .pickerStyle(.menu)
-        .adeInsetField()
+        PrMergeStrategyOptions(selection: $mergeMethod)
 
         Button("Land active PR") {
           landingConfirmation = .activePr(prId: activeEntry.prId)
@@ -394,13 +419,7 @@ struct PrMobileWorkflowCardView: View {
     }
 
     if let activePrId = card.activePrId {
-      Picker("Merge strategy", selection: $mergeMethod) {
-        ForEach(PrMergeMethodOption.allCases) { option in
-          Text(option.shortTitle).tag(option)
-        }
-      }
-      .pickerStyle(.menu)
-      .adeInsetField()
+      PrMergeStrategyOptions(selection: $mergeMethod)
 
       HStack(spacing: 10) {
         Button("Land active PR") {
@@ -601,14 +620,25 @@ struct PrMobileWorkflowCardView: View {
             }
             Spacer(minLength: 0)
             if lane.outcome != "clean", let proposalId = card.proposalId {
-              Menu {
-                Button("Resolve conflicts") { onResolveIntegrationLane(proposalId, lane.laneId) }
-                Button("Recheck") { onRecheckIntegrationLane(proposalId, lane.laneId) }
-              } label: {
-                Image(systemName: "ellipsis.circle")
-                  .frame(width: 32, height: 32)
+              HStack(spacing: 6) {
+                Button {
+                  onResolveIntegrationLane(proposalId, lane.laneId)
+                } label: {
+                  Image(systemName: "wrench.and.screwdriver")
+                    .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Resolve conflicts for \(lane.laneName)")
+
+                Button {
+                  onRecheckIntegrationLane(proposalId, lane.laneId)
+                } label: {
+                  Image(systemName: "arrow.clockwise")
+                    .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.glass)
+                .accessibilityLabel("Recheck \(lane.laneName)")
               }
-              .buttonStyle(.glass)
               .disabled(!isLive)
             }
           }

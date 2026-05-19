@@ -103,12 +103,19 @@ struct LaneBatchManageSheet: View {
 
           GlassSection(title: "Delete") {
             VStack(alignment: .leading, spacing: 12) {
-              Picker("Delete mode", selection: $deleteMode) {
+              LazyVStack(spacing: 8) {
                 ForEach(LaneDeleteMode.allCases) { mode in
-                  Text(mode.title).tag(mode)
+                  LaneOptionButton(
+                    title: mode.title,
+                    subtitle: mode.detail,
+                    systemImage: mode.symbol,
+                    isSelected: deleteMode == mode,
+                    tint: ADEColor.danger
+                  ) {
+                    deleteMode = mode
+                  }
                 }
               }
-              .pickerStyle(.menu)
 
               if deleteMode == .remoteBranch {
                 LaneTextField("Remote name", text: $deleteRemoteName)

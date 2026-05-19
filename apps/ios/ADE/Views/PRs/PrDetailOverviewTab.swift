@@ -661,7 +661,7 @@ struct PrPathToMergeTab: View {
       conflictStrategy: "pause",
       forceFinalizeMode: "off",
       forceFinalizeRequireNoCiFailures: true,
-      atCapPolicy: "stop",
+      atCapPolicy: "ci_retry_once",
       atCapWaitMinutes: 30,
       atCapCiRetryMax: 3,
       forceMergeRequiresConfirmation: true,
@@ -674,7 +674,7 @@ struct PrPathToMergeTab: View {
   }
 
   private var resolvedAtCapPolicy: String {
-    resolvedPipelineSettings.atCapPolicy ?? "stop"
+    resolvedPipelineSettings.atCapPolicy ?? "ci_retry_once"
   }
 
   private var resolvedAtCapWaitMinutes: Int {
@@ -695,6 +695,38 @@ struct PrPathToMergeTab: View {
 
   private var resolvedEarlyMergeOnGreen: Bool {
     resolvedPipelineSettings.earlyMergeOnGreen ?? true
+  }
+
+  private var mergeMethodOptions: [PrPipelineOption] {
+    [PrPipelineOption(id: "repo_default", label: "Repository default")] +
+      PrMergeMethodOption.allCases.map { PrPipelineOption(id: $0.rawValue, label: $0.shortTitle) }
+  }
+
+  private var conflictStrategyOptions: [PrPipelineOption] {
+    [
+      PrPipelineOption(id: "pause", label: "Pause"),
+      PrPipelineOption(id: "rebase", label: "Rebase"),
+      PrPipelineOption(id: "merge", label: "Merge commit"),
+      PrPipelineOption(id: "auto", label: "Auto agent")
+    ]
+  }
+
+  private var atCapPolicyOptions: [PrPipelineOption] {
+    [
+      PrPipelineOption(id: "stop", label: "Stop"),
+      PrPipelineOption(id: "wait_for_ci", label: "Wait for CI"),
+      PrPipelineOption(id: "ci_retry_once", label: "Retry CI once"),
+      PrPipelineOption(id: "ci_retry_loop", label: "Retry CI fixes"),
+      PrPipelineOption(id: "force_merge", label: "Force merge")
+    ]
+  }
+
+  private func selectAtCapPolicy(_ policy: String) {
+    if policy == "force_merge", resolvedForceMergeRequiresConfirmation {
+      confirmForceMergeAtCap = true
+    } else {
+      onSetAtCapPolicy(policy)
+    }
   }
 
   private var failedChecks: [PrCheck] {
@@ -1220,27 +1252,17 @@ struct PrPathToMergeTab: View {
 
       Divider().overlay(ADEColor.textMuted.opacity(0.15))
 
-      HStack(spacing: 10) {
+      VStack(alignment: .leading, spacing: 8) {
         Text("Merge method")
           .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        Menu {
-          Button("Repository default") { onSetPipelineMergeMethod("repo_default") }
-          ForEach(PrMergeMethodOption.allCases) { option in
-            Button(option.title) { onSetPipelineMergeMethod(option.rawValue) }
-          }
-        } label: {
-          HStack(spacing: 4) {
-            Text(pipelineMergeMethodLabel(settings.mergeMethod).lowercased())
-              .font(.system(size: 12, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .disabled(!isLive)
+        PrPipelineOptionGrid(
+          options: mergeMethodOptions,
+          selectedId: settings.mergeMethod,
+          isEnabled: isLive,
+          accessibilityPrefix: "Merge method",
+          onSelect: onSetPipelineMergeMethod
+        )
       }
       .padding(.vertical, 10)
 
@@ -1286,27 +1308,17 @@ struct PrPathToMergeTab: View {
 
       Divider().overlay(ADEColor.textMuted.opacity(0.15))
 
-      HStack(spacing: 10) {
+      VStack(alignment: .leading, spacing: 8) {
         Text("Conflict strategy")
           .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        Menu {
-          Button("Pause") { onSetPipelineConflictStrategy("pause") }
-          Button("Rebase") { onSetPipelineConflictStrategy("rebase") }
-          Button("Merge commit") { onSetPipelineConflictStrategy("merge") }
-          Button("Auto agent") { onSetPipelineConflictStrategy("auto") }
-        } label: {
-          HStack(spacing: 4) {
-            Text(pipelineConflictStrategyLabel(resolvedConflictStrategy).lowercased())
-              .font(.system(size: 12, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .disabled(!isLive)
+        PrPipelineOptionGrid(
+          options: conflictStrategyOptions,
+          selectedId: resolvedConflictStrategy,
+          isEnabled: isLive,
+          accessibilityPrefix: "Conflict strategy",
+          onSelect: onSetPipelineConflictStrategy
+        )
       }
       .padding(.vertical, 10)
 
@@ -1329,33 +1341,17 @@ struct PrPathToMergeTab: View {
 
       Divider().overlay(ADEColor.textMuted.opacity(0.15))
 
-      HStack(spacing: 10) {
+      VStack(alignment: .leading, spacing: 8) {
         Text("At-cap policy")
           .font(.system(size: 13, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 0)
-        Menu {
-          Button("Stop") { onSetAtCapPolicy("stop") }
-          Button("Wait for CI") { onSetAtCapPolicy("wait_for_ci") }
-          Button("Retry CI fixes") { onSetAtCapPolicy("ci_retry_loop") }
-          Button("Force merge") {
-            if resolvedForceMergeRequiresConfirmation {
-              confirmForceMergeAtCap = true
-            } else {
-              onSetAtCapPolicy("force_merge")
-            }
-          }
-        } label: {
-          HStack(spacing: 4) {
-            Text(pipelineAtCapPolicyLabel(resolvedAtCapPolicy).lowercased())
-              .font(.system(size: 12, design: .monospaced))
-              .foregroundStyle(ADEColor.textSecondary)
-            Image(systemName: "chevron.up.chevron.down")
-              .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .disabled(!isLive)
+        PrPipelineOptionGrid(
+          options: atCapPolicyOptions,
+          selectedId: resolvedAtCapPolicy,
+          isEnabled: isLive,
+          accessibilityPrefix: "At-cap policy",
+          onSelect: selectAtCapPolicy
+        )
       }
       .padding(.vertical, 10)
 
@@ -1675,20 +1671,32 @@ struct PrPathReviewCommentRow: View {
         .background(Circle().fill(sourceTint.opacity(0.16)))
         .overlay(Circle().strokeBorder(sourceTint.opacity(0.32), lineWidth: 0.5))
 
-      Menu {
-        Button("Mark fixed", systemImage: "checkmark") { onMarkFixed() }
-        Button("Dismiss", systemImage: "xmark") { onDismiss() }
-        Button("Escalate", systemImage: "exclamationmark.triangle") { onEscalate() }
-      } label: {
-        Image(systemName: "ellipsis")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(width: 24, height: 24)
+      HStack(spacing: 4) {
+        prInlineAction(symbol: "checkmark", label: "Mark fixed", action: onMarkFixed)
+        prInlineAction(symbol: "xmark", label: "Dismiss", action: onDismiss)
+        prInlineAction(symbol: "exclamationmark.triangle", label: "Escalate", action: onEscalate)
       }
       .disabled(!isLive)
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
+  }
+
+  private func prInlineAction(symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      // Visual chip stays compact (26pt circle), but the outer frame + contentShape
+      // expands the tap target to Apple's HIG-minimum 44pt.
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 26, height: 26)
+        .background(Color.white.opacity(0.05), in: Circle())
+        .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
   }
 }
 
@@ -1717,6 +1725,57 @@ private struct PrPathStatChip: View {
       Capsule(style: .continuous)
         .strokeBorder(tint.opacity(0.32), lineWidth: 0.5)
     )
+  }
+}
+
+private struct PrPipelineOption: Identifiable {
+  let id: String
+  let label: String
+}
+
+private struct PrPipelineOptionGrid: View {
+  let options: [PrPipelineOption]
+  let selectedId: String
+  let isEnabled: Bool
+  let accessibilityPrefix: String
+  let onSelect: (String) -> Void
+
+  private let columns = [
+    GridItem(.flexible(minimum: 0), spacing: 6),
+    GridItem(.flexible(minimum: 0), spacing: 6)
+  ]
+
+  var body: some View {
+    LazyVGrid(columns: columns, spacing: 6) {
+      ForEach(options) { option in
+        let selected = option.id == selectedId
+        Button {
+          onSelect(option.id)
+        } label: {
+          Text(option.label)
+            .font(.system(size: 11.5, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+            .minimumScaleFactor(0.78)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .padding(.horizontal, 6)
+            .background(
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(selected ? PrGlassPalette.purpleDeep.opacity(0.9) : Color.white.opacity(0.05))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(selected ? PrGlassPalette.purpleBright.opacity(0.45) : Color.white.opacity(0.08), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityLabel("\(accessibilityPrefix): \(option.label)")
+        .accessibilityValue(selected ? "selected" : "not selected")
+      }
+    }
   }
 }
 
@@ -1752,6 +1811,7 @@ private func pipelineAtCapPolicyLabel(_ policy: String) -> String {
   switch policy {
   case "stop": return "Stop"
   case "wait_for_ci": return "Wait for CI"
+  case "ci_retry_once": return "Retry CI once"
   case "ci_retry_loop": return "Retry CI fixes"
   case "force_merge": return "Force merge"
   default: return policy.replacingOccurrences(of: "_", with: " ")
@@ -1799,15 +1859,36 @@ struct PrIssueInventoryRow: View {
         ADEStatusPill(text: item.source.uppercased(), tint: ADEColor.accent)
         ADEStatusPill(text: item.state.replacingOccurrences(of: "_", with: " ").uppercased(), tint: tint)
         Spacer(minLength: 0)
-        Menu {
-          Button("Mark fixed") { onFixed() }
-          Button("Dismiss") { onDismiss() }
-          Button("Escalate") { onEscalate() }
-        } label: {
-          Image(systemName: "ellipsis.circle")
-            .frame(width: 32, height: 32)
+        // Inline 30pt glass chips with an expanded 44pt hit area so the row hits
+        // Apple's HIG minimum tap target without ballooning the visible buttons.
+        HStack(spacing: 6) {
+          Button(action: onFixed) {
+            Image(systemName: "checkmark")
+              .frame(width: 30, height: 30)
+          }
+          .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
+          .accessibilityLabel("Mark fixed")
+
+          Button(action: onDismiss) {
+            Image(systemName: "xmark")
+              .frame(width: 30, height: 30)
+          }
+          .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
+          .accessibilityLabel("Dismiss")
+
+          Button(action: onEscalate) {
+            Image(systemName: "exclamationmark.triangle")
+              .frame(width: 30, height: 30)
+          }
+          .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
+          .accessibilityLabel("Escalate")
         }
-        .buttonStyle(.glass)
         .disabled(!isLive)
       }
 

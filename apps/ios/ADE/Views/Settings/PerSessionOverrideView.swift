@@ -1,5 +1,22 @@
 import SwiftUI
 
+func notificationHasActiveOverride(_ override: SessionNotificationOverride) -> Bool {
+  override.muted || override.awaitingInputOnly
+}
+
+func notificationStaleOverrideIds(
+  overrides: [String: SessionNotificationOverride],
+  agents: [AgentSnapshot]
+) -> [String] {
+  let agentIds = Set(agents.map(\.sessionId))
+  return overrides
+    .filter { sessionId, override in
+      !agentIds.contains(sessionId) && notificationHasActiveOverride(override)
+    }
+    .map(\.key)
+    .sorted()
+}
+
 /// Lists every session we know about from the shared workspace snapshot and
 /// lets the user mute a session or restrict it to awaiting-input alerts only.
 ///
@@ -11,8 +28,10 @@ struct PerSessionOverrideView: View {
   @State private var agents: [AgentSnapshot] = []
 
   var body: some View {
+    let staleOverrideIds = notificationStaleOverrideIds(overrides: overrides, agents: agents)
+
     Form {
-      if agents.isEmpty {
+      if agents.isEmpty && staleOverrideIds.isEmpty {
         Section {
           emptyState
         }
@@ -20,6 +39,9 @@ struct PerSessionOverrideView: View {
         Section {
           ForEach(agents) { agent in
             sessionRow(for: agent)
+          }
+          ForEach(staleOverrideIds, id: \.self) { sessionId in
+            staleOverrideRow(for: sessionId)
           }
         } footer: {
           Text("Overrides only affect push notifications — the session itself keeps running.")
@@ -78,6 +100,48 @@ struct PerSessionOverrideView: View {
     .padding(.vertical, 4)
   }
 
+  @ViewBuilder
+  private func staleOverrideRow(for sessionId: String) -> some View {
+    let override = overrides[sessionId] ?? SessionNotificationOverride()
+
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 10) {
+        Circle()
+          .fill(ADEColor.textMuted)
+          .frame(width: 10, height: 10)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(shortSessionId(sessionId))
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          Text("Saved override")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        Spacer()
+      }
+
+      Toggle(isOn: mutedBinding(sessionId, fallback: override)) {
+        Label("Mute this session", systemImage: "bell.slash")
+          .labelStyle(.titleAndIcon)
+          .font(.caption)
+      }
+      .tint(ADEColor.purpleAccent)
+      .accessibilityHint("Silence all push alerts from this saved session")
+
+      Toggle(isOn: awaitingOnlyBinding(sessionId, fallback: override)) {
+        Label("Awaiting-input only", systemImage: "hand.raised")
+          .labelStyle(.titleAndIcon)
+          .font(.caption)
+      }
+      .tint(ADEColor.purpleAccent)
+      .disabled(override.muted)
+      .accessibilityHint("Only alert when this saved session pauses for your input")
+    }
+    .padding(.vertical, 4)
+  }
+
   private var emptyState: some View {
     VStack(alignment: .center, spacing: 10) {
       Image(systemName: "tray")
@@ -112,7 +176,7 @@ struct PerSessionOverrideView: View {
         var current = overrides[sessionId] ?? fallback
         current.muted = newValue
         if newValue { current.awaitingInputOnly = false }
-        overrides[sessionId] = current
+        writeOverride(current, for: sessionId)
       }
     )
   }
@@ -123,9 +187,22 @@ struct PerSessionOverrideView: View {
       set: { newValue in
         var current = overrides[sessionId] ?? fallback
         current.awaitingInputOnly = newValue
-        overrides[sessionId] = current
+        writeOverride(current, for: sessionId)
       }
     )
+  }
+
+  private func writeOverride(_ override: SessionNotificationOverride, for sessionId: String) {
+    if notificationHasActiveOverride(override) {
+      overrides[sessionId] = override
+    } else {
+      overrides.removeValue(forKey: sessionId)
+    }
+  }
+
+  private func shortSessionId(_ sessionId: String) -> String {
+    guard sessionId.count > 12 else { return sessionId }
+    return "\(sessionId.prefix(8))…\(sessionId.suffix(4))"
   }
 
   private func statusLine(for agent: AgentSnapshot) -> String {

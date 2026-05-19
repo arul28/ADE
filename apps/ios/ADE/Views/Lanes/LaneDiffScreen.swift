@@ -55,12 +55,24 @@ struct LaneDiffScreen: View {
             }
 
             if diff != nil {
-              Picker("Side", selection: $side) {
-                Text("Original").tag("original")
-                Text("Modified").tag("modified")
+              HStack(spacing: 8) {
+                LaneOptionButton(
+                  title: "Original",
+                  subtitle: "Base content",
+                  systemImage: "doc.text",
+                  isSelected: side == "original"
+                ) {
+                  side = "original"
+                }
+                LaneOptionButton(
+                  title: "Modified",
+                  subtitle: request.mode == "unstaged" ? "Editable content" : "Compared content",
+                  systemImage: "square.and.pencil",
+                  isSelected: side == "modified"
+                ) {
+                  side = "modified"
+                }
               }
-              .pickerStyle(.segmented)
-              .padding(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
             }
           }
           .padding(16)

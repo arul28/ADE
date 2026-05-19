@@ -429,6 +429,7 @@ private enum WorkPreviewData {
       transcript: WorkPreviewData.transcript,
       fallbackEntries: [],
       artifacts: [WorkPreviewData.artifact],
+      optimisticPendingSteers: [],
       localEchoMessages: [],
       expandedToolCardIds: Binding<Set<String>>.constant(["cmd-1"]),
       artifactContent: .constant([:]),

@@ -33,6 +33,8 @@ import type {
   CtoIdentity,
   CtoTriggerAgentWakeupArgs,
   CreateChildLaneArgs,
+  CommitIntegrationArgs,
+  CreateQueuePrsArgs,
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
@@ -90,7 +92,9 @@ import type {
   RerunPrChecksArgs,
   SetPrLabelsArgs,
   SetPrReviewThreadResolvedArgs,
+  SimulateIntegrationArgs,
   StartIntegrationResolutionArgs,
+  StartQueueAutomationArgs,
   SubmitPrReviewArgs,
   SyncCommandPayload,
   SyncRemoteCommandAction,
@@ -113,11 +117,13 @@ import type {
 import {
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
+  deriveTrackedCliInitialInputSessionMeta,
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
   launchProfileForTerminalSession,
+  resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   validateLaunchProfilePermissionMode,
 } from "../../../../desktop/src/shared/cliLaunch";
@@ -227,9 +233,24 @@ function asOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function asConfidenceThreshold(value: unknown): number | undefined {
+  const numeric = asOptionalNumber(value);
+  if (numeric == null) return undefined;
+  if (numeric < 0 || numeric > 1) return undefined;
+  return numeric;
+}
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => asTrimmedString(entry)).filter((entry): entry is string => Boolean(entry));
+}
+
+function asStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value)
+    .map(([key, entry]) => [key.trim(), typeof entry === "string" ? entry.trim() : ""] as const)
+    .filter(([key, entry]) => key.length > 0 && entry.length > 0);
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function parseAgentChatFileRefs(value: unknown): AgentChatFileRef[] | undefined {
@@ -552,6 +573,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     rows: asOptionalNumber(value.rows),
     model: asTrimmedString(value.model),
     modelId: asTrimmedString(value.modelId),
+    reasoningEffort: asTrimmedString(value.reasoningEffort),
   };
 }
 
@@ -587,7 +609,14 @@ async function listRemoteWorkSessions(
     if (!isChatToolType(session.toolType) || session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
-    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+    if (chat.awaitingInput) {
+      return {
+        ...session,
+        runtimeState: "waiting-input" as const,
+        chatIdleSinceAt: null,
+        pendingInputItemId: chat.pendingInputItemId ?? null,
+      };
+    }
     if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
     if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
     return session;
@@ -614,6 +643,7 @@ function parseAgentChatListArgs(value: Record<string, unknown>): AgentChatListAr
   return {
     ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
     includeAutomation: asOptionalBoolean(value.includeAutomation),
+    includeArchived: asOptionalBoolean(value.includeArchived),
   };
 }
 
@@ -992,6 +1022,22 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
   };
 }
 
+function parseCreateQueuePrsArgs(value: Record<string, unknown>): CreateQueuePrsArgs {
+  const laneIds = requireStringArray(value.laneIds, "prs.createQueue requires laneIds.");
+  const targetBranch = requireString(value.targetBranch, "prs.createQueue requires targetBranch.");
+  const titles = asStringRecord(value.titles);
+  return {
+    laneIds,
+    targetBranch,
+    ...(titles ? { titles } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.autoRebase === "boolean" ? { autoRebase: value.autoRebase } : {}),
+    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
+    ...(asTrimmedString(value.queueName) ? { queueName: asTrimmedString(value.queueName)! } : {}),
+    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+  };
+}
+
 function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs {
   return {
     laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
@@ -1138,6 +1184,32 @@ function parseListIntegrationWorkflowsArgs(value: Record<string, unknown>): List
   return view ? { view: view as ListIntegrationWorkflowsArgs["view"] } : {};
 }
 
+function parseSimulateIntegrationArgs(value: Record<string, unknown>): SimulateIntegrationArgs {
+  return {
+    sourceLaneIds: requireStringArray(value.sourceLaneIds, "prs.simulateIntegration requires sourceLaneIds."),
+    baseBranch: requireString(value.baseBranch, "prs.simulateIntegration requires baseBranch."),
+    ...(typeof value.persist === "boolean" ? { persist: value.persist } : {}),
+    ...(typeof value.mergeIntoLaneId === "string" || value.mergeIntoLaneId === null
+      ? { mergeIntoLaneId: value.mergeIntoLaneId }
+      : {}),
+  };
+}
+
+function parseCommitIntegrationArgs(value: Record<string, unknown>): CommitIntegrationArgs {
+  return {
+    proposalId: requireString(value.proposalId, "prs.commitIntegration requires proposalId."),
+    integrationLaneName: requireString(value.integrationLaneName, "prs.commitIntegration requires integrationLaneName."),
+    title: requireString(value.title, "prs.commitIntegration requires title."),
+    ...(typeof value.body === "string" ? { body: value.body } : {}),
+    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
+    ...(typeof value.pauseOnConflict === "boolean" ? { pauseOnConflict: value.pauseOnConflict } : {}),
+    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
+    ...(typeof value.preferredIntegrationLaneId === "string" || value.preferredIntegrationLaneId === null
+      ? { preferredIntegrationLaneId: value.preferredIntegrationLaneId }
+      : {}),
+  };
+}
+
 function parseUpdateIntegrationProposalArgs(value: Record<string, unknown>): UpdateIntegrationProposalArgs {
   return {
     proposalId: requireString(value.proposalId, "prs.updateIntegrationProposal requires proposalId."),
@@ -1209,7 +1281,35 @@ function parseLandQueueNextArgs(value: Record<string, unknown>): LandQueueNextAr
     method,
     ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
     ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
-    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
+  };
+}
+
+function parseStartQueueAutomationArgs(value: Record<string, unknown>): StartQueueAutomationArgs {
+  const method = asTrimmedString(value.method);
+  if (!method || !["merge", "squash", "rebase"].includes(method)) {
+    throw new Error("prs.startQueueAutomation requires method to be merge, squash, or rebase.");
+  }
+  const pipeline = isRecord(value.pipeline) ? (value.pipeline as StartQueueAutomationArgs["pipeline"]) : undefined;
+  const resolverProvider = asTrimmedString(value.resolverProvider);
+  const resolverModel = asTrimmedString(value.resolverModel);
+  const reasoningEffort = asTrimmedString(value.reasoningEffort);
+  const permissionMode = asTrimmedString(value.permissionMode);
+  const confidenceThreshold = asConfidenceThreshold(value.confidenceThreshold);
+  const originLabel = asTrimmedString(value.originLabel);
+  return {
+    groupId: requireString(value.groupId, "prs.startQueueAutomation requires groupId."),
+    method: method as StartQueueAutomationArgs["method"],
+    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
+    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
+    ...(pipeline ? { pipeline } : {}),
+    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
+    ...(resolverProvider ? { resolverProvider: resolverProvider as StartQueueAutomationArgs["resolverProvider"] } : {}),
+    ...(resolverModel ? { resolverModel } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(permissionMode ? { permissionMode: permissionMode as StartQueueAutomationArgs["permissionMode"] } : {}),
+    ...(confidenceThreshold != null ? { confidenceThreshold } : {}),
+    ...(originLabel ? { originLabel } : {}),
   };
 }
 
@@ -1237,7 +1337,7 @@ function parseResumeQueueAutomationArgs(value: Record<string, unknown>): ResumeQ
     ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
     ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
     ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
-    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
     ...(asTrimmedString(value.originLabel) ? { originLabel: asTrimmedString(value.originLabel)! } : {}),
   };
 }
@@ -1730,6 +1830,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("lanes.previewBranchSwitch", { viewerAllowed: true }, async (payload) =>
     args.laneService.previewBranchSwitch(parseGitCheckoutBranchArgs(payload)));
   register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
+  register("lanes.listUnregisteredWorktrees", { viewerAllowed: true }, async () => args.laneService.listUnregisteredWorktrees());
   register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));
   register("lanes.rename", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -1854,16 +1955,29 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const permissionMode = parsed.permissionMode ?? "default";
     validateLaunchProfilePermissionMode(provider, permissionMode);
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
-    const title = parsed.title?.trim() || LAUNCH_PROFILE_TITLE[provider];
+    const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
+      provider,
+      title: parsed.title,
+      initialInput: parsed.initialInput,
+    });
+    const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
 
     function resolveLaunch(): { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } {
-      if (provider === "shell") return {};
+      if (provider === "shell") {
+        return resolveCleanShellLaunchFields({
+          platform: process.platform,
+          shell: process.env.SHELL,
+          comSpec: process.env.ComSpec,
+        });
+      }
       return buildTrackedCliLaunchCommand({
         provider,
         permissionMode,
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
+        reasoningEffort: parsed.reasoningEffort ?? undefined,
+        initialPrompt: provider === "codex" ? parsed.initialInput : null,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
       });
     }
@@ -1880,7 +1994,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       ...resolveLaunch(),
     });
 
-    if (parsed.initialInput && provider !== "shell") {
+    if (parsed.initialInput && provider !== "shell" && provider !== "codex") {
       const written = args.ptyService.writeBySessionId(result.sessionId, `${parsed.initialInput}\r`);
       if (!written) {
         try {
@@ -1905,6 +2019,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
         confirmTimer.unref?.();
       }
+    }
+
+    if (initialInputMeta.goal) {
+      const session = args.sessionService.get(result.sessionId);
+      args.sessionService.updateMeta({
+        sessionId: result.sessionId,
+        ...(session?.goal?.trim().length ? {} : { goal: initialInputMeta.goal }),
+        ...(initialInputMeta.promptTitle && title === initialInputMeta.promptTitle
+          ? { title: initialInputMeta.promptTitle, manuallyNamed: false }
+          : {}),
+      });
     }
 
     const session = args.sessionService.get(result.sessionId);
@@ -1955,7 +2080,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatListArgs(payload);
-    return agentChatService.listSessions(parsed.laneId, { includeAutomation: parsed.includeAutomation });
+    return agentChatService.listSessions(parsed.laneId, {
+      includeAutomation: parsed.includeAutomation,
+      includeArchived: parsed.includeArchived,
+    });
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
@@ -1970,7 +2098,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
       parseAgentChatSendArgs(payload),
-      { awaitDispatch: true },
+      { awaitDispatch: false },
     );
     return { ok: true };
   });
@@ -1979,8 +2107,8 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return { ok: true };
   });
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
-    return { ok: true };
+    const result = await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
+    return isRecord(result) ? { ...result, ok: true } : { ok: true };
   });
   register("chat.cancelSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     await requireService(args.agentChatService, "Agent chat service not available.").cancelSteer(parseAgentChatCancelSteerArgs(payload));
@@ -2179,9 +2307,9 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return workerBudgetService.getBudgetSnapshot(monthKey ? { monthKey } : {});
   });
   register("cto.getAgentCoreMemory", { viewerAllowed: true }, async (payload) => {
-    const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
+    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
     const agentId = requireString(payload.agentId, "cto.getAgentCoreMemory requires agentId.");
-    return workerHeartbeatService.getAgentCoreMemory(agentId);
+    return workerAgentService.getCoreMemory(agentId);
   });
   register("cto.listAgentRuns", { viewerAllowed: true }, async (payload) => {
     const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
@@ -2206,8 +2334,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     return flowPolicyService.getPolicy();
   });
   register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () => {
-    const linearCredentialService = requireService(args.linearCredentialService, "Linear credential service not available.");
-    const credentialStatus = linearCredentialService.getStatus();
+    const credentialStatus = args.linearCredentialService?.getStatus() ?? {
+      tokenStored: false,
+      authMode: null,
+      tokenExpiresAt: null,
+      oauthConfigured: false,
+    };
     const tokenStored = Boolean(credentialStatus.tokenStored);
     const checkedAt = new Date().toISOString();
     const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
@@ -2263,6 +2395,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoCoreMemory>) : {};
     return ctoStateService.updateCoreMemory(patch);
+  });
+  register("cto.removeAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
+    const agentId = requireString(payload.agentId, "cto.removeAgent requires agentId.");
+    workerAgentService.removeAgent(agentId);
+    (args.workerHeartbeatService as { syncFromConfig?: () => void } | null | undefined)?.syncFromConfig?.();
+    return {};
   });
   register("cto.setAgentStatus", { viewerAllowed: true, queueable: true }, async (payload) => {
     const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
@@ -2408,6 +2547,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
   register("prs.getDeployments", { viewerAllowed: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
@@ -2456,6 +2596,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   });
   register("prs.aiReviewSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.aiReviewSummary(parseAiReviewSummaryArgs(payload)));
+  register("prs.simulateIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
+  register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.commitIntegration(parseCommitIntegrationArgs(payload)));
   register("prs.listIntegrationWorkflows", { viewerAllowed: true }, async (payload) =>
     args.prService.listIntegrationWorkflows(parseListIntegrationWorkflowsArgs(payload)));
   register("prs.updateIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -2476,6 +2620,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
   register("prs.landQueueNext", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.landQueueNext(parseLandQueueNextArgs(payload)));
+  register("prs.startQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
+    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
+    return args.queueLandingService.startQueue(parseStartQueueAutomationArgs(payload));
+  });
   register("prs.pauseQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
     if (!args.queueLandingService) throw new Error("Queue automation is not available.");
     return args.queueLandingService.pauseQueue(parsePauseQueueAutomationArgs(payload).queueId);

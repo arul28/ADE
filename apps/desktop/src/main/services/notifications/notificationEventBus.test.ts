@@ -221,6 +221,25 @@ describe("notificationEventBus", () => {
     expect(result.reason).toBe("no_token");
   });
 
+  it("sendTestPush delivers an in-app notification when APNs is unavailable but the device is connected", async () => {
+    const inAppSpy = vi.fn();
+    const bus = createNotificationEventBus({
+      logger: createLogger(),
+      apnsService: null,
+      listPushTargets: () => [makeTarget()],
+      getPrefsForDevice: () => prefsOn,
+      sendInAppNotification: inAppSpy,
+      isDeviceConnected: () => true,
+    });
+    const result = await bus.sendTestPush("device-A", "alert");
+    expect(result).toEqual({ ok: true, reason: "in_app_only" });
+    expect(inAppSpy).toHaveBeenCalledWith("device-A", expect.objectContaining({
+      category: "system",
+      title: "ADE test push",
+      collapseId: "ade:test",
+    }));
+  });
+
   it("sendTestPush uses `bundle.push-type.liveactivity` topic when kind=activity", async () => {
     const { service, calls } = makeApnsService();
     const bus = createNotificationEventBus({

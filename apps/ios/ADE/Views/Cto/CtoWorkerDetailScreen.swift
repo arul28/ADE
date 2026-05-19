@@ -4,6 +4,7 @@ import SwiftUI
 /// revisions. Mirrors screen-worker-detail.jsx.
 struct CtoWorkerDetailScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.dismiss) private var dismissView
 
   let agentId: String
   let displayName: String
@@ -16,6 +17,7 @@ struct CtoWorkerDetailScreen: View {
   @State private var revisions: [AgentConfigRevision] = []
   @State private var isLoading = false
   @State private var errorMessage: String?
+  @State private var memoryLoadError: String?
 
   @State private var pendingStatusMutation = false
   @State private var pendingWakeup = false
@@ -69,15 +71,14 @@ struct CtoWorkerDetailScreen: View {
       }
       .presentationDetents([.medium, .large])
     }
-    .confirmationDialog(
+    .alert(
       "Dismiss \(displayName)?",
       isPresented: $showDismissConfirm,
-      titleVisibility: .visible
     ) {
+      Button("Cancel", role: .cancel) {}
       Button("Dismiss", role: .destructive) {
         Task { await dismissWorker() }
       }
-      Button("Cancel", role: .cancel) {}
     } message: {
       Text("This will remove the worker from the org. Their sessions and revisions remain accessible but the agent will stop running.")
     }
@@ -323,6 +324,17 @@ struct CtoWorkerDetailScreen: View {
         .padding(.horizontal, 20)
 
       VStack(alignment: .leading, spacing: 0) {
+        if let memoryLoadError {
+          Text("Core memory unavailable: \(memoryLoadError)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 11)
+            .padding(.horizontal, 14)
+
+          Divider().opacity(0.08)
+        }
+
         VStack(alignment: .leading, spacing: 4) {
           Text("Specialization")
             .font(.caption2.monospaced().weight(.semibold))
@@ -514,7 +526,16 @@ struct CtoWorkerDetailScreen: View {
       companyCapCents = snap.companyCapMonthlyCents
     }
 
-    if case .success(let mem) = memoryResult { coreMemory = mem }
+    switch memoryResult {
+    case .success(let mem):
+      coreMemory = mem
+      memoryLoadError = nil
+    case .failure(let err):
+      // Clear the previous snapshot so the unavailable error renders alone instead of
+      // showing stale memory content under a fresh failure banner.
+      coreMemory = nil
+      memoryLoadError = err.localizedDescription
+    }
     if case .success(let fetched) = runsResult { runs = fetched }
     if case .success(let fetched) = revisionsResult { revisions = fetched }
   }
@@ -564,6 +585,7 @@ struct CtoWorkerDetailScreen: View {
       flashNotice("Worker dismissed.")
       // Pop after a short delay to let the notice show.
       try? await Task.sleep(nanoseconds: 1_200_000_000)
+      dismissView()
     } catch {
       flashNotice("Dismiss failed: \(error.localizedDescription)")
     }
@@ -899,13 +921,19 @@ struct CtoWorkerQuickEditSheet: View {
     NavigationStack {
       Form {
         Section("Status") {
-          Picker("Status", selection: $selectedStatus) {
+          VStack(spacing: 8) {
             ForEach(statusOptions, id: \.0) { value, label in
-              Text(label).tag(value)
+              ADEOptionButton(
+                title: label,
+                subtitle: statusDescription(for: value),
+                systemImage: statusIcon(for: value),
+                isSelected: selectedStatus == value,
+                tint: ADEColor.ctoAccent
+              ) {
+                selectedStatus = value
+              }
             }
           }
-          .pickerStyle(.inline)
-          .labelsHidden()
         }
 
         Section {
@@ -945,6 +973,28 @@ struct CtoWorkerQuickEditSheet: View {
     .tint(ADEColor.ctoAccent)
     .onAppear {
       selectedStatus = agent?.status.lowercased() ?? "active"
+    }
+  }
+
+  private func statusDescription(for value: String) -> String {
+    switch value {
+    case "paused":
+      return "Keep the worker assigned but stop active work."
+    case "idle":
+      return "Mark the worker available without active work."
+    default:
+      return "Let the worker run assigned tasks."
+    }
+  }
+
+  private func statusIcon(for value: String) -> String {
+    switch value {
+    case "paused":
+      return "pause.circle"
+    case "idle":
+      return "circle.dashed"
+    default:
+      return "play.circle"
     }
   }
 }

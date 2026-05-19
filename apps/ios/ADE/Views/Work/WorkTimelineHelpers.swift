@@ -648,6 +648,141 @@ private func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
   return lhs
 }
 
+private func approvalRequestEventCard(
+  id: String,
+  timestamp: String,
+  description: String,
+  detail: String?,
+  itemId: String
+) -> WorkEventCardModel {
+  if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
+    return WorkEventCardModel(
+      id: id,
+      kind: "planApproval",
+      title: "Plan approval requested",
+      icon: "list.clipboard",
+      tint: .warning,
+      timestamp: timestamp,
+      body: nonEmptyWorkTimelineText(planApproval.title) ?? nonEmptyWorkTimelineText(description),
+      bullets: workTimelinePlanBullets(from: planApproval.planText),
+      metadata: nonEmptyWorkTimelineText(planApproval.source).map { [$0] } ?? []
+    )
+  }
+
+  if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
+    return WorkEventCardModel(
+      id: id,
+      kind: "question",
+      title: "Question asked",
+      icon: "questionmark.circle",
+      tint: .warning,
+      timestamp: timestamp,
+      body: workApprovalRequestBody(primary: question.title, secondary: question.body, fallback: description),
+      bullets: workTimelineQuestionBullets(from: question),
+      metadata: []
+    )
+  }
+
+  if let permission = pendingWorkPermissionFromApproval(description: description, detail: detail, itemId: itemId) {
+    return WorkEventCardModel(
+      id: id,
+      kind: "permission",
+      title: "Permission requested",
+      icon: "hand.raised.fill",
+      tint: .warning,
+      timestamp: timestamp,
+      body: workApprovalRequestBody(primary: permission.description, secondary: permission.detail, fallback: description),
+      bullets: [],
+      metadata: [permission.tool].compactMap(nonEmptyWorkTimelineText)
+    )
+  }
+
+  return WorkEventCardModel(
+    id: id,
+    kind: "approval",
+    title: "Approval needed",
+    icon: "checkmark.shield",
+    tint: .warning,
+    timestamp: timestamp,
+    body: nonEmptyWorkTimelineText(description),
+    bullets: genericApprovalDetailBullets(from: detail),
+    metadata: []
+  )
+}
+
+private func workApprovalRequestBody(primary: String?, secondary: String?, fallback: String) -> String? {
+  var pieces: [String] = []
+  for candidate in [primary, secondary, fallback] {
+    guard let text = nonEmptyWorkTimelineText(candidate) else { continue }
+    let alreadyIncluded = pieces.contains { existing in
+      existing.caseInsensitiveCompare(text) == .orderedSame
+    }
+    if !alreadyIncluded {
+      pieces.append(text)
+    }
+  }
+  guard !pieces.isEmpty else { return nil }
+  return pieces.prefix(2).joined(separator: "\n")
+}
+
+private func workTimelineQuestionBullets(from model: WorkPendingQuestionModel) -> [String] {
+  model.questions.prefix(4).map { question in
+    let questionText = question.isSecret
+      ? "Secure response requested"
+      : (nonEmptyWorkTimelineText(question.question) ?? "Response requested")
+    var text = question.header.map { "\($0): \(questionText)" } ?? questionText
+    let options = question.options
+      .compactMap { nonEmptyWorkTimelineText($0.label) }
+      .prefix(4)
+      .joined(separator: ", ")
+    if !options.isEmpty {
+      text += " Options: \(options)"
+    } else if question.allowsFreeform {
+      text += " Freeform response allowed."
+    }
+    return truncatedWorkTimelineText(text, limit: 220)
+  }
+}
+
+private func workTimelinePlanBullets(from planText: String) -> [String] {
+  planText
+    .components(separatedBy: .newlines)
+    .compactMap { raw -> String? in
+      let text = raw
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: #"^[-*]\s+"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"^\d+\.\s+"#, with: "", options: .regularExpression)
+      return nonEmptyWorkTimelineText(text)
+    }
+    .prefix(4)
+    .map { truncatedWorkTimelineText($0, limit: 180) }
+}
+
+private func genericApprovalDetailBullets(from detail: String?) -> [String] {
+  guard let detail = nonEmptyWorkTimelineText(detail) else { return [] }
+  if let object = workJSONObject(from: detail) {
+    let request = object["request"] as? [String: Any] ?? object
+    return [
+      optionalString(request["description"]),
+      optionalString(request["tool"]) ?? optionalString(request["toolName"]),
+    ]
+    .compactMap(nonEmptyWorkTimelineText)
+    .map { truncatedWorkTimelineText($0, limit: 180) }
+  }
+  return [truncatedWorkTimelineText(detail, limit: 240)]
+}
+
+private func nonEmptyWorkTimelineText(_ value: String?) -> String? {
+  guard let value else { return nil }
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func truncatedWorkTimelineText(_ value: String, limit: Int) -> String {
+  guard value.count > limit, limit > 3 else { return value }
+  return "\(value.prefix(limit - 3))..."
+}
+
 private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
   guard existing.kind == incoming.kind else { return nil }
   if existing.kind == "reasoning" {
@@ -723,17 +858,13 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         bullets: [],
         metadata: []
       )
-    case .approvalRequest(let description, let detail, _, _):
-      return WorkEventCardModel(
+    case .approvalRequest(let description, let detail, let itemId, _):
+      return approvalRequestEventCard(
         id: envelope.id,
-        kind: "approval",
-        title: "Approval needed",
-        icon: "checkmark.shield",
-        tint: .warning,
         timestamp: envelope.timestamp,
-        body: description,
-        bullets: detail.map { [$0] } ?? [],
-        metadata: []
+        description: description,
+        detail: detail,
+        itemId: itemId
       )
     case .pendingInputResolved(_, let resolution, _):
       return WorkEventCardModel(

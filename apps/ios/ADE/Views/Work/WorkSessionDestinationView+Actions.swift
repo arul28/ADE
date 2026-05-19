@@ -5,25 +5,40 @@ import AVKit
 extension WorkSessionDestinationView {
   @MainActor
   func sendMessage(_ text: String) async -> Bool {
-    guard !sending else { return false }
+    let useSteer = shouldSteerActiveTurn
+    guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
     guard canSendChatMessages else { return false }
 
+    let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
     let echo = WorkLocalEchoMessage(
       text: text,
       timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+      deliveryState: initialDeliveryState
     )
     let echoId = echo.id
     localEchoMessages.append(echo)
     sending = true
     defer { sending = false }
     do {
-      let delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: text)
+      let delivery: SyncChatMessageDelivery
+      if useSteer {
+        delivery = try await syncService.steerChatSession(sessionId: sessionId, text: text)
+      } else {
+        do {
+          delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: text)
+        } catch where workChatErrorIndicatesActiveTurn(error) {
+          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          delivery = try await syncService.steerChatSession(sessionId: sessionId, text: text)
+        }
+      }
       switch delivery {
-      case .queued:
+      case .queued(let steerId):
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+        if let steerId {
+          upsertOptimisticPendingSteer(id: steerId, text: text, timestamp: echo.timestamp)
+        }
       case .sent:
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
         await refreshChatStateAfterAction(forceRemote: true)
@@ -69,6 +84,7 @@ extension WorkSessionDestinationView {
   func cancelSteer(_ steerId: String) async {
     do {
       try await syncService.cancelChatSteer(sessionId: sessionId, steerId: steerId)
+      optimisticPendingSteers.removeAll { $0.id == steerId }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -83,6 +99,14 @@ extension WorkSessionDestinationView {
     guard !trimmed.isEmpty else { return }
     do {
       try await syncService.editChatSteer(sessionId: sessionId, steerId: steerId, text: trimmed)
+      if let index = optimisticPendingSteers.firstIndex(where: { $0.id == steerId }) {
+        optimisticPendingSteers[index] = WorkPendingSteerModel(
+          id: steerId,
+          text: trimmed,
+          turnId: optimisticPendingSteers[index].turnId,
+          timestamp: workDateFormatter.string(from: Date())
+        )
+      }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -95,6 +119,7 @@ extension WorkSessionDestinationView {
   func dispatchSteerInline(_ steerId: String) async {
     do {
       try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "inline")
+      optimisticPendingSteers.removeAll { $0.id == steerId }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -107,6 +132,7 @@ extension WorkSessionDestinationView {
   func dispatchSteerInterrupt(_ steerId: String) async {
     do {
       try await syncService.dispatchChatSteer(sessionId: sessionId, steerId: steerId, mode: "interrupt")
+      optimisticPendingSteers.removeAll { $0.id == steerId }
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -145,59 +171,30 @@ extension WorkSessionDestinationView {
   @MainActor
   func selectRuntimeMode(_ modeId: String) async {
     guard let summary = chatSummary else { return }
-    // Mirror the per-provider flag mapping from the retired session settings
-    // sheet so access-pill menu picks land with the same sync payload shape.
-    var permissionMode: String?
-    var interactionMode: String?
-    var claudePermissionMode: String?
-    var codexApprovalPolicy: String?
-    var codexSandbox: String?
-    var codexConfigSource: String?
-    var opencodePermissionMode: String?
-
-    switch summary.provider.lowercased() {
-    case "claude":
-      switch modeId {
-      case "plan":
-        interactionMode = "plan"
-        claudePermissionMode = "default"
-        permissionMode = "plan"
-      case "edit":
-        interactionMode = "default"
-        claudePermissionMode = "acceptEdits"
-        permissionMode = "edit"
-      case "full-auto":
-        interactionMode = "default"
-        claudePermissionMode = "bypassPermissions"
-        permissionMode = "full-auto"
-      default:
-        interactionMode = "default"
-        claudePermissionMode = "default"
-        permissionMode = "default"
-      }
-    case "codex":
-      let wire = workRuntimeWireFields(provider: summary.provider, mode: modeId)
-      permissionMode = wire.permissionMode
-      codexApprovalPolicy = wire.codexApprovalPolicy
-      codexSandbox = wire.codexSandbox
-      codexConfigSource = wire.codexConfigSource
-    case "opencode":
-      opencodePermissionMode = modeId
-      permissionMode = modeId
-    default:
-      return
-    }
+    let wire = workRuntimeWireFields(provider: summary.provider, mode: modeId)
+    guard wire.permissionMode != nil
+      || wire.interactionMode != nil
+      || wire.claudePermissionMode != nil
+      || wire.codexApprovalPolicy != nil
+      || wire.codexSandbox != nil
+      || wire.codexConfigSource != nil
+      || wire.opencodePermissionMode != nil
+      || wire.droidPermissionMode != nil
+      || wire.cursorModeId != nil
+    else { return }
 
     do {
       _ = try await syncService.updateChatSession(
         sessionId: sessionId,
-        permissionMode: permissionMode,
-        interactionMode: interactionMode,
-        claudePermissionMode: claudePermissionMode,
-        codexApprovalPolicy: codexApprovalPolicy,
-        codexSandbox: codexSandbox,
-        codexConfigSource: codexConfigSource,
-        opencodePermissionMode: opencodePermissionMode
+        permissionMode: wire.permissionMode,
+        interactionMode: wire.interactionMode,
+        claudePermissionMode: wire.claudePermissionMode,
+        codexApprovalPolicy: wire.codexApprovalPolicy,
+        codexSandbox: wire.codexSandbox,
+        codexConfigSource: wire.codexConfigSource,
+        opencodePermissionMode: wire.opencodePermissionMode,
+        droidPermissionMode: wire.droidPermissionMode,
+        cursorModeId: wire.cursorModeId
       )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
@@ -422,7 +419,8 @@ extension WorkSessionDestinationView {
   }
 
   func openSessionLane() {
-    guard let laneId = session?.laneId ?? initialSession?.laneId else { return }
+    guard let currentSession = session ?? initialSession else { return }
+    let laneId = resolvedWorkNavigationLaneId(for: currentSession, lanes: lanes)
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
   }
 }

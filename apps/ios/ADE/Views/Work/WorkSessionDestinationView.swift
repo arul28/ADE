@@ -23,6 +23,86 @@ func workChatSendWillQueueMessage(
   isLive && !hostReachable && chatSendQueueable
 }
 
+func workChatLiveObservationKey(sessionId: String, chatEventNotificationRevision: Int) -> String {
+  "\(sessionId)-\(chatEventNotificationRevision)"
+}
+
+func workChatShouldSteerActiveTurn(
+  session: TerminalSessionSummary?,
+  summary: AgentChatSessionSummary?
+) -> Bool {
+  normalizedWorkChatSessionStatus(session: session, summary: summary) == "active"
+}
+
+func workChatSupportsManualSteerDispatch(
+  session: TerminalSessionSummary?,
+  summary: AgentChatSessionSummary?
+) -> Bool {
+  let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
+  guard let provider else { return false }
+  return providerFamilyKey(provider) == "claude"
+}
+
+func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
+  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+    switch envelope.event {
+    case .assistantText(_, let turnId, _),
+         .activity(_, _, let turnId),
+         .userMessage(_, let turnId, _, _, _):
+      if let turnId, !turnId.isEmpty { return turnId }
+    case .status(_, _, let turnId):
+      if let turnId, !turnId.isEmpty { return turnId }
+    default:
+      continue
+    }
+  }
+  return nil
+}
+
+func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steerId: String) -> Bool {
+  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+    switch envelope.event {
+    case .userMessage(_, _, let candidate, let deliveryState, _):
+      guard candidate == steerId else { continue }
+      return deliveryState != "queued"
+    case .systemNotice(_, let message, _, _, let candidate):
+      guard candidate == steerId else { continue }
+      return workSystemNoticeResolvesQueuedSteer(message)
+    default:
+      continue
+    }
+  }
+  return false
+}
+
+func workChatShouldPreferFallbackTranscript(
+  fallbackTranscript: [WorkChatEnvelope],
+  sessionStatus: String,
+  liveTranscript: [WorkChatEnvelope]
+) -> Bool {
+  !fallbackTranscript.isEmpty
+    && sessionStatus != "active"
+    && !workTranscriptIndicatesActiveTurn(liveTranscript)
+}
+
+func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
+  let message = (error as NSError).localizedDescription.lowercased()
+  return message.contains("turn already active")
+    || message.contains("turn is already active")
+    || message.contains("already active")
+}
+
+private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
+  let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  guard !raw.isEmpty else { return nil }
+  if raw == "cursor" || raw.hasPrefix("cursor") { return "cursor" }
+  if raw.hasPrefix("claude") { return "claude" }
+  if raw.hasPrefix("codex") { return "codex" }
+  if raw.hasPrefix("opencode") { return "opencode" }
+  if raw.hasPrefix("droid") || raw.hasPrefix("factory") { return "droid" }
+  return raw
+}
+
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
 
@@ -45,6 +125,7 @@ struct WorkSessionDestinationView: View {
   @State var fallbackEntries: [AgentChatTranscriptEntry] = []
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
+  @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var expandedToolCardIds = Set<String>()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentLoadsInFlight = Set<String>()
@@ -56,7 +137,9 @@ struct WorkSessionDestinationView: View {
   @State var announcedLaneId: String?
   @State var lastSessionRowRefreshAt = Date.distantPast
   @State var lastTranscriptRemoteRefreshAt = Date.distantPast
+  @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
   @State var lastArtifactRefreshAt = Date.distantPast
+  @State var canonicalTranscriptRefreshInFlight = false
   @State var handledOpeningPromptKey: String?
   @State var stagedOpeningPromptKey: String?
 
@@ -98,29 +181,28 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  var shouldSteerActiveTurn: Bool {
+    hostReachable && workChatShouldSteerActiveTurn(session: session, summary: chatSummary)
+  }
+
+  var supportsManualSteerDispatch: Bool {
+    workChatSupportsManualSteerDispatch(session: session, summary: chatSummary)
+  }
+
   /// Trailing nav-bar control scoped to the session's lane. The visible branch
   /// icon keeps it distinct from in-transcript overflow menus.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
     if let session, showsLaneActions {
-      Menu {
-        Section("Lane") {
-          Text(session.laneName)
-        }
-        Button {
-          openSessionLane()
-        } label: {
-          Label("Go to lane", systemImage: "arrow.triangle.branch")
-        }
-      } label: {
+      Button(action: openSessionLane) {
         Image(systemName: "arrow.triangle.branch")
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 28, height: 28)
+          .frame(width: 34, height: 34)
           .contentShape(Rectangle())
       }
-      .menuStyle(.borderlessButton)
-      .accessibilityLabel("Session lane actions")
+      .buttonStyle(.glass)
+      .accessibilityLabel("Open lane \(session.laneName)")
     } else {
       EmptyView()
     }
@@ -151,6 +233,7 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: liveChatObservationKey) {
         syncTranscriptFromLiveEvents()
+        await reconcileIdleCanonicalTranscriptIfNeeded()
       }
       .task(id: artifactObservationKey) {
         // Proof rows arrive through CRDT-backed local DB updates, not chat
@@ -189,6 +272,7 @@ struct WorkSessionDestinationView: View {
           transcript: transcript,
           fallbackEntries: fallbackEntries,
           artifacts: artifacts,
+          optimisticPendingSteers: optimisticPendingSteers,
           localEchoMessages: localEchoMessages,
           expandedToolCardIds: $expandedToolCardIds,
           artifactContent: $artifactContent,
@@ -200,7 +284,7 @@ struct WorkSessionDestinationView: View {
           isLive: isLiveAndReachable,
           canComposeMessages: canComposeChatMessages,
           canSendMessages: canSendChatMessages,
-          sendWillQueue: sendWillQueueChatMessage,
+          sendWillQueue: sendWillQueueChatMessage || shouldSteerActiveTurn,
           transitionNamespace: transitionNamespace,
           onOpenLane: showsLaneActions ? openSessionLane : nil,
           onSend: sendMessage,
@@ -219,8 +303,8 @@ struct WorkSessionDestinationView: View {
           },
           onCancelSteer: cancelSteer,
           onEditSteer: editSteer,
-          onDispatchSteerInline: dispatchSteerInline,
-          onDispatchSteerInterrupt: dispatchSteerInterrupt,
+          onDispatchSteerInline: supportsManualSteerDispatch ? dispatchSteerInline : nil,
+          onDispatchSteerInterrupt: supportsManualSteerDispatch ? dispatchSteerInterrupt : nil,
           onSelectModel: selectModel,
           onSelectRuntimeMode: selectRuntimeMode,
           onSelectEffort: selectReasoningEffort,
@@ -250,7 +334,10 @@ struct WorkSessionDestinationView: View {
   }
 
   var liveChatObservationKey: String {
-    "\(sessionId)-\(syncService.chatEventNotificationRevision)-\(syncService.chatEventRevision(for: sessionId))"
+    workChatLiveObservationKey(
+      sessionId: sessionId,
+      chatEventNotificationRevision: syncService.chatEventNotificationRevision
+    )
   }
 
   var artifactObservationKey: String {
@@ -283,9 +370,6 @@ struct WorkSessionDestinationView: View {
       if let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
         chatSummary = fetchedSummary
       }
-      if isLiveAndReachable, let currentSession = session ?? initialSession, isChatSession(currentSession) {
-        try? await syncService.subscribeToChatEvents(sessionId: sessionId)
-      }
       if !syncService.prefersReducedSyncLoad {
         await refreshArtifacts(force: true)
       }
@@ -298,8 +382,18 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func loadTranscript(forceRemote: Bool, preferLightweight: Bool = false) async {
+    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
+
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
-      try? await syncService.subscribeToChatEvents(sessionId: sessionId)
+      if status == "active" {
+        try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
+      } else {
+        // Active streaming stays on reduced snapshots for performance, but an
+        // idle detail view must reconcile against a full event snapshot. A
+        // reduced JSONL tail can start mid-message and render as a broken
+        // final transcript until the canonical transcript fetch lands.
+        try? await syncService.requestFullChatEventSnapshot(sessionId: sessionId)
+      }
     }
 
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
@@ -312,8 +406,16 @@ struct WorkSessionDestinationView: View {
     // in the fallback render path.
     var fetchedFallbackEntriesAvailable = false
 
-    let shouldFetchFallback = !preferLightweight || (liveTranscript.isEmpty && transcript.isEmpty)
-    if shouldFetchFallback, let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId) {
+    // Reduced-load mode skips heavy transcript fetches during live streaming,
+    // but once a session is idle the phone must reconcile with the canonical
+    // host transcript. Live event snapshots can be byte-capped tails of a long
+    // answer, which are useful while streaming but not enough for final copy
+    // or history.
+    let shouldFetchFallback = !preferLightweight
+      || (liveTranscript.isEmpty && transcript.isEmpty)
+      || (!liveTranscript.isEmpty && status != "active")
+    let fallbackMaxChars = status == "active" ? 32_000 : 120_000
+    if shouldFetchFallback, let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId, maxChars: fallbackMaxChars) {
       fetchedFallbackEntries = response.entries
       fetchedFallbackEntriesAvailable = true
       fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
@@ -332,10 +434,25 @@ struct WorkSessionDestinationView: View {
       eventTranscript = mergeWorkChatTranscripts(base: eventTranscript, live: liveTranscript)
     }
 
+    let canonicalEventTranscript: [WorkChatEnvelope]
+    if !fallbackTranscript.isEmpty, status != "active" {
+      canonicalEventTranscript = eventTranscript.filter { envelope in
+        switch envelope.event {
+        case .userMessage, .assistantText, .status:
+          return false
+        default:
+          return true
+        }
+      }
+    } else {
+      canonicalEventTranscript = eventTranscript
+    }
+
+    let mergeBaseTranscript = !fallbackTranscript.isEmpty && status != "active" ? [] : transcript
     let mergedTranscript = preferredWorkTranscript(
-      current: transcript,
+      current: mergeBaseTranscript,
       fallback: fallbackTranscript,
-      eventTranscript: eventTranscript
+      eventTranscript: canonicalEventTranscript
     )
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
@@ -425,21 +542,35 @@ struct WorkSessionDestinationView: View {
     }) {
       echo = existingEcho
     } else {
+      let useSteer = shouldSteerActiveTurn
       let nextEcho = WorkLocalEchoMessage(
         text: prompt,
         timestamp: workDateFormatter.string(from: Date()),
-        deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+        deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
       )
       localEchoMessages.append(nextEcho)
       echo = nextEcho
     }
-    updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: sendWillQueueChatMessage ? "queued" : "sending")
-    sending = true
+    let useSteer = shouldSteerActiveTurn
+    updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     do {
-      let delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: prompt)
+      let delivery: SyncChatMessageDelivery
+      if useSteer {
+        delivery = try await syncService.steerChatSession(sessionId: sessionId, text: prompt)
+      } else {
+        do {
+          delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: prompt)
+        } catch where workChatErrorIndicatesActiveTurn(error) {
+          updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: "queued")
+          delivery = try await syncService.steerChatSession(sessionId: sessionId, text: prompt)
+        }
+      }
       switch delivery {
-      case .queued:
+      case .queued(let steerId):
         updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: "queued")
+        if let steerId {
+          upsertOptimisticPendingSteer(id: steerId, text: prompt, timestamp: echo.timestamp)
+        }
       case .sent:
         updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: nil)
         await refreshChatStateAfterAction(forceRemote: true)
@@ -450,7 +581,6 @@ struct WorkSessionDestinationView: View {
       localEchoMessages.removeAll { $0.id == echo.id }
       errorMessage = "Opening message did not reach the machine. The chat exists; tap Send to retry. \(error.localizedDescription)"
     }
-    sending = false
   }
 
   @MainActor
@@ -460,10 +590,11 @@ struct WorkSessionDestinationView: View {
     let promptKey = "\(sessionId)|\(prompt)"
     guard stagedOpeningPromptKey != promptKey else { return }
     stagedOpeningPromptKey = promptKey
+    let useSteer = shouldSteerActiveTurn
     localEchoMessages.append(WorkLocalEchoMessage(
       text: prompt,
       timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: sendWillQueueChatMessage ? "queued" : "sending"
+      deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
     ))
   }
 
@@ -471,15 +602,84 @@ struct WorkSessionDestinationView: View {
   func syncTranscriptFromLiveEvents() {
     let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
     guard !liveTranscript.isEmpty else { return }
+    let fallbackTranscript = makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId)
+    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
+    let shouldPreferFallbackTranscript = workChatShouldPreferFallbackTranscript(
+      fallbackTranscript: fallbackTranscript,
+      sessionStatus: status,
+      liveTranscript: liveTranscript
+    )
+    let canonicalLiveTranscript: [WorkChatEnvelope]
+    if shouldPreferFallbackTranscript {
+      canonicalLiveTranscript = liveTranscript.filter { envelope in
+        switch envelope.event {
+        case .userMessage, .assistantText, .status:
+          return false
+        default:
+          return true
+        }
+      }
+    } else {
+      canonicalLiveTranscript = liveTranscript
+    }
+    let mergeBaseTranscript = shouldPreferFallbackTranscript ? [] : transcript
     let mergedTranscript = preferredWorkTranscript(
-      current: transcript,
-      fallback: makeWorkChatTranscript(from: fallbackEntries, sessionId: sessionId),
-      eventTranscript: liveTranscript
+      current: mergeBaseTranscript,
+      fallback: fallbackTranscript,
+      eventTranscript: canonicalLiveTranscript
     )
     if mergedTranscript != transcript {
       transcript = mergedTranscript
     }
+    reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()
+  }
+
+  @MainActor
+  func upsertOptimisticPendingSteer(id: String, text: String, timestamp: String) {
+    let turnId = latestActiveTurnId(from: transcript)
+    let model = WorkPendingSteerModel(id: id, text: text, turnId: turnId, timestamp: timestamp)
+    if let index = optimisticPendingSteers.firstIndex(where: { $0.id == id }) {
+      optimisticPendingSteers[index] = model
+    } else {
+      optimisticPendingSteers.append(model)
+    }
+  }
+
+  @MainActor
+  func reconcileOptimisticPendingSteers(with transcript: [WorkChatEnvelope]) {
+    guard !optimisticPendingSteers.isEmpty else { return }
+    let pendingIds = Set(derivePendingWorkSteers(from: transcript).map(\.id))
+    optimisticPendingSteers.removeAll { steer in
+      transcriptContainsResolvedSteer(transcript, steerId: steer.id) || pendingIds.contains(steer.id)
+    }
+  }
+
+  @MainActor
+  func reconcileIdleCanonicalTranscriptIfNeeded() async {
+    guard !canonicalTranscriptRefreshInFlight else { return }
+
+    // We used to bail when fallbackEntries was non-empty, but loadTranscript
+    // now populates fallbackEntries during active sessions too — so a populated
+    // cache no longer means "we already reconciled". Rely on the active-status
+    // gate plus the 6s debounce below to throttle work instead.
+    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
+    guard status != "active" else { return }
+
+    let liveTranscript = makeWorkChatTranscript(from: syncService.chatEventHistory(sessionId: sessionId))
+    guard !workTranscriptIndicatesActiveTurn(liveTranscript) else { return }
+
+    let hasLiveOrCachedText = !liveTranscript.isEmpty || !transcript.isEmpty
+    guard hasLiveOrCachedText else { return }
+
+    let now = Date()
+    guard now.timeIntervalSince(lastCanonicalTranscriptRefreshAt) >= 6 else { return }
+
+    canonicalTranscriptRefreshInFlight = true
+    lastCanonicalTranscriptRefreshAt = now
+    defer { canonicalTranscriptRefreshInFlight = false }
+
+    await loadTranscript(forceRemote: isLiveAndReachable, preferLightweight: false)
   }
 
   @MainActor
@@ -550,24 +750,41 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     switch mode {
     case .pushedDetail:
       content
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .tabBar)
-        .toolbar {
-          ToolbarItem(placement: .topBarLeading) {
+        .safeAreaInset(edge: .top, spacing: 0) {
+          HStack(spacing: 10) {
             Button {
               dismiss()
             } label: {
-              Label("Work", systemImage: "chevron.left")
-                .labelStyle(.titleAndIcon)
+              Image(systemName: "chevron.left")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 38, height: 38)
             }
+            .buttonStyle(.glass)
             .accessibilityLabel("Back to Work")
-          }
-          ToolbarItem(placement: .topBarTrailing) {
+
+            Text(title)
+              .font(.headline.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .truncationMode(.tail)
+
+            Spacer(minLength: 0)
+
             trailingControls()
           }
+          .padding(.horizontal, 16)
+          .padding(.bottom, 8)
+          .background {
+            ADEColor.pageBackground
+              .opacity(0.98)
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+          }
         }
+        .navigationTitle("")
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar(.hidden, for: .navigationBar)
+        .adeRootTabBarHidden()
     case .embedded:
       content
     }

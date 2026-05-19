@@ -288,7 +288,31 @@ Renderer surfaces:
   inverse it relies on for round-tripping. `resolveLaunchFields` is
   the atomic-override helper that mixes a caller's
   `command`/`args`/`startupCommand`/`env` with the profile defaults
-  (only when the caller passed nothing).
+  (only when the caller passed nothing). `TRACKED_CLI_PERMISSION_MODES`
+  now includes `auto` (Claude only; mapped onto the SDK
+  `permissionMode: "auto"`); `validateLaunchProfilePermissionMode`
+  rejects `auto` for any non-Claude provider and rejects `config-toml`
+  for any non-Codex provider. Codex CLI launches that pass an
+  `initialPrompt` receive it as the final argv positional on `codex`,
+  not as PTY-typed bytes, so the prompt is treated as a real first
+  turn and does not become a half-typed shell line; Codex argv also
+  appends `codexNoisyLocalMcpDisableFlags` (`-c
+  mcp_servers.unityMCP.enabled=false`, `-c
+  mcp_servers.xcode.enabled=false`) for every non-`config-toml`
+  launch so unbundled local MCP servers do not auto-spawn under ADE.
+  Plain "shell" launches and `resolveCleanShellLaunchFields({
+  platform, shell, comSpec })` together produce a deterministic
+  argv/env per OS that skips the user's profile / rc / config files
+  (zsh `-f` with `ZDOTDIR=/var/empty`, bash `--noprofile --norc` with
+  `BASH_ENV=""`, fish `--no-config`, PowerShell `-NoLogo -NoProfile`,
+  `cmd.exe /d`); `ptyService.resolveShellCandidates({ clean: true })`
+  uses the same recipe for interactive shell sessions launched
+  without a startup command. `deriveTrackedCliInitialInputSessionMeta`
+  seeds the session title and `goal` field from the first prompt
+  (sanitised + clipped to ~72 chars) when the caller did not supply a
+  manual title, so tracked CLI rows render with a meaningful name
+  instead of "Codex" / "Claude" while still letting providers like
+  Shell fall back to the generic profile title.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` — thin
   re-export of `apps/desktop/src/shared/cliLaunch.ts` so existing
   renderer callers keep their import path.

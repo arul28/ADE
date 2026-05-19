@@ -400,6 +400,11 @@ export function createGitOperationsService({
       throw error;
     } finally {
       invalidateLaneReadCache(laneId);
+      try {
+        laneService.invalidateListCache?.();
+      } catch {
+        // Never fail git operation cleanup due to cache invalidation issues.
+      }
     }
   };
 
