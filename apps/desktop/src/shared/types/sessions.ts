@@ -81,6 +81,7 @@ export type TerminalSessionSummary = {
   lastOutputPreview: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
+  pendingInputItemId?: string | null;
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;

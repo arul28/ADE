@@ -219,6 +219,7 @@ function createRuntime() {
     },
     sessionService: {
       get: vi.fn(),
+      updateMeta: vi.fn(),
       readTranscriptTail: vi.fn(() => "")
     },
     sessionDeltaService: {
@@ -2446,6 +2447,8 @@ describe("adeRpcServer", () => {
       provider: "codex",
       permissionMode: "edit",
       initialInput: "fix failing tests",
+      modelId: "openai/gpt-5.5",
+      reasoningEffort: "xhigh",
       cols: 90,
       rows: 24,
     });
@@ -2454,7 +2457,7 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
       expect.objectContaining({
         laneId: "lane-1",
-        title: "Codex",
+        title: "Fix failing tests",
         toolType: "codex",
         cols: 90,
         rows: 24,
@@ -2465,7 +2468,15 @@ describe("adeRpcServer", () => {
         }),
       }),
     );
-    expect(fixture.runtime.ptyService.writeBySessionId).toHaveBeenCalledWith("session-1", "fix failing tests\r");
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\""]));
+    expect(createCall?.args.at(-1)).toContain("fix failing tests");
+    expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
+    expect(fixture.runtime.sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "session-1",
+      goal: "fix failing tests",
+      title: "Fix failing tests",
+    }));
     expect(response.structuredContent).toMatchObject({
       provider: "codex",
       laneId: "lane-1",
@@ -2503,8 +2514,61 @@ describe("adeRpcServer", () => {
       expect.objectContaining({
         cols: 400,
         rows: 200,
+        startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request"),
       }),
     );
+    expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
+  });
+
+  it("starts shell CLI sessions without reading user shell startup files", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    const response = await withEnv({ SHELL: "/bin/zsh" }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "start_cli_session", {
+        laneId: "lane-1",
+        provider: "shell",
+      });
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        title: "Shell",
+        toolType: "shell",
+        command: "/bin/zsh",
+        args: ["-f"],
+        env: { ZDOTDIR: "/var/empty" },
+      }),
+    );
+  });
+
+  it("starts Codex spawn_agent with current default permission flags", async () => {
+    const fixture = createRuntime();
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-bin-"));
+    createFakePathExecutable(binDir, "codex");
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
+      await initialize(handler, { role: "orchestrator" });
+      return await callTool(handler, "spawn_agent", {
+        laneId: "lane-1",
+        provider: "codex",
+        prompt: "Check the mobile CLI path",
+      });
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.stringMatching(/codex$/),
+        args: expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]),
+        startupCommand: expect.stringContaining("codex --sandbox workspace-write --ask-for-approval on-request"),
+      }),
+    );
+    expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
   });
 
   it("passes selected models to fresh Claude Code terminal launches", async () => {
@@ -2545,6 +2609,35 @@ describe("adeRpcServer", () => {
     expect(createCall.args).toEqual(expect.arrayContaining(["--model", "opus[1m]"]));
     expect(createCall.startupCommand).toContain("opus[1m]");
     expect(response.structuredContent.model).toBe("anthropic/claude-opus-4-7-1m");
+  });
+
+  it("passes Claude auto permission mode to fresh Claude Code terminal launches", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "claude",
+      title: "Claude Code",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "claude",
+      permissionMode: "auto",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
+    expect(createCall.args).toEqual(expect.arrayContaining(["--permission-mode", "auto"]));
+    expect(createCall.startupCommand).toContain("--permission-mode auto");
+    expect(response.structuredContent.permissionMode).toBe("auto");
   });
 
   it("confirms Claude Code initial input after startup", async () => {
@@ -2596,7 +2689,7 @@ describe("adeRpcServer", () => {
     await initialize(handler, { role: "orchestrator" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
-      provider: "codex",
+      provider: "cursor",
       initialInput: "fix failing tests",
     });
 
@@ -2661,7 +2754,7 @@ describe("adeRpcServer", () => {
 
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+      "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml",
     );
     expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });

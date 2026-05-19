@@ -816,6 +816,7 @@ export type AgentChatSessionSummary = {
   lastOutputPreview: string | null;
   summary: string | null;
   awaitingInput?: boolean;
+  pendingInputItemId?: string | null;
   threadId?: string;
   requestedCwd?: string | null;
 };
@@ -1102,6 +1103,7 @@ export type AgentChatHandoffResult = {
 export type AgentChatListArgs = {
   laneId?: string;
   includeAutomation?: boolean;
+  includeArchived?: boolean;
 };
 
 export type AgentChatSuggestLaneNameArgs = {

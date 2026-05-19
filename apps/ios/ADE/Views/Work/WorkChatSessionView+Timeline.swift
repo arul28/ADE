@@ -7,7 +7,7 @@ extension WorkChatSessionView {
   func timelineEntryView(for entry: WorkTimelineEntry, proxy: ScrollViewProxy) -> some View {
     switch entry.payload {
     case .message(let message):
-      WorkChatMessageBubble(message: message, isLive: isLatestAssistantMessageLive(message))
+      WorkChatMessageBubble(message: message)
     case .toolCard(let toolCard):
       timelineToolCard(toolCard)
     case .eventCard(let card):

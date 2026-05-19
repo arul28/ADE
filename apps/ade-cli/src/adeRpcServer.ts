@@ -56,10 +56,12 @@ import type { LinearConnectionStatus } from "../../desktop/src/shared/types/line
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
 import {
   buildTrackedCliLaunchCommand,
+  deriveTrackedCliInitialInputSessionMeta,
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  resolveCleanShellLaunchFields,
   validateLaunchProfilePermissionMode,
   type CliProvider,
   type LaunchProfile,
@@ -225,7 +227,7 @@ const TOOL_SPECS: ToolSpec[] = [
         runId: { type: "string" },
         stepId: { type: "string" },
         attemptId: { type: "string" },
-        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         toolWhitelist: { type: "array", items: { type: "string" }, maxItems: 24 },
         maxPromptChars: { type: "number", minimum: 256, maximum: 12000 },
         contextFilePath: { type: "string" },
@@ -322,13 +324,14 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         laneId: { type: "string", minLength: 1 },
         provider: { type: "string", enum: ["claude", "codex", "cursor", "droid", "opencode", "shell"] },
-        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"], default: "default" },
+        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"], default: "default" },
         title: { type: "string" },
         initialInput: { type: "string" },
         cols: { type: "number", minimum: 20, maximum: 400, default: 120 },
         rows: { type: "number", minimum: 4, maximum: 200, default: 36 },
         model: { type: "string" },
         modelId: { type: "string" },
+        reasoningEffort: { type: "string" },
         cwd: { type: "string" },
         chatSessionId: { type: "string" },
         tracked: { type: "boolean", default: true }
@@ -1738,7 +1741,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string" },
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
-        permissionMode: { type: "string", enum: ["default", "plan", "edit", "full-auto", "config-toml"] },
+        permissionMode: { type: "string", enum: ["default", "auto", "plan", "edit", "full-auto", "config-toml"] },
         droidPermissionMode: { type: "string", enum: ["read-only", "auto-low", "auto-medium", "auto-high"] },
         title: { type: "string" },
         initialPrompt: { type: "string" },
@@ -2491,7 +2494,7 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
   if (isTrackedCliPermissionMode(mode)) return mode;
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
-    "permissionMode must be one of default, plan, edit, full-auto, or config-toml",
+    "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml",
   );
 }
 
@@ -3201,11 +3204,11 @@ function sha256Text(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-type SpawnPermissionMode = "default" | "plan" | "edit" | "full-auto" | "config-toml";
+type SpawnPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
 
 function parseSpawnPermissionMode(value: unknown): SpawnPermissionMode {
   const normalized = asTrimmedString(value).toLowerCase();
-  if (normalized === "plan" || normalized === "edit" || normalized === "full-auto" || normalized === "config-toml") return normalized;
+  if (normalized === "auto" || normalized === "plan" || normalized === "edit" || normalized === "full-auto" || normalized === "config-toml") return normalized;
   return "default";
 }
 
@@ -5171,16 +5174,37 @@ async function runTool(args: {
     }
     const cols = clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 400);
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
-    const title = asOptionalTrimmedString(toolArgs.title) ?? LAUNCH_PROFILE_TITLE[provider];
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
+    const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
+    const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
+      provider,
+      title: asOptionalTrimmedString(toolArgs.title),
+      initialInput,
+    });
+    const title = initialInputMeta.title || LAUNCH_PROFILE_TITLE[provider];
     const ptyService = runtime.ptyService;
     const preassignedSessionId = provider === "claude" ? randomUUID() : undefined;
     const laneWorktreePath = resolveLaneWorktreePath(runtime, laneId);
 
     const launchFields: { startupCommand?: string; command?: string; args?: string[]; env?: Record<string, string> } = (() => {
+      if (provider === "shell") {
+        return resolveCleanShellLaunchFields({
+          platform: process.platform,
+          shell: process.env.SHELL,
+          comSpec: process.env.ComSpec,
+        });
+      }
       if (!isCliProvider(provider)) return {};
-      return buildTrackedCliLaunchCommand({ provider, permissionMode, sessionId: preassignedSessionId, model, laneWorktreePath });
+      return buildTrackedCliLaunchCommand({
+        provider,
+        permissionMode,
+        sessionId: preassignedSessionId,
+        model,
+        reasoningEffort,
+        initialPrompt: provider === "codex" ? initialInput : null,
+        laneWorktreePath,
+      });
     })();
 
     const created = await ptyService.create({
@@ -5198,7 +5222,9 @@ async function runTool(args: {
     });
 
     let initialInputWritten = false;
-    if (initialInput && isCliProvider(provider)) {
+    if (initialInput && provider === "codex") {
+      initialInputWritten = true;
+    } else if (initialInput && isCliProvider(provider)) {
       initialInputWritten = ptyService.writeBySessionId(created.sessionId, `${initialInput}\r`);
       if (!initialInputWritten) {
         try {
@@ -5223,6 +5249,17 @@ async function runTool(args: {
         }, CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS);
         confirmTimer.unref?.();
       }
+    }
+
+    if (initialInputMeta.goal) {
+      const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+      runtime.sessionService.updateMeta({
+        sessionId: created.sessionId,
+        ...(session?.goal?.trim().length ? {} : { goal: initialInputMeta.goal }),
+        ...(initialInputMeta.promptTitle && title === initialInputMeta.promptTitle
+          ? { title: initialInputMeta.promptTitle, manuallyNamed: false }
+          : {}),
+      });
     }
 
     const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
@@ -6855,6 +6892,12 @@ async function runTool(args: {
         "permissionMode config-toml is only supported for Codex spawn_agent sessions.",
       );
     }
+    if (provider === "codex" && permissionMode === "auto") {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "permissionMode auto is only supported for Claude spawn_agent sessions.",
+      );
+    }
     const maxPromptChars = Math.max(256, Math.min(12000, Math.floor(asNumber(toolArgs.maxPromptChars, 2800))));
     const prompt = asOptionalTrimmedString(toolArgs.prompt);
     const runId = asOptionalTrimmedString(toolArgs.runId);
@@ -6933,6 +6976,9 @@ async function runTool(args: {
           break;
         case "edit":
           claudePermission = "acceptEdits";
+          break;
+        case "auto":
+          claudePermission = "auto";
           break;
         default:
           claudePermission = "default";

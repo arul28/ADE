@@ -120,8 +120,8 @@ struct WorkComposerInputBanner: View {
 
 /// Compact horizontal strip matching the desktop composer toolbar: small
 /// single-line pills for access / model / reasoning, queued/pending status
-/// chips, and nothing else. The access pill is a SwiftUI `Menu` so runtime
-/// modes flip inline — no extra "session settings" sheet to wade through.
+/// chips, and nothing else. Runtime and reasoning choices are visible chips
+/// so mobile does not hide critical steering behind a native menu.
 struct WorkComposerChipStrip: View {
   let chatSummary: AgentChatSessionSummary?
   let queuedSteerCount: Int
@@ -172,46 +172,19 @@ struct WorkComposerChipStrip: View {
         }
         return tiers
       }()
-      let label = current.isEmpty ? "Effort" : current.capitalized
-      Menu {
+      HStack(spacing: 6) {
         ForEach(menuTiers, id: \.self) { option in
-          Button {
+          composerOptionChip(
+            title: option.capitalized,
+            systemImage: "gauge.with.dots.needle.50percent",
+            tint: ADEColor.accent,
+            isSelected: option.lowercased() == current.lowercased(),
+            accessibilityPrefix: "Reasoning effort"
+          ) {
             onSelectEffort(option)
-          } label: {
-            if option.lowercased() == current.lowercased() {
-              Label(option.capitalized, systemImage: "checkmark")
-            } else {
-              Text(option.capitalized)
-            }
           }
         }
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: "gauge.with.dots.needle.50percent")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-          Text(label)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(current.isEmpty ? ADEColor.textSecondary : ADEColor.textPrimary)
-            .lineLimit(1)
-          Image(systemName: "chevron.down")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(Color.clear, in: Capsule(style: .continuous))
-        .overlay(
-          Capsule(style: .continuous)
-            .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-        )
       }
-      .menuStyle(.borderlessButton)
-      .accessibilityLabel(
-        current.isEmpty
-          ? "Reasoning effort. Tap to choose a tier."
-          : "Reasoning effort: \(current.capitalized). Tap to change."
-      )
     }
   }
 
@@ -262,31 +235,66 @@ struct WorkComposerChipStrip: View {
   private func accessPill(summary: AgentChatSessionSummary) -> some View {
     let options = workRuntimeModeOptions(provider: summary.provider)
     let currentMode = workInitialRuntimeMode(summary)
-    let label = workRuntimeModeLabel(provider: summary.provider, mode: currentMode)
     let tint = workRuntimeModeTint(currentMode)
 
     if options.isEmpty || onSelectRuntimeMode == nil {
-      pillContent(dotColor: tint, label: label, showChevron: false)
+      pillContent(dotColor: tint, label: workRuntimeModeLabel(provider: summary.provider, mode: currentMode), showChevron: false)
     } else {
-      Menu {
+      HStack(spacing: 6) {
         ForEach(options) { option in
-          Button {
+          composerOptionChip(
+            title: option.title,
+            systemImage: nil,
+            tint: workRuntimeModeTint(option.id),
+            isSelected: option.id == currentMode,
+            accessibilityPrefix: "Access mode"
+          ) {
             onSelectRuntimeMode?(option.id)
-          } label: {
-            if option.id == currentMode {
-              Label(option.title, systemImage: "checkmark")
-            } else {
-              Text(option.title)
-            }
           }
         }
-      } label: {
-        pillContent(dotColor: tint, label: label, showChevron: true)
       }
-      .menuStyle(.borderlessButton)
-      .buttonStyle(.plain)
-      .accessibilityLabel("Access mode: \(label). Tap to change.")
     }
+  }
+
+  private func composerOptionChip(
+    title: String,
+    systemImage: String?,
+    tint: Color,
+    isSelected: Bool,
+    accessibilityPrefix: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        Circle()
+          .fill(tint)
+          .frame(width: 6, height: 6)
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(isSelected ? tint : ADEColor.textMuted)
+        }
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          .lineLimit(1)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
+        }
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background((isSelected ? tint.opacity(0.12) : Color.clear), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(accessibilityPrefix): \(title)")
+    .accessibilityValue(isSelected ? "Selected" : "")
   }
 
   @ViewBuilder
@@ -387,10 +395,9 @@ struct WorkQueuedSteerStrip: View {
   let onDispatchInline: (@MainActor (String) async -> Void)?
   let onDispatchInterrupt: (@MainActor (String) async -> Void)?
 
-  // Collapsed by default: with long turns users can have 3-5 queued items
-  // and the composer area is the most vertical-space-constrained region
-  // on iPhone. Users open the strip only when they need to edit/cancel.
-  @State private var isExpanded: Bool = false
+  // Expanded by default so Send now / Interrupt / Edit / Cancel have the same
+  // immediate affordance as desktop and the TUI after a steer is staged.
+  @State private var isExpanded: Bool = true
   // Cancel haptic token: bumped each time a row's cancel lands so the
   // whole strip can drive a single sensoryFeedback modifier.
   @State private var cancelHapticToken: Int = 0
@@ -445,6 +452,7 @@ struct WorkQueuedSteerStrip: View {
     .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
     .animation(.smooth(duration: 0.22), value: isExpanded)
     .animation(.smooth(duration: 0.22), value: anyEditing)
+    .accessibilityElement(children: .contain)
   }
 
   private var header: some View {
@@ -480,6 +488,7 @@ struct WorkQueuedSteerStrip: View {
     .buttonStyle(.plain)
     .accessibilityLabel(steers.count == 1 ? "1 staged message" : "\(steers.count) staged messages")
     .accessibilityHint(isExpanded || anyEditing ? "Collapse staged messages" : "Expand to send now, interrupt, edit, or cancel staged messages")
+    .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
     .disabled(anyEditing)
   }
 }
@@ -566,6 +575,7 @@ struct WorkQueuedSteerRow: View {
             .controlSize(.mini)
             .disabled(busy || !isLive)
             .accessibilityHint("Fold this message into the active turn")
+            .accessibilityIdentifier("Work.Chat.StagedStrip.SendNow")
           }
 
           if let onDispatchInterrupt {
@@ -581,6 +591,7 @@ struct WorkQueuedSteerRow: View {
             .controlSize(.mini)
             .disabled(busy || !isLive)
             .accessibilityHint("Stop the current turn and run this instead")
+            .accessibilityIdentifier("Work.Chat.StagedStrip.Interrupt")
           }
 
           Button {
@@ -594,6 +605,7 @@ struct WorkQueuedSteerRow: View {
           .tint(ADEColor.accent)
           .controlSize(.mini)
           .disabled(busy || !isLive)
+          .accessibilityIdentifier("Work.Chat.StagedStrip.Edit")
 
           Button(role: .destructive) {
             Task { await onCancel() }
@@ -606,6 +618,7 @@ struct WorkQueuedSteerRow: View {
           .tint(ADEColor.danger)
           .controlSize(.mini)
           .disabled(busy || !isLive)
+          .accessibilityIdentifier("Work.Chat.StagedStrip.Cancel")
         }
       }
     }
@@ -616,8 +629,7 @@ struct WorkQueuedSteerRow: View {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Staged message (sends after turn): \(steer.text)")
+    .accessibilityElement(children: .contain)
   }
 }
 

@@ -1,5 +1,13 @@
 import SwiftUI
 
+private struct LaneCommitPendingDestructiveAction: Identifiable {
+  let id = UUID()
+  let title: String
+  let message: String
+  let confirmTitle: String
+  let perform: () -> Void
+}
+
 struct LaneCommitSheet: View {
   @Binding var commitMessage: String
   @Binding var amendCommit: Bool
@@ -33,6 +41,7 @@ struct LaneCommitSheet: View {
   /// and show the user how to enable it.
   @State private var aiSetupHint: String?
   @State private var aiTransientError: String?
+  @State private var pendingDestructiveAction: LaneCommitPendingDestructiveAction?
 
   var body: some View {
     NavigationStack {
@@ -82,6 +91,19 @@ struct LaneCommitSheet: View {
         // Auto-focus the commit message field when the sheet appears so the
         // user can start typing immediately without an extra tap.
         messageFieldFocused = true
+      }
+      .alert(item: $pendingDestructiveAction) { action in
+        Alert(
+          title: Text(action.title),
+          message: Text(action.message),
+          primaryButton: .destructive(Text(action.confirmTitle)) {
+            action.perform()
+            pendingDestructiveAction = nil
+          },
+          secondaryButton: .cancel {
+            pendingDestructiveAction = nil
+          }
+        )
       }
     }
   }
@@ -280,12 +302,18 @@ struct LaneCommitSheet: View {
           symbol: "trash",
           tint: ADEColor.danger,
           isDestructive: true
-        ) { onDiscardAllUnstaged() }
+        ) {
+          requestDestructiveConfirmation(.discardAllUnstaged(unstagedFiles), perform: onDiscardAllUnstaged)
+        }
       ],
       onBulkAction: onStageAll,
       onDiff: { file in onOpenDiff(file, false) },
       onPrimaryAction: onStageFile,
-      onSecondaryAction: onDiscardFile,
+      onSecondaryAction: { file in
+        requestDestructiveConfirmation(.discardUnstaged(file)) {
+          onDiscardFile(file)
+        }
+      },
       onOpenFiles: onOpenFiles
     )
   }
@@ -313,13 +341,28 @@ struct LaneCommitSheet: View {
           symbol: "trash",
           tint: ADEColor.danger,
           isDestructive: true
-        ) { onRestoreAllStaged() }
+        ) {
+          requestDestructiveConfirmation(.restoreAllStaged(stagedFiles), perform: onRestoreAllStaged)
+        }
       ],
       onBulkAction: onUnstageAll,
       onDiff: { file in onOpenDiff(file, true) },
       onPrimaryAction: onUnstageFile,
-      onSecondaryAction: onRestoreStaged,
+      onSecondaryAction: { file in
+        requestDestructiveConfirmation(.restoreStaged(file)) {
+          onRestoreStaged(file)
+        }
+      },
       onOpenFiles: onOpenFiles
+    )
+  }
+
+  private func requestDestructiveConfirmation(_ confirmation: LaneFileConfirmation, perform: @escaping () -> Void) {
+    pendingDestructiveAction = LaneCommitPendingDestructiveAction(
+      title: confirmation.title,
+      message: confirmation.message,
+      confirmTitle: confirmation.confirmTitle,
+      perform: perform
     )
   }
 

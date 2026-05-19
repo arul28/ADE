@@ -5,7 +5,9 @@ extension FilesDirectoryContentsView {
   @MainActor
   func reload() async {
     do {
-      isLoading = true
+      if nodes.isEmpty {
+        isLoading = true
+      }
       nodes = try await syncService.listTree(workspaceId: workspace.id, parentPath: parentPath, includeIgnored: showHidden)
       errorMessage = nil
     } catch {
@@ -29,12 +31,20 @@ extension FilesDirectoryContentsView {
     }
 
     Button("Copy Path") {
-      UIPasteboard.general.string = absolutePath(for: node.path)
+      copyAbsolutePath(for: node)
     }
 
     Button("Copy Relative Path") {
-      UIPasteboard.general.string = node.path
+      copyRelativePath(for: node)
     }
+  }
+
+  func copyAbsolutePath(for node: FileTreeNode) {
+    UIPasteboard.general.string = absolutePath(for: node.path)
+  }
+
+  func copyRelativePath(for node: FileTreeNode) {
+    UIPasteboard.general.string = node.path
   }
 
   func absolutePath(for relativePath: String) -> String {
@@ -48,7 +58,6 @@ extension FilesDirectoryContentsView {
     let includeHidden: Bool
     let live: Bool
     let active: Bool
-    let revision: Int
     let manualReloadToken: Int
   }
 }

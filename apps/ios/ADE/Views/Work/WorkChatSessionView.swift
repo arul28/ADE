@@ -11,6 +11,7 @@ struct WorkChatSessionView: View {
   let transcript: [WorkChatEnvelope]
   let fallbackEntries: [AgentChatTranscriptEntry]
   let artifacts: [ComputerUseArtifactSummary]
+  let optimisticPendingSteers: [WorkPendingSteerModel]
   let localEchoMessages: [WorkLocalEchoMessage]
   @Binding var expandedToolCardIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
@@ -69,7 +70,10 @@ struct WorkChatSessionView: View {
   }
 
   var pendingSteers: [WorkPendingSteerModel] {
-    timelineSnapshot.pendingSteers
+    mergeWorkPendingSteers(
+      optimistic: optimisticPendingSteers,
+      canonical: timelineSnapshot.pendingSteers
+    )
   }
 
   var primaryPendingInput: WorkPendingInputItem? {
@@ -77,7 +81,27 @@ struct WorkChatSessionView: View {
   }
 
   var hasPendingInputGate: Bool {
-    !pendingInputs.isEmpty || sessionStatus == "awaiting-input"
+    workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
+  }
+
+  var awaitingPromptDetailsMissing: Bool {
+    workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
+  }
+
+  var awaitingPromptDetailsMessage: String {
+    let fallback = "The session is marked as needing input, but the prompt details have not synced to this iPhone yet. Keep the machine connected and try again when the prompt appears."
+    guard let preview = awaitingPromptPreview else { return fallback }
+    return "\(preview)\n\(fallback)"
+  }
+
+  private var awaitingPromptPreview: String? {
+    [chatSummary?.lastOutputPreview, session.lastOutputPreview]
+      .compactMap { value -> String? in
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+      }
+      .first
   }
 
   var toolCards: [WorkToolCardModel] {
@@ -138,23 +162,37 @@ struct WorkChatSessionView: View {
     // Existing chats accept messages while live, and can still accept them
     // during reconnects when desktop advertised chat.send as queueable. Pending
     // input is gated separately so the host receives a structured answer.
-    canSendMessages && !sending && !hasPendingInputGate
+    canSendMessages && (!sending || sendWillQueue) && !hasPendingInputGate
   }
 
   var composerFeedback: String? {
-    if sending {
-      return sendWillQueue ? "Queueing message for machine..." : "Sending message to machine..."
+    if sending && !sendWillQueue {
+      return "Sending message to machine..."
     }
     if sendWillQueue {
-      return "Machine is reconnecting. Send will queue until it is back."
+      return sessionStatus == "active"
+        ? "Message will stage behind the active turn."
+        : "Machine is reconnecting. Send will queue until it is back."
     }
     if !canSendMessages {
       return "Reconnect to send messages."
     }
-    if hasPendingInputGate || sessionStatus == "awaiting-input" {
+    if !pendingInputs.isEmpty {
       return "Answer the waiting prompt above, or decline it before sending another message."
     }
+    if awaitingPromptDetailsMissing {
+      return "Waiting for prompt details from the machine."
+    }
     return nil
+  }
+
+  var jumpToLatestPillBottomPadding: CGFloat {
+    // The pill is an overlay, so it needs to sit above the safe-area composer
+    // instead of covering the Send/Stop control. Staged steers add a second
+    // composer band, so give the pill extra air when that strip is present.
+    if !pendingSteers.isEmpty { return 220 }
+    if !pendingInputs.isEmpty { return 150 }
+    return 116
   }
 
   @ViewBuilder
@@ -182,6 +220,17 @@ struct WorkChatSessionView: View {
           )
         }
       }
+    }
+
+    if awaitingPromptDetailsMissing {
+      ADENoticeCard(
+        title: "Prompt details syncing",
+        message: awaitingPromptDetailsMessage,
+        icon: "exclamationmark.bubble.fill",
+        tint: ADEColor.warning,
+        actionTitle: nil,
+        action: nil
+      )
     }
 
     // Connection-caused failures are communicated via the top-right gear, but
@@ -246,43 +295,6 @@ struct WorkChatSessionView: View {
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
 
-      if let primary = primaryPendingInput {
-        let overflow = max(pendingInputs.count - 1, 0)
-        switch primary {
-        case .approval(let approval):
-          WorkComposerInputBanner(
-            title: overflow > 0 ? "Approval waiting (+\(overflow) more)" : "Approval waiting",
-            message: approval.description,
-            icon: "checkmark.shield",
-            tint: ADEColor.warning
-          )
-        case .question(let question):
-          WorkComposerInputBanner(
-            title: overflow > 0 ? "Question waiting (+\(overflow) more)" : "Question waiting",
-            message: question.question,
-            icon: "questionmark.circle",
-            tint: ADEColor.warning
-          )
-        case .permission(let permission):
-          WorkComposerInputBanner(
-            title: overflow > 0 ? "Permission waiting (+\(overflow) more)" : "Permission waiting",
-            message: permission.description,
-            icon: "lock.shield",
-            tint: ADEColor.warning
-          )
-        case .planApproval(let plan):
-          // Plan-approval cards render inline in the timeline. The composer
-          // banner just gives a lightweight heads-up so the user knows there's
-          // a decision waiting even if they haven't scrolled to it yet.
-          WorkComposerInputBanner(
-            title: overflow > 0 ? "Plan approval waiting (+\(overflow) more)" : "Plan approval waiting",
-            message: plan.title,
-            icon: "list.bullet.clipboard",
-            tint: Color(red: 0.95, green: 0.72, blue: 0.15)
-          )
-        }
-      }
-
       if !pendingSteers.isEmpty {
         WorkQueuedSteerStrip(
           steers: pendingSteers,
@@ -306,6 +318,8 @@ struct WorkChatSessionView: View {
               await runSessionAction {
                 await dispatch(steerId)
                 steerEditDrafts.removeValue(forKey: steerId)
+                scrollToLatest(proxy, animated: true)
+                unreadBelowCount = 0
               }
             }
           },
@@ -314,6 +328,8 @@ struct WorkChatSessionView: View {
               await runSessionAction {
                 await dispatch(steerId)
                 steerEditDrafts.removeValue(forKey: steerId)
+                scrollToLatest(proxy, animated: true)
+                unreadBelowCount = 0
               }
             }
           }
@@ -344,7 +360,7 @@ struct WorkChatSessionView: View {
         awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
         canSend: canSend,
-        sending: sending,
+        sending: sending && !sendWillQueue,
         // Show a Stop affordance on the Send button while the assistant is
         // generating. The chip strip stays usable so users can switch
         // access/model mid-turn; interruption replaces "Send" with a
@@ -407,8 +423,14 @@ struct WorkChatSessionView: View {
       .scrollDismissesKeyboard(.interactively)
       .adeScreenBackground()
       .adeNavigationGlass()
-      .safeAreaInset(edge: .bottom) {
+      .safeAreaInset(edge: .bottom, spacing: 0) {
         composerInset(proxy: proxy)
+          .background(alignment: .bottom) {
+            WorkChatComposerBackdrop()
+          }
+      }
+      .overlay(alignment: .top) {
+        WorkChatNavigationBackdrop()
       }
       .overlay(alignment: .bottomTrailing) {
         if unreadBelowCount > 0 {
@@ -417,7 +439,7 @@ struct WorkChatSessionView: View {
             unreadBelowCount = 0
           }
           .padding(.trailing, 16)
-          .padding(.bottom, 14)
+          .padding(.bottom, jumpToLatestPillBottomPadding)
           .transition(.move(edge: .trailing).combined(with: .opacity))
         }
       }
@@ -508,17 +530,48 @@ struct WorkChatSessionView: View {
   }
 }
 
+private struct WorkChatNavigationBackdrop: View {
+  var body: some View {
+    LinearGradient(
+      colors: [
+        ADEColor.pageBackground,
+        ADEColor.pageBackground.opacity(0.96),
+        ADEColor.pageBackground.opacity(0)
+      ],
+      startPoint: .top,
+      endPoint: .bottom
+    )
+    .frame(height: 112)
+    .ignoresSafeArea(edges: .top)
+    .allowsHitTesting(false)
+  }
+}
+
+private struct WorkChatComposerBackdrop: View {
+  var body: some View {
+    LinearGradient(
+      colors: [
+        ADEColor.pageBackground.opacity(0),
+        ADEColor.pageBackground.opacity(0.94),
+        ADEColor.pageBackground
+      ],
+      startPoint: .top,
+      endPoint: .bottom
+    )
+    .ignoresSafeArea(edges: .bottom)
+    .allowsHitTesting(false)
+  }
+}
+
 struct WorkTimelinePresentation: Equatable {
   let entries: [WorkTimelineEntry]
   let visibleEntries: [WorkTimelineEntry]
   let hiddenCount: Int
-  let latestVisibleAssistantMessageId: String?
 
   static let empty = WorkTimelinePresentation(
     entries: [],
     visibleEntries: [],
-    hiddenCount: 0,
-    latestVisibleAssistantMessageId: nil
+    hiddenCount: 0
   )
 }
 
@@ -537,18 +590,23 @@ private func makeWorkTimelinePresentation(
   return WorkTimelinePresentation(
     entries: entries,
     visibleEntries: visibleEntries,
-    hiddenCount: max(entries.count - visibleEntries.count, 0),
-    latestVisibleAssistantMessageId: latestVisibleAssistantMessageId(in: visibleEntries)
+    hiddenCount: max(entries.count - visibleEntries.count, 0)
   )
 }
 
-private func latestVisibleAssistantMessageId(in entries: [WorkTimelineEntry]) -> String? {
-  for entry in entries.reversed() {
-    if case .message(let message) = entry.payload, message.role.lowercased() == "assistant" {
-      return message.id
-    }
+func mergeWorkPendingSteers(
+  optimistic: [WorkPendingSteerModel],
+  canonical: [WorkPendingSteerModel]
+) -> [WorkPendingSteerModel] {
+  guard !optimistic.isEmpty else { return canonical }
+  guard !canonical.isEmpty else { return optimistic }
+  var seen = Set<String>()
+  var result: [WorkPendingSteerModel] = []
+  for steer in optimistic + canonical {
+    guard seen.insert(steer.id).inserted else { continue }
+    result.append(steer)
   }
-  return nil
+  return result
 }
 
 private struct WorkChatComposerCard: View {
@@ -666,7 +724,10 @@ private struct WorkChatComposerDraftInput: View {
       WorkChatComposerTextField(
         draftState: draftState,
         canCompose: canCompose,
-        placeholder: awaitingInputGate ? "Answer the prompt above…" : "Type to vibecode…"
+        placeholder: workChatComposerPlaceholder(
+          pendingInputCount: pendingInputCount,
+          sessionStatus: awaitingInputGate ? "awaiting-input" : ""
+        )
       )
 
       HStack(alignment: .center, spacing: 8) {
@@ -690,7 +751,21 @@ private struct WorkChatComposerDraftInput: View {
         )
 
         if showInterrupt {
-          stopButton
+          if draftState.hasSendableText {
+            stopButton(compact: true)
+            WorkChatComposerSendButton(
+              draftState: draftState,
+              canSend: canSend,
+              sending: sending,
+              accent: sendAccent,
+              label: "Stage",
+              accessibilityLabelText: "Stage message",
+              onSend: onSend,
+              onSent: onSent
+            )
+          } else {
+            stopButton()
+          }
         } else {
           WorkChatComposerSendButton(
             draftState: draftState,
@@ -706,7 +781,7 @@ private struct WorkChatComposerDraftInput: View {
   }
 
   @ViewBuilder
-  private var stopButton: some View {
+  private func stopButton(compact: Bool = false) -> some View {
     Button {
       Task { await onInterrupt() }
     } label: {
@@ -719,11 +794,13 @@ private struct WorkChatComposerDraftInput: View {
           Image(systemName: "stop.fill")
             .font(.system(size: 12, weight: .bold))
         }
-        Text("Stop")
-          .font(.caption.weight(.semibold))
+        if !compact {
+          Text("Stop")
+            .font(.caption.weight(.semibold))
+        }
       }
       .foregroundStyle(Color.white)
-      .padding(.horizontal, 12)
+      .padding(.horizontal, compact ? 10 : 12)
       .padding(.vertical, 8)
       .background(
         Capsule(style: .continuous)
@@ -798,6 +875,8 @@ private struct WorkChatComposerSendButton: View {
   let canSend: Bool
   let sending: Bool
   let accent: Color
+  var label = "Send"
+  var accessibilityLabelText = "Send message"
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
@@ -826,7 +905,7 @@ private struct WorkChatComposerSendButton: View {
           Image(systemName: "paperplane.fill")
             .font(.system(size: 12, weight: .bold))
         }
-        Text("Send")
+        Text(label)
           .font(.caption.weight(.semibold))
       }
       .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
@@ -843,12 +922,12 @@ private struct WorkChatComposerSendButton: View {
       .shadow(color: sendEnabled ? accent.opacity(0.4) : .clear, radius: 8, y: 2)
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(sending ? "Sending message" : "Send message")
+    .accessibilityLabel(sending ? "Sending message" : accessibilityLabelText)
     .disabled(!sendEnabled)
     .adeInspectable(
       "Work.Chat.Composer.SendButton",
       metadata: [
-        "label": sending ? "Sending message" : "Send message",
+        "label": sending ? "Sending message" : accessibilityLabelText,
         "role": "button"
       ]
     )

@@ -23,6 +23,8 @@ struct FilesDetailScreen: View {
   @State var hasLoadedDiff = false
   @State var isDetailsSheetPresented = false
   @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
+  @State var lastHandledFilesDetailRevision: Int?
+  @State var lastFilesDetailReload = Date.distantPast
 
   var language: FilesLanguage {
     FilesLanguage.detect(languageId: blob?.languageId, filePath: relativePath)
@@ -87,19 +89,9 @@ struct FilesDetailScreen: View {
     }
     .adeScreenBackground()
     .adeNavigationGlass()
+    .adeRootTabBarHidden()
     .navigationTitle(lastPathComponent(relativePath))
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
-        Button {
-          isDetailsSheetPresented = true
-        } label: {
-          Image(systemName: "info.circle")
-        }
-        .accessibilityLabel("File details")
-        .disabled(blob == nil)
-      }
-    }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "files-container-\(relativePath)", in: transitionNamespace)
     .sheet(isPresented: $isDetailsSheetPresented) {
       FilesDetailsSheet(
@@ -117,7 +109,7 @@ struct FilesDetailScreen: View {
       .environmentObject(syncService)
     }
     .task(id: syncService.localStateRevision) {
-      await load(refreshDiff: mode == .diff)
+      await refreshForLocalStateRevision(syncService.localStateRevision)
     }
     .task(id: mode) {
       if mode == .diff {
@@ -159,9 +151,10 @@ struct FilesDetailScreen: View {
       if let blob {
         FilesHeaderStrip(
           relativePath: relativePath,
-          language: language,
+          fileKindLabel: fileKindLabel(for: blob),
           fileSize: blob.size,
-          transitionNamespace: transitionNamespace
+          transitionNamespace: transitionNamespace,
+          onShowDetails: { isDetailsSheetPresented = true }
         )
 
         if editorModes.count > 1 {
@@ -180,33 +173,32 @@ struct FilesDetailScreen: View {
   @ViewBuilder
   private var filesModeControl: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Picker("Mode", selection: $mode) {
-        ForEach(editorModes) { editorMode in
-          Text(editorMode.title).tag(editorMode)
-        }
-      }
-      .pickerStyle(.segmented)
+      FilesSegmentedControl(
+        title: "Mode",
+        items: editorModes,
+        selection: $mode,
+        label: { $0.title }
+      )
 
       if mode == .diff, workspace.laneId != nil {
-        Picker("Diff", selection: $diffMode) {
-          ForEach(FilesDiffMode.allCases) { item in
-            Text(item.title).tag(item)
-          }
-        }
-        .pickerStyle(.segmented)
+        FilesSegmentedControl(
+          title: "Diff",
+          items: FilesDiffMode.allCases,
+          selection: $diffMode,
+          label: { $0.title }
+        )
       }
     }
   }
 
   @ViewBuilder
   private var filesCodeLayoutControl: some View {
-    Picker("Code layout", selection: $codeLayoutMode) {
-      ForEach(FilesCodeLayoutMode.allCases) { layoutMode in
-        Text(layoutMode.title).tag(layoutMode)
-      }
-    }
-    .pickerStyle(.segmented)
-    .accessibilityLabel("Code layout")
+    FilesSegmentedControl(
+      title: "Code layout",
+      items: FilesCodeLayoutMode.allCases,
+      selection: $codeLayoutMode,
+      label: { $0.title }
+    )
   }
 
   private func showsCodeLayoutControl(blob: SyncFileBlob) -> Bool {
@@ -216,6 +208,16 @@ struct FilesDetailScreen: View {
     case .diff:
       return workspace.laneId != nil
     }
+  }
+
+  func fileKindLabel(for blob: SyncFileBlob) -> String {
+    if isImagePreviewable {
+      return "Image"
+    }
+    if blob.isBinary {
+      return "Binary"
+    }
+    return language.displayName
   }
 
   @ViewBuilder
@@ -313,6 +315,58 @@ struct FilesDetailScreen: View {
         title: "No diff available",
         message: "Nothing cached for \(diffMode.title.lowercased()) diff. Reconnect or refresh to try again."
       )
+    }
+  }
+}
+
+private struct FilesSegmentedControl<Item: Identifiable & Equatable>: View {
+  let title: String
+  let items: [Item]
+  @Binding var selection: Item
+  let label: (Item) -> String
+
+  var body: some View {
+    HStack(spacing: 3) {
+      ForEach(items) { item in
+        let isSelected = selection == item
+        Button {
+          guard !isSelected else { return }
+          withAnimation(.snappy(duration: 0.16)) {
+            selection = item
+          }
+        } label: {
+          Text(label(item))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .padding(.horizontal, 8)
+            .background {
+              if isSelected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .fill(ADEColor.accent.opacity(0.18))
+              }
+            }
+            .overlay {
+              if isSelected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .stroke(ADEColor.accent.opacity(0.35), lineWidth: 0.75)
+              }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title): \(label(item))")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+      }
+    }
+    .padding(3)
+    .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     }
   }
 }

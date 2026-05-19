@@ -4,6 +4,7 @@ import {
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
   defaultTrackedCliStartupCommand,
+  resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
 } from "./cliLaunch";
@@ -56,6 +57,31 @@ describe("defaultTrackedCliStartupCommand", () => {
   });
 });
 
+describe("resolveCleanShellLaunchFields", () => {
+  it("starts zsh without reading user startup files", () => {
+    expect(resolveCleanShellLaunchFields({ platform: "darwin", shell: "/bin/zsh" })).toEqual({
+      command: "/bin/zsh",
+      args: ["-f"],
+      env: { ZDOTDIR: "/var/empty" },
+    });
+  });
+
+  it("starts bash without profile or rc files", () => {
+    expect(resolveCleanShellLaunchFields({ platform: "linux", shell: "/bin/bash" })).toEqual({
+      command: "/bin/bash",
+      args: ["--noprofile", "--norc"],
+      env: { BASH_ENV: "" },
+    });
+  });
+
+  it("starts Windows PowerShell without profile scripts", () => {
+    expect(resolveCleanShellLaunchFields({ platform: "win32", comSpec: "cmd.exe" })).toEqual({
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+  });
+});
+
 describe("buildTrackedCliStartupCommand", () => {
   describe("claude provider", () => {
     it("adds --dangerously-skip-permissions for full-auto", () => {
@@ -75,6 +101,12 @@ describe("buildTrackedCliStartupCommand", () => {
       const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "default" });
       expect(command).toContain("--append-system-prompt");
       expect(command).toContain("--permission-mode default");
+    });
+
+    it("adds --permission-mode auto for Claude auto", () => {
+      const command = buildTrackedCliStartupCommand({ provider: "claude", permissionMode: "auto" });
+      expect(command).toContain("--append-system-prompt");
+      expect(command).toContain("--permission-mode auto");
     });
 
     it("adds --permission-mode plan for plan (else branch)", () => {
@@ -183,23 +215,11 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).toContain("only normal reason to skip ADE CLI");
     });
 
-    it("seeds Codex with ADE guidance as the initial prompt", () => {
-      const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
-      expect(launch.command).toBe("codex");
-      expect(launch.args[0]).toBe("--no-alt-screen");
-      expect(launch.args.at(-1)).toContain("ADE session guidance");
-      expect(ADE_CLI_INLINE_GUIDANCE).toContain("default control plane");
-      expect(launch.args.at(-1)).toContain("default control plane");
-      expect(launch.args.at(-1)).toContain("ADE_AGENT_SKILLS_DIRS");
-      expect(launch.args.at(-1)).toContain("clean up old, stale, or finished processes");
-      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
-      expect(launch.startupCommand).toContain("ADE session guidance");
-    });
-
     it("uses the selected lane worktree to seed skill roots", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "codex",
         permissionMode: "default",
+        initialPrompt: "Check this lane.",
         laneWorktreePath: "/repo/.ade/worktrees/chat-lane",
       });
 
@@ -282,11 +302,30 @@ describe("buildTrackedCliStartupCommand", () => {
         "config-toml is only supported for Codex",
       );
     });
+
+    it("rejects auto for non-Claude CLI providers", () => {
+      expect(() => buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "auto" })).toThrow(
+        "auto is only supported for Claude",
+      );
+      expect(() => buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "auto" })).toThrow(
+        "auto is only supported for Claude",
+      );
+      expect(() => buildTrackedCliLaunchCommand({ provider: "droid", permissionMode: "auto" })).toThrow(
+        "auto is only supported for Claude",
+      );
+      expect(() => buildTrackedCliLaunchCommand({ provider: "opencode", permissionMode: "auto" })).toThrow(
+        "auto is only supported for Claude",
+      );
+    });
   });
 
   it("covers supported AgentChatPermissionMode values for each provider", () => {
-    const modes = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
+    const modes = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
     for (const mode of modes) {
+      if (mode === "auto") {
+        expect(buildTrackedCliStartupCommand({ provider: "claude", permissionMode: mode }).length).toBeGreaterThan(0);
+        continue;
+      }
       const codex = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: mode });
       expect(codex.length).toBeGreaterThan(0);
       if (mode === "config-toml") continue;

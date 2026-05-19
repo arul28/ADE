@@ -25,6 +25,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "lanes.importBranch",
   "lanes.createChild",
   "lanes.attach",
+  "lanes.listUnregisteredWorktrees",
   "lanes.adoptAttached",
   "lanes.rename",
   "lanes.reparent",
@@ -96,6 +97,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "cto.ensureSession",
   "cto.ensureAgentSession",
   "prs.createFromLane",
+  "prs.createQueue",
   "prs.land",
   "prs.close",
   "prs.reopen",
@@ -111,6 +113,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.setReviewThreadResolved",
   "prs.reactToComment",
   "prs.aiReviewSummary",
+  "prs.simulateIntegration",
+  "prs.commitIntegration",
   "prs.listIntegrationWorkflows",
   "prs.updateIntegrationProposal",
   "prs.deleteIntegrationProposal",
@@ -120,6 +124,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.startIntegrationResolution",
   "prs.recheckIntegrationStep",
   "prs.landQueueNext",
+  "prs.startQueueAutomation",
   "prs.pauseQueueAutomation",
   "prs.resumeQueueAutomation",
   "prs.cancelQueueAutomation",
@@ -190,6 +195,9 @@ function createMockLaneService() {
       targetProfile: null,
     }),
     attach: vi.fn().mockResolvedValue({ id: "attached-1" }),
+    listUnregisteredWorktrees: vi.fn().mockResolvedValue([
+      { path: "/repo/.ade/unregistered-lanes/feature-one", branch: "feature/one" },
+    ]),
     adoptAttached: vi.fn().mockResolvedValue({ ok: true }),
     rename: vi.fn(),
     reparent: vi.fn().mockResolvedValue({ ok: true }),
@@ -220,6 +228,7 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
+    createQueuePrs: vi.fn().mockResolvedValue({ groupId: "group-1", prs: [], errors: [] }),
     draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
@@ -235,6 +244,8 @@ function createMockPrService() {
     setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
     reactToComment: vi.fn().mockResolvedValue(undefined),
     aiReviewSummary: vi.fn().mockResolvedValue({ summary: "ready" }),
+    simulateIntegration: vi.fn().mockResolvedValue({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" }),
+    commitIntegration: vi.fn().mockResolvedValue({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] }),
     listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
     updateIntegrationProposal: vi.fn().mockResolvedValue(undefined),
     deleteIntegrationProposal: vi.fn().mockResolvedValue({ proposalId: "proposal-1", integrationLaneId: null, deletedIntegrationLane: false }),
@@ -317,6 +328,7 @@ function createMockIssueInventoryService() {
 
 function createMockQueueLandingService() {
   return {
+    startQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
     pauseQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "paused" }),
     resumeQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
     cancelQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "cancelled" }),
@@ -344,6 +356,7 @@ function createMockSessionService() {
   return {
     list: vi.fn().mockReturnValue([]),
     get: vi.fn().mockReturnValue(null),
+    updateMeta: vi.fn(),
   } as any;
 }
 
@@ -769,6 +782,14 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow(/branchName/);
     });
 
+    it("lanes.listUnregisteredWorktrees routes to laneService", async () => {
+      const result = await service.execute(makePayload("lanes.listUnregisteredWorktrees"));
+      expect(laneService.listUnregisteredWorktrees).toHaveBeenCalledTimes(1);
+      expect(result).toEqual([
+        { path: "/repo/.ade/unregistered-lanes/feature-one", branch: "feature/one" },
+      ]);
+    });
+
     it("lanes.rename parses laneId and name", async () => {
       await service.execute(makePayload("lanes.rename", {
         laneId: "lane-1",
@@ -915,6 +936,35 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
     });
 
+    it("prs.createQueue parses lane order, target branch, and options", async () => {
+      const result = await service.execute(makePayload("prs.createQueue", {
+        laneIds: ["lane-1", "lane-2"],
+        targetBranch: "main",
+        titles: { "lane-1": "First", "lane-2": "Second" },
+        draft: true,
+        autoRebase: false,
+        ciGating: true,
+        queueName: "Mobile queue",
+        allowDirtyWorktree: true,
+      }));
+      expect(prService.createQueuePrs).toHaveBeenCalledWith({
+        laneIds: ["lane-1", "lane-2"],
+        targetBranch: "main",
+        titles: { "lane-1": "First", "lane-2": "Second" },
+        draft: true,
+        autoRebase: false,
+        ciGating: true,
+        queueName: "Mobile queue",
+        allowDirtyWorktree: true,
+      });
+      expect(result).toEqual({ groupId: "group-1", prs: [], errors: [] });
+    });
+
+    it("prs.createQueue requires laneIds and targetBranch", async () => {
+      await expect(service.execute(makePayload("prs.createQueue", { laneIds: ["lane-1"] })))
+        .rejects.toThrow("prs.createQueue requires targetBranch.");
+    });
+
     it("prs.draftDescription parses laneId and optional model controls", async () => {
       const result = await service.execute(makePayload("prs.draftDescription", {
         laneId: "lane-1",
@@ -1009,6 +1059,83 @@ describe("createSyncRemoteCommandService", () => {
         inReplyToCommentId: "comment-parent",
       });
       expect(result).toEqual({ id: "comment-1", body: "Looks good" });
+    });
+
+    it("prs.simulateIntegration parses source lanes, base branch, and merge target", async () => {
+      const result = await service.execute(makePayload("prs.simulateIntegration", {
+        sourceLaneIds: ["lane-a", "lane-b"],
+        baseBranch: "main",
+        persist: true,
+        mergeIntoLaneId: "lane-int",
+      }));
+      expect(prService.simulateIntegration).toHaveBeenCalledWith({
+        sourceLaneIds: ["lane-a", "lane-b"],
+        baseBranch: "main",
+        persist: true,
+        mergeIntoLaneId: "lane-int",
+      });
+      expect(result).toEqual({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" });
+    });
+
+    it("prs.commitIntegration parses proposal metadata and options", async () => {
+      const result = await service.execute(makePayload("prs.commitIntegration", {
+        proposalId: "proposal-1",
+        integrationLaneName: "Mobile integration",
+        title: "Integration PR",
+        body: "Body",
+        draft: true,
+        pauseOnConflict: true,
+        allowDirtyWorktree: false,
+        preferredIntegrationLaneId: null,
+      }));
+      expect(prService.commitIntegration).toHaveBeenCalledWith({
+        proposalId: "proposal-1",
+        integrationLaneName: "Mobile integration",
+        title: "Integration PR",
+        body: "Body",
+        draft: true,
+        pauseOnConflict: true,
+        allowDirtyWorktree: false,
+        preferredIntegrationLaneId: null,
+      });
+      expect(result).toEqual({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] });
+    });
+
+    it("prs.startQueueAutomation parses queue automation options", async () => {
+      const result = await service.execute(makePayload("prs.startQueueAutomation", {
+        groupId: "group-1",
+        method: "squash",
+        archiveLane: true,
+        autoResolve: true,
+        ciGating: false,
+        resolverProvider: "codex",
+        resolverModel: "gpt-5.4",
+        reasoningEffort: "medium",
+        permissionMode: "default",
+        confidenceThreshold: 0.82,
+        originLabel: "Mobile audit",
+      }));
+      expect(queueLandingService.startQueue).toHaveBeenCalledWith({
+        groupId: "group-1",
+        method: "squash",
+        archiveLane: true,
+        autoResolve: true,
+        ciGating: false,
+        resolverProvider: "codex",
+        resolverModel: "gpt-5.4",
+        reasoningEffort: "medium",
+        permissionMode: "default",
+        confidenceThreshold: 0.82,
+        originLabel: "Mobile audit",
+      });
+      expect(result).toEqual({ queueId: "queue-1", state: "landing" });
+    });
+
+    it("prs.startQueueAutomation requires a merge method", async () => {
+      await expect(service.execute(makePayload("prs.startQueueAutomation", {
+        groupId: "group-1",
+        method: "invalid",
+      }))).rejects.toThrow("prs.startQueueAutomation requires method to be merge, squash, or rebase.");
     });
 
     it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
@@ -1348,7 +1475,7 @@ describe("createSyncRemoteCommandService", () => {
         sessionId: "sess-1",
         text: "hello",
       }, {
-        awaitDispatch: true,
+        awaitDispatch: false,
       });
       expect(result).toEqual({ ok: true });
     });
@@ -1403,6 +1530,16 @@ describe("createSyncRemoteCommandService", () => {
         text: "change direction",
       });
       expect(result).toEqual({ ok: true });
+    });
+
+    it("chat.steer returns the backend queued result for mobile clients", async () => {
+      agentChatService.steer.mockResolvedValueOnce({ steerId: "steer-1", queued: true });
+      const result = await service.execute(makePayload("chat.steer", {
+        sessionId: "sess-1",
+        text: "change direction",
+      }));
+
+      expect(result).toEqual({ ok: true, steerId: "steer-1", queued: true });
     });
 
     it("chat.steer throws when text is missing", async () => {
@@ -1487,7 +1624,7 @@ describe("createSyncRemoteCommandService", () => {
             { path: "b", type: "file" },
           ],
         }, {
-          awaitDispatch: true,
+          awaitDispatch: false,
         });
       });
 
@@ -1555,7 +1692,7 @@ describe("createSyncRemoteCommandService", () => {
           executionMode: "autonomous",
           interactionMode: "chat",
         }, {
-          awaitDispatch: true,
+          awaitDispatch: false,
         });
       });
 
@@ -1628,6 +1765,19 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" });
     });
 
+    it("chat.listSessions forwards automation and archived filters", async () => {
+      await service.execute(makePayload("chat.listSessions", {
+        laneId: "lane-1",
+        includeAutomation: true,
+        includeArchived: true,
+      }));
+
+      expect(agentChatService.listSessions).toHaveBeenCalledWith("lane-1", {
+        includeAutomation: true,
+        includeArchived: true,
+      });
+    });
+
     it("chat commands throw when agentChatService is not available", async () => {
       const svcNoChat = createSyncRemoteCommandService({
         laneService,
@@ -1654,6 +1804,57 @@ describe("createSyncRemoteCommandService", () => {
       expect(sessionService.list).toHaveBeenCalledWith(
         expect.objectContaining({ laneId: "lane-1" }),
       );
+    });
+
+    it("work.listSessions forwards pending input item ids for awaiting chat sessions", async () => {
+      sessionService.list.mockReturnValueOnce([{
+        id: "chat-awaiting",
+        laneId: "lane-1",
+        laneName: "Primary",
+        ptyId: null,
+        tracked: true,
+        pinned: false,
+        manuallyNamed: false,
+        goal: null,
+        toolType: "codex-chat",
+        title: "Needs approval",
+        status: "running",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        endedAt: null,
+        archivedAt: null,
+        exitCode: null,
+        transcriptPath: "",
+        headShaStart: null,
+        headShaEnd: null,
+        lastOutputPreview: null,
+        summary: null,
+        runtimeState: "running",
+        resumeCommand: null,
+        resumeMetadata: null,
+        chatIdleSinceAt: null,
+      }]);
+      agentChatService.listSessions.mockResolvedValueOnce([{
+        sessionId: "chat-awaiting",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        status: "active",
+        awaitingInput: true,
+        pendingInputItemId: "pending-input-1",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-01-01T00:00:01.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      }]);
+
+      const result = await service.execute(makePayload("work.listSessions", { laneId: "lane-1" }));
+
+      expect(result).toMatchObject([{
+        id: "chat-awaiting",
+        runtimeState: "waiting-input",
+        pendingInputItemId: "pending-input-1",
+      }]);
     });
 
     it("work.runQuickCommand parses laneId + title + startupCommand", async () => {
@@ -1724,13 +1925,15 @@ describe("createSyncRemoteCommandService", () => {
         provider: "codex",
         permissionMode: "edit",
         initialInput: "fix the tests",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "xhigh",
         cols: 70,
         rows: 24,
       }));
       expect(ptyService.create).toHaveBeenCalledWith(
         expect.objectContaining({
           laneId: "lane-1",
-          title: "Codex",
+          title: "Fix the tests",
           toolType: "codex",
           cols: 70,
           rows: 24,
@@ -1738,7 +1941,15 @@ describe("createSyncRemoteCommandService", () => {
           startupCommand: expect.stringContaining("codex"),
         }),
       );
-      expect(ptyService.writeBySessionId).toHaveBeenCalledWith("pty-1", "fix the tests\r");
+      const createCall = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\""]));
+      expect(createCall?.args.at(-1)).toContain("fix the tests");
+      expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "pty-1",
+        goal: "fix the tests",
+        title: "Fix the tests",
+      }));
       expect(result).toEqual(expect.objectContaining({
         sessionId: "pty-1",
         ptyId: "pty-proc",
@@ -1775,12 +1986,19 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     it("work.startCliSession opens a shell without accepting arbitrary startup commands", async () => {
-      await service.execute(makePayload("work.startCliSession", {
-        laneId: "lane-1",
-        provider: "shell",
-        startupCommand: "rm -rf nope",
-        initialInput: "rm -rf also-nope",
-      }));
+      const previousShell = process.env.SHELL;
+      process.env.SHELL = "/bin/zsh";
+      try {
+        await service.execute(makePayload("work.startCliSession", {
+          laneId: "lane-1",
+          provider: "shell",
+          startupCommand: "rm -rf nope",
+          initialInput: "rm -rf also-nope",
+        }));
+      } finally {
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+      }
       expect(ptyService.create).toHaveBeenCalledWith(
         expect.not.objectContaining({
           startupCommand: "rm -rf nope",
@@ -1793,6 +2011,13 @@ describe("createSyncRemoteCommandService", () => {
           toolType: "shell",
         }),
       );
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.command).toBeTruthy();
+      expect(call?.args).toEqual(expect.any(Array));
+      expect(call?.env).toEqual(expect.objectContaining({
+        ZDOTDIR: "/var/empty",
+      }));
+      expect(call).not.toHaveProperty("startupCommand");
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
     });
 
@@ -1824,6 +2049,17 @@ describe("createSyncRemoteCommandService", () => {
       expect(call?.startupCommand).toContain("--session-id");
       expect(call?.startupCommand).toContain(call!.sessionId);
       expect(call?.toolType).toBe("claude");
+    });
+
+    it("work.startCliSession preserves Claude auto permission mode from mobile", async () => {
+      await service.execute(makePayload("work.startCliSession", {
+        laneId: "lane-1",
+        provider: "claude",
+        permissionMode: "auto",
+      }));
+      const call = ptyService.create.mock.calls.at(-1)?.[0];
+      expect(call?.args).toEqual(expect.arrayContaining(["--permission-mode", "auto"]));
+      expect(call?.startupCommand).toContain("--permission-mode auto");
     });
 
     it("work.startCliSession passes Claude model and confirms initial input", async () => {
@@ -1882,7 +2118,7 @@ describe("createSyncRemoteCommandService", () => {
 
       await expect(service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
-        provider: "codex",
+        provider: "cursor",
         initialInput: "fix the tests",
       }))).rejects.toThrow("could not write initialInput");
       expect(ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-proc", sessionId: "pty-1" });
@@ -2378,6 +2614,35 @@ describe("createSyncRemoteCommandService", () => {
         agentId: "worker-live",
         status: "running",
       });
+    });
+
+    it("cto.getAgentCoreMemory reads from workerAgentService so headless heartbeat stubs still work", async () => {
+      const memory = {
+        version: 3,
+        updatedAt: "2026-04-01T00:00:00.000Z",
+        projectSummary: "Mobile worker fixture.",
+        criticalConventions: ["Drive the real Simulator"],
+        userPreferences: [],
+        activeFocus: ["CTO detail"],
+        notes: [],
+      };
+      workerAgentService.getCoreMemory.mockReturnValueOnce(memory);
+
+      const result = await service.execute(makePayload("cto.getAgentCoreMemory", {
+        agentId: "worker-42",
+      }));
+
+      expect(result).toEqual(memory);
+      expect(workerAgentService.getCoreMemory).toHaveBeenCalledWith("worker-42");
+    });
+
+    it("cto.removeAgent removes the worker through the mobile sync command surface", async () => {
+      const result = await service.execute(makePayload("cto.removeAgent", {
+        agentId: "worker-42",
+      }));
+
+      expect(result).toEqual({});
+      expect(workerAgentService.removeAgent).toHaveBeenCalledWith("worker-42");
     });
   });
 

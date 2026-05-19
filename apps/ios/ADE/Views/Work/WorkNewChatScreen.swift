@@ -82,6 +82,9 @@ struct WorkNewChatScreen: View {
 
           laneSelector
           modeSelector
+          if sessionMode == .cli {
+            cliProviderSelector
+          }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -104,6 +107,7 @@ struct WorkNewChatScreen: View {
     .navigationTitle("New Chat")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .tabBar)
+    .adeRootTabBarHidden()
     .toolbar {
       ToolbarItem(placement: .topBarTrailing) {
         if busy {
@@ -121,6 +125,11 @@ struct WorkNewChatScreen: View {
     }
     .onChange(of: provider) { _, newProvider in
       runtimeMode = workDefaultRuntimeMode(provider: newProvider)
+      if sessionMode == .cli {
+        normalizeCliSelection()
+      } else if !workNewChatModel(modelId, belongsTo: workNormalizedNewChatProvider(newProvider)) {
+        modelId = workDefaultNewChatModelId(provider: newProvider)
+      }
       if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
         reasoningEffort = ""
       }
@@ -128,6 +137,8 @@ struct WorkNewChatScreen: View {
     .onChange(of: sessionMode) { _, newMode in
       if newMode == .chat {
         normalizeChatSelection()
+      } else {
+        normalizeCliSelection()
       }
     }
     .onChange(of: modelId) { _, newModel in
@@ -172,65 +183,176 @@ struct WorkNewChatScreen: View {
     .accessibilityLabel("ADE")
   }
 
-  @ViewBuilder
-  private var laneSelector: some View {
-    Menu {
-      ForEach(lanes) { lane in
-        Button {
-          selectedLaneId = lane.id
-        } label: {
-          if lane.id == selectedLaneId {
-            Label(lane.name, systemImage: "checkmark")
-          } else {
-            Text(lane.name)
-          }
+  private func compactChoiceChip(
+    title: String,
+    systemImage: String?,
+    tint: Color,
+    isSelected: Bool,
+    accessibilityPrefix: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        Circle().fill(tint).frame(width: 6, height: 6)
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(isSelected ? tint : ADEColor.textMuted)
+        }
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          .lineLimit(1)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
         }
       }
-      if lanes.isEmpty {
-        Text("No lanes available")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      Divider()
-      Button {
-        Task { await onRefreshLanes() }
-      } label: {
-        Label("Refresh lanes", systemImage: "arrow.clockwise")
-      }
-    } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "arrow.triangle.branch")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(selectedLaneName)
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Image(systemName: "chevron.down")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 9)
-      .background(ADEColor.surfaceBackground.opacity(0.7), in: Capsule(style: .continuous))
-      .glassEffect()
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background((isSelected ? tint.opacity(0.12) : Color.clear), in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.32), lineWidth: 0.6)
+          .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
       )
     }
     .buttonStyle(.plain)
+    .accessibilityLabel("\(accessibilityPrefix): \(title)")
+    .accessibilityValue(isSelected ? "Selected" : "")
+  }
+
+  @ViewBuilder
+  private var laneSelector: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        ForEach(lanes) { lane in
+          compactChoiceChip(
+            title: lane.name,
+            systemImage: "arrow.triangle.branch",
+            tint: ADEColor.accent,
+            isSelected: lane.id == selectedLaneId,
+            accessibilityPrefix: "Lane"
+          ) {
+            selectedLaneId = lane.id
+          }
+        }
+        if lanes.isEmpty {
+          Text("No lanes available")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
+        }
+        Button {
+          Task { await onRefreshLanes() }
+        } label: {
+          Image(systemName: "arrow.clockwise")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(width: 34, height: 34)
+            .background(ADEColor.surfaceBackground.opacity(0.55), in: Circle())
+            .glassEffect()
+            .overlay(Circle().stroke(ADEColor.accent.opacity(0.26), lineWidth: 0.6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Refresh lanes")
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Lane selector. Current lane \(selectedLaneName).")
   }
 
   @ViewBuilder
   private var modeSelector: some View {
-    Picker("Session type", selection: $sessionMode) {
+    HStack(spacing: 3) {
       ForEach(WorkNewSessionMode.allCases) { mode in
-        Text(mode.title).tag(mode)
+        let isSelected = sessionMode == mode
+        Button {
+          guard !isSelected else { return }
+          withAnimation(.snappy(duration: 0.16)) {
+            sessionMode = mode
+          }
+        } label: {
+          Text(mode.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .padding(.horizontal, 8)
+            .background {
+              if isSelected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .fill(ADEColor.accent.opacity(0.18))
+              }
+            }
+            .overlay {
+              if isSelected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .stroke(ADEColor.accent.opacity(0.35), lineWidth: 0.75)
+              }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Session type: \(mode.title)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
       }
     }
-    .pickerStyle(.segmented)
+    .padding(3)
+    .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    }
     .padding(.horizontal, 8)
-    .accessibilityLabel("Session type")
+  }
+
+  @ViewBuilder
+  private var cliProviderSelector: some View {
+    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+      ForEach(workCliProviderOptions) { option in
+        let isSelected = provider == option.id
+        Button {
+          provider = option.id
+        } label: {
+          HStack(spacing: 8) {
+            WorkProviderLogo(
+              provider: option.id,
+              fallbackSymbol: option.id == "shell" ? "terminal.fill" : providerIcon(option.id),
+              tint: providerTint(option.id),
+              size: 16
+            )
+            Text(option.title)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+              .lineLimit(1)
+              .minimumScaleFactor(0.78)
+            Spacer(minLength: 0)
+          }
+          .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+          .padding(.horizontal, 10)
+          .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(isSelected ? providerTint(option.id).opacity(0.16) : ADEColor.surfaceBackground.opacity(0.55))
+          }
+          .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(isSelected ? providerTint(option.id).opacity(0.36) : ADEColor.border.opacity(0.22), lineWidth: 0.6)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("CLI provider: \(option.title)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+      }
+    }
+    .padding(.horizontal, 8)
   }
 
   @ViewBuilder
@@ -288,14 +410,20 @@ struct WorkNewChatScreen: View {
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     do {
       if sessionMode == .cli {
+        let cliModelId = workCliSupportsModelSelection(provider: provider) ? modelId : nil
+        let cliReasoningEffort = workCliSupportsReasoningSelection(provider: provider) && !normalizedReasoning.isEmpty
+          ? normalizedReasoning
+          : nil
         let result = try await syncService.startCliSession(
           laneId: selectedLaneId,
           provider: provider,
           permissionMode: workCliPermissionMode(provider: provider, runtimeMode: runtimeMode),
-          title: workCliProviderOptions.first(where: { $0.id == provider })?.title,
+          title: workCliInitialSessionTitle(provider: provider, opener: opener),
           initialInput: opener.isEmpty ? nil : opener,
-          cols: 88,
-          rows: 28
+          modelId: cliModelId,
+          reasoningEffort: cliReasoningEffort,
+          cols: 48,
+          rows: 24
         )
         if let session = result.session {
           await onCliStarted(session)
@@ -309,9 +437,9 @@ struct WorkNewChatScreen: View {
             tracked: true,
             pinned: false,
             manuallyNamed: nil,
-            goal: nil,
+            goal: opener.isEmpty ? nil : opener,
             toolType: workCliToolType(provider: provider),
-            title: workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider),
+            title: workCliInitialSessionTitle(provider: provider, opener: opener),
             status: "running",
             startedAt: workDateFormatter.string(from: Date()),
             endedAt: nil,
@@ -341,7 +469,9 @@ struct WorkNewChatScreen: View {
         codexApprovalPolicy: wire.codexApprovalPolicy,
         codexSandbox: wire.codexSandbox,
         codexConfigSource: wire.codexConfigSource,
-        opencodePermissionMode: wire.opencodePermissionMode
+        opencodePermissionMode: wire.opencodePermissionMode,
+        droidPermissionMode: wire.droidPermissionMode,
+        cursorModeId: wire.cursorModeId
       )
       await onStarted(summary, opener)
       busy = false
@@ -367,6 +497,21 @@ struct WorkNewChatScreen: View {
       reasoningEffort = ""
     }
   }
+
+  private func normalizeCliSelection() {
+    let family = providerFamilyKey(provider)
+    guard workCliSupportsModelSelection(provider: family) else {
+      reasoningEffort = ""
+      return
+    }
+    if !workNewChatModel(modelId, belongsTo: family) {
+      modelId = workDefaultNewChatModelId(provider: family)
+    }
+    if (!workCliSupportsReasoningSelection(provider: family)
+        || !modelSupportsReasoning(modelId: modelId, provider: family)) {
+      reasoningEffort = ""
+    }
+  }
 }
 
 private func workNormalizedNewChatProvider(_ provider: String) -> String {
@@ -381,12 +526,44 @@ private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> 
 }
 
 private func workDefaultNewChatModelId(provider: String) -> String {
+  let family = providerFamilyKey(provider)
+  if let defaultModel = workDefaultCatalogModelId(provider: family) {
+    return defaultModel
+  }
   switch workNormalizedNewChatProvider(provider) {
   case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
   case "cursor": return "auto"
   case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
   default: return "claude-sonnet-4-6"
   }
+}
+
+private func workCliSupportsModelSelection(provider: String) -> Bool {
+  providerFamilyKey(provider) != "shell"
+}
+
+private func workCliSupportsReasoningSelection(provider: String) -> Bool {
+  let family = providerFamilyKey(provider)
+  return family == "claude" || family == "codex" || family == "droid"
+}
+
+private func workCliInitialSessionTitle(provider: String, opener: String) -> String {
+  let fallback = workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider)
+  let seed = opener
+    .replacingOccurrences(of: "\n", with: " ")
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !seed.isEmpty, providerFamilyKey(provider) != "shell" else {
+    return fallback
+  }
+  let clipped: String
+  if seed.count > 72 {
+    let prefix = String(seed.prefix(72))
+    clipped = prefix.replacingOccurrences(of: #"\s+\S*$"#, with: "", options: .regularExpression)
+  } else {
+    clipped = seed
+  }
+  return clipped.trimmingCharacters(in: CharacterSet(charactersIn: ".?!,:; ").union(.whitespacesAndNewlines))
 }
 
 func workCliPermissionMode(provider: String, runtimeMode: String) -> String? {
@@ -477,81 +654,28 @@ private struct WorkNewChatComposerBar: View {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(alignment: .center, spacing: 10) {
             if sessionMode == .chat {
-              Button {
-                onOpenModelPicker()
-              } label: {
-                HStack(spacing: 6) {
-                  WorkProviderLogo(
-                    provider: provider,
-                    fallbackSymbol: providerIcon(provider),
-                    tint: providerTint(provider),
-                    size: 16
-                  )
-                  Text(modelName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textPrimary)
-                    .lineLimit(1)
-                  if !reasoningEffort.isEmpty {
-                    Text("·")
-                      .font(.caption2)
-                      .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-                    Text(reasoningEffort.capitalized)
-                      .font(.system(size: 10, weight: .medium))
-                      .foregroundStyle(ADEColor.textMuted)
-                      .lineLimit(1)
-                  }
-                  Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(ADEColor.textMuted)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(Color.clear, in: Capsule(style: .continuous))
-                .overlay(
-                  Capsule(style: .continuous)
-                    .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-                )
-              }
-              .buttonStyle(.plain)
+              modelPickerButton
             } else {
-              cliProviderMenu
+              cliProviderChips
+              if workCliSupportsModelSelection(provider: provider) {
+                modelPickerButton
+              }
             }
 
             if !runtimeOptions.isEmpty {
-              Menu {
+              HStack(spacing: 6) {
                 ForEach(runtimeOptions) { option in
-                  Button {
+                  compactChoiceChip(
+                    title: option.title,
+                    systemImage: nil,
+                    tint: workRuntimeModeTint(option.id),
+                    isSelected: option.id == runtimeMode,
+                    accessibilityPrefix: "Access mode"
+                  ) {
                     runtimeMode = option.id
-                  } label: {
-                    if option.id == runtimeMode {
-                      Label(option.title, systemImage: "checkmark")
-                    } else {
-                      Text(option.title)
-                    }
                   }
                 }
-              } label: {
-                HStack(spacing: 6) {
-                  Circle().fill(runtimeTint).frame(width: 6, height: 6)
-                  Text(runtimeLabel)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textPrimary)
-                    .lineLimit(1)
-                  Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(ADEColor.textMuted)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(runtimeTint.opacity(0.06), in: Capsule(style: .continuous))
-                .overlay(
-                  Capsule(style: .continuous)
-                    .stroke(runtimeTint.opacity(0.22), lineWidth: 0.5)
-                )
               }
-              .menuStyle(.borderlessButton)
-              .buttonStyle(.plain)
-              .accessibilityLabel("Access mode: \(runtimeLabel). Tap to change.")
             }
           }
           .padding(.trailing, 4)
@@ -630,31 +754,85 @@ private struct WorkNewChatComposerBar: View {
     }
   }
 
-  private var cliProviderMenu: some View {
-    Menu {
+  private var cliProviderChips: some View {
+    HStack(spacing: 6) {
       ForEach(workCliProviderOptions) { option in
-        Button {
+        compactChoiceChip(
+          title: option.title,
+          systemImage: option.id == "shell" ? "terminal.fill" : providerIcon(option.id),
+          tint: providerTint(option.id),
+          isSelected: option.id == provider,
+          accessibilityPrefix: "CLI provider"
+        ) {
           provider = option.id
-        } label: {
-          if option.id == provider {
-            Label(option.title, systemImage: "checkmark")
-          } else {
-            Text(option.title)
-          }
         }
       }
+    }
+  }
+
+  private func compactChoiceChip(
+    title: String,
+    systemImage: String?,
+    tint: Color,
+    isSelected: Bool,
+    accessibilityPrefix: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        Circle().fill(tint).frame(width: 6, height: 6)
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(isSelected ? tint : ADEColor.textMuted)
+        }
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          .lineLimit(1)
+        if isSelected {
+          Image(systemName: "checkmark")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(tint)
+        }
+      }
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background((isSelected ? tint.opacity(0.12) : Color.clear), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(accessibilityPrefix): \(title)")
+    .accessibilityValue(isSelected ? "Selected" : "")
+  }
+
+  private var modelPickerButton: some View {
+    Button {
+      onOpenModelPicker()
     } label: {
       HStack(spacing: 6) {
         WorkProviderLogo(
           provider: provider,
-          fallbackSymbol: provider == "shell" ? "terminal.fill" : providerIcon(provider),
+          fallbackSymbol: providerIcon(provider),
           tint: providerTint(provider),
           size: 16
         )
-        Text(workCliProviderOptions.first(where: { $0.id == provider })?.title ?? providerLabel(provider))
+        Text(modelName)
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
+        if !reasoningEffort.isEmpty {
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+          Text(reasoningEffort.capitalized)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
@@ -667,9 +845,8 @@ private struct WorkNewChatComposerBar: View {
           .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
       )
     }
-    .menuStyle(.borderlessButton)
     .buttonStyle(.plain)
-    .accessibilityLabel("CLI provider: \(workCliProviderOptions.first(where: { $0.id == provider })?.title ?? provider). Tap to change.")
+    .accessibilityLabel("Model: \(modelName). Tap to change.")
   }
 }
 

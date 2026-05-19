@@ -76,6 +76,7 @@ func buildWorkRootSessionPresentation(
   selectedStatus: WorkSessionStatusFilter,
   selectedLaneId: String,
   searchText: String,
+  outputSearchBySessionId: [String: String] = [:],
   organization: WorkSessionOrganization,
   orderedLanes: [LaneSummary]
 ) -> WorkRootSessionPresentation {
@@ -90,7 +91,8 @@ func buildWorkRootSessionPresentation(
     archivedSessionIds: archivedSessionIds,
     selectedStatus: selectedStatus,
     selectedLaneId: selectedLaneId,
-    searchText: searchText
+    searchText: searchText,
+    outputSearchBySessionId: outputSearchBySessionId
   )
 
   var liveChatSessions: [TerminalSessionSummary] = []

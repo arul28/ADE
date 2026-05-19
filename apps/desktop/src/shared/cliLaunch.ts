@@ -6,6 +6,7 @@ import type {
 } from "./types";
 import { ADE_AGENT_SKILLS_DIRS_ENV, getAdeAgentSkillRootsForPrompt, joinAdeAgentSkillRoots } from "./agentSkillRoots";
 import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
+import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { commandArrayToLine, quoteShellArg } from "./shell";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
@@ -17,8 +18,14 @@ export type TrackedCliLaunchCommand = {
   env?: Record<string, string>;
 };
 
+export type CleanShellLaunchFields = {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+};
+
 export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "shell"] as const satisfies readonly LaunchProfile[];
-export const TRACKED_CLI_PERMISSION_MODES = ["default", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
+export const TRACKED_CLI_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];
 
 export function sanitizeTrackedCliResumeTargetId(value: string | null | undefined): string | null {
   const target = String(value ?? "").trim();
@@ -49,6 +56,100 @@ export const LAUNCH_PROFILE_TITLE: Record<LaunchProfile, string> = {
   shell: "Shell",
 };
 
+const TRACKED_CLI_PROMPT_SEED_MIN_LEN = 3;
+const TRACKED_CLI_PROMPT_SEED_MAX_LEN = 180;
+const TRACKED_CLI_PROMPT_TITLE_MAX_LEN = 72;
+
+function stripAnsiForCliTitle(raw: string): string {
+  return raw
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "");
+}
+
+export function sanitizeTrackedCliPromptSeed(raw: string): string {
+  const stripped = stripAnsiForCliTitle(raw)
+    .replace(/\r\n/g, "\n")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .replace(/\n/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!stripped.length) return "";
+  return stripped.slice(0, TRACKED_CLI_PROMPT_SEED_MAX_LEN);
+}
+
+function trimPromptLeadIn(raw: string): string {
+  let text = raw.trim();
+  for (let i = 0; i < 4; i += 1) {
+    const next = text
+      .replace(/^(?:ok(?:ay)?|so|hey|hi|hello|please|pls|vv)\b[\s,.:;-]*/iu, "")
+      .trim();
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+function sentenceCase(raw: string): string {
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
+}
+
+export function trackedCliTitleFromPromptSeed(seed: string): string {
+  const naturalLanguageSlashTitle = seed.startsWith("/") && !isProviderSlashCommandInput(seed)
+    ? seed.slice(1).trim()
+    : seed;
+  const cleaned = trimPromptLeadIn(naturalLanguageSlashTitle)
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return "";
+
+  const clauseMatch = cleaned.match(/^(.{18,}?[,.!?;:])\s/u);
+  const clause = clauseMatch?.[1]?.replace(/[,.!?;:]+$/u, "").trim();
+  const base = clause && clause.length >= 12 ? clause : cleaned;
+  const clipped = base.length > TRACKED_CLI_PROMPT_TITLE_MAX_LEN
+    ? base.slice(0, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).replace(/\s+\S*$/u, "").trim()
+    : base;
+  return sentenceCase(clipped || base.slice(0, TRACKED_CLI_PROMPT_TITLE_MAX_LEN).trim()).replace(/[.?!,:;]+$/u, "");
+}
+
+export function isLaunchProfilePlaceholderTitle(
+  title: string | null | undefined,
+  profile: LaunchProfile,
+): boolean {
+  const normalized = String(title ?? "").trim().toLowerCase();
+  if (!normalized.length) return true;
+  if (isProviderSlashCommandInput(normalized)) return true;
+  const defaultTitle = LAUNCH_PROFILE_TITLE[profile]?.trim().toLowerCase();
+  if (defaultTitle && normalized === defaultTitle) return true;
+  if (profile === "codex") return normalized === "codex cli" || normalized === "codex session";
+  if (profile === "claude") return normalized === "claude" || normalized === "claude cli" || normalized === "claude session";
+  return false;
+}
+
+export function deriveTrackedCliInitialInputSessionMeta(args: {
+  provider: LaunchProfile;
+  title?: string | null;
+  initialInput?: string | null;
+}): { goal: string | null; title: string; promptTitle: string | null } {
+  const explicitTitle = String(args.title ?? "").trim();
+  const fallbackTitle = explicitTitle || LAUNCH_PROFILE_TITLE[args.provider];
+  if (args.provider === "shell") {
+    return { goal: null, title: fallbackTitle, promptTitle: null };
+  }
+
+  const seed = sanitizeTrackedCliPromptSeed(args.initialInput ?? "");
+  if (seed.length < TRACKED_CLI_PROMPT_SEED_MIN_LEN || isProviderSlashCommandInput(seed)) {
+    return { goal: null, title: fallbackTitle, promptTitle: null };
+  }
+
+  const promptTitle = trackedCliTitleFromPromptSeed(seed) || null;
+  const title = promptTitle && isLaunchProfilePlaceholderTitle(explicitTitle, args.provider)
+    ? promptTitle
+    : fallbackTitle;
+  return { goal: seed, title, promptTitle };
+}
+
 const LAUNCH_PROFILE_TOOL_TYPES: Record<LaunchProfile, readonly TerminalToolType[]> = {
   claude: ["claude", "claude-orchestrated", "claude-chat"],
   codex: ["codex", "codex-orchestrated", "codex-chat"],
@@ -74,9 +175,44 @@ export function validateLaunchProfilePermissionMode(
   if (profile === "shell" && mode !== "default") {
     throw new Error(`permissionMode ${mode} is not supported for shell sessions.`);
   }
+  if (mode === "auto" && profile !== "claude") {
+    throw new Error("permissionMode auto is only supported for Claude CLI sessions.");
+  }
   if (mode === "config-toml" && profile !== "codex") {
     throw new Error("permissionMode config-toml is only supported for Codex CLI sessions.");
   }
+}
+
+export function resolveCleanShellLaunchFields(args: {
+  platform: string;
+  shell?: string | null;
+  comSpec?: string | null;
+}): CleanShellLaunchFields {
+  if (args.platform === "win32") {
+    const shell = args.shell?.trim() || "";
+    const comSpec = args.comSpec?.trim() || "";
+    const powershellPathPattern = /(?:^|[\\/])(?:powershell|pwsh)(?:\.exe)?$/i;
+    let command: string;
+    if (powershellPathPattern.test(shell)) {
+      command = shell;
+    } else if (powershellPathPattern.test(comSpec)) {
+      command = comSpec;
+    } else {
+      command = "powershell.exe";
+    }
+    return {
+      command,
+      args: ["-NoLogo", "-NoProfile"],
+    };
+  }
+
+  const shell = args.shell?.trim() || "";
+  const name = shell.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (name === "zsh") return { command: shell || "/bin/zsh", args: ["-f"], env: { ZDOTDIR: "/var/empty" } };
+  if (name === "bash") return { command: shell || "/bin/bash", args: ["--noprofile", "--norc"], env: { BASH_ENV: "" } };
+  if (name === "fish") return { command: shell || "fish", args: ["--no-config"] };
+  if (name === "sh" && shell) return { command: shell, args: [], env: { ENV: "" } };
+  return { command: "/bin/sh", args: [], env: { ENV: "" } };
 }
 
 export function launchProfileForTerminalSession(
@@ -197,7 +333,7 @@ export function buildTrackedCliLaunchCommand(args: {
   if (args.provider === "codex") {
     const commandArgs: string[] = [
       "--no-alt-screen",
-      ...modelToCliFlag(args.model),
+      ...modelToCliFlag(resolveCodexCliModelForLaunch(args.model)),
       ...codexReasoningEffortFlags(args.reasoningEffort),
       ...permissionModeToCodexFlags(args.permissionMode),
       workTabCliPrompt(initialPrompt, skillRoots),
@@ -267,6 +403,16 @@ export function normalizeCliFlagValue(value: string | null | undefined): string 
 export function modelToCliFlag(model: string | null | undefined): string[] {
   const normalized = normalizeCliFlagValue(model);
   return normalized ? ["--model", normalized] : [];
+}
+
+export function resolveCodexCliModelForLaunch(model: string | null | undefined): string | null {
+  const raw = String(model ?? "").trim();
+  if (!raw) return null;
+  const slash = raw.indexOf("/");
+  if (slash > 0 && raw.slice(0, slash).toLowerCase() === "openai") {
+    return raw.slice(slash + 1).trim() || null;
+  }
+  return raw;
 }
 
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {

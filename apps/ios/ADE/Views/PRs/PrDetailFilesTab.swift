@@ -350,32 +350,16 @@ private struct PrFileRowLabel: View {
 
       statusChip(for: file.status)
 
-      Menu {
-        Button {
+      HStack(spacing: 4) {
+        prFileInlineAction(symbol: "folder", label: "Open \(file.filename) in Files") {
           onOpenFile(file)
-        } label: {
-          Label("Open in Files", systemImage: "folder")
         }
         .disabled(!canOpenFiles)
 
-        Button {
+        prFileInlineAction(symbol: "doc.on.doc", label: "Copy path for \(file.filename)") {
           onCopyPath(file)
-        } label: {
-          Label("Copy path", systemImage: "doc.on.doc")
         }
-      } label: {
-        ZStack {
-          Circle()
-            .fill(Color.white.opacity(0.06))
-          Circle()
-            .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
-          Image(systemName: "ellipsis")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        .frame(width: 24, height: 24)
       }
-      .accessibilityLabel("File actions for \(file.filename)")
 
       Image(systemName: "chevron.right")
         .font(.system(size: 10, weight: .semibold))
@@ -409,6 +393,23 @@ private struct PrFileRowLabel: View {
     default:
       EmptyView()
     }
+  }
+
+  private func prFileInlineAction(symbol: String, label: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      ZStack {
+        Circle()
+          .fill(Color.white.opacity(0.06))
+        Circle()
+          .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
+        Image(systemName: symbol)
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .frame(width: 24, height: 24)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
   }
 }
 

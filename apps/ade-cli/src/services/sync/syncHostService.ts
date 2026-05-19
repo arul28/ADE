@@ -3036,9 +3036,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const deviceId = peer.metadata?.deviceId;
     if (!deviceId) return;
     const kind = payload?.kind === "activity" ? "activity" : "alert";
-    const result = args.notificationEventBus
-      ? await args.notificationEventBus.sendTestPush(deviceId, kind)
-      : { ok: false, reason: "notification_bus_unavailable" as const };
+    if (!args.notificationEventBus) {
+      if (isIosPeerConnected(deviceId)) {
+        sendInAppNotification(deviceId, {
+          category: "system",
+          title: payload?.title?.trim() || "ADE test push",
+          body: payload?.body?.trim() || "This device reached its paired ADE machine.",
+          collapseId: "ade:test",
+        });
+        sendRequired(peer, "command_result", {
+          commandId: `push-test:${deviceId}:${kind}`,
+          ok: true,
+          result: {
+            mode: "in_app",
+            message: "Test notification delivered in app. APNs is not wired in this runtime.",
+          },
+        }, requestId ?? null);
+        return;
+      }
+      sendRequired(peer, "command_result", {
+        commandId: `push-test:${deviceId}:${kind}`,
+        ok: false,
+        error: {
+          code: "test_push_failed",
+          message: "Notifications are not wired in this ADE runtime.",
+        },
+      }, requestId ?? null);
+      return;
+    }
+    const result = await args.notificationEventBus.sendTestPush(deviceId, kind);
     sendRequired(peer, "command_result", {
       commandId: `push-test:${deviceId}:${kind}`,
       ok: result.ok,

@@ -162,7 +162,7 @@ struct FilesRootScreen: View {
               prompt: "Search files",
               query: $quickOpenQuery,
               disabled: !canUseLiveFileActions,
-              emptyMessage: quickOpenEmptyMessage,
+              emptyMessage: quickOpenResults.isEmpty ? quickOpenEmptyMessage : "",
               scopeText: workspace.rootPath
             )
 
@@ -193,7 +193,7 @@ struct FilesRootScreen: View {
               prompt: "Search text",
               query: $textSearchQuery,
               disabled: !canUseLiveFileActions,
-              emptyMessage: textSearchEmptyMessage,
+              emptyMessage: textSearchResults.isEmpty ? textSearchEmptyMessage : "",
               scopeText: workspace.rootPath
             )
 

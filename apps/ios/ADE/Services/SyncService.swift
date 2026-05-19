@@ -3,6 +3,7 @@ import Foundation
 import Network
 import SwiftUI
 import UIKit
+import UserNotifications
 import WidgetKit
 import os
 import zlib
@@ -89,7 +90,14 @@ func syncConnectionHealth(
 
 enum SyncChatMessageDelivery: Equatable {
   case sent
-  case queued
+  case queued(steerId: String?)
+}
+
+func syncChatMessageDelivery(from response: Any) -> SyncChatMessageDelivery {
+  if let response = response as? [String: Any], response["queued"] as? Bool == true {
+    return .queued(steerId: response["steerId"] as? String)
+  }
+  return .sent
 }
 
 func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
@@ -217,6 +225,7 @@ enum InitialHydrationGate {
 
 enum SyncRequestTimeout {
   static let defaultTimeoutNanoseconds: UInt64 = 30_000_000_000
+  static let modelCatalogTimeoutNanoseconds: UInt64 = 6_000_000_000
   static let chatSendTimeoutNanoseconds: UInt64 = 120_000_000_000
   static let laneDeleteTimeoutNanoseconds: UInt64 = 240_000_000_000
   static let message = "The machine took too long to respond. Reconnecting now."
@@ -245,6 +254,7 @@ private let syncChatSubscriptionMaxBytes = 2_000_000
 private let syncReducedLoadChatSubscriptionMaxBytes = 160_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
+private let chatEventNotificationCoalesceNanoseconds: UInt64 = 420_000_000
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -356,9 +366,14 @@ func syncEndpointHost(_ rawValue: String) -> String? {
 }
 
 func syncConnectPortCandidates(primaryPort: Int, addresses: [String]) -> [Int] {
+  let normalizedHosts = addresses
+    .map(syncNormalizedRouteHost)
+    .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+  let hasBonjourRoute = normalizedHosts.contains { $0.hasSuffix(".local") }
+  let hasTailnetRoute = addresses.contains(where: syncIsTailscaleRoute)
   let shouldTryDefaultPair =
-    SyncDirectHostPorts.portCandidates.contains(primaryPort)
-      || addresses.contains(where: syncIsTailscaleRoute)
+    (SyncDirectHostPorts.portCandidates.contains(primaryPort) && !hasBonjourRoute)
+      || hasTailnetRoute
   let fallbackPorts = shouldTryDefaultPair ? SyncDirectHostPorts.portCandidates : []
   var seen = Set<Int>()
   return ([primaryPort] + fallbackPorts)
@@ -495,6 +510,32 @@ func syncShouldPublishForegroundReconnectStarted(
   guard allowAutoReconnect, !autoReconnectPausedByUser, hasToken else { return false }
   guard connectionState == .disconnected || connectionState == .error else { return false }
   return !automaticAddresses.isEmpty
+}
+
+func syncDiscoveredHostsEqualForPresentation(
+  _ left: DiscoveredSyncHost,
+  _ right: DiscoveredSyncHost
+) -> Bool {
+  left.id == right.id
+    && left.serviceName == right.serviceName
+    && left.hostName == right.hostName
+    && left.hostIdentity == right.hostIdentity
+    && left.port == right.port
+    && left.addresses == right.addresses
+    && left.tailscaleAddress == right.tailscaleAddress
+    && left.runtimeKind == right.runtimeKind
+    && left.runtimeVersion == right.runtimeVersion
+    && left.projectIds == right.projectIds
+    && left.projectNames == right.projectNames
+    && left.projectCount == right.projectCount
+}
+
+func syncDiscoveredHostListsEqualForPresentation(
+  _ left: [DiscoveredSyncHost],
+  _ right: [DiscoveredSyncHost]
+) -> Bool {
+  guard left.count == right.count else { return false }
+  return zip(left, right).allSatisfy(syncDiscoveredHostsEqualForPresentation)
 }
 
 func syncClientHeartbeatIntervalNanoseconds(serverIntervalMs rawValue: Any?) -> UInt64 {
@@ -741,6 +782,16 @@ struct LaneNavigationRequest: Equatable, Identifiable {
   }
 }
 
+struct WorkSessionNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let sessionId: String
+
+  init(sessionId: String) {
+    self.id = UUID().uuidString
+    self.sessionId = sessionId
+  }
+}
+
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
   let prId: String
@@ -843,6 +894,11 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
   return syncNormalizedCommandScopeValue(activeProjectId)
 }
 
+struct SyncSendTestPushResult: Equatable {
+  var ok: Bool
+  var message: String
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -867,9 +923,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
+  @Published private(set) var workspaceSnapshotRevision = 0
   @Published var settingsPresented = false
   @Published var projectHomePresented = true
   @Published var attentionDrawerPresented = false
+  @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
@@ -883,6 +941,7 @@ final class SyncService: ObservableObject {
   }
 
   private(set) var terminalBuffers: [String: String] = [:]
+  private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   /// Latest known chat summary keyed by session id. Populated by the Work
@@ -1047,7 +1106,7 @@ final class SyncService: ObservableObject {
   private var activeSessionsObservationTask: Task<Void, Never>?
 
   /// Backing storage for `attentionDrawer` + the Combine subscriptions it
-  /// uses to observe `activeSessions` / `localStateRevision`. Lazily
+  /// uses to observe `activeSessions` / workspace snapshot writes. Lazily
   /// initialised on first access so tests + previews that never touch the
   /// drawer don't allocate an extra `ObservableObject`.
   private var attentionDrawerStorage: AttentionDrawerModel?
@@ -1228,16 +1287,8 @@ final class SyncService: ObservableObject {
         mergedById[activeProjectId] = existing
       }
     }
-    let sortedProjects = mergedById.values.sorted { left, right in
-      let leftActive = activeProjectId != nil && left.id == activeProjectId
-      let rightActive = activeProjectId != nil && right.id == activeProjectId
-      if leftActive != rightActive { return leftActive }
-      let leftOpen = left.isOpen ?? true
-      let rightOpen = right.isOpen ?? true
-      if leftOpen != rightOpen { return leftOpen }
-      return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
-    }
-    projects = preferRemoteSelection ? deduplicateProjectListByRoot(sortedProjects) : sortedProjects
+    let sortedProjects = sortedProjectList(Array(mergedById.values))
+    projects = deduplicateProjectListByRoot(sortedProjects)
     if preferRemoteSelection {
       preferActiveProjectFromRemoteCatalogIfNeeded()
     }
@@ -1303,6 +1354,18 @@ final class SyncService: ObservableObject {
     return candidates.filter { project in
       guard let root = normalizedProjectRoot(project.rootPath) else { return true }
       return seenRoots.insert(root).inserted
+    }
+  }
+
+  private func sortedProjectList(_ candidates: [MobileProjectSummary]) -> [MobileProjectSummary] {
+    candidates.sorted { left, right in
+      let leftActive = activeProjectId != nil && left.id == activeProjectId
+      let rightActive = activeProjectId != nil && right.id == activeProjectId
+      if leftActive != rightActive { return leftActive }
+      let leftOpen = left.isOpen ?? true
+      let rightOpen = right.isOpen ?? true
+      if leftOpen != rightOpen { return leftOpen }
+      return (left.lastOpenedAt ?? "") > (right.lastOpenedAt ?? "")
     }
   }
 
@@ -1601,6 +1664,16 @@ final class SyncService: ObservableObject {
 
   private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
     let projectIds = Set(projects.map(\.id))
+    if let activeProjectId,
+       let activeProjectRootPath,
+       let remoteProject = deduplicatedRemoteProjectCatalog().first(where: { project in
+         project.id != activeProjectId
+           && normalizedProjectRoot(project.rootPath) == activeProjectRootPath
+       }) {
+      setActiveProjectId(remoteProject.id, rootPath: remoteProject.rootPath)
+      return
+    }
+
     if let activeProjectId, projectIds.contains(activeProjectId) {
       database.setActiveProjectId(activeProjectId)
       return
@@ -1678,7 +1751,7 @@ final class SyncService: ObservableObject {
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
     database.setActiveProjectId(activeProjectId)
-    projects = database.listMobileProjects()
+    projects = deduplicateProjectListByRoot(sortedProjectList(database.listMobileProjects()))
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
     pendingOperationCount = loadPendingOperations().count
@@ -2730,6 +2803,7 @@ final class SyncService: ObservableObject {
       let raw = try await sendCommand(action: "prs.refresh", args: args)
       let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
       try database.replacePullRequestHydration(payload)
+      scheduleWorkspaceSnapshotWrite()
       setDomainStatus([.prs], phase: .ready)
     } catch {
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -2751,7 +2825,10 @@ final class SyncService: ObservableObject {
   }
 
   func refreshLaneDetail(laneId: String) async throws -> LaneDetailPayload {
-    setDomainStatus([.lanes], phase: .hydrating)
+    let laneStatus = status(for: .lanes)
+    if laneStatus.phase != .ready {
+      setDomainStatus([.lanes], phase: .hydrating)
+    }
     do {
       let detail = try await sendDecodableCommand(action: "lanes.getDetail", args: ["laneId": laneId], as: LaneDetailPayload.self)
       try database.replaceLaneDetail(detail)
@@ -2831,13 +2908,19 @@ final class SyncService: ObservableObject {
   }
 
   func setSessionPinned(sessionId: String, pinned: Bool) async throws {
-    if supportsRemoteAction("work.updateSessionMeta") {
-      _ = try await sendCommand(action: "work.updateSessionMeta", args: [
-        "sessionId": sessionId,
-        "pinned": pinned,
-      ])
-    }
     try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
+    if supportsRemoteAction("work.updateSessionMeta") {
+      do {
+        _ = try await sendCommand(action: "work.updateSessionMeta", args: [
+          "sessionId": sessionId,
+          "pinned": pinned,
+        ])
+      } catch {
+        syncConnectLog.info(
+          "work setSessionPinned deferred session=\(sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
+        )
+      }
+    }
   }
 
   func updateSessionMeta(
@@ -2856,14 +2939,20 @@ final class SyncService: ObservableObject {
     if let manuallyNamed {
       args["manuallyNamed"] = manuallyNamed
     }
+    try database.updateSessionMeta(
+      sessionId: sessionId,
+      title: title,
+      pinned: pinned,
+      manuallyNamed: manuallyNamed
+    )
     if supportsRemoteAction("work.updateSessionMeta") {
-      _ = try await sendCommand(action: "work.updateSessionMeta", args: args)
-    }
-    if let title {
-      try database.updateSessionTitle(sessionId: sessionId, title: title)
-    }
-    if let pinned {
-      try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
+      do {
+        _ = try await sendCommand(action: "work.updateSessionMeta", args: args)
+      } catch {
+        syncConnectLog.info(
+          "work updateSessionMeta deferred session=\(sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
+        )
+      }
     }
   }
 
@@ -3114,17 +3203,23 @@ final class SyncService: ObservableObject {
       return
     }
     subscribedTerminalSessionIds.insert(trimmedSessionId)
+    try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
+  }
+
+  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes) async throws {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    subscribedTerminalSessionIds.insert(trimmedSessionId)
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: [
         "sessionId": trimmedSessionId,
-        "maxBytes": syncTerminalSubscriptionMaxBytes,
+        "maxBytes": max(1_024, min(syncTerminalSubscriptionMaxBytes, maxBytes)),
       ])
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
     guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
-    terminalBuffers[trimmedSessionId] = trimmedTerminalBuffer(snapshot.transcript)
-    markTerminalBufferChanged(immediate: true)
+    updateTerminalBuffer(sessionId: trimmedSessionId, transcript: snapshot.transcript, immediate: true)
   }
 
   func unsubscribeTerminal(sessionId: String) async throws {
@@ -3170,15 +3265,21 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  func subscribeToChatEvents(sessionId: String) async throws {
+  func subscribeToChatEvents(sessionId: String, requestSnapshot: Bool = false, maxBytes: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    guard !subscribedChatSessionIds.contains(trimmedSessionId) else { return }
-    subscribedChatSessionIds.insert(trimmedSessionId)
-    localStateRevision += 1
-    if canSendLiveRequests() && supportsChatStreaming {
-      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId))
+    let wasSubscribed = subscribedChatSessionIds.contains(trimmedSessionId)
+    if !wasSubscribed {
+      subscribedChatSessionIds.insert(trimmedSessionId)
+      localStateRevision += 1
     }
+    if canSendLiveRequests() && supportsChatStreaming && (!wasSubscribed || requestSnapshot) {
+      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes))
+    }
+  }
+
+  func requestFullChatEventSnapshot(sessionId: String) async throws {
+    try await subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true, maxBytes: syncChatSubscriptionMaxBytes)
   }
 
   func unsubscribeFromChatEvents(sessionId: String) async throws {
@@ -3231,6 +3332,8 @@ final class SyncService: ObservableObject {
     permissionMode: String? = nil,
     title: String? = nil,
     initialInput: String? = nil,
+    modelId: String? = nil,
+    reasoningEffort: String? = nil,
     cols: Int? = nil,
     rows: Int? = nil
   ) async throws -> StartCliSessionResult {
@@ -3246,6 +3349,12 @@ final class SyncService: ObservableObject {
     }
     if let initialInput, !initialInput.isEmpty {
       args["initialInput"] = initialInput
+    }
+    if let modelId, !modelId.isEmpty {
+      args["modelId"] = modelId
+    }
+    if let reasoningEffort, !reasoningEffort.isEmpty {
+      args["reasoningEffort"] = reasoningEffort
     }
     if let cols, cols > 0 {
       args["cols"] = cols
@@ -3627,11 +3736,14 @@ final class SyncService: ObservableObject {
 
     let task = Task { @MainActor [weak self] in
       guard let self else { throw CancellationError() }
-      return try await self.sendDecodableCommand(
+      let response = try await self.sendCommand(
         action: "chat.models",
         args: ["provider": normalizedProvider],
-        as: [AgentChatModelInfo].self
+        disconnectOnTimeout: false,
+        timeoutMessage: "Model list is still loading from the machine.",
+        timeoutNanoseconds: SyncRequestTimeout.modelCatalogTimeoutNanoseconds
       )
+      return try self.decode(response, as: [AgentChatModelInfo].self)
     }
     chatModelsInFlight[cacheKey] = task
 
@@ -3649,12 +3761,12 @@ final class SyncService: ObservableObject {
     }
   }
 
-	  @MainActor
-	  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
-	    guard let cached = chatModelCatalogCache.values.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
-	    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
-	    return cached.catalog
-	  }
+  @MainActor
+  func cachedChatModelCatalog() -> AgentChatModelCatalog? {
+    guard let cached = chatModelCatalogCache.values.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
+    guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
+    return cached.catalog
+  }
 
   @MainActor
   func getChatModelCatalog(
@@ -3685,16 +3797,19 @@ final class SyncService: ObservableObject {
     }
 
     let task = Task { @MainActor [weak self] in
-	      guard let self else { throw CancellationError() }
-	      var args: [String: Any] = ["mode": mode]
-	      if let refreshProvider {
-	        args["refreshProvider"] = refreshProvider
-	      }
-	      return try await self.sendDecodableCommand(
-	        action: "chat.modelCatalog",
-	        args: args,
-	        as: AgentChatModelCatalog.self
-	      )
+      guard let self else { throw CancellationError() }
+      var args: [String: Any] = ["mode": mode]
+      if let refreshProvider {
+        args["refreshProvider"] = refreshProvider
+      }
+      let response = try await self.sendCommand(
+        action: "chat.modelCatalog",
+        args: args,
+        disconnectOnTimeout: false,
+        timeoutMessage: "Model catalog is still loading from the machine.",
+        timeoutNanoseconds: SyncRequestTimeout.modelCatalogTimeoutNanoseconds
+      )
+      return try self.decode(response, as: AgentChatModelCatalog.self)
     }
     chatModelCatalogInFlight[cacheKey] = task
 
@@ -3789,7 +3904,11 @@ final class SyncService: ObservableObject {
   }
 
   func listChatSessions(laneId: String) async throws -> [AgentChatSessionSummary] {
-    try await sendDecodableCommand(action: "chat.listSessions", args: ["laneId": laneId, "includeAutomation": true], as: [AgentChatSessionSummary].self)
+    try await sendDecodableCommand(
+      action: "chat.listSessions",
+      args: ["laneId": laneId, "includeAutomation": true, "includeArchived": true],
+      as: [AgentChatSessionSummary].self
+    )
   }
 
   func createChatSession(
@@ -3873,7 +3992,7 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
   }
 
-  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 200, maxChars: Int = 32_000) async throws -> AgentChatTranscriptResponse {
+  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> AgentChatTranscriptResponse {
     try await sendDecodableCommand(
       action: "chat.getTranscript",
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
@@ -3881,7 +4000,7 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 32_000) async throws -> [AgentChatTranscriptEntry] {
+  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> [AgentChatTranscriptEntry] {
     let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
     return response.entries
   }
@@ -3895,18 +4014,17 @@ final class SyncService: ObservableObject {
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
       timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds
     )
-    if let response = response as? [String: Any], response["queued"] as? Bool == true {
-      return .queued
-    }
-    return .sent
+    return syncChatMessageDelivery(from: response)
   }
 
   func interruptChatSession(sessionId: String) async throws {
     _ = try await sendChatCommand(action: "chat.interrupt", payload: AgentChatInterruptRequest(sessionId: sessionId))
   }
 
-  func steerChatSession(sessionId: String, text: String) async throws {
-    _ = try await sendChatCommand(action: "chat.steer", payload: AgentChatSteerRequest(sessionId: sessionId, text: text))
+  @discardableResult
+  func steerChatSession(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
+    let response = try await sendChatCommand(action: "chat.steer", payload: AgentChatSteerRequest(sessionId: sessionId, text: text))
+    return syncChatMessageDelivery(from: response)
   }
 
   func cancelChatSteer(sessionId: String, steerId: String) async throws {
@@ -4173,18 +4291,30 @@ final class SyncService: ObservableObject {
 
   @discardableResult
   func startPrAiResolution(prId: String, model: String? = nil, reasoningEffort: String? = nil) async throws -> AiResolutionState {
-    var args: [String: Any] = ["prId": prId]
-    if let model, !model.isEmpty {
-      args["model"] = model
+    let result = try await startPathToMerge(
+      prId: prId,
+      modelId: model,
+      reasoning: reasoningEffort,
+      scope: "both"
+    )
+    if let blocker = result.blockedBy {
+      throw NSError(domain: "ADE", code: 31, userInfo: [NSLocalizedDescriptionKey: blocker.message])
     }
-    if let reasoningEffort, !reasoningEffort.isEmpty {
-      args["reasoningEffort"] = reasoningEffort
-    }
-    return try await sendDecodableCommand(action: "prs.aiResolutionStart", args: args, as: AiResolutionState.self)
+    let runtime = result.runtime
+    return AiResolutionState(
+      prId: prId,
+      status: result.scheduled ? "running" : runtime.status,
+      sessionId: runtime.activeSessionId,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      startedAt: runtime.lastStartedAt ?? runtime.createdAt,
+      updatedAt: runtime.updatedAt,
+      lastError: runtime.errorMessage
+    )
   }
 
   func stopPrAiResolution(prId: String) async throws {
-    _ = try await sendCommand(action: "prs.aiResolutionStop", args: ["prId": prId])
+    _ = try await stopPathToMerge(prId: prId, reason: "AI resolver stopped from mobile.")
   }
 
   func resolveReviewThread(prId: String, threadId: String, resolved: Bool) async throws {
@@ -4330,7 +4460,7 @@ final class SyncService: ObservableObject {
       conflictStrategy: "pause",
       forceFinalizeMode: "off",
       forceFinalizeRequireNoCiFailures: true,
-      atCapPolicy: "stop",
+      atCapPolicy: "ci_retry_once",
       atCapWaitMinutes: 30,
       atCapCiRetryMax: 3,
       forceMergeRequiresConfirmation: true,
@@ -5492,11 +5622,15 @@ final class SyncService: ObservableObject {
       }
     }
     let identifiedHosts = Array(mergedByIdentity.values)
-    let filteredNoIdentity = noIdentity.filter { host in
+    let anonymousHosts = mergeAnonymousDiscoveredHosts(noIdentity)
+    let filteredNoIdentity = anonymousHosts.filter { host in
       !shouldSuppressAnonymousTailnetHost(host, identifiedHosts: identifiedHosts)
     }
     let merged = identifiedHosts + filteredNoIdentity
-    discoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
+    let nextDiscoveredHosts = merged.sorted { $0.hostName.localizedCaseInsensitiveCompare($1.hostName) == .orderedAscending }
+    if !syncDiscoveredHostListsEqualForPresentation(discoveredHosts, nextDiscoveredHosts) {
+      discoveredHosts = nextDiscoveredHosts
+    }
     refreshSavedProfilesFromDiscovery()
     guard let profile = activeHostProfile else { return }
     let matching = discoveredHosts.filter { discovered in
@@ -5520,6 +5654,63 @@ final class SyncService: ObservableObject {
     Task { @MainActor [weak self] in
       await self?.reconnectIfPossible()
     }
+  }
+
+  private func mergeAnonymousDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) -> [DiscoveredSyncHost] {
+    var mergedByKey: [String: DiscoveredSyncHost] = [:]
+    var orderedKeys: [String] = []
+
+    for host in hosts {
+      let key = anonymousDiscoveryKey(for: host)
+      if let existing = mergedByKey[key] {
+        mergedByKey[key] = mergeAnonymousDiscoveredHost(existing, with: host)
+      } else {
+        mergedByKey[key] = host
+        orderedKeys.append(key)
+      }
+    }
+
+    return orderedKeys.compactMap { mergedByKey[$0] }
+  }
+
+  private func anonymousDiscoveryKey(for host: DiscoveredSyncHost) -> String {
+    let routes = host.addresses + (host.tailscaleAddress.map { [$0] } ?? [])
+    if let route = routes
+      .map(syncNormalizedRouteHost)
+      .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+      .first(where: { !$0.isEmpty }) {
+      return "route:\(route):\(host.port)"
+    }
+
+    let hostName = host.hostName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if !hostName.isEmpty {
+      return "name:\(hostName):\(host.port)"
+    }
+
+    return "id:\(host.id)"
+  }
+
+  private func mergeAnonymousDiscoveredHost(
+    _ left: DiscoveredSyncHost,
+    with right: DiscoveredSyncHost
+  ) -> DiscoveredSyncHost {
+    let preferred = right.lastResolvedAt >= left.lastResolvedAt ? right : left
+    let fallback = right.lastResolvedAt >= left.lastResolvedAt ? left : right
+    return DiscoveredSyncHost(
+      id: preferred.id,
+      serviceName: preferred.serviceName.isEmpty ? fallback.serviceName : preferred.serviceName,
+      hostName: preferred.hostName.isEmpty ? fallback.hostName : preferred.hostName,
+      hostIdentity: nil,
+      port: preferred.port > 0 ? preferred.port : fallback.port,
+      addresses: deduplicatedAddresses(preferred.addresses + fallback.addresses),
+      tailscaleAddress: preferred.tailscaleAddress ?? fallback.tailscaleAddress,
+      runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
+      runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
+      projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
+      projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
+      projectCount: preferred.projectCount ?? fallback.projectCount,
+      lastResolvedAt: max(preferred.lastResolvedAt, fallback.lastResolvedAt)
+    )
   }
 
   private func refreshSavedProfilesFromDiscovery() {
@@ -5711,6 +5902,7 @@ final class SyncService: ObservableObject {
   func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
     subscribedTerminalSessionIds.insert(sessionId)
     terminalBuffers[sessionId] = transcript
+    terminalBufferUpdatedAt[sessionId] = Date()
     terminalBufferRevision += 1
   }
 
@@ -5857,6 +6049,7 @@ final class SyncService: ObservableObject {
     lastError = nil
     lastSyncAt = Date()
     saveRemoteCommandDescriptors(commandDescriptors)
+    uploadSavedNotificationPreferences()
 
     let matchingDiscovery = discoveredHosts.first { discovered in
       discovered.hostIdentity == remoteHostIdentity
@@ -6108,6 +6301,10 @@ final class SyncService: ObservableObject {
       }
     case "command_result", "file_response", "terminal_snapshot":
       resolve(requestId: requestId, result: .success(payload))
+    case "in_app_notification":
+      if let dict = payload as? [String: Any] {
+        presentInAppNotification(dict)
+      }
     case "chat_subscribe":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
@@ -6129,6 +6326,7 @@ final class SyncService: ObservableObject {
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + chunk)
+        terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged()
       }
     case "terminal_exit":
@@ -6136,6 +6334,7 @@ final class SyncService: ObservableObject {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
+        terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(immediate: true)
       }
     default:
@@ -6392,6 +6591,50 @@ final class SyncService: ObservableObject {
           self.handleTransportFailure(error)
         }
       }
+    }
+  }
+
+  private func presentInAppNotification(_ payload: [String: Any]) {
+    guard let title = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !title.isEmpty,
+          let body = (payload["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !body.isEmpty else {
+      return
+    }
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.body = body
+    content.sound = .default
+    content.categoryIdentifier = notificationCategoryIdentifier(for: payload["category"] as? String)
+    if let metadata = payload["metadata"] as? [String: Any] {
+      content.userInfo = metadata
+    }
+    if let deepLink = payload["deepLink"] as? String, !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      var next = content.userInfo
+      next["deepLink"] = deepLink
+      content.userInfo = next
+    }
+    let collapseId = (payload["collapseId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let requestId: String
+    if let collapseId, !collapseId.isEmpty {
+      requestId = "ade.in-app.\(collapseId)"
+    } else {
+      requestId = "ade.in-app.\(UUID().uuidString)"
+    }
+    let request = UNNotificationRequest(identifier: requestId, content: content, trigger: nil)
+    UNUserNotificationCenter.current().add(request)
+  }
+
+  private func notificationCategoryIdentifier(for category: String?) -> String {
+    switch category {
+    case "chat":
+      return NotificationCategories.Identifier.chatAwaitingInput
+    case "cto":
+      return NotificationCategories.Identifier.ctoMissionPhase
+    case "pr":
+      return NotificationCategories.Identifier.prReviewRequested
+    default:
+      return NotificationCategories.Identifier.systemAlert
     }
   }
 
@@ -6764,10 +7007,11 @@ final class SyncService: ObservableObject {
     return ["queued": true]
   }
 
-  private func chatSubscriptionPayload(sessionId: String) -> [String: Any] {
-    let maxBytes = canSendLiveRequests() && prefersReducedSyncLoad
+  private func chatSubscriptionPayload(sessionId: String, maxBytes requestedMaxBytes: Int? = nil) -> [String: Any] {
+    let defaultMaxBytes = canSendLiveRequests() && prefersReducedSyncLoad
       ? syncReducedLoadChatSubscriptionMaxBytes
       : syncChatSubscriptionMaxBytes
+    let maxBytes = max(1_024, min(syncChatSubscriptionMaxBytes, requestedMaxBytes ?? defaultMaxBytes))
     return [
       "sessionId": sessionId,
       "maxBytes": maxBytes,
@@ -6823,7 +7067,9 @@ final class SyncService: ObservableObject {
   }
 
   func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
-    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(events)
+    let next = deduplicatedChatEventHistory(events)
+    guard chatEventEnvelopesBySession[sessionId] != next else { return }
+    chatEventEnvelopesBySession[sessionId] = next
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     lastSyncAt = Date()
     markChatEventsChanged(immediate: true)
@@ -6831,7 +7077,9 @@ final class SyncService: ObservableObject {
 
   func mergeChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
     let current = chatEventEnvelopesBySession[sessionId] ?? []
-    chatEventEnvelopesBySession[sessionId] = deduplicatedChatEventHistory(current + events)
+    let next = deduplicatedChatEventHistory(current + events)
+    guard current != next else { return }
+    chatEventEnvelopesBySession[sessionId] = next
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     lastSyncAt = Date()
     markChatEventsChanged(immediate: true)
@@ -6877,6 +7125,17 @@ final class SyncService: ObservableObject {
     return String(buffer.suffix(syncTerminalBufferMaxCharacters))
   }
 
+  private func updateTerminalBuffer(sessionId: String, transcript: String, immediate: Bool = false) {
+    let nextBuffer = trimmedTerminalBuffer(transcript)
+    guard terminalBuffers[sessionId] != nextBuffer else {
+      terminalBufferUpdatedAt[sessionId] = Date()
+      return
+    }
+    terminalBuffers[sessionId] = nextBuffer
+    terminalBufferUpdatedAt[sessionId] = Date()
+    markTerminalBufferChanged(immediate: immediate)
+  }
+
   private func markTerminalBufferChanged(immediate: Bool = false) {
     if immediate {
       terminalBufferRevisionTask?.cancel()
@@ -6904,7 +7163,7 @@ final class SyncService: ObservableObject {
 
     guard chatEventRevisionTask == nil else { return }
     chatEventRevisionTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: 120_000_000)
+      try? await Task.sleep(nanoseconds: chatEventNotificationCoalesceNanoseconds)
       guard let self, !Task.isCancelled else { return }
       self.chatEventNotificationRevision += 1
       self.chatEventRevisionTask = nil
@@ -6925,6 +7184,7 @@ final class SyncService: ObservableObject {
     if clearHistory {
       subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
+      terminalBufferUpdatedAt.removeAll()
     }
     terminalBufferRevision += 1
   }
@@ -7132,11 +7392,43 @@ extension SyncService {
     sendEnvelope(type: "notification_prefs", requestId: nil, payload: ["prefs": nested])
   }
 
+  private func uploadSavedNotificationPreferences() {
+    uploadNotificationPrefs(NotificationPreferences.load(from: ADESharedContainer.defaults))
+  }
+
   /// Ask the host to deliver a test push to this device. The desktop decides
   /// which token kind (alert vs activity) to target based on what it last saw
   /// from us.
-  func sendTestPush() {
-    sendEnvelope(type: "send_test_push", requestId: nil, payload: ["kind": "alert"])
+  func sendTestPush() async -> SyncSendTestPushResult {
+    let requestId = makeRequestId()
+    do {
+      let raw = try await awaitResponse(
+        requestId: requestId,
+        disconnectOnTimeout: false,
+        timeoutMessage: "The paired machine did not respond to the test push request."
+      ) {
+        self.sendEnvelope(type: "send_test_push", requestId: requestId, payload: ["kind": "alert"])
+      }
+      guard let dict = raw as? [String: Any] else {
+        return SyncSendTestPushResult(ok: false, message: "The paired machine returned an unreadable test push response.")
+      }
+      if dict["ok"] as? Bool == true {
+        let result = dict["result"] as? [String: Any]
+        let message = (result?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message, !message.isEmpty {
+          return SyncSendTestPushResult(ok: true, message: message)
+        }
+        return SyncSendTestPushResult(ok: true, message: "Test push sent.")
+      }
+      let error = dict["error"] as? [String: Any]
+      let message = (error?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let message, !message.isEmpty {
+        return SyncSendTestPushResult(ok: false, message: message)
+      }
+      return SyncSendTestPushResult(ok: false, message: "The paired machine could not send a test push.")
+    } catch {
+      return SyncSendTestPushResult(ok: false, message: error.localizedDescription)
+    }
   }
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
@@ -7269,12 +7561,12 @@ extension SyncService {
     let sessions = database.fetchSessions()
     let now = Date()
 
-    // `activeSessions` holds every live chat session — running, awaiting-input,
-    // and idle. The Live Activity / widget filter to running-only at render
-    // time so the user-facing roster never lists multi-hour-old zombies, while
-    // the in-app Attention Drawer still gets its full set. Non-chat (shell /
-    // CLI) sessions are excluded entirely. Completed / failed / ended sessions
-    // are dropped since they're terminal.
+    // `activeSessions` holds every relevant chat session — running,
+    // awaiting-input, idle, and failed. The Live Activity / widget filter to
+    // running-only at render time so the user-facing roster never lists
+    // multi-hour-old zombies, while the in-app Attention Drawer still gets its
+    // full set. Non-chat (shell / CLI) sessions are excluded entirely.
+    // Completed / ended sessions are dropped since they're terminal.
     var allAgents: [AgentSnapshot] = []
     var runningAgents: [AgentSnapshot] = []
     var awaitingInputCount = 0
@@ -7289,9 +7581,11 @@ extension SyncService {
     for session in sessions {
       let isChat = (session.toolType?.contains("chat") == true)
       guard isChat else { continue }
+      guard session.archivedAt == nil else { continue }
 
       let status = session.status.lowercased()
-      guard status != "completed" && status != "failed" && status != "ended" else {
+      let isFailedStatus = status == "failed" || status == "error"
+      guard status != "completed" && status != "ended" || isFailedStatus else {
         continue
       }
 
@@ -7299,9 +7593,9 @@ extension SyncService {
       let isAwaiting = runtime == "waiting-input" || status == "awaiting_input"
       let isRunningRuntime = runtime == "running"
       let isIdleRuntime = runtime == "idle"
-      let isEndedRuntime = runtime == "exited"
+      let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
-      if isEndedRuntime { continue }
+      if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
 
       let started = Self.parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -7315,6 +7609,7 @@ extension SyncService {
       let summary = chatSummaryCache[session.id]
       let lastActivity =
         Self.parseIso8601(summary?.lastActivityAt ?? "")
+        ?? Self.parseIso8601(session.endedAt ?? "")
         ?? Self.parseIso8601(session.chatIdleSinceAt ?? "")
         ?? (isRunningRuntime ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
@@ -7330,17 +7625,22 @@ extension SyncService {
         modelId: resolvedModelId,
         laneName: session.laneName.isEmpty ? nil : session.laneName,
         title: session.title.isEmpty ? session.goal : session.title,
-        status: isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status),
-        awaitingInput: isAwaiting,
-        lastActivityAt: lastActivity,
-        elapsedSeconds: elapsed,
-        preview: session.lastOutputPreview,
-        progress: nil,
-        phase: nil,
-        toolCalls: 0
-      )
+        status: isFailedStatus ? "failed" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status)),
+	        awaitingInput: isAwaiting,
+	        lastActivityAt: lastActivity,
+	        elapsedSeconds: elapsed,
+	        preview: session.lastOutputPreview,
+        pendingInputItemId: isAwaiting ? (session.pendingInputItemId ?? pendingInputItemIdForSnapshot(sessionId: session.id)) : nil,
+	        progress: nil,
+	        phase: nil,
+	        toolCalls: 0
+	      )
 
       allAgents.append(snap)
+
+      if isFailedStatus {
+        continue
+      }
 
       // LA roster: ONLY truly streaming chats (runtime == running and seen
       // recently). Idle / awaiting / stale-running drop out entirely so the
@@ -7389,10 +7689,17 @@ extension SyncService {
       )
     }
 
-    scheduleWorkspaceSnapshotWrite()
-  }
+	    scheduleWorkspaceSnapshotWrite()
+	  }
 
-  /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
+	  private func pendingInputItemIdForSnapshot(sessionId: String) -> String? {
+	    let events = chatEventEnvelopesBySession[sessionId] ?? []
+	    guard !events.isEmpty else { return nil }
+	    let transcript = makeWorkChatTranscript(from: events)
+	    return derivePendingWorkInputs(from: transcript).last?.itemId
+	  }
+
+	  /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
   /// so bursty sync traffic collapses into a single widget-timeline reload.
   private func scheduleWorkspaceSnapshotWrite() {
     snapshotDebouncerTask?.cancel()
@@ -7434,6 +7741,7 @@ extension SyncService {
     )
 
     if ADESharedContainer.writeWorkspaceSnapshot(snapshot) {
+      workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }
   }
@@ -7482,8 +7790,11 @@ extension SyncService {
       ]
     }
 
-    if !prefs.perSessionOverrides.isEmpty {
-      dict["perSessionOverrides"] = prefs.perSessionOverrides.mapValues { override in
+    let activeOverrides = prefs.perSessionOverrides.filter { _, override in
+      override.muted || override.awaitingInputOnly
+    }
+    if !activeOverrides.isEmpty {
+      dict["perSessionOverrides"] = activeOverrides.mapValues { override in
         [
           "muted": override.muted,
           "awaitingInputOnly": override.awaitingInputOnly,

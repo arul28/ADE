@@ -257,24 +257,29 @@ struct LaneBranchPickerSheet: View {
 
   private func startPointPickerRow(title: String, subtitle: String, selection: Binding<String>) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 10) {
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Picker(title, selection: selection) {
-          ForEach(startPointOptions) { option in
-            Text(option.label).tag(option.value)
-          }
-        }
-        .pickerStyle(.menu)
-        .tint(ADEColor.textPrimary)
-        .labelsHidden()
-        .frame(maxWidth: 220, alignment: .trailing)
-      }
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
       Text(subtitle)
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
+        .fixedSize(horizontal: false, vertical: true)
+      ScrollView {
+        LazyVStack(spacing: 8) {
+          ForEach(startPointOptions) { option in
+            LaneOptionButton(
+              title: option.label,
+              isSelected: option.value == selection.wrappedValue,
+              tint: ADEColor.accent
+            ) {
+              selection.wrappedValue = option.value
+            }
+          }
+        }
+      }
+      .frame(maxHeight: startPointOptions.count > 4 ? 220 : nil)
+      .accessibilityLabel(title)
+      .accessibilityValue(startPointDisplayLabel(for: selection.wrappedValue))
     }
     .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
     .background(ADEColor.surfaceBackground.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -286,30 +291,57 @@ struct LaneBranchPickerSheet: View {
 
   private func baseRefPickerRow(title: String, subtitle: String, selection: Binding<String>) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 10) {
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Picker(title, selection: selection) {
-          ForEach(baseRefOptions, id: \.self) { name in
-            Text(name).tag(name)
-          }
-        }
-        .pickerStyle(.menu)
-        .tint(ADEColor.textPrimary)
-        .labelsHidden()
-        .frame(maxWidth: 220, alignment: .trailing)
-      }
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
       Text(subtitle)
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
+        .fixedSize(horizontal: false, vertical: true)
+      ScrollView {
+        LazyVStack(spacing: 8) {
+          ForEach(baseRefOptions, id: \.self) { name in
+            LaneOptionButton(
+              title: name,
+              isSelected: name == selection.wrappedValue,
+              tint: ADEColor.accent
+            ) {
+              selection.wrappedValue = name
+            }
+          }
+        }
+      }
+      .frame(maxHeight: baseRefOptions.count > 4 ? 220 : nil)
+      .accessibilityLabel(title)
+      .accessibilityValue(selection.wrappedValue)
     }
     .padding(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
     .background(ADEColor.surfaceBackground.opacity(0.22), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(ADEColor.border.opacity(0.12), lineWidth: 0.5)
+    )
+  }
+
+  private func branchMenuLabel(_ value: String) -> some View {
+    HStack(spacing: 8) {
+      Text(value)
+        .font(.system(.caption, design: .monospaced).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 8)
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityHidden(true)
+    }
+    .padding(EdgeInsets(top: 9, leading: 10, bottom: 9, trailing: 10))
+    .frame(maxWidth: .infinity, minHeight: 40)
+    .background(ADEColor.recessedBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
   }
 
@@ -540,6 +572,10 @@ struct LaneBranchPickerSheet: View {
   private var selectedCreateStartPoint: String {
     if !createStartPoint.isEmpty { return createStartPoint }
     return branchRef
+  }
+
+  private func startPointDisplayLabel(for value: String) -> String {
+    startPointOptions.first(where: { $0.value == value })?.label ?? value
   }
 
   private var selectedCreateBaseRef: String {

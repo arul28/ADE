@@ -3,17 +3,40 @@ import UIKit
 
 private let adeAccent = ADEColor.accent
 
-private enum RootTab: Hashable {
+private enum RootTab: Hashable, CaseIterable, Identifiable {
   case work
   case lanes
   case prs
   case files
   case cto
+
+  var id: Self { self }
+
+  var title: String {
+    switch self {
+    case .work: return "Work"
+    case .lanes: return "Lanes"
+    case .prs: return "PRs"
+    case .files: return "Files"
+    case .cto: return "CTO"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .work: return "terminal"
+    case .lanes: return "square.stack.3d.up"
+    case .prs: return "arrow.triangle.pull"
+    case .files: return "doc.text"
+    case .cto: return "brain.head.profile"
+    }
+  }
 }
 
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var selectedTab: RootTab = .work
+  @State private var rootTabBarHidden = false
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -29,16 +52,17 @@ struct ContentView: View {
       }
     }
       .tint(adeAccent)
-      .tabBarMinimizeBehavior(.onScrollDown)
       .adeScreenBackground()
       .adeNavigationGlass()
       .adeInspectorHost()
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
+      .onAppear {
+        ADEUIKitAppearance.configureTabBar()
+      }
       .sheet(isPresented: $syncService.settingsPresented) {
-        ConnectionSettingsView()
-          .environmentObject(syncService)
+        ConnectionSettingsView(syncService: syncService)
       }
       .sheet(isPresented: $syncService.attentionDrawerPresented) {
         AttentionDrawerSheet()
@@ -66,6 +90,13 @@ struct ContentView: View {
           selectedTab = .prs
         }
       }
+      .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        syncService.closeProjectHome()
+        if selectedTab != .work {
+          selectedTab = .work
+        }
+      }
   }
 
   private var rootTabs: some View {
@@ -75,6 +106,18 @@ struct ContentView: View {
       prsTab
       filesTab
       ctoTab
+    }
+    .toolbar(.hidden, for: .tabBar)
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      if !rootTabBarHidden {
+        ADERootBottomTabBar(
+          selectedTab: $selectedTab,
+          workBadgeCount: syncService.runningChatSessionCount
+        )
+      }
+    }
+    .onPreferenceChange(ADERootTabBarHiddenPreferenceKey.self) { hidden in
+      rootTabBarHidden = hidden
     }
   }
 
@@ -117,6 +160,64 @@ struct ContentView: View {
       .tabItem {
         Label("CTO", systemImage: "brain.head.profile")
       }
+  }
+}
+
+private struct ADERootBottomTabBar: View {
+  @Binding var selectedTab: RootTab
+  let workBadgeCount: Int
+
+  var body: some View {
+    HStack(spacing: 6) {
+      ForEach(RootTab.allCases) { tab in
+        Button {
+          selectedTab = tab
+        } label: {
+          VStack(spacing: 4) {
+            ZStack(alignment: .topTrailing) {
+              Image(systemName: tab.symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 38, height: 28)
+
+              if tab == .work, workBadgeCount > 0 {
+                Text("\(min(workBadgeCount, 99))")
+                  .font(.system(size: 10, weight: .bold, design: .rounded))
+                  .foregroundStyle(.white)
+                  .padding(.horizontal, 5)
+                  .frame(minWidth: 18, minHeight: 18)
+                  .background(ADEColor.danger, in: Capsule())
+                  .offset(x: 10, y: -6)
+              }
+            }
+
+            Text(tab.title)
+              .font(.caption2.weight(.semibold))
+              .lineLimit(1)
+          }
+          .frame(maxWidth: .infinity)
+          .foregroundStyle(selectedTab == tab ? ADEColor.accentBright : ADEColor.textSecondary)
+          .padding(.vertical, 8)
+          .background(
+            selectedTab == tab
+              ? ADEColor.accent.opacity(0.14)
+              : Color.clear,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+          )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.title)
+        .accessibilityValue(selectedTab == tab ? "Selected" : "")
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 8)
+    .padding(.bottom, 8)
+    .background(ADEColor.surfaceBackground.ignoresSafeArea(edges: .bottom))
+    .overlay(alignment: .top) {
+      Rectangle()
+        .fill(ADEColor.glassBorder)
+        .frame(height: 0.5)
+    }
   }
 }
 

@@ -166,19 +166,25 @@ struct PrMergeGateInfo: Equatable {
 func prComputeMergeGate(
   status: PrStatus?,
   checks: [PrCheck],
+  summaryChecksStatus: String? = nil,
   reviewThreadsUnresolved: Int,
   reviewsNeeded: Int,
   reviewsHave: Int,
   capabilities: PrActionCapabilities?,
   isDraft: Bool = false
 ) -> PrMergeGateInfo {
-  let failing = checks.filter { check in
+  let normalizedSummaryChecksStatus = summaryChecksStatus?.lowercased()
+  let summarySaysFailing = checks.isEmpty && ["failing", "failure", "failed"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysPending = checks.isEmpty && ["pending", "running", "in_progress"].contains(normalizedSummaryChecksStatus ?? "")
+  let summarySaysPassing = checks.isEmpty && ["passing", "success", "passed"].contains(normalizedSummaryChecksStatus ?? "")
+  let failingChecks = checks.filter { check in
     check.status == "completed" &&
       check.conclusion != nil &&
       check.conclusion != "success" &&
       check.conclusion != "neutral" &&
       check.conclusion != "skipped"
   }.count
+  let failing = failingChecks + (summarySaysFailing ? 1 : 0)
   let conflicts = status?.mergeConflicts ?? false
   let blockedReason = capabilities?.mergeBlockedReason?.trimmingCharacters(in: .whitespacesAndNewlines)
   let hasBlockedReason = !(blockedReason?.isEmpty ?? true)
@@ -201,8 +207,10 @@ func prComputeMergeGate(
 
   if conflicts || failing > 0 || hasBlockedReason {
     var parts: [String] = []
-    if failing > 0 {
-      parts.append("\(failing) failing check\(failing == 1 ? "" : "s")")
+    if summarySaysFailing {
+      parts.append("checks failing")
+    } else if failingChecks > 0 {
+      parts.append("\(failingChecks) failing check\(failingChecks == 1 ? "" : "s")")
     }
     if conflicts {
       parts.append("merge conflicts")
@@ -219,6 +227,11 @@ func prComputeMergeGate(
     let subline = parts.isEmpty ? (blockedReason ?? "Merge blocked by machine") : parts.joined(separator: " · ")
     let target: PrMergeGateTarget = (failing > 0 || conflicts) ? .checks : .reviews
     return PrMergeGateInfo(tone: .red, subline: subline, target: target)
+  }
+
+  if status == nil && checks.isEmpty && !summarySaysPassing {
+    let subline = summarySaysPending ? "Checks pending" : "Waiting for synced PR status"
+    return PrMergeGateInfo(tone: .amber, subline: subline, target: .overview)
   }
 
   if behind > 0 || !mergeable {

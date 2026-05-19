@@ -188,7 +188,17 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      when Claude/Codex are only resolvable through `~/.zshrc` shims.
    - Otherwise iterate the shell candidate list (`/bin/zsh`,
      `/bin/bash`, `/bin/sh`, or Windows equivalents), retrying across
-     candidates if the first spawn fails.
+     candidates if the first spawn fails. Plain interactive shell
+     sessions (`toolType === "shell"` with no direct command and no
+     startup command) opt into the **clean shell** candidate set:
+     `resolveShellCandidates({ clean: true })` returns the same shell
+     binaries but pinned to `args` + `env` overlays that skip user
+     init files (zsh `-f` with `ZDOTDIR=/var/empty`, bash
+     `--noprofile --norc` with `BASH_ENV=""`, fish `--no-config`,
+     PowerShell `-NoLogo -NoProfile`, `cmd.exe /d`). The overlays are
+     applied per candidate so an `args.env` from the caller is
+     overlaid first, then the clean-shell `env` block, before
+     `ptyLib.spawn`.
 10. If the spawn ended up in a shell (no direct launch, or direct
     launch fell back), type `args.startupCommand` into the PTY so the
     shell executes the CLI. Direct launches that succeeded skip this —

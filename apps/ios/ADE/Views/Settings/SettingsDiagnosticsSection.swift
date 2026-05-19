@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsDiagnosticsSection: View {
-  @EnvironmentObject private var syncService: SyncService
+  let snapshot: SettingsDiagnosticsSnapshot
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -14,27 +14,27 @@ struct SettingsDiagnosticsSection: View {
           value: Self.appVersionString
         )
 
-        if let identity = syncService.activeHostProfile?.hostIdentity {
+        if let identity = snapshot.pairedMachineIdentity {
           SettingsDetailRow(
             symbol: "desktopcomputer.and.arrow.down",
             label: "Paired machine",
-            value: Self.shortIdentity(identity)
+            value: identity
           )
         }
 
-        if let lastSync = syncService.lastSyncAt {
+        if let lastSync = snapshot.lastSyncDescription {
           SettingsDetailRow(
             symbol: "clock.arrow.circlepath",
             label: "Last sync",
-            value: Self.relativeDate(lastSync)
+            value: lastSync
           )
         }
 
-        if let deviceId = syncService.activeHostProfile?.pairedDeviceId {
+        if let deviceId = snapshot.deviceIdentity {
           SettingsDetailRow(
             symbol: "iphone",
             label: "This device",
-            value: Self.shortIdentity(deviceId)
+            value: deviceId
           )
         }
       }
@@ -46,20 +46,6 @@ struct SettingsDiagnosticsSection: View {
     let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "–"
     let build = info?["CFBundleVersion"] as? String ?? "–"
     return "\(shortVersion) (\(build))"
-  }
-
-  private static func shortIdentity(_ raw: String) -> String {
-    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.count > 12 else { return trimmed }
-    let prefix = trimmed.prefix(6)
-    let suffix = trimmed.suffix(4)
-    return "\(prefix)…\(suffix)"
-  }
-
-  private static func relativeDate(_ date: Date) -> String {
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .short
-    return formatter.localizedString(for: date, relativeTo: Date())
   }
 }
 

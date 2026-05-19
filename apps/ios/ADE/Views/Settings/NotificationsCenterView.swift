@@ -10,17 +10,19 @@ import UserNotifications
 /// dependencies.
 struct NotificationsCenterView: View {
   var onPreferencesChanged: (NotificationPreferences) -> Void
-  var onSendTestPush: () -> Void
+  var onSendTestPush: () async -> SyncSendTestPushResult
 
   @State private var prefs: NotificationPreferences
   @State private var authStatus: UNAuthorizationStatus = .notDetermined
   @State private var hasDeviceToken: Bool = false
   @State private var isRequestingAuthorization: Bool = false
+  @State private var isSendingTestPush: Bool = false
+  @State private var testPushResult: SyncSendTestPushResult?
 
   init(
     initialPreferences: NotificationPreferences = NotificationPreferences(),
     onPreferencesChanged: @escaping (NotificationPreferences) -> Void,
-    onSendTestPush: @escaping () -> Void
+    onSendTestPush: @escaping () async -> SyncSendTestPushResult
   ) {
     self.onPreferencesChanged = onPreferencesChanged
     self.onSendTestPush = onSendTestPush
@@ -129,7 +131,13 @@ struct NotificationsCenterView: View {
 
         VStack(alignment: .leading, spacing: 8) {
           sendTestPushButton
-          if !canSendTestPush {
+          if let testPushResult {
+            Text(testPushResult.message)
+              .font(.caption)
+              .foregroundStyle(testPushResult.ok ? ADEColor.success : ADEColor.danger)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.horizontal, 2)
+          } else if !canSendTestPush {
             Text("Enable notifications and register this device before sending a test push.")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
@@ -381,8 +389,8 @@ struct NotificationsCenterView: View {
   // MARK: - Send test push
 
   private var sendTestPushButton: some View {
-    Button(action: onSendTestPush) {
-      Text("Send test push")
+    Button(action: sendTestPush) {
+      Text(isSendingTestPush ? "Sending test push..." : "Send test push")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.purpleAccent)
         .frame(maxWidth: .infinity)
@@ -393,8 +401,8 @@ struct NotificationsCenterView: View {
         )
     }
     .buttonStyle(.plain)
-    .disabled(!canSendTestPush)
-    .opacity(canSendTestPush ? 1 : 0.45)
+    .disabled(!canSendTestPush || isSendingTestPush)
+    .opacity(canSendTestPush ? (isSendingTestPush ? 0.65 : 1) : 0.45)
     .accessibilityHint(
       canSendTestPush
         ? "Ask the paired machine to send a test notification to this device"
@@ -449,6 +457,19 @@ struct NotificationsCenterView: View {
   private func registerDeviceForRemoteNotifications() {
     UIApplication.shared.registerForRemoteNotifications()
     Task { await refreshAuthorizationStatus() }
+  }
+
+  private func sendTestPush() {
+    guard canSendTestPush, !isSendingTestPush else { return }
+    isSendingTestPush = true
+    testPushResult = nil
+    Task {
+      let result = await onSendTestPush()
+      await MainActor.run {
+        testPushResult = result
+        isSendingTestPush = false
+      }
+    }
   }
 
   private func openSystemSettings() {

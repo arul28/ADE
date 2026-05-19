@@ -54,7 +54,8 @@ func workFilteredSessions(
   archivedSessionIds: Set<String>,
   selectedStatus: WorkSessionStatusFilter,
   selectedLaneId: String,
-  searchText: String
+  searchText: String,
+  outputSearchBySessionId: [String: String] = [:]
 ) -> [TerminalSessionSummary] {
   sessions
     .filter { !isRunOwnedSession($0) }
@@ -78,7 +79,12 @@ func workFilteredSessions(
         return false
       }
 
-      return workSessionMatchesSearch(session: session, summary: chatSummaries[session.id], query: searchText)
+      return workSessionMatchesSearch(
+        session: session,
+        summary: chatSummaries[session.id],
+        query: searchText,
+        outputSearchText: outputSearchBySessionId[session.id]
+      )
     }
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
 }
@@ -123,6 +129,33 @@ func workRunningBannerMessage(liveTerminalCount: Int, attentionCount: Int) -> St
 
 func workFilesWorkspace(for laneId: String, in workspaces: [FilesWorkspace]) -> FilesWorkspace? {
   workspaces.first { $0.laneId == laneId }
+}
+
+func resolvedWorkNavigationLaneId(for session: TerminalSessionSummary, lanes: [LaneSummary]) -> String {
+  if lanes.contains(where: { $0.id == session.laneId }) {
+    return session.laneId
+  }
+
+  let sessionLaneName = normalizedWorkLaneLookupValue(session.laneName)
+  if sessionLaneName == "primary",
+    let primaryLane = lanes.first(where: { normalizedWorkLaneLookupValue($0.laneType) == "primary" })
+  {
+    return primaryLane.id
+  }
+
+  if let namedLane = lanes.first(where: { normalizedWorkLaneLookupValue($0.name) == sessionLaneName }) {
+    return namedLane.id
+  }
+
+  if let branchLane = lanes.first(where: { normalizedWorkLaneLookupValue($0.branchRef) == sessionLaneName }) {
+    return branchLane.id
+  }
+
+  return session.laneId
+}
+
+private func normalizedWorkLaneLookupValue(_ value: String) -> String {
+  value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 }
 
 func workSessionDisplayTitle(session: TerminalSessionSummary, summary: AgentChatSessionSummary?) -> String {
@@ -198,7 +231,8 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
 private func workSessionMatchesSearch(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
-  query: String
+  query: String,
+  outputSearchText: String? = nil
 ) -> Bool {
   let tokens = query
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -206,11 +240,15 @@ private func workSessionMatchesSearch(
     .split(whereSeparator: \.isWhitespace)
     .map(String.init)
   guard !tokens.isEmpty else { return true }
-  let indexed = workSessionSearchIndex(session: session, summary: summary)
+  let indexed = workSessionSearchIndex(session: session, summary: summary, outputSearchText: outputSearchText)
   return tokens.allSatisfy(indexed.contains)
 }
 
-private func workSessionSearchIndex(session: TerminalSessionSummary, summary: AgentChatSessionSummary?) -> String {
+private func workSessionSearchIndex(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  outputSearchText: String? = nil
+) -> String {
   let status = normalizedWorkChatSessionStatus(session: session, summary: summary)
   let statusTokens = status.replacingOccurrences(of: "-", with: " ")
   var fields: [String] = []
@@ -228,7 +266,86 @@ private func workSessionSearchIndex(session: TerminalSessionSummary, summary: Ag
   fields.append(summary?.model ?? "")
   fields.append(statusTokens)
   fields.append(session.pinned ? "pinned" : "")
+  fields.append(outputSearchText ?? "")
   return fields.joined(separator: " ").lowercased()
+}
+
+private let workSessionOutputSearchMaxCharacters = 20_000
+
+func workSessionOutputSearchIndexBySessionId(buffers: [String: String]) -> [String: String] {
+  guard !buffers.isEmpty else { return [:] }
+  var result: [String: String] = [:]
+  result.reserveCapacity(buffers.count)
+  for (sessionId, buffer) in buffers {
+    let searchText = workSessionOutputSearchText(buffer)
+    if !searchText.isEmpty {
+      result[sessionId] = searchText
+    }
+  }
+  return result
+}
+
+func workSessionOutputSearchText(_ raw: String) -> String {
+  let tail = raw.count > workSessionOutputSearchMaxCharacters
+    ? String(raw.suffix(workSessionOutputSearchMaxCharacters))
+    : raw
+  var output = ""
+  output.reserveCapacity(tail.count)
+  var index = tail.startIndex
+  while index < tail.endIndex {
+    let scalar = tail[index].unicodeScalars.first
+    if scalar?.value == 0x1B {
+      index = workAdvancePastTerminalEscape(in: tail, from: index)
+      continue
+    }
+    if let value = scalar?.value, value < 0x20 || value == 0x7F {
+      if tail[index] == "\n" || tail[index] == "\r" || tail[index] == "\t" {
+        output.append(" ")
+      }
+      index = tail.index(after: index)
+      continue
+    }
+    output.append(tail[index])
+    index = tail.index(after: index)
+  }
+  return output.lowercased()
+}
+
+private func workAdvancePastTerminalEscape(in text: String, from escapeIndex: String.Index) -> String.Index {
+  var index = text.index(after: escapeIndex)
+  guard index < text.endIndex else { return index }
+
+  let introducer = text[index]
+  if introducer == "]" {
+    index = text.index(after: index)
+    while index < text.endIndex {
+      let scalar = text[index].unicodeScalars.first?.value
+      if scalar == 0x07 {
+        return text.index(after: index)
+      }
+      if scalar == 0x1B {
+        let next = text.index(after: index)
+        if next < text.endIndex && text[next] == "\\" {
+          return text.index(after: next)
+        }
+      }
+      index = text.index(after: index)
+    }
+    return text.endIndex
+  }
+
+  if introducer == "[" || introducer == "(" || introducer == ")" || introducer == "P" || introducer == "^" || introducer == "_" {
+    index = text.index(after: index)
+    while index < text.endIndex {
+      if let scalar = text[index].unicodeScalars.first, scalar.value >= 0x40 && scalar.value <= 0x7E {
+        return text.index(after: index)
+      }
+      index = text.index(after: index)
+    }
+    return text.endIndex
+  }
+
+  return text.index(after: index)
 }
 
 private func workSessionStatusSortRank(_ status: String) -> Int {

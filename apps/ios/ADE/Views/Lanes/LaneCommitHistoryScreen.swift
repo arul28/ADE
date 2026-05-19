@@ -87,23 +87,14 @@ struct LaneCommitHistoryScreen: View {
         }
         .disabled(!canRunLiveActions)
         Spacer(minLength: 0)
-        Menu {
-          Button(role: .destructive) {
-            pendingConfirmation = CommitHistoryConfirmation(kind: .revert, commit: commit)
-          } label: {
-            Label("Revert commit", systemImage: "arrow.uturn.backward")
-          }
-          .disabled(!canRunLiveActions)
-
-          Button {
-            pendingConfirmation = CommitHistoryConfirmation(kind: .cherryPick, commit: commit)
-          } label: {
-            Label("Cherry-pick commit", systemImage: "arrow.triangle.merge")
-          }
-          .disabled(!canRunLiveActions)
-        } label: {
-          LaneMenuLabel(title: "More")
+        LaneActionButton(title: "Revert", symbol: "arrow.uturn.backward") {
+          pendingConfirmation = CommitHistoryConfirmation(kind: .revert, commit: commit)
         }
+        .disabled(!canRunLiveActions)
+        LaneActionButton(title: "Pick", symbol: "arrow.triangle.merge") {
+          pendingConfirmation = CommitHistoryConfirmation(kind: .cherryPick, commit: commit)
+        }
+        .disabled(!canRunLiveActions)
       }
     }
   }

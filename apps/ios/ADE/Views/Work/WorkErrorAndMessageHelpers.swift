@@ -195,20 +195,27 @@ private func backfillMissingTextEnvelopes(
   fallback: [WorkChatEnvelope]
 ) -> [WorkChatEnvelope] {
   guard !fallback.isEmpty else { return transcript }
+  var merged = transcript
   var seen: Set<String> = []
-  for envelope in transcript {
-    if let key = workTextContentKey(for: envelope) {
+  for envelope in merged {
+    for key in workTextBackfillDedupeKeys(for: envelope) {
       seen.insert(key)
     }
   }
+  var didReplace = false
   var missing: [WorkChatEnvelope] = []
   for envelope in fallback {
-    guard let key = workTextContentKey(for: envelope), !seen.contains(key) else { continue }
-    seen.insert(key)
+    if replaceTruncatedTextEnvelope(in: &merged, with: envelope) {
+      didReplace = true
+      workTextBackfillDedupeKeys(for: envelope).forEach { seen.insert($0) }
+      continue
+    }
+    let keys = workTextBackfillDedupeKeys(for: envelope)
+    guard !keys.isEmpty, keys.allSatisfy({ !seen.contains($0) }) else { continue }
+    keys.forEach { seen.insert($0) }
     missing.append(envelope)
   }
-  guard !missing.isEmpty else { return transcript }
-  var merged = transcript
+  guard didReplace || !missing.isEmpty else { return transcript }
   merged.append(contentsOf: missing)
   return merged.sorted { lhs, rhs in
     if lhs.timestamp == rhs.timestamp {
@@ -216,6 +223,33 @@ private func backfillMissingTextEnvelopes(
     }
     return lhs.timestamp < rhs.timestamp
   }
+}
+
+private func replaceTruncatedTextEnvelope(
+  in transcript: inout [WorkChatEnvelope],
+  with fallback: WorkChatEnvelope
+) -> Bool {
+  guard let fallbackIdentity = workTextRoleTurnKey(for: fallback),
+        let fallbackText = workTextEnvelopeText(fallback),
+        !fallbackText.isEmpty
+  else { return false }
+
+  guard let index = transcript.firstIndex(where: { candidate in
+    guard workTextRoleTurnKey(for: candidate) == fallbackIdentity,
+          let candidateText = workTextEnvelopeText(candidate)
+    else { return false }
+    let normalizedCandidate = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedFallback = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedCandidate.isEmpty, normalizedFallback.count > normalizedCandidate.count else {
+      return false
+    }
+    return normalizedFallback.contains(normalizedCandidate)
+      || normalizedFallback.hasSuffix(normalizedCandidate)
+      || normalizedFallback.hasPrefix(normalizedCandidate)
+  }) else { return false }
+
+  transcript[index] = fallback
+  return true
 }
 
 /// Identity key for a user/assistant text envelope used for backfill dedup.
@@ -232,6 +266,39 @@ private func workTextContentKey(for envelope: WorkChatEnvelope) -> String? {
   case .assistantText(let text, let turnId, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
     return "assistant|\(turnId ?? "")|\(normalized)"
+  default:
+    return nil
+  }
+}
+
+private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [String] {
+  guard let key = workTextContentKey(for: envelope) else { return [] }
+  switch envelope.event {
+  case .userMessage(let text, let turnId, _, _, _):
+    let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return [key, "user|\(turnId ?? "")|\(normalized)"]
+  default:
+    return [key]
+  }
+}
+
+private func workTextRoleTurnKey(for envelope: WorkChatEnvelope) -> String? {
+  switch envelope.event {
+  case .userMessage(_, let turnId, let steerId, _, _):
+    return "user|\(turnId ?? "")|\(steerId ?? "")"
+  case .assistantText(_, let turnId, _):
+    return "assistant|\(turnId ?? "")"
+  default:
+    return nil
+  }
+}
+
+private func workTextEnvelopeText(_ envelope: WorkChatEnvelope) -> String? {
+  switch envelope.event {
+  case .userMessage(let text, _, _, _, _):
+    return text
+  case .assistantText(let text, _, _):
+    return text
   default:
     return nil
   }
@@ -648,8 +715,8 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         queue.removeValue(forKey: steerId)
         resolved.insert(steerId)
       }
-    case .systemNotice(_, _, _, _, let steerId):
-      if let steerId {
+    case .systemNotice(_, let message, _, _, let steerId):
+      if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
         queue.removeValue(forKey: steerId)
         resolved.insert(steerId)
       }
@@ -658,6 +725,13 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+func workSystemNoticeResolvesQueuedSteer(_ message: String) -> Bool {
+  let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return normalized.contains("cancelled")
+    || normalized.contains("canceled")
+    || normalized.contains("delivering")
 }
 
 func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String> {

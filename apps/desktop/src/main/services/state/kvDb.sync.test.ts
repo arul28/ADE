@@ -106,6 +106,55 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db2.close();
   });
 
+  it("normalizes legacy text primary keys before applying remote CRDT changes", async () => {
+    const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-legacy-pk-a-"), createLogger() as any);
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-legacy-pk-b-"), createLogger() as any);
+
+    db1.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-legacy", "/repo/legacy", "Legacy", "main", "2026-03-15T00:00:00.000Z", "2026-03-15T00:00:00.000Z"]
+    );
+    db1.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path, attached_root_path,
+        is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "lane-legacy",
+        "project-legacy",
+        "Legacy Lane",
+        null,
+        "worktree",
+        "main",
+        "feature/legacy",
+        "/repo/legacy/.ade/worktrees/lane-legacy",
+        null,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "active",
+        "2026-03-15T00:00:00.000Z",
+        null,
+      ]
+    );
+
+    const legacyChanges = db1.sync.exportChangesSince(0).map((change) => {
+      if (change.table === "projects") return { ...change, pk: "project-legacy" };
+      if (change.table === "lanes") return { ...change, pk: "lane-legacy" };
+      return change;
+    });
+
+    expect(() => db2.sync.applyChanges(legacyChanges)).not.toThrow();
+    expect(db2.get<{ name: string }>("select name from lanes where id = ?", ["lane-legacy"])?.name).toBe("Legacy Lane");
+
+    db1.close();
+    db2.close();
+  });
+
   it("repairs a legacy projects unique constraint before CRR marking", async () => {
     const dbPath = makeDbPath("ade-kvdb-sync-projects-legacy-");
     const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => { exec: (sql: string) => void; close: () => void } };

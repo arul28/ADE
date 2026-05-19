@@ -43,18 +43,33 @@ struct FilesDirectoryContentsView: View {
         )
       } else {
         ForEach(filesSortedNodes(nodes)) { node in
-          Button {
-            open(node)
-          } label: {
-            FilesTreeNodeRow(
-              node: node,
-              transitionNamespace: transitionNamespace,
-              isSelectedTransitionSource: selectedFilePath == node.path
-            )
-          }
-          .buttonStyle(.plain)
+          FilesTreeNodeRow(
+            node: node,
+            transitionNamespace: transitionNamespace,
+            isSelectedTransitionSource: selectedFilePath == node.path,
+            onOpen: { open(node) },
+            onCopyPath: { copyAbsolutePath(for: node) },
+            onCopyRelativePath: { copyRelativePath(for: node) }
+          )
           .contextMenu {
             contextMenu(for: node)
+          }
+          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Copy Path") {
+              copyAbsolutePath(for: node)
+            }
+            .tint(ADEColor.accent)
+
+            Button("Copy Relative Path") {
+              copyRelativePath(for: node)
+            }
+            .tint(ADEColor.info)
+          }
+          .accessibilityAction(named: Text("Copy Path")) {
+            copyAbsolutePath(for: node)
+          }
+          .accessibilityAction(named: Text("Copy Relative Path")) {
+            copyRelativePath(for: node)
           }
         }
       }
@@ -65,7 +80,6 @@ struct FilesDirectoryContentsView: View {
       includeHidden: showHidden,
       live: isLive,
       active: isTabActive,
-      revision: syncService.localStateRevision,
       manualReloadToken: manualReloadToken
     )) {
       guard isTabActive else { return }

@@ -18,89 +18,108 @@ struct CtoBriefEditor: View {
 
   var body: some View {
     NavigationStack {
-      Form {
-        if let errorMessage {
-          Section {
-            Text(errorMessage)
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.danger)
-          }
-        }
+      VStack(spacing: 0) {
+        editorHeader
 
-        Section {
-          TextEditor(text: $projectSummary)
-            .font(.system(.body))
-            .frame(minHeight: 100)
-        } header: {
-          Text("Project summary")
-        }
-
-        Section {
-          TextEditor(text: $criticalConventions)
-            .font(.system(.callout, design: .monospaced))
-            .frame(minHeight: 100)
-        } header: {
-          Text("Critical conventions")
-        } footer: {
-          Text("One per line.")
-        }
-
-        Section {
-          TextEditor(text: $userPreferences)
-            .font(.system(.callout, design: .monospaced))
-            .frame(minHeight: 100)
-        } header: {
-          Text("User preferences")
-        } footer: {
-          Text("One per line.")
-        }
-
-        Section {
-          TextEditor(text: $activeFocus)
-            .font(.system(.callout, design: .monospaced))
-            .frame(minHeight: 80)
-        } header: {
-          Text("Active focus")
-        } footer: {
-          Text("One per line.")
-        }
-
-        Section {
-          TextEditor(text: $notes)
-            .font(.system(.callout, design: .monospaced))
-            .frame(minHeight: 80)
-        } header: {
-          Text("Notes")
-        } footer: {
-          Text("One per line.")
-        }
-      }
-      .scrollContentBackground(.hidden)
-      .adeScreenBackground()
-      .navigationTitle("Edit brief")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          Button("Cancel") { dismiss() }
-            .disabled(isSaving)
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            Task { await save() }
-          } label: {
-            if isSaving {
-              ProgressView().controlSize(.small)
-            } else {
-              Text("Save").fontWeight(.semibold)
+        Form {
+          if let errorMessage {
+            Section {
+              Text(errorMessage)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.danger)
             }
           }
-          .disabled(isSaving)
+
+          Section {
+            TextEditor(text: $projectSummary)
+              .font(.system(.body))
+              .frame(minHeight: 100)
+          } header: {
+            Text("Project summary")
+          }
+
+          Section {
+            TextEditor(text: $criticalConventions)
+              .font(.system(.callout, design: .monospaced))
+              .frame(minHeight: 100)
+          } header: {
+            Text("Critical conventions")
+          } footer: {
+            Text("One per line.")
+          }
+
+          Section {
+            TextEditor(text: $userPreferences)
+              .font(.system(.callout, design: .monospaced))
+              .frame(minHeight: 100)
+          } header: {
+            Text("User preferences")
+          } footer: {
+            Text("One per line.")
+          }
+
+          Section {
+            TextEditor(text: $activeFocus)
+              .font(.system(.callout, design: .monospaced))
+              .frame(minHeight: 80)
+          } header: {
+            Text("Active focus")
+          } footer: {
+            Text("One per line.")
+          }
+
+          Section {
+            TextEditor(text: $notes)
+              .font(.system(.callout, design: .monospaced))
+              .frame(minHeight: 80)
+          } header: {
+            Text("Notes")
+          } footer: {
+            Text("One per line.")
+          }
         }
+        .scrollContentBackground(.hidden)
       }
+      .adeScreenBackground()
+      .navigationTitle("")
+      .toolbar(.hidden, for: .navigationBar)
     }
     .presentationDetents([.large])
     .tint(ADEColor.accent)
     .onAppear(perform: hydrate)
+  }
+
+  private var editorHeader: some View {
+    HStack {
+      Button("Cancel") { dismiss() }
+        .buttonStyle(.glass)
+        .disabled(isSaving)
+        .accessibilityLabel("Cancel edit brief")
+
+      Spacer(minLength: 0)
+
+      Text("Edit brief")
+        .font(.headline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      Spacer(minLength: 0)
+
+      Button {
+        Task { await save() }
+      } label: {
+        if isSaving {
+          ProgressView().controlSize(.small)
+        } else {
+          Text("Save").fontWeight(.semibold)
+        }
+      }
+      .buttonStyle(.glass)
+      .disabled(isSaving)
+      .accessibilityLabel("Save edit brief")
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 10)
+    .background(ADEColor.pageBackground.opacity(0.98))
   }
 
   private func hydrate() {

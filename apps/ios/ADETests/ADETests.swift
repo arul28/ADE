@@ -1,5 +1,6 @@
 import XCTest
 import SQLite3
+import UIKit
 @testable import ADE
 
 /// Default `lastActivityAt`/`startedAt` for fixture sessions. Returns "now"
@@ -60,9 +61,203 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(output, "errok")
   }
 
+  @MainActor
+  func testDeepLinkRouterRequestsWorkSessionNavigation() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.requestedWorkSessionNavigation = nil
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session-123")))
+
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "session-123")
+  }
+
+  @MainActor
+  func testTerminalEmulatorSkipsDuplicateRevisionRenders() {
+    let view = ADETerminalTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 300))
+    let coordinator = WorkTerminalEmulatorView.Coordinator { _ in }
+
+    XCTAssertTrue(coordinator.render(rawText: "bash-3.2$ echo ok\nok\n", revision: 1, in: view))
+    XCTAssertFalse(coordinator.render(rawText: "bash-3.2$ echo ok\nok\n", revision: 2, in: view))
+    XCTAssertTrue(coordinator.render(rawText: "bash-3.2$ echo ok\nok\nbash-3.2$ ", revision: 3, in: view))
+  }
+
+  @MainActor
+  func testTerminalViewportRevisionOnlyUpdateDoesNotRerender() {
+    let view = ADETerminalTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 300))
+    let coordinator = WorkTerminalEmulatorView.Coordinator { _ in }
+
+    XCTAssertTrue(
+      coordinator.updateViewport(
+        WorkTerminalViewport(cols: 48, rows: 12),
+        rawText: "one\n",
+        revision: 1,
+        view: view
+      )
+    )
+    XCTAssertFalse(
+      coordinator.updateViewport(
+        WorkTerminalViewport(cols: 48, rows: 13),
+        rawText: "one\n",
+        revision: 2,
+        view: view
+      )
+    )
+  }
+
+  func testNotificationPreferencesSavePrunesInactivePerSessionOverrides() throws {
+    let suiteName = "ADETests.NotificationPreferences.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+
+    var prefs = NotificationPreferences()
+    prefs.perSessionOverrides = [
+      "inactive": SessionNotificationOverride(),
+      "muted": SessionNotificationOverride(muted: true),
+      "awaiting": SessionNotificationOverride(awaitingInputOnly: true),
+    ]
+
+    prefs.save(to: defaults)
+
+    let loaded = NotificationPreferences.load(from: defaults)
+    XCTAssertNil(loaded.perSessionOverrides["inactive"])
+    XCTAssertEqual(loaded.perSessionOverrides["muted"], SessionNotificationOverride(muted: true))
+    XCTAssertEqual(loaded.perSessionOverrides["awaiting"], SessionNotificationOverride(awaitingInputOnly: true))
+  }
+
+  @MainActor
+  func testSyncNotificationPrefsPayloadOmitsInactivePerSessionOverrides() {
+    var prefs = NotificationPreferences()
+    prefs.perSessionOverrides = [
+      "inactive": SessionNotificationOverride(),
+      "active": SessionNotificationOverride(awaitingInputOnly: true),
+    ]
+
+    let payload = SyncService.encodeNotificationPrefsForDesktop(prefs)
+    let overrides = payload["perSessionOverrides"] as? [String: [String: Bool]]
+
+    XCTAssertNil(overrides?["inactive"])
+    XCTAssertEqual(overrides?["active"]?["muted"], false)
+    XCTAssertEqual(overrides?["active"]?["awaitingInputOnly"], true)
+  }
+
+  func testNotificationStaleOverrideIdsKeepSavedOverridesVisible() {
+    let agent = AgentSnapshot(
+      sessionId: "active-session",
+      provider: "codex",
+      laneName: "Primary",
+      title: "Active",
+      status: "idle",
+      awaitingInput: false,
+      lastActivityAt: Date(),
+      elapsedSeconds: 0,
+      preview: nil,
+      progress: nil,
+      phase: nil,
+      toolCalls: 0
+    )
+
+    let staleIds = notificationStaleOverrideIds(
+      overrides: [
+        "inactive-stale": SessionNotificationOverride(),
+        "active-session": SessionNotificationOverride(muted: true),
+        "saved-stale": SessionNotificationOverride(awaitingInputOnly: true),
+      ],
+      agents: [agent]
+    )
+
+    XCTAssertEqual(staleIds, ["saved-stale"])
+  }
+
   func testShellCliPermissionModeDoesNotInheritRuntimeMode() {
     XCTAssertNil(workCliPermissionMode(provider: "shell", runtimeMode: "plan"))
     XCTAssertEqual(workCliPermissionMode(provider: "codex", runtimeMode: "plan"), "plan")
+    XCTAssertEqual(workCliPermissionMode(provider: "claude", runtimeMode: "auto"), "auto")
+  }
+
+  func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
+    XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "plan", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "plan", "full-auto", "config-toml"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["agent", "ask", "plan", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high"])
+
+    let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
+    XCTAssertEqual(claudeAuto.permissionMode, "auto")
+    XCTAssertEqual(claudeAuto.claudePermissionMode, "auto")
+    XCTAssertEqual(claudeAuto.interactionMode, "default")
+
+    let cursorAsk = workRuntimeWireFields(provider: "cursor", mode: "ask")
+    XCTAssertEqual(cursorAsk.permissionMode, "edit")
+    XCTAssertEqual(cursorAsk.cursorModeId, "ask")
+
+    let droidHigh = workRuntimeWireFields(provider: "droid", mode: "auto-high")
+    XCTAssertEqual(droidHigh.permissionMode, "full-auto")
+    XCTAssertEqual(droidHigh.droidPermissionMode, "auto-high")
+  }
+
+  func testResolvedWorkArchivedSessionIdsKeepsLocalOverrideForKnownChat() {
+    let summary = makeAgentChatSessionSummary(
+      sessionId: "chat-known",
+      status: "idle",
+      archivedAt: nil
+    )
+
+    let archived = resolvedWorkArchivedSessionIds(
+      localStorage: "chat-known\nchat-local",
+      chatSummaries: ["chat-known": summary]
+    )
+
+    XCTAssertEqual(archived, ["chat-known", "chat-local"])
+  }
+
+  func testResolvedWorkArchivedSessionIdsReadsHydratedTerminalArchiveState() {
+    let session = makeTerminalSessionSummary(
+      id: "chat-hydrated",
+      toolType: "codex-chat",
+      archivedAt: "2026-05-18T13:04:31.483Z"
+    )
+
+    let archived = resolvedWorkArchivedSessionIds(
+      localStorage: "",
+      chatSummaries: [:],
+      sessions: [session]
+    )
+
+    XCTAssertEqual(archived, ["chat-hydrated"])
+  }
+
+  func testResolvedWorkNavigationLaneIdKeepsKnownLaneId() {
+    let session = makeTerminalSessionSummary(laneId: "lane-active", laneName: "Active", toolType: "codex-chat")
+    let lanes = [makeLaneSummary(id: "lane-active", name: "Active", laneType: "worktree", branchRef: "ade/active")]
+
+    XCTAssertEqual(resolvedWorkNavigationLaneId(for: session, lanes: lanes), "lane-active")
+  }
+
+  func testResolvedWorkNavigationLaneIdMapsStalePrimarySessionToActivePrimary() {
+    let session = makeTerminalSessionSummary(laneId: "lane-stale-primary", laneName: "Primary", toolType: "codex-chat")
+    let lanes = [
+      makeLaneSummary(id: "lane-active-primary", name: "Primary", laneType: "primary", branchRef: "main"),
+      makeLaneSummary(id: "lane-feature", name: "Feature", laneType: "worktree", branchRef: "ade/feature")
+    ]
+
+    XCTAssertEqual(resolvedWorkNavigationLaneId(for: session, lanes: lanes), "lane-active-primary")
+  }
+
+  func testResolvedWorkNavigationLaneIdFallsBackToMatchingNameOrBranch() {
+    let renamedSession = makeTerminalSessionSummary(laneId: "lane-stale", laneName: "Feature Lane", toolType: "codex-chat")
+    let branchSession = makeTerminalSessionSummary(laneId: "lane-stale-branch", laneName: "ade/feature-lane", toolType: "codex-chat")
+    let lanes = [
+      makeLaneSummary(id: "lane-by-name", name: "Feature Lane", laneType: "worktree", branchRef: "ade/other"),
+      makeLaneSummary(id: "lane-by-branch", name: "Other Lane", laneType: "worktree", branchRef: "ade/feature-lane")
+    ]
+
+    XCTAssertEqual(resolvedWorkNavigationLaneId(for: renamedSession, lanes: lanes), "lane-by-name")
+    XCTAssertEqual(resolvedWorkNavigationLaneId(for: branchSession, lanes: lanes), "lane-by-branch")
   }
 
   func testTerminalDisplayPreservesAnsiRunsForRendering() {
@@ -555,6 +750,126 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testDiscoveredHostsDisplayCoalescesDuplicateLiveRoutes() {
+    let staleName = DiscoveredSyncHost(
+      id: "stale-device",
+      serviceName: "ADE Sync stale",
+      hostName: "MacBook-Pro-567.local",
+      hostIdentity: "stale-device",
+      port: 8787,
+      addresses: ["MacBook-Pro-567.local", "192.168.1.249"],
+      tailscaleAddress: "100.75.21.10",
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-a"],
+      projectNames: ["ADE"],
+      projectCount: 1,
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+    let friendlyName = DiscoveredSyncHost(
+      id: "fresh-device",
+      serviceName: "ADE Sync fresh",
+      hostName: "lappy",
+      hostIdentity: "fresh-device",
+      port: 8787,
+      addresses: ["192.168.1.249"],
+      tailscaleAddress: "100.75.21.10",
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-b", "project-a"],
+      projectNames: ["Versic", "ADE"],
+      projectCount: 2,
+      lastResolvedAt: "2026-05-10T10:00:01.000Z"
+    )
+
+    let displayed = syncDiscoveredHostsForDisplay(savedHosts: [], liveHosts: [staleName, friendlyName])
+
+    XCTAssertEqual(displayed.savedHosts.count, 0)
+    XCTAssertEqual(displayed.liveHosts.count, 1)
+    XCTAssertEqual(displayed.liveHosts[0].hostName, "lappy")
+    XCTAssertEqual(displayed.liveHosts[0].addresses, ["192.168.1.249", "MacBook-Pro-567.local"])
+    XCTAssertEqual(displayed.liveHosts[0].projectNames, ["Versic", "ADE"])
+    XCTAssertEqual(displayed.liveHosts[0].projectCount, 2)
+  }
+
+  func testDiscoveredHostsDisplayCoalescesDuplicateLiveRoutesAcrossPorts() {
+    let pairService = DiscoveredSyncHost(
+      id: "pair-service",
+      serviceName: "ADE Pair",
+      hostName: "MacBook-Pro-567.local",
+      hostIdentity: "machine-pair-service",
+      port: 8787,
+      addresses: ["192.168.1.249"],
+      tailscaleAddress: nil,
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-a"],
+      projectNames: ["ADE"],
+      projectCount: 1,
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+    let runtimeService = DiscoveredSyncHost(
+      id: "runtime-service",
+      serviceName: "ADE Runtime",
+      hostName: "lappy",
+      hostIdentity: "machine-runtime-service",
+      port: 8790,
+      addresses: ["192.168.1.249"],
+      tailscaleAddress: nil,
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-b", "project-a"],
+      projectNames: ["Versic", "ADE"],
+      projectCount: 2,
+      lastResolvedAt: "2026-05-10T10:00:01.000Z"
+    )
+
+    let displayed = syncDiscoveredHostsForDisplay(savedHosts: [], liveHosts: [pairService, runtimeService])
+
+    XCTAssertEqual(displayed.liveHosts.count, 1)
+    XCTAssertEqual(displayed.liveHosts[0].hostName, "lappy")
+    XCTAssertEqual(displayed.liveHosts[0].port, 8790)
+    XCTAssertEqual(displayed.liveHosts[0].addresses, ["192.168.1.249"])
+    XCTAssertEqual(displayed.liveHosts[0].projectNames, ["Versic", "ADE"])
+  }
+
+  func testDiscoveredHostsDisplayKeepsDistinctLanHostsWithSharedTailnetMetadata() {
+    let currentMachine = DiscoveredSyncHost(
+      id: "current-machine",
+      serviceName: "ADE Runtime current",
+      hostName: "Mac.lan",
+      hostIdentity: "current-machine",
+      port: 8787,
+      addresses: ["192.168.1.240", "192.168.1.249"],
+      tailscaleAddress: "100.75.20.63",
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-a"],
+      projectNames: ["ADE"],
+      projectCount: 1,
+      lastResolvedAt: "2026-05-10T10:00:00.000Z"
+    )
+    let otherMachine = DiscoveredSyncHost(
+      id: "other-machine",
+      serviceName: "ADE Runtime other",
+      hostName: "lappy",
+      hostIdentity: "other-machine",
+      port: 8790,
+      addresses: ["192.168.1.249"],
+      tailscaleAddress: "100.75.20.63",
+      runtimeKind: "daemon",
+      runtimeVersion: "1.0.0-beta.1",
+      projectIds: ["project-b"],
+      projectNames: ["Versic"],
+      projectCount: 1,
+      lastResolvedAt: "2026-05-10T10:00:01.000Z"
+    )
+
+    let displayed = syncDiscoveredHostsForDisplay(savedHosts: [], liveHosts: [currentMachine, otherMachine])
+
+    XCTAssertEqual(displayed.liveHosts.map(\.hostName), ["Mac.lan", "lappy"])
+  }
+
   @MainActor
   func testSyncMergesDuplicateBonjourHostsByDeviceIdentityWithProjectMetadata() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -791,6 +1106,94 @@ final class ADETests: XCTestCase {
       service.automaticReconnectAddressesForTesting(profile),
       ["100.75.20.63", "192.168.1.8"]
     )
+  }
+
+  func testSyncConnectPortCandidatesDoNotScanBonjourHostnameFallbackWindow() {
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 8787, addresses: ["Aruls-Mac-Studio.local."]),
+      [8787]
+    )
+    XCTAssertEqual(
+      syncConnectPortCandidates(primaryPort: 8787, addresses: ["192.168.1.8"]).prefix(3),
+      [8787, 8788, 8789]
+    )
+  }
+
+  @MainActor
+  func testSyncDiscoveredHostIgnoresTimestampOnlyRefreshForPublishedList() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8787,
+        addresses: ["Aruls-Mac-Studio.local"],
+        tailscaleAddress: nil,
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+    ])
+    let firstPublished = service.discoveredHosts
+
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8787",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8787,
+        addresses: ["Aruls-Mac-Studio.local"],
+        tailscaleAddress: nil,
+        lastResolvedAt: "2026-04-23T00:00:01.000Z"
+      ),
+    ])
+
+    XCTAssertEqual(service.discoveredHosts, firstPublished)
+  }
+
+  @MainActor
+  func testSyncDiscoveredHostsCoalescesDuplicateAnonymousLanRows() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "anonymous-8787-a",
+        serviceName: "ADE Sync MacBook A",
+        hostName: "MacBook-Pro-567.local",
+        hostIdentity: nil,
+        port: 8787,
+        addresses: ["192.168.1.249"],
+        tailscaleAddress: "100.80.20.10",
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0-beta.1",
+        projectIds: ["project-a"],
+        projectNames: ["ADE"],
+        projectCount: 1,
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+      DiscoveredSyncHost(
+        id: "anonymous-8787-b",
+        serviceName: "ADE Sync MacBook B",
+        hostName: "MacBook-Pro-567.local",
+        hostIdentity: nil,
+        port: 8787,
+        addresses: ["192.168.1.249"],
+        tailscaleAddress: "100.80.20.10",
+        runtimeKind: "daemon",
+        runtimeVersion: "1.0.0-beta.1",
+        projectIds: ["project-b", "project-a"],
+        projectNames: ["Versic", "ADE"],
+        projectCount: 2,
+        lastResolvedAt: "2026-04-23T00:00:01.000Z"
+      ),
+    ])
+
+    XCTAssertEqual(service.discoveredHosts.count, 1)
+    XCTAssertEqual(service.discoveredHosts[0].hostName, "MacBook-Pro-567.local")
+    XCTAssertEqual(service.discoveredHosts[0].addresses, ["192.168.1.249"])
+    XCTAssertEqual(service.discoveredHosts[0].projectIds, ["project-b", "project-a"])
+    XCTAssertEqual(service.discoveredHosts[0].projectNames, ["Versic", "ADE"])
   }
 
   @MainActor
@@ -1243,6 +1646,9 @@ final class ADETests: XCTestCase {
     try await service.subscribeToChatEvents(sessionId: "session-1")
     XCTAssertEqual(service.localStateRevision, subscriptionRevision)
 
+    try await service.subscribeToChatEvents(sessionId: "session-1", requestSnapshot: true)
+    XCTAssertEqual(service.localStateRevision, subscriptionRevision)
+
     XCTAssertEqual(service.subscribedChatSessionIds, Set(["session-1", "session-2"]))
     XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["sessionId"] as? String }.sorted(), ["session-1", "session-2"])
     XCTAssertEqual(service.chatSubscriptionPayloads().compactMap { $0["maxBytes"] as? Int }, [2_000_000, 2_000_000])
@@ -1322,6 +1728,27 @@ final class ADETests: XCTestCase {
     service.mergeChatEventHistory(sessionId: "session-1", events: [original, tail])
 
     XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [original, tail])
+  }
+
+  @MainActor
+  func testDuplicateChatSubscribeSnapshotDoesNotAdvanceRevision() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let event = AgentChatEventEnvelope(
+      sessionId: "session-1",
+      timestamp: "2026-03-17T00:00:00.000Z",
+      event: .userMessage(text: "Start here", attachments: [], turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil),
+      sequence: 1,
+      provenance: nil
+    )
+
+    service.recordChatEventEnvelope(event)
+    XCTAssertEqual(service.chatEventRevision(for: "session-1"), 1)
+
+    service.mergeChatEventHistory(sessionId: "session-1", events: [event])
+    service.replaceChatEventHistory(sessionId: "session-1", events: [event])
+
+    XCTAssertEqual(service.chatEventHistory(sessionId: "session-1"), [event])
+    XCTAssertEqual(service.chatEventRevision(for: "session-1"), 1)
   }
 
   @MainActor
@@ -1794,6 +2221,44 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceProjectHomeDeduplicatesCachedRowsByRootAndKeepsActive() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    UserDefaults.standard.set("project-active", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-one", forKey: activeProjectRootPathKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-stale', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z'),
+        ('project-active', '/tmp/project-one/', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values
+        ('lane-one', 'project-active', 'One', null, 'worktree', 'main', 'feature/one', '/tmp/project-one/.ade/worktrees/one',
+         null, 0, null, null, null, null, null, 'active', '2026-04-22T00:10:00.000Z', null);
+    """)
+
+    let service = SyncService(database: database)
+
+    XCTAssertEqual(service.projects.map(\.id), ["project-active"])
+    XCTAssertEqual(service.projects.first?.laneCount, 1)
+    XCTAssertEqual(service.activeProjectId, "project-active")
+
+    database.close()
+  }
+
+  @MainActor
   func testSyncServiceRejectsUncachedProjectSelectionWithoutCatalogSwitch() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
@@ -2083,6 +2548,51 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceAdoptsRemoteProjectIdWhenStaleCachedDuplicateStillExists() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    UserDefaults.standard.set("stale-project", forKey: activeProjectIdKey)
+    UserDefaults.standard.set("/tmp/project-one", forKey: activeProjectRootPathKey)
+    UserDefaults.standard.set("host-1", forKey: activeProjectHostIdentityKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    }
+
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('runtime-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z'),
+        ('stale-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    XCTAssertEqual(service.activeProjectId, "stale-project")
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "runtime-project",
+        displayName: "Project One",
+        rootPath: "/tmp/project-one/",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 2,
+        isAvailable: true,
+        isCached: true
+      ),
+    ])
+
+    XCTAssertEqual(service.activeProjectId, "runtime-project")
+    XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-one")
+    XCTAssertEqual(database.currentProjectId(), "runtime-project")
+
+    database.close()
+  }
+
+  @MainActor
   func testSyncServiceSeedsRuntimeProjectRowBeforeHydration() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
@@ -2120,6 +2630,65 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(database.listMobileProjects().first?.rootPath, "/tmp/project-one")
     XCTAssertEqual(service.projects.first?.id, "runtime-project")
     XCTAssertTrue(service.projects.first?.isCached == true)
+
+    database.close()
+  }
+
+  func testDatabaseFindsProofArtifactsAcrossDuplicateProjectRootIds() throws {
+    let database = makeControllerHydrationDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      create table if not exists computer_use_artifacts (
+        id text primary key,
+        project_id text not null,
+        artifact_kind text not null,
+        backend_style text not null,
+        backend_name text not null,
+        source_tool_name text,
+        original_type text,
+        title text not null,
+        description text,
+        uri text not null,
+        storage_kind text not null,
+        mime_type text,
+        metadata_json text not null default '{}',
+        created_at text not null
+      );
+      create table if not exists computer_use_artifact_links (
+        id text primary key,
+        artifact_id text not null,
+        project_id text not null,
+        owner_kind text not null,
+        owner_id text not null,
+        relation text not null default 'attached_to',
+        metadata_json text,
+        created_at text not null
+      );
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('cached-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z'),
+        ('runtime-project', '/tmp/project-one/', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T02:00:00.000Z');
+      insert into computer_use_artifacts (
+        id, project_id, artifact_kind, backend_style, backend_name, source_tool_name, original_type,
+        title, description, uri, storage_kind, mime_type, metadata_json, created_at
+      ) values (
+        'artifact-1', 'runtime-project', 'screenshot', 'manual', 'ade-cli', 'proof attach', 'screenshot',
+        'Runtime proof', 'Attached while the runtime project id was canonical', 'ade-artifact://project/proof.png',
+        'file', 'image/png', '{}', '2026-04-22T02:05:00.000Z'
+      );
+      insert into computer_use_artifact_links (
+        id, artifact_id, project_id, owner_kind, owner_id, relation, metadata_json, created_at
+      ) values (
+        'link-1', 'artifact-1', 'runtime-project', 'chat_session', 'chat-1', 'attached_to', null, '2026-04-22T02:05:00.000Z'
+      );
+    """)
+    database.setActiveProjectId("cached-project")
+
+    let artifacts = database.fetchComputerUseArtifacts(ownerKind: "chat_session", ownerId: "chat-1")
+
+    XCTAssertEqual(artifacts.map(\.id), ["artifact-1"])
+    XCTAssertEqual(artifacts.first?.title, "Runtime proof")
 
     database.close()
   }
@@ -2269,6 +2838,9 @@ final class ADETests: XCTestCase {
 
     let changes = source.exportChangesSince(version: 0)
     XCTAssertFalse(changes.isEmpty)
+    let lanePrimaryKeys = changes.filter { $0.table == "lanes" }.map(\.pk)
+    XCTAssertFalse(lanePrimaryKeys.isEmpty)
+    XCTAssertTrue(lanePrimaryKeys.allSatisfy { $0 == packedDesktopTextPrimaryKey("lane-1") })
 
     let result = try target.applyChanges(changes)
     XCTAssertGreaterThan(result.appliedCount, 0)
@@ -3108,6 +3680,43 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseReplaceLaneSnapshotsSkipsNoOpNotifications() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeLaneHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    defer { database.close() }
+
+    try insertHydrationProjectGraph(into: database)
+    var notificationCount = 0
+    let token = NotificationCenter.default.addObserver(
+      forName: .adeDatabaseDidChange,
+      object: nil,
+      queue: nil
+    ) { _ in
+      notificationCount += 1
+    }
+    defer { NotificationCenter.default.removeObserver(token) }
+
+    let snapshot = makeLaneListSnapshot(
+      id: "lane-primary",
+      name: "Primary",
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    )
+
+    try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
+    XCTAssertEqual(notificationCount, 1)
+    try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
+    XCTAssertEqual(notificationCount, 1)
+  }
+
   func testDatabaseReplaceLaneDetailCachesRichLanePayload() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeControllerHydrationDatabase(baseURL: baseURL)
@@ -3227,6 +3836,62 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseReplaceLaneDetailSkipsNoOpNotifications() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    defer { database.close() }
+
+    try insertHydrationProjectGraph(into: database)
+    var notificationCount = 0
+    let token = NotificationCenter.default.addObserver(
+      forName: .adeDatabaseDidChange,
+      object: nil,
+      queue: nil
+    ) { _ in
+      notificationCount += 1
+    }
+    defer { NotificationCenter.default.removeObserver(token) }
+
+    let snapshot = makeLaneListSnapshot(
+      id: "lane-primary",
+      name: "Primary",
+      laneType: "primary",
+      baseRef: "main",
+      branchRef: "main",
+      worktreePath: "/tmp/project",
+      description: nil,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
+      createdAt: "2026-03-17T00:00:00.000Z",
+      archivedAt: nil
+    )
+    let detail = LaneDetailPayload(
+      lane: snapshot.lane,
+      runtime: snapshot.runtime,
+      stackChain: [],
+      children: [],
+      stateSnapshot: nil,
+      rebaseSuggestion: nil,
+      autoRebaseStatus: nil,
+      conflictStatus: nil,
+      overlaps: [],
+      syncStatus: nil,
+      conflictState: nil,
+      recentCommits: [],
+      diffChanges: nil,
+      stashes: [],
+      envInitProgress: nil,
+      sessions: [],
+      chatSessions: []
+    )
+
+    try database.replaceLaneDetail(detail)
+    XCTAssertEqual(notificationCount, 1)
+    try database.replaceLaneDetail(detail)
+    XCTAssertEqual(notificationCount, 1)
+  }
+
   func testDatabaseReplaceTerminalSessionsHydratesHostSessionProjection() throws {
     let baseURL = makeTemporaryDirectory()
     let database = makeControllerHydrationDatabase(baseURL: baseURL)
@@ -3322,6 +3987,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(session.resumeMetadata?.launch.codexApprovalPolicy, "on-request")
     XCTAssertEqual(session.resumeMetadata?.launch.codexSandbox, "workspace-write")
     XCTAssertEqual(session.resumeMetadata?.launch.codexConfigSource, "flags")
+    XCTAssertTrue(session.manuallyNamed ?? false)
+    database.close()
+  }
+
+  func testDatabaseUpdateSessionMetaPersistsRenamePinnedAndManualName() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    try database.replaceTerminalSessions([
+      TerminalSessionSummary(
+        id: "session-rename",
+        laneId: "lane-primary",
+        laneName: "Primary",
+        ptyId: nil,
+        tracked: true,
+        pinned: false,
+        manuallyNamed: false,
+        goal: nil,
+        toolType: "codex-chat",
+        title: "Original title",
+        status: "running",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        endedAt: nil,
+        exitCode: nil,
+        transcriptPath: "/tmp/session-rename.log",
+        headShaStart: nil,
+        headShaEnd: nil,
+        lastOutputPreview: nil,
+        summary: nil,
+        runtimeState: "running",
+        resumeCommand: "codex",
+        resumeMetadata: nil,
+        chatIdleSinceAt: nil
+      ),
+    ])
+
+    try database.updateSessionMeta(
+      sessionId: "session-rename",
+      title: "Renamed from phone",
+      pinned: true,
+      manuallyNamed: true
+    )
+
+    let session = try XCTUnwrap(database.fetchSessions().first)
+    XCTAssertEqual(session.title, "Renamed from phone")
+    XCTAssertTrue(session.pinned)
     XCTAssertTrue(session.manuallyNamed ?? false)
     database.close()
   }
@@ -3587,6 +4300,49 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseReplacePullRequestHydrationScopesPayloadToActiveProject() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(
+        refreshedCount: 1,
+        prs: [
+          PrSummary(
+            id: "pr-host-project",
+            laneId: "lane-primary",
+            projectId: "host-db-project",
+            repoOwner: "arul",
+            repoName: "ade",
+            githubPrNumber: 99,
+            githubUrl: "https://github.com/arul/ade/pull/99",
+            githubNodeId: nil,
+            title: "Scope to mobile active project",
+            state: "open",
+            baseBranch: "main",
+            headBranch: "ade/scope-pr",
+            checksStatus: "failing",
+            reviewStatus: "pending",
+            additions: 1,
+            deletions: 0,
+            lastSyncedAt: nil,
+            createdAt: "2026-03-17T00:10:00.000Z",
+            updatedAt: "2026-03-17T00:10:00.000Z"
+          ),
+        ],
+        snapshots: []
+      )
+    )
+
+    let prs = database.fetchPullRequests()
+    XCTAssertEqual(prs.map(\.id), ["pr-host-project"])
+    XCTAssertEqual(prs.first?.projectId, "project-1")
+
+    database.close()
+  }
+
   @MainActor
   func testDisconnectKeepsCachedLaneDataAvailable() async throws {
     let baseURL = makeTemporaryDirectory()
@@ -3688,7 +4444,7 @@ final class ADETests: XCTestCase {
 
     let delivery = try await service.sendChatMessage(sessionId: "chat-1", text: "keep this draft moving")
 
-    XCTAssertEqual(delivery, .queued)
+    XCTAssertEqual(delivery, .queued(steerId: nil))
     let queued = service.pendingOperationsForTesting()
     XCTAssertEqual(service.pendingOperationCount, 1)
     XCTAssertEqual(queued.count, 1)
@@ -3894,6 +4650,77 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(repoScopedGitHubPullRequests(from: snapshot).map(\.id), ["repo-pr"])
   }
 
+  func testPrParsedDateHandlesFractionalAndFallbackIsoDates() {
+    let fractional = prParsedDate("2026-05-14T00:00:00.123Z")
+    let fallback = prParsedDate("2026-05-14T00:00:00Z")
+
+    XCTAssertNotNil(fractional)
+    XCTAssertNotNil(fallback)
+    XCTAssertEqual(fallback, prParsedDate("2026-05-14T00:00:00Z"))
+  }
+
+  func testPrDetailSidecarFetchPolicySkipsLocalRevisionAfterInitialLoad() {
+    XCTAssertTrue(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: false, refreshRemote: false))
+    XCTAssertFalse(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: true, refreshRemote: false))
+    XCTAssertTrue(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: true, refreshRemote: true))
+  }
+
+  func testPrChecksSummaryFallsBackToOverallFailingStatus() {
+    let stats = prChecksSummaryStats(checks: [], overallChecksStatus: "failing")
+
+    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 1, pending: 0, pass: 0, total: 1))
+    XCTAssertTrue(prChecksHasFailedSignal(checks: [], overallChecksStatus: "failing"))
+    XCTAssertEqual(prChecksEmptyStateCopy(overallChecksStatus: "failing").title, "Checks failing")
+  }
+
+  func testPrChecksSummaryPrefersSyncedCheckRuns() {
+    let checks = [
+      PrCheck(
+        name: "unit",
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: nil,
+        startedAt: nil,
+        completedAt: nil
+      ),
+    ]
+    let stats = prChecksSummaryStats(checks: checks, overallChecksStatus: "failing")
+
+    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 1, total: 1))
+    XCTAssertFalse(prChecksHasFailedSignal(checks: checks, overallChecksStatus: "failing"))
+  }
+
+  func testPrMergeGateDoesNotShowGreenWhenStatusIsMissing() {
+    let gate = prComputeMergeGate(
+      status: nil,
+      checks: [],
+      summaryChecksStatus: nil,
+      reviewThreadsUnresolved: 0,
+      reviewsNeeded: 0,
+      reviewsHave: 0,
+      capabilities: nil
+    )
+
+    XCTAssertEqual(gate.tone, .amber)
+    XCTAssertEqual(gate.subline, "Waiting for synced PR status")
+  }
+
+  func testPrMergeGateUsesSummaryFailingStatusBeforeCheckRowsSync() {
+    let gate = prComputeMergeGate(
+      status: nil,
+      checks: [],
+      summaryChecksStatus: "failing",
+      reviewThreadsUnresolved: 0,
+      reviewsNeeded: 0,
+      reviewsHave: 0,
+      capabilities: nil
+    )
+
+    XCTAssertEqual(gate.tone, .red)
+    XCTAssertEqual(gate.subline, "checks failing")
+    XCTAssertEqual(gate.target, .checks)
+  }
+
   func testPrLinkLanePreselectionRequiresExactBranchMatch() {
     func lane(id: String, name: String, branchRef: String) -> LaneSummary {
       LaneSummary(
@@ -3926,6 +4753,8 @@ final class ADETests: XCTestCase {
     ]
 
     XCTAssertEqual(matchedLaneForExactBranch("cursor/windows-port-foundations-ede6", lanes: lanes)?.id, "lane-branch-match")
+    XCTAssertEqual(matchedLaneForExactBranch("refs/heads/cursor/windows-port-foundations-ede6", lanes: lanes)?.id, "lane-branch-match")
+    XCTAssertEqual(matchedLaneForExactBranch("origin/cursor/windows-port-foundations-ede6", lanes: lanes)?.id, "lane-branch-match")
     XCTAssertNil(matchedLaneForExactBranch("automations overhaul", lanes: lanes))
     XCTAssertNil(matchedLaneForExactBranch("   ", lanes: lanes))
   }
@@ -4114,6 +4943,49 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testCompactSyncSummaryUsesRemoteUpstreamState() {
+    XCTAssertEqual(compactSyncSummary(nil), "Checking remote")
+    XCTAssertEqual(
+      compactSyncSummary(
+        GitUpstreamSyncStatus(
+          hasUpstream: true,
+          upstreamRef: "origin/feature",
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "none"
+        )
+      ),
+      "In sync with remote"
+    )
+    XCTAssertEqual(
+      compactSyncSummary(
+        GitUpstreamSyncStatus(
+          hasUpstream: true,
+          upstreamRef: "origin/feature",
+          ahead: 2,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "push"
+        )
+      ),
+      "2 ahead remote"
+    )
+    XCTAssertEqual(
+      compactSyncSummary(
+        GitUpstreamSyncStatus(
+          hasUpstream: false,
+          upstreamRef: nil,
+          ahead: 0,
+          behind: 0,
+          diverged: false,
+          recommendedAction: "publish"
+        )
+      ),
+      "No upstream"
+    )
+  }
+
   func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
     let emptyState = laneRootEmptyState(
       connectionState: .disconnected,
@@ -4280,6 +5152,36 @@ final class ADETests: XCTestCase {
         hostReachable: true,
         chatSendQueueable: false
       )
+    )
+  }
+
+  func testWorkChatActiveTurnUsesSteerAndClaudeOnlyManualDispatch() {
+    let activeSummary = makeAgentChatSessionSummary(provider: "codex", status: "active")
+    XCTAssertTrue(workChatShouldSteerActiveTurn(session: nil, summary: activeSummary))
+
+    let idleSummary = makeAgentChatSessionSummary(provider: "codex", status: "idle")
+    XCTAssertFalse(workChatShouldSteerActiveTurn(session: nil, summary: idleSummary))
+
+    let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
+    XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
+
+    let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
+    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: nil, summary: claudeSummary))
+    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil))
+    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: nil, summary: activeSummary))
+    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "cursor"), summary: nil))
+  }
+
+  func testSyncChatMessageDeliveryParsesQueuedSteerResult() {
+    XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": true]), .queued(steerId: "steer-1"))
+    XCTAssertEqual(syncChatMessageDelivery(from: ["ok": true, "steerId": "steer-1", "queued": false]), .sent)
+    XCTAssertEqual(syncChatMessageDelivery(from: NSNull()), .sent)
+  }
+
+  func testWorkChatLiveObservationKeyUsesCoalescedNotificationRevision() {
+    XCTAssertEqual(
+      workChatLiveObservationKey(sessionId: "chat-1", chatEventNotificationRevision: 7),
+      "chat-1-7"
     )
   }
 
@@ -4738,6 +5640,17 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testFilesDetailRefreshDelayOnlyThrottlesWarmContent() throws {
+    XCTAssertNil(filesDetailRefreshDelay(hasLoadedBlob: false, elapsedSinceLastLoad: 0.1))
+    XCTAssertNil(filesDetailRefreshDelay(hasLoadedBlob: true, elapsedSinceLastLoad: 0.9, minimumInterval: 0.75))
+    let delayed = try XCTUnwrap(filesDetailRefreshDelay(hasLoadedBlob: true, elapsedSinceLastLoad: 0.2, minimumInterval: 0.75))
+    XCTAssertEqual(
+      delayed,
+      0.55,
+      accuracy: 0.001
+    )
+  }
+
   func testDatabaseCachesFilesWorkspaceDirectoryBlobDiffAndHistorySnapshots() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
@@ -5133,6 +6046,29 @@ final class ADETests: XCTestCase {
 
     let session = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "waiting-input", status: "running")
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: session, summary: nil), "awaiting-input")
+
+    let crdtOnlySession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "exited", status: "awaiting_input")
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: crdtOnlySession, summary: nil), "awaiting-input")
+
+    let staleCompletedSummary = makeAgentChatSessionSummary(status: "completed", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: crdtOnlySession, summary: staleCompletedSummary), "awaiting-input")
+  }
+
+  func testWorkChatComposerPlaceholderDistinguishesMissingPromptDetails() {
+    XCTAssertTrue(workChatComposerBlocksFreeformInput(pendingInputCount: 0, sessionStatus: "awaiting-input"))
+    XCTAssertTrue(workChatAwaitingPromptDetailsMissing(pendingInputCount: 0, sessionStatus: "awaiting-input"))
+    XCTAssertEqual(
+      workChatComposerPlaceholder(pendingInputCount: 0, sessionStatus: "awaiting-input"),
+      "Waiting for prompt details..."
+    )
+    XCTAssertEqual(
+      workChatComposerPlaceholder(pendingInputCount: 1, sessionStatus: "awaiting-input"),
+      "Answer the prompt above..."
+    )
+    XCTAssertEqual(
+      workChatComposerPlaceholder(pendingInputCount: 0, sessionStatus: "idle"),
+      "Type to vibecode..."
+    )
   }
 
   func testWorkChatStatusNormalizationFallsBackToSessionRuntimeStateAndTerminalState() {
@@ -5144,6 +6080,9 @@ final class ADETests: XCTestCase {
 
     let idleSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "idle", status: "running")
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: idleSession, summary: nil), "idle")
+
+    let staleActiveSummary = makeAgentChatSessionSummary(status: "active", awaitingInput: false)
+    XCTAssertEqual(normalizedWorkChatSessionStatus(session: idleSession, summary: staleActiveSummary), "idle")
 
     let endedSession = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "stopped", status: "exited")
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: endedSession, summary: nil), "ended")
@@ -5165,6 +6104,88 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(isChatSession(makeTerminalSessionSummary(toolType: "\ncustom-chat\t")))
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: "   ")))
     XCTAssertFalse(isChatSession(makeTerminalSessionSummary(toolType: nil)))
+  }
+
+  @MainActor
+  func testSyncActiveSessionsKeepsFailedChatsForAttentionDrawer() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'
+      );
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values (
+        'lane-1', 'project-1', 'Primary', 'primary', 'main', 'main', '/tmp/project', 'active', '2026-04-20T00:00:00.000Z'
+      );
+    """)
+
+    try database.replaceTerminalSessions([
+      makeTerminalSessionSummary(
+        id: "failed-chat",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "codex-chat",
+        runtimeState: "exited",
+        status: "failed",
+        title: "Mobile failed chat",
+        lastOutputPreview: "Tool call failed",
+        startedAt: "2026-04-20T00:01:00.000Z"
+      ),
+      makeTerminalSessionSummary(
+        id: "completed-chat",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "codex-chat",
+        runtimeState: "exited",
+        status: "completed",
+        title: "Completed chat",
+        startedAt: "2026-04-20T00:02:00.000Z"
+      ),
+      makeTerminalSessionSummary(
+        id: "awaiting-chat",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "codex-chat",
+        runtimeState: "exited",
+        status: "awaiting_input",
+        title: "Mobile awaiting chat",
+        lastOutputPreview: "Approval needed",
+        startedAt: "2026-04-20T00:02:30.000Z"
+      ),
+      makeTerminalSessionSummary(
+        id: "failed-shell",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "shell",
+        runtimeState: "exited",
+        status: "failed",
+        title: "Failed shell",
+        startedAt: "2026-04-20T00:03:00.000Z"
+      ),
+    ])
+
+    let service = SyncService(database: database)
+    service.refreshActiveSessionsAndSnapshot()
+
+    let failed = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "failed-chat" }))
+    XCTAssertEqual(failed.status, "failed")
+    XCTAssertEqual(failed.title, "Mobile failed chat")
+    XCTAssertEqual(failed.preview, "Tool call failed")
+    XCTAssertFalse(failed.awaitingInput)
+    let awaiting = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "awaiting-chat" }))
+    XCTAssertEqual(awaiting.status, "awaiting_input")
+    XCTAssertEqual(awaiting.title, "Mobile awaiting chat")
+    XCTAssertTrue(awaiting.awaitingInput)
+    XCTAssertEqual(service.awaitingInputSessionsCount, 1)
+    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
+    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
+    database.close()
   }
 
   func testTerminalResumeTargetDetectionMatchesDesktopResumeAvailability() {
@@ -5222,6 +6243,7 @@ final class ADETests: XCTestCase {
       "codexSandbox": "workspace-write",
       "codexConfigSource": "host",
       "opencodePermissionMode": "edit",
+      "droidPermissionMode": "auto-low",
       "cursorModeSnapshot": [
         "currentModeId": "ask",
         "availableModeIds": ["agent", "ask", "manual"],
@@ -5261,6 +6283,7 @@ final class ADETests: XCTestCase {
       "lastOutputPreview": "Working...",
       "summary": "Primary chat session",
       "awaitingInput": true,
+      "pendingInputItemId": "pending-item-1",
       "threadId": "thread-1",
       "requestedCwd": "apps/ios/ADE",
     ]
@@ -5270,6 +6293,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(summary.sessionId, "chat-1")
     XCTAssertEqual(summary.provider, "cursor")
+    XCTAssertEqual(summary.droidPermissionMode, "auto-low")
     XCTAssertEqual(summary.cursorModeId, "ask")
     XCTAssertEqual(summary.cursorModeSnapshot, .object([
       "currentModeId": .string("ask"),
@@ -5279,6 +6303,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.5))
     XCTAssertEqual(summary.completion?.artifacts?.first?.reference, "docs/transcript.md")
     XCTAssertTrue(summary.awaitingInput ?? false)
+    XCTAssertEqual(summary.pendingInputItemId, "pending-item-1")
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
@@ -5584,6 +6609,109 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), ["I'm Codex, based on GPT-5."])
   }
 
+  func testPreferredWorkTranscriptReplacesTrimmedLiveTailWithFullFallbackText() {
+    let fullText = (1...200).map(String.init).joined(separator: "\n")
+    let tailText = (121...200).map(String.init).joined(separator: "\n")
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: nil,
+        event: .assistantText(text: fullText, turnId: "turn-1", itemId: nil)
+      ),
+    ]
+    let liveTail = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 98,
+        event: .assistantText(text: tailText, turnId: "turn-1", itemId: "msg-1")
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: liveTail,
+      fallback: fallback,
+      eventTranscript: liveTail
+    )
+    let messages = buildWorkChatMessages(from: preferred)
+
+    XCTAssertEqual(preferred.count, 1)
+    XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), [fullText])
+  }
+
+  func testPreferredWorkTranscriptDoesNotBackfillQueuedSteerAsPlainUserMessage() {
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "ship it", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: live,
+      fallback: fallback,
+      eventTranscript: live
+    )
+
+    XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), [])
+    XCTAssertEqual(derivePendingWorkSteers(from: preferred).map(\.id), ["steer-1"])
+  }
+
+  func testLiveActiveTranscriptPreventsFallbackFromMaskingQueuedSteers() {
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: nil,
+        event: .assistantText(text: "old canonical reply", turnId: "turn-old", itemId: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .status(turnStatus: "started", message: nil, turnId: "turn-active")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "keep this staged", turnId: "turn-active", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:04.000Z",
+        sequence: 4,
+        event: .systemNotice(kind: "info", message: "Message queued (#1) — will be sent after the current turn.", detail: nil, turnId: "turn-active", steerId: "steer-1")
+      ),
+    ]
+
+    XCTAssertFalse(workChatShouldPreferFallbackTranscript(
+      fallbackTranscript: fallback,
+      sessionStatus: "idle",
+      liveTranscript: live
+    ))
+
+    let preferred = preferredWorkTranscript(
+      current: [],
+      fallback: fallback,
+      eventTranscript: live
+    )
+    XCTAssertEqual(derivePendingWorkSteers(from: preferred).map(\.id), ["steer-1"])
+  }
+
   func testPendingWorkInputItemIdsTracksResolvedApprovalAndQuestionEvents() {
     let transcript = [
       WorkChatEnvelope(
@@ -5803,6 +6931,12 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:03.000Z",
         sequence: 3,
+        event: .systemNotice(kind: "info", message: "Message queued (#1) — will be sent after the current turn.", detail: nil, turnId: "turn-1", steerId: "steer-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
         event: .userMessage(text: "also run tests", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
       ),
     ]
@@ -5917,6 +7051,41 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(visibleWorkTimelineEntries(from: entries, visibleCount: 10).map(\.id), entries.map(\.id))
   }
 
+  func testAssistantMessagePreviewBoundsHugeResponses() {
+    let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+
+    let firstPage = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageInitialLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
+    )
+
+    XCTAssertTrue(firstPage.isTruncated)
+    XCTAssertEqual(firstPage.visibleLineCount, 48)
+    XCTAssertEqual(firstPage.totalLineCount, 5000)
+    XCTAssertTrue(firstPage.text.contains("48. Line 48"))
+    XCTAssertFalse(firstPage.text.contains("49. Line 49"))
+
+    let secondPageBudget = workAssistantMessageInitialLineBudget + workAssistantMessageLineBudgetStep
+    let secondPage = workAssistantMessagePreview(
+      markdown,
+      lineBudget: secondPageBudget,
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: secondPageBudget)
+    )
+
+    XCTAssertEqual(secondPage.visibleLineCount, 96)
+    XCTAssertTrue(secondPage.text.contains("96. Line 96"))
+    XCTAssertFalse(secondPage.text.contains("97. Line 97"))
+  }
+
+  func testWorkChatAccessibilityPreviewCapsHugeMessages() {
+    let text = String(repeating: "x", count: workChatAccessibilityPreviewLimit + 50)
+    let preview = workChatAccessibilityPreview(text)
+
+    XCTAssertEqual(preview.count, workChatAccessibilityPreviewLimit + 3)
+    XCTAssertTrue(preview.hasSuffix("..."))
+  }
+
   func testParseMarkdownBlocksUsesStableIdsAcrossRepeatedCalls() {
     let markdown = """
     # Heading
@@ -6008,6 +7177,16 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(gpt55?.tier, .flagship)
     XCTAssertNotNil(ADEColor.modelBrand(for: "gpt-5.5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.5"), ["low", "medium", "high", "xhigh"])
+  }
+
+  func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-4-6"), ["low", "medium", "high"])
+    XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
   }
 
   func testDynamicWorkModelCatalogBuildsFromLiveHostModels() {
@@ -6232,6 +7411,48 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(filtered.map(\.id), ["terminal-1"])
+  }
+
+  func testWorkFilteredSessionsMatchesLiveTerminalOutputTail() {
+    let terminalSession = makeTerminalSessionSummary(
+      id: "terminal-live",
+      laneId: "lane-1",
+      laneName: "release",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      title: "Phone terminal"
+    )
+    let outputSearch = workSessionOutputSearchIndexBySessionId(buffers: [
+      "terminal-live": "\u{001B}[2m• \u{001B}[0mMOBILE_OK\r\n\u{001B}[1m›\u{001B}[0m",
+    ])
+
+    let filtered = workFilteredSessions(
+      [terminalSession],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      selectedStatus: .running,
+      selectedLaneId: "all",
+      searchText: "mobile_ok",
+      outputSearchBySessionId: outputSearch
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["terminal-live"])
+  }
+
+  func testCtoLiveReloadThrottleSkipsBurstySyncRevisions() {
+    let baseline = Date(timeIntervalSince1970: 1_800_000_000)
+
+    XCTAssertTrue(shouldRunCtoLiveReload(lastReloadAt: nil, now: baseline))
+    XCTAssertFalse(shouldRunCtoLiveReload(lastReloadAt: baseline, now: baseline.addingTimeInterval(0.5)))
+    XCTAssertTrue(shouldRunCtoLiveReload(lastReloadAt: baseline, now: baseline.addingTimeInterval(2.0)))
+  }
+
+  func testStoppableRuntimeSessionIncludesLiveAndIdleTerminalRows() {
+    XCTAssertTrue(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "running", status: "running")))
+    XCTAssertTrue(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "idle", status: "running")))
+    XCTAssertTrue(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "waiting-input", status: "running")))
+    XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "stopped", status: "exited")))
+    XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")))
   }
 
   func testWorkFilteredSessionsHidesRunOwnedRowsLikeDesktop() {
@@ -6630,6 +7851,26 @@ final class ADETests: XCTestCase {
       language: "swift"
     )
     XCTAssertTrue(filesDiffHasChanges(deleted))
+  }
+
+  func testFilesDiffTreatsTruncatedSidesAsUnsafeToMarkClean() {
+    let truncated = FileDiff(
+      path: "large.txt",
+      mode: "modified",
+      original: DiffSide(exists: true, text: "same visible prefix", size: 196_690, isTruncated: true),
+      modified: DiffSide(exists: true, text: "same visible prefix", size: 762_000, isTruncated: true),
+      isBinary: false,
+      language: "text"
+    )
+
+    XCTAssertTrue(filesDiffHasChanges(truncated))
+    XCTAssertEqual(
+      filesDiffPreviewLimit(diff: truncated),
+      FilesPreviewLimit(
+        title: "Diff preview paused",
+        message: "This diff is too large to compare fully on iPhone. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+      )
+    )
   }
 
   func testWorkDisplayLeavesCleanRepeatedLettersAloneEvenWithManyDoubles() {
@@ -7593,7 +8834,9 @@ final class ADETests: XCTestCase {
     title: String? = nil,
     status: String,
     awaitingInput: Bool? = nil,
-    lastActivityAt: String = recentIso8601Fixture()
+    archivedAt: String? = nil,
+    lastActivityAt: String = recentIso8601Fixture(),
+    pendingInputItemId: String? = nil
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: sessionId,
@@ -7629,10 +8872,12 @@ final class ADETests: XCTestCase {
       idleSinceAt: nil,
       startedAt: "2026-03-25T00:00:00.000Z",
       endedAt: nil,
+      archivedAt: archivedAt,
       lastActivityAt: lastActivityAt,
       lastOutputPreview: nil,
       summary: nil,
       awaitingInput: awaitingInput,
+      pendingInputItemId: pendingInputItemId,
       threadId: nil,
       requestedCwd: nil
     )
@@ -7649,7 +8894,8 @@ final class ADETests: XCTestCase {
     lastOutputPreview: String? = nil,
     startedAt: String = recentIso8601Fixture(),
     resumeCommand: String? = nil,
-    resumeMetadata: TerminalResumeMetadata? = nil
+    resumeMetadata: TerminalResumeMetadata? = nil,
+    archivedAt: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -7665,6 +8911,7 @@ final class ADETests: XCTestCase {
       status: status,
       startedAt: startedAt,
       endedAt: nil,
+      archivedAt: archivedAt,
       exitCode: nil,
       transcriptPath: "",
       headShaStart: nil,
@@ -7675,6 +8922,42 @@ final class ADETests: XCTestCase {
       resumeCommand: resumeCommand,
       resumeMetadata: resumeMetadata,
       chatIdleSinceAt: nil
+    )
+  }
+
+  private func makeLaneSummary(
+    id: String,
+    name: String,
+    laneType: String,
+    branchRef: String
+  ) -> LaneSummary {
+    LaneSummary(
+      id: id,
+      name: name,
+      description: nil,
+      laneType: laneType,
+      baseRef: "main",
+      branchRef: branchRef,
+      worktreePath: "/tmp/\(id)",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(
+        dirty: false,
+        ahead: 0,
+        behind: 0,
+        remoteBehind: 0,
+        rebaseInProgress: false
+      ),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-25T00:00:00.000Z",
+      archivedAt: nil
     )
   }
 
@@ -8267,6 +9550,63 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(timestamps, timestamps.sorted(), "Timeline must sort chronologically.")
   }
 
+  func testBuildWorkTimelineKeepsResolvedStructuredQuestionReadable() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "ap-1",
+        "kind": "structured_question",
+        "title": "Mobile question fixture",
+        "body": "Pick a mobile verification path.",
+        "questions": [
+          {
+            "id": "flow",
+            "header": "Flow",
+            "question": "Which Work prompt flow should continue?",
+            "options": [
+              {"label":"Question flow","value":"question_flow"},
+              {"label":"Approval flow","value":"approval_flow"}
+            ]
+          },
+          {
+            "id": "notes",
+            "header": "Notes",
+            "question": "Add an optional note for the mobile audit."
+          }
+        ]
+      }
+    }
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Mobile question fixture", detail: detail, itemId: "ap-1", turnId: "t-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .pendingInputResolved(itemId: "ap-1", resolution: "accepted", turnId: "t-1")
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let questionCard = snapshot.eventCards.first { $0.kind == "question" }
+    XCTAssertEqual(questionCard?.title, "Question asked")
+    XCTAssertEqual(questionCard?.body, "Mobile question fixture\nPick a mobile verification path.")
+    XCTAssertEqual(questionCard?.bullets.first, "Flow: Which Work prompt flow should continue? Options: Question flow, Approval flow")
+    XCTAssertEqual(questionCard?.bullets.last, "Notes: Add an optional note for the mobile audit. Freeform response allowed.")
+    XCTAssertFalse(snapshot.eventCards.contains { $0.kind == "approval" })
+    XCTAssertFalse(snapshot.eventCards.flatMap { [$0.body ?? ""] + $0.bullets }.contains { $0.contains("{") || $0.contains("\"request\"") })
+  }
+
   func testBuildWorkTimelineEmitsInlinePermissionAndSuppressesGenericEventCard() {
     let detail = """
     {"request":{"itemId":"perm-1","kind":"permissions","tool":"functions.GitHub","description":"Allow GitHub MCP"}}
@@ -8291,6 +9631,38 @@ final class ADETests: XCTestCase {
       return false
     }
     XCTAssertTrue(hasPendingPermission, "Expected an inline .pendingPermission timeline entry.")
+  }
+
+  func testBuildWorkTimelineKeepsResolvedPermissionReadable() {
+    let detail = """
+    {"request":{"itemId":"perm-1","kind":"permissions","tool":"functions.GitHub","description":"Allow GitHub MCP"}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Allow", detail: detail, itemId: "perm-1", turnId: "t-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .pendingInputResolved(itemId: "perm-1", resolution: "declined", turnId: "t-1")
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let permissionCard = snapshot.eventCards.first { $0.kind == "permission" }
+    XCTAssertEqual(permissionCard?.title, "Permission requested")
+    XCTAssertEqual(permissionCard?.body, "Allow\nAllow GitHub MCP")
+    XCTAssertEqual(permissionCard?.metadata, ["functions.GitHub"])
+    XCTAssertFalse(snapshot.eventCards.flatMap { [$0.body ?? ""] + $0.bullets }.contains { $0.contains("{") || $0.contains("\"request\"") })
   }
 
   func testBuildWorkTimelineSuppressesRawToolCardWhenPermissionRequestIsPending() {

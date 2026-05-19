@@ -47,7 +47,7 @@ import { createMemoryService } from "../../desktop/src/main/services/memory/memo
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
-import type { createWorkerRevisionService } from "../../desktop/src/main/services/cto/workerRevisionService";
+import { createWorkerRevisionService } from "../../desktop/src/main/services/cto/workerRevisionService";
 import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
@@ -708,6 +708,11 @@ export async function createAdeRuntime(args: {
     workerAgentService,
     projectConfigService,
   });
+  const workerRevisionService = createWorkerRevisionService({
+    db,
+    projectId,
+    workerAgentService,
+  });
   const missionBudgetService = createMissionBudgetService({
     db,
     logger,
@@ -1077,6 +1082,7 @@ export async function createAdeRuntime(args: {
       agentChatService,
       workerAgentService,
       workerBudgetService,
+      workerRevisionService,
       workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
       ctoStateService,
       flowPolicyService: headlessLinearServices.flowPolicyService,
@@ -1158,6 +1164,7 @@ export async function createAdeRuntime(args: {
     workerAgentService,
     adeProjectService,
     workerBudgetService,
+    workerRevisionService,
     githubService: headlessLinearServices.githubService as never,
     workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
     workerHeartbeatService: headlessLinearServices.workerHeartbeatService,

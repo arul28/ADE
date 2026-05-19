@@ -28,74 +28,135 @@ struct CtoIdentityEditor: View {
 
   var body: some View {
     NavigationStack {
-      Form {
-        if let errorMessage {
+      VStack(spacing: 0) {
+        editorHeader
+
+        Form {
+          if let errorMessage {
+            Section {
+              Text(errorMessage)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.danger)
+            }
+          }
+
+          Section("Name") {
+            TextField("CTO", text: $localName)
+              .textInputAutocapitalization(.words)
+              .disableAutocorrection(false)
+          }
+
+          Section("Personality") {
+            VStack(spacing: 8) {
+              ForEach(presets, id: \.id) { preset in
+                ADEOptionButton(
+                  title: preset.label,
+                  subtitle: personalityDescription(for: preset.id),
+                  systemImage: personalityIcon(for: preset.id),
+                  isSelected: localPersonality == preset.id,
+                  tint: ADEColor.ctoAccent
+                ) {
+                  localPersonality = preset.id
+                }
+              }
+            }
+          }
+
+          Section("Model") {
+            TextField("anthropic", text: $localProvider)
+              .textInputAutocapitalization(.never)
+              .disableAutocorrection(true)
+              .font(.system(.body, design: .monospaced))
+            TextField("claude-sonnet-4-6", text: $localModel)
+              .textInputAutocapitalization(.never)
+              .disableAutocorrection(true)
+              .font(.system(.body, design: .monospaced))
+          }
+
           Section {
-            Text(errorMessage)
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.danger)
+            TextEditor(text: $localExtension)
+              .font(.system(.body))
+              .frame(minHeight: 140)
+          } header: {
+            Text("System prompt extension")
           }
         }
-
-        Section("Name") {
-          TextField("CTO", text: $localName)
-            .textInputAutocapitalization(.words)
-            .disableAutocorrection(false)
-        }
-
-        Section("Personality") {
-          Picker("Personality", selection: $localPersonality) {
-            ForEach(presets, id: \.id) { preset in
-              Text(preset.label).tag(preset.id)
-            }
-          }
-          .pickerStyle(.inline)
-          .labelsHidden()
-        }
-
-        Section("Model") {
-          TextField("anthropic", text: $localProvider)
-            .textInputAutocapitalization(.never)
-            .disableAutocorrection(true)
-            .font(.system(.body, design: .monospaced))
-          TextField("claude-sonnet-4-6", text: $localModel)
-            .textInputAutocapitalization(.never)
-            .disableAutocorrection(true)
-            .font(.system(.body, design: .monospaced))
-        }
-
-        Section("System prompt extension") {
-          TextEditor(text: $localExtension)
-            .font(.system(.body))
-            .frame(minHeight: 140)
-        }
+        .scrollContentBackground(.hidden)
       }
-      .scrollContentBackground(.hidden)
       .adeScreenBackground()
-      .navigationTitle("Edit identity")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarLeading) {
-          Button("Cancel") { dismiss() }
-            .disabled(isSaving)
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-          Button {
-            Task { await save() }
-          } label: {
-            if isSaving {
-              ProgressView().controlSize(.small)
-            } else {
-              Text("Save").fontWeight(.semibold)
-            }
-          }
-          .disabled(isSaving)
-        }
-      }
+      .navigationTitle("")
+      .toolbar(.hidden, for: .navigationBar)
     }
     .presentationDetents([.large])
     .tint(ADEColor.accent)
     .onAppear(perform: hydrate)
+  }
+
+  private var editorHeader: some View {
+    HStack {
+      Button("Cancel") { dismiss() }
+        .buttonStyle(.glass)
+        .disabled(isSaving)
+        .accessibilityLabel("Cancel edit identity")
+
+      Spacer(minLength: 0)
+
+      Text("Edit identity")
+        .font(.headline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      Spacer(minLength: 0)
+
+      Button {
+        Task { await save() }
+      } label: {
+        if isSaving {
+          ProgressView().controlSize(.small)
+        } else {
+          Text("Save").fontWeight(.semibold)
+        }
+      }
+      .buttonStyle(.glass)
+      .disabled(isSaving)
+      .accessibilityLabel("Save edit identity")
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 10)
+    .background(ADEColor.pageBackground.opacity(0.98))
+  }
+
+  private func personalityDescription(for id: String) -> String {
+    switch id {
+    case "professional":
+      return "Measured, direct planning."
+    case "strategic":
+      return "Long-range tradeoffs and sequencing."
+    case "hands_on":
+      return "Operational, implementation-first guidance."
+    case "casual":
+      return "Lower-formality check-ins."
+    case "minimal":
+      return "Brief status and next actions."
+    default:
+      return "Use the prompt extension below."
+    }
+  }
+
+  private func personalityIcon(for id: String) -> String {
+    switch id {
+    case "strategic":
+      return "map"
+    case "hands_on":
+      return "hammer"
+    case "casual":
+      return "bubble.left.and.text.bubble.right"
+    case "minimal":
+      return "line.3.horizontal.decrease"
+    case "custom":
+      return "slider.horizontal.3"
+    default:
+      return "person.crop.circle"
+    }
   }
 
   private func hydrate() {

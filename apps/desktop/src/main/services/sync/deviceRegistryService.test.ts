@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../../shared/types/sync";
+import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../shared/types/sync";
 import { openKvDb } from "../state/kvDb";
 import { createDeviceRegistryService } from "./deviceRegistryService";
 
@@ -185,6 +185,22 @@ describe("deviceRegistryService", () => {
 
     expect(registry2.getNotificationPreferences(local.deviceId)?.chat.awaitingInput).toBe(false);
     db2.close();
+  });
+
+  it("drops inactive per-session notification overrides while normalizing", () => {
+    const prefs = normalizeNotificationPreferences({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      perSessionOverrides: {
+        inactive: { muted: false, awaitingInputOnly: false },
+        muted: { muted: true, awaitingInputOnly: false },
+        awaiting: { muted: false, awaitingInputOnly: true },
+      },
+    });
+
+    expect(prefs.perSessionOverrides).toEqual({
+      muted: { muted: true, awaitingInputOnly: false },
+      awaiting: { muted: false, awaitingInputOnly: true },
+    });
   });
 
   it("stores workspace Live Activity update tokens and invalidates only the rejected token", async () => {

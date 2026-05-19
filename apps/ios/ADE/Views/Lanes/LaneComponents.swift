@@ -110,6 +110,28 @@ struct LaneLaunchTile: View {
   }
 }
 
+// MARK: - Option button
+
+struct LaneOptionButton: View {
+  let title: String
+  var subtitle: String? = nil
+  var systemImage: String? = nil
+  let isSelected: Bool
+  var tint: Color = ADEColor.accent
+  let action: () -> Void
+
+  var body: some View {
+    ADEOptionButton(
+      title: title,
+      subtitle: subtitle,
+      systemImage: systemImage,
+      isSelected: isSelected,
+      tint: tint,
+      action: action
+    )
+  }
+}
+
 // MARK: - Session card
 
 struct LaneSessionCard: View {
@@ -211,10 +233,22 @@ struct LaneTextField: View {
   }
 
   var body: some View {
-    TextField(title, text: $text, axis: .vertical)
+    TextField(title, text: $text)
       .textFieldStyle(.plain)
       .foregroundStyle(ADEColor.textPrimary)
-      .adeInsetField()
+      .textInputAutocapitalization(title.localizedCaseInsensitiveContains("path") ? .never : .sentences)
+      .autocorrectionDisabled(title.localizedCaseInsensitiveContains("path"))
+      .submitLabel(.done)
+      .padding(12)
+      .frame(minHeight: 44, maxHeight: 56, alignment: .center)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .accessibilityLabel(title)
   }
 }
 

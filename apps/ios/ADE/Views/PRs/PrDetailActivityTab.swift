@@ -250,6 +250,10 @@ struct PrActivityTab: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
       }
+
+      Color.clear
+        .frame(height: 88)
+        .accessibilityHidden(true)
     }
     .background(timelineRail, alignment: .topLeading)
   }

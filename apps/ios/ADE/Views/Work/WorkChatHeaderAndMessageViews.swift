@@ -88,12 +88,7 @@ struct WorkSessionHeader: View {
 /// the per-message timestamp for the same reason.
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
-
-  /// When true, this row is the active assistant message in a streaming turn.
-  /// Drives the subtle streaming shimmer treatment. Defaults to `false` so
-  /// existing call sites keep working; the session view sets it to `true`
-  /// for the latest assistant message while `sessionStatus == "active"`.
-  var isLive: Bool = false
+  @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
@@ -123,7 +118,62 @@ struct WorkChatMessageBubble: View {
   private var assistantRow: some View {
     // Model name intentionally absent here. Usage / composer show model; the
     // turn line is time-only.
-    WorkMarkdownRenderer(markdown: message.markdown)
+    let preview = workAssistantMessagePreview(
+      message.markdown,
+      lineBudget: assistantLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget)
+    )
+
+    return VStack(alignment: .leading, spacing: 10) {
+      if preview.isTruncated {
+        Text(preview.text)
+          .font(.body)
+          .foregroundStyle(ADEColor.textPrimary)
+          .tint(ADEColor.accent)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .textSelection(.enabled)
+          .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
+      } else {
+        WorkMarkdownRenderer(markdown: preview.text)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
+      }
+
+      if preview.isTruncated {
+        HStack(spacing: 8) {
+          Text("\(preview.visibleLineCount) of \(preview.totalLineCount) lines")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+
+          Spacer(minLength: 0)
+
+          Button {
+            UIPasteboard.general.string = message.markdown
+          } label: {
+            Label("Copy full", systemImage: "doc.on.doc")
+              .labelStyle(.titleAndIcon)
+          }
+          .buttonStyle(.glass)
+          .tint(ADEColor.textSecondary)
+          .controlSize(.mini)
+
+          if assistantLineBudget < min(preview.totalLineCount, workAssistantMessageMaxLineBudget) {
+            Button {
+              assistantLineBudget = min(
+                assistantLineBudget + workAssistantMessageLineBudgetStep,
+                workAssistantMessageMaxLineBudget
+              )
+            } label: {
+              Label("Show more", systemImage: "chevron.down")
+                .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.glass)
+            .tint(ADEColor.accent)
+            .controlSize(.mini)
+          }
+        }
+      }
+    }
       .padding(.horizontal, 14)
       .padding(.vertical, 12)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -133,7 +183,6 @@ struct WorkChatMessageBubble: View {
           .stroke(accent.opacity(0.16), lineWidth: 0.6)
       )
       .frame(maxWidth: .infinity, alignment: .leading)
-      .adeStreamingShimmer(isActive: isLive, cornerRadius: 14)
     .contextMenu {
       Button {
         UIPasteboard.general.string = message.markdown
@@ -141,8 +190,7 @@ struct WorkChatMessageBubble: View {
         Label("Copy message", systemImage: "doc.on.doc")
       }
     }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Assistant message. \(message.markdown)")
+    .accessibilityElement(children: .contain)
     .adeInspectable(
       "Work.Chat.MessageBubble.Assistant",
       metadata: [
@@ -185,7 +233,7 @@ struct WorkChatMessageBubble: View {
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Your message. \(message.markdown)")
+    .accessibilityLabel("Your message. \(workChatAccessibilityPreview(message.markdown))")
     .adeInspectable(
       "Work.Chat.MessageBubble.User",
       metadata: [
@@ -238,6 +286,95 @@ struct WorkChatMessageBubble: View {
       .accessibilityLabel("Written by \(label)")
     }
   }
+}
+
+let workAssistantMessageInitialLineBudget = 48
+let workAssistantMessageLineBudgetStep = 48
+let workAssistantMessageMaxLineBudget = 192
+let workAssistantMessageInitialCharacterBudget = 4_000
+let workAssistantMessageCharacterBudgetStep = 4_000
+let workChatAccessibilityPreviewLimit = 800
+
+struct WorkAssistantMessagePreview {
+  let text: String
+  let isTruncated: Bool
+  let visibleLineCount: Int
+  let totalLineCount: Int
+}
+
+func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
+  let extraSteps = max((lineBudget - workAssistantMessageInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
+  return workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+}
+
+func workAssistantMessagePreview(
+  _ markdown: String,
+  lineBudget: Int,
+  characterBudget: Int
+) -> WorkAssistantMessagePreview {
+  let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+  let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+  guard !lines.isEmpty else {
+    return WorkAssistantMessagePreview(text: markdown, isTruncated: false, visibleLineCount: 0, totalLineCount: 0)
+  }
+
+  let clampedLineBudget = max(lineBudget, 1)
+  let clampedCharacterBudget = max(characterBudget, 256)
+  if lines.count <= clampedLineBudget && normalized.count <= clampedCharacterBudget {
+    return WorkAssistantMessagePreview(
+      text: markdown,
+      isTruncated: false,
+      visibleLineCount: lines.count,
+      totalLineCount: lines.count
+    )
+  }
+
+  var renderedLines: [String] = []
+  renderedLines.reserveCapacity(min(lines.count, clampedLineBudget))
+  var usedCharacters = 0
+
+  for line in lines {
+    guard renderedLines.count < clampedLineBudget else { break }
+    let newlineCost = renderedLines.isEmpty ? 0 : 1
+    let remaining = clampedCharacterBudget - usedCharacters - newlineCost
+    guard remaining > 0 else { break }
+
+    if line.count > remaining {
+      renderedLines.append(String(line.prefix(remaining)))
+      usedCharacters = clampedCharacterBudget
+      break
+    }
+
+    renderedLines.append(line)
+    usedCharacters += line.count + newlineCost
+  }
+
+  let previewText = renderedLines.joined(separator: "\n")
+  return WorkAssistantMessagePreview(
+    text: previewText,
+    isTruncated: renderedLines.count < lines.count || previewText.count < normalized.count,
+    visibleLineCount: renderedLines.count,
+    totalLineCount: lines.count
+  )
+}
+
+func workAssistantMessageAccessibilityLabel(_ preview: WorkAssistantMessagePreview) -> String {
+  if preview.isTruncated {
+    return "Assistant response preview. \(preview.visibleLineCount) of \(preview.totalLineCount) lines shown."
+  }
+  let trimmed = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else {
+    return "Assistant response."
+  }
+  if trimmed.count <= 500 {
+    return "Assistant response. \(trimmed)"
+  }
+  return "Assistant response preview. \(trimmed.prefix(500))"
+}
+
+func workChatAccessibilityPreview(_ markdown: String) -> String {
+  guard markdown.count > workChatAccessibilityPreviewLimit else { return markdown }
+  return "\(markdown.prefix(workChatAccessibilityPreviewLimit))..."
 }
 
 /// Centered time pill that introduces each turn (model lives in the usage

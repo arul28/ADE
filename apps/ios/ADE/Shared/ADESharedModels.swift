@@ -30,6 +30,9 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     public let elapsedSeconds: Int
     /// Truncated last-output preview. Always <= ~120 chars.
     public let preview: String?
+    /// Current pending input / approval item id when `awaitingInput == true`.
+    /// Optional so older snapshots from previous app versions decode cleanly.
+    public let pendingInputItemId: String?
     /// 0...1 when derivable; nil when the phase is open-ended.
     public let progress: Double?
     /// "planning" | "development" | "testing" | "validation" | "pr" | ...
@@ -47,6 +50,7 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         lastActivityAt: Date,
         elapsedSeconds: Int,
         preview: String?,
+        pendingInputItemId: String? = nil,
         progress: Double?,
         phase: String?,
         toolCalls: Int
@@ -61,6 +65,7 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.lastActivityAt = lastActivityAt
         self.elapsedSeconds = elapsedSeconds
         self.preview = preview
+        self.pendingInputItemId = pendingInputItemId
         self.progress = progress
         self.phase = phase
         self.toolCalls = toolCalls
@@ -69,7 +74,7 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sessionId, provider, modelId, laneName, title, status,
              awaitingInput, lastActivityAt, elapsedSeconds, preview,
-             progress, phase, toolCalls
+             pendingInputItemId, progress, phase, toolCalls
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +89,7 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.lastActivityAt = try c.decode(Date.self, forKey: .lastActivityAt)
         self.elapsedSeconds = try c.decode(Int.self, forKey: .elapsedSeconds)
         self.preview = try c.decodeIfPresent(String.self, forKey: .preview)
+        self.pendingInputItemId = try c.decodeIfPresent(String.self, forKey: .pendingInputItemId)
         self.progress = try c.decodeIfPresent(Double.self, forKey: .progress)
         self.phase = try c.decodeIfPresent(String.self, forKey: .phase)
         self.toolCalls = try c.decode(Int.self, forKey: .toolCalls)

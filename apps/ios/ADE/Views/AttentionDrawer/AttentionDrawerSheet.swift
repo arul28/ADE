@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 
 /// Presented as a `medium`/`large` sheet from any root screen when the user
@@ -33,9 +34,9 @@ struct AttentionDrawerSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Clear all") {
-                        drawer.markAllSeen()
+                        drawer.clearVisibleItems()
                     }
-                    .disabled(drawer.unreadCount == 0)
+                    .disabled(drawer.items.isEmpty)
                 }
             }
             .adeScreenBackground()
@@ -194,8 +195,8 @@ private struct AttentionDrawerCard: View {
     var body: some View {
         let tint = AttentionIcon.tint(for: item.kind)
 
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onTap) {
                 HStack(alignment: .top, spacing: 12) {
                     AttentionBadge(kind: item.kind, size: 30, pulse: item.kind == .awaitingInput)
 
@@ -218,59 +219,208 @@ private struct AttentionDrawerCard: View {
                             .padding(.top, 4)
                     }
                 }
-
-                AttentionActionRow(attention: item.attentionPayload)
             }
-            .padding(14)
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(tint.opacity(0.16))
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(
-                            RadialGradient(
-                                colors: [tint.opacity(0.22), tint.opacity(0.0)],
-                                center: .topLeading,
-                                startRadius: 0,
-                                endRadius: 200
-                            )
-                        )
-                }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.08), .clear],
-                            startPoint: .top,
-                            endPoint: .center
-                        )
-                    )
-                    .allowsHitTesting(false)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                tint.opacity(0.55),
-                                tint.opacity(0.15),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.75
-                    )
-            )
-            .shadow(color: tint.opacity(0.35), radius: 8, x: 0, y: 4)
-            .shadow(color: Color.black.opacity(0.25), radius: 5, x: 0, y: 2)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(item.title). \(item.subtitle)")
+            .accessibilityHint(item.deepLink == nil ? "" : "Opens the related surface.")
+
+            AttentionDrawerActionRow(item: item, open: onTap)
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.title). \(item.subtitle)")
-        .accessibilityHint(item.deepLink == nil ? "" : "Opens the related surface.")
+        .padding(14)
+        .background(cardBackground(tint: tint))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.06), .clear],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                )
+                .allowsHitTesting(false)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            tint.opacity(0.32),
+                            tint.opacity(0.10),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
+        )
+        .shadow(color: Color.black.opacity(0.18), radius: 3, x: 0, y: 1)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func cardBackground(tint: Color) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(ADEColor.cardBackground.opacity(0.98))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(tint.opacity(0.045))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    RadialGradient(
+                        colors: [tint.opacity(0.06), tint.opacity(0.0)],
+                        center: .topLeading,
+                        startRadius: 0,
+                        endRadius: 180
+                    )
+                )
+        }
+    }
+}
+
+@available(iOS 17.0, *)
+private struct AttentionDrawerActionRow: View {
+    let item: AttentionItem
+    let open: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            switch item.kind {
+            case .awaitingInput:
+                let canAnswerInline = !(item.itemId ?? "").isEmpty
+                if canAnswerInline {
+                    Button(intent: ApproveSessionIntent(sessionId: item.sessionId ?? "", itemId: item.itemId ?? "")) {
+                        AttentionDrawerActionLabel("Approve", systemImage: "checkmark", variant: .primary(ADEColor.success))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(intent: DenySessionIntent(sessionId: item.sessionId ?? "", itemId: item.itemId ?? "")) {
+                        AttentionDrawerActionLabel("Deny", systemImage: "xmark", variant: .danger)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button(action: open) {
+                    AttentionDrawerActionLabel(canAnswerInline ? "Reply" : "Open session", systemImage: "text.bubble", variant: .secondary)
+                }
+                .buttonStyle(.plain)
+
+            case .failed:
+                Button(action: open) {
+                    AttentionDrawerActionLabel("Open agent", systemImage: "arrow.right", variant: .primary(ADEColor.accent))
+                }
+                .buttonStyle(.plain)
+
+                Button(intent: RestartSessionIntent(sessionId: item.sessionId ?? "")) {
+                    AttentionDrawerActionLabel("Restart", systemImage: "arrow.uturn.backward", variant: .secondary)
+                }
+                .buttonStyle(.plain)
+
+            case .ciFailing:
+                Button(action: open) {
+                    AttentionDrawerActionLabel(prLabel("Open"), systemImage: "arrow.triangle.branch", variant: .primary(ADEColor.accent))
+                }
+                .buttonStyle(.plain)
+
+                Button(intent: RetryCheckIntent(prNumber: item.prNumber ?? 0, prId: item.prId ?? "")) {
+                    AttentionDrawerActionLabel("Rerun CI", systemImage: "arrow.uturn.backward", variant: .secondary)
+                }
+                .buttonStyle(.plain)
+
+            case .reviewRequested:
+                Button(action: open) {
+                    AttentionDrawerActionLabel(prLabel("Review"), systemImage: "eye", variant: .primary(ADEColor.accent))
+                }
+                .buttonStyle(.plain)
+
+            case .mergeReady:
+                Button(action: open) {
+                    AttentionDrawerActionLabel(prLabel("Merge"), systemImage: "checkmark.seal", variant: .primary(ADEColor.success))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: open) {
+                    AttentionDrawerActionLabel("View", systemImage: "arrow.right", variant: .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func prLabel(_ verb: String) -> String {
+        if let number = item.prNumber, number > 0 {
+            return "\(verb) #\(number)"
+        }
+        return "\(verb) PR"
+    }
+}
+
+@available(iOS 17.0, *)
+private enum AttentionDrawerActionVariant {
+    case primary(Color)
+    case secondary
+    case danger
+
+    var foreground: Color {
+        switch self {
+        case .primary(let tint): return tint
+        case .secondary: return ADEColor.textPrimary
+        case .danger: return ADEColor.danger
+        }
+    }
+
+    var background: Color {
+        switch self {
+        case .primary(let tint): return tint.opacity(0.18)
+        case .secondary: return ADEColor.surfaceBackground.opacity(0.72)
+        case .danger: return ADEColor.danger.opacity(0.14)
+        }
+    }
+
+    var stroke: Color {
+        switch self {
+        case .primary(let tint): return tint.opacity(0.32)
+        case .secondary: return ADEColor.glassBorder
+        case .danger: return ADEColor.danger.opacity(0.30)
+        }
+    }
+}
+
+@available(iOS 17.0, *)
+private struct AttentionDrawerActionLabel: View {
+    let title: String
+    let systemImage: String?
+    let variant: AttentionDrawerActionVariant
+
+    init(
+        _ title: String,
+        systemImage: String? = nil,
+        variant: AttentionDrawerActionVariant
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.variant = variant
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .bold))
+            }
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+        }
+        .foregroundStyle(variant.foreground)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 10)
+        .background(variant.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(variant.stroke, lineWidth: 0.6)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
 

@@ -64,6 +64,7 @@ public enum ADESharedContainer {
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(snapshot) else { return false }
         defaults.set(data, forKey: workspaceSnapshotKey)
+        defaults.synchronize()
         return true
     }
 

@@ -4863,7 +4863,7 @@ function buildCliSessionStartPlan(
     readValue(args, ["--permission-mode", "--permissions"]) ?? "default";
   if (!isTrackedCliPermissionMode(permissionMode)) {
     throw new CliUsageError(
-      "permissionMode must be one of default, plan, edit, full-auto, or config-toml.",
+      "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
     );
   }
   validateLaunchProfilePermissionMode(provider, permissionMode);
@@ -10678,6 +10678,21 @@ async function runServe(
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   const projectRegistry = new ProjectRegistry(layout);
+  let preferredSyncProjectId: string | null = null;
+  const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
+  if (preferredSyncProjectRoot) {
+    try {
+      preferredSyncProjectId = projectRegistry.add(
+        path.resolve(preferredSyncProjectRoot),
+      ).projectId;
+    } catch (error) {
+      process.stderr.write(
+        `ade serve could not register ADE_PROJECT_ROOT for phone sync: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
+  }
   type ProjectRecord = ReturnType<
     InstanceType<typeof ProjectRegistry>["list"]
   >[number];
@@ -10894,11 +10909,13 @@ async function runServe(
   }
 
   if (syncEnabled) {
-    void scopeRegistry.ensureSyncHost().catch((error: unknown) => {
-      process.stderr.write(
-        `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    });
+    void scopeRegistry
+      .ensureSyncHost(preferredSyncProjectId ?? undefined)
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
   }
 
   process.stderr.write(

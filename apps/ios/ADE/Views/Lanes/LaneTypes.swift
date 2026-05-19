@@ -233,6 +233,22 @@ enum LaneDeleteMode: String, CaseIterable, Identifiable {
     case .remoteBranch: return "Worktree + local + remote"
     }
   }
+
+  var detail: String {
+    switch self {
+    case .worktree: return "Remove the ADE lane and worktree"
+    case .localBranch: return "Also delete the local branch"
+    case .remoteBranch: return "Also delete the remote branch"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .worktree: return "folder.badge.minus"
+    case .localBranch: return "arrow.triangle.branch"
+    case .remoteBranch: return "cloud.slash"
+    }
+  }
 }
 
 // MARK: - Model structs

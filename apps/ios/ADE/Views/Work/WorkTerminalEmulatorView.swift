@@ -45,22 +45,30 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
       self.onViewportChange = onViewportChange
     }
 
-    func updateViewport(_ viewport: WorkTerminalViewport, rawText: String, revision: Int, view: ADETerminalTextView) {
-      guard viewport != lastViewport else { return }
+    @discardableResult
+    func updateViewport(_ viewport: WorkTerminalViewport, rawText: String, revision: Int, view: ADETerminalTextView) -> Bool {
+      guard viewport != lastViewport else { return false }
       lastViewport = viewport
       let columnsChanged = screen.resize(cols: viewport.cols)
-      if columnsChanged || revision != lastRevision || rawText != lastRawText {
+      var didRender = false
+      if columnsChanged || rawText != lastRawText {
         screen.reset()
         screen.write(rawText)
         lastRawText = rawText
-        lastRevision = revision
+        view.render(screen.attributedString(font: view.terminalFont))
+        didRender = true
       }
-      view.render(screen.attributedString(font: view.terminalFont))
+      lastRevision = revision
       onViewportChange(viewport)
+      return didRender
     }
 
-    func render(rawText: String, revision: Int, in view: ADETerminalTextView) {
-      guard revision != lastRevision || rawText != lastRawText else { return }
+    @discardableResult
+    func render(rawText: String, revision: Int, in view: ADETerminalTextView) -> Bool {
+      guard rawText != lastRawText else {
+        lastRevision = revision
+        return false
+      }
       defer {
         lastRevision = revision
         lastRawText = rawText
@@ -74,6 +82,7 @@ struct WorkTerminalEmulatorView: UIViewRepresentable {
         screen.write(rawText)
       }
       view.render(screen.attributedString(font: view.terminalFont))
+      return true
     }
   }
 }
@@ -84,6 +93,8 @@ final class ADETerminalTextView: UIView {
 
   private let textView = UITextView()
   private var lastViewport: WorkTerminalViewport?
+  private var hasRenderedContent = false
+  private var pendingScrollToBottom = false
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -119,17 +130,35 @@ final class ADETerminalTextView: UIView {
 
   override func layoutSubviews() {
     super.layoutSubviews()
+    if pendingScrollToBottom {
+      scrollToBottom()
+    }
     publishViewportIfNeeded()
   }
 
   func render(_ attributed: NSAttributedString) {
     let nearBottom = textView.contentOffset.y + textView.bounds.height >= textView.contentSize.height - 80
+    let shouldStickToBottom = !hasRenderedContent || pendingScrollToBottom || nearBottom
     textView.attributedText = attributed
-    if nearBottom {
-      let bottomY = max(-textView.adjustedContentInset.top, textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom)
-      textView.setContentOffset(CGPoint(x: 0, y: bottomY), animated: false)
+    hasRenderedContent = true
+    if shouldStickToBottom {
+      scrollToBottom()
     }
     publishViewportIfNeeded()
+  }
+
+  private func scrollToBottom() {
+    guard textView.bounds.height > 1 else {
+      pendingScrollToBottom = true
+      return
+    }
+    textView.layoutIfNeeded()
+    let bottomY = max(
+      -textView.adjustedContentInset.top,
+      textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom
+    )
+    textView.setContentOffset(CGPoint(x: 0, y: bottomY), animated: false)
+    pendingScrollToBottom = false
   }
 
   private func publishViewportIfNeeded() {
@@ -137,8 +166,9 @@ final class ADETerminalTextView: UIView {
     let charSize = ("W" as NSString).size(withAttributes: [.font: terminalFont])
     let usableWidth = max(1, bounds.width - textView.textContainerInset.left - textView.textContainerInset.right)
     let usableHeight = max(1, bounds.height - textView.textContainerInset.top - textView.textContainerInset.bottom)
+    let fittedCols = Int(floor(usableWidth / max(1, charSize.width))) - 2
     let viewport = WorkTerminalViewport(
-      cols: max(20, min(240, Int(floor(usableWidth / max(1, charSize.width))))),
+      cols: max(20, min(240, fittedCols)),
       rows: max(4, min(120, Int(floor(usableHeight / max(1, terminalFont.lineHeight)))))
     )
     guard viewport != lastViewport else { return }

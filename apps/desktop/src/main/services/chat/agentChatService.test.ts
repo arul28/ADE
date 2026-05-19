@@ -2941,6 +2941,24 @@ describe("createAgentChatService", () => {
       expect(sessionsWithAutomation.length).toBe(1);
     });
 
+    it("keeps archived sessions by default and can filter them out", async () => {
+      const { service } = createService();
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+      await service.archiveSession({ sessionId: session.id });
+
+      const sessions = await service.listSessions();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.archivedAt).toEqual(expect.any(String));
+
+      await expect(service.listSessions(undefined, { includeArchived: false })).resolves.toEqual([]);
+    });
+
     it("does not expose completion summaries as the session summary before the chat is ended", async () => {
       const { service } = createService();
 
@@ -8376,6 +8394,66 @@ describe("createAgentChatService", () => {
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
     });
 
+    it("does not reapply unchanged Claude permission controls during session updates", async () => {
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-stable-permission",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Ready" }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-stable-permission",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        claudePermissionMode: "bypassPermissions",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Confirm readiness.",
+      });
+      expect(setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+
+      setPermissionMode.mockClear();
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        claudePermissionMode: "bypassPermissions",
+      });
+
+      expect(updated.claudePermissionMode).toBe("bypassPermissions");
+      expect(setPermissionMode).not.toHaveBeenCalled();
+    });
+
     it("uses Claude SDK query controls for plan mode when the wrapper lacks setPermissionMode", async () => {
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
@@ -8827,6 +8905,72 @@ describe("createAgentChatService", () => {
         role: "user",
         text: "Full handoff prompt with all implementation details.",
         displayText: "Pearl UI audit handoff",
+      });
+    });
+
+    it("coalesces streamed assistant fragments before applying transcript limits", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const events: AgentChatEventEnvelope[] = [{
+        sessionId: session.id,
+        timestamp: "2026-05-18T23:40:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "Count to 6000.",
+          turnId: "turn-long",
+        },
+      }];
+      for (let index = 1; index <= 130; index += 1) {
+        events.push({
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:01.000Z",
+          sequence: (index * 2),
+          event: {
+            type: "text",
+            text: `${index}\n`,
+            messageId: "assistant-message-long",
+            turnId: "turn-long",
+          },
+        });
+        events.push({
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:01.000Z",
+          sequence: (index * 2) + 1,
+          event: {
+            type: "text",
+            text: `other-${index}\n`,
+            turnId: "turn-other",
+          },
+        });
+      }
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(events);
+
+      const transcript = await service.getChatTranscript({
+        sessionId: session.id,
+        limit: 100,
+        maxChars: 40_000,
+      });
+
+      expect(transcript.totalEntries).toBe(3);
+      expect(transcript.truncated).toBe(false);
+      expect(transcript.entries).toHaveLength(3);
+      expect(transcript.entries[1]).toMatchObject({
+        role: "assistant",
+        text: expect.stringMatching(/^1\n2\n3/),
+        turnId: "turn-long",
+      });
+      expect(transcript.entries[1]!.text).toContain("\n130");
+      expect(transcript.entries[2]).toMatchObject({
+        role: "assistant",
+        text: expect.stringMatching(/^other-1\nother-2/),
+        turnId: "turn-other",
       });
     });
   });
@@ -14159,6 +14303,10 @@ describe("createAgentChatService", () => {
     );
 
     expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      awaitingInput: true,
+      pendingInputItemId: approvalEvent.event.itemId,
+    });
 
     await service.respondToInput({
       sessionId: session.id,

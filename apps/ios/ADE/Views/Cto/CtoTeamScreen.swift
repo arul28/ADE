@@ -16,6 +16,7 @@ struct CtoTeamScreen: View {
   @State private var showHireSheet = false
   @State private var pendingWakeup: Set<String> = []
   @State private var wakeupNotice: String?
+  @State private var lastLiveReloadAt: Date?
 
   var body: some View {
     ScrollView {
@@ -92,6 +93,9 @@ struct CtoTeamScreen: View {
     .task { if displayAgents.isEmpty { await load(force: true) } }
     .task(id: ctoAgentsLiveReloadKey) {
       guard ctoAgentsLiveReloadKey != nil else { return }
+      let now = Date()
+      guard shouldRunCtoLiveReload(lastReloadAt: lastLiveReloadAt, now: now) else { return }
+      lastLiveReloadAt = now
       await load(force: true)
     }
     .sheet(isPresented: $showHireSheet) {
@@ -330,6 +334,7 @@ struct CtoTeamScreen: View {
     if case .success(let snap) = budgetResult {
       budget = snap
     }
+    lastLiveReloadAt = Date()
   }
 
   private var displayAgents: [AgentIdentity] {

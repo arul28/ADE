@@ -97,6 +97,62 @@ struct ADEGlassActionButton: View {
   }
 }
 
+struct ADEOptionButton: View {
+  let title: String
+  var subtitle: String? = nil
+  var systemImage: String? = nil
+  let isSelected: Bool
+  var tint: Color = ADEColor.accent
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .center, spacing: 10) {
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(isSelected ? tint : ADEColor.textSecondary)
+            .frame(width: 20)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+          if let subtitle, !subtitle.isEmpty {
+            Text(subtitle)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(2)
+              .multilineTextAlignment(.leading)
+          }
+        }
+        Spacer(minLength: 0)
+        if isSelected {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(tint)
+        }
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(isSelected ? tint.opacity(0.13) : ADEColor.surfaceBackground.opacity(0.10))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(isSelected ? tint.opacity(0.55) : ADEColor.glassBorder, lineWidth: isSelected ? 1 : 0.5)
+      )
+      .glassEffect(in: .rect(cornerRadius: 12))
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+    .accessibilityLabel(subtitle.map { "\(title). \($0)" } ?? title)
+    .accessibilityValue(isSelected ? "Selected" : "")
+  }
+}
+
 struct ADEGlassHoldActionButton: View {
   let title: String
   let symbol: String

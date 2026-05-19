@@ -221,12 +221,7 @@ struct PrAiResolverSheet: View {
         }
 
         Section("Reasoning effort") {
-          Picker("Effort", selection: $reasoningEffort) {
-            ForEach(efforts, id: \.0) { pair in
-              Text(pair.1).tag(pair.0)
-            }
-          }
-          .pickerStyle(.segmented)
+          PrAiResolverEffortPicker(efforts: efforts, selection: $reasoningEffort)
         }
 
         Section("Model (optional)") {
@@ -258,5 +253,38 @@ struct PrAiResolverSheet: View {
         }
       }
     }
+  }
+}
+
+private struct PrAiResolverEffortPicker: View {
+  let efforts: [(String, String)]
+  @Binding var selection: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      ForEach(efforts, id: \.0) { value, label in
+        let selected = value == selection
+        Button {
+          selection = value
+        } label: {
+          Text(label)
+            .font(.system(size: 13, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? Color.white : ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 38)
+            .background(
+              RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(selected ? PrGlassPalette.purpleDeep.opacity(0.9) : Color.white.opacity(0.06))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(selected ? PrGlassPalette.purpleBright.opacity(0.45) : Color.white.opacity(0.08), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Reasoning effort: \(label)")
+        .accessibilityValue(selected ? "selected" : "not selected")
+      }
+    }
+    .padding(.vertical, 4)
   }
 }

@@ -81,6 +81,7 @@ public final class AttentionDrawerModel: ObservableObject {
     @Published public private(set) var unreadCount: Int = 0
 
     public static let lastSeenAtKey = "ade.attention.lastSeenAt"
+    public static let dismissedItemIDsKey = "ade.attention.dismissedItemIDs"
 
     private var lastSeenAt: Date {
         didSet {
@@ -93,6 +94,7 @@ public final class AttentionDrawerModel: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private var dismissedItemIDs: Set<String>
 
     public init(defaults: UserDefaults = ADESharedContainer.defaults) {
         self.defaults = defaults
@@ -100,6 +102,7 @@ public final class AttentionDrawerModel: ObservableObject {
         self.lastSeenAt = stored > 0
             ? Date(timeIntervalSince1970: stored)
             : .distantPast
+        self.dismissedItemIDs = Set(defaults.stringArray(forKey: Self.dismissedItemIDsKey) ?? [])
     }
 
     // MARK: - Reducer
@@ -122,6 +125,7 @@ public final class AttentionDrawerModel: ObservableObject {
                         subtitle: "Approval needed",
                         providerSlug: agent.provider,
                         sessionId: agent.sessionId,
+                        itemId: agent.pendingInputItemId,
                         deepLink: URL(string: "ade://session/\(agent.sessionId)"),
                         timestamp: agent.lastActivityAt
                     )
@@ -187,6 +191,9 @@ public final class AttentionDrawerModel: ObservableObject {
             }
         }
 
+        pruneDismissedItems(activeIDs: Set(result.map(\.id)))
+        result.removeAll { dismissedItemIDs.contains($0.id) }
+
         result.sort { lhs, rhs in
             let lp = Self.kindPriority(lhs.kind)
             let rp = Self.kindPriority(rhs.kind)
@@ -205,6 +212,21 @@ public final class AttentionDrawerModel: ObservableObject {
         lastSeenAt = Date()
     }
 
+    /// Clear the currently visible attention cards from the drawer. The
+    /// dismissal is scoped to the active attention IDs and is pruned once the
+    /// backing state clears, so a future CI/review/agent regression reappears.
+    public func clearVisibleItems() {
+        guard !items.isEmpty else {
+            markAllSeen()
+            return
+        }
+
+        dismissedItemIDs.formUnion(items.map(\.id))
+        persistDismissedItems()
+        items.removeAll()
+        markAllSeen()
+    }
+
     // MARK: - Bell affordance
 
     /// Count label for the drawer badge. Returns `nil` at zero, `"9+"` for
@@ -218,6 +240,17 @@ public final class AttentionDrawerModel: ObservableObject {
 
     private func recomputeUnreadCount() {
         unreadCount = items.filter { $0.timestamp > lastSeenAt }.count
+    }
+
+    private func pruneDismissedItems(activeIDs: Set<String>) {
+        let pruned = dismissedItemIDs.intersection(activeIDs)
+        guard pruned != dismissedItemIDs else { return }
+        dismissedItemIDs = pruned
+        persistDismissedItems()
+    }
+
+    private func persistDismissedItems() {
+        defaults.set(Array(dismissedItemIDs).sorted(), forKey: Self.dismissedItemIDsKey)
     }
 
     private static func kindPriority(_ kind: AttentionKind) -> Int {
@@ -249,7 +282,7 @@ public final class AttentionDrawerModel: ObservableObject {
 @available(iOS 17.0, *)
 extension AttentionDrawerModel {
     /// Wire the drawer model up to a live `SyncService`: rebuild whenever
-    /// the service's `activeSessions` or `localStateRevision` change. The
+    /// the service's `activeSessions` or App Group workspace snapshot changes. The
     /// workspace snapshot is read from the App Group since `SyncService`
     /// already writes the authoritative blob there — no separate transport.
     ///
@@ -276,6 +309,11 @@ extension AttentionDrawerModel {
             .store(in: &bag)
 
         syncService.$localStateRevision
+            .receive(on: DispatchQueue.main)
+            .sink { _ in refresh() }
+            .store(in: &bag)
+
+        syncService.$workspaceSnapshotRevision
             .receive(on: DispatchQueue.main)
             .sink { _ in refresh() }
             .store(in: &bag)

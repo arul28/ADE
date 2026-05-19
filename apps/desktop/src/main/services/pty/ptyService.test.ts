@@ -433,6 +433,35 @@ describe("ptyService", () => {
       expect(result.pid).toBe(12345);
     });
 
+    it("starts plain shell sessions without user startup files", async () => {
+      const previousShell = process.env.SHELL;
+      process.env.SHELL = "/bin/zsh";
+      try {
+        const { service, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Shell",
+          cols: 80,
+          rows: 24,
+          toolType: "shell",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-f"],
+          expect.objectContaining({
+            env: expect.objectContaining({
+              ZDOTDIR: "/var/empty",
+            }),
+          }),
+        );
+      } finally {
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+      }
+    });
+
     it("uses a caller-provided sessionId when creating a new tracked session", async () => {
       const { service, sessionService } = createHarness();
       const result = await service.create({

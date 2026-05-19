@@ -48,6 +48,7 @@ final class AttentionDrawerModelTests: XCTestCase {
             lastActivityAt: now,
             elapsedSeconds: 30,
             preview: nil,
+            pendingInputItemId: "pending-approval-1",
             progress: nil,
             phase: nil,
             toolCalls: 0
@@ -138,6 +139,7 @@ final class AttentionDrawerModelTests: XCTestCase {
 
         let awaiting = try? XCTUnwrap(model.items.first)
         XCTAssertEqual(awaiting?.sessionId, "s-awaiting")
+        XCTAssertEqual(awaiting?.itemId, "pending-approval-1")
         XCTAssertEqual(awaiting?.deepLink, URL(string: "ade://session/s-awaiting"))
         XCTAssertEqual(awaiting?.subtitle, "Approval needed")
 
@@ -224,6 +226,84 @@ final class AttentionDrawerModelTests: XCTestCase {
 
         let stored = defaults.double(forKey: AttentionDrawerModel.lastSeenAtKey)
         XCTAssertGreaterThan(stored, 0, "markAllSeen should persist the new lastSeenAt")
+    }
+
+    func testClearVisibleItemsHidesCurrentCardsAndPersistsDismissal() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let snapshot = WorkspaceSnapshot(
+            generatedAt: now,
+            agents: [],
+            prs: [
+                PrSnapshot(
+                    id: "pr-1",
+                    number: 9101,
+                    title: "Mobile attention CI failing",
+                    checks: "failing",
+                    review: "approved",
+                    state: "open",
+                    mergeReady: false
+                )
+            ],
+            connection: "connected"
+        )
+
+        model.rebuild(from: snapshot)
+        XCTAssertEqual(model.items.map(\.id), ["ci:pr-1"])
+
+        model.clearVisibleItems()
+
+        XCTAssertTrue(model.items.isEmpty)
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertEqual(
+            Set(defaults.stringArray(forKey: AttentionDrawerModel.dismissedItemIDsKey) ?? []),
+            ["ci:pr-1"]
+        )
+
+        let freshModel = AttentionDrawerModel(defaults: defaults)
+        freshModel.rebuild(from: snapshot)
+        XCTAssertTrue(freshModel.items.isEmpty, "persisted dismissals should hide the same still-active attention")
+    }
+
+    func testClearedItemsReappearAfterBackingStateClears() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let failing = WorkspaceSnapshot(
+            generatedAt: now,
+            agents: [],
+            prs: [
+                PrSnapshot(
+                    id: "pr-1",
+                    number: 9101,
+                    title: "Mobile attention CI failing",
+                    checks: "failing",
+                    review: "approved",
+                    state: "open",
+                    mergeReady: false
+                )
+            ],
+            connection: "connected"
+        )
+
+        model.rebuild(from: failing)
+        model.clearVisibleItems()
+        model.rebuild(from: failing)
+        XCTAssertTrue(model.items.isEmpty)
+
+        model.rebuild(from: .init(
+            generatedAt: now.addingTimeInterval(1),
+            agents: [],
+            prs: [],
+            connection: "connected"
+        ))
+        model.rebuild(from: .init(
+            generatedAt: now.addingTimeInterval(2),
+            agents: [],
+            prs: failing.prs,
+            connection: "connected"
+        ))
+
+        XCTAssertEqual(model.items.map(\.id), ["ci:pr-1"])
     }
 
     func testBadgeCapsAtNinePlus() {

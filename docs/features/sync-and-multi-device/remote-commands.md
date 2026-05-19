@@ -111,7 +111,7 @@ runtime-scoped registrations are explicit.
 Listed in order of appearance in the registry:
 
 **Lanes** (`lanes.*`)
-- `list`, `refreshSnapshots`, `getDetail`
+- `list`, `refreshSnapshots`, `getDetail`, `listUnregisteredWorktrees`
 - `create`, `createChild`, `createFromUnstaged`, `importBranch`,
   `attach`, `adoptAttached`
 - `rename`, `reparent`, `updateAppearance`
@@ -183,12 +183,25 @@ both via `SyncService.dispatchChatSteer` /
 **PRs** (`prs.*`)
 - `list`, `refresh`, `getDetail`, `getStatus`
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
-- `createFromLane`, `draftDescription`, `land`, `close`, `reopen`,
-  `requestReviewers`, `rerunChecks`, `addComment`
+- `createFromLane`, `createQueue`, `draftDescription`, `land`,
+  `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
+- `simulateIntegration`, `commitIntegration`,
+  `listIntegrationWorkflows`, `updateIntegrationProposal`,
+  `deleteIntegrationProposal`, `startIntegrationResolution`,
+  `recheckIntegrationStep`
+- `landQueueNext`, `startQueueAutomation`, `pauseQueueAutomation`,
+  `resumeQueueAutomation`, `cancelQueueAutomation`
 - `getMobileSnapshot` — aggregate read that returns
   `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
   create-PR eligibility, workflow cards). Consumed by the iOS PRs
   tab; see `ios-companion.md` for the shape.
+
+**CTO** (`cto.*`)
+- `removeAgent` — drop a worker from the team and trigger a
+  `workerHeartbeatService.syncFromConfig` resync so the live
+  roster reflects the removal immediately. Phone-driven CTO
+  management uses this in tandem with `setAgentStatus`,
+  `triggerAgentWakeup`, and `rollbackAgentRevision`.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.

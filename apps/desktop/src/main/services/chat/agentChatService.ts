@@ -1699,7 +1699,7 @@ const CHAT_TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] chat transcript limit reached (8MB
 const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
 const MAX_TRANSCRIPT_READ_LIMIT = 100;
 const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
-const MAX_TRANSCRIPT_READ_CHARS = 40_000;
+const MAX_TRANSCRIPT_READ_CHARS = 120_000;
 const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
 const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
   "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
@@ -5459,10 +5459,35 @@ export function createAgentChatService(args: {
       const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
       if (!transcriptPath) return [];
       const raw = fs.readFileSync(transcriptPath, "utf8");
-      const entries: AgentChatTranscriptEntry[] = [];
+      type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
+      const entries: TranscriptDraftEntry[] = [];
+      const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
+      let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
+      const flushAssistantDraft = (): void => {
+        if (!assistantDraft) return;
+        const text = assistantDraft.text.trim();
+        if (text.length > 0) {
+          entries.push({
+            role: "assistant",
+            text,
+            timestamp: assistantDraft.timestamp,
+            ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
+          });
+        }
+        assistantDraft = null;
+      };
+      const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
+        const messageId = event.messageId?.trim();
+        if (messageId) return `message:${messageId}`;
+        const turnId = event.turnId?.trim();
+        if (turnId) return `turn:${turnId}`;
+        return null;
+      };
+
       for (const entry of parseAgentChatTranscript(raw)) {
         if (entry.sessionId !== managed.session.id) continue;
         if (entry.event.type === "user_message") {
+          flushAssistantDraft();
           const text = entry.event.text.trim();
           if (!text.length) continue;
           const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
@@ -5478,17 +5503,54 @@ export function createAgentChatService(args: {
           continue;
         }
         if (entry.event.type === "text") {
-          const text = entry.event.text.trim();
-          if (!text.length) continue;
-          entries.push({
+          if (!entry.event.text.trim().length) continue;
+          const mergeKey = assistantTranscriptMergeKey(entry.event);
+          if (mergeKey) {
+            flushAssistantDraft();
+            const existing = assistantDraftsByKey.get(mergeKey);
+            if (existing) {
+              existing.text = `${existing.text}${entry.event.text}`;
+              continue;
+            }
+            const draft: TranscriptDraftEntry = {
+              role: "assistant",
+              text: entry.event.text,
+              timestamp: entry.timestamp,
+              ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+              ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
+              ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+            };
+            assistantDraftsByKey.set(mergeKey, draft);
+            entries.push(draft);
+            continue;
+          }
+          if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
+            assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
+            continue;
+          }
+          flushAssistantDraft();
+          assistantDraft = {
             role: "assistant",
-            text,
+            text: entry.event.text,
             timestamp: entry.timestamp,
-            turnId: entry.event.turnId,
-          });
+            ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+            ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
+            ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+          };
+          continue;
         }
+        flushAssistantDraft();
       }
-      return entries;
+      flushAssistantDraft();
+      return entries
+        .map((entry) => ({
+          role: entry.role,
+          text: entry.text.trim(),
+          ...(entry.displayText ? { displayText: entry.displayText } : {}),
+          timestamp: entry.timestamp,
+          ...(entry.turnId ? { turnId: entry.turnId } : {}),
+        }))
+        .filter((entry) => entry.text.length > 0);
     } catch {
       return [];
     }
@@ -19398,6 +19460,61 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
+  const latestLivePendingInputItemId = (managed: ManagedChatSession | null | undefined): string | null => {
+    if (!managed) return null;
+    const localPending = managed.localPendingInputs.keys().next().value;
+    if (typeof localPending === "string" && localPending.trim().length) return localPending;
+    const runtime = managed.runtime;
+    if (!runtime) return null;
+    switch (runtime.kind) {
+      case "codex":
+      case "claude": {
+        const approval = runtime.approvals.keys().next().value;
+        return typeof approval === "string" && approval.trim().length ? approval : null;
+      }
+      case "opencode": {
+        const approval = runtime.pendingApprovals.keys().next().value;
+        return typeof approval === "string" && approval.trim().length ? approval : null;
+      }
+      case "cursor":
+      case "droid": {
+        const permission = runtime.permissionWaiters.keys().next().value;
+        return typeof permission === "string" && permission.trim().length ? permission : null;
+      }
+    }
+  };
+
+  const latestPendingInputItemIdFromEvents = (events: AgentChatEventEnvelope[]): string | null => {
+    const pending = new Set<string>();
+    for (const envelope of events) {
+      const event = envelope.event;
+      if (event.type === "approval_request" || event.type === "structured_question") {
+        if (typeof event.itemId === "string" && event.itemId.trim().length) {
+          pending.delete(event.itemId);
+          pending.add(event.itemId);
+        }
+      } else if (event.type === "pending_input_resolved") {
+        pending.delete(event.itemId);
+      } else if (event.type === "auto_approval_review") {
+        pending.delete(event.targetItemId);
+      }
+    }
+    let latest: string | null = null;
+    for (const id of pending) latest = id;
+    return latest;
+  };
+
+  const latestPendingInputItemIdForSession = (
+    sessionId: string,
+    managed: ManagedChatSession | null | undefined,
+  ): string | null => {
+    const live = latestLivePendingInputItemId(managed);
+    if (live) return live;
+    return latestPendingInputItemIdFromEvents(
+      getChatEventHistory(sessionId, { maxEvents: 512 }).events,
+    );
+  };
+
   const summarizeSessionRow = (
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
   ): AgentChatSessionSummary => {
@@ -19425,6 +19542,10 @@ export function createAgentChatService(args: {
         ?? persisted?.claudeBackgroundResumeSessionId
         ?? persisted?.sdkSessionId
         ?? null
+      : null;
+    const sessionHasPendingInput = hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true;
+    const pendingInputItemId = sessionHasPendingInput
+      ? latestPendingInputItemIdForSession(row.id, liveManaged)
       : null;
     return {
       sessionId: row.id,
@@ -19501,7 +19622,8 @@ export function createAgentChatService(args: {
       lastActivityAt: liveSession?.lastActivityAt ?? persisted?.updatedAt ?? row.endedAt ?? row.startedAt,
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
-      ...((hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true) ? { awaitingInput: true } : {}),
+      ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
+      ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(liveSession?.threadId || persisted?.threadId
         ? { threadId: liveSession?.threadId ?? persisted?.threadId }
         : {}),
@@ -19513,17 +19635,19 @@ export function createAgentChatService(args: {
 
   const listSessions = async (
     laneId?: string,
-    options?: { includeIdentity?: boolean; includeAutomation?: boolean },
+    options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean },
   ): Promise<AgentChatSessionSummary[]> => {
     const rows = sessionService.list({ ...(laneId ? { laneId } : {}), limit: 500 });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));
     const includeIdentity = options?.includeIdentity === true;
     const includeAutomation = options?.includeAutomation === true;
+    const includeArchived = options?.includeArchived !== false;
 
     return chatRows
       .map((row) => summarizeSessionRow(row))
       .filter((summary) => includeIdentity || !summary.identityKey)
-      .filter((summary) => includeAutomation || (summary.surface ?? "work") === "work");
+      .filter((summary) => includeAutomation || (summary.surface ?? "work") === "work")
+      .filter((summary) => includeArchived || summary.archivedAt == null);
   };
 
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
@@ -20748,6 +20872,9 @@ export function createAgentChatService(args: {
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
     const prevCodexFastMode = managed.session.codexFastMode === true;
+    const prevClaudeTurnPermissionMode = managed.session.provider === "claude"
+      ? resolveClaudeTurnPermissionMode(managed)
+      : null;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -20974,7 +21101,11 @@ export function createAgentChatService(args: {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
-      if (managed.runtime?.kind === "claude" && managed.runtime.query) {
+      if (
+        managed.runtime?.kind === "claude"
+        && managed.runtime.query
+        && resolveClaudeTurnPermissionMode(managed) !== prevClaudeTurnPermissionMode
+      ) {
         const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
         const control = getClaudeQueryControl(managed.runtime.query);
         if (typeof control.setPermissionMode === "function") {

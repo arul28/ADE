@@ -84,12 +84,21 @@ struct CreatePrWizardView: View {
   // Cached eligible lane options — recomputed only when the source-of-truth
   // (capabilities / lanes) shifts, not on every keystroke.
   @State private var cachedLaneOptions: [CreatePrLaneOption] = []
+  @State private var cachedBlockedLaneOptions: [PrCreateLaneEligibility] = []
+  @State private var didCacheLaneOptions = false
+  @State private var showAllBlockedLanes = false
+
+  private static let collapsedBlockedLaneLimit = 3
 
   private var fallbackCreateLanes: [LaneSummary] {
     lanes.filter { $0.archivedAt == nil && $0.laneType != "primary" }
   }
 
   private var eligibleLaneOptions: [CreatePrLaneOption] {
+    didCacheLaneOptions ? cachedLaneOptions : sourceEligibleLaneOptions
+  }
+
+  private var sourceEligibleLaneOptions: [CreatePrLaneOption] {
     if let capabilities = createCapabilities {
       return capabilities.lanes
         .filter { Self.canOpenPr(from: $0) }
@@ -117,8 +126,27 @@ struct CreatePrWizardView: View {
   }
 
   private var blockedLaneOptions: [PrCreateLaneEligibility] {
+    didCacheLaneOptions ? cachedBlockedLaneOptions : sourceBlockedLaneOptions
+  }
+
+  private var sourceBlockedLaneOptions: [PrCreateLaneEligibility] {
     guard let capabilities = createCapabilities else { return [] }
     return capabilities.lanes.filter { !Self.canOpenPr(from: $0) }
+  }
+
+  private var visibleBlockedLaneOptions: [PrCreateLaneEligibility] {
+    guard !showAllBlockedLanes else { return blockedLaneOptions }
+    return Array(blockedLaneOptions.prefix(Self.collapsedBlockedLaneLimit))
+  }
+
+  private var canToggleBlockedLanes: Bool {
+    blockedLaneOptions.count > Self.collapsedBlockedLaneLimit
+  }
+
+  private var blockedLaneToggleTitle: String {
+    showAllBlockedLanes
+      ? "Show fewer"
+      : "Show \(blockedLaneOptions.count - Self.collapsedBlockedLaneLimit) more"
   }
 
   private var selectedOption: CreatePrLaneOption? {
@@ -388,7 +416,7 @@ struct CreatePrWizardView: View {
             labelsSection
             integrationReviewSection
           }
-          Color.clear.frame(height: 40)
+          Color.clear.frame(height: 72)
         }
       }
       .scrollIndicators(.hidden)
@@ -522,7 +550,7 @@ struct CreatePrWizardView: View {
           .font(.caption2.weight(.semibold))
           .foregroundStyle(ADEColor.textSecondary)
       }
-      ForEach(blockedLaneOptions) { entry in
+      ForEach(visibleBlockedLaneOptions) { entry in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           Text(entry.laneName)
             .font(.caption.weight(.semibold))
@@ -535,6 +563,23 @@ struct CreatePrWizardView: View {
           }
           Spacer(minLength: 0)
         }
+      }
+      if canToggleBlockedLanes {
+        Button {
+          showAllBlockedLanes.toggle()
+        } label: {
+          HStack(spacing: 5) {
+            Text(blockedLaneToggleTitle)
+            Image(systemName: showAllBlockedLanes ? "chevron.up" : "chevron.down")
+              .font(.system(size: 9, weight: .bold))
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
       }
     }
     .padding(.horizontal, 22)
@@ -1108,6 +1153,7 @@ struct CreatePrWizardView: View {
       let laneIds = orderedSelectedLaneIds
       let trimmedName = queueName.trimmingCharacters(in: .whitespacesAndNewlines)
       let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+      let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
       onCreateQueue(
         CreateQueuePrsRequest(
           laneIds: laneIds,
@@ -1117,7 +1163,7 @@ struct CreatePrWizardView: View {
           ciGating: ciGating,
           // v2 TODO: per-lane title overrides.
           titles: nil,
-          baseBranch: baseTrim.isEmpty ? nil : baseTrim
+          baseBranch: targetBranch
         )
       )
     case .integration:
@@ -1125,6 +1171,7 @@ struct CreatePrWizardView: View {
       let trimmedName = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
       let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
       let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+      let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
       onCreateIntegration(
         CreateIntegrationRequest(
           sourceLaneIds: laneIds,
@@ -1132,7 +1179,7 @@ struct CreatePrWizardView: View {
           title: trimmedTitle,
           body: bodyText,
           draft: draft,
-          baseBranch: baseTrim.isEmpty ? nil : baseTrim
+          baseBranch: targetBranch
         )
       )
     }
@@ -1150,7 +1197,12 @@ struct CreatePrWizardView: View {
   }
 
   private func refreshCachedLaneOptions() {
-    cachedLaneOptions = eligibleLaneOptions
+    cachedLaneOptions = sourceEligibleLaneOptions
+    cachedBlockedLaneOptions = sourceBlockedLaneOptions
+    didCacheLaneOptions = true
+    if sourceBlockedLaneOptions.count <= Self.collapsedBlockedLaneLimit {
+      showAllBlockedLanes = false
+    }
   }
 
   // MARK: - Draft generation

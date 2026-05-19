@@ -213,6 +213,7 @@ private extension View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .adeRootTabBarHidden()
     case .embedded:
       self
     }

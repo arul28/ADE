@@ -108,6 +108,17 @@ struct FilesPreviewLimit: Equatable {
   let message: String
 }
 
+let filesDetailRefreshMinimumInterval: TimeInterval = 0.75
+
+func filesDetailRefreshDelay(
+  hasLoadedBlob: Bool,
+  elapsedSinceLastLoad: TimeInterval,
+  minimumInterval: TimeInterval = filesDetailRefreshMinimumInterval
+) -> TimeInterval? {
+  guard hasLoadedBlob, elapsedSinceLastLoad < minimumInterval else { return nil }
+  return max(0, minimumInterval - elapsedSinceLastLoad)
+}
+
 private let filesTextPreviewByteLimit = 300 * 1024
 private let filesTextPreviewLineLimit = 4_000
 private let filesDiffPreviewByteLimit = 400 * 1024
@@ -126,6 +137,13 @@ func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
 }
 
 func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
+  if diff.original.isTruncated == true || diff.modified.isTruncated == true {
+    return FilesPreviewLimit(
+      title: "Diff preview paused",
+      message: "This diff is too large to compare fully on iPhone. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+    )
+  }
+
   let combinedText = "\(diff.original.text)\n\(diff.modified.text)"
   return filesTextLimit(
     byteCount: combinedText.utf8.count,
@@ -138,7 +156,13 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
 }
 
 func filesDiffHasChanges(_ diff: FileDiff) -> Bool {
-  diff.original.exists != diff.modified.exists || diff.original.text != diff.modified.text
+  if diff.original.exists != diff.modified.exists || diff.original.text != diff.modified.text {
+    return true
+  }
+  if let originalSize = diff.original.size, let modifiedSize = diff.modified.size, originalSize != modifiedSize {
+    return true
+  }
+  return diff.original.isTruncated == true || diff.modified.isTruncated == true
 }
 
 private func filesTextLimit(byteCount: Int, lineCount: Int, lineLimit: Int, byteLimit: Int, title: String, action: String) -> FilesPreviewLimit? {

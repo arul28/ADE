@@ -8,9 +8,7 @@ extension WorkRootScreen {
 
   var bulkSelectedRunningCount: Int {
     bulkSelectedSessions.filter { session in
-      guard !isChatSession(session) else { return false }
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return status == "active" || status == "awaiting-input" || status == "idle"
+      isStoppableRuntimeSession(session, summary: chatSummaries[session.id])
     }.count
   }
 
@@ -53,6 +51,26 @@ extension WorkRootScreen {
     }
   }
 
+  @MainActor
+  func applyArchivedSessionOverride(sessionIds: Set<String>, archived: Bool) {
+    guard !sessionIds.isEmpty else { return }
+    var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
+    if archived {
+      localIds.formUnion(sessionIds)
+    } else {
+      localIds.subtract(sessionIds)
+    }
+    archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+
+    let archivedAt = archived ? workDateFormatter.string(from: Date()) : nil
+    for sessionId in sessionIds {
+      guard var summary = chatSummaries[sessionId] else { continue }
+      summary.archivedAt = archivedAt
+      chatSummaries[sessionId] = summary
+    }
+    syncService.cacheChatSummaries(chatSummaries)
+  }
+
   func exitSelectionMode() {
     withAnimation(.snappy) {
       isSelecting = false
@@ -63,9 +81,7 @@ extension WorkRootScreen {
   @MainActor
   func performBulkStopRuntime() async {
     let targets = bulkSelectedSessions.filter { session in
-      guard !isChatSession(session) else { return false }
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-      return status == "active" || status == "awaiting-input" || status == "idle"
+      isStoppableRuntimeSession(session, summary: chatSummaries[session.id])
     }
     guard !targets.isEmpty else { return }
     bulkBusy = true
@@ -100,20 +116,28 @@ extension WorkRootScreen {
     bulkBusy = true
     defer { bulkBusy = false }
     var failed = 0
-    await withTaskGroup(of: Bool.self) { group in
+    var succeededIds = Set<String>()
+    await withTaskGroup(of: (String, Bool).self) { group in
       for session in targets {
         group.addTask {
           do {
             try await syncService.archiveChatSession(sessionId: session.id)
-            return true
+            return (session.id, true)
           } catch {
-            return false
+            return (session.id, false)
           }
         }
       }
-      for await success in group where !success {
-        failed += 1
+      for await (sessionId, success) in group {
+        if success {
+          succeededIds.insert(sessionId)
+        } else {
+          failed += 1
+        }
       }
+    }
+    if !succeededIds.isEmpty {
+      applyArchivedSessionOverride(sessionIds: succeededIds, archived: true)
     }
     await reload(refreshRemote: true)
     if failed > 0 {
@@ -152,9 +176,7 @@ extension WorkRootScreen {
       }
     }
     if !succeededIds.isEmpty {
-      var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-      for sessionId in succeededIds { localIds.remove(sessionId) }
-      archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+      applyArchivedSessionOverride(sessionIds: succeededIds, archived: false)
     }
     await reload(refreshRemote: true)
     if failed > 0 {
@@ -193,9 +215,7 @@ extension WorkRootScreen {
       }
     }
     if !succeededIds.isEmpty {
-      var localIds = Set(archivedSessionIdsStorage.split(separator: "\n").map(String.init))
-      for sessionId in succeededIds { localIds.remove(sessionId) }
-      archivedSessionIdsStorage = localIds.sorted().joined(separator: "\n")
+      applyArchivedSessionOverride(sessionIds: succeededIds, archived: false)
     }
     await reload(refreshRemote: true)
     if failed > 0 {
