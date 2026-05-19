@@ -193,6 +193,9 @@ function validatePreflight() {
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/sql.js/**/*")) {
     fail("package.json build.asarUnpack must unpack node_modules/sql.js/**/* for the plain node fallback");
   }
+  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
+    fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
+  }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
   }
@@ -547,6 +550,12 @@ async function validatePackagedRuntime(appDir) {
   }
   if (payload?.codexExecutable !== "function") {
     fail(`Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
+  }
+  if (payload?.openCodeExecutable !== "function") {
+    fail(`Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
+  }
+  if (payload?.openCodeExecutableSource !== "bundled") {
+    fail(`Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`);
   }
 
   const defaultHelp = await runCommand(adeCliBinPath, ["--help"], {

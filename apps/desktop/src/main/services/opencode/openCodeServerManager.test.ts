@@ -1,4 +1,5 @@
 import os from "node:os";
+import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
@@ -13,6 +14,7 @@ vi.mock("./openCodeBinaryManager", () => ({
 import {
   __buildOpenCodeServeLaunchSpecForTests,
   __isManagedOpenCodeServeCommandForTests,
+  __parseOpenCodeServerListenUrlForTests,
   __resetOpenCodeServerManagerForTests,
   __resolveOpenCodeListenerPidForTests,
   __setOpenCodeProcessControllerForTests,
@@ -86,6 +88,16 @@ describe("openCodeServerManager", () => {
     OPENCODE_CONFIG_CONTENT: process.env.OPENCODE_CONFIG_CONTENT,
     OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
   };
+
+  it("parses OpenCode listen URLs with noisy stdout prefixes", () => {
+    expect(__parseOpenCodeServerListenUrlForTests(
+      "[info] opencode server listening on http://127.0.0.1:4096",
+    )).toBe("http://127.0.0.1:4096");
+    expect(__parseOpenCodeServerListenUrlForTests(
+      "Warning first; opencode server listening on http://127.0.0.1:62301",
+    )).toBe("http://127.0.0.1:62301");
+    expect(__parseOpenCodeServerListenUrlForTests("Warning: server is unsecured")).toBeNull();
+  });
 
   const restoreEnv = (key: keyof typeof originalEnv): void => {
     const value = originalEnv[key];
@@ -742,7 +754,7 @@ describe("openCodeServerManager", () => {
       exitCode: null,
       signalCode: null,
       kill: procKill,
-    } as unknown as import("node:child_process").ChildProcess;
+    } as unknown as ChildProcess;
 
     __terminateOpenCodeServerProcessesForTests(fakeProc, 9001);
 
@@ -769,7 +781,7 @@ describe("openCodeServerManager", () => {
       exitCode: null,
       signalCode: null,
       kill: procKill,
-    } as unknown as import("node:child_process").ChildProcess;
+    } as unknown as ChildProcess;
 
     __terminateOpenCodeServerProcessesForTests(fakeProc, 8002);
 

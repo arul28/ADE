@@ -145,10 +145,19 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
   const modalities = model.modalities as { input?: string[] } | undefined;
   return {
     tools: model.tool_call !== false && capabilities?.toolcall !== false && capabilities?.tools !== false,
-    vision: Boolean(modalities?.input?.includes("image") || capabilities?.input?.image === true),
+    vision: Boolean(model.attachment === true || modalities?.input?.includes("image") || capabilities?.input?.image === true),
     reasoning: model.reasoning !== false && capabilities?.reasoning !== false,
     streaming: true,
   };
+}
+
+function openCodeSdkErrorMessage(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : null;
+  if (typeof data?.message === "string" && data.message.trim().length) return data.message.trim();
+  if (typeof record.message === "string" && record.message.trim().length) return record.message.trim();
+  return null;
 }
 
 /**
@@ -214,6 +223,7 @@ export async function probeOpenCodeProviderInventory(args: {
       try {
         const listed = await client.provider.list({
           query: { directory: args.projectRoot },
+          throwOnError: true,
         });
         const data = listed.data as
           | {
@@ -334,7 +344,7 @@ export async function probeOpenCodeProviderInventory(args: {
         lease.release("handle_close");
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = openCodeSdkErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
       args.logger.warn("opencode.inventory_probe_failed", { error: message });
       replaceDynamicOpenCodeModelDescriptors([]);
       inventoryCache = {

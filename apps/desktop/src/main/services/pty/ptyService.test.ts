@@ -117,6 +117,8 @@ const mocks = vi.hoisted(() => {
     extractResumeCommandFromOutput: vi.fn(() => null),
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
+    resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
+    spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
 });
 
@@ -159,6 +161,10 @@ vi.mock("node:crypto", () => ({
   randomUUID: mocks.randomUUID,
 }));
 
+vi.mock("node:child_process", () => ({
+  spawnSync: mocks.spawnSync,
+}));
+
 vi.mock("../git/git", () => ({
   runGit: mocks.runGit,
 }));
@@ -186,6 +192,10 @@ vi.mock("../../utils/terminalSessionSignals", async () => {
     runtimeStateFromOsc133Chunk: mocks.runtimeStateFromOsc133Chunk,
   };
 });
+
+vi.mock("../opencode/openCodeBinaryManager", () => ({
+  resolveOpenCodeBinaryPath: mocks.resolveOpenCodeBinaryPath,
+}));
 
 import {
   createPtyService,
@@ -374,6 +384,8 @@ describe("ptyService", () => {
     mocks.defaultResumeCommandForTool.mockReturnValue(null);
     mocks.extractResumeCommandFromOutput.mockReturnValue(null);
     mocks.derivePreviewFromChunk.mockReturnValue({ nextLine: "", preview: "preview" });
+    mocks.resolveOpenCodeBinaryPath.mockReturnValue(null);
+    mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
   describe("ensureNodePtySpawnHelperExecutable", () => {
@@ -499,6 +511,47 @@ describe("ptyService", () => {
           }),
         }),
       );
+    });
+
+    it("uses ADE's bundled OpenCode runtime for direct OpenCode CLI terminals", async () => {
+      const bundledOpenCode = "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-arm64/bin/opencode";
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue(bundledOpenCode);
+      const { service, loadPty, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        command: "opencode",
+        args: ["--model", "openai/gpt-5.4", "--prompt", "fix the test"],
+        startupCommand: "OPENCODE_CONFIG_CONTENT='{}' opencode --model openai/gpt-5.4 --prompt 'fix the test'",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn).toHaveBeenCalledWith(
+        bundledOpenCode,
+        ["--model", "openai/gpt-5.4", "--prompt", "fix the test"],
+        expect.any(Object),
+      );
+      expect(mockPty.write).not.toHaveBeenCalled();
+    });
+
+    it("uses ADE's bundled OpenCode runtime when typing OpenCode startup commands", async () => {
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue("/tmp/ADE Runtime/opencode");
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode resume",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        startupCommand: "OPENCODE_CONFIG_CONTENT='{}' opencode --continue",
+      });
+
+      expect(mockPty.write).toHaveBeenCalledWith("OPENCODE_CONFIG_CONTENT='{}' '/tmp/ADE Runtime/opencode' --continue\r");
     });
 
     it("exports ADE chat terminal context to spawned shells", async () => {
@@ -1425,6 +1478,63 @@ describe("ptyService", () => {
       });
       expect(mockPty.write).toHaveBeenCalledWith("codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended\r");
       expect(mockPty.write).toHaveBeenCalledWith("fix failing tests\r");
+    });
+
+    it("sendToSession uses OpenCode replay resume when the installed CLI supports it", async () => {
+      const previous = process.env.ADE_OPENCODE_REPLAY_RESUME;
+      process.env.ADE_OPENCODE_REPLAY_RESUME = "1";
+      try {
+        const { service, sessionService, mockPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-opencode-replay",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "OpenCode CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-opencode-replay.log",
+          toolType: "opencode",
+          resumeCommand: "opencode --session ses_abc",
+          resumeMetadata: {
+            provider: "opencode",
+            targetKind: "session",
+            targetId: "ses_abc",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-opencode-replay",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const result = await service.sendToSession({
+          sessionId: "session-opencode-replay",
+          text: "continue from the freeze frame",
+          model: "openai/gpt-5.4",
+          permissionMode: "plan",
+        });
+
+        expect(result).toEqual(expect.objectContaining({
+          sessionId: "session-opencode-replay",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+        const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
+        expect(writes.some((line: string) =>
+          line.includes("opencode run --interactive --agent plan --model openai/gpt-5.4 --session ses_abc --replay --replay-limit 40 --")
+          && line.includes("continue from the freeze frame")
+          && line.includes("\"question\":\"allow\"")
+        )).toBe(true);
+        expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+        } else {
+          process.env.ADE_OPENCODE_REPLAY_RESUME = previous;
+        }
+      }
     });
 
     it("sendToSession single-flights concurrent resumes for the same session", async () => {
@@ -2526,6 +2636,48 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("uses ADE's bundled OpenCode runtime when backfilling OpenCode resume targets", async () => {
+      const startedAt = "2026-04-15T21:30:00.000Z";
+      const bundledOpenCode = "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-arm64/bin/opencode";
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue(bundledOpenCode);
+      mocks.spawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            id: "ses_abc",
+            directory: "/tmp/worktree",
+            created: Date.parse(startedAt),
+            updated: Date.parse(startedAt) + 1000,
+          },
+        ]),
+        stderr: "",
+      });
+
+      const { service, sessionService } = createHarness();
+      sessionService.create({
+        sessionId: "session-opencode",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "OpenCode CLI",
+        startedAt,
+        transcriptPath: "/tmp/worktree/.ade/transcripts/session-opencode.log",
+        toolType: "opencode",
+      });
+
+      await service.ensureResumeTargets(["session-opencode"]);
+
+      expect(mocks.spawnSync).toHaveBeenCalledWith(
+        bundledOpenCode,
+        ["session", "list", "--format", "json", "--max-count", "80"],
+        expect.objectContaining({
+          cwd: "/tmp/worktree",
+          encoding: "utf8",
+        }),
+      );
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode", "opencode --session ses_abc");
     });
 
     it("captures Claude runtime titles for sessions that already have a resume target", async () => {

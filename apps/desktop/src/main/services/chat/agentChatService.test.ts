@@ -37,8 +37,21 @@ const mockState = vi.hoisted(() => ({
     events: any[];
     waiters: Array<() => void>;
     aborted: boolean;
+    questionReply: ReturnType<typeof vi.fn>;
+    questionReject: ReturnType<typeof vi.fn>;
+    permissionReply: ReturnType<typeof vi.fn>;
   }>(),
   openCodeTitleForNextPrompt: null as string | null,
+  openCodeQuestionForNextPrompt: null as null | {
+    id: string;
+    questions: Array<{
+      header: string;
+      question: string;
+      options?: Array<{ label: string; description?: string }>;
+      multiple?: boolean;
+      custom?: boolean;
+    }>;
+  },
   droidSessionCounter: 0,
   codexRequestPayloads: [] as Array<Record<string, unknown>>,
   codexResponseOverrides: new Map<string, Record<string, unknown> | ((payload: Record<string, unknown>) => Record<string, unknown>)>(),
@@ -80,7 +93,7 @@ const mockState = vi.hoisted(() => ({
 // ---------------------------------------------------------------------------
 
 vi.mock("node:crypto", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:crypto")>();
+  const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
     randomUUID: () => mockState.nextUuid(),
@@ -204,6 +217,35 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       events: [] as any[],
       waiters: [] as Array<() => void>,
       aborted: false,
+      questionReply: vi.fn(async ({ requestID, answers }: { requestID: string; answers?: string[][] }) => {
+        pushEvent({
+          type: "question.replied",
+          properties: {
+            sessionID: sessionId,
+            requestID,
+            answers: answers ?? [],
+          },
+        });
+      }),
+      questionReject: vi.fn(async ({ requestID }: { requestID: string }) => {
+        pushEvent({
+          type: "question.rejected",
+          properties: {
+            sessionID: sessionId,
+            requestID,
+          },
+        });
+      }),
+      permissionReply: vi.fn(async ({ requestID, reply }: { requestID: string; reply?: string }) => {
+        pushEvent({
+          type: "permission.replied",
+          properties: {
+            sessionID: sessionId,
+            requestID,
+            reply,
+          },
+        });
+      }),
     };
     mockState.openCodeSessions.set(sessionId, state);
 
@@ -230,6 +272,19 @@ vi.mock("../opencode/openCodeRuntime", () => ({
                 },
               });
               mockState.openCodeTitleForNextPrompt = null;
+            }
+            if (mockState.openCodeQuestionForNextPrompt) {
+              const request = mockState.openCodeQuestionForNextPrompt;
+              mockState.openCodeQuestionForNextPrompt = null;
+              pushEvent({
+                type: "question.asked",
+                properties: {
+                  id: request.id,
+                  sessionID: sessionId,
+                  questions: request.questions,
+                  tool: { messageID: `message-${sessionId}`, callID: `call-${sessionId}` },
+                },
+              });
             }
             const result = streamText({} as any) as {
               fullStream?: AsyncIterable<Record<string, unknown>>;
@@ -338,6 +393,15 @@ vi.mock("../opencode/openCodeRuntime", () => ({
           },
         });
       }),
+      v2Client: {
+        question: {
+          reply: state.questionReply,
+          reject: state.questionReject,
+        },
+        permission: {
+          reply: state.permissionReply,
+        },
+      },
     };
 
     return {
@@ -352,6 +416,7 @@ vi.mock("../opencode/openCodeRuntime", () => ({
       setBusy: vi.fn(),
       setEvictionHandler: vi.fn(),
       client,
+      v2Client: client.v2Client,
     };
   }),
   openCodeEventStream: vi.fn(async ({ client }: { client: { __sessionId?: string } }) => {
@@ -603,15 +668,13 @@ import {
 } from "./agentChatService";
 import { spawn } from "node:child_process";
 import { detectAllAuth } from "../ai/authDetector";
-import { createUniversalToolSet } from "../ai/tools/universalTools";
-import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { runGit } from "../git/git";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
-import { mapPermissionToClaude, mapPermissionToCodex } from "../orchestrator/permissionMapping";
+import { mapPermissionToCodex } from "../orchestrator/permissionMapping";
 import { acquireCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
-import type { AgentChatEvent, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue } from "../../../shared/types";
+import type { AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import {
   createDynamicOpenCodeModelDescriptor,
@@ -1279,6 +1342,7 @@ beforeEach(() => {
   mockState.openCodeSessionCounter = 0;
   mockState.openCodeSessions.clear();
   mockState.openCodeTitleForNextPrompt = null;
+  mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;
   mockState.codexRequestPayloads = [];
   mockState.codexResponseOverrides.clear();
@@ -12574,6 +12638,73 @@ describe("createAgentChatService", () => {
           && JSON.stringify((event.event as any).attachments ?? []).includes("opencode-steer-context.txt")
           && (event.event as any).deliveryState !== "queued",
       );
+    });
+
+    it("bridges OpenCode question events through ADE's question UI", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      mockState.openCodeQuestionForNextPrompt = {
+        id: "opencode-question-1",
+        questions: [
+          {
+            header: "Scope",
+            question: "Which surface should I inspect first?",
+            options: [
+              { label: "CLI", description: "Check terminal resume." },
+              { label: "Chat", description: "Check SDK chat." },
+            ],
+            custom: true,
+          },
+        ],
+      };
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Ask a clarifying question.",
+      });
+
+      const questionEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => {
+          if (event.event.type !== "approval_request") return false;
+          const detail = event.event.detail as { request?: PendingInputRequest } | undefined;
+          return detail?.request?.source === "opencode"
+            && detail.request.kind === "structured_question"
+            && detail.request.providerMetadata?.openCodeQuestion === true;
+        },
+      );
+      const request = ((questionEvent.event as any).detail as { request: PendingInputRequest }).request;
+      expect(request.questions[0]?.question).toBe("Which surface should I inspect first?");
+      expect(request.questions[0]?.options?.map((option) => option.value)).toEqual(["CLI", "Chat"]);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: request.itemId ?? request.requestId,
+        decision: "accept",
+        answers: { q_1: "Chat" },
+      });
+      await turn;
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      expect(openCodeState.questionReply).toHaveBeenCalledWith({
+        requestID: "opencode-question-1",
+        directory: expect.stringMatching(/project$/),
+        answers: [["Chat"]],
+      }, { throwOnError: true });
     });
 
     it("sends Claude image follow-ups as SDK user messages after an earlier text turn", async () => {

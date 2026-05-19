@@ -3,6 +3,7 @@ import {
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
+  buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
@@ -338,6 +339,21 @@ describe("tracked CLI resume helpers", () => {
     }, { model: "gpt-5.4", reasoningEffort: "high", permissionMode: "plan" })).toBe(
       "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-99",
     );
+  });
+
+  it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
+    const command = buildOpenCodeReplayResumeCommand({
+      permissionMode: "plan",
+      model: "openai/gpt-5.4",
+      resumeTarget: "ses_99",
+      prompt: "continue from the snapshot",
+      replayLimit: 12,
+    });
+
+    expect(command).toContain("OPENCODE_CONFIG_CONTENT=");
+    expect(command).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --session ses_99 --replay --replay-limit 12 --");
+    expect(command).toContain("continue from the snapshot");
+    expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
 
   it("falls back to the provider resume picker when the concrete target is missing", () => {

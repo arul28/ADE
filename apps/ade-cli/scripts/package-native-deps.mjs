@@ -131,11 +131,18 @@ async function writeManifest(bundleRoot, target, packages) {
 }
 
 async function chmodRuntimeExecutables(bundleRoot, target) {
-  if (!target.startsWith("darwin-")) return;
-  const helperPath = path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper");
-  if (!(await exists(helperPath))) return;
-  const stat = await fs.stat(helperPath);
-  await fs.chmod(helperPath, stat.mode | 0o111);
+  const executablePaths = [
+    path.join(bundleRoot, "node_modules", "opencode-ai", "bin", "opencode.exe"),
+    path.join(bundleRoot, "node_modules", `opencode-${target}`, "bin", "opencode"),
+  ];
+  if (target.startsWith("darwin-")) {
+    executablePaths.push(path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper"));
+  }
+  for (const executablePath of executablePaths) {
+    if (!(await exists(executablePath))) continue;
+    const stat = await fs.stat(executablePath);
+    await fs.chmod(executablePath, stat.mode | 0o111);
+  }
 }
 
 async function makeTarGz(sourceDir, outputPath) {

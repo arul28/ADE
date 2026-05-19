@@ -79,6 +79,18 @@ vi.mock("@opencode-ai/sdk", () => ({
   })),
 }));
 
+vi.mock("@opencode-ai/sdk/v2/client", () => ({
+  createOpencodeClient: vi.fn(() => ({
+    question: {
+      reply: vi.fn(),
+      reject: vi.fn(),
+    },
+    permission: {
+      reply: vi.fn(),
+    },
+  })),
+}));
+
 vi.mock("./openCodeBinaryManager", () => ({
   resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
 }));
@@ -95,7 +107,6 @@ vi.mock("./openCodeServerManager", () => ({
 
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
-  buildOpenCodeMergedConfig,
   getOpenCodeRuntimeSnapshot,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -130,6 +141,10 @@ describe("openCodeRuntime", () => {
         agent: expect.objectContaining({
           "ade-plan": expect.objectContaining({
             tools: expect.objectContaining({ code_search: false, web_search: false }),
+            permission: expect.objectContaining({ question: "allow" }),
+          }),
+          "ade-helper": expect.objectContaining({
+            permission: expect.objectContaining({ question: "deny" }),
           }),
         }),
       }),

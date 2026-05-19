@@ -245,6 +245,7 @@ import {
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
+  type OpenCodeQuestionInfo,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
@@ -660,6 +661,7 @@ function isVisibleCodexSlashCommand(command: { name: string }): boolean {
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
   permissionId: string;
+  protocol?: "legacy" | "v2";
   request?: PendingInputRequest;
 };
 
@@ -9018,12 +9020,38 @@ export function createAgentChatService(args: {
     message: string;
     errorInfo: { category: "auth" | "rate_limit" | "network" | "unknown"; provider?: string; model?: string };
   } => {
-    const rawMessage = error instanceof Error ? error.message : String(error);
+    const readStatusCode = (value: unknown, seen = new Set<unknown>()): number | null => {
+      if (!value || typeof value !== "object" || seen.has(value)) return null;
+      seen.add(value);
+      const record = value as Record<string, unknown>;
+      const data = asRecord(record.data);
+      const direct = record.status ?? record.statusCode ?? data?.statusCode;
+      if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+      return readStatusCode(record.cause, seen) ?? readStatusCode(record.error, seen);
+    };
+    const collectMessages = (value: unknown, seen = new Set<unknown>()): string[] => {
+      if (value == null) return [];
+      if (typeof value === "string") return value.trim().length ? [value.trim()] : [];
+      if (typeof value !== "object" || seen.has(value)) return [];
+      seen.add(value);
+      const record = value as Record<string, unknown>;
+      const data = asRecord(record.data);
+      const messages = [
+        typeof record.message === "string" ? record.message : null,
+        typeof data?.message === "string" ? data.message : null,
+        typeof record.responseBody === "string" ? record.responseBody : null,
+        typeof data?.responseBody === "string" ? data.responseBody : null,
+      ].filter((message): message is string => Boolean(message?.trim()));
+      return [
+        ...messages,
+        ...collectMessages(record.cause, seen),
+        ...collectMessages(record.error, seen),
+      ];
+    };
+    const rawMessage = collectMessages(error).join(" ") || (error instanceof Error ? error.message : String(error));
     const lower = rawMessage.toLowerCase();
 
-    const statusCode = (error as { status?: number; statusCode?: number })?.status
-      ?? (error as { status?: number; statusCode?: number })?.statusCode
-      ?? null;
+    const statusCode = readStatusCode(error);
 
     if (statusCode === 429 || lower.includes("rate limit") || lower.includes("429") || lower.includes("too many requests")) {
       return {
@@ -9074,6 +9102,37 @@ export function createAgentChatService(args: {
       errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
     };
   };
+
+  const openCodeSessionErrorMessage = (error: unknown): string => {
+    const record = asRecord(error);
+    const data = asRecord(record?.data);
+    const nested = asRecord(record?.error);
+    const nestedData = asRecord(nested?.data);
+    return (
+      (typeof data?.message === "string" && data.message.trim())
+      || (typeof nestedData?.message === "string" && nestedData.message.trim())
+      || (typeof record?.message === "string" && record.message.trim())
+      || "OpenCode session failed."
+    );
+  };
+
+  const openCodeQuestionsToPendingQuestions = (questions: OpenCodeQuestionInfo[]): PendingInputQuestion[] =>
+    questions.map((question, index) => ({
+      id: `q_${index + 1}`,
+      header: question.header?.trim().length ? question.header.trim() : `Question ${index + 1}`,
+      question: question.question.trim(),
+      ...(question.multiple === true ? { multiSelect: true } : {}),
+      allowsFreeform: question.custom !== false || !question.options?.length,
+      ...(question.options?.length ? {
+        options: question.options.map((option) => ({
+          label: option.label,
+          value: option.label,
+          ...(typeof option.description === "string" && option.description.trim().length
+            ? { description: option.description.trim() }
+            : {}),
+        })),
+      } : {}),
+    }));
 
   // ── Claude SDK streaming turn ──
 
@@ -10898,6 +10957,7 @@ export function createAgentChatService(args: {
       const promptAccepted = runtime.handle.client.session.promptAsync({
         path: { id: runtime.handle.sessionId },
         query: { directory: runtime.handle.directory },
+        throwOnError: true,
         body: openCodePromptBody,
       });
 
@@ -10927,7 +10987,15 @@ export function createAgentChatService(args: {
               return event.properties.sessionID;
             case "permission.updated":
               return event.properties.sessionID;
+            case "permission.asked":
+              return event.properties.sessionID;
             case "permission.replied":
+              return event.properties.sessionID;
+            case "question.asked":
+              return event.properties.sessionID;
+            case "question.replied":
+              return event.properties.sessionID;
+            case "question.rejected":
               return event.properties.sessionID;
             case "session.status":
             case "session.idle":
@@ -11207,6 +11275,98 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        if (event.type === "question.asked") {
+          const questionRequest = event.properties;
+          const questions = openCodeQuestionsToPendingQuestions(questionRequest.questions ?? []);
+          const firstQuestion = questions[0];
+          const response = await requestChatInput({
+            chatSessionId: managed.session.id,
+            title: questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
+            body: firstQuestion?.question ?? "OpenCode needs input before it can continue.",
+            source: "opencode",
+            providerMetadata: {
+              openCodeQuestion: true,
+              requestId: questionRequest.id,
+              tool: questionRequest.tool ?? null,
+            },
+            eventDescription: "OpenCode question",
+            eventDetail: { openCodeQuestion: questionRequest },
+            questions: questions.map(({ options, ...question }) => ({
+              ...question,
+              ...(options ? { options } : {}),
+            })),
+          });
+          if (managed.runtime !== runtime) {
+            continue;
+          }
+          if (response.decision === "decline" || response.decision === "cancel") {
+            await runtime.handle.v2Client.question.reject({
+              requestID: questionRequest.id,
+              directory: runtime.handle.directory,
+            }, { throwOnError: true });
+            continue;
+          }
+          const answerList = questions.map((question) => {
+            const answers = response.answers[question.id] ?? [];
+            if (answers.length > 0) return answers;
+            return response.responseText?.trim() ? [response.responseText.trim()] : [];
+          });
+          await runtime.handle.v2Client.question.reply({
+            requestID: questionRequest.id,
+            directory: runtime.handle.directory,
+            answers: answerList,
+          }, { throwOnError: true });
+          continue;
+        }
+
+        if (event.type === "question.replied" || event.type === "question.rejected") {
+          continue;
+        }
+
+        if (event.type === "permission.asked") {
+          const permission = event.properties;
+          const normalizedType = permission.permission.trim().toLowerCase();
+          const description = permission.patterns?.length
+            ? `${normalizedType}: ${permission.patterns.join(", ")}`
+            : normalizedType || "Approval required";
+          const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
+            || normalizedType.includes("command")
+            || description.toLowerCase().includes("command")
+            || description.toLowerCase().includes("bash")
+            ? "bash"
+            : "write";
+          const request: PendingInputRequest = {
+            requestId: permission.id,
+            itemId: permission.id,
+            source: "opencode",
+            kind: "approval",
+            description,
+            questions: [],
+            allowsFreeform: false,
+            blocking: true,
+            canProceedWithoutAnswer: false,
+            providerMetadata: {
+              type: permission.permission,
+              metadata: permission.metadata,
+              callId: permission.tool?.callID ?? null,
+              protocol: "v2",
+            },
+            turnId,
+          };
+          runtime.pendingApprovals.set(permission.id, {
+            category,
+            permissionId: permission.id,
+            protocol: "v2",
+            request,
+          });
+          emitPendingInputRequest(managed, request, {
+            kind: category === "bash" ? "command" : "file_change",
+            description,
+            detail: permission.metadata,
+          });
+          continue;
+        }
+
         if (event.type === "permission.updated") {
           const permission = event.properties;
           const normalizedType = permission.type.trim().toLowerCase();
@@ -11237,6 +11397,7 @@ export function createAgentChatService(args: {
           runtime.pendingApprovals.set(permission.id, {
             category,
             permissionId: permission.id,
+            protocol: "legacy",
             request,
           });
           emitPendingInputRequest(managed, request, {
@@ -11248,12 +11409,20 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "permission.replied") {
-          const pending = runtime.pendingApprovals.get(event.properties.permissionID);
+          const replied = event.properties as {
+            permissionID?: string;
+            requestID?: string;
+            response?: string;
+            reply?: string;
+          };
+          const permissionId = replied.permissionID ?? replied.requestID;
+          if (!permissionId) continue;
+          const pending = runtime.pendingApprovals.get(permissionId);
           if (!pending) continue;
-          runtime.pendingApprovals.delete(event.properties.permissionID);
+          runtime.pendingApprovals.delete(permissionId);
           emitPendingInputResolved(managed, {
-            itemId: event.properties.permissionID,
-            decision: event.properties.response === "reject"
+            itemId: permissionId,
+            decision: (replied.response ?? replied.reply) === "reject"
               ? "decline"
               : "accept",
             turnId: pending.request?.turnId ?? null,
@@ -11290,7 +11459,7 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "session.error") {
-          throw new Error(String(event.properties.error?.data?.message ?? "OpenCode session failed."));
+          throw new Error(openCodeSessionErrorMessage(event.properties.error));
         }
 
         if (event.type === "session.idle") {
@@ -19692,22 +19861,32 @@ export function createAgentChatService(args: {
         throw new Error(`No pending approval found for item '${itemId}'.`);
       }
       managed.runtime.pendingApprovals.delete(itemId);
-      await managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-        path: {
-          id: managed.runtime.handle.sessionId,
-          permissionID: pending.permissionId,
-        },
-        query: {
+      const reply = resolvedDecision === "accept_for_session"
+        ? "always"
+        : resolvedDecision === "accept"
+          ? "once"
+          : "reject";
+      if (pending.protocol === "v2") {
+        await managed.runtime.handle.v2Client.permission.reply({
+          requestID: pending.permissionId,
           directory: managed.runtime.handle.directory,
-        },
-        body: {
-          response: resolvedDecision === "accept_for_session"
-            ? "always"
-            : resolvedDecision === "accept"
-              ? "once"
-              : "reject",
-        },
-      });
+          reply,
+        }, { throwOnError: true });
+      } else {
+        await managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
+          path: {
+            id: managed.runtime.handle.sessionId,
+            permissionID: pending.permissionId,
+          },
+          query: {
+            directory: managed.runtime.handle.directory,
+          },
+          throwOnError: true,
+          body: {
+            response: reply,
+          },
+        });
+      }
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
