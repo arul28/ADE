@@ -403,6 +403,7 @@ export function createMultiProjectRpcRequestHandler(
               ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
               : null,
           multiProject: true,
+          pid: process.pid,
         },
         capabilities: {
           actions: {

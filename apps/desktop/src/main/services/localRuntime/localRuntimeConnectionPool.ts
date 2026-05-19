@@ -193,19 +193,25 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
   });
 }
 
-function readRuntimeInfo(value: unknown): { version: string | null; buildHash: string | null } {
+function readRuntimeInfo(value: unknown): {
+  version: string | null;
+  buildHash: string | null;
+  pid: number | null;
+} {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { version: null, buildHash: null };
+    return { version: null, buildHash: null, pid: null };
   }
   const runtimeInfo = (value as { runtimeInfo?: unknown }).runtimeInfo;
   if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
-    return { version: null, buildHash: null };
+    return { version: null, buildHash: null, pid: null };
   }
   const version = (runtimeInfo as { version?: unknown }).version;
   const buildHash = (runtimeInfo as { buildHash?: unknown }).buildHash;
+  const pid = (runtimeInfo as { pid?: unknown }).pid;
   return {
     version: typeof version === "string" && version.trim() ? version.trim() : null,
     buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,
+    pid: typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null,
   };
 }
 
@@ -234,9 +240,50 @@ function isCompatibleRuntimeVersion(args: {
 }
 
 class LocalRuntimeCompatibilityError extends Error {
-  constructor(message: string) {
+  readonly pid: number | null;
+  constructor(message: string, pid: number | null = null) {
     super(message);
     this.name = "LocalRuntimeCompatibilityError";
+    this.pid = pid;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+async function terminateProcess(
+  pid: number,
+  options: { gracefulTimeoutMs?: number; pollIntervalMs?: number } = {},
+): Promise<void> {
+  const gracefulTimeoutMs = options.gracefulTimeoutMs ?? 2_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 50;
+  if (!isProcessAlive(pid)) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return;
+  }
+  const deadline = Date.now() + gracefulTimeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+  if (!isProcessAlive(pid)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {}
+  const killDeadline = Date.now() + gracefulTimeoutMs;
+  while (Date.now() < killDeadline) {
+    if (!isProcessAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   }
 }
 
@@ -670,13 +717,48 @@ export class LocalRuntimeConnectionPool {
       return await this.connectClient(socketPath);
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
-        throw error;
+        await this.replaceStaleRuntime(socketPath, error);
+        return null;
       }
       this.logger.debug("local_runtime.connect_existing_failed", {
         socketPath,
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  }
+
+  private async replaceStaleRuntime(
+    socketPath: string,
+    reason: LocalRuntimeCompatibilityError,
+  ): Promise<void> {
+    this.logger.warn("local_runtime.replacing_stale", {
+      socketPath,
+      pid: reason.pid,
+      reason: reason.message,
+    });
+    if (reason.pid != null) {
+      try {
+        await terminateProcess(reason.pid);
+      } catch (error) {
+        this.logger.warn("local_runtime.terminate_failed", {
+          pid: reason.pid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (!isAdeRuntimeNamedPipePath(socketPath)) {
+      try {
+        fs.unlinkSync(socketPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code && code !== "ENOENT") {
+          this.logger.debug("local_runtime.socket_unlink_failed", {
+            socketPath,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
   }
 
@@ -698,27 +780,31 @@ export class LocalRuntimeConnectionPool {
       runtimeBuildHash: runtimeInfo.buildHash,
       expectedBuildHash,
     })) {
-      this.logger.info("local_runtime.version_mismatch_blocked", {
+      this.logger.info("local_runtime.version_mismatch_detected", {
         socketPath,
         runtimeVersion: runtimeInfo.version,
         appVersion: this.appVersion,
         runtimeBuildHash: runtimeInfo.buildHash,
         expectedBuildHash,
+        runtimePid: runtimeInfo.pid,
       });
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
-        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}. The existing ADE service was left running to preserve active work.`,
+        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
+        runtimeInfo.pid,
       );
     }
     if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
-      this.logger.info("local_runtime.build_mismatch_blocked", {
+      this.logger.info("local_runtime.build_mismatch_detected", {
         socketPath,
         runtimeBuildHash: runtimeInfo.buildHash,
         expectedBuildHash,
+        runtimePid: runtimeInfo.pid,
       });
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
-        "ADE service build does not match the packaged desktop runtime. The existing ADE service was left running to preserve active work.",
+        "ADE service build does not match the packaged desktop runtime.",
+        runtimeInfo.pid,
       );
     }
     this.activeClient = client;
