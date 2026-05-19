@@ -291,17 +291,10 @@ struct WorkTerminalSessionView: View {
   private func submitReturn(input: String) {
     guard canSendInput else { return }
     let sessionId = session.id
-    if !input.isEmpty {
-      let service = syncService
-      service.sendTerminalInput(sessionId: sessionId, data: input)
-      Task { @MainActor in
-        try? await Task.sleep(nanoseconds: 180_000_000)
-        guard service.connectionState == .connected || service.connectionState == .syncing else { return }
-        service.sendTerminalInput(sessionId: sessionId, data: "\r")
-      }
-    } else {
-      syncService.sendTerminalInput(sessionId: sessionId, data: "\r")
-    }
+    // Send buffered text + Return as a single write so the carriage return
+    // can't arrive after later keystrokes (or be dropped entirely if the
+    // connection state flips during a delay).
+    syncService.sendTerminalInput(sessionId: sessionId, data: input + "\r")
     sendingFeedback &+= 1
   }
 

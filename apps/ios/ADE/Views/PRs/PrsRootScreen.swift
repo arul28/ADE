@@ -1733,7 +1733,9 @@ private struct PrLaneLinkSheet: View {
       .filter { lane in
         guard lane.archivedAt == nil, lane.laneType != "primary" else { return false }
         guard !expectedBranch.isEmpty else { return false }
-        return normalizedPrBranchName(lane.branchRef).caseInsensitiveCompare(expectedBranch) == .orderedSame
+        // Git refs are case-sensitive — case-insensitive matching can offer or
+        // preselect the wrong lane when two branches differ only by case.
+        return normalizedPrBranchName(lane.branchRef) == expectedBranch
       }
       .sorted { lhs, rhs in lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending }
   }
@@ -1854,7 +1856,12 @@ private struct PrLaneLinkSheet: View {
     }
     .onAppear {
       if selectedLaneId.isEmpty {
-        selectedLaneId = item.linkedLaneId ?? exactBranchMatchedLane?.id ?? availableLanes.first?.id ?? ""
+        // Only honor linkedLaneId if it is still in the visible option set; otherwise
+        // the primary action stays enabled with no rendered selection.
+        let linkedIfVisible = item.linkedLaneId.flatMap { id in
+          availableLanes.contains(where: { $0.id == id }) ? id : nil
+        }
+        selectedLaneId = linkedIfVisible ?? exactBranchMatchedLane?.id ?? availableLanes.first?.id ?? ""
       }
     }
   }

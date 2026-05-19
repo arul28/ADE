@@ -70,7 +70,10 @@ struct LaneDetailHeaderCard<Footer: View>: View {
     let hasUpstream = syncStatus?.hasUpstream ?? true
     let diverged = syncStatus?.diverged ?? false
     let shouldPull = hasUpstream && remoteBehind > 0 && !diverged
-    let shouldPush = !hasUpstream || remoteAhead > 0
+    // While detail is still loading (syncStatus nil) we don't know the ahead count yet, so
+    // keep Push enabled instead of disabling an already-ahead lane until the fetch lands.
+    let syncStatusLoaded = syncStatus != nil
+    let shouldPush = !syncStatusLoaded || !hasUpstream || remoteAhead > 0
 
     HStack(spacing: 8) {
       Image(systemName: "arrow.triangle.2.circlepath")

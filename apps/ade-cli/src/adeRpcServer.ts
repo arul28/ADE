@@ -5251,15 +5251,17 @@ async function runTool(args: {
       }
     }
 
-    if (initialInputMeta.goal) {
+    const autoTitleApplied = Boolean(initialInputMeta.promptTitle) && title === initialInputMeta.promptTitle;
+    if (initialInputMeta.goal || autoTitleApplied) {
       const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
-      runtime.sessionService.updateMeta({
+      const metaPatch: Parameters<typeof runtime.sessionService.updateMeta>[0] = {
         sessionId: created.sessionId,
-        ...(session?.goal?.trim().length ? {} : { goal: initialInputMeta.goal }),
-        ...(initialInputMeta.promptTitle && title === initialInputMeta.promptTitle
-          ? { title: initialInputMeta.promptTitle, manuallyNamed: false }
-          : {}),
-      });
+        ...(initialInputMeta.goal && !session?.goal?.trim().length ? { goal: initialInputMeta.goal } : {}),
+        ...(autoTitleApplied ? { title: initialInputMeta.promptTitle!, manuallyNamed: false } : {}),
+      };
+      if (metaPatch.goal !== undefined || metaPatch.title !== undefined || metaPatch.manuallyNamed !== undefined) {
+        runtime.sessionService.updateMeta(metaPatch);
+      }
     }
 
     const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;

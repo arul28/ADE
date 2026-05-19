@@ -14,7 +14,9 @@ func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> Pr
     case .success: pass += 1
     case .failure: fail += 1
     case .pending: pending += 1
-    case .neutral: break
+    // Neutral/skipped checks are non-failing outcomes; bucket them with pass so the
+    // stat strip's total always equals the sum of pass + fail + pending.
+    case .neutral: pass += 1
     }
   }
   if !checks.isEmpty {

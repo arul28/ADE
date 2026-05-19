@@ -1568,10 +1568,13 @@ final class DatabaseService {
 
     if let title {
       let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmedTitle.isEmpty else { return }
-      assignments.append("title = ?")
-      binders.append { statement, index in
-        try self.bindText(trimmedTitle, to: statement, index: index)
+      // Skip just the title write when it's blank — other field updates
+      // (pinned, manually_named) must still apply on the same call.
+      if !trimmedTitle.isEmpty {
+        assignments.append("title = ?")
+        binders.append { statement, index in
+          try self.bindText(trimmedTitle, to: statement, index: index)
+        }
       }
     }
 

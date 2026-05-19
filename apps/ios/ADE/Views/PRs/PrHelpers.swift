@@ -48,8 +48,10 @@ func matchedLaneForExactBranch(_ headBranch: String?, lanes: [LaneSummary]) -> L
   else {
     return nil
   }
+  // Git refs are case-sensitive; matching case-insensitively could pick the wrong
+  // lane when two branches differ only by case (e.g. Feature-X vs feature-x).
   return lanes.first { lane in
-    normalizedPrBranchName(lane.branchRef).caseInsensitiveCompare(normalizedHead) == .orderedSame
+    normalizedPrBranchName(lane.branchRef) == normalizedHead
   }
 }
 

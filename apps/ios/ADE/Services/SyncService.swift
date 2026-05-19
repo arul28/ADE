@@ -1664,18 +1664,25 @@ final class SyncService: ObservableObject {
 
   private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
     let projectIds = Set(projects.map(\.id))
+
+    // Keep a still-valid active project before considering any remote-catalog
+    // remap. If the cached row is in `projects`, we must not override it with
+    // a different id from `remoteProjectCatalog` — `refreshProjectCatalog`
+    // intentionally preserves the existing selection when it keeps a cached
+    // row for the same root.
+    if let activeProjectId, projectIds.contains(activeProjectId) {
+      database.setActiveProjectId(activeProjectId)
+      return
+    }
+
     if let activeProjectId,
        let activeProjectRootPath,
        let remoteProject = deduplicatedRemoteProjectCatalog().first(where: { project in
          project.id != activeProjectId
            && normalizedProjectRoot(project.rootPath) == activeProjectRootPath
-       }) {
+       }),
+       projectIds.contains(remoteProject.id) {
       setActiveProjectId(remoteProject.id, rootPath: remoteProject.rootPath)
-      return
-    }
-
-    if let activeProjectId, projectIds.contains(activeProjectId) {
-      database.setActiveProjectId(activeProjectId)
       return
     }
 
@@ -3763,7 +3770,25 @@ final class SyncService: ObservableObject {
 
   @MainActor
   func cachedChatModelCatalog() -> AgentChatModelCatalog? {
-    guard let cached = chatModelCatalogCache.values.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
+    // Scope the fallback lookup to the current host/project. `chatModelsCacheKey`
+    // mixes host + project root into every key it writes, so returning the newest
+    // entry from *any* cache row could leak a different host's catalog into the
+    // active session. Match the key prefix instead and only consider entries that
+    // belong to the same host/project scope.
+    let scopePrefix = chatModelsCacheKey(provider: "")
+    let scopedEntries = chatModelCatalogCache
+      .filter { key, _ in
+        // Strip the provider component from the stored key and compare scopes.
+        // Both `scopePrefix` and the stored key use `\u{1f}` separators between
+        // provider, host, and project root; everything after the first separator
+        // is the host+project portion we care about.
+        guard let sepIndex = scopePrefix.firstIndex(of: "\u{1f}"),
+              let storedSepIndex = key.firstIndex(of: "\u{1f}")
+        else { return false }
+        return scopePrefix[sepIndex...] == key[storedSepIndex...]
+      }
+      .values
+    guard let cached = scopedEntries.sorted(by: { $0.fetchedAt > $1.fetchedAt }).first else { return nil }
     guard Date().timeIntervalSince(cached.fetchedAt) < chatModelsCacheTTL else { return nil }
     return cached.catalog
   }
@@ -7400,6 +7425,12 @@ extension SyncService {
   /// which token kind (alert vs activity) to target based on what it last saw
   /// from us.
   func sendTestPush() async -> SyncSendTestPushResult {
+    // Fail fast when the socket is offline. Without this guard, `sendEnvelope`
+    // silently drops the frame and `awaitResponse` would sit until timeout,
+    // making the test-push button look unresponsive.
+    guard canSendLiveRequests() else {
+      return SyncSendTestPushResult(ok: false, message: "The paired machine is offline.")
+    }
     let requestId = makeRequestId()
     do {
       let raw = try await awaitResponse(
@@ -7626,15 +7657,15 @@ extension SyncService {
         laneName: session.laneName.isEmpty ? nil : session.laneName,
         title: session.title.isEmpty ? session.goal : session.title,
         status: isFailedStatus ? "failed" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status)),
-	        awaitingInput: isAwaiting,
-	        lastActivityAt: lastActivity,
-	        elapsedSeconds: elapsed,
-	        preview: session.lastOutputPreview,
+        awaitingInput: isAwaiting,
+        lastActivityAt: lastActivity,
+        elapsedSeconds: elapsed,
+        preview: session.lastOutputPreview,
         pendingInputItemId: isAwaiting ? (session.pendingInputItemId ?? pendingInputItemIdForSnapshot(sessionId: session.id)) : nil,
-	        progress: nil,
-	        phase: nil,
-	        toolCalls: 0
-	      )
+        progress: nil,
+        phase: nil,
+        toolCalls: 0
+      )
 
       allAgents.append(snap)
 
@@ -7689,17 +7720,17 @@ extension SyncService {
       )
     }
 
-	    scheduleWorkspaceSnapshotWrite()
-	  }
+    scheduleWorkspaceSnapshotWrite()
+  }
 
-	  private func pendingInputItemIdForSnapshot(sessionId: String) -> String? {
-	    let events = chatEventEnvelopesBySession[sessionId] ?? []
-	    guard !events.isEmpty else { return nil }
-	    let transcript = makeWorkChatTranscript(from: events)
-	    return derivePendingWorkInputs(from: transcript).last?.itemId
-	  }
+  private func pendingInputItemIdForSnapshot(sessionId: String) -> String? {
+    let events = chatEventEnvelopesBySession[sessionId] ?? []
+    guard !events.isEmpty else { return nil }
+    let transcript = makeWorkChatTranscript(from: events)
+    return derivePendingWorkInputs(from: transcript).last?.itemId
+  }
 
-	  /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
+  /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
   /// so bursty sync traffic collapses into a single widget-timeline reload.
   private func scheduleWorkspaceSnapshotWrite() {
     snapshotDebouncerTask?.cancel()

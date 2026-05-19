@@ -736,26 +736,28 @@ function packedCrsqlPrimaryKey(value: SyncScalar): SyncScalar | null {
 }
 
 function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeRow): CrsqlChangeRow {
+  const tableInfo = allRows<{ pk: number }>(
+    db,
+    `pragma table_info('${change.table.replace(/'/g, "''")}')`
+  );
+  const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
+  if (primaryKeyColumns.length !== 1) {
+    const shape = primaryKeyColumns.length === 0
+      ? "no primary key"
+      : `${primaryKeyColumns.length} primary key columns`;
+    throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
+  }
+
   if (isSyncScalarBytes(change.pk)) {
     const packedPk = packedCrsqlPrimaryKey(change.pk);
     if (packedPk) return change;
     throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: invalid packed key.`);
   }
 
-  const tableInfo = allRows<{ pk: number }>(
-    db,
-    `pragma table_info('${change.table.replace(/'/g, "''")}')`
-  );
-  const primaryKeyColumns = tableInfo.filter((column) => Number(column.pk) > 0);
-  if (primaryKeyColumns.length === 1) {
-    const packedPk = packedCrsqlPrimaryKey(change.pk);
-    if (packedPk) return { ...change, pk: packedPk };
-  }
+  const packedPk = packedCrsqlPrimaryKey(change.pk);
+  if (packedPk) return { ...change, pk: packedPk };
 
-  const shape = primaryKeyColumns.length === 0
-    ? "no primary key"
-    : `${primaryKeyColumns.length} primary key columns`;
-  throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: ${shape}.`);
+  throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: unsupported scalar shape.`);
 }
 
 function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {

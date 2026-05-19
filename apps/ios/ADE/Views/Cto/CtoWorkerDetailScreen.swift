@@ -531,6 +531,9 @@ struct CtoWorkerDetailScreen: View {
       coreMemory = mem
       memoryLoadError = nil
     case .failure(let err):
+      // Clear the previous snapshot so the unavailable error renders alone instead of
+      // showing stale memory content under a fresh failure banner.
+      coreMemory = nil
       memoryLoadError = err.localizedDescription
     }
     if case .success(let fetched) = runsResult { runs = fetched }

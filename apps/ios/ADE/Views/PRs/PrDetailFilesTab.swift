@@ -397,6 +397,8 @@ private struct PrFileRowLabel: View {
 
   private func prFileInlineAction(symbol: String, label: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
+      // Visual chip stays compact (24pt circle) but the outer frame expands the tap target
+      // to Apple's HIG-minimum 44pt so these inline actions don't punish thumb taps in the row.
       ZStack {
         Circle()
           .fill(Color.white.opacity(0.06))
@@ -407,6 +409,8 @@ private struct PrFileRowLabel: View {
           .foregroundStyle(ADEColor.textSecondary)
       }
       .frame(width: 24, height: 24)
+      .frame(width: 44, height: 44)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)

@@ -69,6 +69,9 @@ final class ADETests: XCTestCase {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     defer { database.close() }
     let service = SyncService(database: database)
+    // Bind explicitly so the deep-link router routes through our test instance instead
+    // of relying on initializer side effects to update SyncService.shared.
+    SyncService.shared = service
     service.requestedWorkSessionNavigation = nil
 
     DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session-123")))

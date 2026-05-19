@@ -233,6 +233,13 @@ function asOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function asConfidenceThreshold(value: unknown): number | undefined {
+  const numeric = asOptionalNumber(value);
+  if (numeric == null) return undefined;
+  if (numeric < 0 || numeric > 1) return undefined;
+  return numeric;
+}
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => asTrimmedString(entry)).filter((entry): entry is string => Boolean(entry));
@@ -1274,7 +1281,7 @@ function parseLandQueueNextArgs(value: Record<string, unknown>): LandQueueNextAr
     method,
     ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
     ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
-    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
   };
 }
 
@@ -1288,7 +1295,7 @@ function parseStartQueueAutomationArgs(value: Record<string, unknown>): StartQue
   const resolverModel = asTrimmedString(value.resolverModel);
   const reasoningEffort = asTrimmedString(value.reasoningEffort);
   const permissionMode = asTrimmedString(value.permissionMode);
-  const confidenceThreshold = asOptionalNumber(value.confidenceThreshold);
+  const confidenceThreshold = asConfidenceThreshold(value.confidenceThreshold);
   const originLabel = asTrimmedString(value.originLabel);
   return {
     groupId: requireString(value.groupId, "prs.startQueueAutomation requires groupId."),
@@ -1330,7 +1337,7 @@ function parseResumeQueueAutomationArgs(value: Record<string, unknown>): ResumeQ
     ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
     ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
     ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
-    ...(asOptionalNumber(value.confidenceThreshold) != null ? { confidenceThreshold: asOptionalNumber(value.confidenceThreshold)! } : {}),
+    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
     ...(asTrimmedString(value.originLabel) ? { originLabel: asTrimmedString(value.originLabel)! } : {}),
   };
 }

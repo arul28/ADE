@@ -1684,12 +1684,16 @@ struct PrPathReviewCommentRow: View {
 
   private func prInlineAction(symbol: String, label: String, action: @escaping () -> Void) -> some View {
     Button(action: action) {
+      // Visual chip stays compact (26pt circle), but the outer frame + contentShape
+      // expands the tap target to Apple's HIG-minimum 44pt.
       Image(systemName: symbol)
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(ADEColor.textSecondary)
         .frame(width: 26, height: 26)
         .background(Color.white.opacity(0.05), in: Circle())
         .overlay(Circle().stroke(Color.white.opacity(0.10), lineWidth: 0.5))
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)
@@ -1855,12 +1859,16 @@ struct PrIssueInventoryRow: View {
         ADEStatusPill(text: item.source.uppercased(), tint: ADEColor.accent)
         ADEStatusPill(text: item.state.replacingOccurrences(of: "_", with: " ").uppercased(), tint: tint)
         Spacer(minLength: 0)
+        // Inline 30pt glass chips with an expanded 44pt hit area so the row hits
+        // Apple's HIG minimum tap target without ballooning the visible buttons.
         HStack(spacing: 6) {
           Button(action: onFixed) {
             Image(systemName: "checkmark")
               .frame(width: 30, height: 30)
           }
           .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
           .accessibilityLabel("Mark fixed")
 
           Button(action: onDismiss) {
@@ -1868,6 +1876,8 @@ struct PrIssueInventoryRow: View {
               .frame(width: 30, height: 30)
           }
           .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
           .accessibilityLabel("Dismiss")
 
           Button(action: onEscalate) {
@@ -1875,6 +1885,8 @@ struct PrIssueInventoryRow: View {
               .frame(width: 30, height: 30)
           }
           .buttonStyle(.glass)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
           .accessibilityLabel("Escalate")
         }
         .disabled(!isLive)

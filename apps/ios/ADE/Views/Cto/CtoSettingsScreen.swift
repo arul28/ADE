@@ -348,9 +348,15 @@ struct CtoSettingsScreen: View {
 
     if let value = try? await syncService.fetchCtoBudget() {
       self.budget = value
+    } else {
+      // Drop stale budget rather than render outdated numbers under a fresh load.
+      self.budget = nil
     }
     if let value = try? await syncService.fetchLinearConnectionStatus() {
       self.linearStatus = value
+    } else {
+      // Same reasoning — a failed refresh should not preserve the previous integration state.
+      self.linearStatus = nil
     }
   }
 }

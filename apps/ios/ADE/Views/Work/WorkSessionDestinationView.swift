@@ -658,8 +658,11 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func reconcileIdleCanonicalTranscriptIfNeeded() async {
     guard !canonicalTranscriptRefreshInFlight else { return }
-    guard fallbackEntries.isEmpty else { return }
 
+    // We used to bail when fallbackEntries was non-empty, but loadTranscript
+    // now populates fallbackEntries during active sessions too — so a populated
+    // cache no longer means "we already reconciled". Rely on the active-status
+    // gate plus the 6s debounce below to throttle work instead.
     let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
     guard status != "active" else { return }
 
