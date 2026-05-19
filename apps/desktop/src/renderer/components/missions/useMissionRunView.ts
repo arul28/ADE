@@ -28,7 +28,7 @@ function getRunViewCoalesced(args: {
   return request;
 }
 
-export function useMissionRunView(missionId: string | null, runId: string | null) {
+export function useMissionRunView(missionId: string | null, runId: string | null, active = true) {
   const [runView, setRunView] = useState<MissionRunView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,10 +98,11 @@ export function useMissionRunView(missionId: string | null, runId: string | null
       void refresh();
     },
     RUN_VIEW_SAFETY_POLL_MS,
-    Boolean(resolvedMissionId.length),
+    active && Boolean(resolvedMissionId.length),
   );
 
   useEffect(() => {
+    if (!active) return;
     if (!resolvedMissionId.length) return;
     const subscriptionKey = requestKey;
     const unsubscribe = window.ade.missions.subscribeRunView(
@@ -117,7 +118,7 @@ export function useMissionRunView(missionId: string | null, runId: string | null
       pendingRefreshRef.current = false;
       unsubscribe();
     };
-  }, [requestKey, resolvedMissionId, runId]);
+  }, [active, requestKey, resolvedMissionId, runId]);
 
   return { runView, loading, error, refresh };
 }

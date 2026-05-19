@@ -24,18 +24,26 @@ describe("CodexImageGenerationCard", () => {
   beforeEach(() => {
     openPath = vi.fn(async () => undefined);
     originalAde = (window as { ade?: unknown }).ade as typeof window.ade;
-    (window as unknown as { ade: { app: { openPath: typeof openPath } } }).ade = {
-      ...(originalAde ?? {}),
-      app: {
-        ...(originalAde?.app ?? {}),
-        openPath,
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        app: {
+          ...(originalAde?.app ?? {}),
+          openPath,
+        },
       },
-    } as never;
+    });
   });
 
   afterEach(() => {
     cleanup();
-    (window as unknown as { ade: typeof originalAde }).ade = originalAde;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: originalAde,
+    });
   });
 
   it("renders the Open button only when savedPath is set, and triggers window.ade.app.openPath on click", () => {

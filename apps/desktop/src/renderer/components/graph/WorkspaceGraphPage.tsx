@@ -119,7 +119,7 @@ const MERGE_SUCCESS_ANIMATION_MS = 1200;
 const GRAPH_ACTIVITY_SESSION_LIMIT = 150;
 const GRAPH_ACTIVITY_OPERATION_LIMIT = 150;
 
-function GraphInner() {
+function GraphInner({ active = true }: { active?: boolean }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
@@ -363,8 +363,9 @@ function GraphInner() {
   }, [viewMode]);
 
   React.useEffect(() => {
+    if (!active) return;
     void refreshEnvironmentMappings();
-  }, [project?.rootPath, refreshEnvironmentMappings]);
+  }, [active, project?.rootPath, refreshEnvironmentMappings]);
 
   const riskRefreshTimerRef = React.useRef<number | null>(null);
   const dragOriginRef = React.useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -686,8 +687,9 @@ function GraphInner() {
         return;
       }
       const includeOperations = options?.includeOperations ?? true;
+      const projectRoot = project?.rootPath ?? null;
       const [sessions, operations] = await Promise.all([
-        listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }).then((rows) =>
+        listSessionsCached({ limit: GRAPH_ACTIVITY_SESSION_LIMIT }, { projectRoot }).then((rows) =>
           rows.filter((session) => !isRunOwnedSession(session)),
         ),
         includeOperations
@@ -738,7 +740,7 @@ function GraphInner() {
     } catch {
       // ignore
     }
-  }, []);
+  }, [project?.rootPath]);
 
   const scheduleRefreshActivity = React.useCallback((delayMs = 700, options?: { includeOperations?: boolean }) => {
     if (options?.includeOperations !== false) {
@@ -768,6 +770,7 @@ function GraphInner() {
   }, [refreshActivity]);
 
   React.useEffect(() => {
+    if (!active) return;
     if (!project?.rootPath) return;
     let cancelled = false;
     let riskTimer: number | null = null;
@@ -814,9 +817,10 @@ function GraphInner() {
       if (syncTimer != null) window.clearTimeout(syncTimer);
       if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
-  }, [project?.rootPath, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
+  }, [active, project?.rootPath, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     const initialPrTimer = window.setTimeout(() => {
       if (cancelled || document.visibilityState !== "visible") return;
@@ -842,13 +846,15 @@ function GraphInner() {
         // noop
       }
     };
-  }, [refreshPrs, reportGraphIssue, scheduleRefreshPrs]);
+  }, [active, refreshPrs, reportGraphIssue, scheduleRefreshPrs]);
 
   React.useEffect(() => {
+    if (!active) return;
     void refreshIntegrationProposals();
-  }, [lanesKey, refreshIntegrationProposals]);
+  }, [active, lanesKey, refreshIntegrationProposals]);
 
   React.useEffect(() => {
+    if (!active) return;
     let unsub = () => {};
     try {
       unsub = window.ade.prs.onEvent((event) => {
@@ -870,9 +876,10 @@ function GraphInner() {
         // noop
       }
     };
-  }, [refreshIntegrationProposals, reportGraphIssue]);
+  }, [active, refreshIntegrationProposals, reportGraphIssue]);
 
   React.useEffect(() => {
+    if (!active) return;
     if (!project?.rootPath) {
       setLoadedGraphPreferences(false);
       skipNextGraphPreferencePersistRootRef.current = null;
@@ -904,16 +911,17 @@ function GraphInner() {
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath]);
+  }, [active, project?.rootPath]);
 
   React.useEffect(() => {
+    if (!active) return;
     if (!project?.rootPath || !loadedGraphPreferences) return;
     if (skipNextGraphPreferencePersistRootRef.current === project.rootPath) {
       skipNextGraphPreferencePersistRootRef.current = null;
       return;
     }
     void window.ade.graphState.set(project.rootPath, createGraphPreferences(viewMode)).catch(() => {});
-  }, [loadedGraphPreferences, project?.rootPath, viewMode]);
+  }, [active, loadedGraphPreferences, project?.rootPath, viewMode]);
 
   React.useEffect(() => {
     if (!undoToast) return;
@@ -1088,6 +1096,7 @@ function GraphInner() {
   }, [selectedLaneIds]);
 
   React.useEffect(() => {
+    if (!active) return;
     let unsubConflict = () => {};
     let unsubPtyData = () => {};
     let unsubPtyExit = () => {};
@@ -1187,7 +1196,7 @@ function GraphInner() {
         prRefreshTimerRef.current = null;
       }
     };
-  }, [project?.rootPath, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
+  }, [active, project?.rootPath, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {
@@ -1518,6 +1527,7 @@ function GraphInner() {
   ]);
 
   React.useEffect(() => {
+    if (!active) return;
     if (!loadedGraphPreferences) return;
     if (nodeDragActiveRef.current) return;
     const edgeVisualState = (edgeId: string, source: string, target: string) => {
@@ -2663,7 +2673,7 @@ function GraphInner() {
       void reactFlow.fitView({ duration: 500, padding: 0.2 });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [activeSnapshot.updatedAt, edges.length, loadedGraphPreferences, nodes.length, reactFlow, viewMode]);
+  }, [active, activeSnapshot.updatedAt, edges.length, loadedGraphPreferences, nodes.length, reactFlow, viewMode]);
 
   const hoveredTooltipLane = nodeTooltip ? laneById.get(nodeTooltip.laneId) ?? null : null;
   const activeViewMeta = VIEW_MODE_META[viewMode];
@@ -4500,11 +4510,11 @@ function GraphInner() {
   );
 }
 
-export function WorkspaceGraphPage() {
+export function WorkspaceGraphPage({ active = true }: { active?: boolean } = {}) {
   return (
     <div className="h-full">
       <ReactFlowProvider>
-        <GraphInner />
+        <GraphInner active={active} />
       </ReactFlowProvider>
     </div>
   );

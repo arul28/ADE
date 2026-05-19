@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ProgressInfo } from "builder-util-runtime";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 import type { AutoUpdateSnapshot, RecentlyInstalledUpdate } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -32,6 +31,13 @@ type CreateAutoUpdateServiceArgs = {
 
 type UpdateCheckResultLike = {
   downloadPromise?: Promise<unknown> | null;
+};
+
+type ProgressInfo = {
+  percent: number;
+  bytesPerSecond: number;
+  transferred: number;
+  total: number;
 };
 
 export function createEmptyAutoUpdateSnapshot(): AutoUpdateSnapshot {

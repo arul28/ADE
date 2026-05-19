@@ -163,7 +163,8 @@ describe("TopBar", () => {
     resetStore();
     globalThis.window.ade = {
       app: {
-        getWindowSession: vi.fn(async () => ({ windowId: 1, project: useAppStore.getState().project })),
+        getWindowSession: vi.fn(async () => ({ windowId: 1, project: useAppStore.getState().project, openProjectTabs: [] })),
+        setWindowProjectTabs: vi.fn(async () => ({ openProjectTabs: [] })),
         newWindow: vi.fn(async () => ({ windowId: 2 })),
         openProjectInNewWindow: vi.fn(async (rootPath: string) => ({
           windowId: 2,

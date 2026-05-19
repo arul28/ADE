@@ -2,9 +2,13 @@
 
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MissionTabNavigation } from "./MissionTabContainer";
 import { initialMissionsState, useMissionsStore } from "./useMissionsStore";
+
+vi.mock("./MissionChatV2", () => ({
+  MissionChatV2: () => null,
+}));
 
 describe("MissionTabNavigation", () => {
   beforeEach(() => {

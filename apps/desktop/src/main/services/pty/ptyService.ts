@@ -27,6 +27,8 @@ import type {
   ChatTerminalListArgs,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
+  ChatTerminalReattachArgs,
+  ChatTerminalReattachResult,
   ChatTerminalResizeArgs,
   ChatTerminalSession,
   ChatTerminalSignalArgs,
@@ -615,6 +617,9 @@ export function createPtyService({
   const missingResumeTargetBackfillFailures = new Map<string, { toolType: TerminalToolType | null; checkedAtMs: number }>();
   const claudeTitleCaptureKeys = new Set<string>();
   const resumeRuntimeFlights = new Map<string, Promise<PtyCreateResult>>();
+  // Dedup concurrent reattachChatCli calls for the same chatSessionId so we
+  // never spawn two PTYs racing to `claude --resume <same-id>`.
+  const reattachChatCliFlights = new Map<string, Promise<ChatTerminalReattachResult>>();
   /** Timers for auto-closing tool-typed PTYs when the CLI tool exits back to shell prompt */
   const toolAutoCloseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let ptyDataSummaryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3015,6 +3020,95 @@ export function createPtyService({
       return session ? terminalSessionFromSummary(session) : null;
     },
 
+    async reattachChatCli(args: ChatTerminalReattachArgs): Promise<ChatTerminalReattachResult> {
+      const chatSessionId = cleanOptionalId(args?.chatSessionId);
+      if (!chatSessionId) throw new Error("terminal.reattachChatCli requires chatSessionId.");
+
+      // Fast path: an existing live PTY is already bound. Skip the dedup map to
+      // keep the no-op cost low.
+      const activeTerminalId = activeTerminalByChatSession.get(chatSessionId) ?? null;
+      if (activeTerminalId) {
+        const liveActive = liveEntryBySessionId(activeTerminalId);
+        if (liveActive) {
+          return {
+            terminalId: activeTerminalId,
+            ptyId: liveActive[0],
+            pid: liveActive[1].pty.pid ?? null,
+            relaunched: false,
+          };
+        }
+      }
+
+      // Single-flight dedup: concurrent callers (chat composer + App Control,
+      // rapid sends, etc.) must not each launch a fresh `claude --resume` PTY.
+      // Whoever wins the create wins; everyone else awaits the same Promise.
+      const existing = reattachChatCliFlights.get(chatSessionId);
+      if (existing) return existing;
+
+      const flight = (async (): Promise<ChatTerminalReattachResult> => {
+        // For chat-CLI sessions the chat session id and terminal session id are the same.
+        const session = sessionService.get(chatSessionId);
+        if (!session) {
+          throw new Error(`Chat CLI session '${chatSessionId}' was not found.`);
+        }
+        if (!session.tracked) {
+          throw new Error(`Chat CLI session '${chatSessionId}' is not tracked and cannot be reattached.`);
+        }
+        if (!isPersistedChatToolType(session.toolType)) {
+          throw new Error(`Session '${chatSessionId}' is not a chat CLI session.`);
+        }
+
+        const resumeCommand = session.resumeMetadata
+          ? buildTrackedCliResumeCommand(session.resumeMetadata, {
+            model: null,
+            reasoningEffort: null,
+            permissionMode: null,
+          })
+          : normalizeResumeCommand(session.resumeCommand, session.toolType);
+        if (!resumeCommand) {
+          throw new Error(`Chat CLI session '${chatSessionId}' has no resume command available.`);
+        }
+
+        const { cols, rows } = clampDims(
+          typeof args.cols === "number" ? args.cols : PTY_SEND_DEFAULT_COLS,
+          typeof args.rows === "number" ? args.rows : PTY_SEND_DEFAULT_ROWS,
+        );
+
+        const created = await service.create({
+          sessionId: chatSessionId,
+          laneId: session.laneId,
+          chatSessionId,
+          cols,
+          rows,
+          title: session.title || session.goal || "Chat CLI",
+          tracked: true,
+          toolType: session.toolType,
+          startupCommand: resumeCommand,
+        });
+
+        logger.info("pty.reattach_chat_cli", {
+          chatSessionId,
+          toolType: session.toolType,
+        });
+
+        return {
+          terminalId: created.sessionId,
+          ptyId: created.ptyId,
+          pid: created.pid,
+          relaunched: true,
+        };
+      })();
+
+      reattachChatCliFlights.set(chatSessionId, flight);
+      try {
+        return await flight;
+      } finally {
+        if (reattachChatCliFlights.get(chatSessionId) === flight) {
+          reattachChatCliFlights.delete(chatSessionId);
+        }
+      }
+    },
+
     async readTerminal(args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> {
       const terminalId = resolveTerminalId(args);
       if (!terminalId) throw new Error("terminal.read requires terminalId or an active chat terminal.");
@@ -3092,21 +3186,45 @@ export function createPtyService({
       };
     },
 
-    writeTerminal(args: ChatTerminalWriteArgs): { ok: true } {
+    async writeTerminal(args: ChatTerminalWriteArgs): Promise<{ ok: true }> {
       if (!args || typeof args.data !== "string") {
         throw new Error("terminal.write requires string data.");
       }
       const ptyId = cleanOptionalId(args.ptyId);
       let entry: PtyEntry | null = null;
       if (ptyId) {
+        // Explicit ptyId: never auto-reattach by ptyId; preserve the throw if the entry is missing.
         const candidate = ptys.get(ptyId);
         if (!candidate || candidate.disposed) throw new Error(`Terminal PTY '${ptyId}' is not running.`);
         entry = candidate;
       } else {
         const terminalId = resolveTerminalId(args);
-        if (!terminalId) throw new Error("terminal.write requires terminalId, ptyId, or an active chat terminal.");
-        const live = liveEntryBySessionId(terminalId);
-        if (!live) throw new Error(`Terminal session '${terminalId}' is not running.`);
+        const chatSessionId = cleanOptionalId(args.chatSessionId);
+        let live = terminalId ? liveEntryBySessionId(terminalId) : null;
+        if (!live) {
+          // The PTY is gone. If this is a chat-CLI session and we have a chatSessionId or a terminalId that
+          // matches a chat-CLI tracked session record, auto-reattach via reattachChatCli.
+          const reattachKey = chatSessionId ?? terminalId ?? null;
+          if (reattachKey) {
+            const session = sessionService.get(reattachKey);
+            if (
+              session
+              && session.tracked
+              && isPersistedChatToolType(session.toolType)
+            ) {
+              const created = await service.reattachChatCli({ chatSessionId: reattachKey });
+              live = liveEntryBySessionId(created.terminalId);
+            }
+          }
+        }
+        if (!live) {
+          if (!terminalId) {
+            // No live terminal could be resolved from args and no chat-CLI auto-reattach applies.
+            // Preserve the historical contract for callers that pass chatSessionId without a live target.
+            throw new Error("terminal.write requires terminalId, ptyId, or an active chat terminal.");
+          }
+          throw new Error(`Terminal session '${terminalId}' is not running.`);
+        }
         entry = live[1];
       }
       entry.pty.write(args.data);
@@ -3403,6 +3521,16 @@ export function createPtyService({
         if (!entry.disposed) count += 1;
       }
       return count;
+    },
+
+    // Used by project-context rebalancing to decide whether a project still
+    // has user work that would be destroyed by eviction. ANY live PTY (running
+    // CLI, shell, agent process) protects the whole context.
+    hasLiveSessions(): boolean {
+      for (const entry of ptys.values()) {
+        if (!entry.disposed) return true;
+      }
+      return false;
     },
 
     onData(listener: PtyDataListener): () => void {

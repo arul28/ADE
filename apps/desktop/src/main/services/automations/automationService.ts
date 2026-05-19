@@ -46,7 +46,7 @@ import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerO
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
-import { getDefaultModelDescriptor, getModelById, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 
 type CronTask = {
   stop: () => void;
@@ -1876,6 +1876,9 @@ export function createAutomationService({
       const promptText = typeof interpolated === "string" ? interpolated : rawPrompt;
       const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule, action);
       const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
+      const codexFastMode = providerGroup === "codex"
+        && action.codexFastMode === true
+        && modelSupportsFastMode(modelDescriptor);
       const permissionConfig = buildPermissionConfig(rule, { publishPhase: false }, action);
       const permissionMode = resolveProviderPermissionMode(providerGroup, permissionConfig);
       const reasoningEffort = action.modelConfig?.thinkingLevel
@@ -1895,6 +1898,7 @@ export function createAutomationService({
           sessionProfile: "workflow",
           reasoningEffort,
           permissionMode,
+          ...(codexFastMode ? { codexFastMode: true } : {}),
           ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
           ...(providerGroup === "codex" && permissionConfig.providers?.codexSandbox
             ? { codexSandbox: permissionConfig.providers.codexSandbox }
@@ -2299,6 +2303,9 @@ export function createAutomationService({
       ? "plan"
       : resolveProviderPermissionMode(providerGroup, permissionConfig);
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.orchestratorModel?.thinkingLevel ?? null;
+    const codexFastMode = providerGroup === "codex"
+      && args.rule.execution?.session?.codexFastMode === true
+      && modelSupportsFastMode(modelDescriptor);
     const timeoutMs = Math.max(
       15_000,
       Math.floor((args.rule.guardrails.maxDurationMin ?? 10) * 60_000),
@@ -2315,6 +2322,7 @@ export function createAutomationService({
         sessionProfile: "workflow",
         reasoningEffort,
         permissionMode,
+        ...(codexFastMode ? { codexFastMode: true } : {}),
         ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
         ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
           ? { codexSandbox: permissionConfig.providers.codexSandbox }

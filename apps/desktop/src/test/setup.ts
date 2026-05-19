@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll } from "vitest";
+import { afterAll, afterEach, beforeEach } from "vitest";
 
 type TestTempTrackerState = {
   installed: boolean;
@@ -99,6 +99,25 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
     dispatchEvent: () => false,
   })) as typeof window.matchMedia;
 }
+
+function ensureWritableWindowAde(): void {
+  if (typeof window === "undefined") return;
+  const descriptor = Object.getOwnPropertyDescriptor(window, "ade");
+  if (!descriptor || descriptor.writable !== false || descriptor.configurable !== true) return;
+  Object.defineProperty(window, "ade", {
+    configurable: true,
+    writable: true,
+    value: descriptor.value,
+  });
+}
+
+beforeEach(() => {
+  ensureWritableWindowAde();
+});
+
+afterEach(() => {
+  ensureWritableWindowAde();
+});
 
 // nwsapi (jsdom's CSS selector engine) throws on Tailwind arbitrary-value
 // class names like `rounded-[8px]` because `[` opens an attribute selector.

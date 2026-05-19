@@ -336,15 +336,23 @@ describe("MissionThreadMessageList usage", () => {
     agentListLifecycle.mounts = 0;
     agentListLifecycle.unmounts = 0;
     (useMissionPolling as unknown as Mock).mockClear();
-    globalThis.window.ade = {
-      sessions: {
-        readTranscriptTail: vi.fn(() => Promise.resolve("")),
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        sessions: {
+          readTranscriptTail: vi.fn(() => Promise.resolve("")),
+        },
       },
-    } as any;
+    });
   });
 
   afterEach(() => {
-    globalThis.window.ade = originalAde;
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: originalAde,
+    });
   });
 
   it("passes mission-feed mode when no session is selected", () => {
@@ -365,11 +373,15 @@ describe("MissionThreadMessageList usage", () => {
 
   it("does not read raw transcript tails for closed mission history threads", async () => {
     const readTranscriptTail = vi.fn(() => Promise.resolve(""));
-    globalThis.window.ade = {
-      sessions: {
-        readTranscriptTail,
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        sessions: {
+          readTranscriptTail,
+        },
       },
-    } as any;
+    });
 
     render(React.createElement(MissionThreadMessageList, {
       messages: [],

@@ -1,4 +1,7 @@
-import { create } from "zustand";
+import React, { createContext, useContext, type ReactNode } from "react";
+import { useStore } from "zustand";
+import { createStore, type StoreApi } from "zustand/vanilla";
+import type { StateCreator } from "zustand";
 import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
@@ -541,6 +544,8 @@ export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
+  openProjectTabRoots: string[];
+  projectInfoByRoot: Record<string, ProjectInfo>;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
   showWelcome: boolean;
   projectTransition:
@@ -580,11 +585,40 @@ export type AppState = {
   didYouKnowEnabled: boolean;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
+  /**
+   * Per-project lane / chat selection. Switching projects stashes the current
+   * selection here keyed by project root so switching BACK restores the same
+   * lane and chat instead of resetting to "first lane". This is what makes
+   * a project tab feel like a real workspace tab — you come back to exactly
+   * what you left.
+   */
+  laneSelectionByProject: Record<string, { laneId: string | null; sessionId: string | null }>;
+  /**
+   * Per-project lane list cache. On project switch we apply the cached lanes
+   * IMMEDIATELY (no loading flicker, no chat-pane unmount) and refresh in the
+   * background. Without this, every switch wipes `lanes` to `[]`, which
+   * unmounts the chat UI even though the agent runtime is still alive on the
+   * backend — making it look like the chat closed.
+   */
+  laneCacheByProject: Record<string, { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] }>;
+  /**
+   * Per-project sessions list cache (chats, terminals, CLI runs). Same
+   * stale-while-revalidate pattern as `laneCacheByProject`. Without this,
+   * useWorkSessions wipes `sessions` to `[]` on every projectRoot change,
+   * which blanks the work view's chat tabs and terminals for several
+   * seconds until the IPC fetch returns. With this, the cached sessions
+   * render instantly and the refresh runs silently in the background.
+   */
+  sessionsCacheByProject: Record<string, unknown[]>;
   /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
   dismissedMissingAiBannerRoots: SessionDismissMap;
   dismissedGithubBannerRoots: SessionDismissMap;
 
   setProject: (project: ProjectInfo | null) => void;
+  setOpenProjectTabRoots: (
+    next: string[] | ((prev: string[]) => string[])
+  ) => void;
+  rememberProjectInfo: (project: ProjectInfo) => void;
   setProjectBinding: (binding: OpenProjectBinding | null) => void;
   setProjectHydrated: (hydrated: boolean) => void;
   setShowWelcome: (show: boolean) => void;
@@ -666,15 +700,6 @@ type LaneRefreshRequest = {
   includeAutoRebaseStatus: boolean;
 };
 
-let warmupTimer: number | null = null;
-/** Monotonic counter incremented before each lane refresh request.
- *  Slower responses whose token doesn't match the latest value are discarded. */
-let laneRefreshVersion = 0;
-let laneRefreshInFlight: Promise<void> | null = null;
-let activeLaneRefreshProjectKey: string | null = null;
-let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
-let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
-
 function normalizeLaneRefreshRequest(options?: {
   includeStatus?: boolean;
   includeSnapshots?: boolean;
@@ -714,25 +739,6 @@ function withPreservedLaneStatus(
     : lane;
 }
 
-function scheduleProjectHydration(get: () => AppState) {
-  if (warmupTimer != null) {
-    window.clearTimeout(warmupTimer);
-  }
-  const delay = Math.max(1_200, 1_800);
-  warmupTimer = window.setTimeout(() => {
-    warmupTimer = null;
-    void get().refreshLanes({
-      includeStatus: true,
-      includeConflictStatus: false,
-      includeRebaseSuggestions: false,
-      includeAutoRebaseStatus: false,
-    }).catch((err) => {
-      console.debug("Scheduled lane refresh failed:", err);
-    });
-    void get().refreshProviderMode();
-  }, delay);
-}
-
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
@@ -750,10 +756,41 @@ function formatProjectTransitionError(
   return raw.length > 0 ? raw : "Project action failed.";
 }
 
-export const useAppStore = create<AppState>((set, get) => ({
+const createAppState: StateCreator<AppState> = (set, get) => {
+  let warmupTimer: number | null = null;
+  /** Monotonic counter incremented before each lane refresh request.
+   *  Slower responses whose token doesn't match the latest value are discarded. */
+  let laneRefreshVersion = 0;
+  let laneRefreshInFlight: Promise<void> | null = null;
+  let activeLaneRefreshProjectKey: string | null = null;
+  let activeLaneRefreshRequest: LaneRefreshRequest | null = null;
+  let pendingLaneRefreshRequest: LaneRefreshRequest | null = null;
+
+  const scheduleProjectHydration = () => {
+    if (warmupTimer != null) {
+      window.clearTimeout(warmupTimer);
+    }
+    const delay = Math.max(1_200, 1_800);
+    warmupTimer = window.setTimeout(() => {
+      warmupTimer = null;
+      void get().refreshLanes({
+        includeStatus: true,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      }).catch((err) => {
+        console.debug("Scheduled lane refresh failed:", err);
+      });
+      void get().refreshProviderMode();
+    }, delay);
+  };
+
+  return ({
   project: null,
   projectBinding: null,
   projectHydrated: false,
+  openProjectTabRoots: [],
+  projectInfoByRoot: {},
   showWelcome: true,
   projectTransition: null,
   projectTransitionError: null,
@@ -786,6 +823,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
+  laneSelectionByProject: {},
+  laneCacheByProject: {},
+  sessionsCacheByProject: {},
   dismissedMissingAiBannerRoots: {},
   dismissedGithubBannerRoots: {},
 
@@ -795,6 +835,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const nextProjectRoot = project?.rootPath ?? null;
       return {
         project,
+        projectInfoByRoot: project
+          ? {
+              ...prev.projectInfoByRoot,
+              [project.rootPath]: project,
+            }
+          : prev.projectInfoByRoot,
+        openProjectTabRoots: project && !prev.openProjectTabRoots.includes(project.rootPath)
+          ? [...prev.openProjectTabRoots, project.rootPath]
+          : prev.openProjectTabRoots,
         projectBinding: project
           ? {
             kind: "local",
@@ -809,6 +858,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           previousProjectRoot !== nextProjectRoot ? {} : prev.laneDeleteProgressByLaneId,
       };
     }),
+  setOpenProjectTabRoots: (next) =>
+    set((prev) => ({
+      openProjectTabRoots:
+        typeof next === "function" ? next(prev.openProjectTabRoots) : next,
+    })),
+  rememberProjectInfo: (project) =>
+    set((prev) => ({
+      projectInfoByRoot: {
+        ...prev.projectInfoByRoot,
+        [project.rootPath]: project,
+      },
+    })),
   setProjectBinding: (projectBinding) => set({ projectBinding }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
@@ -819,7 +880,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       laneDeleteProgressByLaneId:
         typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next,
     })),
-  selectLane: (laneId) => set({ selectedLaneId: laneId }),
+  selectLane: (laneId) =>
+    set((prev) => {
+      const projectRoot = prev.project?.rootPath ?? null;
+      if (!projectRoot) return { selectedLaneId: laneId };
+      const previousSelection =
+        prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
+      return {
+        selectedLaneId: laneId,
+        laneSelectionByProject: {
+          ...prev.laneSelectionByProject,
+          [projectRoot]: { ...previousSelection, laneId },
+        },
+      };
+    }),
   setLaneInspectorTab: (laneId, tab) =>
     set((prev) => ({
       laneInspectorTabs: {
@@ -832,7 +906,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { [laneId]: _, ...rest } = prev.laneInspectorTabs;
       return { laneInspectorTabs: rest };
     }),
-  focusSession: (sessionId) => set({ focusedSessionId: sessionId }),
+  focusSession: (sessionId) =>
+    set((prev) => {
+      const projectRoot = prev.project?.rootPath ?? null;
+      if (!projectRoot) return { focusedSessionId: sessionId };
+      const previousSelection =
+        prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
+      return {
+        focusedSessionId: sessionId,
+        laneSelectionByProject: {
+          ...prev.laneSelectionByProject,
+          [projectRoot]: { ...previousSelection, sessionId },
+        },
+      };
+    }),
   setTheme: (theme) =>
     set((prev) => {
       const next = { ...prev, theme };
@@ -1071,6 +1158,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           workViewByProject: prev.workViewByProject,
           laneWorkViewByScope: nextLaneWorkViews,
         });
+        // Cache the lane list per project root so the next switch back to this
+        // project can apply lanes immediately (no flicker, no chat unmount).
+        const activeProjectRoot = get().project?.rootPath ?? null;
+        const nextLaneCache = activeProjectRoot
+          ? {
+              ...prev.laneCacheByProject,
+              [activeProjectRoot]: { lanes, laneSnapshots: nextSnapshots },
+            }
+          : prev.laneCacheByProject;
         return {
           laneSnapshots: nextSnapshots,
           lanes,
@@ -1078,11 +1174,18 @@ export const useAppStore = create<AppState>((set, get) => ({
           selectedLaneId: nextSelected,
           laneInspectorTabs: nextTabs,
           laneWorkViewByScope: nextLaneWorkViews,
+          laneCacheByProject: nextLaneCache,
         };
       });
     };
 
-    set({ lanesLoading: true });
+    // Only show a loading spinner when there's nothing to display. If we
+    // already have cached lanes (stale-while-revalidate after a project
+    // switch), keep `lanesLoading: false` so the chat pane + lane list stay
+    // visually stable while we refresh silently in the background.
+    if (get().lanes.length === 0) {
+      set({ lanesLoading: true });
+    }
 
     if (laneRefreshInFlight) {
       const activeRequest = activeLaneRefreshRequest;
@@ -1183,31 +1286,36 @@ export const useAppStore = create<AppState>((set, get) => ({
         return null;
       }
       get().setProject(project);
-      set((prev) => ({
-        projectHydrated: true,
-        showWelcome: false,
-        projectTransition: null,
-        projectTransitionError: null,
-        isNewTabOpen: false,
-        laneSnapshots: [],
-        lanes: [],
-        lanesLoading: true,
-        laneDeleteProgressByLaneId: {},
-        selectedLaneId: null,
-        focusedSessionId: null,
-        laneInspectorTabs: {},
-        keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION,
-        dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
-        dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
-      }));
+      set((prev) => {
+        const restoredSelection =
+          prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
+        const cachedLanes = prev.laneCacheByProject[project.rootPath];
+        return {
+          projectHydrated: true,
+          showWelcome: false,
+          projectTransition: null,
+          projectTransitionError: null,
+          isNewTabOpen: false,
+          laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+          lanes: cachedLanes?.lanes ?? [],
+          lanesLoading: !cachedLanes,
+          laneDeleteProgressByLaneId: {},
+          selectedLaneId: restoredSelection.laneId,
+          focusedSessionId: restoredSelection.sessionId,
+          laneInspectorTabs: {},
+          keybindings: null,
+          terminalAttention: EMPTY_TERMINAL_ATTENTION,
+          dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
+          dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
+        };
+      });
       invalidateAiDiscoveryCache(project.rootPath);
       invalidateProjectConfigCache(project.rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
         get().refreshKeybindings()
       ]);
-      scheduleProjectHydration(get);
+      scheduleProjectHydration();
       return project;
     } catch (error) {
       set({
@@ -1223,47 +1331,109 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    // Stash the OUTGOING project's lane/session selection so switching back
+    // restores it instead of falling through to "first lane".
+    const outgoingProjectRoot = get().project?.rootPath ?? null;
+    const outgoingSelection = {
+      laneId: get().selectedLaneId,
+      sessionId: get().focusedSessionId,
+    };
+    const cachedProject = get().projectInfoByRoot[rootPath] ?? null;
+    const isWarmTabSwitch =
+      cachedProject != null && get().openProjectTabRoots.includes(rootPath);
+    if (isWarmTabSwitch && cachedProject) {
+      get().setProject(cachedProject);
+    }
+    const restoredWarmSelection =
+      cachedProject != null
+        ? get().laneSelectionByProject[cachedProject.rootPath] ?? { laneId: null, sessionId: null }
+        : { laneId: null, sessionId: null };
     set({
-      projectTransition: {
-        kind: "switching",
-        rootPath,
-        startedAtMs: Date.now(),
-      },
+      projectTransition: isWarmTabSwitch
+        ? null
+        : {
+            kind: "switching",
+            rootPath,
+            startedAtMs: Date.now(),
+          },
       projectTransitionError: null,
-      projectBinding: null,
+      projectBinding: isWarmTabSwitch && cachedProject
+        ? {
+            kind: "local",
+            key: `local:${cachedProject.rootPath}`,
+            rootPath: cachedProject.rootPath,
+            displayName: cachedProject.displayName,
+          }
+        : null,
+      ...(isWarmTabSwitch
+        ? {
+            projectHydrated: true,
+            showWelcome: false,
+            isNewTabOpen: false,
+            selectedLaneId: restoredWarmSelection.laneId,
+            focusedSessionId: restoredWarmSelection.sessionId,
+          }
+        : {}),
+      ...(outgoingProjectRoot
+        ? {
+            laneSelectionByProject: {
+              ...get().laneSelectionByProject,
+              [outgoingProjectRoot]: outgoingSelection,
+            },
+          }
+        : {}),
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
       get().setProject(project);
+      const restoredSelection =
+        get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
+      // Stale-while-revalidate: if we have cached lanes for the destination
+      // project, apply them IMMEDIATELY so the chat pane and terminal stay
+      // mounted across the switch (their `lockSessionId` keeps the agent
+      // runtime attached). Then refreshLanes runs in the background and
+      // replaces the cache when fresh data arrives.
+      const cachedLanes = get().laneCacheByProject[project.rootPath];
       // Banner-dismiss pruning happens in the second `set` call below, after recents are fetched,
       // so we can retain dismissals for the active project + all recent projects in one pass.
-      set({
-        projectHydrated: true,
-        showWelcome: false,
-        projectTransition: null,
-        projectTransitionError: null,
-        isNewTabOpen: false,
-        laneSnapshots: [],
-        lanes: [],
-        lanesLoading: true,
-        laneDeleteProgressByLaneId: {},
-        selectedLaneId: null,
-        focusedSessionId: null,
-        laneInspectorTabs: {},
-        keybindings: null,
-        terminalAttention: EMPTY_TERMINAL_ATTENTION,
-      });
+      set(isWarmTabSwitch
+        ? {
+            projectTransition: null,
+            projectTransitionError: null,
+            projectHydrated: true,
+            showWelcome: false,
+            isNewTabOpen: false,
+          }
+        : {
+            projectHydrated: true,
+            showWelcome: false,
+            projectTransition: null,
+            projectTransitionError: null,
+            isNewTabOpen: false,
+            laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+            lanes: cachedLanes?.lanes ?? [],
+            lanesLoading: !cachedLanes,
+            laneDeleteProgressByLaneId: {},
+            selectedLaneId: restoredSelection.laneId,
+            focusedSessionId: restoredSelection.sessionId,
+            laneInspectorTabs: {},
+            keybindings: null,
+            terminalAttention: EMPTY_TERMINAL_ATTENTION,
+          });
       invalidateAiDiscoveryCache(rootPath);
       invalidateProjectConfigCache(rootPath);
       void Promise.allSettled([
         get().refreshLanes({ includeStatus: false }),
         get().refreshKeybindings()
       ]);
-      scheduleProjectHydration(get);
+      scheduleProjectHydration();
 
       const hasProjectScopedStateToPrune =
         Object.keys(get().workViewByProject).length > 1 ||
         Object.keys(get().laneWorkViewByScope).length > 0 ||
+        Object.keys(get().laneSelectionByProject).length > 1 ||
+        Object.keys(get().laneCacheByProject).length > 1 ||
+        Object.keys(get().sessionsCacheByProject).length > 1 ||
         Object.keys(get().dismissedMissingAiBannerRoots).length > 1 ||
         Object.keys(get().dismissedGithubBannerRoots).length > 1;
       if (!hasProjectScopedStateToPrune) return;
@@ -1276,12 +1446,24 @@ export const useAppStore = create<AppState>((set, get) => ({
           set((prev) => {
             const nextWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
+            const nextLaneSelections: Record<string, { laneId: string | null; sessionId: string | null }> = {};
+            const nextLaneCache: Record<string, { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] }> = {};
+            const nextSessionsCache: Record<string, unknown[]> = {};
             for (const [key, value] of Object.entries(prev.workViewByProject)) {
               if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
             }
             for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
               const projectKey = scopeKey.split("::")[0];
               if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
+            }
+            for (const [key, value] of Object.entries(prev.laneSelectionByProject)) {
+              if (key === activeRoot || recentRoots.has(key)) nextLaneSelections[key] = value;
+            }
+            for (const [key, value] of Object.entries(prev.laneCacheByProject)) {
+              if (key === activeRoot || recentRoots.has(key)) nextLaneCache[key] = value;
+            }
+            for (const [key, value] of Object.entries(prev.sessionsCacheByProject)) {
+              if (key === activeRoot || recentRoots.has(key)) nextSessionsCache[key] = value;
             }
             persistWorkViewState({
               workViewByProject: nextWorkViews,
@@ -1290,6 +1472,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             return {
               workViewByProject: nextWorkViews,
               laneWorkViewByScope: nextLaneWorkViews,
+              laneSelectionByProject: nextLaneSelections,
+              laneCacheByProject: nextLaneCache,
+              sessionsCacheByProject: nextSessionsCache,
               dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, retainedRoots),
               dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, retainedRoots),
             };
@@ -1386,6 +1571,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         laneInspectorTabs: {},
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        openProjectTabRoots: [],
         // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.
         dismissedMissingAiBannerRoots: {},
         dismissedGithubBannerRoots: {},
@@ -1399,4 +1585,92 @@ export const useAppStore = create<AppState>((set, get) => ({
       throw error;
     }
   }
-}));
+  });
+};
+
+export type AppStoreApi = StoreApi<AppState>;
+
+const rootAppStore = createStore<AppState>()(createAppState);
+const AppStoreContext = createContext<AppStoreApi | null>(null);
+
+export function createProjectAppStore(project: ProjectInfo): AppStoreApi {
+  const store = createStore<AppState>()(createAppState);
+  const rootState = rootAppStore.getState();
+  store.setState({
+    project,
+    projectBinding: {
+      kind: "local",
+      key: `local:${project.rootPath}`,
+      rootPath: project.rootPath,
+      displayName: project.displayName,
+    },
+    projectHydrated: true,
+    showWelcome: false,
+    isNewTabOpen: false,
+    theme: rootState.theme,
+    terminalPreferences: rootState.terminalPreferences,
+    codeBlockCopyButtonPosition: rootState.codeBlockCopyButtonPosition,
+    agentTurnCompletionSound: rootState.agentTurnCompletionSound,
+    agentTurnCompletionSoundVolume: rootState.agentTurnCompletionSoundVolume,
+    agentTurnCompletionSoundQuietWhenFocused: rootState.agentTurnCompletionSoundQuietWhenFocused,
+    chatFontSizePx: rootState.chatFontSizePx,
+    chatUserMinimapEnabled: rootState.chatUserMinimapEnabled,
+    chatTranscriptDensity: rootState.chatTranscriptDensity,
+    chatChromeTint: rootState.chatChromeTint,
+    chatShellGeometry: rootState.chatShellGeometry,
+    smartTooltipsEnabled: rootState.smartTooltipsEnabled,
+    onboardingEnabled: rootState.onboardingEnabled,
+    didYouKnowEnabled: rootState.didYouKnowEnabled,
+    setTheme: rootState.setTheme,
+    setTerminalPreferences: rootState.setTerminalPreferences,
+    setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
+    setAgentTurnCompletionSound: rootState.setAgentTurnCompletionSound,
+    setAgentTurnCompletionSoundVolume: rootState.setAgentTurnCompletionSoundVolume,
+    setAgentTurnCompletionSoundQuietWhenFocused: rootState.setAgentTurnCompletionSoundQuietWhenFocused,
+    setChatFontSizePx: rootState.setChatFontSizePx,
+    setChatUserMinimapEnabled: rootState.setChatUserMinimapEnabled,
+    setChatTranscriptDensity: rootState.setChatTranscriptDensity,
+    setChatChromeTint: rootState.setChatChromeTint,
+    setChatShellGeometry: rootState.setChatShellGeometry,
+    resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
+    setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
+    setOnboardingEnabled: rootState.setOnboardingEnabled,
+    setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
+  });
+  return store;
+}
+
+export function hydrateProjectAppStore(store: AppStoreApi, state: Partial<AppState>): void {
+  store.setState(state);
+}
+
+export function useAppStoreApi(): AppStoreApi {
+  return useContext(AppStoreContext) ?? rootAppStore;
+}
+
+export function AppStoreProvider({
+  store,
+  children,
+}: {
+  store: AppStoreApi;
+  children: ReactNode;
+}): React.ReactElement {
+  return React.createElement(AppStoreContext.Provider, { value: store }, children);
+}
+
+type UseAppStore = {
+  <T>(selector: (state: AppState) => T): T;
+  getState: AppStoreApi["getState"];
+  setState: AppStoreApi["setState"];
+  subscribe: AppStoreApi["subscribe"];
+};
+
+export const useAppStore = Object.assign(
+  (<T,>(selector: (state: AppState) => T): T =>
+    useStore(useContext(AppStoreContext) ?? rootAppStore, selector)) as UseAppStore,
+  {
+    getState: rootAppStore.getState,
+    setState: rootAppStore.setState,
+    subscribe: rootAppStore.subscribe,
+  },
+);

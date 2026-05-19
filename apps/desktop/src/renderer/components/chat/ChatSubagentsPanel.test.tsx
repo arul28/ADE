@@ -5,7 +5,7 @@ import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
-import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
+import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
 
 vi.mock("motion/react", () => ({
   AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -14,9 +14,10 @@ vi.mock("motion/react", () => ({
   },
 }));
 
-const snapshot: ChatSubagentSnapshot = {
+const baseSnapshot: ChatSubagentSnapshot = {
   taskId: "task-1",
   description: "Audit chat renderer",
+  agentType: "code-reviewer",
   status: "running",
   startedAt: "2026-05-12T00:00:00.000Z",
   updatedAt: "2026-05-12T00:00:10.000Z",
@@ -26,107 +27,117 @@ const snapshot: ChatSubagentSnapshot = {
   usage: { durationMs: 10_000, toolUses: 2, totalTokens: 1234 },
 };
 
-function buildTimelineEvents(count = 0): AgentChatEventEnvelope[] {
-  const events: AgentChatEventEnvelope[] = [{
+function buildPlanEvent(): AgentChatEventEnvelope {
+  return {
     sessionId: "session-1",
     timestamp: "2026-05-12T00:00:00.000Z",
     event: {
-      type: "subagent_started",
-      taskId: "task-1",
-      description: "Audit chat renderer",
-      background: true,
+      type: "plan",
+      steps: [
+        { text: "Map theme plumbing", status: "completed" },
+        { text: "Identify glass styling", status: "completed" },
+        { text: "Implement appearance mode", status: "in_progress" },
+        { text: "Apply glass styling app-wide", status: "pending" },
+        { text: "Run focused checks", status: "pending" },
+      ],
     },
-  }];
-
-  for (let index = 0; index < count; index += 1) {
-    events.push({
-      sessionId: "session-1",
-      timestamp: `2026-05-12T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
-      event: {
-        type: "subagent_progress",
-        taskId: "task-1",
-        summary: `Progress ${index}`,
-        lastToolName: "rg",
-      },
-    });
-  }
-
-  return events;
+  } as AgentChatEventEnvelope;
 }
 
-describe("ChatSubagentsPanel", () => {
+describe("ChatSubagentsPanel (pane variant)", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
   });
 
-  it("toggles the drawer, opens detail, and returns to the list", () => {
+  it("renders the Progress section with bar, counter, and checklist", () => {
     render(
       <ChatSubagentsPanel
-        snapshots={[snapshot]}
-        events={buildTimelineEvents(2)}
+        snapshots={[]}
+        events={[buildPlanEvent()]}
+        variant="pane"
       />,
     );
 
-    const trigger = screen.getByRole("button", { name: /Subagents/i });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-
-    fireEvent.click(trigger);
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    // With only background snapshots, the single non-empty tab auto-resolves
-    // to "background" — the tab strip collapses into a section header so the
-    // background list renders directly without clicking a tab.
-    expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
-
-    fireEvent.click(screen.getByTitle("Audit chat renderer"));
-    expect(screen.getByText("task-1")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /Back/i }));
-    expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
+    expect(screen.getByText("Progress")).toBeTruthy();
+    expect(screen.getByText("2/5 · 40%")).toBeTruthy();
+    expect(screen.getByText("Map theme plumbing")).toBeTruthy();
+    expect(screen.getByText("Implement appearance mode")).toBeTruthy();
+    expect(screen.getByText("Run focused checks")).toBeTruthy();
   });
 
-  it("shows hidden timeline events and copies the subagent id", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
-    render(
-      <ChatSubagentsPanel
-        snapshots={[snapshot]}
-        events={buildTimelineEvents(25)}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /Subagents/i }));
-    fireEvent.click(screen.getByTitle("Audit chat renderer"));
-
-    expect(screen.queryByText("Progress 0")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Show .* earlier events/i }));
-    expect(screen.getByText("Progress 0")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /Copy id/i }));
-    expect(writeText).toHaveBeenCalledWith("task-1");
-  });
-
-  it("renders the tab strip when more than one category is non-empty", () => {
+  it("splits foreground subagents and background tasks into separate sections", () => {
     const foregroundSnapshot: ChatSubagentSnapshot = {
-      ...snapshot,
+      ...baseSnapshot,
       taskId: "task-2",
       description: "Inspect codex flow",
+      agentType: "Explore",
       background: false,
     };
+
     render(
       <ChatSubagentsPanel
-        snapshots={[snapshot, foregroundSnapshot]}
-        events={buildTimelineEvents(0)}
+        snapshots={[baseSnapshot, foregroundSnapshot]}
+        events={[]}
+        variant="pane"
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Subagents/i }));
-    // With both background and non-background snapshots present, both tabs
-    // should be clickable.
-    expect(screen.getAllByRole("button", { name: /Background/i }).length).toBeGreaterThan(0);
+    expect(screen.getByText("Subagents")).toBeTruthy();
+    expect(screen.getByText("Background tasks")).toBeTruthy();
+    expect(screen.getByText("Explore")).toBeTruthy();
+    // Background row gets a "bg" suffix (no parentheses in the redesign).
+    expect(screen.getByText("bg")).toBeTruthy();
+  });
+
+  it("calls onSelectSubagent with the snapshot identity when a row is clicked", () => {
+    const onSelectSubagent = vi.fn<[SubagentSelection], void>();
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        onSelectSubagent={onSelectSubagent}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Audit chat renderer"));
+    expect(onSelectSubagent).toHaveBeenCalledTimes(1);
+    const arg = onSelectSubagent.mock.calls[0]![0];
+    expect(arg.taskId).toBe("task-1");
+    expect(arg.agentType).toBe("code-reviewer");
+    expect(arg.status).toBe("running");
+    expect(arg.background).toBe(true);
+  });
+
+  it("renders the single-agent empty state when no plan and no subagents are present", () => {
+    render(
+      <ChatSubagentsPanel snapshots={[]} events={[]} variant="pane" />,
+    );
+
+    // The redesign splits the empty state onto two lines.
+    expect(
+      screen.getByText(/No agent activity for this chat\./i),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Single-agent mode\./i),
+    ).toBeTruthy();
+  });
+
+  it("surfaces an interrupt action when at least one subagent is running", () => {
+    const onInterruptTurn = vi.fn();
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        onInterruptTurn={onInterruptTurn}
+      />,
+    );
+
+    const stop = screen.getByRole("button", { name: /Stop running agents/i });
+    fireEvent.click(stop);
+    expect(onInterruptTurn).toHaveBeenCalledTimes(1);
   });
 });

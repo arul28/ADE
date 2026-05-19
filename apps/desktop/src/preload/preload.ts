@@ -312,6 +312,8 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatSubagentTranscriptArgs,
+  AgentChatSubagentTranscriptMessage,
   AgentChatContextUsage,
   AgentChatContextUsageArgs,
   AgentChatRewindFilesArgs,
@@ -747,6 +749,8 @@ import type {
   ChatTerminalPreviewResult,
   ChatTerminalReadArgs,
   ChatTerminalReadResult,
+  ChatTerminalReattachArgs,
+  ChatTerminalReattachResult,
   ChatTerminalSession,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
@@ -2604,15 +2608,21 @@ contextBridge.exposeInMainWorld("ade", {
       windowId: number | null;
       project: ProjectInfo | null;
       binding: OpenProjectBinding | null;
+      openProjectTabs: ProjectInfo[];
     }> => {
       const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
         windowId: number | null;
         project: ProjectInfo | null;
         binding: OpenProjectBinding | null;
+        openProjectTabs?: ProjectInfo[];
       };
       rememberProjectBinding(session.binding);
-      return session;
+      return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
     },
+    setWindowProjectTabs: async (
+      rootPaths: string[],
+    ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
+      ipcRenderer.invoke(IPC.appSetWindowProjectTabs, { rootPaths }),
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
@@ -5370,6 +5380,12 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "getClaudeSessionMessages", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatGetClaudeSessionMessages, args),
       ),
+    getSubagentTranscript: async (
+      args: AgentChatSubagentTranscriptArgs,
+    ): Promise<AgentChatSubagentTranscriptMessage[] | null> =>
+      callProjectRuntimeActionOr("chat", "getSubagentTranscript", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetSubagentTranscript, args),
+      ),
     getContextUsage: async (
       args: AgentChatContextUsageArgs,
     ): Promise<AgentChatContextUsage | null> =>
@@ -6051,6 +6067,19 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.terminalActiveForChat, args);
+    },
+    reattachChatCli: async (
+      args: ChatTerminalReattachArgs,
+    ): Promise<ChatTerminalReattachResult> => {
+      const runtime =
+        await callProjectRuntimeActionIfBound<ChatTerminalReattachResult>(
+          "terminal",
+          "reattachChatCli",
+          { args },
+        );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.terminalReattachChatCli, args);
     },
   },
   localhost: {

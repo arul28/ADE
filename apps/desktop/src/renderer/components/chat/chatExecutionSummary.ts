@@ -1,4 +1,15 @@
 import type { AgentChatEventEnvelope, TurnDiffSummary } from "../../../shared/types";
+import { latestPlan, type ChatInfoPlan } from "../../../shared/chatSubagents";
+
+export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
+
+/**
+ * Latest plan snapshot derived from the event stream. Returns null when the
+ * provider has not emitted a plan event for this chat.
+ */
+export function derivePlan(events: AgentChatEventEnvelope[]): ChatInfoPlan {
+  return latestPlan(events);
+}
 
 export type ChatSubagentSnapshot = {
   taskId: string;

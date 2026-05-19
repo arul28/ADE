@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo } from "react"
 import type { OrchestratorTimelineEvent } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { NOISY_EVENT_TYPES, classifyErrorSource, ERROR_SOURCE_COLORS, collapseFeedMessages, type CollapsedFeedMessage } from "./missionHelpers";
+import { useMissionPageActive } from "./MissionActiveContext";
 
 type Props = {
   runId: string;
@@ -132,6 +133,7 @@ function collapseTimelineEvents(events: OrchestratorTimelineEvent[]): CollapsedF
 }
 
 export const OrchestratorActivityFeed = React.memo(function OrchestratorActivityFeed({ runId, initialTimeline }: Props) {
+  const active = useMissionPageActive();
   const [events, setEvents] = useState<OrchestratorTimelineEvent[]>(() => sortTimeline(initialTimeline));
   const [category, setCategory] = useState("All Events");
   const [severity, setSeverity] = useState<Severity>("all");
@@ -183,12 +185,14 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
   }, [refreshTimeline]);
 
   useEffect(() => {
+    if (!active) return;
     refreshTokenRef.current += 1;
     setEvents(sortTimeline(initialTimeline));
     void refreshTimeline();
-  }, [initialTimeline, refreshTimeline]);
+  }, [active, initialTimeline, refreshTimeline]);
 
   useEffect(() => {
+    if (!active) return;
     const unsub = window.ade.orchestrator.onEvent((ev) => {
       if (ev.runId !== runId) return;
       scheduleTimelineRefresh();
@@ -196,14 +200,15 @@ export const OrchestratorActivityFeed = React.memo(function OrchestratorActivity
     return () => {
       unsub();
     };
-  }, [runId, scheduleTimelineRefresh]);
+  }, [active, runId, scheduleTimelineRefresh]);
 
   useEffect(() => {
+    if (!active) return;
     const interval = window.setInterval(() => {
       void refreshTimeline();
     }, 12_000);
     return () => window.clearInterval(interval);
-  }, [refreshTimeline]);
+  }, [active, refreshTimeline]);
 
   useEffect(() => {
     return () => {

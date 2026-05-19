@@ -2818,7 +2818,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           rootPath: MOCK_PROJECT.rootPath,
           displayName: MOCK_PROJECT.name,
         },
+        openProjectTabs: [MOCK_PROJECT],
       }),
+      setWindowProjectTabs: resolved({ openProjectTabs: [MOCK_PROJECT] }),
       newWindow: resolved({ windowId: 2 }),
       openProjectInNewWindow: resolvedArg({
         windowId: 2,
@@ -4504,6 +4506,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listClaudeSessions: resolvedArg([]),
       getClaudeSessionInfo: resolvedArg(null),
       getClaudeSessionMessages: resolvedArg([]),
+      getSubagentTranscript: resolvedArg(null),
       getContextUsage: resolvedArg(null),
       rewindFiles: resolvedArg({
         canRewind: false,

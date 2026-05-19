@@ -107,33 +107,8 @@ export type SetupPaneRow = {
   cyclable?: boolean;
 };
 
-export type SubagentSnapshot = {
-  id: string;
-  name: string;
-  kind: "subagent" | "teammate";
-  status: "running" | "completed" | "failed" | "stopped";
-  summary: string;
-  parentToolUseId?: string | null;
-  turnId?: string | null;
-  background?: boolean;
-  startedAt?: string | null;
-  endedAt?: string | null;
-  tokens?: number;
-  durationMs?: number;
-  lastToolName?: string;
-};
-
-export type ChatInfoPlanStep = {
-  text: string;
-  status: "pending" | "in_progress" | "completed" | "failed";
-};
-
-export type ChatInfoPlan = {
-  current: number;
-  total: number;
-  steps: ChatInfoPlanStep[];
-  live: boolean;
-} | null;
+export type { SubagentSnapshot, ChatInfoPlan, ChatInfoPlanStep } from "../../../desktop/src/shared/chatSubagents";
+import type { SubagentSnapshot, ChatInfoPlan } from "../../../desktop/src/shared/chatSubagents";
 
 export type ChatInfoSnapshot = {
   provider: AdeCodeProvider;

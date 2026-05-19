@@ -1081,6 +1081,7 @@ app.whenReady().then(async () => {
   const projectInitPromises = new Map<string, Promise<AppContext>>();
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
+  const windowProjectTabRoots = new Map<number, Set<string>>();
   const windowProjectBindings = new Map<number, OpenProjectBinding & { kind: "remote" }>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
@@ -1115,7 +1116,13 @@ app.whenReady().then(async () => {
   } else if (process.env.NODE_ENV === "test") {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is skipped in tests.");
   }
-  const MAX_WARM_IDLE_PROJECT_CONTEXTS = 1;
+  // Soft cap for project contexts that have NO user work at all (no chats,
+  // no live PTYs, no active sessions/missions/tests). Anything with work is
+  // protected by `hasActiveProjectWorkloads` and is never evicted regardless
+  // of this number. The cap exists only as a safety valve against opening
+  // hundreds of empty projects in a long-running session — well above any
+  // realistic working set, so users effectively never hit it.
+  const MAX_WARM_IDLE_PROJECT_CONTEXTS = 100;
   const MOBILE_SYNC_HANDOFF_LEASE_MS = 60_000;
   let activeProjectRoot: string | null = null;
   let mobileSyncSelectedRoot: string | null = null;
@@ -1137,6 +1144,34 @@ app.whenReady().then(async () => {
     return projectContexts.get(projectRoot)?.project ?? null;
   };
 
+  const projectsForWindowTabs = (windowId: number | null): ProjectInfo[] => {
+    if (windowId == null) return [];
+    const roots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
+    const projects: ProjectInfo[] = [];
+    for (const root of roots) {
+      const project = projectForRoot(root);
+      if (project) projects.push(project);
+    }
+    return projects;
+  };
+
+  const rememberWindowProjectTabs = (
+    windowId: number | null,
+    rootPaths: string[],
+  ): ProjectInfo[] => {
+    if (windowId == null) return [];
+    const roots = new Set<string>();
+    for (const rootPath of rootPaths) {
+      const normalized = rootPath.trim() ? normalizeProjectRoot(rootPath) : "";
+      if (normalized) roots.add(normalized);
+    }
+    const activeRoot = windowProjectRoots.get(windowId) ?? null;
+    if (activeRoot) roots.add(activeRoot);
+    windowProjectTabRoots.set(windowId, roots);
+    scheduleProjectContextRebalance();
+    return projectsForWindowTabs(windowId);
+  };
+
   const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
     project && !shouldUseInProcessProjectRuntime()
       ? {
@@ -1151,6 +1186,9 @@ app.whenReady().then(async () => {
     const roots = new Set<string>();
     for (const root of windowProjectRoots.values()) {
       if (root) roots.add(root);
+    }
+    for (const tabRoots of windowProjectTabRoots.values()) {
+      for (const root of tabRoots) roots.add(root);
     }
     return roots;
   };
@@ -1268,6 +1306,11 @@ app.whenReady().then(async () => {
     if (windowId != null) {
       windowProjectRoots.set(windowId, normalizedRoot);
       windowProjectBindings.delete(windowId);
+      if (normalizedRoot) {
+        const tabRoots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
+        tabRoots.add(normalizedRoot);
+        windowProjectTabRoots.set(windowId, tabRoots);
+      }
     }
     if (options.foreground ?? true) {
       setForegroundProject(normalizedRoot);
@@ -1302,7 +1345,12 @@ app.whenReady().then(async () => {
       windowProjectRoots.set(windowId, null);
       windowProjectBindings.set(windowId, binding);
     }
-    setForegroundProject(null);
+    // Binding this window to a remote project must not tear down local
+    // foreground services that other windows depend on. Only drop the
+    // foreground if no other window is still working in a local project.
+    if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
+      setForegroundProject(firstOpenWindowProjectRoot());
+    }
     emitProjectChangedToWindow(windowId, null);
     emitProjectBindingChangedToWindow(windowId, binding);
   };
@@ -1333,7 +1381,9 @@ app.whenReady().then(async () => {
   ): void => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     for (const win of BrowserWindow.getAllWindows()) {
-      if (windowProjectRoots.get(win.id) !== normalizedRoot) continue;
+      const isActiveInWindow = windowProjectRoots.get(win.id) === normalizedRoot;
+      const isOpenTabInWindow = windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true;
+      if (!isActiveInWindow && !isOpenTabInWindow) continue;
       try {
         win.webContents.send(channel, payload);
       } catch {
@@ -1367,11 +1417,29 @@ app.whenReady().then(async () => {
     }
 
     try {
-      if (ctx.agentChatService?.hasActiveWorkloads()) {
+      // ANY chat session the user hasn't explicitly closed/deleted protects
+      // the project. The narrower hasActiveWorkloads check (mid-turn only) is
+      // not enough — a session sitting between turns still owns a live agent
+      // runtime that must survive a project switch so typing a new message
+      // does not cold-restart the agent.
+      if (
+        ctx.agentChatService?.hasRetainableSessions?.()
+        ?? ctx.agentChatService?.hasActiveWorkloads()
+      ) {
         return true;
       }
     } catch (error) {
       return keepAliveOnProbeFailure("agent_chats", error);
+    }
+
+    try {
+      // Any live PTY (running CLI/shell/agent) means the user has work that
+      // would be killed by eviction. Don't evict.
+      if (ctx.ptyService?.hasLiveSessions?.()) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("pty_sessions", error);
     }
 
     try {
@@ -2784,8 +2852,21 @@ app.whenReady().then(async () => {
       getDirtyFileTextForPath: async (absPath: string) => {
         const trimmed = absPath.trim();
         if (!trimmed) return undefined;
+        const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
+        const candidateWindows = BrowserWindow.getAllWindows().filter(
+          (candidate) =>
+            !candidate.isDestroyed()
+            && candidate.webContents
+            && !candidate.webContents.isDestroyed(),
+        );
         const win =
-          BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+          candidateWindows.find(
+            (candidate) => windowProjectRoots.get(candidate.id) === normalizedProjectRoot,
+          )
+          ?? candidateWindows.find(
+            (candidate) => windowProjectTabRoots.get(candidate.id)?.has(normalizedProjectRoot) === true,
+          )
+          ?? null;
         if (!win?.webContents || win.webContents.isDestroyed())
           return undefined;
         try {
@@ -4970,6 +5051,31 @@ app.whenReady().then(async () => {
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      // Kick off base-ref detection IN PARALLEL with the existing-context
+      // check and any recent-project bookkeeping. For a cold open this shaves
+      // 200-600ms off (git symbolic-ref + rev-parse run during work we'd be
+      // doing anyway). For the fast "context already warm" path we simply
+      // discard the in-flight promise.
+      const baseRefStartedAt = Date.now();
+      const baseRefPromise = detectDefaultBaseRef(repoRoot)
+        .then((value) => {
+          projectOpenLogger.info("project.open.base_ref_detected", {
+            selectedPath,
+            repoRoot,
+            baseRef: value,
+            durationMs: Date.now() - baseRefStartedAt,
+          });
+          return value;
+        })
+        .catch((error) => {
+          projectOpenLogger.warn("project.open.base_ref_failed", {
+            selectedPath,
+            repoRoot,
+            durationMs: Date.now() - baseRefStartedAt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return "main";
+        });
       const isKnownRecentProject = (readGlobalState(globalStatePath).recentProjects ?? []).some((entry) => {
         if (typeof entry?.rootPath !== "string") return false;
         return normalizeProjectRoot(entry.rootPath) === repoRoot;
@@ -4988,6 +5094,10 @@ app.whenReady().then(async () => {
         });
         bindWindowToProject(currentIpcWindowId(), repoRoot, { emit: true, foreground: true });
         scheduleProjectContextRebalance();
+        // Drop the unused base-ref promise so it doesn't leak as an unhandled
+        // rejection if detectDefaultBaseRef threw between the .catch above
+        // and this point (already neutralized by .catch, but keep tidy).
+        void baseRefPromise;
         projectOpenLogger.info("project.open.done", {
           selectedPath,
           repoRoot,
@@ -5000,14 +5110,7 @@ app.whenReady().then(async () => {
       let initPromise = projectInitPromises.get(repoRoot);
       if (!initPromise) {
         initPromise = (async () => {
-          const baseRefStartedAt = Date.now();
-          const baseRef = await detectDefaultBaseRef(repoRoot!);
-          projectOpenLogger.info("project.open.base_ref_detected", {
-            selectedPath,
-            repoRoot,
-            baseRef,
-            durationMs: Date.now() - baseRefStartedAt,
-          });
+          const baseRef = await baseRefPromise;
           const initStartedAt = Date.now();
           const ctx = shouldUseInProcessProjectRuntime()
             ? await initContextForProjectRoot({
@@ -5072,11 +5175,15 @@ app.whenReady().then(async () => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     const wasActive = activeProjectRoot === normalizedRoot;
     for (const [windowId, root] of windowProjectRoots) {
+      const tabRoots = windowProjectTabRoots.get(windowId);
+      tabRoots?.delete(normalizedRoot);
       if (root === normalizedRoot) {
-        windowProjectRoots.set(windowId, null);
+        const nextRoot = tabRoots?.values().next().value ?? null;
+        windowProjectRoots.set(windowId, nextRoot);
         windowProjectBindings.delete(windowId);
-        emitProjectChangedToWindow(windowId, null);
-        emitProjectBindingChangedToWindow(windowId, null);
+        const nextProject = projectForRoot(nextRoot);
+        emitProjectChangedToWindow(windowId, nextProject);
+        emitProjectBindingChangedToWindow(windowId, bindingForLocalProject(nextProject));
       }
     }
     await closeProjectContext(normalizedRoot);
@@ -5091,7 +5198,17 @@ app.whenReady().then(async () => {
     const previousRoot = current.project?.rootPath ?? "";
     const windowId = currentIpcWindowId();
     if (windowId != null) {
-      bindWindowToProject(windowId, null, { emit: true, foreground: true });
+      // Unbind this window without clobbering the global foreground project —
+      // other open windows may still be working in their own projects, and
+      // background services keyed to `activeProjectRoot` (mobile sync host,
+      // artifact dir, etc.) must keep pointing at a live root if one exists.
+      const tabRoots = windowProjectTabRoots.get(windowId);
+      if (previousRoot) tabRoots?.delete(normalizeProjectRoot(previousRoot));
+      const nextRoot = tabRoots?.values().next().value ?? null;
+      bindWindowToProject(windowId, nextRoot, { emit: true, foreground: false });
+      if (nextRoot == null && (activeProjectRoot === previousRoot || activeProjectRoot == null)) {
+        setForegroundProject(firstOpenWindowProjectRoot());
+      }
       dormantContext = createDormantProjectContext(previousRoot);
       scheduleProjectContextRebalance();
       return;
@@ -5099,7 +5216,7 @@ app.whenReady().then(async () => {
     if (activeProjectRoot) {
       await closeProjectContext(activeProjectRoot);
     }
-    setForegroundProject(null);
+    setForegroundProject(firstOpenWindowProjectRoot());
     dormantContext = createDormantProjectContext(previousRoot);
   };
 
@@ -5438,15 +5555,27 @@ app.whenReady().then(async () => {
   };
 
   const registerWindowSession = (win: BrowserWindow, projectRoot: string | null = null): void => {
-    windowProjectRoots.set(win.id, projectRoot ? normalizeProjectRoot(projectRoot) : null);
+    const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    windowProjectRoots.set(win.id, normalizedRoot);
+    windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
     windowProjectBindings.delete(win.id);
     win.on("focus", () => {
-      setForegroundProject(windowProjectRoots.get(win.id) ?? null);
+      const focusedRoot = windowProjectRoots.get(win.id) ?? null;
+      if (focusedRoot != null) {
+        setForegroundProject(focusedRoot);
+      } else if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
+        // Focusing an unscoped window (e.g. a brand-new File > New Window) must
+        // not clobber the foreground project — that would tear down background
+        // services and break running work in other windows. Only re-derive the
+        // foreground when the current one is no longer bound to any window.
+        setForegroundProject(firstOpenWindowProjectRoot());
+      }
       builtInBrowserService.attachToWindow(win);
     });
     win.on("closed", () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
       windowProjectRoots.delete(win.id);
+      windowProjectTabRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
       if (activeProjectRoot === previousRoot) {
         setForegroundProject(firstOpenWindowProjectRoot());
@@ -5455,18 +5584,24 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
-      return { windowId: null, project, binding: bindingForLocalProject(project) };
+      return {
+        windowId: null,
+        project,
+        binding: bindingForLocalProject(project),
+        openProjectTabs: project ? [project] : [],
+      };
     }
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
-    if (remoteBinding) return { windowId, project: null, binding: remoteBinding };
+    if (remoteBinding) return { windowId, project: null, binding: remoteBinding, openProjectTabs: projectsForWindowTabs(windowId) };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
       windowId,
       project,
       binding: bindingForLocalProject(project),
+      openProjectTabs: projectsForWindowTabs(windowId),
     };
   };
 
@@ -5615,6 +5750,7 @@ app.whenReady().then(async () => {
     runWithIpcWindow: (event, fn) =>
       ipcWindowScope.run(BrowserWindow.fromWebContents(event.sender)?.id ?? null, fn),
     getWindowSession,
+    setWindowProjectTabs: rememberWindowProjectTabs,
     bindRemoteProject: bindWindowToRemoteProject,
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
       ? null

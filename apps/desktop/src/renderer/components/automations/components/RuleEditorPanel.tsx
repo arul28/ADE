@@ -387,6 +387,7 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
       kind: "agent-session",
       prompt: draft.prompt ?? "",
       sessionTitle: execution.session?.title ?? "",
+      codexFastMode: execution.session?.codexFastMode === true,
     });
   } else if (execution?.kind === "mission") {
     rows.push({
@@ -417,6 +418,7 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           prompt: action.prompt ?? "",
           sessionTitle: action.sessionTitle ?? "",
           modelConfig: action.modelConfig,
+          codexFastMode: action.codexFastMode === true,
           permissionConfig: action.permissionConfig,
           ...actionRuntimeOptions(action),
         });
@@ -437,12 +439,21 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
 
   if (soloAgent) {
     const first = rowsForSave[0]!;
+    const previousSession = draft.execution?.kind === "agent-session"
+      ? draft.execution.session ?? {}
+      : {};
+    const previousSessionWithoutFastMode = { ...previousSession };
+    delete previousSessionWithoutFastMode.codexFastMode;
     return {
       ...draft,
       execution: {
         ...(draft.execution ?? { kind: "agent-session" }),
         kind: "agent-session",
-        session: { ...(draft.execution?.kind === "agent-session" ? draft.execution.session : {}), title: first.sessionTitle || null },
+        session: {
+          ...previousSessionWithoutFastMode,
+          title: first.sessionTitle || null,
+          ...(first.codexFastMode === true ? { codexFastMode: true } : {}),
+        },
       },
       ...(first.modelConfig ? { modelConfig: { orchestratorModel: first.modelConfig } } : {}),
       ...(first.permissionConfig ? { permissionConfig: first.permissionConfig } : {}),
@@ -516,6 +527,7 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
         type: "agent-session",
         ...rowRuntimeOptions(row),
         ...(row.modelConfig ? { modelConfig: row.modelConfig } : {}),
+        ...(row.codexFastMode === true ? { codexFastMode: true } : {}),
         ...(row.permissionConfig ? { permissionConfig: row.permissionConfig } : {}),
         ...(row.prompt ? { prompt: row.prompt } : {}),
         ...(row.sessionTitle ? { sessionTitle: row.sessionTitle } : {}),
@@ -563,6 +575,7 @@ function automationActionToDraftAction(
         type: "agent-session",
         ...rowRuntimeOptions(actionToRow(action)),
         ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
+        ...(action.codexFastMode === true ? { codexFastMode: true } : {}),
         ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
@@ -633,6 +646,8 @@ export function RuleEditorPanel({
   const currentPermission = permissionMeta
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
     : "";
+  const ruleFastModeActive = draft.execution?.kind === "agent-session"
+    && draft.execution.session?.codexFastMode === true;
 
   // laneMode resolution: missing → "reuse" (server-side migration handles
   // legacy create-lane-as-first-action collapse).
@@ -680,6 +695,20 @@ export function RuleEditorPanel({
     }
     const nextDraft = { ...draft, execution: next };
     setDraft(isRequireLaneAtRunTimeMode(next.laneMode) ? stripActionTargetLaneIdsFromDraft(nextDraft) : nextDraft);
+  };
+  const setRuleCodexFastMode = (enabled: boolean) => {
+    const current = draft.execution ?? { kind: "agent-session" as const };
+    if (current.kind !== "agent-session") return;
+    setDraft({
+      ...draft,
+      execution: {
+        ...current,
+        session: {
+          ...(current.session ?? {}),
+          codexFastMode: enabled,
+        },
+      },
+    });
   };
 
   // Smart defaults: when the trigger event changes and the user hasn't yet
@@ -974,6 +1003,8 @@ export function RuleEditorPanel({
                       })
                     }
                     onOpenAiSettings={openAiSettings}
+                    fastModeActive={ruleFastModeActive}
+                    onFastModeToggle={draft.execution?.kind === "agent-session" ? setRuleCodexFastMode : undefined}
                   />
                 </div>
                 {permissionMeta ? (

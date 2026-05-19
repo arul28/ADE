@@ -237,6 +237,8 @@ import type {
   AgentChatClaudeSessionListArgs,
   AgentChatClaudeSessionMessage,
   AgentChatClaudeSessionMessagesArgs,
+  AgentChatSubagentTranscriptArgs,
+  AgentChatSubagentTranscriptMessage,
   AgentChatClaudeOutputStyle,
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
@@ -341,6 +343,7 @@ import type {
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
   ChatTerminalReadArgs,
+  ChatTerminalReattachArgs,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
   ReparentLaneArgs,
@@ -1768,6 +1771,7 @@ export function registerIpc({
   resolveSyncService,
   runWithIpcWindow,
   getWindowSession,
+  setWindowProjectTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
   createWindow,
@@ -1782,7 +1786,8 @@ export function registerIpc({
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[] };
+  setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
@@ -3106,6 +3111,17 @@ export function registerIpc({
     return { chatSessionId };
   };
 
+  const parseTerminalReattachArgs = (value: unknown): ChatTerminalReattachArgs => {
+    const record = terminalRecord(value);
+    const chatSessionId = optionalTerminalString(record, "chatSessionId", 128);
+    if (!chatSessionId) throw new Error("Invalid terminal payload: chatSessionId is required");
+    const rawCols = record["cols"];
+    const rawRows = record["rows"];
+    const cols = typeof rawCols === "number" && Number.isFinite(rawCols) ? rawCols : null;
+    const rows = typeof rawRows === "number" && Number.isFinite(rawRows) ? rawRows : null;
+    return { chatSessionId, cols, rows };
+  };
+
   const resolveComputerUseOwnerSnapshotArgs = async (
     _ctx: AppContext,
     args: ComputerUseOwnerSnapshotArgs,
@@ -3264,7 +3280,19 @@ export function registerIpc({
           displayName: ctx.project.displayName,
         }
         : null,
+      openProjectTabs: ctx.hasUserSelectedProject ? [ctx.project] : [],
     };
+  });
+
+  ipcMain.handle(IPC.appSetWindowProjectTabs, async (event, arg: { rootPaths?: string[] } = {}) => {
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    const rootPaths = Array.isArray(arg?.rootPaths)
+      ? arg.rootPaths.filter((rootPath): rootPath is string => typeof rootPath === "string")
+      : [];
+    const openProjectTabs = setWindowProjectTabs
+      ? setWindowProjectTabs(windowId, rootPaths)
+      : [];
+    return { openProjectTabs };
   });
 
   ipcMain.handle(IPC.appNewWindow, async () => {
@@ -6584,7 +6612,7 @@ export function registerIpc({
     const ctx = getCtx();
     const session = ctx.sessionService.get(arg.sessionId);
     if (!session) return "";
-    const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(2_000_000, arg.maxBytes)) : 160_000;
+    const maxBytes = typeof arg.maxBytes === "number" ? Math.max(1024, Math.min(16_000_000, arg.maxBytes)) : 160_000;
     const raw = arg.raw === true;
     return ctx.ptyService.readTranscriptTail({
       sessionId: session.id,
@@ -6761,6 +6789,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatGetClaudeSessionMessages, async (_event, arg: AgentChatClaudeSessionMessagesArgs): Promise<AgentChatClaudeSessionMessage[]> => {
     const ctx = getCtx();
     return ctx.agentChatService.getClaudeSessionMessages(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatGetSubagentTranscript, async (_event, arg: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const ctx = getCtx();
+    return ctx.agentChatService.getSubagentTranscript(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetContextUsage, async (_event, arg: AgentChatContextUsageArgs): Promise<AgentChatContextUsage | null> => {
@@ -7565,7 +7598,7 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.terminalWrite, async (_event, arg) =>
-    getCtx().ptyService.writeTerminal(parseTerminalWriteArgs(arg)),
+    await getCtx().ptyService.writeTerminal(parseTerminalWriteArgs(arg)),
   );
 
   ipcMain.handle(IPC.terminalSignal, async (_event, arg) =>
@@ -7574,6 +7607,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.terminalActiveForChat, async (_event, arg) =>
     getCtx().ptyService.activeForChat(parseTerminalActiveForChatArgs(arg)),
+  );
+
+  ipcMain.handle(IPC.terminalReattachChatCli, async (_event, arg) =>
+    await getCtx().ptyService.reattachChatCli(parseTerminalReattachArgs(arg)),
   );
 
   ipcMain.handle(IPC.diffGetChanges, async (_event, arg: GetDiffChangesArgs) => {
@@ -8241,32 +8278,43 @@ export function registerIpc({
 
   const ensurePrPolling = () => {
     const ctx = getCtx();
+    // PR services are only attached to fully-initialised project contexts. When
+    // the renderer fires PR queries for an unscoped window (e.g. a brand-new
+    // File > New Window before a project is chosen) or during a transition,
+    // ctx is dormant and these services are null. Return null so callers can
+    // hand back empty results instead of throwing into IPC.
+    if (!ctx.prPollingService || !ctx.prService) return null;
     ctx.prPollingService.start();
     return ctx;
   };
 
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = getCtx();
+    if (!ctx.prService) return null;
     return ctx.prService.getForLane(arg.laneId);
   });
 
   ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     return ctx.prService.listAll();
   });
 
   ipcMain.handle(IPC.prsListOpenForRepo, async (): Promise<BranchPullRequest[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     return await ctx.prService.listOpenPullRequests();
   });
 
   ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     return await ctx.prService.refresh(arg);
   });
 
   ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return null;
     try {
       return await ctx.prService.getStatus(arg.prId);
     } catch (err) {
@@ -8278,6 +8326,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     try {
       return await ctx.prService.getChecks(arg.prId);
     } catch (err) {
@@ -8288,6 +8337,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     try {
       return await ctx.prService.getComments(arg.prId);
     } catch (err) {
@@ -8298,6 +8348,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     try {
       return await ctx.prService.getReviews(arg.prId);
     } catch (err) {
@@ -8308,6 +8359,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsGetReviewThreads, async (_event, arg: { prId: string }): Promise<PrReviewThread[]> => {
     const ctx = ensurePrPolling();
+    if (!ctx) return [];
     try {
       return await ctx.prService.getReviewThreads(arg.prId);
     } catch (err) {
@@ -8381,22 +8433,34 @@ export function registerIpc({
     getCtx().prService.getMergeContexts(Array.isArray(arg?.prIds) ? arg.prIds : [])
   );
 
-  ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) =>
-    ensurePrPolling().prService.listWithConflicts({
+  ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.listWithConflicts({
       includeConflictAnalysis: arg?.includeConflictAnalysis === true,
-    })
-  );
+    });
+  });
 
   ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) =>
     getCtx().prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined })
   );
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> =>
-    await ensurePrPolling().prService.getGithubSnapshot({
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> => {
+    const ctx = ensurePrPolling();
+    if (!ctx) {
+      return {
+        repo: null,
+        viewerLogin: null,
+        repoPullRequests: [],
+        externalPullRequests: [],
+        syncedAt: new Date(0).toISOString(),
+      };
+    }
+    return await ctx.prService.getGithubSnapshot({
       force: arg?.force === true,
       includeExternalClosed: arg?.includeExternalClosed === true,
-    })
-  );
+    });
+  });
 
   ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
     const ctx = getCtx();

@@ -80,7 +80,7 @@ Two helpers summarise a parsed stream:
 | `done` | Final turn marker with model, model id, usage, cost. Also clears non-question pending inputs when status is not `completed`. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
-| `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. |
+| `subagent_started` / `subagent_progress` / `subagent_result` | Legacy Claude background subagent lifecycle. Each envelope carries `taskId`, `parentToolUseId`, `description`, and optional `agentId` + `agentType`: for Claude / ade-code `agentType` is the Task tool's `subagent_type` (stashed at the `tool_use` boundary and joined on `parentToolUseId`); for Codex parallel agents it is a per-turn `Agent #N` label assigned at first announcement and the raw threadId is mirrored as `agentId`; for OpenCode subagents `agentType` is omitted so the row falls back to the `description` (taken from `session.title`). The service also emits canonical `subagent.started` / `subagent.progress` / `subagent.completed` rows from `runtimeEvents.ts` so all runtimes can converge on the same envelope. |
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Mission step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, memory notices, file persistence hints. |

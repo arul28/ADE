@@ -419,7 +419,7 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
   return [...new Set(changed)];
 }
 
-export function PrsProvider({ children }: { children: React.ReactNode }) {
+export function PrsProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const cacheKey = prsContextCacheKey(projectRoot);
   const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
@@ -724,6 +724,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   const initialLoadDone = React.useRef(Boolean(warmCache));
 
   const refreshQueueStates = useCallback(async (groupIds: string[]) => {
+    if (!active) return;
     const uniqueGroupIds = [...new Set(groupIds.map((groupId) => String(groupId ?? "").trim()).filter(Boolean))];
     if (uniqueGroupIds.length === 0) return;
     await Promise.all(uniqueGroupIds.map(async (groupId) => {
@@ -738,7 +739,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         console.warn("[PrsContext] Failed to refresh queue state for group:", groupId, err);
       }
     }));
-  }, []);
+  }, [active]);
 
   // Core refresh (guarded against concurrent calls).
   // If a refresh is requested while one is already in flight, we set a
@@ -748,6 +749,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     includeWorkflowDiagnostics?: boolean;
     forceRebaseDiagnostics?: boolean;
   } = {}) => {
+    if (!active) return;
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
     const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
       && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
@@ -807,9 +809,10 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       }
       void refreshQueueStates([...affectedQueueGroupIds]);
     }
-  }, [refreshMergeContexts, refreshQueueStates]);
+  }, [active, refreshMergeContexts, refreshQueueStates]);
 
   const refreshCore = useCallback(async (options: RefreshCoreOptions = {}) => {
+    if (!active) return;
     if (refreshInFlight.current) {
       refreshPending.current = mergeRefreshCoreOptions(refreshPending.current, options);
       return;
@@ -883,17 +886,18 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
         void refreshCore(pendingRefresh);
       }
     }
-  }, [applyLocalPrState]);
+  }, [active, applyLocalPrState]);
 
   // Initial load
   useEffect(() => {
+    if (!active) return;
     const shouldRefreshFromGithub =
       activeTabRef.current !== "normal" || selectedPrIdRef.current !== null;
     void refreshCore({
       skipFreshWarmCache: true,
       githubRefreshMode: shouldRefreshFromGithub ? "background" : undefined,
     });
-  }, [refreshCore]);
+  }, [active, refreshCore]);
 
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
@@ -1028,6 +1032,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
   // Reset rate-limit backoff on each mount / PR change so stale backoff
   // from a previous session doesn't block the first fetch.
   useEffect(() => {
+    if (!active) return;
     // Reset rate-limit backoff whenever the selected PR changes (including
     // on remount) so stale backoff from a previous session is cleared.
     rateLimitedUntilRef.current = 0;
@@ -1268,23 +1273,23 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       // Reset rate-limit backoff on cleanup so remounts start fresh
       rateLimitedUntilRef.current = 0;
     };
-  }, [selectedPrId, refreshDetailSilently]);
+  }, [active, selectedPrId, refreshDetailSilently]);
 
   useEffect(() => {
-    if (!selectedPrId) return;
+    if (!active || !selectedPrId) return;
     if (mergeContextByPrId[selectedPrId]) return;
     void refreshMergeContexts([selectedPrId]);
-  }, [mergeContextByPrId, refreshMergeContexts, selectedPrId]);
+  }, [active, mergeContextByPrId, refreshMergeContexts, selectedPrId]);
 
   useEffect(() => {
-    if (activeTab === "normal") return;
+    if (!active || activeTab === "normal") return;
     const prIds = prsRef.current.map((pr) => pr.id);
     if (prIds.length === 0) return;
     void refreshMergeContexts(prIds);
-  }, [activeTab, prs, refreshMergeContexts]);
+  }, [active, activeTab, prs, refreshMergeContexts]);
 
   useEffect(() => {
-    if (activeTab === "normal") return;
+    if (!active || activeTab === "normal") return;
     let cancelled = false;
     window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
       .then((states) => {
@@ -1300,10 +1305,11 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [activeTab]);
+  }, [active, activeTab]);
 
   // Subscribe to PR events
   useEffect(() => {
+    if (!active) return;
     const unsub = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type === "prs-updated") {
         const previous = prsRef.current;
@@ -1359,24 +1365,25 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unsub();
     };
-  }, [refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
+  }, [active, refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
 
   // Subscribe to rebase events
   useEffect(() => {
+    if (!active) return;
     const unsub = window.ade.rebase.onEvent((event: RebaseEventPayload) => {
       if (event.type === "rebase-needs-updated") {
         setRebaseNeeds(event.needs);
       }
     });
     return unsub;
-  }, []);
+  }, [active]);
 
   // Periodic rebase needs scan (cancelled flag guards against setState after unmount).
   // The plain GitHub PR list does not render rebase workflow state, so avoid
   // doing that git work until a workflow tab or selected PR detail can use it.
   useEffect(() => {
     let cancelled = false;
-    if (activeTab === "normal" && selectedPrId == null) {
+    if (!active || (activeTab === "normal" && selectedPrId == null)) {
       return () => {
         cancelled = true;
       };
@@ -1394,20 +1401,21 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [activeTab, selectedPrId]);
+  }, [active, activeTab, selectedPrId]);
 
   // Subscribe to auto-rebase events
   useEffect(() => {
+    if (!active) return;
     const unsub = window.ade.lanes.onAutoRebaseEvent((event: AutoRebaseEventPayload) => {
       if (event.type === "auto-rebase-updated") {
         setAutoRebaseStatuses(event.statuses);
       }
     });
     return unsub;
-  }, []);
+  }, [active]);
 
   useEffect(() => {
-    if (activeTab === "normal" && selectedPrId == null) return;
+    if (!active || (activeTab === "normal" && selectedPrId == null)) return;
     let cancelled = false;
     window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
       if (!cancelled) setAutoRebaseStatuses(statuses);
@@ -1417,7 +1425,7 @@ export function PrsProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, selectedPrId]);
+  }, [active, activeTab, selectedPrId]);
 
   useEffect(() => {
     if (PRS_CONTEXT_CACHE_DISABLED) return;

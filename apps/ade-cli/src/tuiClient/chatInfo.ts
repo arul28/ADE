@@ -1,11 +1,10 @@
 import type {
-  AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
+import { latestPlan } from "../../../desktop/src/shared/chatSubagents";
 import type {
   AdeCodeProvider,
-  ChatInfoPlan,
   ChatInfoSnapshot,
   SubagentSnapshot,
 } from "./types";
@@ -32,26 +31,6 @@ function tokenStatsSummary(stats: TokenStats | null): string | null {
     parts.push(`$${stats.costUsd.toFixed(2)}`);
   }
   return parts.length ? parts.join(" ") : null;
-}
-
-function planFromEvent(event: Extract<AgentChatEvent, { type: "plan" }>): ChatInfoPlan {
-  const completed = event.steps.filter((step) => step.status === "completed").length;
-  const inProgress = event.steps.findIndex((step) => step.status === "in_progress");
-  const current = inProgress >= 0 ? inProgress + 1 : completed;
-  return {
-    current,
-    total: event.steps.length,
-    steps: event.steps.map((step) => ({ text: step.text, status: step.status })),
-    live: event.steps.some((step) => step.status === "in_progress"),
-  };
-}
-
-function latestPlan(events: AgentChatEventEnvelope[]): ChatInfoPlan {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]?.event;
-    if (event?.type === "plan") return planFromEvent(event);
-  }
-  return null;
 }
 
 export function deriveChatInfoSnapshot(args: {

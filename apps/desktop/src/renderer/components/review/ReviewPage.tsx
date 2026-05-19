@@ -549,7 +549,7 @@ function buildTargetConfig(
   };
 }
 
-export function ReviewPage() {
+export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [, setSearchParams] = useSearchParams();
@@ -698,18 +698,22 @@ export function ReviewPage() {
   }, []);
 
   React.useEffect(() => {
+    if (!active) return;
     void refreshLaunchContext();
-  }, [refreshLaunchContext]);
+  }, [active, refreshLaunchContext]);
 
   React.useEffect(() => {
+    if (!active) return;
     void refreshRuns();
-  }, [refreshRuns]);
+  }, [active, refreshRuns]);
 
   React.useEffect(() => {
+    if (!active) return;
     void loadDetail(selectedRunId);
-  }, [loadDetail, selectedRunId]);
+  }, [active, loadDetail, selectedRunId]);
 
   React.useEffect(() => {
+    if (!active) return;
     const unsub = onReviewEvent((event) => {
       if (event.type === "suppressions-updated") return;
       void refreshRuns();
@@ -725,7 +729,7 @@ export function ReviewPage() {
         // ignore bridge teardown issues
       }
     };
-  }, [loadDetail, refreshRuns, selectedRunId]);
+  }, [active, loadDetail, refreshRuns, selectedRunId]);
 
   React.useEffect(() => {
     if (!launchContext?.defaultLaneId || launchDraft.laneId) return;

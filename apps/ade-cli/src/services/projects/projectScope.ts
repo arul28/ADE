@@ -112,15 +112,21 @@ export class ProjectScopeRegistry {
   async ensureSyncHost(projectId?: ProjectId): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
     if (projectId) {
-      if (this.scopes.has(projectId) && this.syncHostProjectId !== projectId) {
-        await this.dispose(projectId);
-      }
       const existingHostId = this.syncHostProjectId;
       if (existingHostId && existingHostId !== projectId) {
-        await this.dispose(existingHostId);
+        await this.configureCachedSyncHost(existingHostId, false);
       }
       this.syncHostProjectId = projectId;
-      return await this.get(projectId);
+      try {
+        const scope = await this.get(projectId);
+        await this.configureSyncHost(scope, true);
+        return scope;
+      } catch (error) {
+        if (this.syncHostProjectId === projectId) {
+          this.syncHostProjectId = null;
+        }
+        throw error;
+      }
     }
 
     const existingHostId = this.syncHostProjectId;
@@ -139,7 +145,28 @@ export class ProjectScopeRegistry {
         const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
         return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
       })[0];
-    return record ? this.get(record.projectId) : null;
+    return record ? this.ensureSyncHost(record.projectId) : null;
+  }
+
+  private async configureCachedSyncHost(
+    projectId: ProjectId,
+    enabled: boolean,
+  ): Promise<void> {
+    const cached = this.scopes.get(projectId);
+    if (!cached) return;
+    const scope = await cached.catch(() => null);
+    if (scope) await this.configureSyncHost(scope, enabled);
+  }
+
+  private async configureSyncHost(
+    scope: ProjectScope,
+    enabled: boolean,
+  ): Promise<void> {
+    const syncService = scope.runtime.syncService;
+    if (!syncService) return;
+    syncService.setHostDiscoveryEnabled?.(enabled);
+    await syncService.setHostStartupEnabled?.(enabled);
+    if (enabled) await syncService.initialize();
   }
 
   private buildSyncRuntimeOptions(projectId: ProjectId): AdeRuntimeSyncOptions | null {

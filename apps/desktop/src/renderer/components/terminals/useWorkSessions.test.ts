@@ -28,6 +28,7 @@ function resetFakeAppStoreState() {
     refreshLanes: refreshLanesSpy.mockResolvedValue(undefined),
     workViewByProject: {},
     setWorkViewState: setWorkViewStateSpy,
+    sessionsCacheByProject: {},
   };
   routerLocation.pathname = "/work";
   routerLocation.search = "";
@@ -90,11 +91,31 @@ vi.mock("react-router-dom", () => ({
   useSearchParams: useSearchParamsMock,
 }));
 
-vi.mock("../../state/appStore", () => ({
-  useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
+vi.mock("../../state/appStore", () => {
+  const useAppStore = vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
     return selector(fakeAppStoreState);
-  }),
-}));
+  }) as unknown as {
+    (selector: (state: Record<string, unknown>) => unknown): unknown;
+    getState: () => Record<string, unknown>;
+    setState: (
+      partial:
+        | Record<string, unknown>
+        | ((prev: Record<string, unknown>) => Record<string, unknown>),
+    ) => void;
+  };
+  useAppStore.getState = () => fakeAppStoreState;
+  useAppStore.setState = (partial) => {
+    const next = typeof partial === "function" ? partial(fakeAppStoreState) : partial;
+    Object.assign(fakeAppStoreState, next);
+  };
+  const appStoreApi = {
+    getState: useAppStore.getState,
+    setState: useAppStore.setState,
+    subscribe: vi.fn(() => () => {}),
+  };
+  const useAppStoreApi = () => appStoreApi;
+  return { useAppStore, useAppStoreApi };
+});
 
 // ---------------------------------------------------------------------------
 // Import the hook under test (after mocks are declared)
@@ -353,7 +374,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true, projectRoot: "/fake/project" });
     expect(result.current.sessions).toEqual([
       expect.objectContaining({
         id: "new-pty-session",
@@ -512,7 +533,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(listSessionsCachedMock).toHaveBeenCalled();
     });
-    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
   });
 
   it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
@@ -1143,7 +1164,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       await new Promise((r) => setTimeout(r, 120));
     });
 
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
     expect(invalidateSessionListCache).toHaveBeenCalled();
   });
 
@@ -1163,7 +1184,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
   });
 
   it("does not subscribe or refresh while the kept-alive Work surface is inactive", async () => {
@@ -1212,7 +1233,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(invalidateSessionListCache).toHaveBeenCalled();
-    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { projectRoot: "/fake/project" });
   });
 });
 

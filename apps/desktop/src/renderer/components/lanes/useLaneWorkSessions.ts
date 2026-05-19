@@ -142,7 +142,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       try {
         const rows = await listSessionsCached(
           { laneId, limit: 200 },
-          options.force ? { force: true } : undefined,
+          { force: Boolean(options.force), projectRoot },
         );
         setSessions(rows.filter((session) => !isRunOwnedSession(session)));
         hasLoadedOnceRef.current = true;
@@ -161,7 +161,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         }
       }
     },
-    [laneId],
+    [laneId, projectRoot],
   );
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 300) => {

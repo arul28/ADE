@@ -71,6 +71,7 @@ describe("projectConfigService automation execution normalization", () => {
               laneMode: "nope",
               laneNamePreset: "issue-title",
               laneNameTemplate: "Should be dropped",
+              session: { codexFastMode: true },
             },
           },
           {
@@ -89,6 +90,24 @@ describe("projectConfigService automation execution normalization", () => {
               laneMode: "prompt-at-run",
             },
           },
+          {
+            id: "built-in-agent-rule",
+            trigger: { type: "manual" },
+            execution: {
+              kind: "built-in",
+              builtIn: {
+                actions: [
+                  {
+                    type: "agent-session",
+                    prompt: "Summarize",
+                    modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" },
+                    codexFastMode: true,
+                    permissionConfig: { providers: { codex: "full-auto", codexSandbox: "danger-full-access" } },
+                  },
+                ],
+              },
+            },
+          },
         ],
       }),
       "utf8",
@@ -102,7 +121,7 @@ describe("projectConfigService automation execution normalization", () => {
       logger: makeLogger(),
     });
 
-    const [customRule, presetRule, requireTriggerLaneRule, legacyPromptAtRunRule] = service.get().effective.automations;
+    const [customRule, presetRule, requireTriggerLaneRule, legacyPromptAtRunRule, builtInAgentRule] = service.get().effective.automations;
 
     expect(customRule.execution).toMatchObject({
       kind: "mission",
@@ -115,6 +134,7 @@ describe("projectConfigService automation execution normalization", () => {
       kind: "agent-session",
       laneMode: "reuse",
       laneNamePreset: "issue-title",
+      session: { codexFastMode: true },
     });
     expect(presetRule.execution?.laneNameTemplate).toBeUndefined();
     expect(requireTriggerLaneRule.execution).toMatchObject({
@@ -124,6 +144,19 @@ describe("projectConfigService automation execution normalization", () => {
     expect(legacyPromptAtRunRule.execution).toMatchObject({
       kind: "agent-session",
       laneMode: "require-on-trigger",
+    });
+    expect(builtInAgentRule.execution).toMatchObject({
+      kind: "built-in",
+      builtIn: {
+        actions: [
+          {
+            type: "agent-session",
+            modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" },
+            codexFastMode: true,
+            permissionConfig: { providers: { codex: "full-auto", codexSandbox: "danger-full-access" } },
+          },
+        ],
+      },
     });
   });
 

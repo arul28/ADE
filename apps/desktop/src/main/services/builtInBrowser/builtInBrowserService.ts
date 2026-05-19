@@ -25,10 +25,17 @@ const SCREENSHOT_TIMEOUT_MS = 3_000;
 const ELEMENT_SCREENSHOT_TIMEOUT_MS = 2_000;
 const DEBUGGER_TIMEOUT_MS = 3_000;
 const MAX_BROWSER_TABS = 10;
-const BROWSER_CHROME_VERSION = normalizeChromeVersion(process.versions.chrome);
-const BROWSER_CHROME_MAJOR_VERSION = BROWSER_CHROME_VERSION.split(".")[0] || "120";
-const BROWSER_USER_AGENT = buildDesktopChromeUserAgent(BROWSER_CHROME_VERSION, process.platform);
-const BROWSER_UA_PLATFORM = browserClientHintsPlatform(process.platform);
+const GOOGLE_AUTH_PERMISSION_CHECK_ALLOWLIST = new Set([
+  "hid",
+  "serial",
+  "storage-access",
+  "top-level-storage-access",
+  "usb",
+]);
+const GOOGLE_AUTH_PERMISSION_REQUEST_ALLOWLIST = new Set([
+  "storage-access",
+  "top-level-storage-access",
+]);
 
 type DebuggerMessageListener = (
   event: Electron.Event,
@@ -192,16 +199,13 @@ export function createBuiltInBrowserService(args: {
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
-    try {
-      wc.setUserAgent(BROWSER_USER_AGENT);
-    } catch (error) {
-      logger()?.debug("built_in_browser.set_user_agent_failed", {
-        err: error instanceof Error ? error.message : String(error),
-      });
-    }
     wc.setWindowOpenHandler(({ url }) => {
-      void navigate({ url, newTab: true, openPanel: true }).catch(emitError);
-      return { action: "deny" };
+      const tab = createPopupTabState(url);
+      if (!tab) return { action: "deny" };
+      return {
+        action: "allow",
+        createWindow: () => tab.webContents,
+      };
     });
     wc.on("will-navigate", (event, url) => {
       if (isAllowedNavigationUrl(url)) return;
@@ -265,6 +269,26 @@ export function createBuiltInBrowserService(args: {
     };
   };
 
+  const createPopupTabState = (url: string): BrowserTabState | null => {
+    const popupUrl = stringOrNull(url) ?? "about:blank";
+    if (!isAllowedNavigationUrl(popupUrl)) {
+      emitError(new Error(`Blocked unsupported browser popup protocol: ${url}`));
+      return null;
+    }
+    if (tabs.length >= MAX_BROWSER_TABS) {
+      emitError(new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`));
+      return null;
+    }
+    const tab = createTabState();
+    tabs = [...tabs, tab];
+    activeTabId = tab.id;
+    clearSelectionInternal();
+    attachViewsToCurrentWindow();
+    requestOpenPanel({ url: popupUrl, tabId: tab.id });
+    emitStatus();
+    return tab;
+  };
+
   const ensureActiveTab = (): BrowserTabState => {
     const existing = activeTab();
     if (existing) return existing;
@@ -308,20 +332,35 @@ export function createBuiltInBrowserService(args: {
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = session.fromPartition(BROWSER_PARTITION);
-    browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
-      callback({ requestHeaders: normalizeBrowserRequestHeaders(details.requestHeaders) });
-    });
-    browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
+      if (shouldAllowGoogleAuthPermissionCheck(permission, requestingOrigin, details)) {
+        logger()?.debug("built_in_browser.permission_check_allowed", {
+          permission,
+          requestingOrigin,
+          requestingUrl: details.requestingUrl ?? null,
+        });
+        return true;
+      }
       logger()?.debug("built_in_browser.permission_check_denied", {
         permission,
         requestingOrigin,
+        requestingUrl: details.requestingUrl ?? null,
       });
       return false;
     });
     browserSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+      if (shouldAllowGoogleAuthPermissionRequest(permission, details)) {
+        logger()?.debug("built_in_browser.permission_request_allowed", {
+          permission,
+          requestingUrl: stringOrNull(details.requestingUrl),
+        });
+        callback(true);
+        return;
+      }
       logger()?.debug("built_in_browser.permission_request_denied", {
         permission,
         requestingOrigin: "requestingOrigin" in details ? details.requestingOrigin : null,
+        requestingUrl: stringOrNull(details.requestingUrl),
       });
       callback(false);
     });
@@ -1070,58 +1109,41 @@ function emptyToNull(value: string): string | null {
   return trimmed.length ? trimmed : null;
 }
 
-function normalizeChromeVersion(version: string | undefined): string {
-  const match = (version ?? "").match(/^\d+(?:\.\d+){0,3}/);
-  const parts = (match?.[0] ?? "120.0.0.0").split(".");
-  while (parts.length < 4) parts.push("0");
-  return parts.slice(0, 4).join(".");
+function shouldAllowGoogleAuthPermissionCheck(
+  permission: string,
+  requestingOrigin: string,
+  details: Electron.PermissionCheckHandlerHandlerDetails,
+): boolean {
+  if (!GOOGLE_AUTH_PERMISSION_CHECK_ALLOWLIST.has(permission)) return false;
+  return (
+    isGoogleAccountsSurface(requestingOrigin)
+    || isGoogleAccountsSurface(details.requestingUrl)
+    || isGoogleAccountsSurface(details.embeddingOrigin)
+    || isGoogleAccountsSurface(details.securityOrigin)
+  );
 }
 
-function buildDesktopChromeUserAgent(chromeVersion: string, platform: NodeJS.Platform): string {
-  let platformToken: string;
-  if (platform === "darwin") {
-    platformToken = "Macintosh; Intel Mac OS X 10_15_7";
-  } else if (platform === "win32") {
-    platformToken = "Windows NT 10.0; Win64; x64";
-  } else {
-    platformToken = "X11; Linux x86_64";
+function shouldAllowGoogleAuthPermissionRequest(permission: string, details: unknown): boolean {
+  if (!GOOGLE_AUTH_PERMISSION_REQUEST_ALLOWLIST.has(permission)) return false;
+  if (!isRecord(details)) return false;
+  return (
+    isGoogleAccountsSurface(details.requestingUrl)
+    || isGoogleAccountsSurface(details.requestingOrigin)
+  );
+}
+
+function isGoogleAccountsSurface(value: unknown): boolean {
+  const text = stringOrNull(value);
+  if (!text) return false;
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "https:" && (
+      parsed.hostname === "accounts.google.com"
+      || parsed.hostname.endsWith(".accounts.google.com")
+    );
+  } catch {
+    return false;
   }
-  return `Mozilla/5.0 (${platformToken}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`;
-}
-
-function browserClientHintsPlatform(platform: NodeJS.Platform): string {
-  if (platform === "darwin") return "macOS";
-  if (platform === "win32") return "Windows";
-  return "Linux";
-}
-
-function browserClientHintsBrands(): string {
-  return `"Google Chrome";v="${BROWSER_CHROME_MAJOR_VERSION}", "Chromium";v="${BROWSER_CHROME_MAJOR_VERSION}", "Not:A-Brand";v="24"`;
-}
-
-type BrowserRequestHeaders = Record<string, string | string[]>;
-
-function setRequestHeader(headers: BrowserRequestHeaders, name: string, value: string): void {
-  for (const key of Object.keys(headers)) {
-    if (key.toLowerCase() === name.toLowerCase()) {
-      delete headers[key];
-    }
-  }
-  headers[name] = value;
-}
-
-function normalizeBrowserRequestHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): BrowserRequestHeaders {
-  const next: BrowserRequestHeaders = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (value !== undefined) next[key] = value;
-  }
-  setRequestHeader(next, "User-Agent", BROWSER_USER_AGENT);
-  setRequestHeader(next, "Sec-CH-UA", browserClientHintsBrands());
-  setRequestHeader(next, "Sec-CH-UA-Mobile", "?0");
-  setRequestHeader(next, "Sec-CH-UA-Platform", `"${BROWSER_UA_PLATFORM}"`);
-  return next;
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {

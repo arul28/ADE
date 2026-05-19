@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useCallback } from "react";
+import React, { Suspense, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -11,7 +11,12 @@ import {
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimelineListView } from "./TimelineListView";
 import { TimelineCompactView } from "./TimelineCompactView";
-import { useTimelineStore } from "./useTimelineStore";
+import {
+  TimelineStoreProvider,
+  createTimelineStore,
+  useTimelineStore,
+  type TimelineStoreApi,
+} from "./useTimelineStore";
 import type { TimelineEvent } from "./timelineTypes";
 
 const TimelineGraph = React.lazy(async () => {
@@ -34,7 +39,19 @@ const HISTORY_TILING_TREE: PaneSplit = {
   ],
 };
 
-export function HistoryPage() {
+export function HistoryPage({ active = true }: { active?: boolean } = {}) {
+  const storeRef = useRef<TimelineStoreApi | null>(null);
+  if (!storeRef.current) {
+    storeRef.current = createTimelineStore();
+  }
+  return (
+    <TimelineStoreProvider store={storeRef.current}>
+      <HistoryPageContent active={active} />
+    </TimelineStoreProvider>
+  );
+}
+
+function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -55,11 +72,13 @@ export function HistoryPage() {
 
   // ── Initial fetch & auto-refresh ───────────────────────────
   useEffect(() => {
+    if (!active) return;
     void fetchEvents();
-  }, [fetchEvents]);
+  }, [active, fetchEvents]);
 
   // Auto-refresh while operations are actively running, but keep it quiet.
   useEffect(() => {
+    if (!active) return;
     const hasRunning = events.some((e) => e.status === "running");
     if (!hasRunning) return;
     const refresh = () => {
@@ -76,9 +95,10 @@ export function HistoryPage() {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [events, fetchEvents]);
+  }, [active, events, fetchEvents]);
 
   useEffect(() => {
+    if (!active) return;
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
       void fetchEvents({ silent: true });
@@ -89,7 +109,7 @@ export function HistoryPage() {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [fetchEvents]);
+  }, [active, fetchEvents]);
 
   // ── URL sync: read selectedEventId from search params ──────
   useEffect(() => {

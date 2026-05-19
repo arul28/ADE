@@ -4099,6 +4099,227 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // Claude subagent name capture (Task tool input -> task_started envelope)
+  // --------------------------------------------------------------------------
+
+  describe("claude subagent name capture", () => {
+    it("attaches agentType from the Task tool input to subagent_* envelopes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-name-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Assistant emits a Task tool_use block with subagent_type = "code-reviewer"
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_task_1",
+                name: "Task",
+                input: {
+                  subagent_type: "code-reviewer",
+                  description: "Review the auth module",
+                  prompt: "Please review auth.ts for security gaps.",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        // SDK emits the canonical task lifecycle system messages referencing
+        // the same tool_use id via parent_tool_use_id.
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "toolu_task_1",
+          description: "Review the auth module",
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-1",
+          parent_tool_use_id: "toolu_task_1",
+          summary: "Reading file…",
+          last_tool_name: "Read",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-1",
+          parent_tool_use_id: "toolu_task_1",
+          status: "completed",
+          summary: "Found no issues",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-name-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn a code-reviewer subagent.",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-1",
+      );
+
+      const startEnvelope = events.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-1",
+      );
+      const progressEnvelope = events.find(
+        (e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "task-1",
+      );
+      const resultEnvelope = events.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "task-1",
+      );
+
+      expect((startEnvelope?.event as any)?.agentType).toBe("code-reviewer");
+      expect((progressEnvelope?.event as any)?.agentType).toBe("code-reviewer");
+      expect((resultEnvelope?.event as any)?.agentType).toBe("code-reviewer");
+      expect((startEnvelope?.event as any)?.parentToolUseId).toBe("toolu_task_1");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("falls back gracefully when Task tool has no subagent_type", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-name-2", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Task tool input lacks subagent_type (older models)
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-2",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_task_2",
+                name: "Task",
+                input: {
+                  description: "Audit something",
+                  prompt: "Audit the change log.",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-2",
+          parent_tool_use_id: "toolu_task_2",
+          description: "Audit something",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-2",
+          parent_tool_use_id: "toolu_task_2",
+          status: "completed",
+          summary: "Done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-name-2",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Run a subagent without an explicit type",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_started" && (e.event as any).taskId === "task-2",
+      );
+
+      const startEnvelope = events.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-2",
+      );
+      expect(startEnvelope).toBeDefined();
+      // No agentType is fine — the renderer falls back to description.
+      expect((startEnvelope?.event as any)?.agentType).toBeUndefined();
+      expect((startEnvelope?.event as any)?.description).toBe("Audit something");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // getSlashCommands
   // --------------------------------------------------------------------------
 
@@ -5505,6 +5726,28 @@ describe("createAgentChatService", () => {
       );
 
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+  });
+
+  describe("hasRetainableSessions", () => {
+    it("is true while any chat session is open and false after it is closed", async () => {
+      const { service } = createService();
+      expect(service.hasRetainableSessions()).toBe(false);
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      // Idle session (no active turn, no pending input) — hasActiveWorkloads
+      // is narrow and returns false. hasRetainableSessions must still report
+      // true so project-context rebalancing keeps the agent runtime alive
+      // for an instant resume after a project switch.
+      expect(service.hasActiveWorkloads()).toBe(false);
+      expect(service.hasRetainableSessions()).toBe(true);
+
+      await service.dispose({ sessionId: session.id });
+      expect(service.hasRetainableSessions()).toBe(false);
     });
   });
 
@@ -7441,6 +7684,173 @@ describe("createAgentChatService", () => {
       expect(
         service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("completed");
+    });
+
+    it("assigns Agent #N labels to Codex collab agents in turn-spawn order", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn two parallel agents.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-a"],
+            prompt: "Inspect the renderer",
+            agentsStates: {},
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-2",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-b"],
+            prompt: "Inspect the main process",
+            agentsStates: {},
+          },
+        },
+      });
+
+      const startedEvents = events.filter((envelope) =>
+        envelope.event.type === "subagent_started"
+        && (envelope.event.taskId === "agent-thread-a" || envelope.event.taskId === "agent-thread-b"),
+      );
+
+      expect(startedEvents).toHaveLength(2);
+      expect(startedEvents[0]!.event).toMatchObject({
+        type: "subagent_started",
+        taskId: "agent-thread-a",
+        agentId: "agent-thread-a",
+        agentType: "Agent #1",
+      });
+      expect(startedEvents[1]!.event).toMatchObject({
+        type: "subagent_started",
+        taskId: "agent-thread-b",
+        agentId: "agent-thread-b",
+        agentType: "Agent #2",
+      });
+    });
+
+    it("filters codex parent stream by threadId when fetching subagent transcript", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel agent.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-1",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-filter"],
+            prompt: "Focused investigation",
+            agentsStates: {},
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-2",
+            type: "collabAgentToolCall",
+            tool: "wait",
+            status: "completed",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-filter"],
+            agentsStates: {
+              "agent-thread-filter": {
+                status: "completed",
+                message: "Investigation complete.",
+              },
+            },
+          },
+        },
+      });
+
+      const transcript = await service.getSubagentTranscript({
+        sessionId: session.id,
+        agentId: "agent-thread-filter",
+      });
+      expect(transcript).not.toBeNull();
+      expect(transcript!.length).toBeGreaterThanOrEqual(2);
+      const types = transcript!.map((m) => (m.message as { type: string }).type);
+      expect(types).toContain("subagent_started");
+      expect(types).toContain("subagent_result");
+      // Filter must reject envelopes that don't carry this threadId.
+      expect(transcript!.every((m) => {
+        const event = m.message as { taskId?: string };
+        return event.taskId === "agent-thread-filter";
+      })).toBe(true);
+
+      // A different threadId returns an empty (but non-null) array.
+      const empty = await service.getSubagentTranscript({
+        sessionId: session.id,
+        agentId: "some-other-thread",
+      });
+      expect(empty).toEqual([]);
     });
 
     it("coalesces Codex spawn placeholders when the app-server reveals the agent thread later", async () => {

@@ -731,6 +731,8 @@ export type AutomationAction = {
   retry?: number;
   /** Optional model override for agent-session actions inside a built-in chain. */
   modelConfig?: ModelConfig;
+  /** Optional Codex fast-mode override for agent-session actions inside a built-in chain. */
+  codexFastMode?: boolean;
   /** Optional permission override for agent-session actions inside a built-in chain. */
   permissionConfig?: MissionPermissionConfig;
   /** Configuration payload for actions of kind `ade-action`. */
@@ -786,6 +788,7 @@ export type AutomationExecution = {
   session?: {
     title?: string | null;
     reasoningEffort?: string | null;
+    codexFastMode?: boolean;
   };
   /**
    * Mission-specific launch hints reused by the automation mission launcher.

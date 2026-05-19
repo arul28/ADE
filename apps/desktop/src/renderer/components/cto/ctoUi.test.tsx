@@ -11,7 +11,116 @@ import {
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
+import { CtoPage } from "./CtoPage";
+import { useAppStore } from "../../state/appStore";
+
+const agentChatPaneProps = vi.hoisted(() => ({
+  latest: null as null | Record<string, unknown>,
+}));
+
+vi.mock("../chat/AgentChatPane", () => ({
+  AgentChatPane: (props: Record<string, unknown>) => {
+    agentChatPaneProps.latest = props;
+    return <div data-testid="cto-agent-chat-pane" />;
+  },
+}));
+
+describe("CtoPage chat layout", () => {
+  const originalAde = globalThis.window.ade;
+
+  beforeEach(() => {
+    agentChatPaneProps.latest = null;
+    useAppStore.setState({
+      lanes: [
+        {
+          id: "lane-primary",
+          name: "Primary",
+          laneType: "primary",
+        } as any,
+      ],
+      lanesLoading: false,
+    });
+    globalThis.window.ade = {
+      ...(originalAde ?? {}),
+      cto: {
+        ...(originalAde?.cto ?? {}),
+        getState: vi.fn().mockResolvedValue({
+          identity: {
+            version: 2,
+            persona: "Senior CTO",
+            personality: "strategic",
+            customPersonality: null,
+            modelPreferences: {
+              provider: "anthropic",
+              model: "claude-sonnet-4-6",
+              reasoningEffort: null,
+            },
+          },
+          coreMemory: {
+            projectSummary: "Project brief",
+            criticalConventions: [],
+            userPreferences: [],
+            activeFocus: [],
+            notes: [],
+          },
+          recentSessions: [],
+        }),
+        getOnboardingState: vi.fn().mockResolvedValue({
+          completedAt: "2026-05-01T00:00:00.000Z",
+          completedSteps: ["identity"],
+          dismissedAt: null,
+        }),
+        listAgents: vi.fn().mockResolvedValue([]),
+        ensureSession: vi.fn().mockResolvedValue({
+          id: "cto-session",
+          laneId: "lane-primary",
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-4-6",
+          sessionProfile: "persistent_identity",
+          reasoningEffort: null,
+          executionMode: null,
+          identityKey: "cto",
+          capabilityMode: "full_tooling",
+          status: "idle",
+          createdAt: "2026-05-01T00:00:00.000Z",
+          lastActivityAt: "2026-05-01T00:00:00.000Z",
+          threadId: "thread-1",
+        }),
+      },
+    } as any;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    useAppStore.setState({ lanes: [], lanesLoading: false });
+    if (originalAde === undefined) {
+      delete (globalThis.window as any).ade;
+    } else {
+      globalThis.window.ade = originalAde;
+    }
+  });
+
+  it("embeds the persistent CTO chat in the full-height chat host instead of an extra clipped card", async () => {
+    render(
+      <MemoryRouter>
+        <CtoPage />
+      </MemoryRouter>,
+    );
+
+    const pane = await screen.findByTestId("cto-agent-chat-pane");
+    expect(agentChatPaneProps.latest?.laneId).toBe("lane-primary");
+    expect(agentChatPaneProps.latest?.lockSessionId).toBe("cto-session");
+    expect(agentChatPaneProps.latest?.hideSessionTabs).toBe(true);
+
+    const host = pane.parentElement;
+    expect(host?.className).toBe("min-h-0 flex-1 overflow-hidden");
+    expect(host?.className).not.toContain("rounded");
+  });
+});
 
 describe("CtoSettingsPanel (file group)", () => {
   vi.mock("./IdentityEditor", () => ({

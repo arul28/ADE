@@ -646,7 +646,8 @@ export function TopBar() {
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
-  const [openProjectTabRoots, setOpenProjectTabRoots] = useState<string[]>([]);
+  const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
+  const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
   const [openRemoteProjectTabs, setOpenRemoteProjectTabs] = useState<
     RemoteProjectTab[]
   >([]);
@@ -697,6 +698,10 @@ export function TopBar() {
 
   useEffect(() => {
     openProjectTabRootsRef.current = openProjectTabRoots;
+  }, [openProjectTabRoots]);
+
+  useEffect(() => {
+    window.ade.app.setWindowProjectTabs(openProjectTabRoots).catch(() => {});
   }, [openProjectTabRoots]);
 
   useEffect(() => {
@@ -800,7 +805,14 @@ export function TopBar() {
     window.ade.app
       .getWindowSession()
       .then((session) => {
-        if (!cancelled) setWindowId(session.windowId);
+        if (cancelled) return;
+        setWindowId(session.windowId);
+        if (session.openProjectTabs.length > 0) {
+          for (const tabProject of session.openProjectTabs) {
+            useAppStore.getState().rememberProjectInfo(tabProject);
+          }
+          setOpenProjectTabRoots(session.openProjectTabs.map((entry) => entry.rootPath));
+        }
       })
       .catch(() => {
         if (!cancelled) setWindowId(null);
@@ -808,7 +820,7 @@ export function TopBar() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [setOpenProjectTabRoots]);
 
   useEffect(() => {
     if (!phoneSyncOpen) return;

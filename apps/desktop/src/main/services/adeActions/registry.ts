@@ -769,7 +769,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stopStack",
   ],
   pty: ["create", "dispose", "resize", "sendToSession", "write"],
-  terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat"],
+  terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
@@ -2677,10 +2677,11 @@ type TerminalDomainService = {
   list(args?: unknown): unknown;
   read(args?: unknown): Promise<unknown>;
   preview(args?: unknown): Promise<unknown>;
-  write(args?: unknown): unknown;
+  write(args?: unknown): Promise<unknown>;
   resize(args?: unknown): unknown;
   signal(args?: unknown): unknown;
   activeForChat(args?: unknown): unknown;
+  reattachChatCli(args?: unknown): Promise<unknown>;
 };
 
 const RUNTIME_FILE_WATCH_CLIENT_ID_FIELD = "__adeRuntimeClientId";
@@ -3578,8 +3579,8 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
     preview(args) {
       return runtime.ptyService.previewTerminal(args as Parameters<typeof runtime.ptyService.previewTerminal>[0]);
     },
-    write(args) {
-      return runtime.ptyService.writeTerminal(args as Parameters<typeof runtime.ptyService.writeTerminal>[0]);
+    async write(args) {
+      return await runtime.ptyService.writeTerminal(args as Parameters<typeof runtime.ptyService.writeTerminal>[0]);
     },
     resize(args) {
       return runtime.ptyService.resizeTerminal(args as Parameters<typeof runtime.ptyService.resizeTerminal>[0]);
@@ -3589,6 +3590,9 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
     },
     activeForChat(args) {
       return runtime.ptyService.activeForChat(args as Parameters<typeof runtime.ptyService.activeForChat>[0]);
+    },
+    async reattachChatCli(args) {
+      return await runtime.ptyService.reattachChatCli(args as Parameters<typeof runtime.ptyService.reattachChatCli>[0]);
     },
   };
 }

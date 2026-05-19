@@ -5,11 +5,12 @@ import type { AutomationRuleDraft } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { TemplatesTab } from "./TemplatesTab";
 
-export function AutomationsTemplatesPage() {
+export function AutomationsTemplatesPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const [missionsEnabled, setMissionsEnabled] = useState(true);
 
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     window.ade.app.getInfo().then(
       (info) => {
@@ -22,7 +23,7 @@ export function AutomationsTemplatesPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [active]);
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-templates-page">

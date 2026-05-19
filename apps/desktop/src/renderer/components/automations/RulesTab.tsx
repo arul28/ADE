@@ -123,6 +123,7 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
         type: action.type,
         ...runtimeActionFields(action),
         ...(action.modelConfig ? { modelConfig: structuredClone(action.modelConfig) } : {}),
+        ...(action.codexFastMode === true ? { codexFastMode: true } : {}),
         ...(action.permissionConfig ? { permissionConfig: structuredClone(action.permissionConfig) } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
@@ -309,11 +310,13 @@ function RuleListRow({
 type DetailView = "editor" | "history";
 
 export function RulesTab({
+  active = true,
   pendingDraft,
   onDraftConsumed,
   onOpenTemplates,
   missionsEnabled,
 }: {
+  active?: boolean;
   pendingDraft: AutomationRuleDraft | null;
   onDraftConsumed: () => void;
   onOpenTemplates: () => void;
@@ -392,6 +395,7 @@ export function RulesTab({
   loadRef.current = refresh;
 
   useEffect(() => {
+    if (!active) return;
     void refresh();
     const unsubscribe = window.ade.automations.onEvent(() => {
       void loadRef.current?.();
@@ -403,9 +407,10 @@ export function RulesTab({
         // ignore
       }
     };
-  }, [refresh]);
+  }, [active, refresh]);
 
   useEffect(() => {
+    if (!active) return;
     if (!pendingDraft) return;
     setSelectedRuleId(null);
     setDraft(pendingDraft);
@@ -416,7 +421,7 @@ export function RulesTab({
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     onDraftConsumed();
-  }, [onDraftConsumed, pendingDraft]);
+  }, [active, onDraftConsumed, pendingDraft]);
 
   useEffect(() => {
     if (selectedRuleId == null) return;

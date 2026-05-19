@@ -44,6 +44,7 @@ export type ActionRowValue = {
   prompt?: string;
   sessionTitle?: string;
   modelConfig?: ModelConfig;
+  codexFastMode?: boolean;
   permissionConfig?: MissionPermissionConfig;
   // Create lane
   laneNameTemplate?: string;
@@ -113,6 +114,14 @@ export function ActionRow({
     if ("retry" in patch && patch.retry == null) delete next.retry;
     if ("continueOnFailure" in patch && !patch.continueOnFailure) delete next.continueOnFailure;
     onChange(next);
+  };
+  const setCodexFastMode = (enabled: boolean) => {
+    if (enabled) {
+      onChange({ ...value, codexFastMode: true });
+      return;
+    }
+    const { codexFastMode: _codexFastMode, ...rest } = value;
+    onChange(rest);
   };
 
   return (
@@ -233,6 +242,8 @@ export function ActionRow({
                   onChange={(modelConfig) => onChange({ ...value, modelConfig })}
                   compact
                   onOpenAiSettings={onOpenAiSettings}
+                  fastModeActive={value.codexFastMode === true}
+                  onFastModeToggle={setCodexFastMode}
                 />
               </div>
               <label className="block space-y-1.5">

@@ -227,6 +227,19 @@ export type ChatTerminalActiveForChatArgs = {
   chatSessionId: string;
 };
 
+export type ChatTerminalReattachArgs = {
+  chatSessionId: string;
+  cols?: number | null;
+  rows?: number | null;
+};
+
+export type ChatTerminalReattachResult = {
+  terminalId: string;
+  ptyId: string;
+  pid: number | null;
+  relaunched: boolean; // false when the existing PTY was already live
+};
+
 export type TerminalSnapshotCell = {
   text: string;
   fg: number | null;

@@ -651,43 +651,6 @@ function PendingSteerItem({
   );
 }
 
-function CodexFastModeToggle({
-  active,
-  disabled,
-  onToggle,
-}: {
-  active: boolean;
-  disabled?: boolean;
-  onToggle?: (next: boolean) => void;
-}) {
-  return (
-    <SmartTooltip
-      content={{
-        label: "Fast mode",
-        description: active ? "Fast mode is on for the next turn." : "Use Fast mode for supported runtime models.",
-        effect: active ? "Next turn uses the fast service tier." : "Standard mode is selected.",
-      }}
-    >
-      <button
-        type="button"
-        aria-label="Fast mode"
-        aria-pressed={active}
-        disabled={disabled || !onToggle}
-        onClick={() => onToggle?.(!active)}
-        className={cn(
-          "inline-flex h-8 min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-          active
-            ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
-            : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
-        )}
-      >
-        <Lightning size={13} weight="fill" />
-        <span>Fast</span>
-      </button>
-    </SmartTooltip>
-  );
-}
-
 function LinearIssueContextDialog({
   open,
   selectedIssue,
@@ -1779,7 +1742,6 @@ export function AgentChatComposer({
     parallelChatMode && parallelConfiguringIndex != null
       ? parallelModelSlots[parallelConfiguringIndex]?.codexFastMode === true
       : codexFastMode === true;
-  const fastModeToggleDisabled = parallelChatMode ? parallelLaunchBusy : modelSelectionLocked;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
@@ -3414,6 +3376,9 @@ export function AgentChatComposer({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={parallelLaunchBusy}
                   compact
+                  fastModeActive={fastModeActive}
+                  fastModeSupported={fastModeSupported}
+                  onFastModeToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
                 />
                 <ReasoningEffortPicker
                   modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
@@ -3423,13 +3388,6 @@ export function AgentChatComposer({
                   compact
                 />
               </>
-            ) : null}
-            {parallelChatMode && parallelConfiguringIndex != null && fastModeSupported ? (
-              <CodexFastModeToggle
-                active={fastModeActive}
-                disabled={fastModeToggleDisabled}
-                onToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
-              />
             ) : null}
             {!parallelChatMode ? (
               <>
@@ -3441,6 +3399,9 @@ export function AgentChatComposer({
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={modelSelectionLocked}
                   compact
+                  fastModeActive={fastModeActive}
+                  fastModeSupported={fastModeSupported}
+                  onFastModeToggle={onCodexFastModeChange}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}
@@ -3450,13 +3411,6 @@ export function AgentChatComposer({
                   compact
                 />
               </>
-            ) : null}
-            {!parallelChatMode && fastModeSupported ? (
-              <CodexFastModeToggle
-                active={fastModeActive}
-                disabled={fastModeToggleDisabled}
-                onToggle={onCodexFastModeChange}
-              />
             ) : null}
           </div>
 

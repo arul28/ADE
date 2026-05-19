@@ -140,14 +140,24 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("can switch the daemon sync host to a requested project", async () => {
+  it("switches the daemon sync host without disposing active project scopes", async () => {
     const { registry, first, second } = createRegistry();
     const firstDispose = vi.fn();
     const secondDispose = vi.fn();
     const onDisposeProject = vi.fn();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
     createAdeRuntimeMock
-      .mockResolvedValueOnce({ dispose: firstDispose })
-      .mockResolvedValueOnce({ dispose: secondDispose });
+      .mockResolvedValueOnce({ dispose: firstDispose, syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: secondDispose, syncService: secondSyncService });
     const scopeRegistry = new ProjectScopeRegistry(registry, {
       onDisposeProject,
       syncRuntime: {
@@ -162,8 +172,14 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.ensureSyncHost(first.projectId);
     await scopeRegistry.ensureSyncHost(second.projectId);
 
-    expect(firstDispose).toHaveBeenCalledTimes(1);
-    expect(onDisposeProject).toHaveBeenCalledWith(first.projectId);
+    expect(firstDispose).not.toHaveBeenCalled();
+    expect(secondDispose).not.toHaveBeenCalled();
+    expect(onDisposeProject).not.toHaveBeenCalled();
+    expect(firstSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(false);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+    expect(secondSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.initialize).toHaveBeenCalled();
     expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
     expect(createAdeRuntimeMock.mock.calls[1]?.[0]).toMatchObject({
       projectRoot: second.rootPath,
@@ -176,7 +192,56 @@ describe("ProjectScopeRegistry", () => {
     });
 
     await scopeRegistry.disposeAll();
+    expect(firstDispose).toHaveBeenCalledTimes(1);
     expect(secondDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("promotes an existing warm project when selecting the default sync host", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: true,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.ensureSyncHost(first.projectId);
+    await scopeRegistry.get(second.projectId);
+    const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
+      projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
+    };
+    file.projects = file.projects.map((project) => ({
+      ...project,
+      lastOpenedAt: project.projectId === second.projectId ? 2_000 : 1_000,
+      addedAt: project.projectId === second.projectId ? 2_000 : 1_000,
+    }));
+    fs.writeFileSync(registry.path, JSON.stringify(file, null, 2));
+    await scopeRegistry.dispose(first.projectId);
+    const promoted = await scopeRegistry.ensureSyncHost();
+
+    expect(promoted?.registryProjectId).toBe(second.projectId);
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(secondSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+    expect(secondSyncService.initialize).toHaveBeenCalled();
+
+    await scopeRegistry.disposeAll();
   });
 
   it("passes runtime capability options into project runtimes", async () => {

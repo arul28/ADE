@@ -21,6 +21,7 @@ import {
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
+  type AgentChatSubagentTranscriptMessage,
   type AgentChatOpenCodePermissionMode,
   type AgentChatPermissionMode,
   type AgentChatParallelLaunchState,
@@ -1623,6 +1624,15 @@ export function AgentChatPane({
   const [iosSimulatorAvailable, setIosSimulatorAvailable] = useState(isLikelyMacRenderer);
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false);
+  // Subagent drill-in: when set, the chat surface renders the named subagent's
+  // transcript instead of the parent stream and the composer is disabled.
+  const [subagentView, setSubagentView] = useState<{
+    taskId: string;
+    agentId: string | null;
+    agentType: string | null;
+    status: "running" | "completed" | "failed" | "stopped";
+    background: boolean;
+  } | null>(null);
   const [rewindConfirmDialog, setRewindConfirmDialog] = useState<RewindFilesConfirmDialogState | null>(null);
   const [cursorCloudLaunchModeOpen, setCursorCloudLaunchModeOpen] = useState(false);
   const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
@@ -1992,6 +2002,89 @@ export function AgentChatPane({
   // events for delegation and collabToolCall items (spawn_agent, etc.) just
   // like Claude. Gate on whether we actually have snapshots to display.
   const selectedSubagentPaneAvailable = selectedSubagentSnapshots.length > 0;
+  // Latest snapshot for the currently drilled-in subagent — keeps the
+  // breadcrumb status in sync as the agent transitions running → completed.
+  const subagentViewSnapshot = useMemo(() => {
+    if (!subagentView) return null;
+    return selectedSubagentSnapshots.find((s) => s.taskId === subagentView.taskId) ?? null;
+  }, [subagentView, selectedSubagentSnapshots]);
+  // Indicates at least one background subagent is currently running; used to
+  // surface a small dot on the panel toggle when the panel is collapsed.
+  const hasRunningBackgroundSubagent = useMemo(
+    () => selectedSubagentSnapshots.some((s) => s.background === true && s.status === "running"),
+    [selectedSubagentSnapshots],
+  );
+  // Auto-clear the subagent view when the underlying snapshot disappears
+  // (e.g. session switch). Updating status is fine and stays in view.
+  useEffect(() => {
+    if (subagentView && !subagentViewSnapshot) {
+      setSubagentView(null);
+    }
+  }, [subagentView, subagentViewSnapshot]);
+
+  // Subagent transcript fetched via IPC for the drill-in view. `null` means
+  // the runtime doesn't support transcript retrieval (LM Studio/Droid). `[]`
+  // means we tried but the agent has not produced any messages yet.
+  const [subagentTranscript, setSubagentTranscript] = useState<
+    AgentChatSubagentTranscriptMessage[] | null
+  >(null);
+  const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
+  const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
+
+  useEffect(() => {
+    if (!subagentView || !selectedSessionId) {
+      setSubagentTranscript(null);
+      setSubagentTranscriptLoading(false);
+      setSubagentTranscriptUnsupported(false);
+      return;
+    }
+
+    const fetchTranscript = window.ade?.agentChat?.getSubagentTranscript;
+    if (typeof fetchTranscript !== "function") {
+      setSubagentTranscript(null);
+      setSubagentTranscriptUnsupported(true);
+      return;
+    }
+
+    let cancelled = false;
+    const isRunning = subagentViewSnapshot?.status === "running";
+
+    const tick = async () => {
+      try {
+        setSubagentTranscriptLoading(true);
+        const result = await fetchTranscript({
+          sessionId: selectedSessionId,
+          agentId: subagentView.agentId ?? subagentView.taskId,
+          taskId: subagentView.taskId,
+        });
+        if (cancelled) return;
+        if (result === null) {
+          setSubagentTranscriptUnsupported(true);
+          setSubagentTranscript(null);
+        } else {
+          setSubagentTranscriptUnsupported(false);
+          setSubagentTranscript(result);
+        }
+      } catch (error) {
+        // Log so debugging is possible; surface as empty transcript rather than
+        // crashing the drill-in view. Polling tick will retry on the next
+        // interval if the subagent is still running.
+        // eslint-disable-next-line no-console
+        console.error("agentChat.getSubagentTranscript failed", error);
+        if (!cancelled) setSubagentTranscript([]);
+      } finally {
+        if (!cancelled) setSubagentTranscriptLoading(false);
+      }
+    };
+
+    void tick();
+    const intervalId = isRunning ? window.setInterval(() => { void tick(); }, 1500) : null;
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
+  }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
@@ -5659,6 +5752,16 @@ export function AgentChatPane({
       onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
       variant="pane"
       onClose={() => setSubagentPaneOpen(false)}
+      onSelectSubagent={(selection) => {
+        setSubagentView({
+          taskId: selection.taskId,
+          agentId: selection.agentId,
+          agentType: selection.agentType,
+          status: selection.status,
+          background: selection.background,
+        });
+      }}
+      selectedTaskId={subagentView?.taskId ?? null}
     />
   ) : null;
   const cursorCloudPanelContent = (
@@ -5925,6 +6028,16 @@ export function AgentChatPane({
                 <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                   {selectedSubagentSnapshots.length}
                 </span>
+                {!subagentPaneOpen && hasRunningBackgroundSubagent ? (
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute -bottom-0.5 -right-0.5 h-[7px] w-[7px] rounded-full",
+                      "bg-[color:var(--color-accent,#A78BFA)] ring-2 ring-[color:var(--color-bg,#0c0b10)]",
+                      "motion-safe:ade-glow-pulse",
+                    )}
+                  />
+                ) : null}
               </button>
             </SmartTooltip>
           ) : null}
@@ -6667,6 +6780,42 @@ export function AgentChatPane({
       />
   );
 
+  // Composer placeholder shown when the chat is drilled in to a subagent
+  // transcript. Replies always go to the parent session, so disabling input
+  // here matches user expectations and the wireframe brief.
+  const subagentComposerLock = subagentView ? (
+    <div
+      data-chat-appearance-root
+      style={chatAppearanceRootStyle}
+      className={cn(
+        compactShell ? "min-w-0 w-full" : undefined,
+        "flex items-center gap-3 px-4 py-3 font-sans text-[12px]",
+        "border-t border-white/[0.05] bg-white/[0.012]",
+      )}
+    >
+      <span
+        aria-hidden
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-fg/30"
+      >
+        <span className="block h-px w-2.5 bg-fg/30" />
+      </span>
+      <span className="min-w-0 flex-1 text-fg/55">
+        Composer paused — viewing a subagent transcript.
+      </span>
+      <button
+        type="button"
+        onClick={() => setSubagentView(null)}
+        className={cn(
+          "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
+          "text-[color:var(--color-accent-bright,#C4B5FD)]",
+          "transition-colors hover:bg-[color:var(--color-accent,#A78BFA)]/10",
+        )}
+      >
+        Return to main chat
+      </button>
+    </div>
+  ) : null;
+
   const composerWithTypographyRoot = (
     <div
       data-chat-appearance-root
@@ -6749,7 +6898,9 @@ export function AgentChatPane({
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
         header={compactShell ? undefined : shellHeader}
-        footer={isEmptyState || appPanelOpen ? undefined : composerWithTypographyRoot}
+        footer={isEmptyState || appPanelOpen
+          ? undefined
+          : subagentComposerLock ?? composerWithTypographyRoot}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
@@ -6851,10 +7002,69 @@ export function AgentChatPane({
                         }}
                       />
                     ) : null}
+                    {subagentView ? (
+                      <button
+                        type="button"
+                        onClick={() => setSubagentView(null)}
+                        title="Return to main chat"
+                        className={cn(
+                          "group flex shrink-0 items-center gap-2.5 px-5 py-2 text-left font-sans text-[11.5px]",
+                          "border-b border-white/[0.05] bg-white/[0.012]",
+                          "transition-colors hover:bg-white/[0.025]",
+                        )}
+                      >
+                        <span
+                          aria-hidden
+                          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-fg/35 transition-colors group-hover:bg-white/[0.05] group-hover:text-fg/70"
+                        >
+                          {"←"}
+                        </span>
+                        <span className="text-fg/45 group-hover:text-fg/65">Main</span>
+                        <span aria-hidden className="text-fg/20">{"•"}</span>
+                        <span className="truncate font-medium tracking-[0.005em] text-fg/85">
+                          {subagentView.agentType
+                            ?? subagentViewSnapshot?.description
+                            ?? subagentView.agentId
+                            ?? subagentView.taskId}
+                        </span>
+                        {subagentView.background ? (
+                          <span className="text-[10.5px] tracking-[0.01em] text-fg/30">bg</span>
+                        ) : null}
+                        <span aria-hidden className="text-fg/20">{"•"}</span>
+                        <span
+                          className={cn(
+                            "text-[10.5px] tracking-[0.005em]",
+                            (subagentViewSnapshot?.status ?? subagentView.status) === "running"
+                              && "text-[color:var(--color-accent-bright,#C4B5FD)]",
+                            (subagentViewSnapshot?.status ?? subagentView.status) === "completed"
+                              && "text-emerald-300/75",
+                            (subagentViewSnapshot?.status ?? subagentView.status) === "failed"
+                              && "text-rose-300/80",
+                            (subagentViewSnapshot?.status ?? subagentView.status) === "stopped"
+                              && "text-amber-200/75",
+                          )}
+                        >
+                          {subagentViewSnapshot?.status ?? subagentView.status}
+                        </span>
+                        <span className="ml-auto hidden text-[10px] text-fg/25 group-hover:inline">
+                          press to return
+                        </span>
+                      </button>
+                    ) : null}
                     <AgentChatMessageList
-                      key={selectedSessionId ?? "chat-draft"}
+                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
-                      showStreamingIndicator={turnActive && selectedSession?.status !== "ended"}
+                      subagentTranscript={subagentView ? {
+                        messages: subagentTranscript,
+                        loading: subagentTranscriptLoading,
+                        unsupported: subagentTranscriptUnsupported,
+                        snapshotName:
+                          subagentView.agentType
+                          ?? subagentViewSnapshot?.description
+                          ?? subagentView.agentId
+                          ?? subagentView.taskId,
+                      } : undefined}
+                      showStreamingIndicator={!subagentView && turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}

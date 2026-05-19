@@ -49,9 +49,15 @@ function sliceRows(rows: TerminalSessionSummary[], limit: number | null): Termin
 
 export async function listSessionsCached(
   args?: ListSessionsArgs,
-  options?: { force?: boolean; ttlMs?: number },
+  options?: { force?: boolean; ttlMs?: number; projectRoot?: string | null },
 ): Promise<TerminalSessionSummary[]> {
-  const key = cacheKey(args);
+  const key = options?.projectRoot == null
+    ? cacheKey(args)
+    : JSON.stringify({
+        projectRoot: options.projectRoot?.trim() || null,
+        laneId: normalizeArgs(args).laneId ?? null,
+        status: normalizeArgs(args).status ?? null,
+      });
   const ttlMs = options?.ttlMs ?? DEFAULT_SESSION_LIST_TTL_MS;
   const limit = requestedLimit(args);
   const now = Date.now();
