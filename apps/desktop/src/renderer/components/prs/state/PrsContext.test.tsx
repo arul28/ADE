@@ -204,6 +204,7 @@ describe("PrsContext refresh", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     globalThis.window.ade = originalAde;
     window.location.hash = "";
     window.history.replaceState(null, "", "/");
@@ -223,6 +224,42 @@ describe("PrsContext refresh", () => {
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
+  it("bounds automatic retries after persistent refresh failures", async () => {
+    vi.useFakeTimers();
+    vi.mocked(window.ade.prs.listWithConflicts).mockRejectedValue(new Error("boom"));
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(4);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(12_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(4);
   });
 
   it("loads rebase diagnostics for a selected PR on the normal tab", async () => {

@@ -103,6 +103,45 @@ function claudeNativePackagesToPrune(platform) {
     .flatMap(([, packages]) => packages);
 }
 
+function codexNativePackagesToPrune(platform) {
+  const byPlatform = {
+    darwin: [
+      path.join("node_modules", "@openai", "codex-darwin-arm64"),
+      path.join("node_modules", "@openai", "codex-darwin-x64"),
+    ],
+    linux: [
+      path.join("node_modules", "@openai", "codex-linux-arm64"),
+      path.join("node_modules", "@openai", "codex-linux-x64"),
+    ],
+    win32: [
+      path.join("node_modules", "@openai", "codex-win32-arm64"),
+      path.join("node_modules", "@openai", "codex-win32-x64"),
+    ],
+  };
+  return Object.entries(byPlatform)
+    .filter(([targetPlatform]) => targetPlatform !== platform)
+    .flatMap(([, packages]) => packages);
+}
+
+function cursorNativePackagesToPrune(platform) {
+  const byPlatform = {
+    darwin: [
+      path.join("node_modules", "@cursor", "sdk-darwin-arm64"),
+      path.join("node_modules", "@cursor", "sdk-darwin-x64"),
+    ],
+    linux: [
+      path.join("node_modules", "@cursor", "sdk-linux-arm64"),
+      path.join("node_modules", "@cursor", "sdk-linux-x64"),
+    ],
+    win32: [
+      path.join("node_modules", "@cursor", "sdk-win32-x64"),
+    ],
+  };
+  return Object.entries(byPlatform)
+    .filter(([targetPlatform]) => targetPlatform !== platform)
+    .flatMap(([, packages]) => packages);
+}
+
 function openCodeNativePackagesToPrune() {
   const packages = [
     "opencode-darwin-arm64",
@@ -128,10 +167,19 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   if (platform === "darwin") return;
   const commonNonRuntimePayload = [
     ...claudeNativePackagesToPrune(platform),
+    ...codexNativePackagesToPrune(platform),
+    ...cursorNativePackagesToPrune(platform),
     ...openCodeNativePackagesToPrune(),
     path.join("node_modules", "node-pty", "deps"),
     path.join("node_modules", "node-pty", "src"),
   ];
+  const win32X64OnlyPayload = platform === "win32"
+    ? [
+        path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
+        path.join("node_modules", "@openai", "codex-win32-arm64"),
+        path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
+      ]
+    : [];
   const platformPayload = {
     darwin: [
       path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "audio-capture", "arm64-linux"),
@@ -173,6 +221,7 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   };
   const candidates = [
     ...commonNonRuntimePayload,
+    ...win32X64OnlyPayload,
     ...(platformPayload[platform] ?? []),
   ];
   const removed = candidates.filter((relativePath) => removeIfPresent(runtimeRoot, relativePath));

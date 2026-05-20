@@ -2637,6 +2637,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       const selectedStash = trimmedRef
         ? stashes.find((stash) => stash.ref === trimmedRef)
         : stashes[0];
+      if (trimmedRef && !selectedStash) {
+        throw new Error(`Stash ${trimmedRef} is not saved for this lane branch.`);
+      }
       const resolvedRef = trimmedRef || selectedStash?.ref;
       if (!resolvedRef) throw new Error("No stashes are saved for this lane branch.");
       return deps.gitService!.stashPop({

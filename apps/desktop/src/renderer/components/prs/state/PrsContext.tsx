@@ -48,6 +48,8 @@ type RefreshCoreOptions = {
   githubRefreshArgs?: PrRefreshArgs;
 };
 
+const REFRESH_ERROR_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
+
 function normalizePrRefreshArgs(args?: PrRefreshArgs): PrRefreshArgs | undefined {
   const prIds = [
     ...(args?.prId ? [args.prId] : []),
@@ -677,6 +679,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
   const refreshPending = React.useRef<RefreshCoreOptions | null>(null);
+  const [refreshErrorRetryCount, setRefreshErrorRetryCount] = React.useState(0);
   const prsRef = React.useRef<PrWithConflicts[]>(warmCache?.prs ?? []);
   const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>(warmCache?.mergeContextByPrId ?? {});
   React.useEffect(() => { prsRef.current = prs; }, [prs]);
@@ -908,6 +911,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
       await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
       warmCacheHydratedAtRef.current = Date.now();
+      setRefreshErrorRetryCount(0);
       if (options.githubRefreshMode === "background") {
         void window.ade.prs.refresh(options.githubRefreshArgs)
           .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
@@ -919,6 +923,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           });
       }
     } catch (err) {
+      setRefreshErrorRetryCount((count) => count + 1);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
@@ -947,13 +952,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
   useEffect(() => {
     if (!active || !error) return;
+    if (refreshErrorRetryCount === 0 || refreshErrorRetryCount > REFRESH_ERROR_RETRY_DELAYS_MS.length) return;
+    const retryDelayMs = REFRESH_ERROR_RETRY_DELAYS_MS[refreshErrorRetryCount - 1] ?? REFRESH_ERROR_RETRY_DELAYS_MS[0];
     const retryTimer = window.setTimeout(() => {
       void refreshCore();
-    }, 1_500);
+    }, retryDelayMs);
     return () => {
       window.clearTimeout(retryTimer);
     };
-  }, [active, error, refreshCore]);
+  }, [active, error, refreshCore, refreshErrorRetryCount]);
 
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.

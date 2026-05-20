@@ -550,7 +550,7 @@ function classifyChangedFileRisk(filePath: string): string[] {
   if (/\b(preload|ipc|shared\/types|types)\b/i.test(filePath)) risks.push("contract");
   if (/\b(kvDb|migration|sqlite|state|sync)\b/i.test(filePath)) risks.push("persistence");
   if (/\b(prs?|review|github|publish|merge|branch)\b/i.test(filePath)) risks.push("workflow");
-  if (/\b(renderer|components|tsx$|css$)\b/i.test(filePath)) risks.push("ui");
+  if (/\b(renderer|components)\b/i.test(filePath) || /\.(?:tsx|css)$/i.test(filePath)) risks.push("ui");
   if (/\b(auth|credential|secret|token|security|permission|sandbox)\b/i.test(filePath)) risks.push("security");
   if (/\b(test|spec)\b/i.test(filePath)) risks.push("test");
   return risks.length > 0 ? risks : ["direct-diff"];

@@ -431,19 +431,23 @@ describe("GitHubTab", () => {
   it("requires confirmation before unmapping a GitHub PR from its lane", async () => {
     const user = userEvent.setup();
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    renderTab();
+    try {
+      renderTab();
 
-    await waitFor(() => {
-      expect(screen.getByText("Open PR")).toBeTruthy();
-    });
-    await user.click(screen.getByRole("button", { name: /#101 Open PR/i }));
-    await waitFor(() => {
-      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
-    });
-    await user.click(screen.getByRole("button", { name: /unmap from lane/i }));
+      await waitFor(() => {
+        expect(screen.getByText("Open PR")).toBeTruthy();
+      });
+      await user.click(screen.getByRole("button", { name: /#101 Open PR/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+      });
+      await user.click(screen.getByRole("button", { name: /unmap from lane/i }));
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Unmap PR #101"));
-    expect(window.ade.prs.delete).not.toHaveBeenCalled();
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Unmap PR #101"));
+      expect(window.ade.prs.delete).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
   });
 
   it("renders a cached ADE detail shell while a linked PR hydrates", async () => {

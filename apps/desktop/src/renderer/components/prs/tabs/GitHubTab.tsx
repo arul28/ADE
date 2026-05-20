@@ -25,6 +25,7 @@ import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
 
 const VIRTUALIZE_AT = 50;
+const LINKED_HYDRATION_LIMIT = 8;
 const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
 const GITHUB_TAB_HOT_REFRESH_DELAY_MS = 30_000;
@@ -760,6 +761,7 @@ export function GitHubTab({
   const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
   const [createLaneError, setCreateLaneError] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
+  const [renderedHydrationItems, setRenderedHydrationItems] = React.useState<GitHubPrListItem[]>([]);
   const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
@@ -990,6 +992,7 @@ export function GitHubTab({
       ),
     [allItems, filter, scopeFilter, matchesSearch],
   );
+  const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
 
   // Counts for filter tabs (scoped but not search-filtered)
   const filterCounts = React.useMemo(() => {
@@ -1078,8 +1081,8 @@ export function GitHubTab({
   }, [missingLinkedPrId, onRefreshAll]);
 
   React.useEffect(() => {
-    const prIds = filteredItems
-      .slice(0, 8)
+    const prIds = hydrationItems
+      .slice(0, LINKED_HYDRATION_LIMIT)
       .map((item) => item.linkedPrId)
       .filter((prId): prId is string => Boolean(prId));
     if (prIds.length === 0) return undefined;
@@ -1091,7 +1094,14 @@ export function GitHubTab({
       void onRefreshAll({ prIds: uniquePrIds }).catch(() => {});
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [filteredItems, onRefreshAll]);
+  }, [hydrationItems, onRefreshAll]);
+
+  const handleHydrationItemsChange = React.useCallback((items: GitHubPrListItem[]) => {
+    setRenderedHydrationItems((prev) => {
+      if (prev.length === items.length && prev.every((item, index) => item.id === items[index]?.id)) return prev;
+      return items;
+    });
+  }, []);
 
   const selectedLinkedPr = React.useMemo(
     (): PrWithConflicts | null => {
@@ -1547,6 +1557,7 @@ export function GitHubTab({
               prsByIdMap={prsByIdMap}
               onSelect={handleSelectItem}
               onOpenQueueView={onOpenQueueView}
+              onHydrationItemsChange={handleHydrationItemsChange}
             />
           ) : (
             filteredItems.map((item) => (
@@ -1895,6 +1906,7 @@ function GitHubTabVirtualList({
   prsByIdMap,
   onSelect,
   onOpenQueueView,
+  onHydrationItemsChange,
 }: {
   parentRef: React.RefObject<HTMLDivElement | null>;
   items: GitHubPrListItem[];
@@ -1902,6 +1914,7 @@ function GitHubTabVirtualList({
   prsByIdMap: Map<string, PrSummary>;
   onSelect: (item: GitHubPrListItem) => void;
   onOpenQueueView?: (groupId: string) => void;
+  onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
 }) {
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -1909,12 +1922,21 @@ function GitHubTabVirtualList({
     estimateSize: () => 108,
     overscan: 6,
   });
+  const virtualItems = virtualizer.getVirtualItems();
+  React.useEffect(() => {
+    onHydrationItemsChange(
+      virtualItems
+        .map((virtualRow) => items[virtualRow.index])
+        .filter((item): item is GitHubPrListItem => Boolean(item)),
+    );
+  }, [items, onHydrationItemsChange, virtualItems]);
+
   return (
     <div
       data-testid="pr-github-list-virtual"
       style={{ height: virtualizer.getTotalSize(), position: "relative" }}
     >
-      {virtualizer.getVirtualItems().map((virtualRow) => {
+      {virtualItems.map((virtualRow) => {
         const item = items[virtualRow.index]!;
         return (
           <div

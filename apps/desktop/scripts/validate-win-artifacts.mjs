@@ -442,6 +442,15 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "src"), "node-pty source tree");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-arm64"), "macOS node-pty arm64 prebuild in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-x64"), "macOS node-pty x64 prebuild in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "win32-arm64"), "Windows arm64 node-pty prebuild in Windows x64 package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"), "Claude Windows arm64 payload in Windows x64 package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-win32-arm64"), "Codex Windows arm64 payload in Windows x64 package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-darwin-arm64"), "Codex macOS arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-darwin-x64"), "Codex macOS x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-arm64"), "Codex Linux arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-x64"), "Codex Linux x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "duplicate OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");

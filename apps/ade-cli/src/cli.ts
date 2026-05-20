@@ -2704,19 +2704,26 @@ function buildLanePlan(args: string[]): CliPlan {
   };
 }
 
-function resolveStashSelectionForCli(listResult: unknown, stashRef: string | null): {
+function resolveStashSelectionForCli(listResult: unknown, stashRef: string | null, stashOid: string | null): {
   stashRef: string;
   stashOid: string;
 } {
   const stashes = firstArray(listResult, ["stashes"]);
   const match = stashRef
     ? stashes.find((stash) => asString(stash.ref) === stashRef)
-    : stashes[0];
+    : stashOid
+      ? stashes.find((stash) => asString(stash.oid) === stashOid)
+      : stashes[0];
   const selectedRef = asString(match?.ref);
-  const stashOid = asString(match?.oid);
-  if (selectedRef && stashOid) return { stashRef: selectedRef, stashOid };
-  if (!stashRef) {
+  const selectedOid = asString(match?.oid);
+  if (selectedRef && selectedOid) return { stashRef: selectedRef, stashOid: selectedOid };
+  if (!stashRef && !stashOid) {
     throw new CliUsageError("No saved stashes were found for this lane.");
+  }
+  if (stashOid) {
+    throw new CliUsageError(
+      `Stash OID ${stashOid} is not saved for this lane. Run ade git stash list --lane <lane>.`,
+    );
   }
   throw new CliUsageError(
     `Stash ${stashRef} is not saved for this lane. Run ade git stash list --lane <lane>.`,
@@ -3026,15 +3033,13 @@ function buildGitPlan(args: string[]): CliPlan {
             key: "result",
             method: "ade/actions/call",
             params: (values) => {
-              const selection = resolveStashSelectionForCli(values.stashes, stashRef);
+              const selection = resolveStashSelectionForCli(values.stashes, stashRef, stashOid);
               return {
                 name: toolName,
                 arguments: {
                   ...common,
                   stashRef: selection.stashRef,
-                  ...(toolName === "stash_apply" || !stashOid
-                    ? { stashOid: selection.stashOid }
-                    : {}),
+                  stashOid: selection.stashOid,
                 },
               };
             },

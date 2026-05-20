@@ -741,6 +741,46 @@ describe("reviewService", () => {
     expect(String(persistedFindings[0]?.adjudication_json)).toContain("publicationEligible");
   });
 
+  it("classifies tsx and css changed paths as UI risk", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No diff-risk issues.", []),
+        makeOutput("No cross-file issues.", []),
+        makeOutput("No checks issues.", []),
+        makeOutput("No security issues.", []),
+        makeOutput("No UI issues.", []),
+      ],
+      materializedTarget: {
+        fullPatchText: [
+          "diff --git a/src/views/ReviewPage.tsx b/src/views/ReviewPage.tsx",
+          "diff --git a/src/styles/review.css b/src/styles/review.css",
+        ].join("\n"),
+        changedFiles: [
+          makeChangedFile({ filePath: "src/views/ReviewPage.tsx" }),
+          makeChangedFile({ filePath: "src/styles/review.css" }),
+        ],
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const riskMap = JSON.parse(detail?.artifacts.find((artifact) => artifact.artifactType === "risk_map")?.contentText ?? "{}") as {
+      groups?: Array<{ risk: string; files: string[] }>;
+    };
+
+    expect(riskMap.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: "ui",
+        files: expect.arrayContaining(["src/views/ReviewPage.tsx", "src/styles/review.css"]),
+      }),
+    ]));
+  });
+
   it("completes with partial coverage when one specialist reviewer fails", async () => {
     const harness = createHarness({
       outputs: [

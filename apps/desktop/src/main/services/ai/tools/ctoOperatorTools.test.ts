@@ -215,6 +215,25 @@ describe("createCtoOperatorTools", () => {
     expect(result).toMatchObject({ success: true, operationId: "stash-pop" });
   });
 
+  it("throws a lane-specific error when a requested branch stash is missing", async () => {
+    const gitService = {
+      listStashes: vi.fn().mockResolvedValue([
+        { oid: "oid-3", ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
+      ]),
+      stashPop: vi.fn(),
+    };
+    const deps = buildDeps({ gitService: gitService as any });
+    const tools = createCtoOperatorTools(deps);
+
+    await expect((tools.gitStashPop as any).execute({ laneId: "lane-1", stashRef: "stash@{0}" }))
+      .resolves.toMatchObject({
+        success: false,
+        error: "Stash stash@{0} is not saved for this lane branch.",
+      });
+
+    expect(gitService.stashPop).not.toHaveBeenCalled();
+  });
+
   // ── Chat tools ──────────────────────────────────────────────────
 
   describe("chat tools", () => {

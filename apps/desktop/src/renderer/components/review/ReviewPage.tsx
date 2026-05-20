@@ -393,7 +393,7 @@ function formatPublicationOutcome(detail: Pick<ReviewRunDetail, "config" | "publ
   if (!detail || detail.config.publishBehavior !== "auto_publish") return "No findings published.";
   const publishedCount = detail.publications?.filter((publication) => publication.status === "published").length ?? 0;
   if (publishedCount === 0) return "No findings published.";
-  return `${publishedCount} publication ${publishedCount === 1 ? "completed" : "completed"}.`;
+  return `${publishedCount} publication${publishedCount === 1 ? "" : "s"} completed.`;
 }
 
 function failedReviewers(detail: NormalizedDetail | null | undefined): NonNullable<NormalizedDetail["reviewerRuns"]> {

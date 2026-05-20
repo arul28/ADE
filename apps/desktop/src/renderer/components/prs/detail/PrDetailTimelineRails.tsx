@@ -604,7 +604,10 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
                 onChange={(event) => setCommentDraft(event.target.value)}
                 placeholder="Leave a comment"
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void onAddComment();
+                  if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+                  event.preventDefault();
+                  if (actionBusy || !commentDraft.trim()) return;
+                  void onAddComment();
                 }}
                 style={{
                   width: "100%",
@@ -617,7 +620,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
                   background: COLORS.recessedBg,
                   border: `1px solid ${COLORS.border}`,
                   borderRadius: 8,
-                  outline: "none",
                 }}
               />
               <div className="mt-2 flex justify-end">

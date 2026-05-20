@@ -275,6 +275,40 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBeNull();
   });
 
+  it("removes metadata-only CRR rows for local-only PR AI summaries", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-crr-metadata-only-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(first);
+    insertSessionAndPr(first);
+    first.get("select crsql_as_crr(?)", ["pull_request_ai_summaries"]);
+    first.run(
+      `insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at)
+       values (?, ?, ?, ?)`,
+      ["pr-1", "head-1", "{}", "2026-03-17T00:00:00.000Z"],
+    );
+    expect(first.get<{ count: number }>("select count(1) as count from crsql_changes where [table] = ?", ["pull_request_ai_summaries"])?.count).toBeGreaterThan(0);
+    for (const trigger of first.all<{ name: string }>(
+      "select name from sqlite_master where type = 'trigger' and tbl_name = ? and name like ?",
+      ["pull_request_ai_summaries", "pull_request_ai_summaries__crsql_%trig"],
+    )) {
+      first.run(`drop trigger if exists "${trigger.name}"`);
+    }
+    first.run("drop table pull_request_ai_summaries__crsql_clock");
+    first.run("drop table pull_request_ai_summaries__crsql_pks");
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(
+      reopened.get<{ count: number }>(
+        "select count(1) as count from crsql_changes where [table] = ?",
+        ["pull_request_ai_summaries"],
+      )?.count,
+    ).toBe(0);
+  });
+
   it("backfills phone-critical tables whose rows predate CRR enablement", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-pre-crr-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
