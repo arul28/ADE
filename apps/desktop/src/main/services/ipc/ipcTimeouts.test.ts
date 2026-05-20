@@ -41,7 +41,7 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(120 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "macos_vm", action: "delete", args: {} },
-    }])).toBe(2 * 60_000);
+    }])).toBe(10 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "macos_vm", action: "start", args: { createIfMissing: true } },
     }])).toBe(120 * 60_000);
@@ -50,7 +50,7 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(120 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "macos_vm", action: "wipe", args: { confirm: true } },
-    }])).toBe(2 * 60_000);
+    }])).toBe(10 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "macos_vm", action: "installRuntime", args: {} },
     }])).toBe(120 * 60_000);

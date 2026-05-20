@@ -236,7 +236,14 @@ type CachedVmLaunchContext =
     };
 
 const vmLaunchContextCache = new Map<string, CachedVmLaunchContext>();
-const VM_LAUNCH_CONTEXT_TTL_MS = 5_000;
+// Long TTL is intentional: the cached SSH target (IP + username + vmName) is
+// stable for the lifetime of a running VM, and lifecycle events (start, stop,
+// restart, placement-changed, deleted) drive explicit invalidation via
+// `refreshVmLaneLaunchCache` / `invalidateVmLaneLaunchCache`. A short TTL was
+// breaking every agent operation that started more than a few seconds after
+// the cache was primed — agentChatService / ptyService call this sync helper
+// on every turn, and there was no background refresh path.
+const VM_LAUNCH_CONTEXT_TTL_MS = 30 * 60_000;
 
 function getCachedVmLaunchContextSync(laneId: string): CachedVmLaunchContext | null {
   const entry = vmLaunchContextCache.get(laneId);

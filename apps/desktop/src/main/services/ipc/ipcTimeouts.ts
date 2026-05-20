@@ -57,9 +57,16 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.macosVmInstallRuntime:
       return 120 * 60_000;
     case IPC.macosVmStop:
+      return 2 * 60_000;
     case IPC.macosVmDelete:
     case IPC.macosVmWipe:
-      return 2 * 60_000;
+      // wipe() and deleteVm() both call `runLume("delete", …)` with a
+      // 10-minute internal budget. A shorter IPC ceiling would fire while
+      // the lume process is still running, leaving the store record
+      // unchanged (VM appears to still exist) but the underlying process
+      // orphaned. Match the internal budget so the renderer sees the real
+      // completion outcome.
+      return 10 * 60_000;
     case IPC.macosVmCaptureScreenshot:
     case IPC.macosVmFocusWindow:
     case IPC.macosVmClick:
