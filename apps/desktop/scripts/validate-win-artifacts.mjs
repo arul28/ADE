@@ -193,6 +193,9 @@ function validatePreflight() {
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/sql.js/**/*")) {
     fail("package.json build.asarUnpack must unpack node_modules/sql.js/**/* for the plain node fallback");
   }
+  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
+    fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
+  }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
   }
@@ -439,6 +442,13 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "src"), "node-pty source tree");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-arm64"), "macOS node-pty arm64 prebuild in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-x64"), "macOS node-pty x64 prebuild in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "duplicate OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-x64"), "OpenCode macOS x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-arm64"), "OpenCode Linux arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-x64"), "OpenCode Linux x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-arm64"), "macOS arm64 cr-sqlite payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-x64"), "macOS x64 cr-sqlite payload in Windows package");
 
@@ -547,6 +557,12 @@ async function validatePackagedRuntime(appDir) {
   }
   if (payload?.codexExecutable !== "function") {
     fail(`Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
+  }
+  if (payload?.openCodeExecutable !== "function") {
+    fail(`Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
+  }
+  if (payload?.openCodeExecutableSource !== "bundled") {
+    fail(`Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`);
   }
 
   const defaultHelp = await runCommand(adeCliBinPath, ["--help"], {

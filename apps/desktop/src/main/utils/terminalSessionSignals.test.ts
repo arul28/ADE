@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -228,6 +229,22 @@ describe("terminalSessionSignals", () => {
       provider: "opencode",
       targetId: "ses_abc",
     });
+    expect(parseTrackedCliResumeCommand("opencode run --interactive --session ses_abc --replay --replay-limit 40 -- continue", "opencode")).toEqual({
+      provider: "opencode",
+      targetId: "ses_abc",
+    });
+  });
+
+  it("builds OpenCode run replay resume commands with question tool enabled", () => {
+    const command = buildOpenCodeReplayResumeCommand({
+      permissionMode: "edit",
+      targetId: "ses_abc",
+      model: "openai/gpt-5.4",
+      prompt: "continue from here",
+    });
+
+    expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
+    expect(command).toContain("\"question\":\"allow\"");
   });
 
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {

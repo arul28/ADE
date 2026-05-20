@@ -69,6 +69,10 @@ async function readPackageManifest(packageName) {
   return await readJson(manifestPath);
 }
 
+function isOpenCodePlatformPackage(packageName) {
+  return /^opencode-(?:darwin|linux|windows)-/.test(packageName);
+}
+
 async function collectRuntimePackages(target) {
   const rootManifest = await readJson(path.join(packageRoot, "package.json"));
   const platformCursorPackage = `@cursor/sdk-${target}`;
@@ -82,6 +86,7 @@ async function collectRuntimePackages(target) {
   while (queue.length > 0) {
     const packageName = queue.shift();
     if (!packageName || visited.has(packageName)) continue;
+    if (isOpenCodePlatformPackage(packageName)) continue;
     visited.add(packageName);
     const manifest = await readPackageManifest(packageName);
     if (!manifest) continue;
@@ -93,6 +98,9 @@ async function collectRuntimePackages(target) {
     };
     for (const dependencyName of Object.keys(deps)) {
       if (dependencyName.startsWith("@cursor/sdk-") && dependencyName !== platformCursorPackage) {
+        continue;
+      }
+      if (isOpenCodePlatformPackage(dependencyName)) {
         continue;
       }
       if (!visited.has(dependencyName)) queue.push(dependencyName);
@@ -131,11 +139,18 @@ async function writeManifest(bundleRoot, target, packages) {
 }
 
 async function chmodRuntimeExecutables(bundleRoot, target) {
-  if (!target.startsWith("darwin-")) return;
-  const helperPath = path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper");
-  if (!(await exists(helperPath))) return;
-  const stat = await fs.stat(helperPath);
-  await fs.chmod(helperPath, stat.mode | 0o111);
+  const executablePaths = [
+    path.join(bundleRoot, "node_modules", "opencode-ai", "bin", "opencode.exe"),
+    path.join(bundleRoot, "node_modules", `opencode-${target}`, "bin", "opencode"),
+  ];
+  if (target.startsWith("darwin-")) {
+    executablePaths.push(path.join(bundleRoot, "node_modules", "node-pty", "prebuilds", target, "spawn-helper"));
+  }
+  for (const executablePath of executablePaths) {
+    if (!(await exists(executablePath))) continue;
+    const stat = await fs.stat(executablePath);
+    await fs.chmod(executablePath, stat.mode | 0o111);
+  }
 }
 
 async function makeTarGz(sourceDir, outputPath) {

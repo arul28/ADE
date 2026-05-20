@@ -211,6 +211,10 @@ jobs:
         run: |
           apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
           tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -q '^\./node_modules/'
+          if tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-'; then
+            echo "Unexpected duplicate OpenCode platform package in native runtime archive"
+            exit 1
+          fi
 
       - name: Upload ADE runtime binary
         uses: actions/upload-artifact@v4
@@ -220,6 +224,7 @@ jobs:
             apps/ade-cli/dist-static/ade-${{ matrix.target }}
             apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
           if-no-files-found: error
+          compression-level: 0
 
   validate-docs:
     needs: install
