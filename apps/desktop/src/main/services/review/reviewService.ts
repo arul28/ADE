@@ -215,6 +215,7 @@ const DEFAULT_BUDGETS: ReviewRunConfig["budgets"] = {
   maxPublishedFindings: 6,
 };
 const UNLIMITED_BUDGET_VALUE = Number.MAX_SAFE_INTEGER;
+const MANIFEST_PROMPT_FILE_LIMIT = 100;
 
 const REVIEW_PASS_ORDER: ReviewPassKey[] = [
   "diff-risk",
@@ -538,9 +539,14 @@ const REVIEW_PASSES: PassDefinition[] = [
   },
 ];
 
-function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>): string {
-  const changedFilesSummary = changedFiles.length > 0
-    ? changedFiles.map((entry) => `- ${entry.filePath}`).join("\n")
+function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>, limit = changedFiles.length): string {
+  const visibleFiles = changedFiles.slice(0, limit);
+  const omittedCount = Math.max(0, changedFiles.length - visibleFiles.length);
+  const changedFilesSummary = visibleFiles.length > 0
+    ? [
+        ...visibleFiles.map((entry) => `- ${entry.filePath}`),
+        ...(omittedCount > 0 ? [`- ...${omittedCount} more changed files omitted from this prompt; inspect the manifest artifact for the full list.`] : []),
+      ].join("\n")
     : "- No changed files were detected.";
   return changedFilesSummary;
 }
@@ -666,7 +672,7 @@ function buildPassPrompt(args: {
   context: ReviewContextPacket;
   contextArtifactIds: ReviewContextArtifactIds;
 }): string {
-  const changedFilesSummary = buildChangedFilesSummary(args.changedFiles);
+  const changedFilesSummary = buildChangedFilesSummary(args.changedFiles, MANIFEST_PROMPT_FILE_LIMIT);
   const includeValidation = args.pass.key === "checks-and-tests";
   const ruleGuidance = collectRulePromptGuidance(args.context.matchedRuleOverlays, args.pass.key);
 
@@ -2506,6 +2512,7 @@ export function createReviewService({
         compareTarget: materialized.compareTarget,
       };
       const changedFiles = materialized.changedFiles.slice(0, effectiveRun.config.budgets.maxFiles);
+      const promptChangedFiles = changedFiles.slice(0, MANIFEST_PROMPT_FILE_LIMIT);
       const manifestPayload = buildChangedFileManifestPayload({
         targetLabel: materialized.targetLabel,
         compareTarget: materialized.compareTarget,
@@ -2513,6 +2520,18 @@ export function createReviewService({
         budgets: effectiveRun.config.budgets,
       });
       const riskMapPayload = buildRiskMapPayload(changedFiles);
+      const promptManifestPayload = {
+        ...buildChangedFileManifestPayload({
+          targetLabel: materialized.targetLabel,
+          compareTarget: materialized.compareTarget,
+          changedFiles: promptChangedFiles,
+          budgets: effectiveRun.config.budgets,
+        }),
+        totalFileCount: changedFiles.length,
+        omittedFileCount: Math.max(0, changedFiles.length - promptChangedFiles.length),
+        promptFileLimit: MANIFEST_PROMPT_FILE_LIMIT,
+      };
+      const promptRiskMapPayload = buildRiskMapPayload(promptChangedFiles);
       const manifestArtifact = insertArtifact(runId, {
         artifactType: "changed_file_manifest",
         title: "Changed-file manifest",
@@ -2534,7 +2553,7 @@ export function createReviewService({
           riskGroupCount: Array.isArray(riskMapPayload.groups) ? riskMapPayload.groups.length : 0,
         },
       });
-      const manifestPrompt = buildManifestPrompt(manifestPayload, riskMapPayload);
+      const manifestPrompt = buildManifestPrompt(promptManifestPayload, promptRiskMapPayload);
       const reviewContext = await contextBuilder.buildContext({
         run: effectiveRun,
         materialized: {

@@ -1024,6 +1024,53 @@ describe("reviewService", () => {
     });
   });
 
+  it("caps the prompt manifest even when review budgets are unlimited", async () => {
+    const changedFiles = Array.from({ length: 120 }, (_, index) => makeChangedFile({
+      filePath: `src/file-${index}.ts`,
+      excerpt: `@@ -1 +1 @@\n+file ${index} ${"x".repeat(200)}`,
+      lineNumbers: [index + 1],
+      diffPositionsByLine: { [index + 1]: 1 },
+    }));
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+        makeOutput("No security findings.", []),
+        makeOutput("No UI findings.", []),
+      ],
+      materializedTarget: {
+        changedFiles,
+      },
+      config: {
+        budgets: {
+          unlimited: true,
+          maxFiles: 1,
+          maxDiffChars: 4_000,
+          maxPromptChars: 4_000,
+          maxFindings: 1,
+          maxFindingsPerPass: 1,
+          maxPublishedFindings: 1,
+        },
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const prompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt")?.contentText ?? "";
+    expect(prompt).toContain("src/file-99.ts");
+    expect(prompt).not.toContain("src/file-100.ts");
+    expect(prompt).toContain('"omittedFileCount": 20');
+
+    const manifest = detail?.artifacts.find((artifact) => artifact.artifactType === "changed_file_manifest")?.contentText ?? "";
+    expect(manifest).toContain("src/file-119.ts");
+  });
+
   it("persists provenance, rules, and validation artifacts and keeps renderer findings on the normal evidence path", async () => {
     const harness = createHarness({
       outputs: [
