@@ -222,6 +222,24 @@ describe("openKvDb SQL binding", () => {
 });
 
 describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
+  it("keeps composite-key PR AI summary cache local-only", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-local-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_clock' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_pks' limit 1",
+      ),
+    ).toBeNull();
+  });
+
   it("backfills phone-critical tables whose rows predate CRR enablement", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-pre-crr-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

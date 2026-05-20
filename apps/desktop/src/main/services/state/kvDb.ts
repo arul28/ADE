@@ -423,6 +423,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
+  "pull_request_ai_summaries",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
