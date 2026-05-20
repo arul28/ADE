@@ -47,6 +47,10 @@ type LaneInfo = {
   linearIssue?: LaneLinearIssue | null;
 };
 
+type BranchStashSummary = GitStashSummary & {
+  oid: string;
+};
+
 type CommitMessagePromptContext = {
   hasStagedChanges: boolean;
   stagedFiles: string;
@@ -132,7 +136,7 @@ function stashOrdinal(ref: string): number | null {
   return Number.isSafeInteger(ordinal) ? ordinal : null;
 }
 
-function sortStashesForDrop(stashes: GitStashSummary[]): GitStashSummary[] {
+function sortStashesForDrop<T extends GitStashSummary>(stashes: T[]): T[] {
   return stashes.slice().sort((left, right) => {
     const leftOrdinal = stashOrdinal(left.ref);
     const rightOrdinal = stashOrdinal(right.ref);
@@ -141,6 +145,14 @@ function sortStashesForDrop(stashes: GitStashSummary[]): GitStashSummary[] {
     if (rightOrdinal != null) return 1;
     return right.ref.localeCompare(left.ref);
   });
+}
+
+function toPublicStash(stash: BranchStashSummary): GitStashSummary {
+  return {
+    ref: stash.ref,
+    subject: stash.subject,
+    createdAt: stash.createdAt,
+  };
 }
 
 async function isWorktreeDirty(worktreePath: string): Promise<boolean> {
@@ -265,8 +277,8 @@ export function createGitOperationsService({
     return cleaned.slice(0, 72).trimEnd();
   }
 
-  async function listBranchStashes(lane: LaneInfo): Promise<GitStashSummary[]> {
-    const out = await runGitOrThrow(["stash", "list", "--format=%gd%x1f%cI%x1f%gs"], {
+  async function listBranchStashes(lane: LaneInfo): Promise<BranchStashSummary[]> {
+    const out = await runGitOrThrow(["stash", "list", "--format=%H%x1f%gd%x1f%cI%x1f%gs"], {
       cwd: lane.worktreePath,
       timeoutMs: 15_000
     });
@@ -274,26 +286,42 @@ export function createGitOperationsService({
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line): GitStashSummary | null => {
-        const [ref, createdAt, subject] = parseDelimited(line);
-        if (!ref) return null;
+      .map((line): BranchStashSummary | null => {
+        const [oid, ref, createdAt, subject] = parseDelimited(line);
+        if (!oid || !ref) return null;
         return {
+          oid,
           ref,
           createdAt: createdAt && createdAt.length ? createdAt : null,
           subject: subject ?? ""
         };
       })
-      .filter((entry): entry is GitStashSummary => entry != null)
+      .filter((entry): entry is BranchStashSummary => entry != null)
       .filter((entry) => stashMatchesBranch(entry.subject, lane.branchRef));
   }
 
-  async function requireBranchStash(lane: LaneInfo, stashRef: string): Promise<GitStashSummary> {
+  async function requireBranchStash(lane: LaneInfo, stashRef: string): Promise<BranchStashSummary> {
     const stash = (await listBranchStashes(lane)).find((entry) => entry.ref === stashRef);
     if (!stash) {
       const branch = normalizeBranchForStashComparison(lane.branchRef);
       throw new Error(`Stash ${stashRef} is not saved for branch ${branch || lane.branchRef}.`);
     }
     return stash;
+  }
+
+  async function resolveCurrentBranchStashRef(lane: LaneInfo, stash: BranchStashSummary): Promise<string> {
+    const current = (await listBranchStashes(lane)).find((entry) => entry.oid === stash.oid);
+    if (!current) {
+      throw new Error(`Stash ${stash.ref} changed before ADE could clear it. Refresh stashes and try again.`);
+    }
+    const resolved = await runGitOrThrow(["rev-parse", "--verify", current.ref], {
+      cwd: lane.worktreePath,
+      timeoutMs: 8_000,
+    });
+    if (resolved.trim() !== stash.oid) {
+      throw new Error(`Stash ${current.ref} changed before ADE could clear it. Refresh stashes and try again.`);
+    }
+    return current.ref;
   }
 
   async function assertCommitMessageGenerationEnabled(): Promise<string> {
@@ -1013,7 +1041,7 @@ export function createGitOperationsService({
       const laneId = args.laneId.trim();
       return readLaneCached(`stashes:${laneId}:default`, 1_500, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
-        return listBranchStashes(lane);
+        return (await listBranchStashes(lane)).map(toPublicStash);
       });
     },
 
@@ -1088,7 +1116,8 @@ export function createGitOperationsService({
         fn: async (lane) => {
           const stashes = sortStashesForDrop(await listBranchStashes(lane));
           for (const stash of stashes) {
-            await runGitOrThrow(["stash", "drop", stash.ref], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+            const currentRef = await resolveCurrentBranchStashRef(lane, stash);
+            await runGitOrThrow(["stash", "drop", currentRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
           }
         }
       });

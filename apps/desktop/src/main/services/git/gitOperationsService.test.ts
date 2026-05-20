@@ -14,6 +14,8 @@ vi.mock("./git", () => ({
 
 import { createGitOperationsService } from "./gitOperationsService";
 
+const STASH_LIST_FORMAT = "--format=%H%x1f%gd%x1f%cI%x1f%gs";
+
 function createTestGitOperationsService(
   branchRef = "feature/stash-test",
   overrides: { worktreePath?: string } = {},
@@ -72,10 +74,14 @@ describe("gitOperationsService.stashClear", () => {
     mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
       if (args[0] === "stash" && args[1] === "list") {
         return [
-          "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: keep for this lane",
-          "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fOn other-branch: leave alone",
-          "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+          "oid-0\u001fstash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: keep for this lane",
+          "oid-other\u001fstash@{1}\u001f2026-05-12T02:08:32-04:00\u001fOn other-branch: leave alone",
+          "oid-2\u001fstash@{2}\u001f2026-05-12T02:07:32-04:00\u001fWIP on feature/stash-test: abc123 work",
         ].join("\n");
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") {
+        if (args[2] === "stash@{2}") return "oid-2\n";
+        if (args[2] === "stash@{0}") return "oid-0\n";
       }
       return undefined;
     });
@@ -85,16 +91,36 @@ describe("gitOperationsService.stashClear", () => {
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
-      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      ["stash", "list", STASH_LIST_FORMAT],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       2,
+      ["stash", "list", STASH_LIST_FORMAT],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["rev-parse", "--verify", "stash@{2}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 8_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      4,
       ["stash", "drop", "stash@{2}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
-      3,
+      5,
+      ["stash", "list", STASH_LIST_FORMAT],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      6,
+      ["rev-parse", "--verify", "stash@{0}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 8_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      7,
       ["stash", "drop", "stash@{0}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
@@ -116,6 +142,35 @@ describe("gitOperationsService.stashClear", () => {
       }),
     );
     expect(mockInvalidateListCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-resolves stash refs by oid before each clear drop when ordinals shift", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    const initial = "oid-lane\u001fstash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn feature/stash-test: shifted";
+    const shifted = "oid-lane\u001fstash@{1}\u001f2026-05-12T02:07:32-04:00\u001fOn feature/stash-test: shifted";
+    let listCalls = 0;
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
+      if (args[0] === "stash" && args[1] === "list") {
+        listCalls += 1;
+        return listCalls === 1 ? initial : shifted;
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") return "oid-lane\n";
+      return undefined;
+    });
+    const { service } = createTestGitOperationsService();
+
+    await service.stashClear({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["rev-parse", "--verify", "stash@{1}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 8_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      4,
+      ["stash", "drop", "stash@{1}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
   });
 });
 
@@ -154,9 +209,9 @@ describe("gitOperationsService.getSyncStatus", () => {
 
 describe("gitOperationsService stash item commands", () => {
   const branchStashList = [
-    "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: first",
-    "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
-    "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
+    "oid-0\u001fstash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: first",
+    "oid-1\u001fstash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+    "oid-2\u001fstash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
   ].join("\n");
 
   beforeEach(() => {
@@ -165,9 +220,9 @@ describe("gitOperationsService stash item commands", () => {
 
   it("lists stashes with ordinal refs and ISO timestamps", async () => {
     mockGit.runGitOrThrow.mockResolvedValue([
-      "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: test",
-      "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
-      "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
+      "oid-0\u001fstash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: test",
+      "oid-1\u001fstash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+      "oid-2\u001fstash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
     ].join("\n"));
     const { service } = createTestGitOperationsService();
 
@@ -184,7 +239,7 @@ describe("gitOperationsService stash item commands", () => {
       },
     ]);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      ["stash", "list", STASH_LIST_FORMAT],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
     );
   });
@@ -200,7 +255,7 @@ describe("gitOperationsService stash item commands", () => {
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
-      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      ["stash", "list", STASH_LIST_FORMAT],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
@@ -266,7 +321,7 @@ describe("gitOperationsService stash item commands", () => {
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
-      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      ["stash", "list", STASH_LIST_FORMAT],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
@@ -311,7 +366,7 @@ describe("gitOperationsService stash item commands", () => {
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
-      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      ["stash", "list", STASH_LIST_FORMAT],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(

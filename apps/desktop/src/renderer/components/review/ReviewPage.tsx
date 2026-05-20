@@ -1766,6 +1766,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           <SectionCard title={`Findings (${selectedRun.findingCount})`} icon={MagnifyingGlass}>
             {(() => {
               const rawFindings = selectedDetail?.findings ?? [];
+              const detailUnavailable = selectedDetail == null;
               const suppressedCount = rawFindings.filter((f) => f.suppressionMatch != null).length;
               const severityMatches = severityFilter === "all"
                 ? rawFindings
@@ -1835,7 +1836,15 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     </div>
                   ) : null}
                   <div className="space-y-2">
-                    {visible.length > 0 ? visible.map((finding, index) => (
+                    {detailUnavailable && loadingDetail ? (
+                      <div className="rounded-xl border border-sky-400/20 bg-sky-400/[0.06] p-3 text-xs text-sky-100">
+                        Loading findings and evidence for this run...
+                      </div>
+                    ) : detailUnavailable && selectedRun.findingCount > 0 ? (
+                      <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3 text-xs text-amber-100">
+                        Findings are still loading or unavailable. Refresh this run before treating the review as empty.
+                      </div>
+                    ) : visible.length > 0 ? visible.map((finding, index) => (
                       <ReviewFindingCard
                         key={finding.id ?? `${finding.title}-${index}`}
                         finding={finding}

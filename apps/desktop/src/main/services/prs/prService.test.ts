@@ -1645,6 +1645,50 @@ describe("prService.createLaneFromPrBranch", () => {
     );
   });
 
+  it("blocks fork PR branches before trying to import from origin", async () => {
+    const githubService = makeBranchPrGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/404`) {
+          return {
+            data: makeUnmappedBranchPull({
+              head: {
+                ref: "feature/unmapped",
+                sha: "head-sha-unmapped",
+                user: { login: "fork-owner" },
+                repo: {
+                  owner: { login: "fork-owner" },
+                  name: "fork-repo",
+                },
+              },
+            }),
+            response: { status: 200, headers: new Headers() },
+          };
+        }
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }),
+    });
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+    });
+
+    expect(preflightDisposition(result.preflight)).toBe("blocked");
+    expect(preflightConflicts(result.preflight)).toEqual([
+      expect.objectContaining({ code: "fork_unavailable" }),
+    ]);
+    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/fork-owner|fork-repo|cannot be imported/i);
+    expect(result.lane ?? null).toBeNull();
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "ls-remote")).toBe(false);
+  });
+
   it("creates a lane from the PR branch, maps the PR to that lane, and returns lane/pr summaries", async () => {
     const importedLane = makeFakeLane({
       id: "lane-imported",

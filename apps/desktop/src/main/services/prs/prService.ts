@@ -2183,6 +2183,12 @@ export function createPrService({
     }
 
     const sameRepoHead = rawPullHasSameRepoHead(pr, repo);
+    if (!sameRepoHead) {
+      return finish(createLaneFromPrBranchBlock(
+        "fork_unavailable",
+        `Fork PR branch '${headRepoOwner ?? "unknown"}/${headRepoName ?? "unknown"}:${headBranch}' cannot be imported from the configured origin remote. Fetch the fork branch locally or add fork-remote import support before creating a lane.`,
+      ));
+    }
     const remoteBlock = await resolveConfiguredRemoteBranch({ headBranch, headSha, sameRepoHead });
     if (remoteBlock) return finish(remoteBlock);
     const localBranchBlock = await resolveLocalBranchForPrHead({ headBranch, headSha, githubPrNumber });
@@ -2219,6 +2225,11 @@ export function createPrService({
       Boolean(preflight.headRepoOwner && preflight.headRepoName)
       && preflight.headRepoOwner?.toLowerCase() === preflight.repoOwner.toLowerCase()
       && preflight.headRepoName?.toLowerCase() === preflight.repoName.toLowerCase();
+    if (!sameRepoHead) {
+      throw new Error(
+        `Fork PR branch '${preflight.headRepoOwner ?? "unknown"}/${preflight.headRepoName ?? "unknown"}:${preflight.headBranch}' cannot be imported from the configured origin remote. Fetch the fork branch locally or add fork-remote import support before creating a lane.`,
+      );
+    }
     const remoteBlock = await resolveConfiguredRemoteBranch({
       headBranch: preflight.headBranch,
       headSha: preflight.headSha,

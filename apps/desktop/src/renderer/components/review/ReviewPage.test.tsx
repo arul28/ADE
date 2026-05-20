@@ -411,6 +411,22 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toContain("runId=run-3"));
   });
 
+  it("does not show no findings while finding detail is still loading", async () => {
+    (window.ade.review as any).getRunDetail.mockImplementation(() => new Promise(() => undefined));
+
+    render(
+      <MemoryRouter initialEntries={["/review?runId=run-2"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect((window.ade.review as any).getRunDetail).toHaveBeenCalledWith("run-2"));
+    expect(screen.getByText(/Loading findings and evidence for this run/i)).toBeTruthy();
+    expect(screen.queryByText("No findings")).toBeNull();
+  });
+
   it("surfaces ADE-native finding classes and compact review context artifacts", async () => {
     render(
       <MemoryRouter initialEntries={["/review?runId=run-2"]}>
