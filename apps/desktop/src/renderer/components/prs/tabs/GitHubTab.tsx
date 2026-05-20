@@ -116,6 +116,10 @@ function createLaneFromPrBranchArgs(item: GitHubPrListItem): CreateLaneFromPrBra
   };
 }
 
+function createLaneFromPrBranchRequestKey(item: GitHubPrListItem): string {
+  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
+}
+
 function preflightText(value: unknown): string | null {
   if (value == null) return null;
   if (typeof value === "string") {
@@ -749,6 +753,8 @@ export function GitHubTab({
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
   );
+  const createLanePreflightRequestIdRef = React.useRef(0);
+  const createLanePreflightRequestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
   const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
   const snapshotRef = React.useRef<GitHubPrSnapshot | null>(null);
@@ -1175,6 +1181,14 @@ export function GitHubTab({
 
   const handleOpenCreateLaneFromPrBranch = React.useCallback((item: GitHubPrListItem | null = selectedItem) => {
     if (!item) return;
+    const requestId = createLanePreflightRequestIdRef.current + 1;
+    const itemKey = createLaneFromPrBranchRequestKey(item);
+    createLanePreflightRequestIdRef.current = requestId;
+    createLanePreflightRequestRef.current = { id: requestId, itemKey };
+    const isCurrentPreflightRequest = () => {
+      const current = createLanePreflightRequestRef.current;
+      return current?.id === requestId && current.itemKey === itemKey;
+    };
     setCreateLaneItem(item);
     setCreateLanePreflight(null);
     setCreateLaneError(null);
@@ -1182,18 +1196,22 @@ export function GitHubTab({
     void createLaneFromPrBranchApi()
       .preflightCreateLaneFromPrBranch(createLaneFromPrBranchArgs(item))
       .then((result) => {
+        if (!isCurrentPreflightRequest()) return;
         setCreateLanePreflight(result);
       })
       .catch((err) => {
+        if (!isCurrentPreflightRequest()) return;
         setCreateLaneError(formatActionError(err));
       })
       .finally(() => {
+        if (!isCurrentPreflightRequest()) return;
         setCreateLaneLoading(false);
       });
   }, [selectedItem]);
 
   const handleCancelCreateLaneFromPrBranch = React.useCallback(() => {
     if (createLaneBusy) return;
+    createLanePreflightRequestRef.current = null;
     setCreateLaneItem(null);
     setCreateLanePreflight(null);
     setCreateLaneError(null);

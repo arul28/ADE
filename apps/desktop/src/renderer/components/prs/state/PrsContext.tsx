@@ -1131,6 +1131,11 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // Its cleanup marks that closure cancelled, so the new selection should be
     // allowed to start its own cache/live hydration immediately.
     detailFetchInProgress.current = false;
+    const clearSecondaryDetail = () => {
+      setDetailReviewThreads([]);
+      setDetailDeployments([]);
+      setDetailAiSummary(null);
+    };
     const applySnapshotPrefill = (snapshot: PrSnapshotHydration) => {
       snapshotForRequest = snapshot;
       mergeDetailSnapshots([snapshot]);
@@ -1143,6 +1148,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailReviews(snapshot.reviews);
       setDetailComments(snapshot.comments);
       setDetailBusy(false);
+      clearSecondaryDetail();
     };
     const warmedSnapshotForRequest = detailSnapshotsByPrIdRef.current[prId] ?? null;
     if (warmedSnapshotForRequest && detailSnapshotStatePrIdRef.current !== prId) {
@@ -1176,6 +1182,44 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     const isPrRateLimitError = (error: unknown): boolean => {
       const msg = String((error as { message?: unknown } | null)?.message ?? error);
       return msg.includes("rate limit") || msg.includes("API rate");
+    };
+    const yieldToPaint = () =>
+      new Promise<void>((resolve) => {
+        const ric = (window as unknown as {
+          requestIdleCallback?: (cb: () => void) => void;
+        }).requestIdleCallback;
+        if (typeof ric === "function") ric(() => resolve());
+        else setTimeout(resolve, 0);
+      });
+    const startSecondaryDetailFetch = (options: { reset?: boolean } = {}) => {
+      if (options.reset) {
+        clearSecondaryDetail();
+      }
+      const api = window.ade?.prs;
+      void (async () => {
+        const steps: Array<[string, () => Promise<void>]> = [
+          ["getDeployments", async () => {
+            if (typeof api?.getDeployments !== "function") return;
+            const deployments = await api.getDeployments(prId);
+            if (!cancelled && selectedPrIdRef.current === prId) setDetailDeployments(deployments);
+          }],
+          ["getAiSummary", async () => {
+            if (typeof api?.getAiSummary !== "function") return;
+            const summary = await api.getAiSummary(prId);
+            if (!cancelled && selectedPrIdRef.current === prId) setDetailAiSummary(summary);
+          }],
+        ];
+        for (const [name, step] of steps) {
+          if (cancelled) return;
+          await yieldToPaint();
+          if (cancelled) return;
+          try {
+            await step();
+          } catch (err) {
+            console.warn(`[PrsContext] ${name} failed:`, err);
+          }
+        }
+      })();
     };
     const startProgressivePrimaryFetch = (options: { background?: boolean } = {}) => {
       if (detailFetchInProgress.current) return;
@@ -1268,6 +1312,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     if (hasFreshSnapshotPrefill) {
       setDetailBusy(false);
       startProgressivePrimaryFetch({ background: true });
+      startSecondaryDetailFetch();
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
@@ -1285,12 +1330,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         if (snapshot) {
           applySnapshotPrefill(snapshot);
           startProgressivePrimaryFetch({ background: true });
+          startSecondaryDetailFetch();
         } else {
           startProgressivePrimaryFetch();
+          startSecondaryDetailFetch({ reset: true });
         }
       }).catch(() => {
         if (!cancelled) {
           startProgressivePrimaryFetch();
+          startSecondaryDetailFetch({ reset: true });
         }
       });
       const intervalId = window.setInterval(() => {
@@ -1381,44 +1429,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailComments(value);
     });
 
-    // Progressive secondary fetch (review threads, deployments, AI summary) — yields
+    // Progressive secondary fetch (deployments, AI summary) — yields
     // to the main paint so the primary header + checks render first.
-    setDetailReviewThreads([]);
-    setDetailDeployments([]);
-    setDetailAiSummary(null);
-    const yieldToPaint = () =>
-      new Promise<void>((resolve) => {
-        const ric = (window as unknown as {
-          requestIdleCallback?: (cb: () => void) => void;
-        }).requestIdleCallback;
-        if (typeof ric === "function") ric(() => resolve());
-        else setTimeout(resolve, 0);
-      });
-    (async () => {
-      const api = window.ade?.prs;
-      const steps: Array<[string, () => Promise<void>]> = [
-        ["getDeployments", async () => {
-          if (typeof api?.getDeployments !== "function") return;
-          const deployments = await api.getDeployments(prId);
-          if (!cancelled && selectedPrIdRef.current === prId) setDetailDeployments(deployments);
-        }],
-        ["getAiSummary", async () => {
-          if (typeof api?.getAiSummary !== "function") return;
-          const summary = await api.getAiSummary(prId);
-          if (!cancelled && selectedPrIdRef.current === prId) setDetailAiSummary(summary);
-        }],
-      ];
-      for (const [name, step] of steps) {
-        if (cancelled) return;
-        await yieldToPaint();
-        if (cancelled) return;
-        try {
-          await step();
-        } catch (err) {
-          console.warn(`[PrsContext] ${name} failed:`, err);
-        }
-      }
-    })();
+    startSecondaryDetailFetch({ reset: true });
 
     // After the initial fetch, poll every 60 seconds for fresh detail data.
     // GitHub rate limit is 5000/hour (~83/min) and each detail refresh uses ~10 API calls,

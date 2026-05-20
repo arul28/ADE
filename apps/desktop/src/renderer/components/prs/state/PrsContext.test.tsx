@@ -4,7 +4,7 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, PrAiSummary, PrConvergenceState, PrConvergenceStatePatch, PrDeployment, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -81,6 +81,8 @@ function DetailHarness() {
     detailChecks,
     detailReviews,
     detailComments,
+    detailDeployments,
+    detailAiSummary,
     detailLiveDataPrId,
     detailStatus,
     loading,
@@ -103,6 +105,8 @@ function DetailHarness() {
       <div data-testid="checks-count">{detailChecks.length}</div>
       <div data-testid="reviews-count">{detailReviews.length}</div>
       <div data-testid="comments-count">{detailComments.length}</div>
+      <div data-testid="deployments-count">{detailDeployments.length}</div>
+      <div data-testid="ai-summary">{detailAiSummary?.summary ?? ""}</div>
     </div>
   );
 }
@@ -802,6 +806,89 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("checks-count").textContent).toBe("0");
       expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
     });
+  });
+
+  it("hydrates deployments and AI summary after snapshot prefill while live detail is pending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    const liveStatus = createDeferred<any>();
+    const liveChecks = createDeferred<any[]>();
+    const liveReviews = createDeferred<any[]>();
+    const liveComments = createDeferred<any[]>();
+    const snapshot: PrSnapshotHydration = {
+      prId: "pr-1",
+      detail: null,
+      status: {
+        prId: "pr-1",
+        state: "closed",
+        checksStatus: "failing",
+        reviewStatus: "changes_requested",
+        isMergeable: false,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      },
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-24T12:10:00.000Z",
+    };
+    const deployment: PrDeployment = {
+      id: "deployment-1",
+      environment: "preview",
+      state: "success",
+      description: null,
+      environmentUrl: "https://preview.example.com",
+      logUrl: null,
+      sha: "abc123",
+      ref: "feature/open",
+      creator: "octocat",
+      createdAt: "2026-03-24T12:00:00.000Z",
+      updatedAt: "2026-03-24T12:05:00.000Z",
+    };
+    const aiSummary: PrAiSummary = {
+      prId: "pr-1",
+      summary: "Cached overview is available.",
+      riskAreas: [],
+      reviewerHotspots: [],
+      unresolvedConcerns: [],
+      generatedAt: "2026-03-24T12:06:00.000Z",
+      headSha: "abc123",
+    };
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async (args?: { prId?: string }) => (args?.prId === "pr-1" ? [snapshot] : [])),
+      getStatus: vi.fn(async (_prId: string) => liveStatus.promise),
+      getChecks: vi.fn(async (_prId: string) => liveChecks.promise),
+      getReviews: vi.fn(async (_prId: string) => liveReviews.promise),
+      getComments: vi.fn(async (_prId: string) => liveComments.promise),
+      getDeployments: vi.fn(async (_prId: string) => [deployment]),
+      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("closed");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+    });
+
+    await waitFor(() => {
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledWith("pr-1");
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledWith("pr-1");
+      expect(screen.getByTestId("deployments-count").textContent).toBe("1");
+      expect(screen.getByTestId("ai-summary").textContent).toBe("Cached overview is available.");
+    });
+    expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
   });
 
   it("keeps cached selected PR detail visible when live GitHub detail is rate limited", async () => {

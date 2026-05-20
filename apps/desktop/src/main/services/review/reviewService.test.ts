@@ -319,6 +319,16 @@ function makeOutput(summary: string, findings: Array<Record<string, unknown>>): 
   return JSON.stringify({ summary, findings });
 }
 
+function makeTurnResult(summary: string, findings: Array<Record<string, unknown>>) {
+  return {
+    sessionId: "session-review",
+    provider: "codex",
+    model: "gpt-5.4",
+    modelId: "openai/gpt-5.4",
+    outputText: makeOutput(summary, findings),
+  };
+}
+
 function makeContextPacket(overrides: Partial<Record<string, any>> = {}) {
   return {
     matchedRuleOverlays: [],
@@ -551,6 +561,7 @@ function createHarness(args: {
       modelId: "openai/gpt-5.4",
     };
   });
+  const interrupt = vi.fn(async () => undefined);
 
   const service = createReviewService({
     db: db as any,
@@ -593,6 +604,7 @@ function createHarness(args: {
         lastOutputPreview: "Review output",
         summary: "Saved review transcript",
       })),
+      interrupt,
       runSessionTurn,
     } as any,
     sessionService: {
@@ -642,6 +654,7 @@ function createHarness(args: {
     raw,
     service,
     createSession,
+    interrupt,
     runSessionTurn,
     publishReviewPublication,
     start: (config?: Partial<ReviewRunConfig>) => service.startRun({
@@ -696,11 +709,72 @@ describe("reviewService", () => {
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "risk_map")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "adjudication_result")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "merged_findings")).toBe(true);
+    const firstPrompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt");
+    expect(firstPrompt?.contentText).toContain("Exact diff hunks");
+    expect(firstPrompt?.contentText).toContain("diff --git a/src/review.ts b/src/review.ts");
 
     const persistedFindings = mapExecRows(harness.raw.exec("select source_pass, originating_passes_json, adjudication_json from review_findings"));
     expect(String(persistedFindings[0]?.source_pass)).toBe("adjudicated");
     expect(String(persistedFindings[0]?.originating_passes_json)).toContain("diff-risk");
     expect(String(persistedFindings[0]?.adjudication_json)).toContain("publicationEligible");
+  });
+
+  it("fails the review run when a specialist reviewer fails", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Cross-file clear.", []),
+        makeOutput("Checks clear.", []),
+        makeOutput("Security clear.", []),
+        makeOutput("UI clear.", []),
+      ],
+    });
+    harness.runSessionTurn.mockRejectedValueOnce(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "failed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.errorMessage).toContain("specialist reviewer");
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
+    expect(detail?.findings).toEqual([]);
+  });
+
+  it("interrupts active specialist reviewer sessions when cancelling a run", async () => {
+    const harness = createHarness({ outputs: [] });
+    const pendingTurns: Array<(value: ReturnType<typeof makeTurnResult>) => void> = [];
+    harness.runSessionTurn.mockImplementation((): Promise<ReturnType<typeof makeTurnResult>> => new Promise((resolve) => {
+      pendingTurns.push(resolve as (value: ReturnType<typeof makeTurnResult>) => void);
+    }));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.createSession.mock.calls.length,
+      (count) => count === 5,
+    );
+
+    const cancelled = await harness.service.cancelRun({ runId: run.id });
+    expect(cancelled?.status).toBe("cancelled");
+    expect(harness.interrupt).toHaveBeenCalledTimes(5);
+    const interruptCalls = harness.interrupt.mock.calls as unknown as Array<[{ sessionId: string }]>;
+    expect(interruptCalls.map((call) => call[0].sessionId)).toEqual([
+      "session-review-1",
+      "session-review-2",
+      "session-review-3",
+      "session-review-4",
+      "session-review-5",
+    ]);
+
+    for (const resolve of pendingTurns) {
+      resolve(makeTurnResult("No findings after cancel.", []));
+    }
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "cancelled"),
+    );
   });
 
   it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {

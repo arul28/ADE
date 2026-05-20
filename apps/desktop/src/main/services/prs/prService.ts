@@ -27,6 +27,7 @@ import type {
   DraftPrDescriptionArgs,
   DeletePrArgs,
   DeletePrResult,
+  GitHubStatus,
   IntegrationLaneChangeStatus,
   IntegrationLaneOrigin,
   IntegrationLaneSnapshot,
@@ -643,6 +644,12 @@ function parsePrLocator(raw: string): { owner?: string; repo?: string; number: n
 
 function repoPrKey(owner: string, repo: string, number: number): string {
   return `${owner.trim().toLowerCase()}/${repo.trim().toLowerCase()}#${Number(number)}`;
+}
+
+function repoRefKey(repo: GitHubRepoRef | null | undefined): string | null {
+  const owner = repo?.owner?.trim().toLowerCase() ?? "";
+  const name = repo?.name?.trim().toLowerCase() ?? "";
+  return owner && name ? `${owner}/${name}` : null;
 }
 
 function readPrTemplate(projectRoot: string): string | null {
@@ -5456,6 +5463,38 @@ export function createPrService({
     cachedGithubSnapshotAt = capturedAt;
   };
 
+  const clearGithubSnapshotAuthCache = (): void => {
+    invalidateGithubSnapshotCache();
+    githubSnapshotInFlight = null;
+  };
+
+  const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
+    if (!githubStatus.tokenStored) {
+      return "GitHub token missing. Set it in Settings to sync pull requests.";
+    }
+    if (githubStatus.tokenDecryptionFailed) {
+      return "GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.";
+    }
+    if (githubStatus.repo && githubStatus.repoAccessError) {
+      return `GitHub token cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
+    }
+    return "GitHub token is invalid or missing required access. Update it in Settings to sync pull requests.";
+  };
+
+  const requireGithubSnapshotAuth = async (): Promise<GitHubStatus> => {
+    const githubStatus = await githubService.getStatus();
+    if (!githubStatus.tokenStored || !githubStatus.connected) {
+      clearGithubSnapshotAuthCache();
+      throw new Error(buildGithubSnapshotAuthError(githubStatus));
+    }
+    return githubStatus;
+  };
+
+  const githubSnapshotMatchesStatus = (
+    snapshot: GitHubPrSnapshot,
+    githubStatus: GitHubStatus,
+  ): boolean => repoRefKey(snapshot.repo) === repoRefKey(githubStatus.repo);
+
   type GithubSnapshotMetadata = {
     lanes: LaneSummary[];
     laneById: Map<string, LaneSummary>;
@@ -5507,16 +5546,6 @@ export function createPrService({
     if (group?.group_type === "integration") return "integration";
     if (linked) return "single";
     return null;
-  };
-
-  const selectLocalGithubSnapshotRepo = (
-    cacheRows: GithubPrCacheRow[],
-    prRows: PullRequestRow[],
-  ): GitHubRepoRef | null => {
-    const firstCacheRow = cacheRows.find((row) => asString(row.repo_owner).trim() && asString(row.repo_name).trim());
-    if (firstCacheRow) return { owner: firstCacheRow.repo_owner, name: firstCacheRow.repo_name };
-    const firstPrRow = prRows.find((row) => asString(row.repo_owner).trim() && asString(row.repo_name).trim());
-    return firstPrRow ? { owner: firstPrRow.repo_owner, name: firstPrRow.repo_name } : null;
   };
 
   const snapshotSyncedAtFromRows = (rows: Array<PullRequestRow | GithubPrCacheRow>): string => {
@@ -5657,11 +5686,14 @@ export function createPrService({
     };
   };
 
-  const getGithubSnapshotFromLocalCache = async (): Promise<GitHubPrSnapshot | null> => {
+  const getGithubSnapshotFromLocalCache = async (
+    githubStatus: GitHubStatus,
+  ): Promise<GitHubPrSnapshot | null> => {
+    const repo = githubStatus.repo;
+    if (!repo) return null;
+
     const cacheRows = listGithubPrCacheRows();
     const metadata = await loadGithubSnapshotMetadata();
-    const repo = selectLocalGithubSnapshotRepo(cacheRows, metadata.pullRequestRows);
-    if (!repo) return null;
 
     const repoPrefix = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#`;
     const repoCacheRows = cacheRows.filter((row) =>
@@ -5683,18 +5715,17 @@ export function createPrService({
 
     return {
       repo,
-      viewerLogin: null,
+      viewerLogin: githubStatus.userLogin,
       repoPullRequests,
       externalPullRequests: [],
       syncedAt: snapshotSyncedAtFromRows([...repoCacheRows, ...repoPrRows]),
     };
   };
 
-  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
-    const githubStatus = await githubService.getStatus();
-    if (!githubStatus.tokenStored) {
-      throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
-    }
+  const getGithubSnapshotUncached = async (
+    precheckedGithubStatus?: GitHubStatus,
+  ): Promise<GitHubPrSnapshot> => {
+    const githubStatus = precheckedGithubStatus ?? await requireGithubSnapshotAuth();
 
     const repo = githubStatus.repo;
     if (!repo) {
@@ -5786,11 +5817,22 @@ export function createPrService({
 
   const getGithubSnapshot = async (options: GithubSnapshotOptions = {}): Promise<GitHubPrSnapshot> => {
     const force = options?.force === true;
-    const startSnapshotRequest = (allowStaleOnError: boolean): Promise<GitHubPrSnapshot> => {
-      const staleFallback = cachedGithubSnapshot;
+    const githubStatus = await requireGithubSnapshotAuth();
+    if (cachedGithubSnapshot && !githubSnapshotMatchesStatus(cachedGithubSnapshot, githubStatus)) {
+      invalidateGithubSnapshotCache();
+    }
+
+    const startSnapshotRequest = (
+      allowStaleOnError: boolean,
+      precheckedGithubStatus: GitHubStatus,
+    ): Promise<GitHubPrSnapshot> => {
+      const staleFallback =
+        cachedGithubSnapshot && githubSnapshotMatchesStatus(cachedGithubSnapshot, precheckedGithubStatus)
+          ? cachedGithubSnapshot
+          : null;
       const requestEpoch = githubSnapshotCacheEpoch;
       let inFlight!: { request: Promise<GitHubPrSnapshot> };
-      const request = getGithubSnapshotUncached()
+      const request = getGithubSnapshotUncached(precheckedGithubStatus)
         .then((snapshot) => {
           const capturedAt = Date.now();
           const canPublishSnapshot =
@@ -5827,16 +5869,16 @@ export function createPrService({
         return cachedSnapshot;
       }
       if (!githubSnapshotInFlight) {
-        void startSnapshotRequest(true).catch(() => {});
+        void startSnapshotRequest(true, githubStatus).catch(() => {});
       }
       return cachedSnapshot;
     }
     if (!force) {
-      const localSnapshot = await getGithubSnapshotFromLocalCache();
+      const localSnapshot = await getGithubSnapshotFromLocalCache(githubStatus);
       if (localSnapshot) {
         publishGithubSnapshot(localSnapshot);
         if (!githubSnapshotInFlight) {
-          void startSnapshotRequest(true).catch(() => {});
+          void startSnapshotRequest(true, githubStatus).catch(() => {});
         }
         return localSnapshot;
       }
@@ -5845,7 +5887,7 @@ export function createPrService({
       return githubSnapshotInFlight.request;
     }
 
-    return startSnapshotRequest(false);
+    return startSnapshotRequest(false, githubStatus);
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {

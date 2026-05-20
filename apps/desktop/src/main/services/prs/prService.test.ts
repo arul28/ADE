@@ -181,6 +181,16 @@ function makeGithubService(overrides?: Record<string, unknown>) {
   } as any;
 }
 
+function makeGithubStatus(overrides?: Record<string, unknown>) {
+  return {
+    tokenStored: true,
+    connected: true,
+    repo: REPO,
+    userLogin: "octocat",
+    ...overrides,
+  };
+}
+
 function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
@@ -496,14 +506,10 @@ describe("prService.getGithubSnapshot", () => {
     vi.clearAllMocks();
   });
 
-  it("serves local PR rows on a cold cache without waiting for live GitHub status", async () => {
-    let resolveStatus!: (value: unknown) => void;
-    const githubStatusRequest = new Promise<unknown>((resolve) => {
-      resolveStatus = resolve;
-    });
+  it("serves local PR rows on a cold cache after GitHub auth passes", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(() => githubStatusRequest),
-      apiRequest: vi.fn(async () => ({ data: [] })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(() => new Promise(() => {})),
     });
     const db = makeMockDb();
     const cachedRow = makePrRow({
@@ -523,7 +529,7 @@ describe("prService.getGithubSnapshot", () => {
 
     expect(snapshot).toMatchObject({
       repo: REPO,
-      viewerLogin: null,
+      viewerLogin: "octocat",
       repoPullRequests: [
         expect.objectContaining({
           githubPrNumber: 321,
@@ -538,23 +544,78 @@ describe("prService.getGithubSnapshot", () => {
       syncedAt: "2026-01-02T00:00:00Z",
     });
     expect(githubService.getStatus).toHaveBeenCalledTimes(1);
-    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
 
-    resolveStatus({
-      tokenStored: true,
-      repo: REPO,
-      userLogin: "octocat",
+  it("does not read durable GitHub PR cache when the token is missing", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        tokenStored: false,
+        connected: false,
+        userLogin: null,
+      })),
+      apiRequest: vi.fn(async () => ({ data: [makeGitHubPull({ title: "Private live PR" })] })),
     });
-    await flushMicrotasks();
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from github_pr_cache")) {
+        return [{
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_pr_number: 777,
+          item_json: JSON.stringify({
+            ...makeGitHubPull({
+              number: 777,
+              title: "Private cached PR",
+            }),
+            repoOwner: REPO.owner,
+            repoName: REPO.name,
+            githubPrNumber: 777,
+            githubUrl: "https://github.com/test-owner/test-repo/pull/777",
+            updatedAt: "2026-01-02T00:00:00Z",
+          }),
+          state: "open",
+          head_branch: "feature/private",
+          updated_at: "2026-01-02T00:00:00Z",
+          synced_at: "2026-01-02T00:00:00Z",
+        }];
+      }
+      if (text.includes("from pull_requests")) {
+        return [makePrRow({ title: "Private linked PR" })];
+      }
+      return [];
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub token missing");
+    expect(db.all).not.toHaveBeenCalled();
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not return an in-memory GitHub snapshot when token status is invalid", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn()
+        .mockResolvedValueOnce(makeGithubStatus())
+        .mockResolvedValueOnce(makeGithubStatus({
+          connected: false,
+          repoAccessError: "403: Resource not accessible by token",
+        })),
+      apiRequest: vi.fn(async () => ({ data: [makeGitHubPull({ title: "Private cached PR" })] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const cached = await service.getGithubSnapshot({ force: true });
+    expect(cached.repoPullRequests[0]?.title).toBe("Private cached PR");
+    githubService.apiRequest.mockClear();
+
+    await expect(service.getGithubSnapshot()).rejects.toThrow("GitHub token cannot access test-owner/test-repo");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 
   it("keeps branch PR auto-link running in the background after a local snapshot response", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
         if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           throw new Error(`Unexpected GitHub API path: ${args.path}`);
@@ -612,11 +673,7 @@ describe("prService.getGithubSnapshot", () => {
       resolveRevalidation = resolve;
     });
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn()
         .mockResolvedValueOnce({ data: [makeGitHubPull({ title: "Cached PR" })] })
         .mockImplementationOnce(() => revalidationStarted),
@@ -647,11 +704,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("keeps GitHub tab snapshots scoped to the current repo", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => ({
         data: args.path === "/search/issues" ? { items: [] } : [],
       })),
@@ -679,11 +732,7 @@ describe("prService.getGithubSnapshot", () => {
     });
     let repoCalls = 0;
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
@@ -713,11 +762,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("serves closed-history requests from a fresh repo snapshot cache", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           return { data: [makeGitHubPull({ number: 1, title: "Cached repo PR" })] };
@@ -748,11 +793,7 @@ describe("prService.getGithubSnapshot", () => {
     });
     let repoCalls = 0;
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
@@ -795,11 +836,7 @@ describe("prService.getGithubSnapshot", () => {
     });
     let repoCalls = 0;
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
@@ -834,11 +871,7 @@ describe("prService.getGithubSnapshot", () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
     let repoCalls = 0;
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string; query?: { q?: string } }) => {
         if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           repoCalls += 1;
@@ -880,11 +913,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("backfills a lane PR row from GitHub when the head branch matches an active lane", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn()
         .mockResolvedValueOnce({
           data: [
@@ -924,11 +953,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("fetches a targeted same-repo lane branch PR when the repo snapshot window misses it", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
         if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           throw new Error(`Unexpected GitHub API path: ${args.path}`);
@@ -991,11 +1016,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("continues targeted lane branch PR lookups after one branch lookup fails", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
         if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
           throw new Error(`Unexpected GitHub API path: ${args.path}`);
@@ -1064,11 +1085,7 @@ describe("prService.getGithubSnapshot", () => {
 
   it("updates an existing repo PR row during lane PR backfill instead of duplicating it", async () => {
     const githubService = makeGithubService({
-      getStatus: vi.fn(async () => ({
-        tokenStored: true,
-        repo: REPO,
-        userLogin: "octocat",
-      })),
+      getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn()
         .mockResolvedValueOnce({
           data: [

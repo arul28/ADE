@@ -2,10 +2,10 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
+import type { CreateLaneFromPrBranchPreflightResult, GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
 
 const mockUsePrs = vi.fn();
 
@@ -96,6 +96,53 @@ const snapshot: GitHubPrSnapshot = {
   ],
   externalPullRequests: [],
 };
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function makePreflightResult(args: {
+  githubPrNumber: number;
+  title: string;
+  headBranch: string;
+  remoteBranch: string;
+}): CreateLaneFromPrBranchPreflightResult {
+  return {
+    preflight: {
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: args.githubPrNumber,
+      githubUrl: `https://github.com/ade-dev/ade/pull/${args.githubPrNumber}`,
+      title: args.title,
+      headBranch: args.headBranch,
+      headRepoOwner: "ade-dev",
+      headRepoName: "ade",
+      headSha: "head-sha",
+      remoteBranch: args.remoteBranch,
+      importBranchRef: args.remoteBranch,
+      targetLaneName: args.title,
+      baseBranch: "main",
+      canCreate: true,
+      status: "ready",
+      blockingConflict: null,
+      blockingConflicts: [],
+    },
+    lane: null,
+    pr: null,
+  };
+}
 
 describe("GitHubTab", () => {
   beforeEach(() => {
@@ -741,6 +788,89 @@ describe("GitHubTab", () => {
     expect(screen.getByText("origin/feature/open")).toBeTruthy();
     expect(screen.getAllByText("Unlinked PR").length).toBeGreaterThan(0);
     expect(screen.getAllByText("main").length).toBeGreaterThan(0);
+  });
+
+  it("ignores stale create-lane preflight results from a previous PR", async () => {
+    const user = userEvent.setup();
+    const firstPreflight = createDeferred<CreateLaneFromPrBranchPreflightResult>();
+    const secondPreflight = createDeferred<CreateLaneFromPrBranchPreflightResult>();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked-first",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "First PR",
+          headBranch: "feature/first",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:10:00.000Z",
+        }),
+        makeGitHubPr({
+          id: "repo-unlinked-second",
+          githubPrNumber: 201,
+          githubUrl: "https://github.com/ade-dev/ade/pull/201",
+          title: "Second PR",
+          headBranch: "feature/second",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.preflightCreateLaneFromPrBranch as ReturnType<typeof vi.fn>)
+      .mockImplementation((args: { githubPrNumber: number }) =>
+        args.githubPrNumber === 200 ? firstPreflight.promise : secondPreflight.promise);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: 200,
+    });
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    await user.click(await screen.findByText("Second PR"));
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: 201,
+    });
+
+    await act(async () => {
+      firstPreflight.resolve(makePreflightResult({
+        githubPrNumber: 200,
+        title: "First PR",
+        headBranch: "feature/first",
+        remoteBranch: "origin/feature/first",
+      }));
+      await firstPreflight.promise;
+    });
+    expect(screen.queryByText(/#200 First PR/)).toBeNull();
+    expect(screen.getByText(/checking branch ownership/i)).toBeTruthy();
+
+    await act(async () => {
+      secondPreflight.resolve(makePreflightResult({
+        githubPrNumber: 201,
+        title: "Second PR",
+        headBranch: "feature/second",
+        remoteBranch: "origin/feature/second",
+      }));
+      await secondPreflight.promise;
+    });
+
+    expect(await screen.findByText(/#201 Second PR/)).toBeTruthy();
+    expect(screen.queryByText(/#200 First PR/)).toBeNull();
+    expect(screen.getByText("origin/feature/second")).toBeTruthy();
   });
 
   it("shows blocking preflight conflicts before creating a lane", async () => {

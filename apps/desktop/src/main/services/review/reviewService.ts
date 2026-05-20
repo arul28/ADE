@@ -276,6 +276,8 @@ type ReviewContextArtifactIds = {
 
 type PassExecutionResult = {
   pass: PassDefinition;
+  status: ReviewReviewerRunStatus;
+  errorMessage: string | null;
   reviewerRunId: string;
   sessionId: string | null;
   summary: string | null;
@@ -614,6 +616,7 @@ function buildPassPrompt(args: {
   run: ReviewRun;
   pass: PassDefinition;
   manifestPrompt: string;
+  diffPrompt: string;
   changedFiles: Array<{ filePath: string }>;
   context: ReviewContextPacket;
   contextArtifactIds: ReviewContextArtifactIds;
@@ -659,6 +662,9 @@ function buildPassPrompt(args: {
     "Changed-file manifest and risk map:",
     args.manifestPrompt,
     "",
+    "Exact diff hunks:",
+    args.diffPrompt.trim() || "- No diff text was available for this target.",
+    "",
     "Context artifact ids you may cite in evidence when relevant:",
     ...buildContextArtifactHints({
       artifactIds: args.contextArtifactIds,
@@ -673,9 +679,6 @@ function buildPassPrompt(args: {
     "",
     "Checks and validation context:",
     includeValidation ? args.context.validation.prompt : "- Full validation evidence is reserved for the checks-and-tests pass.",
-    "",
-    "Exact diff access:",
-    "The full diff was saved as a run artifact. Use the changed-file manifest excerpts above for first-pass review and cite the diff_bundle artifact when the exact hunk is needed.",
   ].join("\n");
 }
 
@@ -1535,7 +1538,7 @@ export function createReviewService({
   projectDefaultBranch: string | null;
   laneService: Pick<ReturnType<typeof createLaneService>, "getLaneBaseAndBranch" | "getStateSnapshot" | "list">;
   gitService: Pick<ReturnType<typeof createGitOperationsService>, "listRecentCommits">;
-  agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "getSessionSummary" | "runSessionTurn">;
+  agentChatService: Pick<ReturnType<typeof createAgentChatService>, "createSession" | "getSessionSummary" | "interrupt" | "runSessionTurn">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
@@ -1563,6 +1566,7 @@ export function createReviewService({
   });
   const activeRuns = new Set<string>();
   const cancelledRuns = new Set<string>();
+  const activeReviewerSessions = new Map<string, Set<string>>();
   let disposed = false;
   const configuredDefaultModelId =
     getDefaultModelDescriptor("codex")?.id
@@ -2044,6 +2048,7 @@ export function createReviewService({
     model: string;
     pass: PassDefinition;
     manifestPrompt: string;
+    diffPrompt: string;
     changedFiles: MaterializedChangedFile[];
     changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
     context: ReviewContextPacket;
@@ -2083,6 +2088,9 @@ export function createReviewService({
         surface: "automation",
       });
       sessionId = session.id;
+      const runSessions = activeReviewerSessions.get(args.runId) ?? new Set<string>();
+      runSessions.add(sessionId);
+      activeReviewerSessions.set(args.runId, runSessions);
       sessionService.updateMeta({
         sessionId,
         title: `${args.sessionTitle} · ${args.pass.label}`,
@@ -2100,6 +2108,7 @@ export function createReviewService({
         run: args.run,
         pass: args.pass,
         manifestPrompt: truncateText(args.manifestPrompt, args.run.config.budgets.maxPromptChars),
+        diffPrompt: args.diffPrompt,
         changedFiles: args.changedFiles,
         context: args.context,
         contextArtifactIds: args.contextArtifactIds,
@@ -2180,9 +2189,10 @@ export function createReviewService({
         },
       });
       findingsArtifactId = findingsArtifact.id;
+      const status: ReviewReviewerRunStatus = cancelledRuns.has(args.runId) ? "cancelled" : "completed";
       const endedAt = nowIso();
       updateReviewerRun(reviewerRun.id, {
-        status: cancelledRuns.has(args.runId) ? "cancelled" : "completed",
+        status,
         findings_artifact_id: findingsArtifactId,
         candidate_count: normalized.findings.length,
         kept_count: candidates.length,
@@ -2196,10 +2206,12 @@ export function createReviewService({
         laneId: args.run.laneId,
         reviewerRunId: reviewerRun.id,
         reviewerKey: args.pass.key,
-        status: cancelledRuns.has(args.runId) ? "cancelled" : "completed",
+        status,
       });
       return {
         pass: args.pass,
+        status,
+        errorMessage: null,
         reviewerRunId: reviewerRun.id,
         sessionId,
         summary: normalized.summary,
@@ -2210,6 +2222,7 @@ export function createReviewService({
         budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
       };
     } catch (error) {
+      const status: ReviewReviewerRunStatus = cancelledRuns.has(args.runId) ? "cancelled" : "failed";
       const endedAt = nowIso();
       const outputArtifact = insertArtifact(args.runId, {
         artifactType: "pass_output",
@@ -2224,7 +2237,7 @@ export function createReviewService({
       });
       outputArtifactId = outputArtifact.id;
       updateReviewerRun(reviewerRun.id, {
-        status: cancelledRuns.has(args.runId) ? "cancelled" : "failed",
+        status,
         prompt_artifact_id: promptArtifactId,
         output_artifact_id: outputArtifactId,
         findings_artifact_id: findingsArtifactId,
@@ -2243,10 +2256,12 @@ export function createReviewService({
         laneId: args.run.laneId,
         reviewerRunId: reviewerRun.id,
         reviewerKey: args.pass.key,
-        status: cancelledRuns.has(args.runId) ? "cancelled" : "failed",
+        status,
       });
       return {
         pass: args.pass,
+        status,
+        errorMessage: getErrorMessage(error),
         reviewerRunId: reviewerRun.id,
         sessionId,
         summary: null,
@@ -2256,6 +2271,12 @@ export function createReviewService({
         findingsArtifactId: findingsArtifactId ?? "",
         budgetTrimmedCount: 0,
       };
+    } finally {
+      if (sessionId) {
+        const runSessions = activeReviewerSessions.get(args.runId);
+        runSessions?.delete(sessionId);
+        if (runSessions?.size === 0) activeReviewerSessions.delete(args.runId);
+      }
     }
   }
 
@@ -2367,6 +2388,7 @@ export function createReviewService({
         },
       });
       const manifestPrompt = buildManifestPrompt(manifestPayload, riskMapPayload);
+      const diffPrompt = truncateText(materialized.fullPatchText, effectiveRun.config.budgets.maxDiffChars);
       const reviewContext = await contextBuilder.buildContext({
         run: effectiveRun,
         materialized: {
@@ -2448,6 +2470,7 @@ export function createReviewService({
           model,
           pass,
           manifestPrompt,
+          diffPrompt,
           changedFiles,
           changedFilesByPath,
           context: reviewContext,
@@ -2461,7 +2484,7 @@ export function createReviewService({
         });
       }
       if (disposed) return;
-      if (cancelledRuns.has(runId)) {
+      if (cancelledRuns.has(runId) || passResults.some((result) => result.status === "cancelled")) {
         cancelledRuns.delete(runId);
         const endedAt = nowIso();
         updateRun(runId, {
@@ -2473,6 +2496,22 @@ export function createReviewService({
         });
         emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
         emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+        return;
+      }
+
+      const failedPassResults = passResults.filter((result) => result.status === "failed");
+      if (failedPassResults.length > 0) {
+        const endedAt = nowIso();
+        const failedLabels = failedPassResults.map((result) => result.pass.label).join(", ");
+        updateRun(runId, {
+          status: "failed",
+          summary: null,
+          error_message: `Review failed because ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed: ${failedLabels}.`,
+          ended_at: endedAt,
+          updated_at: endedAt,
+        });
+        emit({ type: "run-completed", runId, laneId: run.laneId, status: "failed" });
+        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "failed" });
         return;
       }
 
@@ -2804,10 +2843,22 @@ export function createReviewService({
     const endedAt = nowIso();
     updateRun(args.runId, {
       status: "cancelled",
-      summary: row.summary ?? "Cancellation requested; finishing current pass.",
+      summary: row.summary ?? "Cancellation requested; stopping active reviewers.",
       ended_at: endedAt,
       updated_at: endedAt,
     });
+    const activeSessions = Array.from(activeReviewerSessions.get(args.runId) ?? []);
+    await Promise.all(activeSessions.map(async (sessionId) => {
+      try {
+        await agentChatService.interrupt({ sessionId });
+      } catch (error) {
+        logger.warn("review.cancel_reviewer_interrupt_failed", {
+          runId: args.runId,
+          sessionId,
+          error: getErrorMessage(error),
+        });
+      }
+    }));
     const refreshed = getRunRow(args.runId);
     if (refreshed) {
       emit({ type: "runs-updated", runId: args.runId, laneId: refreshed.lane_id, status: "cancelled" });
