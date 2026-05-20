@@ -7249,6 +7249,132 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("resolves stale phase approval interventions without applying the transition", async () => {
+    const fixture = await createFixture();
+    try {
+      const planningPhase = phaseCard({
+        phaseKey: "planning",
+        name: "Planning",
+        position: 0,
+        requiresApproval: true,
+        orderingConstraints: { mustBeFirst: true },
+      });
+      const developmentPhase = phaseCard({
+        phaseKey: "development",
+        name: "Development",
+        position: 1,
+        orderingConstraints: { mustFollow: ["planning"] },
+      });
+      const testingPhase = phaseCard({
+        phaseKey: "testing",
+        name: "Testing",
+        position: 2,
+        orderingConstraints: { mustFollow: ["development"] },
+      });
+      const mission = fixture.missionService.create({
+        prompt: "A stale planning approval should close without changing phases.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          phaseOverride: [planningPhase, developmentPhase, testingPhase],
+          phaseRuntime: {
+            currentPhaseKey: "testing",
+            currentPhaseName: "Testing",
+            currentPhaseModel: testingPhase.model,
+            currentPhaseInstructions: testingPhase.instructions,
+            currentPhaseValidation: testingPhase.validationGate,
+            currentPhaseBudget: testingPhase.budget,
+            transitionedAt: "2026-03-01T00:05:00.000Z",
+            transitions: [
+              {
+                fromPhaseKey: "development",
+                fromPhaseName: "Development",
+                toPhaseKey: "testing",
+                toPhaseName: "Testing",
+                at: "2026-03-01T00:05:00.000Z",
+                reason: "phase_advanced",
+              },
+            ],
+          },
+        },
+        steps: [
+          {
+            stepKey: "test-work",
+            title: "Test work",
+            stepIndex: 0,
+            metadata: {
+              phaseKey: "testing",
+              phaseName: "Testing",
+              stepType: "testing",
+            },
+          },
+        ],
+      });
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      const approval = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "phase_approval",
+        title: "Approve transition from Planning phase",
+        body: "Approve the planning output.",
+        requestedAction: "Approve the Planning output to proceed to Development.",
+        pauseMission: true,
+        metadata: {
+          runId: started.run.id,
+          phaseKey: "planning",
+          phaseName: "Planning",
+          targetPhaseKey: "development",
+          targetPhaseName: "Development",
+          source: "phase_approval_gate",
+        },
+      });
+
+      fixture.aiOrchestratorService.steerMission({
+        missionId: mission.id,
+        interventionId: approval.id,
+        directive: "Approved, but this approval is now stale.",
+        priority: "instruction",
+        resolutionKind: "answer_provided",
+      });
+
+      const graph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      const phaseRuntime = graph.run.metadata?.phaseRuntime as Record<string, unknown> | undefined;
+      expect(phaseRuntime?.currentPhaseKey).toBe("testing");
+      expect(
+        graph.timeline.some(
+          (entry) =>
+            entry.eventType === "phase_transition"
+            && entry.reason === "phase_approval_resolved"
+            && (entry.detail as Record<string, unknown> | null)?.interventionId === approval.id,
+        ),
+      ).toBe(false);
+
+      const resolvedApproval = fixture.missionService.get(mission.id)?.interventions.find((entry) => entry.id === approval.id);
+      expect(resolvedApproval?.status).toBe("resolved");
+      expect(resolvedApproval?.resolutionKind).toBe("stale_phase_approval");
+      expect(resolvedApproval?.resolutionNote).toContain("no phase transition was applied");
+
+      const runtimeEvents = fixture.orchestratorService.listRuntimeEvents({
+        runId: started.run.id,
+        eventTypes: ["intervention_resolved", "progress"],
+        limit: 20,
+      });
+      const resolvedEvent = runtimeEvents.find((entry) => entry.eventType === "intervention_resolved");
+      expect((resolvedEvent?.payload as Record<string, unknown> | null)?.resolutionKind).toBe("stale_phase_approval");
+      expect((resolvedEvent?.payload as Record<string, unknown> | null)?.appliedPhaseTransition).toBe(false);
+      expect(
+        runtimeEvents.some(
+          (entry) =>
+            entry.eventType === "progress"
+            && (entry.payload as Record<string, unknown> | null)?.transition === "phase_approval_resolved",
+        ),
+      ).toBe(false);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("kicks autopilot after steering so queued recovery workers can start before coordinator re-evaluation", async () => {
     const fixture = await createFixture();
     try {

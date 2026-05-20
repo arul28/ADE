@@ -4283,6 +4283,7 @@ export function createMissionService({
         if (resolutionKind === "accept_defaults") return `${row.title} — user accepted defaults.`;
         if (resolutionKind === "skip_question") return `${row.title} — user skipped the question.`;
         if (resolutionKind === "cancel_run") return `${row.title} — user canceled the run.`;
+        if (resolutionKind === "stale_phase_approval") return `${row.title} — stale phase approval closed.`;
         if (targetStatus === "dismissed") return `${row.title} — dismissed.`;
         return `${row.title} — answer provided.`;
       })();

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import type {
   MissionDetail,
+  MissionInterventionResolutionKind,
   MissionStepStatus,
   MissionStatus,
   CancelOrchestratorRunArgs,
@@ -8605,6 +8606,16 @@ Check all worker statuses and continue managing the mission from here. Read work
         const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
         const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
         let appliedPhaseTransition = false;
+        let phaseApprovalStale = false;
+        let interventionResolutionKind: MissionInterventionResolutionKind = resolutionKind ?? "answer_provided";
+        let interventionResolutionNote =
+          resolutionKind === "accept_defaults"
+            ? "Resolved by accepting defaults."
+            : resolutionKind === "skip_question"
+              ? "Resolved by dismissing the intervention."
+              : resolutionKind === "cancel_run"
+                ? "Resolved by canceling the run."
+                : `Resolved by operator directive (${directive.priority}).`;
         if (
           intervention.interventionType === "phase_approval"
           && resolutionKind !== "cancel_run"
@@ -8619,22 +8630,18 @@ Check all worker statuses and continue managing the mission from here. Read work
               })
             : false;
           if (!appliedPhaseTransition) {
-            continue;
+            phaseApprovalStale = true;
+            interventionResolutionKind = "stale_phase_approval";
+            interventionResolutionNote =
+              "Resolved as stale because this phase approval no longer matches the run's current phase; no phase transition was applied.";
           }
         }
         missionService.resolveIntervention({
           missionId,
           interventionId: intervention.id,
           status: "resolved",
-          resolutionKind: resolutionKind ?? "answer_provided",
-          note:
-            resolutionKind === "accept_defaults"
-              ? "Resolved by accepting defaults."
-              : resolutionKind === "skip_question"
-                ? "Resolved by dismissing the intervention."
-                : resolutionKind === "cancel_run"
-                  ? "Resolved by canceling the run."
-                  : `Resolved by operator directive (${directive.priority}).`,
+          resolutionKind: interventionResolutionKind,
+          note: interventionResolutionNote,
         });
         resolvedInterventions.push(intervention.id);
         resolvedNonManualInterventionCount += 1;
@@ -8648,10 +8655,12 @@ Check all worker statuses and continue managing the mission from here. Read work
             eventKey: `intervention_resolved:${intervention.id}:${directive.priority}`,
             payload: {
               interventionId: intervention.id,
-              reason: resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
+              reason: phaseApprovalStale
+                ? "stale_phase_approval"
+                : resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
               priority: directive.priority,
               directive: clipTextForContext(directive.directive, 220),
-              resolutionKind,
+              resolutionKind: interventionResolutionKind,
               appliedPhaseTransition,
             },
           });
@@ -10053,7 +10062,9 @@ Check all worker statuses and continue managing the mission from here. Read work
             ? "Question skipped"
             : payload?.resolutionKind === "cancel_run"
               ? "Run canceled"
-              : "Operator decision applied";
+              : payload?.resolutionKind === "stale_phase_approval"
+                ? "Stale phase approval closed"
+                : "Operator decision applied";
       return {
         id: `runtime:${event.id}`,
         at: event.occurredAt,
@@ -10061,7 +10072,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: resolutionLabel,
         detail: detail ?? (payload?.resolutionKind === "answer_provided"
           ? "ADE resolved the intervention and resumed mission coordination."
-          : "ADE applied the intervention outcome."),
+          : payload?.resolutionKind === "stale_phase_approval"
+            ? "ADE closed a stale phase approval without changing the run phase."
+            : "ADE applied the intervention outcome."),
         severity: payload?.resolutionKind === "cancel_run" ? "warning" : "info",
         audience: "mission_feed",
         source: "runtime",
@@ -10159,6 +10172,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           if (payload?.resolutionKind === "accept_defaults") return "Defaults accepted";
           if (payload?.resolutionKind === "skip_question") return "Question skipped";
           if (payload?.resolutionKind === "cancel_run") return "Run canceled";
+          if (payload?.resolutionKind === "stale_phase_approval") return "Stale phase approval closed";
           return "Intervention resolved";
         })(),
         detail: event.summary,
