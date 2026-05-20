@@ -76,8 +76,12 @@ export const MissionsHomeDashboard = React.memo(function MissionsHomeDashboard({
             <div key={entry.mission.id} className="flex items-center gap-2 px-2 py-1.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
               <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: COLORS.textPrimary }}>{entry.mission.title}</span>
               <span className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>{formatDurationMs(entry.durationMs)}</span>
-              <button style={outlineButton()} onClick={() => onViewMission(entry.mission.id)}>
-                {entry.action.toUpperCase()}
+              <button
+                style={outlineButton()}
+                aria-label={`View mission ${entry.mission.title}`}
+                onClick={() => onViewMission(entry.mission.id)}
+              >
+                VIEW
               </button>
             </div>
           ))}

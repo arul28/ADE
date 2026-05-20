@@ -741,7 +741,7 @@ export function createProviderOrchestratorAdapter(options?: {
       const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, "opencode", {
         memoryService: args.memoryService as any,
         projectId: args.memoryProjectId,
-        workerRuntime: "in_process",
+        workerRuntime: "managed_chat",
         memoryBriefing: args.memoryBriefing,
       });
       const provider = resolveProviderGroupForModel(descriptor);

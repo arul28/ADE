@@ -74,6 +74,9 @@ export function getMissionStatusBadgeConfig(
   missionStatus: MissionStatus,
   displayStatus?: MissionRunViewDisplayStatus | null,
 ) {
+  if (missionStatus === "completed") return STATUS_CONFIG.completed;
+  if (missionStatus === "failed") return STATUS_CONFIG.failed;
+  if (missionStatus === "canceled") return STATUS_CONFIG.canceled;
   return displayStatus ? RUN_VIEW_STATUS_CONFIG[displayStatus] : STATUS_CONFIG[missionStatus];
 }
 
@@ -81,6 +84,9 @@ export function isMissionVisiblyActive(
   missionStatus: MissionStatus,
   displayStatus?: MissionRunViewDisplayStatus | null,
 ): boolean {
+  if (missionStatus === "completed" || missionStatus === "failed" || missionStatus === "canceled") {
+    return false;
+  }
   if (displayStatus) return displayStatus === "running" || displayStatus === "starting";
   return missionStatus === "in_progress" || missionStatus === "planning";
 }
@@ -721,7 +727,23 @@ export function narrativeForEvent(ev: {
   if (ev.eventType === "fan_out_complete") return "Fan-out complete";
 
   if (ev.eventType === "phase_transition") return "Phase transitioned";
-  if (ev.eventType === "coordinator_steering") return "User steering directive";
+  if (ev.eventType === "plan_revised") {
+    const detail = isRecord(ev.detail) ? ev.detail : null;
+    const reason = typeof detail?.reason === "string" && detail.reason.trim().length > 0
+      ? detail.reason
+      : ev.reason;
+    return reason ? `Plan revised: ${compactText(reason, 110)}` : "Plan revised";
+  }
+  if (ev.eventType === "coordinator_steering") {
+    const detail = isRecord(ev.detail) ? ev.detail : null;
+    const directive = typeof detail?.directive === "string" && detail.directive.trim().length > 0
+      ? detail.directive
+      : ev.reason;
+    const target = typeof detail?.targetStepKey === "string" && detail.targetStepKey.trim().length > 0
+      ? ` for ${prettifyStepKey(detail.targetStepKey)}`
+      : "";
+    return directive ? `User steering${target}: ${compactText(directive, 110)}` : "User steering directive";
+  }
   if (ev.eventType === "coordinator_broadcast") return "Coordinator broadcast";
 
   return ev.reason || "Event recorded";

@@ -148,7 +148,7 @@ export function buildFullPrompt(
   opts?: {
     memoryService?: ReturnType<typeof createMemoryService>;
     projectId?: string;
-    workerRuntime?: "tracked_session" | "in_process";
+    workerRuntime?: "tracked_session" | "managed_chat" | "in_process";
     memoryBriefing?: OrchestratorExecutorStartArgs["memoryBriefing"];
   }
 ): {
@@ -159,6 +159,7 @@ export function buildFullPrompt(
   const { run, step } = args;
   const workerRuntime = opts?.workerRuntime ?? "tracked_session";
   const hasMissionTooling = workerRuntime === "tracked_session";
+  const hasManagedChatRuntime = workerRuntime === "managed_chat";
 
   // 1. Build system prompt
   const systemParts: string[] = [];
@@ -199,7 +200,7 @@ export function buildFullPrompt(
 
   // B. Propulsion principle
   systemParts.push(
-    "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Make the best decision you can and document your reasoning. The only time you should pause for human input is immediately after opening a blocking ask_user intervention that your phase policy explicitly allows."
+    "EXECUTION PROTOCOL: Execute immediately. Do not ask for confirmation or propose a plan and wait for approval. Do not summarize your instructions back. If you encounter a blocker you cannot work around, fail with a clear error message describing the blocker. Make the best decision you can and document your reasoning. The only time you should pause for human input is immediately after opening a blocking ADE question intervention that your phase policy explicitly allows."
   );
 
   // C. Compact plan view
@@ -258,6 +259,7 @@ export function buildFullPrompt(
       ? step.metadata.phaseAskQuestions as Record<string, unknown>
       : null;
   const phaseAllowsQuestions = phaseAskQuestionsRaw?.enabled === true;
+  const phaseRequiresQuestionBeforeExit = phaseAskQuestionsRaw?.requiredBeforeExit === true;
   const phaseMaxQuestionsRaw = Number(phaseAskQuestionsRaw?.maxQuestions ?? Number.NaN);
   const phaseMaxQuestions = Number.isFinite(phaseMaxQuestionsRaw)
     ? Math.max(1, Math.min(10, Math.floor(phaseMaxQuestionsRaw)))
@@ -288,19 +290,44 @@ export function buildFullPrompt(
     );
   }
 
+  const managedChatQuestionInstruction = [
+    "Use ADE's native chat question UI for blocking user input:",
+    "- Codex: call `request_user_input` with 1-3 structured questions, options, and a freeform/other answer when useful.",
+    "- Claude: use the AskUserQuestion / ask_user flow.",
+    "- OpenCode, Cursor, or Droid: use the provider's question mechanism so ADE can render the same inline question card.",
+  ].join(" ");
+  const activeQuestionInstruction = (() => {
+    if (phaseRequiresQuestionBeforeExit && answeredPlannerAnswer.length === 0) {
+      if (hasMissionTooling) {
+        return "- This planning phase requires at least one blocking user question before you return a successful plan. Use `ask_user` before `report_result`.";
+      }
+      if (hasManagedChatRuntime) {
+        return `- This planning phase requires at least one blocking user question before you return a successful plan. ${managedChatQuestionInstruction}`;
+      }
+      return "- This planning phase requires clarification, but this worker has no live question channel. Return a blocked final response that clearly names the missing user input.";
+    }
+    if (hasMissionTooling) {
+      return "- If you truly need clarification, use `ask_user` yourself rather than asking the coordinator to ask on your behalf.";
+    }
+    if (hasManagedChatRuntime) {
+      return `- If you truly need clarification, ask it yourself through the ADE chat question UI rather than asking the coordinator to ask on your behalf. ${managedChatQuestionInstruction}`;
+    }
+    return "- If you truly need clarification, state the narrow question in your final response instead of pretending you asked it.";
+  })();
+
   systemParts.push(
     phaseAllowsQuestions
       ? [
           `PHASE QUESTION POLICY (${phaseLabel.toUpperCase()}):`,
           "- You own clarification for this phase while this step is active.",
-          "- If you truly need clarification, use `ask_user` yourself rather than asking the coordinator to ask on your behalf.",
+          activeQuestionInstruction,
           `- If you open a question, bundle related points into one intervention${phaseMaxQuestions ? ` and keep the total rounds for this step within ${phaseMaxQuestions}` : ""}.`,
           "- After opening a blocking question, stop and wait. Do not continue execution, speculate in the transcript, or ask for the same input twice.",
         ].join("\n")
       : [
           `PHASE QUESTION POLICY (${phaseLabel.toUpperCase()}):`,
           "- Ask Questions is disabled for this phase.",
-          "- Do not use `ask_user` here unless the runtime itself opens a separate intervention for delivery or policy recovery.",
+          "- Do not open `ask_user`, `request_user_input`, or any other ADE chat question here unless the runtime itself opens a separate intervention for delivery or policy recovery.",
           "- Proceed with the best grounded assumption you can and document it in your result.",
         ].join("\n")
   );
@@ -312,7 +339,11 @@ export function buildFullPrompt(
         answeredPlannerQuestion.length > 0 ? `- Question: ${compactText(answeredPlannerQuestion, 360)}` : null,
         `- User answer: ${compactText(answeredPlannerAnswer, 500)}`,
         "- The clarification round for this planning phase is already consumed. Do not call `ask_user`, do not call `request_user_input`, and do not ask another natural-language clarification.",
-        "- Use the answer above as a hard planning input and return `report_result.plan.markdown` now."
+        hasMissionTooling
+          ? "- Use the answer above as a hard planning input and return `report_result.plan.markdown` now."
+          : hasManagedChatRuntime
+            ? "- Use the answer above as a hard planning input and return `### report_result` with `plan.markdown` now."
+            : "- Use the answer above as a hard planning input and return the plan now."
       ].filter((line): line is string => typeof line === "string").join("\n")
     );
   }
@@ -326,10 +357,19 @@ export function buildFullPrompt(
         [
           "PLANNING ARTIFACTS:",
           "- This planning step is inspect-only. Do not create directories or write plan files yourself.",
-          "- Do NOT use ExitPlanMode or any provider-native plan approval flow. Return your plan directly via `report_result`.",
-          "- Your `report_result` payload must include a first-class `plan` object with markdown content plus summary metadata.",
+          "- Do NOT use ExitPlanMode or any provider-native plan approval flow.",
+          hasMissionTooling
+            ? "- Return your plan directly via `report_result`."
+            : "- Return your plan directly in the final assistant response under a `### report_result` heading.",
+          hasMissionTooling
+            ? "- Your `report_result` payload must include a first-class `plan` object with markdown content plus summary metadata."
+            : "- Your `### report_result` section must include a first-class `plan.markdown` field plus summary metadata.",
           "- ADE will persist the canonical mission plan artifact after you complete successfully.",
-          "- If you need clarification from the user and phase policy allows it, use `ask_user` to surface structured questions yourself.",
+          hasMissionTooling
+            ? "- If you need clarification from the user and phase policy allows it, use `ask_user` to surface structured questions yourself."
+            : hasManagedChatRuntime
+              ? "- If you need clarification from the user and phase policy allows it, use ADE's native chat question UI yourself."
+              : "- If you need clarification from the user, return blocked and include the exact question."
         ].join("\n")
       );
     }
@@ -381,6 +421,21 @@ export function buildFullPrompt(
                 "- After calling `report_result`, also write the checkpoint and step-output files described below."
               ])
         ].join("\n")
+      : hasManagedChatRuntime
+        ? [
+            "RESULT REPORTING:",
+            "- Your full ADE chat transcript is captured and visible in the mission Conversations tab.",
+            "- Before you exit, include a final `### report_result` section with outcome, summary, filesChanged, and testsRun fields filled in as accurately as possible.",
+            "- Planning steps must include `plan.markdown` in that `### report_result` section.",
+            ...(readOnlyExecution
+              ? [
+                  "- This step cannot write files. Do NOT attempt `.ade/checkpoints/...` or `.ade/step-output-...md` writes.",
+                  "- Put your findings, plan, warnings, and suggested next steps into the final `### report_result` section instead."
+                ]
+              : [
+                  "- After the final `### report_result`, also write the checkpoint and step-output files described below when the step is allowed to write."
+                ])
+          ].join("\n")
       : [
           "RESULT REPORTING:",
           "- This worker is running in-process. You do NOT have ADE mission-control tools such as `report_status`, `report_result`, `get_pending_messages`, or `get_run_graph`.",
@@ -618,6 +673,15 @@ export function buildFullPrompt(
         "- stream_events: Poll for new orchestrator events",
         "From a shell worker, call these through the ADE CLI, for example `ade get_pending_messages --text`, `ade get_run_graph --text`, `ade get_worker_states --text`, or `ade message_worker <target-worker-step-key> --content \"...\" --text`.",
         "Use get_pending_messages periodically to check for steering directives or peer communications."
+      ].join("\n")
+    );
+  } else if (hasManagedChatRuntime) {
+    systemParts.push(
+      [
+        "RUNTIME LIMITS:",
+        "- This worker runs as a managed ADE chat session. ADE captures the live transcript for the mission Conversations tab.",
+        "- You may receive user answers through the provider's native question UI when phase policy allows questions.",
+        "- Complete the current assignment end-to-end unless you explicitly open a blocking question and wait for the answer."
       ].join("\n")
     );
   } else {

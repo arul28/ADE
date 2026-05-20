@@ -478,7 +478,13 @@ function buildCoordinatorPhasesSection(phases: PhaseCard[] | undefined): string 
         lines.push(`   Validation: ${phase.validationGate.tier.replace("-", " ")} ${phase.validationGate.required ? "(required)" : "(optional)"}`);
       }
       if (phase.askQuestions.enabled) {
-        lines.push(`   Ask Questions: enabled (the active phase owner may ask when needed, max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))} questions)`);
+        const limit = phase.askQuestions.maxQuestions == null
+          ? "unlimited"
+          : `max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions) || 5))} questions`;
+        const requirement = phase.askQuestions.requiredBeforeExit === true
+          ? "required before phase exit"
+          : "when needed";
+        lines.push(`   Ask Questions: enabled (${requirement}, ${limit})`);
       } else {
         lines.push("   Ask Questions: disabled");
       }
@@ -586,7 +592,7 @@ export function buildCoordinatorPromptInspector(args: {
       "Validation is a runtime contract, not advisory behavior.",
       "Dedicated required validation is auto-spawned by runtime; do not simulate it.",
       "If a Planning phase is enabled, start with one read-only planning worker, wait for its output, then explicitly advance phase before spawning code-changing workers.",
-      "Planning questions, when needed, should use ask_user. Provider-native approval prompts are not part of mission flow.",
+      "Planning questions, when needed, should use ADE's question UI (`ask_user` for tracked mission tools, `request_user_input` / provider-native question cards for managed chat workers). Provider-native plan approval prompts are not part of mission flow.",
       "Never spawn a code-changing worker while the run is still in Planning.",
     ].join("\n"),
     description: "System-owned coordinator protocol that sits outside editable phase text.",

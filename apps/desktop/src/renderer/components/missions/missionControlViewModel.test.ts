@@ -265,6 +265,105 @@ describe("deriveActivePhaseViewModel", () => {
     expect(vm?.whyActive).toContain("Mission canceled");
     expect(vm?.exitRequirements).toEqual([]);
   });
+
+  it("does not count phase approvals as open planning questions", () => {
+    const phases = [makePhase({ requiresApproval: true })];
+    const mission = makeMission(phases);
+    mission.interventions = [
+      {
+        id: "intervention-phase-approval",
+        missionId: mission.id,
+        laneId: mission.laneId,
+        interventionType: "phase_approval",
+        status: "open",
+        title: "Approve transition from Planning phase",
+        body: "Approve the planning output.",
+        requestedAction: "Approve the Planning output to proceed to Development.",
+        metadata: { source: "phase_approval_gate", phaseKey: "planning" },
+        createdAt: "2026-03-09T00:02:00.000Z",
+        updatedAt: "2026-03-09T00:02:00.000Z",
+        resolvedAt: null,
+        resolutionKind: null,
+        resolutionNote: null,
+      },
+    ];
+    const runGraph = makeRunGraph(phases);
+    runGraph.run.metadata = {
+      ...runGraph.run.metadata,
+      phaseRuntime: {
+        currentPhaseKey: "planning",
+        currentPhaseName: "Planning",
+      },
+    };
+    runGraph.steps = [
+      {
+        ...runGraph.steps[0]!,
+        status: "succeeded",
+        metadata: { phaseKey: "planning", phaseName: "Planning", phasePosition: 1 },
+      },
+    ];
+
+    const vm = deriveActivePhaseViewModel({
+      mission,
+      runGraph,
+      modelCapabilities: { profiles: [] },
+    });
+
+    expect(vm?.exitRequirements.join("\n")).not.toContain("open planning question");
+    expect(vm?.exitRequirements.join("\n")).toContain("approve the planning phase");
+  });
+
+  it("counts planner manual-input interventions as open planning questions", () => {
+    const phases = [makePhase({ requiresApproval: true })];
+    const mission = makeMission(phases);
+    mission.interventions = [
+      {
+        id: "intervention-planner-question",
+        missionId: mission.id,
+        laneId: mission.laneId,
+        interventionType: "manual_input",
+        status: "open",
+        title: "Planning clarification needed",
+        body: "Should screenshot proof block closeout?",
+        requestedAction: "Answer the planner question.",
+        metadata: {
+          source: "ask_user",
+          reasonCode: "planner_required_question_missing",
+          phaseKey: "planning",
+          questionOwnerKind: "planner",
+        },
+        createdAt: "2026-03-09T00:02:00.000Z",
+        updatedAt: "2026-03-09T00:02:00.000Z",
+        resolvedAt: null,
+        resolutionKind: null,
+        resolutionNote: null,
+      },
+    ];
+    const runGraph = makeRunGraph(phases);
+    runGraph.run.metadata = {
+      ...runGraph.run.metadata,
+      phaseRuntime: {
+        currentPhaseKey: "planning",
+        currentPhaseName: "Planning",
+      },
+    };
+    runGraph.steps = [
+      {
+        ...runGraph.steps[0]!,
+        status: "succeeded",
+        metadata: { phaseKey: "planning", phaseName: "Planning", phasePosition: 1 },
+      },
+    ];
+
+    const vm = deriveActivePhaseViewModel({
+      mission,
+      runGraph,
+      modelCapabilities: { profiles: [] },
+    });
+
+    expect(vm?.exitRequirements.join("\n")).toContain("Answer 1 open planning question(s).");
+    expect(vm?.exitRequirements.join("\n")).toContain("approve the planning phase");
+  });
 });
 
 describe("buildMissionArtifactGroups", () => {
@@ -340,6 +439,8 @@ describe("buildMissionArtifactGroups", () => {
     expect(grouped.all.some((entry) => entry.source === "checkpoint")).toBe(true);
     expect(grouped.all.some((entry) => entry.artifactType === "console_logs")).toBe(true);
     expect(grouped.all.some((entry) => entry.artifactType === "screenshot" && entry.missingExpectedEvidence)).toBe(true);
+    expect(grouped.byWorker.some((group) => group.key === "attempt-1" && group.label === "Validation step")).toBe(true);
+    expect(grouped.byWorker.some((group) => group.key === "planner" && group.label === "planner")).toBe(true);
   });
 
   it("prefers orchestrator artifact metadata titles when present", () => {

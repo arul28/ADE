@@ -2,13 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { PackDeltaDigestV1, PackExport, PackType } from "../../../shared/types";
+import type { PackDeltaDigestV1, PackExport, PackType, PhaseCard } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
 import { CoordinatorAgent } from "./coordinatorAgent";
 import { filterExecutionSteps } from "./orchestratorContext";
-import { updateMissionStateDocument } from "./missionStateDoc";
+import { readMissionStateDocument, updateMissionStateDocument } from "./missionStateDoc";
 import {
   buildCoordinatorEvaluationActionHints,
   createAiOrchestratorService,
@@ -48,6 +48,24 @@ function buildExport(packKey: string, packType: PackType, level: "lite" | "stand
     warnings: [],
     clipReason: null,
     omittedSections: null
+  };
+}
+
+function phaseCard(overrides: Partial<PhaseCard> & Pick<PhaseCard, "phaseKey" | "name" | "position">): PhaseCard {
+  return {
+    id: `phase-${overrides.phaseKey}`,
+    description: `${overrides.name} phase`,
+    instructions: `${overrides.name} instructions`,
+    model: { provider: "codex", modelId: "openai/gpt-5.3-codex", thinkingLevel: "medium" },
+    budget: {},
+    orderingConstraints: {},
+    askQuestions: { enabled: false },
+    validationGate: { tier: "self", required: false },
+    isBuiltIn: false,
+    isCustom: true,
+    createdAt: "2026-03-01T00:00:00.000Z",
+    updatedAt: "2026-03-01T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -2222,6 +2240,198 @@ describe("aiOrchestratorService", () => {
         "ai_orchestrator.coordinator_agent_v2_started",
         expect.objectContaining({ runId: started.run.id }),
       );
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("counts passing risk-aware validation as risk-note closeout evidence", async () => {
+    const fixture = await createFixture();
+    try {
+      const phase = {
+        id: "phase-risk-aware-closeout",
+        phaseKey: "risk_aware_closeout",
+        name: "Risk-aware closeout",
+        description: "Validate closeout risks.",
+        instructions: "Run closeout validation and report remaining risks.",
+        model: { provider: "codex", modelId: "openai/gpt-5.3-codex-spark", thinkingLevel: "medium" },
+        budget: {},
+        orderingConstraints: {},
+        askQuestions: { enabled: false },
+        validationGate: {
+          tier: "self",
+          required: true,
+          criteria: "Remaining risks are visible before completion.",
+          evidenceRequirements: ["risk_notes"],
+        },
+        requiresApproval: false,
+        isBuiltIn: false,
+        isCustom: true,
+        position: 0,
+        createdAt: "2026-05-05T00:00:00.000Z",
+        updatedAt: "2026-05-05T00:00:00.000Z",
+      } as const;
+      const mission = fixture.missionService.create({
+        prompt: "Verify risk-aware closeout validation.",
+        laneId: fixture.laneId,
+        phaseOverride: [phase as any],
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "closeout",
+            title: "Closeout",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: {
+              phaseKey: "risk_aware_closeout",
+              phaseName: "Risk-aware closeout",
+              stepType: "closeout",
+              phaseValidation: phase.validationGate,
+            },
+          },
+          {
+            stepKey: "validate_closeout",
+            title: "Validate: Closeout",
+            stepIndex: 1,
+            dependencyStepKeys: ["closeout"],
+            executorKind: "manual",
+            metadata: {
+              phaseKey: "risk_aware_closeout",
+              phaseName: "Risk-aware closeout",
+              stepType: "validation",
+              phaseValidation: phase.validationGate,
+              validationContract: {
+                level: "step",
+                tier: "self",
+                required: true,
+                criteria: "Outcome summary, changed-files summary, and remaining risks are visible before completion.",
+                evidence: [],
+                maxRetries: 2,
+              },
+            },
+          },
+        ],
+      });
+      const graph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 0 });
+      const step = graph.steps.find((entry) => entry.stepKey === "closeout");
+      const validatorStep = graph.steps.find((entry) => entry.stepKey === "validate_closeout");
+      if (!step) throw new Error("Expected seeded step");
+      if (!validatorStep) throw new Error("Expected seeded validator step");
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'succeeded',
+              metadata_json = ?,
+              updated_at = ?
+          where id = ?
+        `,
+        [
+          JSON.stringify({
+            ...(step.metadata ?? {}),
+            validationContract: {
+              level: "step",
+              tier: "self",
+              required: true,
+              criteria: "Outcome summary, changed-files summary, and remaining risks are visible before completion.",
+              evidence: [],
+              maxRetries: 2,
+            },
+            validationState: "pass",
+            validationPassedAt: "2026-05-05T00:01:00.000Z",
+            lastValidationReport: {
+              verdict: "pass",
+              summary: "Closeout validation passed.",
+              findings: [],
+            },
+            lastResultReport: { summary: "Closeout worker finished." },
+          }),
+          "2026-05-05T00:01:00.000Z",
+          step.id,
+        ],
+      );
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'succeeded',
+              updated_at = ?
+          where id = ?
+        `,
+        [
+          "2026-05-05T00:01:00.000Z",
+          validatorStep.id,
+        ],
+      );
+      fixture.db.run(
+        `update orchestrator_runs set status = 'succeeded', completed_at = ?, updated_at = ? where id = ?`,
+        ["2026-05-05T00:01:00.000Z", "2026-05-05T00:01:00.000Z", started.run.id],
+      );
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      await updateMissionStateDocument({
+        projectRoot: fixture.projectRoot,
+        missionId: mission.id,
+        runId: started.run.id,
+        goal: mission.prompt,
+        patch: {
+          finalization: {
+            policy: {
+              kind: "result_lane",
+              targetBranch: null,
+              draft: null,
+              prDepth: null,
+              autoRebase: null,
+              ciGating: null,
+              autoLand: null,
+              autoResolveConflicts: null,
+              archiveLaneOnLand: null,
+              mergeMethod: null,
+              conflictResolverModel: null,
+              reasoningEffort: null,
+              description: "Assemble a single result lane for the mission and stop before external PR creation.",
+            },
+            status: "finalizing",
+            executionComplete: true,
+            contractSatisfied: false,
+            blocked: false,
+            blockedReason: null,
+            summary: "Execution finished, but the closeout contract is still incomplete.",
+            detail: "risk notes",
+            resolverJobId: null,
+            integrationLaneId: null,
+            resultLaneId: fixture.laneId,
+            queueGroupId: null,
+            queueId: null,
+            activePrId: null,
+            waitReason: null,
+            proposalUrl: null,
+            prUrls: [],
+            reviewStatus: null,
+            mergeReadiness: null,
+            requirements: [],
+            warnings: [],
+            updatedAt: "2026-05-05T00:01:00.000Z",
+            startedAt: "2026-05-05T00:01:00.000Z",
+            completedAt: null,
+          },
+        },
+      });
+
+      const view = await fixture.aiOrchestratorService.getRunView({ missionId: mission.id, runId: started.run.id });
+      const riskNotes = view?.closeoutRequirements.find((entry) => entry.key === "risk_notes");
+      const validationVerdict = view?.closeoutRequirements.find((entry) => entry.key === "validation_verdict");
+      const missionAfterView = fixture.missionService.get(mission.id);
+      const stateDocAfterView = await readMissionStateDocument({ projectRoot: fixture.projectRoot, runId: started.run.id });
+
+      expect(riskNotes?.status).toBe("present");
+      expect(riskNotes?.source).toBe("runtime");
+      expect(riskNotes?.detail).toContain("No unresolved risk findings");
+      expect(validationVerdict?.detail).toBe("Validation passed.");
+      expect(view?.lifecycle.displayStatus).toBe("completed");
+      expect(missionAfterView?.status).toBe("completed");
+      expect(stateDocAfterView?.finalization?.contractSatisfied).toBe(true);
+      expect(stateDocAfterView?.finalization?.status).toBe("completed");
     } finally {
       fixture.dispose();
     }
@@ -5302,6 +5512,135 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("hydrates running worker threads when listing conversations after a missed start event", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "List running worker threads from persisted attempts.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "worker-live", title: "Live worker", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.stepKey === "worker-live");
+      if (!readyStep) throw new Error("Expected worker-live step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_session_id = ?
+          where id = ?
+        `,
+        ["session-live-worker", attempt.id]
+      );
+      fixture.db.run(
+        `
+          delete from orchestrator_chat_threads
+          where mission_id = ?
+            and thread_type = 'worker'
+        `,
+        [mission.id]
+      );
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+
+      expect(thread?.threadType).toBe("worker");
+      expect(thread?.title).toBe("Worker: worker-live");
+      expect(thread?.status).toBe("active");
+      expect(thread?.sessionId).toBe("session-live-worker");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("does not hydrate stale running attempts on terminal steps", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Ignore stale running attempts on skipped steps.",
+        laneId: fixture.laneId
+      });
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+
+      fixture.orchestratorService.addSteps({
+        runId,
+        steps: [{ stepKey: "worker-stale", title: "Stale worker", stepIndex: 0, dependencyStepKeys: [], executorKind: "manual", metadata: { instructions: "Do the work" } }]
+      });
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((step) => step.stepKey === "worker-stale");
+      if (!readyStep) throw new Error("Expected worker-stale step");
+
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual"
+      });
+
+      fixture.db.run(
+        `
+          update orchestrator_attempts
+          set executor_session_id = ?
+          where id = ?
+        `,
+        ["session-stale-worker", attempt.id]
+      );
+      fixture.db.run(
+        `
+          update orchestrator_steps
+          set status = 'skipped'
+          where id = ?
+        `,
+        [readyStep.id]
+      );
+      fixture.db.run(
+        `
+          delete from orchestrator_chat_threads
+          where mission_id = ?
+            and thread_type = 'worker'
+        `,
+        [mission.id]
+      );
+
+      const thread = fixture.aiOrchestratorService
+        .listChatThreads({ missionId: mission.id, includeClosed: true })
+        .find((entry) => entry.attemptId === attempt.id);
+
+      expect(thread).toBeUndefined();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("reconciles attempts immediately on terminal runtime end signals", async () => {
     const fixture = await createFixture();
     try {
@@ -5967,6 +6306,34 @@ describe("aiOrchestratorService", () => {
       expect(result.started).toBeTruthy();
       const refreshed = fixture.missionService.get(mission.id);
       expect(refreshed?.status).toBe("in_progress");
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps mandatory Planning as the initial runtime phase when legacy policy disables planning", async () => {
+    const fixture = await createFixture({ aiIntegrationService: null });
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Build a launch dashboard with a required planning pass.",
+        laneId: fixture.laneId
+      });
+      setMissionPlanningMode(fixture.db, mission.id, "off");
+
+      const result = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual",
+        plannerProvider: "claude"
+      });
+
+      expect(result.started).toBeTruthy();
+      const metadata = result.started?.run.metadata ?? {};
+      const phaseRuntime = metadata.phaseRuntime as Record<string, unknown> | undefined;
+      const phaseOverride = Array.isArray(metadata.phaseOverride) ? metadata.phaseOverride : [];
+      expect(phaseRuntime?.currentPhaseKey).toBe("planning");
+      expect(phaseRuntime?.currentPhaseName).toBe("Planning");
+      expect((phaseOverride[0] as { phaseKey?: string } | undefined)?.phaseKey).toBe("planning");
     } finally {
       fixture.dispose();
     }
@@ -6749,6 +7116,134 @@ describe("aiOrchestratorService", () => {
         )
       ).toBe(true);
       expect(alphaDirectives).toHaveLength(0);
+
+      const steeringEvents = fixture.orchestratorService.listRuntimeEvents({
+        runId: started.run.id,
+        eventTypes: ["coordinator_steering"],
+        limit: 5,
+      });
+      expect(
+        steeringEvents.some((entry) =>
+          String((entry.payload as Record<string, unknown> | null)?.directive ?? "").includes("Prioritize integration tests")
+            && (entry.payload as Record<string, unknown> | null)?.targetStepKey === "beta"
+        ),
+      ).toBe(true);
+      const timelineGraph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      expect(
+        timelineGraph.timeline.some((entry) =>
+          entry.eventType === "coordinator_steering"
+            && String((entry.detail as Record<string, unknown> | null)?.directive ?? "").includes("Prioritize integration tests")
+        ),
+      ).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("transitions the active run phase when a phase approval intervention is approved", async () => {
+    const fixture = await createFixture();
+    try {
+      const planningPhase = phaseCard({
+        phaseKey: "planning",
+        name: "Planning",
+        position: 0,
+        requiresApproval: true,
+        orderingConstraints: { mustBeFirst: true },
+      });
+      const developmentPhase = phaseCard({
+        phaseKey: "development",
+        name: "Development",
+        position: 1,
+        orderingConstraints: { mustFollow: ["planning"] },
+      });
+      const mission = fixture.missionService.create({
+        prompt: "Approve planning before development.",
+        laneId: fixture.laneId,
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        metadata: {
+          phaseOverride: [planningPhase, developmentPhase],
+          phaseRuntime: {
+            currentPhaseKey: "planning",
+            currentPhaseName: "Planning",
+            currentPhaseModel: planningPhase.model,
+            currentPhaseInstructions: planningPhase.instructions,
+            currentPhaseValidation: planningPhase.validationGate,
+            currentPhaseBudget: planningPhase.budget,
+            transitionedAt: "2026-03-01T00:00:00.000Z",
+            transitions: [
+              {
+                fromPhaseKey: null,
+                fromPhaseName: null,
+                toPhaseKey: "planning",
+                toPhaseName: "Planning",
+                at: "2026-03-01T00:00:00.000Z",
+                reason: "run_initialized",
+              },
+            ],
+            phaseBudgets: {
+              planning: {
+                enteredAt: "2026-03-01T00:00:00.000Z",
+                usedTokens: 0,
+                usedCostUsd: 0,
+              },
+            },
+          },
+        },
+        steps: [
+          {
+            stepKey: "plan-work",
+            title: "Plan work",
+            stepIndex: 0,
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+            },
+          },
+        ],
+      });
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      const approval = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "phase_approval",
+        title: "Approve transition from Planning phase",
+        body: "Approve the planning output.",
+        requestedAction: "Approve the Planning output to proceed to Development.",
+        pauseMission: true,
+        metadata: {
+          runId: started.run.id,
+          phaseKey: "planning",
+          phaseName: "Planning",
+          targetPhaseKey: "development",
+          targetPhaseName: "Development",
+          source: "phase_approval_gate",
+        },
+      });
+
+      fixture.aiOrchestratorService.steerMission({
+        missionId: mission.id,
+        interventionId: approval.id,
+        directive: "Approved. Continue into development.",
+        priority: "instruction",
+        resolutionKind: "answer_provided",
+      });
+
+      const graph = fixture.orchestratorService.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      const phaseRuntime = graph.run.metadata?.phaseRuntime as Record<string, unknown> | undefined;
+      expect(phaseRuntime?.currentPhaseKey).toBe("development");
+      expect(phaseRuntime?.currentPhaseName).toBe("Development");
+      expect(phaseRuntime?.currentPhaseModel).toEqual(developmentPhase.model);
+      expect(
+        graph.timeline.some(
+          (entry) =>
+            entry.eventType === "phase_transition"
+            && entry.reason === "phase_approval_resolved"
+            && (entry.detail as Record<string, unknown> | null)?.interventionId === approval.id,
+        ),
+      ).toBe(true);
+      expect(fixture.missionService.get(mission.id)?.interventions.find((entry) => entry.id === approval.id)?.status).toBe("resolved");
     } finally {
       fixture.dispose();
     }
@@ -8752,6 +9247,145 @@ describe("aiOrchestratorService", () => {
       expect(missionAfterSync?.resultLaneId).toBe("result-lane-1");
 
       aiOrchestratorWithPr.dispose();
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps blocked result-lane finalization from being reclassified as completed", async () => {
+    const fixture = await createFixture();
+    try {
+      const defaultProfile = fixture.missionService.listPhaseProfiles().find((profile) => profile.isDefault);
+      if (!defaultProfile) throw new Error("Expected default phase profile");
+      const mission = fixture.missionService.create({
+        prompt: "Complete work but keep result-lane conflicts surfaced.",
+        laneId: fixture.laneId,
+        phaseProfileId: defaultProfile.id,
+        phaseOverride: defaultProfile.phases.map((phase, index) => ({
+          ...phase,
+          position: index,
+          validationGate: {
+            ...phase.validationGate,
+            tier: "none",
+            required: false,
+            criteria: undefined,
+            evidenceRequirements: undefined,
+          },
+        })),
+        plannedSteps: [
+          { index: 0, title: "Worker task", detail: "Task", kind: "implementation", metadata: { stepType: "implementation" } },
+        ],
+      });
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "worker-task",
+            title: "Worker task",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation", instructions: "Do the work" },
+          },
+        ],
+      });
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [new Date().toISOString(), started.run.id],
+      );
+      fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      const runId = started.run.id;
+
+      fixture.orchestratorService.tick({ runId });
+      const graph = fixture.orchestratorService.getRunGraph({ runId });
+      const readyStep = graph.steps.find((entry) => entry.status === "ready") ?? graph.steps[0];
+      if (!readyStep) throw new Error("Expected mission step");
+      const attempt = await fixture.orchestratorService.startAttempt({
+        runId,
+        stepId: readyStep.id,
+        ownerId: "test-owner",
+        executorKind: "manual",
+      });
+      await fixture.orchestratorService.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        result: {
+          schema: "ade.orchestratorAttempt.v1",
+          success: true,
+          summary: "Done",
+          outputs: null,
+          warnings: [],
+          sessionId: null,
+          trackedSession: false,
+        },
+      });
+      fixture.orchestratorService.tick({ runId });
+      expect(fixture.aiOrchestratorService.finalizeRun({ runId }).finalized).toBe(true);
+
+      await updateMissionStateDocument({
+        projectRoot: fixture.projectRoot,
+        missionId: mission.id,
+        runId,
+        goal: mission.prompt,
+        patch: {
+          finalization: {
+            policy: {
+              kind: "result_lane",
+              targetBranch: null,
+              draft: null,
+              prDepth: null,
+              autoRebase: null,
+              ciGating: null,
+              autoLand: null,
+              autoResolveConflicts: null,
+              archiveLaneOnLand: null,
+              mergeMethod: null,
+              conflictResolverModel: null,
+              reasoningEffort: null,
+              description: "Assemble a single result lane for the mission and stop before external PR creation.",
+            },
+            status: "finalizing",
+            executionComplete: true,
+            contractSatisfied: false,
+            blocked: true,
+            blockedReason: "lane-a: merge conflict",
+            summary: "Result lane assembly is blocked by merge conflicts.",
+            detail: "lane-a: merge conflict",
+            resolverJobId: null,
+            integrationLaneId: null,
+            resultLaneId: "result-lane-conflict",
+            queueGroupId: null,
+            queueId: null,
+            activePrId: null,
+            waitReason: null,
+            proposalUrl: null,
+            prUrls: [],
+            reviewStatus: null,
+            mergeReadiness: null,
+            requirements: [],
+            warnings: ["lane-a: merge conflict"],
+            updatedAt: new Date().toISOString(),
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+          },
+        },
+      });
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "intervention_required",
+        lastError: "Result lane merge conflict: result-lane-conflict",
+      });
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "run_completed", { nextMissionStatus: "completed" });
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.status).toBe("intervention_required");
+      const stateDoc = await readMissionStateDocument({ projectRoot: fixture.projectRoot, runId });
+      expect(stateDoc?.finalization?.status).toBe("finalizing");
+      expect(stateDoc?.finalization?.blocked).toBe(true);
+      expect(stateDoc?.finalization?.contractSatisfied).toBe(false);
+      expect(stateDoc?.finalization?.summary).toBe("Result lane assembly is blocked by merge conflicts.");
     } finally {
       fixture.dispose();
     }

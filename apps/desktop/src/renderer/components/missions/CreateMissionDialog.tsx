@@ -27,6 +27,7 @@ import type {
   MissionPermissionConfig,
   CreateMissionArgs,
   MissionPreflightResult,
+  SmartBudgetConfig,
 } from "../../../shared/types";
 import { BUILT_IN_PROFILES } from "../../../shared/modelProfiles";
 import { getDefaultModelDescriptor, resolveModelDescriptor } from "../../../shared/modelRegistry";
@@ -63,6 +64,7 @@ export type CreateDraft = {
 export type CreateMissionDefaults = {
   orchestratorModel?: ModelConfig;
   permissionConfig?: MissionPermissionConfig;
+  smartBudget?: SmartBudgetConfig;
 };
 
 const DEFAULT_AGENT_RUNTIME: MissionAgentRuntimeConfig = {
@@ -82,6 +84,13 @@ const HIGH_TEAMMATE_COUNT_GUARDRAIL_THRESHOLD = 5;
 const CREATE_DIALOG_CACHE_TTL_MS = 60_000;
 const CREATE_DIALOG_PREWARM_DELAY_MS = 300;
 const CREATE_DIALOG_PHASE_SYNC_DELAY_MS = 1_500;
+
+function cloneSmartBudgetConfig(config: SmartBudgetConfig): SmartBudgetConfig {
+  return {
+    ...config,
+    ...(config.providerLimits ? { providerLimits: { ...config.providerLimits } } : {}),
+  };
+}
 
 type CreateMissionDialogAiStatusCache = {
   availableModelIds: string[];
@@ -165,6 +174,7 @@ function phaseProfileComparable(phase: PhaseCard) {
     askQuestions: {
       enabled: phase.askQuestions.enabled,
       maxQuestions: phase.askQuestions.maxQuestions ?? null,
+      requiredBeforeExit: phase.askQuestions.requiredBeforeExit === true,
     },
     validationGate: {
       tier: phase.validationGate.tier,
@@ -244,7 +254,9 @@ function buildDefaultModelConfig(
     orchestratorModel,
     decisionTimeoutCapHours: 24,
     intelligenceConfig: undefined,
-    smartBudget: { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
+    smartBudget: defaults?.smartBudget
+      ? cloneSmartBudgetConfig(defaults.smartBudget)
+      : { enabled: false, fiveHourThresholdUsd: 10, weeklyThresholdUsd: 50 },
   };
 }
 

@@ -1,6 +1,7 @@
 import type {
   GetModelCapabilitiesResult,
   MissionDetail,
+  MissionIntervention,
   OrchestratorArtifact,
   OrchestratorRunGraph,
   OrchestratorWorkerCheckpoint,
@@ -30,6 +31,30 @@ function coercePhaseCards(mission: MissionDetail | null, runGraph: OrchestratorR
     ? mission.phaseConfiguration.selectedPhases
     : [];
   return [...missionPhases].sort((a, b) => a.position - b.position);
+}
+
+function normalizeInterventionMeta(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isPlanningQuestionIntervention(intervention: MissionIntervention): boolean {
+  if (intervention.status !== "open" || intervention.interventionType !== "manual_input") return false;
+  const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
+  const source = normalizeInterventionMeta(metadata?.source);
+  const reasonCode = normalizeInterventionMeta(metadata?.reasonCode);
+  const phase = normalizeInterventionMeta(metadata?.phase);
+  const phaseKey = normalizeInterventionMeta(metadata?.phaseKey);
+  const phaseName = normalizeInterventionMeta(metadata?.phaseName);
+  const stepType = normalizeInterventionMeta(metadata?.stepType);
+  const ownerKind = normalizeInterventionMeta(metadata?.questionOwnerKind);
+  return source === "ask_user"
+    || reasonCode === "planner_natural_question"
+    || reasonCode === "planner_required_question_missing"
+    || phase === "planning"
+    || phaseKey === "planning"
+    || phaseName === "planning"
+    || stepType === "planning"
+    || ownerKind === "planner";
 }
 
 function terminalPhaseSummary(args: {
@@ -175,8 +200,9 @@ export function deriveActivePhaseViewModel(args: {
     } else {
       exitRequirements.push("The coordinator must either ask planning questions or start the planning worker.");
     }
-    if (openInterventions.length > 0) {
-      exitRequirements.push(`Answer ${openInterventions.length} open planning question(s).`);
+    const openPlanningQuestions = openInterventions.filter(isPlanningQuestionIntervention);
+    if (openPlanningQuestions.length > 0) {
+      exitRequirements.push(`Answer ${openPlanningQuestions.length} open planning question(s).`);
     }
     if (activePhase.requiresApproval) {
       exitRequirements.push("Review the generated plan and explicitly approve the planning phase before ADE moves into Development.");
@@ -257,6 +283,8 @@ export type MissionArtifactRecord = {
   artifactType: string;
   stepId: string | null;
   stepTitle: string | null;
+  workerId: string | null;
+  workerLabel: string | null;
   phaseKey: string | null;
   phaseName: string | null;
   uri: string | null;
@@ -270,6 +298,7 @@ export type GroupedMissionArtifacts = {
   all: MissionArtifactRecord[];
   byPhase: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
   byStep: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
+  byWorker: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
   byType: Array<{ key: string; label: string; items: MissionArtifactRecord[] }>;
   expectedEvidence: ValidationEvidenceRequirement[];
 };
@@ -287,6 +316,13 @@ function normalizeMissionArtifacts(mission: MissionDetail | null): MissionArtifa
     }) ?? artifact.artifactType,
     stepId: toOptionalString(artifact.metadata?.stepId),
     stepTitle: toOptionalString(artifact.metadata?.stepTitle),
+    workerId: toOptionalString(artifact.metadata?.attemptId)
+      ?? toOptionalString(artifact.metadata?.workerId)
+      ?? toOptionalString(artifact.metadata?.workerName)
+      ?? toOptionalString(artifact.createdBy),
+    workerLabel: toOptionalString(artifact.metadata?.workerName)
+      ?? toOptionalString(artifact.metadata?.workerLabel)
+      ?? toOptionalString(artifact.createdBy),
     phaseKey: toOptionalString(artifact.metadata?.phaseKey),
     phaseName: toOptionalString(artifact.metadata?.phaseName),
     uri: artifact.uri,
@@ -301,6 +337,32 @@ type StepMap = Map<string, OrchestratorRunGraph["steps"][number]>;
 
 function buildStepMap(runGraph: OrchestratorRunGraph | null): StepMap {
   return new Map((runGraph?.steps ?? []).map((step) => [step.id, step] as const));
+}
+
+type AttemptMap = Map<string, OrchestratorRunGraph["attempts"][number]>;
+
+function buildAttemptMap(runGraph: OrchestratorRunGraph | null): AttemptMap {
+  return new Map((runGraph?.attempts ?? []).map((attempt) => [attempt.id, attempt] as const));
+}
+
+function shortArtifactWorkerId(id: string): string {
+  return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+function resolveArtifactWorkerLabel(args: {
+  artifactMeta?: Record<string, unknown> | null;
+  stepMeta?: Record<string, unknown> | null;
+  stepTitle?: string | null;
+  attemptId?: string | null;
+  attemptOwnerId?: string | null;
+}): string | null {
+  return toOptionalString(args.artifactMeta?.workerName)
+    ?? toOptionalString(args.artifactMeta?.workerLabel)
+    ?? toOptionalString(args.stepMeta?.workerName)
+    ?? toOptionalString(args.stepMeta?.workerLabel)
+    ?? toOptionalString(args.attemptOwnerId)
+    ?? args.stepTitle
+    ?? (args.attemptId ? `Worker ${shortArtifactWorkerId(args.attemptId)}` : null);
 }
 
 function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: OrchestratorArtifact[]): MissionArtifactRecord[] {
@@ -320,6 +382,13 @@ function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: Orchestrat
       }) ?? artifact.kind,
       stepId: artifact.stepId,
       stepTitle: step?.title ?? null,
+      workerId: artifact.attemptId ?? artifact.stepId ?? null,
+      workerLabel: resolveArtifactWorkerLabel({
+        artifactMeta,
+        stepMeta: metadata,
+        stepTitle: step?.title ?? null,
+        attemptId: artifact.attemptId,
+      }),
       phaseKey: toOptionalString(metadata?.phaseKey),
       phaseName: toOptionalString(metadata?.phaseName),
       uri: resolveOrchestratorArtifactUri({
@@ -335,10 +404,12 @@ function normalizeOrchestratorArtifacts(stepById: StepMap, artifacts: Orchestrat
   });
 }
 
-function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorkerCheckpoint[]): MissionArtifactRecord[] {
+function normalizeCheckpoints(stepById: StepMap, attemptById: AttemptMap, checkpoints: OrchestratorWorkerCheckpoint[]): MissionArtifactRecord[] {
   return checkpoints.map((checkpoint) => {
     const step = stepById.get(checkpoint.stepId) ?? null;
     const metadata = isRecord(step?.metadata) ? step.metadata : null;
+    const attempt = attemptById.get(checkpoint.attemptId) ?? null;
+    const attemptMetadata = isRecord(attempt?.metadata) ? attempt.metadata : null;
     return {
       id: checkpoint.id,
       source: "checkpoint",
@@ -347,6 +418,13 @@ function normalizeCheckpoints(stepById: StepMap, checkpoints: OrchestratorWorker
       artifactType: "checkpoint",
       stepId: checkpoint.stepId,
       stepTitle: step?.title ?? null,
+      workerId: checkpoint.attemptId ?? checkpoint.stepId ?? null,
+      workerLabel: resolveArtifactWorkerLabel({
+        stepMeta: metadata,
+        stepTitle: step?.title ?? checkpoint.stepKey,
+        attemptId: checkpoint.attemptId,
+        attemptOwnerId: toOptionalString(attemptMetadata?.ownerId),
+      }),
       phaseKey: toOptionalString(metadata?.phaseKey),
       phaseName: toOptionalString(metadata?.phaseName),
       uri: checkpoint.filePath,
@@ -377,9 +455,10 @@ export function buildMissionArtifactGroups(args: {
   checkpoints: OrchestratorWorkerCheckpoint[];
 }): GroupedMissionArtifacts {
   const stepById = buildStepMap(args.runGraph);
+  const attemptById = buildAttemptMap(args.runGraph);
   const missionArtifacts = normalizeMissionArtifacts(args.mission);
   const orchestratorArtifacts = normalizeOrchestratorArtifacts(stepById, args.orchestratorArtifacts);
-  const checkpointArtifacts = normalizeCheckpoints(stepById, args.checkpoints);
+  const checkpointArtifacts = normalizeCheckpoints(stepById, attemptById, args.checkpoints);
   const all = [...missionArtifacts, ...orchestratorArtifacts, ...checkpointArtifacts]
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 
@@ -398,6 +477,8 @@ export function buildMissionArtifactGroups(args: {
       artifactType: requirement,
       stepId: null,
       stepTitle: null,
+      workerId: null,
+      workerLabel: null,
       phaseKey: null,
       phaseName: null,
       uri: null,
@@ -419,6 +500,11 @@ export function buildMissionArtifactGroups(args: {
       all,
       (item) => item.stepId ?? "mission",
       (item) => item.stepTitle ?? "Mission-level artifacts",
+    ),
+    byWorker: buildGroups(
+      all,
+      (item) => item.workerId ?? item.stepId ?? "mission",
+      (item) => item.workerLabel ?? item.stepTitle ?? "Mission-level artifacts",
     ),
     byType: buildGroups(
       all,

@@ -94,6 +94,9 @@ async function loadScenarioModule(scenarioId: string): Promise<void> {
     case "lanes":
       await import("./lanes");
       return;
+    case "missions":
+      await import("./missions");
+      return;
     case "boot":
       await import("./boot");
       return;

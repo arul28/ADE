@@ -36,12 +36,6 @@ import { MissionActiveProvider } from "./MissionActiveContext";
 
 import type { CreateDraft, CreateMissionDefaults } from "./CreateMissionDialog";
 import { buildMissionLaunchRequest, prewarmCreateMissionDialogCache } from "./CreateMissionDialog";
-import {
-  hasFreshPhaseItems,
-  hasFreshPhaseProfiles,
-  setCachedPhaseItems,
-  setCachedPhaseProfiles,
-} from "./missionDialogDataCache";
 
 /* Re-export helpers used by tests */
 export { collapsePlannerStreamMessages, resolveStepHeartbeatAt } from "./missionHelpers";
@@ -207,11 +201,12 @@ const selectPageData = (s: MissionsStore) => ({
 /* ════════════════════ MAIN COMPONENT ════════════════════ */
 
 function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const missionsStore = useMissionsStoreApi();
   const lanes = useAppStore((s) => s.lanes);
   const mappedLanes = useMemo(() => lanes.map((l) => ({ id: l.id, name: l.name })), [lanes]);
   const appliedQueryMissionIdRef = useRef<string | null>(null);
+  const pendingQueryMissionIdRef = useRef<string | null>(null);
 
   /* ── Fine-grained store slice via useShallow (VAL-ARCH-008) ── */
   const {
@@ -233,6 +228,7 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
     () => ({
       orchestratorModel: missionSettingsDraft.defaultOrchestratorModel,
       permissionConfig: missionSettingsDraft.permissionConfig,
+      smartBudget: missionSettingsDraft.smartBudget,
     }),
     [missionSettingsDraft],
   );
@@ -286,18 +282,6 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
     let cancelled = false;
     const timer = window.setTimeout(() => {
       if (cancelled) return;
-      if (!hasFreshPhaseProfiles()) {
-        void window.ade.missions.listPhaseProfiles({}).then((profiles) => {
-          if (cancelled || profiles.length === 0) return;
-          setCachedPhaseProfiles(profiles);
-        }).catch(() => {});
-      }
-      if (!hasFreshPhaseItems()) {
-        void window.ade.missions.listPhaseItems({}).then((items) => {
-          if (cancelled) return;
-          setCachedPhaseItems(items);
-        }).catch(() => {});
-      }
       void prewarmCreateMissionDialogCache().catch(() => {});
     }, 1_500);
     return () => {
@@ -325,12 +309,31 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
     const missionParam = (searchParams.get("missionId") ?? "").trim();
     if (!missionParam) {
       appliedQueryMissionIdRef.current = null;
+      pendingQueryMissionIdRef.current = null;
       return;
     }
     if (appliedQueryMissionIdRef.current === missionParam) return;
     appliedQueryMissionIdRef.current = missionParam;
+    pendingQueryMissionIdRef.current = missionParam;
     void missionsStore.getState().selectMission(missionParam);
   }, [active, missionsStore, searchParams]);
+
+  useEffect(() => {
+    if (!active || !selectedMissionId) return;
+    const pendingQueryMissionId = pendingQueryMissionIdRef.current;
+    if (pendingQueryMissionId) {
+      if (pendingQueryMissionId === selectedMissionId) {
+        pendingQueryMissionIdRef.current = null;
+      }
+      return;
+    }
+    const missionParam = (searchParams.get("missionId") ?? "").trim();
+    if (missionParam === selectedMissionId) return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("missionId", selectedMissionId);
+    appliedQueryMissionIdRef.current = selectedMissionId;
+    setSearchParams(nextParams, { replace: true });
+  }, [active, searchParams, selectedMissionId, setSearchParams]);
 
   /* ── Checkpoint polling via shared coordinator ── */
   const runGraph = useMissionsStore((s) => s.runGraph);
@@ -474,6 +477,7 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
 
   /* ════════════════════ RENDER ════════════════════ */
   return (
+    <div data-route="missions" className="flex h-full min-h-0 flex-col bg-bg">
     <LazyMotion features={domAnimation}>
       <Group
         id="missions-layout"
@@ -539,6 +543,7 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
         />
       ) : null}
     </LazyMotion>
+    </div>
   );
 }
 

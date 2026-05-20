@@ -7,6 +7,7 @@ import type { AgentChatModelInfo, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
 import type { MissionExecutionPolicy, MissionPermissionConfig, MissionProviderPermissions } from "./missions";
 import type { MissionModelConfig, ModelConfig } from "./models";
+import type { SmartBudgetConfig } from "./budget";
 import type { LinearSyncConfig } from "./linearSync";
 import type { LocalProviderFamily } from "../modelRegistry";
 
@@ -1300,6 +1301,7 @@ export type AiOrchestratorConfig = {
   maxPerStepTokenBudget?: number;
   defaultExecutionPolicy?: Partial<MissionExecutionPolicy>;
   defaultOrchestratorModel?: ModelConfig;
+  smartBudget?: SmartBudgetConfig;
   autoResolveInterventions?: boolean;
   interventionConfidenceThreshold?: number;
   hooks?: Partial<Record<AiOrchestratorHookEvent, AiOrchestratorHookConfig>>;

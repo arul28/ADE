@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { SquaresFour } from "@phosphor-icons/react";
 import type {
   MissionArtifact,
@@ -15,6 +15,17 @@ import {
   STEP_STATUS_HEX,
 } from "./missionHelpers";
 import { OrchestratorDAG } from "./OrchestratorDAG";
+
+const LARGE_PLAN_STEP_THRESHOLD = 80;
+const GROUP_STEP_PREVIEW_LIMIT = 6;
+const PHASE_STEP_PREVIEW_LIMIT = 10;
+
+function toggleSetMember(current: Set<string>, value: string): Set<string> {
+  const next = new Set(current);
+  if (next.has(value)) next.delete(value);
+  else next.add(value);
+  return next;
+}
 
 type PhaseSection = {
   key: string;
@@ -167,6 +178,15 @@ function kindLabel(kind: PlanGroup["kind"]): string {
   }
 }
 
+export function shouldCompactPlanStepLists(stepCount: number): boolean {
+  return stepCount > LARGE_PLAN_STEP_THRESHOLD;
+}
+
+export function getVisiblePlanSteps<T>(steps: T[], compact: boolean, expanded: boolean, limit: number): T[] {
+  if (!compact || expanded || steps.length <= limit) return steps;
+  return steps.slice(0, limit);
+}
+
 export function buildExecutableProgressLabel(steps: Array<Pick<OrchestratorStep, "status">>): string {
   if (steps.length === 0) return "0 registered executable steps";
   const succeeded = steps.filter((step) => step.status === "succeeded").length;
@@ -235,6 +255,12 @@ export const PlanTab = React.memo(function PlanTab({
   const executableProgressLabel = useMemo(() => buildExecutableProgressLabel(executableSteps), [executableSteps]);
   const plannerReview = useMemo(() => derivePlannerReview(mission, runGraph), [mission, runGraph]);
   const planGroups = useMemo(() => derivePlanGroups(executableSteps), [executableSteps]);
+  const compactPlanLists = shouldCompactPlanStepLists(executableSteps.length);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  const [expandedPhases, setExpandedPhases] = useState<Set<string>>(() => new Set());
+
+  const toggleExpandedGroup = (groupKey: string) => setExpandedGroups((current) => toggleSetMember(current, groupKey));
+  const toggleExpandedPhase = (phaseKey: string) => setExpandedPhases((current) => toggleSetMember(current, phaseKey));
 
   if (!runGraph || steps.length === 0) {
     return (
@@ -332,34 +358,50 @@ export const PlanTab = React.memo(function PlanTab({
           </div>
         </div>
         <div className="mt-2 grid gap-2 lg:grid-cols-2">
-          {planGroups.map((group) => (
-            <div key={group.key} className="p-2.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
-                  {group.label}
+          {planGroups.map((group) => {
+            const expanded = expandedGroups.has(group.key);
+            const visibleSteps = getVisiblePlanSteps(group.steps, compactPlanLists, expanded, GROUP_STEP_PREVIEW_LIMIT);
+            const hiddenCount = group.steps.length - visibleSteps.length;
+            const canToggle = compactPlanLists && group.steps.length > GROUP_STEP_PREVIEW_LIMIT;
+            return (
+              <div key={group.key} className="p-2.5" style={{ background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                    {group.label}
+                  </div>
+                  <div className="text-[9px] uppercase tracking-[0.12em]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+                    {kindLabel(group.kind)}
+                  </div>
                 </div>
-                <div className="text-[9px] uppercase tracking-[0.12em]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  {kindLabel(group.kind)}
+                <div className="mt-2 space-y-1">
+                  {visibleSteps.map((step) => (
+                    <button
+                      key={step.id}
+                      type="button"
+                      onClick={() => onStepSelect(step.id)}
+                      className="flex w-full items-start gap-2 text-left"
+                      style={{ color: selectedStepId === step.id ? COLORS.accent : COLORS.textSecondary }}
+                    >
+                      <span style={{ color: STEP_STATUS_HEX[step.status] ?? COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        {statusGlyph(step.status)}
+                      </span>
+                      <span className="min-w-0 flex-1 text-[11px]">{step.title}</span>
+                    </button>
+                  ))}
+                  {canToggle ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleExpandedGroup(group.key)}
+                      className="mt-1 text-left text-[10px] font-semibold uppercase tracking-[0.12em]"
+                      style={{ color: COLORS.accent, fontFamily: MONO_FONT }}
+                    >
+                      {expanded ? "Show fewer" : `Show ${hiddenCount} more`}
+                    </button>
+                  ) : null}
                 </div>
               </div>
-              <div className="mt-2 space-y-1">
-                {group.steps.map((step) => (
-                  <button
-                    key={step.id}
-                    type="button"
-                    onClick={() => onStepSelect(step.id)}
-                    className="flex w-full items-start gap-2 text-left"
-                    style={{ color: selectedStepId === step.id ? COLORS.accent : COLORS.textSecondary }}
-                  >
-                    <span style={{ color: STEP_STATUS_HEX[step.status] ?? COLORS.textMuted, fontFamily: MONO_FONT }}>
-                      {statusGlyph(step.status)}
-                    </span>
-                    <span className="min-w-0 flex-1 text-[11px]">{step.title}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -382,66 +424,82 @@ export const PlanTab = React.memo(function PlanTab({
         </div>
       </section>
 
-      {phaseSections.map((phase) => (
-        <section key={phase.key} className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
-          <div className="flex items-center justify-between">
-            <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
-              {phase.name}
+      {phaseSections.map((phase) => {
+        const expanded = expandedPhases.has(phase.key);
+        const visibleSteps = getVisiblePlanSteps(phase.steps, compactPlanLists, expanded, PHASE_STEP_PREVIEW_LIMIT);
+        const hiddenCount = phase.steps.length - visibleSteps.length;
+        const canToggle = compactPlanLists && phase.steps.length > PHASE_STEP_PREVIEW_LIMIT;
+        return (
+          <section key={phase.key} className="p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>
+            <div className="flex items-center justify-between">
+              <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                {phase.name}
+              </div>
+              <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                {phase.steps.length} item{phase.steps.length === 1 ? "" : "s"}
+              </div>
             </div>
-            <div className="text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-              {phase.steps.length} item{phase.steps.length === 1 ? "" : "s"}
-            </div>
-          </div>
 
-          <div className="mt-2 space-y-2">
-            {phase.steps.map((step, index) => {
-              const attempts = attemptsByStep.get(step.id) ?? [];
-              const latestAttempt = attempts[0] ?? null;
-              const isSelected = selectedStepId === step.id;
-              const meta = isRecord(step.metadata) ? step.metadata : {};
-              const assignedTo = typeof meta.assignedTo === "string" ? meta.assignedTo.trim() : "";
-              return (
+            <div className="mt-2 space-y-2">
+              {visibleSteps.map((step, index) => {
+                const attempts = attemptsByStep.get(step.id) ?? [];
+                const latestAttempt = attempts[0] ?? null;
+                const isSelected = selectedStepId === step.id;
+                const meta = isRecord(step.metadata) ? step.metadata : {};
+                const assignedTo = typeof meta.assignedTo === "string" ? meta.assignedTo.trim() : "";
+                return (
+                  <button
+                    key={step.id}
+                    type="button"
+                    onClick={() => onStepSelect(step.id)}
+                    className="w-full px-3 py-2 text-left transition-colors"
+                    style={isSelected
+                      ? { background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)" }
+                      : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
+                    }
+                  >
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <span style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>{index + 1}.</span>
+                      <span style={{ color: STEP_STATUS_HEX[step.status] ?? COLORS.textMuted, fontFamily: MONO_FONT }}>
+                        {statusGlyph(step.status)}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate" style={{ color: COLORS.textPrimary }}>{step.title}</span>
+                      <span
+                        className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
+                        style={{
+                          background: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
+                          border: "1px solid color-mix(in srgb, var(--color-accent) 33%, transparent)",
+                          color: COLORS.accent,
+                          fontFamily: MONO_FONT,
+                        }}
+                      >
+                        {stepLabel(step)}
+                      </span>
+                    </div>
+
+                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+                      <span>Status: {step.status}</span>
+                      {assignedTo ? <span>Assigned to: {assignedTo}</span> : null}
+                      {latestAttempt?.executorKind ? <span>Executor: {latestAttempt.executorKind}</span> : null}
+                      {step.dependencyStepIds.length > 0 ? <span>Depends on: {step.dependencyStepIds.length}</span> : null}
+                    </div>
+                  </button>
+                );
+              })}
+              {canToggle ? (
                 <button
-                  key={step.id}
                   type="button"
-                  onClick={() => onStepSelect(step.id)}
-                  className="w-full px-3 py-2 text-left transition-colors"
-                  style={isSelected
-                    ? { background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-accent) 30%, transparent)" }
-                    : { background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }
-                  }
+                  onClick={() => toggleExpandedPhase(phase.key)}
+                  className="w-full px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-[0.12em]"
+                  style={{ color: COLORS.accent, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, fontFamily: MONO_FONT }}
                 >
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <span style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>{index + 1}.</span>
-                    <span style={{ color: STEP_STATUS_HEX[step.status] ?? COLORS.textMuted, fontFamily: MONO_FONT }}>
-                      {statusGlyph(step.status)}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate" style={{ color: COLORS.textPrimary }}>{step.title}</span>
-                    <span
-                      className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[1px]"
-                      style={{
-                        background: "color-mix(in srgb, var(--color-accent) 16%, transparent)",
-                        border: "1px solid color-mix(in srgb, var(--color-accent) 33%, transparent)",
-                        color: COLORS.accent,
-                        fontFamily: MONO_FONT,
-                      }}
-                    >
-                      {stepLabel(step)}
-                    </span>
-                  </div>
-
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-                    <span>Status: {step.status}</span>
-                    {assignedTo ? <span>Assigned to: {assignedTo}</span> : null}
-                    {latestAttempt?.executorKind ? <span>Executor: {latestAttempt.executorKind}</span> : null}
-                    {step.dependencyStepIds.length > 0 ? <span>Depends on: {step.dependencyStepIds.length}</span> : null}
-                  </div>
+                  {expanded ? "Show fewer" : `Show ${hiddenCount} more ${phase.name} items`}
                 </button>
-              );
-            })}
-          </div>
-        </section>
-      ))}
+              ) : null}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 });

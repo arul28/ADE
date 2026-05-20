@@ -1,8 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelConfig, PhaseCard, PhaseProfile } from "../../../shared/types";
+
+vi.mock("@emoji-mart/data", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
+vi.mock("@emoji-mart/data/sets/15/native.json", () => ({
+  default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
+}));
+
 import {
   applyCodexLowFullAutoPresetToDraft,
   applyModelToMissionPhases,
+  buildCreateMissionDraft,
   buildMissionLaunchRequest,
   createCustomPhaseFromTemplate,
   insertPhaseBeforeCloseout,
@@ -75,6 +85,35 @@ describe("CreateMissionDialog launch helpers", () => {
     expect(request.phaseOverride?.every((entry) => entry.model.modelId === "openai/gpt-5.5" && entry.model.thinkingLevel === "low")).toBe(true);
     expect(request.autostart).toBe(true);
     expect(request.executionPolicy?.finalizationPolicyKind).toBe("result_lane");
+  });
+
+  it("applies Smart Budget defaults to new mission launch drafts", () => {
+    const draft = buildCreateMissionDraft({
+      orchestratorModel: { provider: "codex", modelId: "openai/gpt-5.5", thinkingLevel: "low" },
+      smartBudget: {
+        enabled: true,
+        fiveHourThresholdUsd: 12,
+        weeklyThresholdUsd: 80,
+        fiveHourHardStopPercent: 75,
+      },
+    });
+
+    const request = buildMissionLaunchRequest({
+      draft: {
+        ...draft,
+        prompt: "Run a budgeted mission.",
+      },
+      activePhases: [phase("phase-1", "planning", 0)],
+      defaultLaneId: "lane-primary",
+    });
+
+    expect(draft.modelConfig.smartBudget).toEqual({
+      enabled: true,
+      fiveHourThresholdUsd: 12,
+      weeklyThresholdUsd: 80,
+      fiveHourHardStopPercent: 75,
+    });
+    expect(request.modelConfig?.smartBudget).toEqual(draft.modelConfig.smartBudget);
   });
 
   it("sets low reasoning on the currently selected model without changing the selected model id", () => {

@@ -295,6 +295,8 @@ export type PhaseCardBudget = {
 export type PhaseCardAskQuestions = {
   enabled: boolean;
   maxQuestions?: number | null;
+  /** When true, Planning cannot exit until a planning question has been answered or explicitly skipped. */
+  requiredBeforeExit?: boolean;
 };
 
 export type PhaseCardValidationGate = {

@@ -1218,11 +1218,61 @@ export type ChatRoutingDeps = {
   listWorkerDigests: (...args: any[]) => any[];
 };
 
+function ensureActiveWorkerThreadsForMission(ctx: OrchestratorContext, missionId: string): void {
+  const rows = ctx.db.all<{
+    run_id: string;
+    step_id: string;
+    step_key: string | null;
+    title: string | null;
+    lane_id: string | null;
+    attempt_id: string;
+    executor_session_id: string | null;
+  }>(
+    `
+      select
+        a.run_id,
+        a.step_id,
+        s.step_key,
+        s.title,
+        s.lane_id,
+        a.id as attempt_id,
+        a.executor_session_id
+      from orchestrator_attempts a
+      join orchestrator_steps s on s.id = a.step_id
+      join orchestrator_runs r on r.id = a.run_id
+      where r.mission_id = ?
+        and s.status in ('running', 'blocked')
+        and a.status in ('running', 'blocked')
+    `,
+    [missionId]
+  );
+
+  for (const row of rows) {
+    const attemptId = row.attempt_id?.trim();
+    if (!attemptId) continue;
+    ensureThreadForTarget(ctx, {
+      missionId,
+      threadId: `worker:${missionId}:${attemptId}`,
+      target: {
+        kind: "worker",
+        runId: row.run_id,
+        stepId: row.step_id,
+        stepKey: row.step_key ?? null,
+        attemptId,
+        sessionId: row.executor_session_id ?? null,
+        laneId: row.lane_id ?? null,
+      },
+      fallbackTitle: `Worker: ${row.title?.trim() || row.step_key?.trim() || attemptId.slice(0, 8)}`,
+    });
+  }
+}
+
 export function listChatThreadsCtx(
   ctx: OrchestratorContext,
   threadArgs: ListOrchestratorChatThreadsArgs
 ): OrchestratorChatThread[] {
   ensureMissionThread(ctx, threadArgs.missionId);
+  ensureActiveWorkerThreadsForMission(ctx, threadArgs.missionId);
   const rows = ctx.db.all<{
     id: string;
     mission_id: string;

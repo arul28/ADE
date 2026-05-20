@@ -15,9 +15,11 @@ import type {
   OrchestratorRunGraph,
   OrchestratorWorkerCheckpoint,
   ProjectConfigSnapshot,
+  SmartBudgetConfig,
 } from "../../../shared/types";
 import {
   DEFAULT_MISSION_SETTINGS_DRAFT,
+  DEFAULT_SMART_BUDGET,
   DEFAULT_ORCHESTRATOR_MODEL,
   DEFAULT_PERMISSION_CONFIG,
   isRecord,
@@ -280,6 +282,30 @@ function buildClearedSelectionState(): Partial<MissionsState> {
   };
 }
 
+function readNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeSmartBudgetConfig(value: unknown, fallback: SmartBudgetConfig = DEFAULT_SMART_BUDGET): SmartBudgetConfig {
+  const source = isRecord(value) ? value : fallback;
+  const fallbackProviderLimits = isRecord(fallback.providerLimits)
+    ? fallback.providerLimits as SmartBudgetConfig["providerLimits"]
+    : undefined;
+  const providerLimits = isRecord(source.providerLimits)
+    ? source.providerLimits as SmartBudgetConfig["providerLimits"]
+    : fallbackProviderLimits;
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : fallback.enabled,
+    fiveHourThresholdUsd: readNumber(source.fiveHourThresholdUsd, fallback.fiveHourThresholdUsd),
+    weeklyThresholdUsd: readNumber(source.weeklyThresholdUsd, fallback.weeklyThresholdUsd),
+    ...(providerLimits ? { providerLimits: { ...providerLimits } } : {}),
+    ...(typeof source.fiveHourHardStopPercent === "number" ? { fiveHourHardStopPercent: source.fiveHourHardStopPercent } : {}),
+    ...(typeof source.weeklyHardStopPercent === "number" ? { weeklyHardStopPercent: source.weeklyHardStopPercent } : {}),
+    ...(typeof source.apiKeyMaxSpendUsd === "number" ? { apiKeyMaxSpendUsd: source.apiKeyMaxSpendUsd } : {}),
+    ...(typeof source.modelDowngradeThresholdPct === "number" ? { modelDowngradeThresholdPct: source.modelDowngradeThresholdPct } : {}),
+  };
+}
+
 /* ════════════════════ STORE CREATION ════════════════════ */
 
 const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
@@ -351,6 +377,7 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
     if (!silent) set({ refreshing: true });
     try {
       const list = await window.ade.missions.list({ limit: 300 });
+      let selectedDetailNeedsRefresh: string | null = null;
       set((state) => {
         const selectedStillExists = Boolean(
           state.selectedMissionId && list.some((mission) => mission.id === state.selectedMissionId),
@@ -358,17 +385,34 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
         const nextId = preserveSelection
           ? (selectedStillExists ? state.selectedMissionId : null)
           : (list[0]?.id ?? null);
+        const selectedSummary = nextId ? list.find((mission) => mission.id === nextId) ?? null : null;
+        const selectedMission = selectedSummary && state.selectedMission?.id === selectedSummary.id
+          ? { ...state.selectedMission, ...selectedSummary }
+          : state.selectedMission;
+        if (selectedSummary && state.selectedMission?.id === selectedSummary.id) {
+          const hydratedOpenInterventions = state.selectedMission.interventions.filter((entry) => entry.status === "open").length;
+          const selectedSummaryChangedWithOpenInterventions =
+            selectedSummary.openInterventions > 0
+            && selectedSummary.updatedAt !== state.selectedMission.updatedAt;
+          if (hydratedOpenInterventions !== selectedSummary.openInterventions || selectedSummaryChangedWithOpenInterventions) {
+            selectedDetailNeedsRefresh = selectedSummary.id;
+          }
+        }
         return {
           missions: list,
           error: null,
           loading: false,
           refreshing: false,
           selectedMissionId: nextId,
+          selectedMission,
           ...(!nextId ? buildClearedSelectionState() : {}),
         };
       });
       if (refreshDashboard) {
         await get().loadDashboard();
+      }
+      if (selectedDetailNeedsRefresh && get().selectedMissionId === selectedDetailNeedsRefresh) {
+        await get().selectMission(selectedDetailNeedsRefresh);
       }
     } catch (err) {
       set({
@@ -456,6 +500,10 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
     const effectiveProviders = isRecord(effectivePermissions.providers) ? effectivePermissions.providers : {};
     const localOrcModel = isRecord(localOrchestrator.defaultOrchestratorModel) ? localOrchestrator.defaultOrchestratorModel : null;
     const effectiveOrcModel = isRecord(effectiveOrchestrator.defaultOrchestratorModel) ? effectiveOrchestrator.defaultOrchestratorModel : null;
+    const effectiveSmartBudget = normalizeSmartBudgetConfig(
+      localOrchestrator.smartBudget ?? effectiveOrchestrator.smartBudget,
+      DEFAULT_SMART_BUDGET,
+    );
 
     // Legacy fallback: derive from deprecated defaultPlannerProvider if no orchestrator model
     const rawLocal = localOrchestrator as Record<string, unknown>;
@@ -502,7 +550,7 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
         cliMode: toCliMode(readString(localCli.mode, effectiveCli.mode, "full-auto")),
         cliSandboxPermissions: toCliSandboxPermissions(readString(localCli.sandboxPermissions, effectiveCli.sandboxPermissions, "workspace-write")),
         inProcessMode: toInProcessMode(readString(localInProcess.mode, effectiveInProcess.mode, "full-auto")),
-        smartBudget: get().missionSettingsDraft.smartBudget,
+        smartBudget: effectiveSmartBudget,
       },
     });
   },
@@ -538,6 +586,7 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
         ...localOrchestrator,
         defaultOrchestratorModel: normalizedOrchestratorModel,
         teammatePlanMode: toTeammatePlanMode(draft.teammatePlanMode),
+        smartBudget: normalizeSmartBudgetConfig(draft.smartBudget, DEFAULT_SMART_BUDGET),
       };
       delete nextOrchestrator.requirePlanReview;
       delete nextOrchestrator.defaultDepthTier;
