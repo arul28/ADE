@@ -1054,8 +1054,9 @@ export function createGitOperationsService({
         reason: "stash_apply",
         metadata: { stashRef },
         fn: async (lane) => {
-          await requireBranchStash(lane, stashRef);
-          await runGitOrThrow(["stash", "apply", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const stash = await requireBranchStash(lane, stashRef);
+          const currentRef = await resolveCurrentBranchStashRef(lane, stash);
+          await runGitOrThrow(["stash", "apply", currentRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       return action;
@@ -1070,10 +1071,12 @@ export function createGitOperationsService({
         reason: "stash_pop",
         metadata: { stashRef },
         fn: async (lane) => {
-          await requireBranchStash(lane, stashRef);
-          await runGitOrThrow(["stash", "apply", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const stash = await requireBranchStash(lane, stashRef);
+          const currentApplyRef = await resolveCurrentBranchStashRef(lane, stash);
+          await runGitOrThrow(["stash", "apply", currentApplyRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
           try {
-            await runGitOrThrow(["stash", "drop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+            const currentDropRef = await resolveCurrentBranchStashRef(lane, stash);
+            await runGitOrThrow(["stash", "drop", currentDropRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
             invalidateStashReadCaches();
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1098,8 +1101,9 @@ export function createGitOperationsService({
         reason: "stash_drop",
         metadata: { stashRef },
         fn: async (lane) => {
-          await requireBranchStash(lane, stashRef);
-          await runGitOrThrow(["stash", "drop", stashRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
+          const stash = await requireBranchStash(lane, stashRef);
+          const currentRef = await resolveCurrentBranchStashRef(lane, stash);
+          await runGitOrThrow(["stash", "drop", currentRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
       });
       invalidateStashReadCaches();

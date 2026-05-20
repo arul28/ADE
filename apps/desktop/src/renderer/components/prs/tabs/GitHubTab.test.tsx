@@ -63,6 +63,32 @@ function makeGitHubPr(overrides: Partial<GitHubPrSnapshot["repoPullRequests"][nu
   };
 }
 
+function makeLaneSummary(overrides: Partial<LaneSummary> = {}): LaneSummary {
+  return {
+    id: "lane-open",
+    name: "lane-open",
+    description: null,
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: "refs/heads/feature/open",
+    worktreePath: "/tmp/lane-open",
+    attachedRootPath: null,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    folder: null,
+    createdAt: "2026-03-13T10:00:00.000Z",
+    archivedAt: null,
+    ...overrides,
+  };
+}
+
 const snapshot: GitHubPrSnapshot = {
   repo: { owner: "ade-dev", name: "ade" },
   viewerLogin: "octocat",
@@ -250,6 +276,7 @@ describe("GitHubTab", () => {
     onSelectPr: ReturnType<typeof vi.fn>;
     onOpenQueueView: ReturnType<typeof vi.fn>;
     onRefreshAll: ReturnType<typeof vi.fn>;
+    lanes: LaneSummary[];
   }> = {}) {
     const onSelectPr = overrides.onSelectPr ?? vi.fn();
     const onOpenQueueView = overrides.onOpenQueueView ?? vi.fn();
@@ -257,7 +284,7 @@ describe("GitHubTab", () => {
     render(
       <MemoryRouter>
         <GitHubTab
-          lanes={[] satisfies LaneSummary[]}
+          lanes={overrides.lanes ?? []}
           mergeMethod={"squash" satisfies MergeMethod}
           selectedPrId={overrides.selectedPrId ?? null}
           onSelectPr={onSelectPr}
@@ -983,6 +1010,73 @@ describe("GitHubTab", () => {
     expect(await screen.findByText(/already owned by lane 'Existing lane'/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
     expect(window.ade.prs.createLaneFromPrBranch).not.toHaveBeenCalled();
+  });
+
+  it("does not let an archived branch match hide the create-lane action", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.preflightCreateLaneFromPrBranch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      preflight: {
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        githubPrNumber: 200,
+        githubUrl: "https://github.com/ade-dev/ade/pull/200",
+        title: "Unlinked PR",
+        headBranch: "feature/open",
+        headRepoOwner: "ade-dev",
+        headRepoName: "ade",
+        remoteBranch: "origin/feature/open",
+        importBranchRef: "origin/feature/open",
+        targetLaneName: "Unlinked PR",
+        baseBranch: "main",
+        canCreate: false,
+        status: "blocked",
+        blockingConflict: {
+          code: "branch_owned",
+          message: "Branch 'feature/open' is already owned by archived lane 'Archived lane'.",
+          laneId: "lane-archived",
+          laneName: "Archived lane",
+        },
+        blockingConflicts: [],
+      },
+      lane: null,
+      pr: null,
+    });
+
+    renderTab({
+      lanes: [
+        makeLaneSummary({
+          id: "lane-archived",
+          name: "Archived lane",
+          branchRef: "refs/heads/feature/open",
+          archivedAt: "2026-03-12T12:00:00.000Z",
+        }),
+      ],
+    });
+
+    expect(await screen.findByRole("button", { name: /create lane from pr branch/i })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Archived lane" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /create lane from pr branch/i }));
+
+    expect(await screen.findByText(/already owned by archived lane 'Archived lane'/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
   });
 
   it("creates a lane from an unmapped PR branch, refreshes lanes, and selects the mapped PR", async () => {

@@ -74,6 +74,7 @@ type Props = {
   actionBusy: boolean;
   onAddComment: () => void;
   deepLink: { eventId: string | null; threadId: string | null; commitSha: string | null };
+  actionSlot?: React.ReactNode;
 };
 
 function shortenSha(sha: string): string {
@@ -409,6 +410,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       actionBusy,
       onAddComment,
       deepLink,
+      actionSlot,
     } = props;
 
     const timelineRef = useRef<PrTimelineRef | null>(null);
@@ -633,13 +635,25 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         </div>
 
         <div className="min-h-0">
-          <PrStatusRail
-            checks={checks}
-            deployments={deployments}
-            mergeState={mergeState}
-            onOpenLog={handleOpenLog}
-            onOpenExternal={handleOpenExternal}
-          />
+          <div className="flex h-full min-h-0 flex-col">
+            {actionSlot ? (
+              <div
+                className="shrink-0 p-3"
+                style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}
+              >
+                {actionSlot}
+              </div>
+            ) : null}
+            <div className="min-h-0 flex-1">
+              <PrStatusRail
+                checks={checks}
+                deployments={deployments}
+                mergeState={mergeState}
+                onOpenLog={handleOpenLog}
+                onOpenExternal={handleOpenExternal}
+              />
+            </div>
+          </div>
         </div>
 
         <PrCheckLogDrawer check={logDrawerCheck} onClose={() => setLogDrawerCheck(null)} />

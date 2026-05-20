@@ -434,7 +434,9 @@ type ChecksSummary = {
   checksRunning: boolean;
 };
 
-function summarizeChecks(checks: PrCheck[]): ChecksSummary {
+type CheckSummaryItem = Pick<PrCheck, "status" | "conclusion">;
+
+function summarizeChecks(checks: CheckSummaryItem[]): ChecksSummary {
   const passing = checks.filter((check) => check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped").length;
   const failing = checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length;
   const pending = checks.filter((check) => check.status !== "completed" && !check.conclusion).length;
@@ -2556,6 +2558,40 @@ export function PrDetailPane({
             actionBusy={actionBusy}
             onAddComment={handleAddComment}
             deepLink={deepLinkState}
+            actionSlot={(
+              <PrOverviewActionPanel
+                pr={pr}
+                detail={detail}
+                status={status}
+                checks={checks}
+                actionRuns={actionRuns}
+                reviews={reviews}
+                actionBusy={actionBusy}
+                aiSummaryBusy={aiSummaryBusy}
+                mergeMethod={mergeMethod}
+                showLabelEditor={showLabelEditor}
+                setShowLabelEditor={setShowLabelEditor}
+                labelInput={labelInput}
+                setLabelInput={setLabelInput}
+                showReviewerEditor={showReviewerEditor}
+                setShowReviewerEditor={setShowReviewerEditor}
+                reviewerInput={reviewerInput}
+                setReviewerInput={setReviewerInput}
+                showReviewModal={showReviewModal}
+                setShowReviewModal={setShowReviewModal}
+                reviewBody={reviewBody}
+                setReviewBody={setReviewBody}
+                reviewEvent={reviewEvent}
+                setReviewEvent={setReviewEvent}
+                onMerge={handleMerge}
+                onAiSummary={handleAiSummary}
+                onSetLabels={handleSetLabels}
+                onRequestReviewers={handleRequestReviewers}
+                onSubmitReview={handleSubmitReview}
+                onClose={handleClosePr}
+                onReopen={handleReopenPr}
+              />
+            )}
           />
         )}
         {activeTab === "overview" && !prsTimelineRailsEnabled && (
@@ -2944,6 +2980,353 @@ type OverviewTabProps = {
   activity: PrActivityEvent[];
   lanes: LaneSummary[];
 };
+
+type PrReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+type PrOverviewActionPanelProps = {
+  pr: PrWithConflicts;
+  detail: PrDetail | null;
+  status: PrStatus | null;
+  checks: PrCheck[];
+  actionRuns: PrActionRun[];
+  reviews: PrReview[];
+  actionBusy: boolean;
+  aiSummaryBusy: boolean;
+  mergeMethod: MergeMethod;
+  showLabelEditor: boolean;
+  setShowLabelEditor: (value: boolean) => void;
+  labelInput: string;
+  setLabelInput: (value: string) => void;
+  showReviewerEditor: boolean;
+  setShowReviewerEditor: (value: boolean) => void;
+  reviewerInput: string;
+  setReviewerInput: (value: string) => void;
+  showReviewModal: boolean;
+  setShowReviewModal: (value: boolean) => void;
+  reviewBody: string;
+  setReviewBody: (value: string) => void;
+  reviewEvent: PrReviewEvent;
+  setReviewEvent: (value: PrReviewEvent) => void;
+  onMerge: (method: MergeMethod) => void;
+  onAiSummary: () => void;
+  onSetLabels: (labels: string[]) => void;
+  onRequestReviewers: (reviewers: string[]) => void;
+  onSubmitReview: () => void;
+  onClose: () => void;
+  onReopen: () => void;
+};
+
+function PrOverviewActionPanel(props: PrOverviewActionPanelProps) {
+  const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(props.mergeMethod);
+  const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
+  const allChecks = React.useMemo(() => buildUnifiedChecks(props.checks, props.actionRuns), [props.checks, props.actionRuns]);
+  const checksSummary = summarizeChecks(allChecks);
+  const { someChecksFailing, checksRunning } = checksSummary;
+  const reviewStatus = props.pr.reviewStatus;
+  const canMerge = Boolean(props.status?.isMergeable) && !props.status?.mergeConflicts && props.pr.state === "open";
+  const canAttemptBlockedMerge = Boolean(props.status) && !props.status?.isMergeable && !props.status?.mergeConflicts && props.pr.state === "open";
+  const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
+  const mergeActionEnabled = canMerge || isBypassMerge;
+  const hasCheckWarnings = someChecksFailing || checksRunning;
+  const hasReviewWarnings = reviewStatus === "changes_requested" || reviewStatus === "requested";
+  const hasMergeWarnings = canMerge && (hasCheckWarnings || hasReviewWarnings);
+  const mergeActionLabel = props.actionBusy
+    ? (isBypassMerge ? "Attempting merge..." : "Merging...")
+    : hasMergeWarnings
+      ? (someChecksFailing ? "Merge (checks failing)" : checksRunning ? "Merge (checks pending)" : "Merge (review pending)")
+      : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
+  const mergeAccentColor = canMerge
+    ? (hasMergeWarnings ? COLORS.warning : COLORS.success)
+    : isBypassMerge ? COLORS.warning : null;
+  const mergeActionBackground = mergeAccentColor
+    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge && !hasMergeWarnings ? "#16a34a" : "#d97706"} 100%)`
+    : COLORS.recessedBg;
+
+  React.useEffect(() => {
+    setLocalMergeMethod(props.mergeMethod);
+  }, [props.mergeMethod]);
+
+  React.useEffect(() => {
+    if (!canAttemptBlockedMerge) setAllowBlockedMerge(false);
+  }, [canAttemptBlockedMerge]);
+
+  const requestReviewers = () => {
+    const reviewers = props.reviewerInput.split(",").map((value) => value.trim()).filter(Boolean);
+    if (reviewers.length) props.onRequestReviewers(reviewers);
+  };
+  const setLabels = () => {
+    const labels = props.labelInput.split(",").map((value) => value.trim()).filter(Boolean);
+    if (labels.length) props.onSetLabels(labels);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ ...cardStyle({ padding: 12 }), display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ ...LABEL_STYLE, fontSize: 11, color: COLORS.textSecondary }}>PR actions</span>
+        <button
+          type="button"
+          onClick={props.onAiSummary}
+          disabled={props.aiSummaryBusy}
+          style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)", width: "100%", justifyContent: "center" })}
+        >
+          <Sparkle size={13} weight="fill" />
+          {props.aiSummaryBusy ? "Analyzing..." : "AI Review"}
+        </button>
+        <button
+          type="button"
+          onClick={() => props.setShowReviewModal(true)}
+          style={outlineButton({ height: 30, padding: "0 10px", width: "100%", justifyContent: "center" })}
+        >
+          <Check size={13} weight="bold" /> Submit Review
+        </button>
+
+        {(props.pr.state === "open" || props.pr.state === "draft") ? (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, background: COLORS.recessedBg, borderRadius: 8, padding: 3, border: `1px solid ${COLORS.border}` }}>
+              {(["squash", "merge", "rebase"] as const).map((method) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => setLocalMergeMethod(method)}
+                  style={{
+                    flex: 1,
+                    height: 28,
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontFamily: SANS_FONT,
+                    fontSize: 11,
+                    fontWeight: localMergeMethod === method ? 600 : 400,
+                    color: localMergeMethod === method ? COLORS.textPrimary : COLORS.textMuted,
+                    background: localMergeMethod === method ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
+                  }}
+                >
+                  {method === "squash" ? "Squash" : method === "merge" ? "Merge" : "Rebase"}
+                </button>
+              ))}
+            </div>
+            {canAttemptBlockedMerge ? (
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45, color: COLORS.textMuted }}>
+                <input
+                  type="checkbox"
+                  checked={allowBlockedMerge}
+                  disabled={props.actionBusy}
+                  onChange={(event) => setAllowBlockedMerge(event.target.checked)}
+                  style={{ marginTop: 2, accentColor: COLORS.warning }}
+                />
+                Attempt merge anyway if GitHub allows bypass rules
+              </label>
+            ) : null}
+            <button
+              type="button"
+              disabled={props.actionBusy || !mergeActionEnabled}
+              onClick={() => props.onMerge(localMergeMethod)}
+              style={{
+                ...primaryButton({
+                  background: mergeActionBackground,
+                  borderColor: mergeAccentColor ?? COLORS.border,
+                  opacity: props.actionBusy || !mergeActionEnabled ? 0.5 : 1,
+                  height: 34,
+                  padding: "0 12px",
+                  width: "100%",
+                  justifyContent: "center",
+                }),
+                color: mergeActionEnabled ? "#fff" : COLORS.textMuted,
+              }}
+            >
+              <GitMerge size={14} weight="bold" />
+              {mergeActionLabel}
+            </button>
+            {props.pr.state === "open" ? (
+              <button
+                type="button"
+                disabled={props.actionBusy}
+                onClick={props.onClose}
+                style={dangerButton({ height: 30, opacity: props.actionBusy ? 0.4 : 1, padding: "0 10px", width: "100%", justifyContent: "center" })}
+              >
+                <XCircle size={13} /> Close
+              </button>
+            ) : null}
+          </>
+        ) : props.pr.state === "closed" ? (
+          <button type="button" disabled={props.actionBusy} onClick={props.onReopen} style={outlineButton({ color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)", height: 30, width: "100%", justifyContent: "center" })}>
+            <ArrowsClockwise size={13} /> Reopen PR
+          </button>
+        ) : null}
+      </div>
+
+      <div style={cardStyle({ padding: 12 })}>
+        <SidebarSection title="Reviewers" onEdit={() => props.setShowReviewerEditor(!props.showReviewerEditor)}>
+          {props.detail?.requestedReviewers?.length ? (
+            props.detail.requestedReviewers.map((reviewer) => (
+              <div key={reviewer.login} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+                <Avatar user={reviewer} size={22} />
+                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, fontWeight: 500 }}>{reviewer.login}</span>
+              </div>
+            ))
+          ) : (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
+          )}
+          {props.showReviewerEditor ? (
+            <div style={{ marginTop: 8 }}>
+              <input
+                value={props.reviewerInput}
+                onChange={(event) => props.setReviewerInput(event.target.value)}
+                placeholder="username1, username2"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") requestReviewers();
+                }}
+                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
+              />
+            </div>
+          ) : null}
+        </SidebarSection>
+      </div>
+
+      <div style={cardStyle({ padding: 12 })}>
+        <SidebarSection title="Labels" onEdit={() => props.setShowLabelEditor(!props.showLabelEditor)}>
+          {props.detail?.labels?.length ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {props.detail.labels.map((label) => (
+                <span key={label.name} style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "3px 10px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: SANS_FONT,
+                  color: `#${label.color}`,
+                  background: `#${label.color}18`,
+                  border: `1px solid #${label.color}35`,
+                  borderRadius: 12,
+                }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: `#${label.color}`, marginRight: 6, flexShrink: 0 }} />
+                  {label.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
+          )}
+          {props.showLabelEditor ? (
+            <div style={{ marginTop: 8 }}>
+              <input
+                value={props.labelInput}
+                onChange={(event) => props.setLabelInput(event.target.value)}
+                placeholder="bug, enhancement"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") setLabels();
+                }}
+                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
+              />
+            </div>
+          ) : null}
+        </SidebarSection>
+      </div>
+
+      <PrReviewSubmitModal
+        open={props.showReviewModal}
+        actionBusy={props.actionBusy}
+        reviewBody={props.reviewBody}
+        setReviewBody={props.setReviewBody}
+        reviewEvent={props.reviewEvent}
+        setReviewEvent={props.setReviewEvent}
+        onCancel={() => props.setShowReviewModal(false)}
+        onSubmit={props.onSubmitReview}
+      />
+    </div>
+  );
+}
+
+function PrReviewSubmitModal({
+  open,
+  actionBusy,
+  reviewBody,
+  setReviewBody,
+  reviewEvent,
+  setReviewEvent,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  actionBusy: boolean;
+  reviewBody: string;
+  setReviewBody: (value: string) => void;
+  reviewEvent: PrReviewEvent;
+  setReviewEvent: (value: PrReviewEvent) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+      <div style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 24, width: 500, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <span style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600, color: COLORS.textPrimary }}>Submit Review</span>
+          <button type="button" onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted, padding: 4 }}><X size={16} /></button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+          {(["APPROVE", "REQUEST_CHANGES", "COMMENT"] as const).map((event) => {
+            const isSelected = reviewEvent === event;
+            const eventColor = event === "APPROVE" ? COLORS.success : event === "REQUEST_CHANGES" ? COLORS.warning : COLORS.info;
+            return (
+              <button key={event} type="button" onClick={() => setReviewEvent(event)} style={{
+                ...outlineButton(),
+                flex: 1,
+                height: 36,
+                background: isSelected ? `${eventColor}18` : "transparent",
+                borderColor: isSelected ? `${eventColor}60` : COLORS.border,
+                color: isSelected ? eventColor : COLORS.textSecondary,
+                boxShadow: isSelected ? `0 0 12px ${eventColor}15` : "none",
+              }}>
+                {event === "APPROVE" && <CheckCircle size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "REQUEST_CHANGES" && <Warning size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "COMMENT" && <ChatText size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "APPROVE" ? "Approve" : event === "REQUEST_CHANGES" ? "Request Changes" : "Comment"}
+              </button>
+            );
+          })}
+        </div>
+        <textarea
+          value={reviewBody}
+          onChange={(event) => setReviewBody(event.target.value)}
+          placeholder="Leave a review comment (optional for approve)..."
+          style={{
+            width: "100%",
+            minHeight: 120,
+            resize: "vertical",
+            padding: 14,
+            fontFamily: SANS_FONT,
+            fontSize: 13,
+            color: COLORS.textPrimary,
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            outline: "none",
+          }}
+        />
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 8 }}>
+          <button type="button" onClick={onCancel} style={outlineButton({ height: 36 })}>Cancel</button>
+          <button type="button" onClick={onSubmit} disabled={actionBusy} style={{
+            ...primaryButton({
+              background: reviewEvent === "APPROVE" ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)` : reviewEvent === "REQUEST_CHANGES" ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)` : `linear-gradient(135deg, ${COLORS.accent} 0%, #7c3aed 100%)`,
+              height: 36,
+              boxShadow:
+                reviewEvent === "APPROVE"
+                  ? "0 2px 12px color-mix(in srgb, var(--color-success) 19%, transparent)"
+                  : reviewEvent === "REQUEST_CHANGES"
+                    ? "0 2px 12px color-mix(in srgb, var(--color-warning) 19%, transparent)"
+                    : "0 2px 12px color-mix(in srgb, var(--color-accent) 19%, transparent)",
+            }),
+            color: "#fff",
+          }}>
+            {actionBusy ? "Submitting..." : `Submit ${reviewEvent === "APPROVE" ? "Approval" : reviewEvent === "REQUEST_CHANGES" ? "Changes Request" : "Comment"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function OverviewTab(props: OverviewTabProps) {
   const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;

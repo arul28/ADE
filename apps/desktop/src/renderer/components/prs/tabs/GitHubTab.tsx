@@ -338,7 +338,7 @@ function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: LaneSummary[])
   if (item.state !== "open" && item.state !== "draft") return false;
   const headBranch = branchNameFromRef(item.headBranch);
   if (!headBranch) return false;
-  return !lanes.some((lane) => branchNameFromRef(lane.branchRef) === headBranch);
+  return !lanes.some((lane) => !lane.archivedAt && branchNameFromRef(lane.branchRef) === headBranch);
 }
 
 function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean {

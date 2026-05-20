@@ -312,6 +312,7 @@ function renderPane(args: {
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
+  prsTimelineRailsEnabled?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -452,6 +453,16 @@ function renderPane(args: {
     setResolverModel: vi.fn(),
     setResolverReasoningLevel: vi.fn(),
     setResolverPermissionMode: vi.fn(),
+    prsTimelineRailsEnabled: args.prsTimelineRailsEnabled ?? false,
+    dismissedAiSummaries: {},
+    timelineFiltersByPrId: {},
+    detailAiSummary: null,
+    detailDeployments: [],
+    detailLiveDataPrId: null,
+    viewerLogin: "octocat",
+    setTimelineFilters: vi.fn(),
+    setAiSummaryDismissed: vi.fn(),
+    regeneratePrAiSummary: vi.fn(),
   });
   Object.assign(window, {
     ade: {
@@ -1349,6 +1360,38 @@ describe("PrDetailPane issue resolver CTA", () => {
 
     await waitFor(() => {
       expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "merge" });
+      expect(onRefresh).toHaveBeenCalled();
+    });
+  });
+
+  it("keeps ADE PR actions available in the default timeline overview", async () => {
+    const user = userEvent.setup();
+    const { land, onRefresh } = renderPane({
+      checks: [makeCheck({ conclusion: "success" })],
+      reviewThreads: [],
+      prsTimelineRailsEnabled: true,
+      statusOverrides: {
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+      },
+      prOverrides: {
+        checksStatus: "passing",
+        reviewStatus: "approved",
+      },
+    });
+
+    expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /ai review/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /submit review/i })).toBeTruthy();
+
+    const mergeButton = screen.getByRole("button", { name: /merge pull request/i });
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
+    await user.click(mergeButton);
+
+    await waitFor(() => {
+      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash" });
       expect(onRefresh).toHaveBeenCalled();
     });
   });

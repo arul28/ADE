@@ -653,6 +653,86 @@ describe("prService.getGithubSnapshot", () => {
     );
   });
 
+  it("does not auto-link same-owner fork PRs to matching local lanes", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        return {
+          data: [
+            makeGitHubPull({
+              number: 655,
+              title: "Same owner fork PR",
+              head: {
+                ref: "feature/missed",
+                user: { login: REPO.owner },
+                repo: { owner: { login: REPO.owner }, name: "fork-repo" },
+              },
+            }),
+          ],
+        };
+      }),
+    });
+    const db = makeMockDb();
+    const laneService = makeLaneService([
+      makeFakeLane({ id: "lane-missed", branchRef: "refs/heads/feature/missed" }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const snapshot = await service.getGithubSnapshot({ force: true });
+
+    expect(snapshot.repoPullRequests[0]).toEqual(expect.objectContaining({
+      githubPrNumber: 655,
+      linkedPrId: null,
+      headRepoOwner: REPO.owner,
+      headRepoName: "fork-repo",
+    }));
+    expect(db.run.mock.calls.some(([sql]: [unknown]) => String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("does not backfill a PR row when only an archived lane matches the head branch", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        return {
+          data: [
+            makeGitHubPull({
+              number: 656,
+              title: "Archived lane PR",
+              head: {
+                ref: "feature/archived",
+                user: { login: REPO.owner },
+                repo: { owner: { login: REPO.owner }, name: REPO.name },
+              },
+            }),
+          ],
+        };
+      }),
+    });
+    const db = makeMockDb();
+    const laneService = makeLaneService([
+      makeFakeLane({
+        id: "lane-archived",
+        branchRef: "refs/heads/feature/archived",
+        archivedAt: "2026-05-01T00:00:00.000Z",
+      }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const snapshot = await service.getGithubSnapshot({ force: true });
+
+    expect(snapshot.repoPullRequests[0]).toEqual(expect.objectContaining({
+      githubPrNumber: 656,
+      linkedPrId: null,
+    }));
+    expect(db.run.mock.calls.some(([sql]: [unknown]) => String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
   it("returns stale cached data immediately while revalidating in the background", async () => {
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:00Z"));
     let resolveRevalidation!: (value: unknown) => void;

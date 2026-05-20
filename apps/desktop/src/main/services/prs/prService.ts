@@ -1671,8 +1671,7 @@ export function createPrService({
       const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
       if (!lane) continue;
 
-      const headOwner = rawPullHeadOwner(rawPr);
-      if (!headOwner || headOwner.toLowerCase() !== repo.owner.toLowerCase()) continue;
+      if (!rawPullHasSameRepoHead(rawPr, repo)) continue;
 
       const prNumber = asNumber(rawPr?.number);
       if (!prNumber) continue;
