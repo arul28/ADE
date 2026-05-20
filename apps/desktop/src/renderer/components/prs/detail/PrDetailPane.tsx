@@ -622,14 +622,24 @@ export function PrDetailPane({
   const deepLinkState = React.useMemo(() => {
     try {
       const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
-      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha };
+      const searchParams = new URLSearchParams(window.location.search.startsWith("?") ? window.location.search.slice(1) : window.location.search);
+      const hashQuery = window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?") + 1) : "";
+      const hashParams = new URLSearchParams(hashQuery);
+      const legacyActivityTab = searchParams.get("detailTab") === "activity" || hashParams.get("detailTab") === "activity";
+      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha, legacyActivityTab };
     } catch {
-      return { eventId: null, threadId: null, commitSha: null };
+      return { eventId: null, threadId: null, commitSha: null, legacyActivityTab: false };
     }
   }, [pr.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const timelineDeepLinkNeedsAllThreads = Boolean(deepLinkState.eventId || deepLinkState.threadId || deepLinkState.legacyActivityTab);
   const timelineFilters: PrTimelineFilters = React.useMemo(
-    () => timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS,
-    [timelineFiltersByPrId, pr.id],
+    () => {
+      const filters = timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS;
+      return timelineDeepLinkNeedsAllThreads
+        ? { ...filters, showResolved: true, showOutdated: true }
+        : filters;
+    },
+    [timelineFiltersByPrId, pr.id, timelineDeepLinkNeedsAllThreads],
   );
   const handleTimelineFiltersChange = React.useCallback(
     (next: PrTimelineFilters) => setTimelineFilters?.(pr.id, next),

@@ -993,8 +993,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           return;
         }
 
-        // Apply successful results; keep previous value for any that failed
-        detailStatePrIdRef.current = prId;
+        // Apply successful results; keep previous value for any that failed.
+        // Only mark the cache fresh after all primary pieces complete, otherwise
+        // one successful section can mask stale checks/reviews/comments.
         if (statusResult.status === "fulfilled") {
           setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
         } else {
@@ -1016,9 +1017,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           console.warn("[PrsContext] Failed to refresh PR comments:", commentsResult.reason);
         }
         if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+          detailStatePrIdRef.current = prId;
+          detailLoadedAtByPrIdRef.current[prId] = Date.now();
           setDetailLiveDataPrId(prId);
+        } else {
+          setDetailLiveDataPrId(null);
         }
-        detailLoadedAtByPrIdRef.current[prId] = Date.now();
       })
       .finally(() => {
         detailFetchInProgress.current = false;
@@ -1051,15 +1055,17 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         }
       }
 
-      detailStatePrIdRef.current = prId;
       if (statusResult.status === "fulfilled") setDetailStatus((prev) => (jsonEqual(prev, statusResult.value) ? prev : statusResult.value));
       if (checksResult.status === "fulfilled") setDetailChecks((prev) => (jsonEqual(prev, checksResult.value) ? prev : checksResult.value));
       if (reviewsResult.status === "fulfilled") setDetailReviews((prev) => (jsonEqual(prev, reviewsResult.value) ? prev : reviewsResult.value));
       if (commentsResult.status === "fulfilled") setDetailComments((prev) => (jsonEqual(prev, commentsResult.value) ? prev : commentsResult.value));
       if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
+        detailStatePrIdRef.current = prId;
+        detailLoadedAtByPrIdRef.current[prId] = Date.now();
         setDetailLiveDataPrId(prId);
+      } else {
+        setDetailLiveDataPrId(null);
       }
-      detailLoadedAtByPrIdRef.current[prId] = Date.now();
     } finally {
       detailFetchInProgress.current = false;
     }
@@ -1238,7 +1244,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         }
         if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
           detailFetchInProgress.current = false;
-          setDetailLiveDataPrId(!rateLimited && primaryFulfilledCount > 0 ? prId : null);
+          if (!rateLimited && primaryFulfilledCount === primaryRequestCount) {
+            detailStatePrIdRef.current = prId;
+            detailLoadedAtByPrIdRef.current[prId] = Date.now();
+            setDetailLiveDataPrId(prId);
+          } else {
+            setDetailLiveDataPrId(null);
+          }
         }
       };
       const loadPrimaryPiece = <T,>(
@@ -1255,10 +1267,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
             if (value != null && (!Array.isArray(value) || value.length > 0)) {
               liveDetailApplied = true;
             }
-            detailStatePrIdRef.current = prId;
-            detailLoadedAtByPrIdRef.current[prId] = Date.now();
             apply(value);
-            setDetailLiveDataPrId(prId);
             setDetailBusy(false);
           })
           .catch((error: unknown) => {

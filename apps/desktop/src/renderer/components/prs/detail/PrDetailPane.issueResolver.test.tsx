@@ -640,6 +640,7 @@ describe("PrDetailPane issue resolver CTA", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    window.history.replaceState(null, "", "/");
   });
 
   it.each(visibilityCases)("$name — Path to Merge tab is always visible", async ({ checks, reviewThreads, statusOverrides }) => {
@@ -1434,6 +1435,37 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash" });
       expect(onRefresh).toHaveBeenCalled();
     });
+  });
+
+  it("enables resolved and outdated review thread filters for legacy activity deep links", async () => {
+    window.history.replaceState(null, "", "/prs?tab=normal&prId=pr-80&detailTab=activity&threadId=thread-1");
+
+    renderPane({
+      checks: [makeCheck({ conclusion: "success" })],
+      reviewThreads: [
+        makeThread({
+          isResolved: true,
+          isOutdated: true,
+          comments: [
+            {
+              id: "comment-1",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "Resolved thread body",
+              url: null,
+              createdAt: null,
+              updatedAt: null,
+            },
+          ],
+        }),
+      ],
+      prsTimelineRailsEnabled: true,
+    });
+
+    expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
+    expect(document.querySelector('[data-filter-key="all"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector('[data-filter-key="unresolved"]')?.getAttribute("aria-pressed")).toBe("false");
+    expect(document.querySelector('[data-filter-key="outdated"]')?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("launches the issue resolver chat and navigates to the work session", async () => {

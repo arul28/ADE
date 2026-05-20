@@ -339,7 +339,7 @@ describe("gitOperationsService stash item commands", () => {
     );
   });
 
-  it("reports restore success when drop fails after apply", async () => {
+  it("reports restore failure when drop fails after apply", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
     mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
       if (args[0] === "stash" && args[1] === "list") return branchStashList;
@@ -349,7 +349,8 @@ describe("gitOperationsService stash item commands", () => {
     });
     const { service, mockFinish, mockLogger } = createTestGitOperationsService();
 
-    const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" }))
+      .rejects.toThrow("Stash was applied, but ADE could not remove stash@{1}; the stash remains saved. drop failed");
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
@@ -386,15 +387,13 @@ describe("gitOperationsService stash item commands", () => {
       ["stash", "drop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
-    expect(result).toEqual({
-      operationId: "op-1",
-      preHeadSha: "abc123",
-      postHeadSha: "abc123",
-    });
     expect(mockFinish).toHaveBeenCalledWith(
       expect.objectContaining({
         operationId: "op-1",
-        status: "succeeded",
+        status: "failed",
+        metadataPatch: expect.objectContaining({
+          error: expect.stringContaining("the stash remains saved"),
+        }),
       }),
     );
     expect(mockLogger.warn).toHaveBeenCalledWith(

@@ -653,9 +653,62 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("status").textContent).toBe("open");
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
       expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
-      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
     });
     expect(window.ade.prs.getComments).toHaveBeenCalledWith("pr-1");
+  });
+
+  it("does not mark partial selected PR detail as live or fresh", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    const getStatus = vi.fn(async (prId: string) => ({
+      prId,
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0,
+    }));
+    const getChecks = vi.fn(async () => {
+      throw new Error("checks unavailable");
+    });
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus,
+      getChecks,
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn(async () => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
+      expect(getChecks).toHaveBeenCalledWith("pr-1");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-2");
+      expect(getStatus).toHaveBeenCalledWith("pr-2");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(getStatus.mock.calls.filter(([prId]) => prId === "pr-1")).toHaveLength(2);
+    });
   });
 
   it("ignores stale primary detail settlements after reselecting the same PR", async () => {
@@ -815,7 +868,7 @@ describe("PrsContext refresh", () => {
     await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("open");
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
-      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
     });
 
     await act(async () => {

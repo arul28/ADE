@@ -828,6 +828,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     setViewMode("all");
     setSelectedLaneIds([]);
     setShowFiltersPanel(false);
+    setPrs(readGraphPrCache(rootPath));
 
     if (hasCachedTopology && isGraphTopologyCacheFresh(rootPath)) {
       setLoadingTopology(false);
