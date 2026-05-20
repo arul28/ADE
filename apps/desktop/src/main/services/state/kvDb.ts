@@ -533,16 +533,23 @@ function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
     const hasClockTable = rawHasTable(db, clockTableName);
     const hasPksTable = rawHasTable(db, pksTableName);
     const triggerCount = listCrrTriggers(db, tableName).length;
-    let deletedMetadataCount = 0;
-    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
-      deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
-    }
-    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      deletedMetadataCount += runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]).changes;
+    const hasMasterRows = rawHasTable(db, "crsql_master")
+      && rawHasColumn(db, "crsql_master", "tbl_name")
+      && Boolean(getRow(db, "select 1 as present from crsql_master where tbl_name = ? limit 1", [tableName]));
+    const hasChangesRows = rawHasTable(db, "crsql_changes")
+      && rawHasColumn(db, "crsql_changes", "table")
+      && Boolean(getRow(db, "select 1 as present from crsql_changes where [table] = ? limit 1", [tableName]));
+
+    if (!hasClockTable && !hasPksTable && triggerCount === 0 && !hasMasterRows && !hasChangesRows) {
+      continue;
     }
 
-    if (!hasClockTable && !hasPksTable && triggerCount === 0 && deletedMetadataCount === 0) {
-      continue;
+    let deletedMetadataCount = 0;
+    if (hasMasterRows) {
+      deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
+    }
+    if (hasChangesRows) {
+      deletedMetadataCount += runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]).changes;
     }
 
     try {
