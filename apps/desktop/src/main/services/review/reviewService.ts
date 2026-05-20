@@ -2672,8 +2672,11 @@ export function createReviewService({
         context: reviewContext,
         artifactIds: contextArtifactIds,
       });
-      const failedReviewerSummary = failedPassResults.length > 0
-        ? ` Partial review: ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed (${failedPassResults.map((result) => result.pass.label).join(", ")}), so ADE adjudicated the completed reviewer outputs.`
+      const failedReviewerWarning = failedPassResults.length > 0
+        ? `Partial review: ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed (${failedPassResults.map((result) => result.pass.label).join(", ")}).`
+        : null;
+      const failedReviewerSummary = failedReviewerWarning
+        ? ` ${failedReviewerWarning} ADE adjudicated only the completed reviewer outputs.`
         : "";
       const finalSummary = `${adjudication.summary}${failedReviewerSummary}`;
       insertArtifact(runId, {
@@ -2834,7 +2837,7 @@ export function createReviewService({
       updateRun(runId, {
         status: cancelledDuringPublish ? "cancelled" : "completed",
         summary: finalSummary,
-        error_message: null,
+        error_message: failedReviewerWarning,
         finding_count: findings.length,
         severity_summary_json: serializeSeveritySummary(severitySummary),
         ended_at: endedAt,

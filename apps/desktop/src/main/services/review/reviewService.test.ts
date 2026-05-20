@@ -756,7 +756,7 @@ describe("reviewService", () => {
     );
 
     const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
-    expect(saved?.errorMessage).toBeNull();
+    expect(saved?.errorMessage).toContain("Partial review");
     expect(saved?.summary).toContain("Partial review");
     const detail = await harness.service.getRunDetail({ runId: run.id });
     expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
@@ -795,6 +795,7 @@ describe("reviewService", () => {
 
     expect(harness.publishReviewPublication).not.toHaveBeenCalled();
     const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.errorMessage).toContain("Partial review");
     expect(detail?.summary).toContain("Partial review");
     expect(detail?.findings).toHaveLength(1);
     expect(detail?.findings[0]?.publicationState).toBe("local_only");

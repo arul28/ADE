@@ -427,6 +427,99 @@ describe("ReviewPage", () => {
     expect(screen.queryByText("No findings")).toBeNull();
   });
 
+  it("surfaces partial reviewer coverage in the primary review summary", async () => {
+    const partialRun = {
+      id: "run-partial",
+      projectId: "project-1",
+      laneId: "lane-review",
+      status: "completed",
+      targetLabel: "feature/review-tab vs main",
+      compareTarget: { kind: "default_branch", label: "main", ref: "main", laneId: null, branchRef: "main" },
+      target: { mode: "lane_diff", laneId: "lane-review" },
+      config: {
+        compareAgainst: { kind: "default_branch" },
+        selectionMode: "full_diff",
+        dirtyOnly: false,
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "medium",
+        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
+        publishBehavior: "local_only",
+      },
+      summary: "Multi-pass review kept 1 high-signal finding(s) from 1 candidate(s). Partial review: 1 specialist reviewer failed (Security/data).",
+      errorMessage: "Partial review: 1 specialist reviewer failed (Security/data).",
+      findingCount: 0,
+      severitySummary: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+      chatSessionId: "session-partial",
+      createdAt: "2026-04-05T12:00:00.000Z",
+      startedAt: "2026-04-05T12:01:00.000Z",
+      endedAt: "2026-04-05T12:05:00.000Z",
+      updatedAt: "2026-04-05T12:05:00.000Z",
+    } as const;
+    (window.ade.review as any).listRuns.mockResolvedValue([partialRun]);
+    (window.ade.review as any).getRunDetail.mockResolvedValue({
+      ...partialRun,
+      findings: [],
+      artifacts: [],
+      reviewerRuns: [
+        {
+          id: "reviewer-security",
+          runId: "run-partial",
+          reviewerKey: "security-data",
+          label: "Security/data",
+          focus: "security and data risks",
+          status: "failed",
+          chatSessionId: "session-security",
+          promptArtifactId: "prompt-security",
+          outputArtifactId: null,
+          findingsArtifactId: null,
+          candidateCount: 0,
+          keptCount: 0,
+          summary: null,
+          errorMessage: "Timed out.",
+          startedAt: "2026-04-05T12:01:00.000Z",
+          endedAt: "2026-04-05T12:05:00.000Z",
+          createdAt: "2026-04-05T12:01:00.000Z",
+          updatedAt: "2026-04-05T12:05:00.000Z",
+        },
+        {
+          id: "reviewer-checks",
+          runId: "run-partial",
+          reviewerKey: "checks-and-tests",
+          label: "Checks and tests",
+          focus: "validation evidence",
+          status: "completed",
+          chatSessionId: "session-checks",
+          promptArtifactId: "prompt-checks",
+          outputArtifactId: "output-checks",
+          findingsArtifactId: "findings-checks",
+          candidateCount: 0,
+          keptCount: 0,
+          summary: "No checks findings.",
+          errorMessage: null,
+          startedAt: "2026-04-05T12:01:00.000Z",
+          endedAt: "2026-04-05T12:03:00.000Z",
+          createdAt: "2026-04-05T12:01:00.000Z",
+          updatedAt: "2026-04-05T12:03:00.000Z",
+        },
+      ],
+      candidateFindings: [],
+      publications: [],
+      chatSession: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/review?runId=run-partial"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText(/Review partially complete/i)).toBeTruthy();
+    expect(await screen.findByText(/Partial review: 1\/2 specialist reviewers completed; failed: Security\/data/i)).toBeTruthy();
+    expect(screen.queryByText(/2 specialist reviewers completed\. Evidence/i)).toBeNull();
+  });
+
   it("surfaces ADE-native finding classes and compact review context artifacts", async () => {
     render(
       <MemoryRouter initialEntries={["/review?runId=run-2"]}>

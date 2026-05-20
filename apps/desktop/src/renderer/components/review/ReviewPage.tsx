@@ -390,11 +390,27 @@ function formatPublicationOutcome(detail: Pick<ReviewRunDetail, "config" | "publ
   return `${publishedCount} publication ${publishedCount === 1 ? "completed" : "completed"}.`;
 }
 
+function failedReviewers(detail: NormalizedDetail | null | undefined): NonNullable<NormalizedDetail["reviewerRuns"]> {
+  return detail?.reviewerRuns.filter((reviewer) => reviewer.status === "failed") ?? [];
+}
+
+function formatReviewerFailureLabels(reviewers: NonNullable<NormalizedDetail["reviewerRuns"]>): string {
+  return reviewers
+    .map((reviewer) => reviewer.label || reviewer.reviewerKey)
+    .filter(Boolean)
+    .join(", ");
+}
+
 function formatReviewCompleteLine(run: NormalizedRun, detail: NormalizedDetail | null): string {
   const findingCount = detail?.findings.length ?? run.findingCount ?? 0;
   const countLabel = `${findingCount} ${findingCount === 1 ? "finding" : "findings"}`;
   const severityLabel = formatSeveritySummary(run.severitySummary);
   if (run.status === "completed") {
+    const failed = failedReviewers(detail);
+    if (failed.length > 0) {
+      const failedLabel = formatReviewerFailureLabels(failed);
+      return `Review partially complete: ${countLabel} from ${describeRunTarget(run)}. ${severityLabel}. ${failed.length} specialist reviewer${failed.length === 1 ? "" : "s"} failed${failedLabel ? `: ${failedLabel}` : ""}. ${formatPublicationOutcome(detail ?? null)}`;
+    }
     return `Review complete: ${countLabel} from ${describeRunTarget(run)}. ${severityLabel}. ${formatPublicationOutcome(detail ?? null)}`;
   }
   if (run.status === "failed") {
@@ -408,6 +424,13 @@ function formatReviewCompleteLine(run: NormalizedRun, detail: NormalizedDetail |
 
 function formatReviewEvidenceLine(run: NormalizedRun, detail: NormalizedDetail | null): string | null {
   if (run.status !== "completed") return null;
+  const failed = failedReviewers(detail);
+  if (failed.length > 0) {
+    const totalCount = detail?.reviewerRuns.length ?? 0;
+    const completedCount = detail?.reviewerRuns.filter((reviewer) => reviewer.status === "completed").length ?? 0;
+    const failedLabel = formatReviewerFailureLabels(failed);
+    return `Partial review: ${completedCount}/${totalCount} specialist reviewers completed${failedLabel ? `; failed: ${failedLabel}` : ""}. ADE adjudicated only completed reviewer outputs and kept the run local.`;
+  }
   const summary = run.summary?.trim() ?? "";
   const exposesProcessCopy = /\b(candidate|publication threshold|multi-pass review kept)\b/i.test(summary);
   if (summary && !exposesProcessCopy) {
