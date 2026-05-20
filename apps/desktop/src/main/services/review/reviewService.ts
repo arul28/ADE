@@ -614,11 +614,49 @@ function buildContextArtifactHints(args: {
   return lines;
 }
 
+function buildReadOnlyInspectionInstructions(args: {
+  run: ReviewRun;
+  artifactIds: ReviewContextArtifactIds;
+}): string[] {
+  const lines = [
+    "Use read-only inspection to gather exact evidence instead of relying on the prompt as the full diff.",
+    "The complete diff is saved as a review artifact; cite it by artifact id when it supports a finding.",
+    "Do not edit files, stage changes, commit, push, or run commands that mutate the workspace.",
+    `Full diff artifact: ${args.artifactIds.diffBundleArtifactId ?? "not available"}.`,
+  ];
+
+  switch (args.run.target.mode) {
+    case "commit_range":
+      lines.push(
+        `Exact changed hunks: git diff ${args.run.target.baseCommit}..${args.run.target.headCommit} -- <path>`,
+        `Head file contents: git show ${args.run.target.headCommit}:<path>`,
+        `Base file contents: git show ${args.run.target.baseCommit}:<path>`,
+      );
+      break;
+    case "working_tree":
+      lines.push(
+        "Exact unstaged hunks: git diff -- <path>",
+        "Exact staged hunks: git diff --cached -- <path>",
+        "Changed files: git status --short",
+      );
+      break;
+    case "lane_diff":
+    case "pr":
+      lines.push(
+        "Exact hunks for checked-out changes: git diff -- <path>",
+        "Changed files: git status --short",
+        "When a commit range is visible in the manifest, prefer git diff <base>..<head> -- <path>.",
+      );
+      break;
+  }
+
+  return lines.map((line) => `- ${line}`);
+}
+
 function buildPassPrompt(args: {
   run: ReviewRun;
   pass: PassDefinition;
   manifestPrompt: string;
-  diffPrompt: string;
   changedFiles: Array<{ filePath: string }>;
   context: ReviewContextPacket;
   contextArtifactIds: ReviewContextArtifactIds;
@@ -664,8 +702,11 @@ function buildPassPrompt(args: {
     "Changed-file manifest and risk map:",
     args.manifestPrompt,
     "",
-    "Exact diff hunks:",
-    args.diffPrompt.trim() || "- No diff text was available for this target.",
+    "Diff and file inspection:",
+    ...buildReadOnlyInspectionInstructions({
+      run: args.run,
+      artifactIds: args.contextArtifactIds,
+    }),
     "",
     "Context artifact ids you may cite in evidence when relevant:",
     ...buildContextArtifactHints({
@@ -2050,7 +2091,6 @@ export function createReviewService({
     model: string;
     pass: PassDefinition;
     manifestPrompt: string;
-    diffPrompt: string;
     changedFiles: MaterializedChangedFile[];
     changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
     context: ReviewContextPacket;
@@ -2152,7 +2192,6 @@ export function createReviewService({
         run: args.run,
         pass: args.pass,
         manifestPrompt: truncateText(args.manifestPrompt, args.run.config.budgets.maxPromptChars),
-        diffPrompt: args.diffPrompt,
         changedFiles: args.changedFiles,
         context: args.context,
         contextArtifactIds: args.contextArtifactIds,
@@ -2432,7 +2471,6 @@ export function createReviewService({
         },
       });
       const manifestPrompt = buildManifestPrompt(manifestPayload, riskMapPayload);
-      const diffPrompt = truncateText(materialized.fullPatchText, effectiveRun.config.budgets.maxDiffChars);
       const reviewContext = await contextBuilder.buildContext({
         run: effectiveRun,
         materialized: {
@@ -2528,7 +2566,6 @@ export function createReviewService({
           model,
           pass,
           manifestPrompt,
-          diffPrompt,
           changedFiles,
           changedFilesByPath,
           context: reviewContext,

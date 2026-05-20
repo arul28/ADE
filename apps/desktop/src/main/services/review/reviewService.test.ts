@@ -720,8 +720,10 @@ describe("reviewService", () => {
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "adjudication_result")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "merged_findings")).toBe(true);
     const firstPrompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt");
-    expect(firstPrompt?.contentText).toContain("Exact diff hunks");
-    expect(firstPrompt?.contentText).toContain("diff --git a/src/review.ts b/src/review.ts");
+    expect(firstPrompt?.contentText).toContain("Diff and file inspection");
+    expect(firstPrompt?.contentText).toContain("Full diff artifact:");
+    expect(firstPrompt?.contentText).toContain("git diff -- <path>");
+    expect(firstPrompt?.contentText).not.toContain("diff --git a/src/review.ts b/src/review.ts");
 
     const persistedFindings = mapExecRows(harness.raw.exec("select source_pass, originating_passes_json, adjudication_json from review_findings"));
     expect(String(persistedFindings[0]?.source_pass)).toBe("adjudicated");
@@ -809,7 +811,7 @@ describe("reviewService", () => {
     expect(harness.runSessionTurn).not.toHaveBeenCalled();
   });
 
-  it("enforces the final prompt budget after exact diff hunks are inserted", async () => {
+  it("enforces the final prompt budget without embedding the full diff bundle", async () => {
     const longDiff = [
       "diff --git a/src/review.ts b/src/review.ts",
       "@@ -1,2 +1,200 @@",
@@ -852,6 +854,7 @@ describe("reviewService", () => {
     for (const prompt of passPrompts) {
       expect(prompt.contentText ?? "").toHaveLength(4_000);
       expect(prompt.contentText ?? "").toContain("...(truncated)...");
+      expect(prompt.contentText ?? "").not.toContain("exact changed line 999");
     }
   });
 

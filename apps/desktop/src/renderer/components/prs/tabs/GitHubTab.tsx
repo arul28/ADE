@@ -363,6 +363,7 @@ function patchSnapshotWithMappedPr(
       linkedPrId: args.mappedPrId,
       linkedLaneId: args.laneId ?? candidate.linkedLaneId,
       linkedLaneName: args.laneName ?? candidate.linkedLaneName,
+      adeKind: candidate.adeKind ?? "single",
     };
   });
   return {

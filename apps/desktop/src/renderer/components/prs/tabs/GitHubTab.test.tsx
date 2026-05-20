@@ -989,6 +989,7 @@ describe("GitHubTab", () => {
     const user = userEvent.setup();
     const onSelectPr = vi.fn();
     const onRefreshAll = vi.fn().mockResolvedValue(undefined);
+    const forcedSnapshot = createDeferred<GitHubPrSnapshot>();
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,
       repoPullRequests: [
@@ -1005,8 +1006,11 @@ describe("GitHubTab", () => {
           updatedAt: "2026-03-13T12:05:00.000Z",
         }),
       ],
+      externalPullRequests: [],
     };
-    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotWithUnlinked)
+      .mockReturnValueOnce(forcedSnapshot.promise);
     renderTab({ onSelectPr, onRefreshAll });
 
     await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
@@ -1022,12 +1026,18 @@ describe("GitHubTab", () => {
     await waitFor(() => {
       expect(onSelectPr).toHaveBeenCalledWith("pr-created");
     });
+    expect(screen.getByRole("button", { name: /^ADE\s+1$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^External\s+0$/i })).toBeTruthy();
     expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-created" });
     expect(window.ade.lanes.list).toHaveBeenCalledWith({
       includeArchived: false,
       includeStatus: false,
     });
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    await act(async () => {
+      forcedSnapshot.resolve(snapshotWithUnlinked);
+      await forcedSnapshot.promise;
+    });
   });
 
   it("renders bot badge when isBot is true", async () => {

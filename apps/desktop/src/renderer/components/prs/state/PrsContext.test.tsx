@@ -111,6 +111,19 @@ function DetailHarness() {
   );
 }
 
+function ActiveToggleDetailHarness() {
+  const [active, setActive] = React.useState(true);
+  return (
+    <div>
+      <button type="button" onClick={() => setActive(false)}>deactivate</button>
+      <button type="button" onClick={() => setActive(true)}>activate</button>
+      <PrsProvider active={active}>
+        <DetailHarness />
+      </PrsProvider>
+    </div>
+  );
+}
+
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -900,6 +913,69 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("ai-summary").textContent).toBe("Cached overview is available.");
     });
     expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
+  });
+
+  it("refreshes secondary detail when a fresh primary detail cache is reused", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    const deployment: PrDeployment = {
+      id: "deployment-1",
+      environment: "preview",
+      state: "success",
+      description: null,
+      environmentUrl: "https://preview.example.com",
+      logUrl: null,
+      sha: "abc123",
+      ref: "feature/open",
+      creator: "octocat",
+      createdAt: "2026-03-24T12:00:00.000Z",
+      updatedAt: "2026-03-24T12:05:00.000Z",
+    };
+    const aiSummary: PrAiSummary = {
+      prId: "pr-1",
+      summary: "Fresh summary is available.",
+      riskAreas: [],
+      reviewerHotspots: [],
+      unresolvedConcerns: [],
+      generatedAt: "2026-03-24T12:06:00.000Z",
+      headSha: "abc123",
+    };
+    Object.assign(window.ade.prs, {
+      getStatus: vi.fn(async (_prId: string) => ({
+        prId: "pr-1",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      })),
+      getChecks: vi.fn(async (_prId: string) => []),
+      getReviews: vi.fn(async (_prId: string) => []),
+      getComments: vi.fn(async (_prId: string) => []),
+      getDeployments: vi.fn(async (_prId: string) => [deployment]),
+      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+    });
+
+    render(<ActiveToggleDetailHarness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(1);
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "deactivate" }));
+    await user.click(screen.getByRole("button", { name: "activate" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(2);
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("keeps cached selected PR detail visible when live GitHub detail is rate limited", async () => {

@@ -1301,6 +1301,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     if (hasFreshDetailCache) {
       setDetailLiveDataPrId(prId);
       setDetailBusy(false);
+      startSecondaryDetailFetch();
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
