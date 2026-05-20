@@ -103,6 +103,24 @@ function claudeNativePackagesToPrune(platform) {
     .flatMap(([, packages]) => packages);
 }
 
+function openCodeNativePackagesToPrune() {
+  const packages = [
+    "opencode-darwin-arm64",
+    "opencode-darwin-x64",
+    "opencode-darwin-x64-baseline",
+    "opencode-linux-arm64",
+    "opencode-linux-arm64-musl",
+    "opencode-linux-x64",
+    "opencode-linux-x64-baseline",
+    "opencode-linux-x64-baseline-musl",
+    "opencode-linux-x64-musl",
+    "opencode-windows-arm64",
+    "opencode-windows-x64",
+    "opencode-windows-x64-baseline",
+  ];
+  return packages.map((packageName) => path.join("node_modules", packageName));
+}
+
 function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   // afterPack runs per-arch on darwin; pruning here would race the
   // electron-universal merge and ENOENT on deleted paths. Skip on darwin
@@ -110,6 +128,7 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   if (platform === "darwin") return;
   const commonNonRuntimePayload = [
     ...claudeNativePackagesToPrune(platform),
+    ...openCodeNativePackagesToPrune(),
     path.join("node_modules", "node-pty", "deps"),
     path.join("node_modules", "node-pty", "src"),
   ];

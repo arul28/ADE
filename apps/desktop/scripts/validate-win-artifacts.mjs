@@ -442,6 +442,13 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "src"), "node-pty source tree");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-arm64"), "macOS node-pty arm64 prebuild in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-x64"), "macOS node-pty x64 prebuild in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "duplicate OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-x64"), "OpenCode macOS x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-arm64"), "OpenCode Linux arm64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-linux-x64"), "OpenCode Linux x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-arm64"), "macOS arm64 cr-sqlite payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-x64"), "macOS x64 cr-sqlite payload in Windows package");
 
