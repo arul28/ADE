@@ -102,8 +102,32 @@ function defaultRunner(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: { exitCode: number | null; stdout: string; stderr: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      resolve(result);
+    };
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+      }, 500);
+      finish({
+        exitCode: null,
+        stdout,
+        stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
+      });
     }, options.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer | string) => {
       stdout += chunk.toString();
@@ -115,13 +139,11 @@ function defaultRunner(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
       reject(error);
     });
     child.once("exit", (exitCode) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve({ exitCode, stdout, stderr });
+      finish({ exitCode, stdout, stderr });
     });
     child.stdin?.end(options.stdin ?? undefined);
   });
