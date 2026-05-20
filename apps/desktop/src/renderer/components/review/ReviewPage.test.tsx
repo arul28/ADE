@@ -403,7 +403,8 @@ describe("ReviewPage", () => {
     expect(await screen.findByText("Reviewer outputs")).toBeTruthy();
     expect(await screen.findByText(/strong evidence/i)).toBeTruthy();
     expect(await screen.findByText("Review agent transcript available")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /open in work/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /open diff risk transcript in work/i })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /open.*work/i }).length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: /rerun/i }));
 
@@ -517,6 +518,8 @@ describe("ReviewPage", () => {
 
     expect(await screen.findByText(/Review partially complete/i)).toBeTruthy();
     expect(await screen.findByText(/Partial review: 1\/2 specialist reviewers completed; failed: Security\/data/i)).toBeTruthy();
+    expect(await screen.findByText("Specialist reviewer transcripts available")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /open checks and tests transcript in work/i })).toBeTruthy();
     expect(screen.queryByText(/2 specialist reviewers completed\. Evidence/i)).toBeNull();
   });
 

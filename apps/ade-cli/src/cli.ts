@@ -2968,9 +2968,11 @@ function buildGitPlan(args: string[]): CliPlan {
     const action = firstPositional(args) ?? "list";
     const stashRef =
       readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
+    const stashOid = readValue(args, ["--oid", "--stash-oid"]);
     const message = readValue(args, ["--message", "-m"]);
     const common = withLane({
       ...(stashRef ? { stashRef } : {}),
+      ...(stashOid ? { stashOid } : {}),
       includeUntracked: !readFlag(args, ["--tracked-only"]),
       ...(message ? { message } : {}),
     });

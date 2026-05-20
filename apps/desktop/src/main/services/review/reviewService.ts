@@ -686,7 +686,8 @@ function buildPassPrompt(args: {
     '- "confidence": number between 0 and 1',
     '- "filePath": changed file path when known, otherwise null',
     '- "line": line number when known, otherwise null',
-    '- "evidence": array of objects with {"summary": string, "quote": string|null, "filePath": string|null, "line": number|null, "artifactId": string|null}',
+    '- "evidence": array of objects with {"kind": "diff_hunk"|"file_snapshot"|"artifact"|"quote", "summary": string, "quote": string|null, "filePath": string|null, "line": number|null, "artifactId": string|null}',
+    '- Use "diff_hunk" for changed lines and "file_snapshot" for exact lines you inspected outside the changed hunks.',
     args.run.config.budgets.unlimited === true
       ? "Return every real issue you can substantiate from the supplied evidence."
       : `Return at most ${args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings} findings.`,
@@ -935,9 +936,22 @@ function sanitizeParsedEvidence(
   evidence: ReviewEvidence[],
   changedFilesByPath: Map<string, ChangedFileEvidenceContext>,
 ): ReviewEvidence[] {
+  const hasReviewedDiffAnchor = evidence.some((entry) => {
+    if (entry.kind === "artifact" || !entry.filePath) return false;
+    const changedFile = changedFilesByPath.get(entry.filePath);
+    if (!changedFile) return false;
+    return entry.line == null || changedFile.lineNumbers.has(entry.line);
+  });
+
   return evidence.flatMap((entry) => {
     if (entry.kind === "artifact") return [entry];
     if (!entry.filePath) return [];
+    if (entry.kind === "file_snapshot") {
+      if (!hasReviewedDiffAnchor) return [];
+      if (entry.line == null) return [];
+      if (!entry.quote?.trim()) return [];
+      return [entry];
+    }
     const changedFile = changedFilesByPath.get(entry.filePath);
     if (!changedFile) return [];
     if (entry.line != null && !changedFile.lineNumbers.has(entry.line)) return [];

@@ -711,6 +711,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     () => selectedDetail?.artifacts?.filter((artifact) => isContextArtifactType(String(artifact.artifactType))) ?? [],
     [selectedDetail?.artifacts],
   );
+  const selectedReviewerTranscripts = React.useMemo(
+    () => selectedDetail?.reviewerRuns.filter((reviewer) => Boolean(reviewer.chatSessionId)) ?? [],
+    [selectedDetail?.reviewerRuns],
+  );
 
   React.useEffect(() => {
     if (!launchDraft.laneId && defaultLaneId) {
@@ -1602,6 +1606,18 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         <div className="mt-2 text-xs font-semibold text-[#F5FAFF]">{reviewer.label}</div>
                         <div className="mt-1 text-[11px] text-[#94A3B8]">{reviewer.candidateCount} candidates, {reviewer.keptCount} used</div>
                         {reviewer.summary ? <div className="mt-2 text-[11px] text-[#C5D2E6]">{reviewer.summary}</div> : null}
+                        {reviewer.chatSessionId ? (
+                          <Button
+                            className="mt-3"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleOpenTranscriptInWork(reviewer.chatSessionId, selectedRun.laneId)}
+                            aria-label={`Open ${reviewer.label} transcript in Work`}
+                          >
+                            <ArrowSquareOut size={12} />
+                            Open in Work
+                          </Button>
+                        ) : null}
                       </article>
                     ))}
                   </div>
@@ -1954,6 +1970,32 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                   <ArrowSquareOut size={12} />
                   Open in Work
                 </Button>
+              </div>
+            ) : selectedReviewerTranscripts.length > 0 ? (
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-[#F5FAFF]">Specialist reviewer transcripts available</div>
+                    <div className="mt-1 text-xs text-[#94A3B8]">
+                      Open the saved read-only sessions in Work when you need the full turn-by-turn trace.
+                    </div>
+                  </div>
+                  <Chip className="text-[9px]">{selectedReviewerTranscripts.length} linked</Chip>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selectedReviewerTranscripts.map((reviewer) => (
+                    <Button
+                      key={reviewer.id}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleOpenTranscriptInWork(reviewer.chatSessionId, selectedRun.laneId)}
+                      aria-label={`Open ${reviewer.label} transcript in Work`}
+                    >
+                      <ArrowSquareOut size={12} />
+                      {reviewer.label}
+                    </Button>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">

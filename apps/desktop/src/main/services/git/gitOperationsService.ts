@@ -1071,6 +1071,7 @@ export function createGitOperationsService({
       const stashRef = args.stashRef.trim();
       const stashOid = args.stashOid?.trim();
       if (!stashRef.length) throw new Error("stashRef is required");
+      if (!stashOid?.length) throw new Error("stashOid is required to pop a saved stash. Refresh stashes and try again.");
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_stash_pop",
@@ -1103,6 +1104,7 @@ export function createGitOperationsService({
       const stashRef = args.stashRef.trim();
       const stashOid = args.stashOid?.trim();
       if (!stashRef.length) throw new Error("stashRef is required");
+      if (!stashOid?.length) throw new Error("stashOid is required to drop a saved stash. Refresh stashes and try again.");
       invalidateStashReadCaches();
       const { action } = await runLaneOperation({
         laneId: args.laneId,

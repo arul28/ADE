@@ -432,21 +432,33 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     action: "stashApply",
     label: "Stash apply",
     description: "Apply a branch stash entry without removing it from the stash list.",
-    params: [LANE_ID_PARAM, { name: "stashRef", type: "string", required: true, description: "Stash ref e.g. stash@{0}." }],
+    params: [
+      LANE_ID_PARAM,
+      { name: "stashRef", type: "string", required: true, description: "Stash ref e.g. stash@{0}." },
+      { name: "stashOid", type: "string", description: "Optional stash commit OID from listStashes." },
+    ],
   },
   {
     domain: "git",
     action: "stashPop",
     label: "Stash pop",
     description: "Apply a branch stash entry and remove it from the stash list.",
-    params: [LANE_ID_PARAM, { name: "stashRef", type: "string", required: true }],
+    params: [
+      LANE_ID_PARAM,
+      { name: "stashRef", type: "string", required: true },
+      { name: "stashOid", type: "string", required: true, description: "Stash commit OID from listStashes." },
+    ],
   },
   {
     domain: "git",
     action: "stashDrop",
     label: "Stash drop",
     description: "Discard a single branch stash entry without applying it.",
-    params: [LANE_ID_PARAM, { name: "stashRef", type: "string", required: true }],
+    params: [
+      LANE_ID_PARAM,
+      { name: "stashRef", type: "string", required: true },
+      { name: "stashOid", type: "string", required: true, description: "Stash commit OID from listStashes." },
+    ],
   },
   {
     domain: "git",

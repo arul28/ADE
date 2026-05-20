@@ -293,7 +293,7 @@ function createRuntime() {
       listBranches: vi.fn(async () => [{ name: "main", current: true, ahead: 0, behind: 0, hasUpstream: true, upstream: "origin/main" }]),
       checkoutBranch: vi.fn(async () => ({ success: true })),
       stashPush: vi.fn(async () => ({ success: true })),
-      listStashes: vi.fn(async () => [{ ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
+      listStashes: vi.fn(async () => [{ oid: "oid-0", ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
       stashApply: vi.fn(async () => ({ success: true })),
       stashPop: vi.fn(async () => ({ success: true })),
       stashDrop: vi.fn(async () => ({ success: true })),
@@ -4732,6 +4732,37 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(response.structuredContent.count).toBe(1);
+  });
+
+  it("passes stash oid through destructive stash tools", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const pop = await callTool(handler, "stash_pop", {
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+    const drop = await callTool(handler, "stash_drop", {
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+
+    expect(pop?.isError).toBeUndefined();
+    expect(drop?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.stashPop).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+    expect(fixture.runtime.gitService.stashDrop).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
   });
 
   it("returns resources for lane status/conflicts", async () => {

@@ -1182,6 +1182,93 @@ describe("reviewService", () => {
     expect(adjudicationArtifact?.contentText).toContain("rule_policy");
   });
 
+  it("keeps inspected file snapshot evidence for strict cross-boundary findings", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Bridge mismatch.", [
+          makeFinding({
+            title: "Bridge rollout incomplete",
+            findingClass: "incomplete_rollout",
+            evidence: [
+              {
+                kind: "diff_hunk",
+                summary: "The preload diff changes the exposed method name.",
+                filePath: "src/review.ts",
+                line: 2,
+                quote: "+exposeReviewV2()",
+              },
+              {
+                kind: "file_snapshot",
+                summary: "The renderer still calls the old preload method.",
+                filePath: "src/renderer.ts",
+                line: 88,
+                quote: "window.ade.review.startRun()",
+              },
+            ],
+          }),
+        ]),
+        makeOutput("No extra cross-file issues.", []),
+        makeOutput("No checks issues.", []),
+      ],
+    });
+    mockContextBuilder.buildContext.mockResolvedValueOnce(makeContextPacket({
+      matchedRuleOverlays: [
+        {
+          id: "preload-bridge",
+          label: "Preload bridge",
+          description: "Strict bridge rule",
+          pathPatterns: ["src/review.ts"],
+          rolloutExpectations: ["Keep bridge and consumer updates aligned."],
+          companionFamilies: [
+            { id: "preload", label: "preload", pathPatterns: ["src/review.ts"] },
+            { id: "renderer", label: "renderer", pathPatterns: ["src/renderer.ts"] },
+          ],
+          promptGuidance: { "cross-file-impact": ["Check both sides of the bridge."] },
+          adjudicationPolicy: { evidenceMode: "cross_boundary" },
+          matchedPaths: ["src/review.ts"],
+          coveredFamilies: [{ id: "preload", label: "preload" }],
+          missingFamilies: [{ id: "renderer", label: "renderer" }],
+        },
+      ],
+      rules: {
+        summary: "1 rule overlay matched",
+        prompt: "- Preload bridge: missing companion coverage: renderer",
+        payload: {
+          changedPaths: ["src/review.ts"],
+          overlays: [{
+            id: "preload-bridge",
+            label: "Preload bridge",
+            description: "Strict bridge rule",
+            matchedPaths: ["src/review.ts"],
+            rolloutExpectations: ["Keep bridge and consumer updates aligned."],
+            coveredFamilies: [{ id: "preload", label: "preload" }],
+            missingFamilies: [{ id: "renderer", label: "renderer" }],
+            adjudicationPolicy: { evidenceMode: "cross_boundary" },
+          }],
+        },
+        metadata: {
+          summary: "1 rule overlay matched",
+          matchedRuleCount: 1,
+          ruleCount: 1,
+          pathCount: 1,
+          matchedRuleIds: ["preload-bridge"],
+        },
+      },
+    }));
+
+    const run = await harness.start();
+    await waitFor(() => harness.service.listRuns(), (runs) => runs[0]?.status === "completed");
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "diff_hunk", filePath: "src/review.ts", line: 2 }),
+        expect.objectContaining({ kind: "file_snapshot", filePath: "src/renderer.ts", line: 88 }),
+      ]),
+    );
+  });
+
   it("cites validation and provenance artifacts when late-stage signals back the finding", async () => {
     const harness = createHarness({
       outputs: [

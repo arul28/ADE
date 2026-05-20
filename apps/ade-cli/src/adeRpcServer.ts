@@ -1046,7 +1046,8 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        stashRef: { type: "string", minLength: 1 }
+        stashRef: { type: "string", minLength: 1 },
+        stashOid: { type: "string", minLength: 1 }
       }
     }
   },
@@ -1055,11 +1056,12 @@ const TOOL_SPECS: ToolSpec[] = [
     description: "Pop a stash onto a lane and remove it from the stash list. Defaults to the current chat lane when laneId is omitted.",
     inputSchema: {
       type: "object",
-      required: ["stashRef"],
+      required: ["stashRef", "stashOid"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        stashRef: { type: "string", minLength: 1 }
+        stashRef: { type: "string", minLength: 1 },
+        stashOid: { type: "string", minLength: 1 }
       }
     }
   },
@@ -1068,11 +1070,12 @@ const TOOL_SPECS: ToolSpec[] = [
     description: "Drop a stash from a lane. Defaults to the current chat lane when laneId is omitted.",
     inputSchema: {
       type: "object",
-      required: ["stashRef"],
+      required: ["stashRef", "stashOid"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
-        stashRef: { type: "string", minLength: 1 }
+        stashRef: { type: "string", minLength: 1 },
+        stashOid: { type: "string", minLength: 1 }
       }
     }
   },
@@ -6526,21 +6529,24 @@ async function runTool(args: {
   if (name === "stash_apply") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_apply");
     const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
-    const action = await runtime.gitService.stashApply({ laneId, stashRef });
+    const stashOid = asOptionalTrimmedString(toolArgs.stashOid);
+    const action = await runtime.gitService.stashApply({ laneId, stashRef, ...(stashOid ? { stashOid } : {}) });
     return { action };
   }
 
   if (name === "stash_pop") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_pop");
     const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
-    const action = await runtime.gitService.stashPop({ laneId, stashRef });
+    const stashOid = assertNonEmptyString(toolArgs.stashOid, "stashOid");
+    const action = await runtime.gitService.stashPop({ laneId, stashRef, stashOid });
     return { action };
   }
 
   if (name === "stash_drop") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "stash_drop");
     const stashRef = assertNonEmptyString(toolArgs.stashRef, "stashRef");
-    const action = await runtime.gitService.stashDrop({ laneId, stashRef });
+    const stashOid = assertNonEmptyString(toolArgs.stashOid, "stashOid");
+    const action = await runtime.gitService.stashDrop({ laneId, stashRef, stashOid });
     return { action };
   }
 

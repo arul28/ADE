@@ -261,7 +261,7 @@ describe("gitOperationsService stash item commands", () => {
     });
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
 
-    const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
+    const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}", stashOid: "oid-1" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
@@ -308,7 +308,7 @@ describe("gitOperationsService stash item commands", () => {
       expect.objectContaining({
         laneId: "lane-1",
         kind: "git_stash_pop",
-        metadata: expect.objectContaining({ stashRef: "stash@{1}", stashOid: null }),
+        metadata: expect.objectContaining({ stashRef: "stash@{1}", stashOid: "oid-1" }),
       }),
     );
     expect(mockFinish).toHaveBeenCalledWith(
@@ -329,7 +329,7 @@ describe("gitOperationsService stash item commands", () => {
     });
     const { service } = createTestGitOperationsService();
 
-    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).rejects.toThrow("apply failed");
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}", stashOid: "oid-1" })).rejects.toThrow("apply failed");
 
     expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(4);
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
@@ -349,7 +349,7 @@ describe("gitOperationsService stash item commands", () => {
     });
     const { service, mockFinish, mockLogger } = createTestGitOperationsService();
 
-    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" }))
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}", stashOid: "oid-1" }))
       .rejects.toThrow("Stash was applied, but ADE could not remove stash@{1}; the stash remains saved. drop failed");
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
@@ -415,7 +415,7 @@ describe("gitOperationsService stash item commands", () => {
     });
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
 
-    const result = await service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}" });
+    const result = await service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}", stashOid: "oid-0" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
@@ -446,7 +446,7 @@ describe("gitOperationsService stash item commands", () => {
       expect.objectContaining({
         laneId: "lane-1",
         kind: "git_stash_drop",
-        metadata: expect.objectContaining({ stashRef: "stash@{0}" }),
+        metadata: expect.objectContaining({ stashRef: "stash@{0}", stashOid: "oid-0" }),
       }),
     );
     expect(mockFinish).toHaveBeenCalledWith(
@@ -493,6 +493,16 @@ describe("gitOperationsService stash item commands", () => {
         metadata: expect.objectContaining({ stashRef: "stash@{0}", stashOid: "oid-0" }),
       }),
     );
+  });
+
+  it("requires a stash oid before destructive stash actions", async () => {
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{0}" }))
+      .rejects.toThrow("stashOid is required to pop a saved stash");
+    await expect(service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}" }))
+      .rejects.toThrow("stashOid is required to drop a saved stash");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 
   it("does not apply a stash from another branch", async () => {

@@ -911,9 +911,15 @@ function parseGitStashPushArgs(value: Record<string, unknown>): GitStashPushArgs
 }
 
 function parseGitStashRefArgs(value: Record<string, unknown>, action: string): GitStashRefArgs {
+  const stashOid = asTrimmedString(value.stashOid);
+  const destructive = action === "git.stashPop" || action === "git.stashDrop";
+  if (destructive && !stashOid) {
+    throw new Error(`${action} requires stashOid.`);
+  }
   return {
     laneId: requireString(value.laneId, `${action} requires laneId.`),
     stashRef: requireString(value.stashRef, `${action} requires stashRef.`),
+    ...(stashOid ? { stashOid } : {}),
   };
 }
 

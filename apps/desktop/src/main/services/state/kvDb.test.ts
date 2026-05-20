@@ -240,6 +240,41 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBeNull();
   });
 
+  it("removes stale CRR metadata for local-only PR AI summaries", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-crr-cleanup-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    first.run("create table pull_request_ai_summaries__crsql_clock(dummy integer)");
+    first.run("create table pull_request_ai_summaries__crsql_pks(dummy integer)");
+    first.run(`
+      create trigger pull_request_ai_summaries__crsql_utrig
+      after update on pull_request_ai_summaries
+      begin
+        select 1;
+      end
+    `);
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_clock' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'pull_request_ai_summaries__crsql_pks' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'trigger' and name = 'pull_request_ai_summaries__crsql_utrig' limit 1",
+      ),
+    ).toBeNull();
+  });
+
   it("backfills phone-critical tables whose rows predate CRR enablement", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-pre-crr-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

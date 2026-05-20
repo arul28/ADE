@@ -146,6 +146,11 @@ function rawHasTable(db: DatabaseSyncType, tableName: string): boolean {
   return Boolean(getRow(db, "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [tableName]));
 }
 
+function rawHasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
+  return allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`)
+    .some((column) => column.name === columnName);
+}
+
 function isReadonlyDatabaseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /readonly database|SQLITE_READONLY/i.test(message);
@@ -505,6 +510,59 @@ function listCrrTriggers(db: DatabaseSyncType, tableName: string): string[] {
   ).map((row) => row.name);
 }
 
+function dropCrrTriggers(db: DatabaseSyncType, tableName: string, logger?: Logger): number {
+  const triggers = listCrrTriggers(db, tableName);
+  for (const triggerName of triggers) {
+    try {
+      runStatement(db, `drop trigger if exists ${quoteIdentifier(triggerName)}`);
+    } catch (error) {
+      logger?.warn("db.crr_trigger_drop_failed", {
+        tableName,
+        triggerName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return triggers.length;
+}
+
+function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
+  for (const tableName of LOCAL_ONLY_CRR_EXCLUDED_TABLES) {
+    const clockTableName = `${tableName}__crsql_clock`;
+    const pksTableName = `${tableName}__crsql_pks`;
+    const hasClockTable = rawHasTable(db, clockTableName);
+    const hasPksTable = rawHasTable(db, pksTableName);
+    const triggerCount = listCrrTriggers(db, tableName).length;
+
+    if (!hasClockTable && !hasPksTable && triggerCount === 0) {
+      continue;
+    }
+
+    try {
+      getRow(db, "select crsql_as_table(?) as ok", [tableName]);
+    } catch {
+      // Older or partial CRR metadata may not be registered enough for
+      // crsql_as_table; explicit shadow-table cleanup below is still safe.
+    }
+    const droppedTriggerCount = dropCrrTriggers(db, tableName, logger);
+    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(pksTableName)}`);
+    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+    }
+    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
+      runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]);
+    }
+
+    logger?.info("db.crr_excluded_metadata_removed", {
+      tableName,
+      hadClockTable: hasClockTable,
+      hadPksTable: hasPksTable,
+      droppedTriggerCount,
+    });
+  }
+}
+
 function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
   if (!rawHasTable(db, `${tableName}__crsql_clock`)) {
     return false;
@@ -596,6 +654,8 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
 }
 
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
+  removeExcludedCrrMetadata(db, logger);
+
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
   for (const tableName of listEligibleCrrTables(db)) {
     if (rawHasTable(db, `${tableName}__crsql_clock`)) {
@@ -3908,6 +3968,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     const migrateDb = makeMigrateDb();
     repairUnifiedMemoryFtsSchemaForRuntime(migrateDb);
     migrate(migrateDb);
+    removeExcludedCrrMetadata(db, logger);
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);
@@ -3930,6 +3991,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
+      removeExcludedCrrMetadata(db, logger);
     }
 
     let retrofittedForeignKeySchema = false;
@@ -3949,6 +4011,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
+      removeExcludedCrrMetadata(db, logger);
     }
 
     if (crsqliteLoaded) {
