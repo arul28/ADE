@@ -45,6 +45,20 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "macos_vm", action: "start", args: { createIfMissing: true } },
     }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "restart", args: {} },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "wipe", args: { confirm: true } },
+    }])).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "installRuntime", args: {} },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "macos_vm", action: "click", args: {} },
+    }])).toBe(60_000);
   });
 
   it("extends lane creation timeouts on direct and local runtime paths", () => {

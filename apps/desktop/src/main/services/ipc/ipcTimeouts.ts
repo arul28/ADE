@@ -9,7 +9,14 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     provision: IPC.macosVmProvision,
     start: IPC.macosVmStart,
     stop: IPC.macosVmStop,
+    restart: IPC.macosVmRestart,
     delete: IPC.macosVmDelete,
+    wipe: IPC.macosVmWipe,
+    installRuntime: IPC.macosVmInstallRuntime,
+    focusWindow: IPC.macosVmFocusWindow,
+    click: IPC.macosVmClick,
+    selectPoint: IPC.macosVmSelectPoint,
+    typeText: IPC.macosVmTypeText,
     captureScreenshot: IPC.macosVmCaptureScreenshot,
   },
   lane: {
@@ -46,11 +53,18 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 10 * 60_000;
     case IPC.macosVmProvision:
     case IPC.macosVmStart:
+    case IPC.macosVmRestart:
+    case IPC.macosVmInstallRuntime:
       return 120 * 60_000;
     case IPC.macosVmStop:
     case IPC.macosVmDelete:
+    case IPC.macosVmWipe:
       return 2 * 60_000;
     case IPC.macosVmCaptureScreenshot:
+    case IPC.macosVmFocusWindow:
+    case IPC.macosVmClick:
+    case IPC.macosVmSelectPoint:
+    case IPC.macosVmTypeText:
       return 60_000;
     case IPC.iosSimulatorListLaunchTargets:
     case IPC.iosSimulatorGetScreenSnapshot:
