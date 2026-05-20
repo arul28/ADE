@@ -506,10 +506,18 @@ describe("prService.getGithubSnapshot", () => {
     vi.clearAllMocks();
   });
 
-  it("serves local PR rows on a cold cache after GitHub auth passes", async () => {
+  it("fetches live GitHub data before serving cold-cache PR metadata", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
-      apiRequest: vi.fn(() => new Promise(() => {})),
+      apiRequest: vi.fn(async () => ({
+        data: [
+          makeGitHubPull({
+            number: 321,
+            title: "Live PR",
+            html_url: "https://github.com/test-owner/test-repo/pull/321",
+          }),
+        ],
+      })),
     });
     const db = makeMockDb();
     const cachedRow = makePrRow({
@@ -533,7 +541,7 @@ describe("prService.getGithubSnapshot", () => {
       repoPullRequests: [
         expect.objectContaining({
           githubPrNumber: 321,
-          title: "Local cached PR",
+          title: "Live PR",
           linkedPrId: "pr-row-1",
           linkedLaneId: LANE_ID,
           linkedLaneName: "my-feature",
@@ -541,9 +549,12 @@ describe("prService.getGithubSnapshot", () => {
         }),
       ],
       externalPullRequests: [],
-      syncedAt: "2026-01-02T00:00:00Z",
+      syncedAt: expect.any(String),
     });
     expect(githubService.getStatus).toHaveBeenCalledTimes(1);
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
+    }));
   });
 
   it("does not read durable GitHub PR cache when the token is missing", async () => {
@@ -613,7 +624,7 @@ describe("prService.getGithubSnapshot", () => {
     expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 
-  it("keeps branch PR auto-link running in the background after a local snapshot response", async () => {
+  it("backfills branch PR auto-links during a live snapshot", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
@@ -652,10 +663,7 @@ describe("prService.getGithubSnapshot", () => {
 
     const snapshot = await service.getGithubSnapshot();
 
-    expect(snapshot.repoPullRequests[0]?.title).toBe("Already cached PR");
-    expect(githubService.apiRequest).not.toHaveBeenCalled();
-
-    await flushMicrotasks(30);
+    expect(snapshot.repoPullRequests[0]?.title).toBe("Background linked PR");
 
     expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
       query: expect.objectContaining({ head: `${REPO.owner}:feature/missed` }),

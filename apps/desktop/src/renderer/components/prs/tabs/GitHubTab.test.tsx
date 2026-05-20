@@ -354,6 +354,42 @@ describe("GitHubTab", () => {
     expect(screen.queryByText("Other project PR")).toBeNull();
   });
 
+  it("filters GitHub rows by ADE linkage scope", async () => {
+    const user = userEvent.setup();
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-unmapped",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unmapped PR",
+          headBranch: "feature/unmapped",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          updatedAt: "2026-03-13T11:50:00.000Z",
+        }),
+      ],
+    });
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Unmapped PR")).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole("button", { name: /ADE/i }));
+    expect(screen.queryByText("Unmapped PR")).toBeNull();
+    expect(screen.getByText("Open PR")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /External/i }));
+    expect(screen.getByText("Unmapped PR")).toBeTruthy();
+    expect(screen.queryByText("Open PR")).toBeNull();
+  });
+
   it("passes queue context into the normal PR detail pane", async () => {
     renderTab({ selectedPrId: "pr-queue" });
 
@@ -724,8 +760,8 @@ describe("GitHubTab", () => {
       expect(screen.getByText("Unlinked PR")).not.toBeNull();
     });
 
-    expect(screen.queryByRole("button", { name: /^ADE/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^External/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^ADE/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^External/i })).toBeTruthy();
   });
 
   it("marks unlinked PRs as unmapped", async () => {

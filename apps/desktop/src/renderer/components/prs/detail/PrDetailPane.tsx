@@ -991,6 +991,7 @@ export function PrDetailPane({
       setSnapshotComments([]);
     }
     setActionRuns([]);
+    setReviewThreads([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
@@ -1009,12 +1010,13 @@ export function PrDetailPane({
 
     snapshotPrefillPendingRef.current = true;
     void loadDetail({ hydrateSnapshot: true });
+    void refreshReviewThreads();
     return () => {
       detailLoadSeqRef.current += 1;
       inventoryLoadSeqRef.current += 1;
       convergenceLoadSeqRef.current += 1;
     };
-  }, [applyConvergenceRuntime, applySnapshotHydration, loadConvergenceState, loadDetail, pr.id]);
+  }, [applyConvergenceRuntime, applySnapshotHydration, loadConvergenceState, loadDetail, pr.id, refreshReviewThreads]);
 
   React.useEffect(() => {
     const key = [

@@ -2055,6 +2055,36 @@ export function createReviewService({
     contextArtifactIds: ReviewContextArtifactIds;
   }): Promise<PassExecutionResult> {
     const reviewerRun = insertReviewerRun(args.runId, args.pass);
+    if (cancelledRuns.has(args.runId)) {
+      const endedAt = nowIso();
+      updateReviewerRun(reviewerRun.id, {
+        status: "cancelled",
+        error_message: "Review run cancelled before reviewer session started.",
+        ended_at: endedAt,
+        updated_at: endedAt,
+      });
+      emit({
+        type: "reviewer-updated",
+        runId: args.runId,
+        laneId: args.run.laneId,
+        reviewerRunId: reviewerRun.id,
+        reviewerKey: args.pass.key,
+        status: "cancelled",
+      });
+      return {
+        pass: args.pass,
+        status: "cancelled",
+        errorMessage: "Review run cancelled before reviewer session started.",
+        reviewerRunId: reviewerRun.id,
+        sessionId: null,
+        summary: null,
+        candidates: [],
+        promptArtifactId: "",
+        outputArtifactId: "",
+        findingsArtifactId: "",
+        budgetTrimmedCount: 0,
+      };
+    }
     const startedAt = nowIso();
     updateReviewerRun(reviewerRun.id, {
       status: "running",
@@ -2103,6 +2133,18 @@ export function createReviewService({
         "update review_runs set chat_session_id = coalesce(chat_session_id, ?), updated_at = ? where id = ? and project_id = ?",
         [sessionId, nowIso(), args.runId, projectId],
       );
+
+      if (cancelledRuns.has(args.runId)) {
+        await agentChatService.interrupt({ sessionId }).catch((error) => {
+          logger.warn("review.cancel_reviewer_interrupt_failed", {
+            runId: args.runId,
+            reviewerKey: args.pass.key,
+            sessionId,
+            error: getErrorMessage(error),
+          });
+        });
+        throw new Error("Review run cancelled before reviewer prompt dispatch.");
+      }
 
       const prompt = buildPassPrompt({
         run: args.run,
@@ -2461,6 +2503,20 @@ export function createReviewService({
           lineNumbers: new Set(entry.lineNumbers),
         },
       ]));
+      if (cancelledRuns.has(runId)) {
+        cancelledRuns.delete(runId);
+        const endedAt = nowIso();
+        updateRun(runId, {
+          status: "cancelled",
+          summary: "Run cancelled before reviewer prompts were sent.",
+          error_message: null,
+          ended_at: endedAt,
+          updated_at: endedAt,
+        });
+        emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
+        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+        return;
+      }
       const passResults = await Promise.all(REVIEW_PASSES.map((pass) => executePass({
           runId,
           run: effectiveRun,

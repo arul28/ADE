@@ -1822,20 +1822,22 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
-  it("loads review threads when opening the resolver", async () => {
+  it("loads review threads before and when opening the resolver", async () => {
     const user = userEvent.setup();
     const { getReviewThreads } = renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
     });
 
-    expect(getReviewThreads).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(getReviewThreads).toHaveBeenCalledTimes(1);
+    });
 
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
 
     await waitFor(() => {
-      expect(getReviewThreads).toHaveBeenCalledTimes(1);
+      expect(getReviewThreads).toHaveBeenCalledTimes(2);
     });
   });
 

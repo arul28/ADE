@@ -419,6 +419,13 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
   }
 }
 
+const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  "github_pr_cache",
+  "lane_detail_snapshots",
+  "lane_list_snapshots",
+  "pr_auto_link_ignores",
+]);
+
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
     db,
@@ -433,6 +440,7 @@ function listEligibleCrrTables(db: DatabaseSyncType): string[] {
         and name not like 'unified_memories_fts%'`
   );
   return tables
+    .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
     .filter((table) => !table.sql?.toLowerCase().startsWith("create virtual table"))
     .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
     .map((table) => table.name);

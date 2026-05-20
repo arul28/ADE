@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 // Mock child cards to keep this test focused on Timeline behavior.
 vi.mock("./PrReviewThreadCard", () => ({
@@ -173,10 +174,10 @@ describe("applyTimelineFilters", () => {
     }),
   ];
 
-  it("returns the full event list by default", () => {
+  it("hides resolved and outdated threads by default", () => {
     const out = applyTimelineFilters(events, DEFAULT_PR_TIMELINE_FILTERS, "alice");
     const ids = out.map((e) => e.id);
-    expect(ids).toEqual(["t-open", "t-resolved", "t-outdated"]);
+    expect(ids).toEqual(["t-open"]);
   });
 
   it("includes resolved + outdated when flags are on", () => {
@@ -203,7 +204,7 @@ describe("PrTimeline", () => {
         repoOwner="acme"
         repoName="ade"
         viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
         onFiltersChange={() => {}}
       />,
     );
@@ -247,7 +248,7 @@ describe("PrTimeline", () => {
         repoOwner="acme"
         repoName="ade"
         viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
         onFiltersChange={() => {}}
       />,
     );
@@ -311,7 +312,8 @@ describe("PrTimeline", () => {
     expect(second?.getAttribute("data-thread-id")).toBe("t2");
   });
 
-  it("does not render the legacy filter toolbar", () => {
+  it("renders the timeline filter toolbar", async () => {
+    const user = userEvent.setup();
     const onFiltersChange = vi.fn();
     render(
       <PrTimeline
@@ -325,9 +327,13 @@ describe("PrTimeline", () => {
         onFiltersChange={onFiltersChange}
       />,
     );
-    expect(screen.queryByRole("button", { name: /Mine/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Show outdated/i })).toBeNull();
-    expect(onFiltersChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Mine/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Show outdated/i })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Mine/i }));
+    expect(onFiltersChange).toHaveBeenCalledWith({
+      ...DEFAULT_PR_TIMELINE_FILTERS,
+      onlyMine: true,
+    });
   });
 
   it("renders the AI summary card when a summary is provided", () => {

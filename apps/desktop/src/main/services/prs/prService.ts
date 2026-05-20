@@ -177,18 +177,6 @@ type PullRequestRow = {
   creation_strategy: string | null;
 };
 
-type GithubPrCacheRow = {
-  project_id: string;
-  repo_owner: string;
-  repo_name: string;
-  github_pr_number: number;
-  item_json: string;
-  state: string;
-  head_branch: string | null;
-  updated_at: string;
-  synced_at: string;
-};
-
 type PrAutoLinkIgnoreRow = {
   project_id: string;
   repo_owner: string;
@@ -5548,73 +5536,6 @@ export function createPrService({
     return null;
   };
 
-  const snapshotSyncedAtFromRows = (rows: Array<PullRequestRow | GithubPrCacheRow>): string => {
-    let latestValue: string | null = null;
-    let latestMs = 0;
-    for (const row of rows) {
-      const values =
-        "last_synced_at" in row
-          ? [row.last_synced_at, row.updated_at, row.created_at]
-          : [row.synced_at, row.updated_at];
-      for (const value of values) {
-        const ms = parseIsoMs(value);
-        if (ms > latestMs) {
-          latestMs = ms;
-          latestValue = value ?? null;
-        }
-      }
-    }
-    return latestValue ?? nowIso();
-  };
-
-  const overlayGithubSnapshotLinkage = (
-    item: GitHubPrListItem,
-    metadata: GithubSnapshotMetadata,
-  ): GitHubPrListItem => {
-    const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(item.repoOwner, item.repoName, Number(item.githubPrNumber))) ?? null;
-    const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
-    const groupRow = linkedPrRow ? metadata.groupByPrId.get(linkedPrRow.id) ?? null : null;
-    return {
-      ...item,
-      linkedPrId: linkedPrRow?.id ?? null,
-      linkedGroupId: linkedPrRow ? (asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null) : null,
-      linkedLaneId: linkedPrRow?.lane_id ?? null,
-      linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
-      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
-      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
-      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
-    };
-  };
-
-  const parseGithubPrCacheItem = (
-    row: GithubPrCacheRow,
-    metadata: GithubSnapshotMetadata,
-  ): GitHubPrListItem | null => {
-    try {
-      const parsed = JSON.parse(row.item_json) as GitHubPrListItem;
-      if (!parsed || typeof parsed !== "object") return null;
-      return overlayGithubSnapshotLinkage({
-        ...parsed,
-        repoOwner: row.repo_owner,
-        repoName: row.repo_name,
-        githubPrNumber: Number(row.github_pr_number),
-        state: (row.state as PrState) ?? parsed.state,
-        headBranch: row.head_branch ?? parsed.headBranch ?? null,
-        updatedAt: row.updated_at || parsed.updatedAt,
-      }, metadata);
-    } catch {
-      return null;
-    }
-  };
-
-  const listGithubPrCacheRows = (): GithubPrCacheRow[] => db.all<GithubPrCacheRow>(
-    `select project_id, repo_owner, repo_name, github_pr_number, item_json, state, head_branch, updated_at, synced_at
-       from github_pr_cache
-      where project_id = ?
-      order by datetime(updated_at) desc, github_pr_number desc`,
-    [projectId],
-  );
-
   const upsertGithubPrCache = (items: GitHubPrListItem[], syncedAt = nowIso()): void => {
     for (const item of items) {
       db.run(
@@ -5644,82 +5565,6 @@ export function createPrService({
         ],
       );
     }
-  };
-
-  const rowToGithubSnapshotItem = (
-    row: PullRequestRow,
-    metadata: GithubSnapshotMetadata,
-  ): GitHubPrListItem => {
-    const workflowRow = metadata.workflowByPrId.get(row.id) ?? null;
-    const groupRow = metadata.groupByPrId.get(row.id) ?? null;
-    const state: PrState =
-      row.state === "draft" || row.state === "merged" || row.state === "closed"
-        ? row.state
-        : "open";
-    return {
-      id: row.github_node_id || `repo-${row.repo_owner}-${row.repo_name}-${Number(row.github_pr_number)}`,
-      scope: "repo",
-      repoOwner: row.repo_owner,
-      repoName: row.repo_name,
-      githubPrNumber: Number(row.github_pr_number),
-      githubUrl: row.github_url,
-      title: row.title || `PR #${Number(row.github_pr_number)}`,
-      state,
-      isDraft: row.state === "draft",
-      baseBranch: row.base_branch || null,
-      headBranch: row.head_branch || null,
-      headRepoOwner: row.repo_owner,
-      headRepoName: row.repo_name,
-      author: null,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at || row.created_at,
-      linkedPrId: row.id,
-      linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
-      linkedLaneId: row.lane_id,
-      linkedLaneName: metadata.laneById.get(row.lane_id)?.name ?? row.lane_id,
-      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, row),
-      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
-      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
-      labels: [],
-      isBot: false,
-      commentCount: 0,
-    };
-  };
-
-  const getGithubSnapshotFromLocalCache = async (
-    githubStatus: GitHubStatus,
-  ): Promise<GitHubPrSnapshot | null> => {
-    const repo = githubStatus.repo;
-    if (!repo) return null;
-
-    const cacheRows = listGithubPrCacheRows();
-    const metadata = await loadGithubSnapshotMetadata();
-
-    const repoPrefix = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#`;
-    const repoCacheRows = cacheRows.filter((row) =>
-      repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)).startsWith(repoPrefix),
-    );
-    const cachedItems = repoCacheRows
-      .map((row) => parseGithubPrCacheItem(row, metadata))
-      .filter((item): item is GitHubPrListItem => item !== null);
-    const seenKeys = new Set(cachedItems.map((item) => repoPrKey(item.repoOwner, item.repoName, Number(item.githubPrNumber))));
-    const repoPrRows = metadata.pullRequestRows
-      .filter((row) => repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)).startsWith(repoPrefix));
-    const linkedOnlyItems = repoPrRows
-      .filter((row) => !seenKeys.has(repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number))))
-      .map((row) => rowToGithubSnapshotItem(row, metadata));
-    const repoPullRequests = [...cachedItems, ...linkedOnlyItems]
-      .sort((left, right) => parseIsoMs(right.updatedAt) - parseIsoMs(left.updatedAt));
-
-    if (repoPullRequests.length === 0) return null;
-
-    return {
-      repo,
-      viewerLogin: githubStatus.userLogin,
-      repoPullRequests,
-      externalPullRequests: [],
-      syncedAt: snapshotSyncedAtFromRows([...repoCacheRows, ...repoPrRows]),
-    };
   };
 
   const getGithubSnapshotUncached = async (
@@ -5823,13 +5668,8 @@ export function createPrService({
     }
 
     const startSnapshotRequest = (
-      allowStaleOnError: boolean,
       precheckedGithubStatus: GitHubStatus,
     ): Promise<GitHubPrSnapshot> => {
-      const staleFallback =
-        cachedGithubSnapshot && githubSnapshotMatchesStatus(cachedGithubSnapshot, precheckedGithubStatus)
-          ? cachedGithubSnapshot
-          : null;
       const requestEpoch = githubSnapshotCacheEpoch;
       let inFlight!: { request: Promise<GitHubPrSnapshot> };
       const request = getGithubSnapshotUncached(precheckedGithubStatus)
@@ -5842,15 +5682,6 @@ export function createPrService({
             publishGithubSnapshot(snapshot, capturedAt);
           }
           return snapshot;
-        })
-        .catch((error) => {
-          if (allowStaleOnError && staleFallback) {
-            logger.warn("prs.github_snapshot_refresh_failed_stale_returned", {
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return staleFallback;
-          }
-          throw error;
         })
         .finally(() => {
           if (githubSnapshotInFlight === inFlight) {
@@ -5869,25 +5700,19 @@ export function createPrService({
         return cachedSnapshot;
       }
       if (!githubSnapshotInFlight) {
-        void startSnapshotRequest(true, githubStatus).catch(() => {});
+        void startSnapshotRequest(githubStatus).catch((error) => {
+          logger.warn("prs.github_snapshot_revalidation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       }
       return cachedSnapshot;
-    }
-    if (!force) {
-      const localSnapshot = await getGithubSnapshotFromLocalCache(githubStatus);
-      if (localSnapshot) {
-        publishGithubSnapshot(localSnapshot);
-        if (!githubSnapshotInFlight) {
-          void startSnapshotRequest(true, githubStatus).catch(() => {});
-        }
-        return localSnapshot;
-      }
     }
     if (!force && githubSnapshotInFlight) {
       return githubSnapshotInFlight.request;
     }
 
-    return startSnapshotRequest(false, githubStatus);
+    return startSnapshotRequest(githubStatus);
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {

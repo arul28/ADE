@@ -227,6 +227,16 @@ async function waitFor<T>(fn: () => T | Promise<T>, predicate: (value: T) => boo
   throw new Error("Timed out waiting for review service state");
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeConfig(overrides: Partial<ReviewRunConfig> = {}): ReviewRunConfig {
   return {
     compareAgainst: { kind: "default_branch" },
@@ -775,6 +785,28 @@ describe("reviewService", () => {
       () => harness.service.listRuns(),
       (runs) => runs.some((entry) => entry.id === run.id && entry.status === "cancelled"),
     );
+  });
+
+  it("does not dispatch specialist prompts after cancellation during context materialization", async () => {
+    const harness = createHarness({ outputs: [] });
+    const context = deferred<ReturnType<typeof makeContextPacket>>();
+    mockContextBuilder.buildContext.mockReturnValueOnce(context.promise);
+
+    const run = await harness.start();
+    await waitFor(
+      () => mockContextBuilder.buildContext.mock.calls.length,
+      (count) => count === 1,
+    );
+
+    await harness.service.cancelRun({ runId: run.id });
+    context.resolve(makeContextPacket());
+
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "cancelled"),
+    );
+    expect(harness.createSession).not.toHaveBeenCalled();
+    expect(harness.runSessionTurn).not.toHaveBeenCalled();
   });
 
   it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {

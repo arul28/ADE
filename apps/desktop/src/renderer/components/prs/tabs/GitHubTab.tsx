@@ -43,12 +43,14 @@ type GitHubTabProps = {
 };
 
 type GitHubFilter = "open" | "closed" | "merged";
+type ScopeFilter = "all" | "ade" | "external";
 
 type GitHubTabWarmCache = {
   projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
   selectedItemId: string | null;
+  scopeFilter: ScopeFilter;
   searchQuery: string;
   externalHistoryLoaded: boolean;
   cachedAt: number;
@@ -189,6 +191,12 @@ function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): LaneSummary
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   if (filter === "open") return item.state === "open" || item.state === "draft";
   return item.state === filter;
+}
+
+function matchesScope(item: GitHubPrListItem, scope: ScopeFilter): boolean {
+  if (scope === "all") return true;
+  if (scope === "ade") return item.adeKind !== null;
+  return item.adeKind === null;
 }
 
 /* -- Color-coded state badge with distinct colors per state -- */
@@ -740,6 +748,9 @@ export function GitHubTab({
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
   );
+  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>(
+    () => initialWarmCacheRef.current?.scopeFilter ?? "all",
+  );
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
   const [unlinkingPrId, setUnlinkingPrId] = React.useState<string | null>(null);
@@ -856,6 +867,7 @@ export function GitHubTab({
     setError(null);
     setFilter(warmCache?.filter ?? "open");
     setSelectedItemId(warmCache?.selectedItemId ?? null);
+    setScopeFilter(warmCache?.scopeFilter ?? "all");
     setSearchQuery(warmCache?.searchQuery ?? "");
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
@@ -910,11 +922,12 @@ export function GitHubTab({
       snapshot,
       filter,
       selectedItemId,
+      scopeFilter,
       searchQuery,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, scopeFilter, searchQuery, selectedItemId, snapshot]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -971,21 +984,32 @@ export function GitHubTab({
 
   const filteredItems = React.useMemo(
     () => allItems
-      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
+      .filter((item) => matchesFilter(item, filter) && matchesScope(item, scopeFilter) && matchesSearch(item))
       .sort((a, b) =>
         new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
       ),
-    [allItems, filter, matchesSearch],
+    [allItems, filter, scopeFilter, matchesSearch],
   );
 
-  // Counts for filter tabs (not search-filtered)
+  // Counts for filter tabs (scoped but not search-filtered)
   const filterCounts = React.useMemo(() => {
+    const scoped = allItems.filter((item) => matchesScope(item, scopeFilter));
     return {
-      open: allItems.filter((item) => item.state === "open" || item.state === "draft").length,
-      closed: allItems.filter((item) => item.state === "closed").length,
-      merged: allItems.filter((item) => item.state === "merged").length,
+      open: scoped.filter((item) => item.state === "open" || item.state === "draft").length,
+      closed: scoped.filter((item) => item.state === "closed").length,
+      merged: scoped.filter((item) => item.state === "merged").length,
     };
-  }, [allItems]);
+  }, [allItems, scopeFilter]);
+
+  // Counts for scope sub-tabs (status-filtered but not search-filtered)
+  const scopeCounts = React.useMemo(() => {
+    const statusFiltered = allItems.filter((item) => matchesFilter(item, filter));
+    return {
+      all: statusFiltered.length,
+      ade: statusFiltered.filter((item) => item.adeKind !== null).length,
+      external: statusFiltered.filter((item) => item.adeKind === null).length,
+    };
+  }, [allItems, filter]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -1007,9 +1031,12 @@ export function GitHubTab({
     if (!matchesFilter(linkedItem, filter)) {
       setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
     }
+    if (!matchesScope(linkedItem, scopeFilter)) {
+      setScopeFilter("all");
+    }
     setSelectedItemId(linkedItem.id);
     hasInitializedSelectionRef.current = true;
-  }, [allItems, snapshot, selectedPrId, filter]);
+  }, [allItems, snapshot, selectedPrId, filter, scopeFilter]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -1415,6 +1442,45 @@ export function GitHubTab({
                 }}>
                   {count}
                 </span>
+              </button>
+            );
+          })}
+        </div>
+        {/* Scope sub-tabs: All / ADE / External */}
+        <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "4px 16px 6px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
+          {(["all", "ade", "external"] as ScopeFilter[]).map((scope) => {
+            const active = scopeFilter === scope;
+            const count = scopeCounts[scope];
+            const label = scope === "ade" ? "ADE" : scope === "external" ? "External" : "All";
+            return (
+              <button
+                key={scope}
+                type="button"
+                onClick={() => {
+                  pendingSelectedItemIdRef.current = null;
+                  setScopeFilter(scope);
+                  setSelectedItemId(null);
+                  onSelectPr(null);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  height: 24,
+                  padding: "0 10px",
+                  fontSize: 11,
+                  fontWeight: active ? 600 : 400,
+                  fontFamily: SANS_FONT,
+                  color: active ? "#C4B5FD" : COLORS.textMuted,
+                  background: active ? "rgba(167,139,250,0.10)" : "transparent",
+                  border: active ? "1px solid rgba(167,139,250,0.15)" : "1px solid transparent",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  transition: "all 150ms ease",
+                }}
+              >
+                {label}
+                <span style={{ fontSize: 10, fontFamily: MONO_FONT, opacity: 0.7 }}>{count}</span>
               </button>
             );
           })}
