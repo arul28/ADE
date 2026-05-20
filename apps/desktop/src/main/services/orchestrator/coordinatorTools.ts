@@ -66,6 +66,11 @@ import {
   resolveFirstPostPlanningPhaseKey,
   resolveMustPrecedePredecessors,
 } from "../missions/phaseEngine";
+import {
+  hasResolvedPlanningQuestionIntervention,
+  isPlanningQuestionIntervention,
+  phaseRequiresPlanningQuestionBeforeExit,
+} from "./planningQuestionPolicy";
 
 /** Timeout for autopilot agent startup (Promise.race guard). */
 const AUTOPILOT_START_TIMEOUT_MS = 15_000;
@@ -1391,12 +1396,18 @@ export function createCoordinatorToolSet(deps: {
       phases: missionPhases,
       phaseOverride: args.phaseOverride ?? null,
       phaseHint: args.phaseHint ?? null,
+      policyPrompt: args.prompt,
+    });
+    const workerInstructions = appendPlanningResultContract(args.prompt, phaseMetadata);
+    const policyPhaseMetadata = applyPlanningQuestionPolicyToWorkerMetadata({
+      metadata: phaseMetadata,
+      phases: missionPhases,
+      policyPrompt: workerInstructions,
     });
     const effectivePhaseMetadata = {
-      ...phaseMetadata,
+      ...policyPhaseMetadata,
       ...(args.readOnly === true ? { readOnlyExecution: true } : {}),
     };
-    const workerInstructions = appendPlanningResultContract(args.prompt, phaseMetadata);
     const resolveReusableTaskShell = (): OrchestratorStep | null => {
       const exactCandidate = resolveStep(g, stepKey);
       if (exactCandidate && isTaskShellStep(exactCandidate) && !TERMINAL_STEP_STATUSES.has(exactCandidate.status)) {
@@ -1894,6 +1905,64 @@ export function createCoordinatorToolSet(deps: {
     return buildPhaseMetadataForPhase(current);
   }
 
+  function nonEmptyString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value : null;
+  }
+
+  function getMissionPromptForPlanningPolicy(): string | null {
+    const candidates: string[] = [];
+    const addCandidate = (value: unknown) => {
+      const candidate = nonEmptyString(value);
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    };
+    try {
+      const getMission = (missionService as { get?: (id: string) => { prompt?: unknown } | null }).get;
+      if (typeof getMission === "function") {
+        const mission = getMission.call(missionService, missionId);
+        addCandidate(mission?.prompt);
+      }
+    } catch {
+      // Fall back to persisted rows below.
+    }
+    try {
+      const missionPromptRow = projectId
+        ? db.get<{ prompt?: unknown }>(
+            `select prompt from missions where id = ? and project_id = ? limit 1`,
+            [missionId, projectId],
+          )
+        : db.get<{ prompt?: unknown }>(
+            `select prompt from missions where id = ? limit 1`,
+            [missionId],
+          );
+      addCandidate(missionPromptRow?.prompt);
+    } catch {
+      // Fall back to run metadata below.
+    }
+    try {
+      const runMetadataRow = db.get<{ metadata_json?: unknown }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [runId],
+      );
+      const metadataJson = nonEmptyString(runMetadataRow?.metadata_json);
+      if (metadataJson) {
+        const metadata = asRecord(JSON.parse(metadataJson));
+        addCandidate(metadata?.missionPrompt);
+        addCandidate(metadata?.missionGoal);
+      }
+    } catch {
+      // Fall back to the service graph below.
+    }
+    try {
+      const graph = orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
+      const runMetadata = asRecord(graph.run.metadata);
+      addCandidate(runMetadata?.missionPrompt);
+      addCandidate(runMetadata?.missionGoal);
+    } catch {
+      // Fall back to accumulated candidates below.
+    }
+    return candidates.length > 0 ? candidates.join("\n\n") : null;
+  }
+
   function resolvePhaseCardForHint(phases: PhaseCard[], hint: WorkerPhaseHint | null): PhaseCard | null {
     if (!hint) return null;
     const wantedStepType = hint === "implementation" ? "implementation" : hint;
@@ -1939,17 +2008,31 @@ export function createCoordinatorToolSet(deps: {
     phases: PhaseCard[];
     phaseOverride?: PhaseCard | null;
     phaseHint?: WorkerPhaseHint | null;
+    policyPrompt?: string | null;
   }): Record<string, unknown> {
-    if (args.phaseOverride) return buildPhaseMetadataForPhase(args.phaseOverride);
+    if (args.phaseOverride) return buildPhaseMetadataForPhase(args.phaseOverride, args.policyPrompt);
     const hintedPhase = resolvePhaseCardForHint(args.phases, args.phaseHint ?? null);
-    if (hintedPhase) return buildPhaseMetadataForPhase(hintedPhase);
+    if (hintedPhase) return buildPhaseMetadataForPhase(hintedPhase, args.policyPrompt);
     const hintedFallback = buildFallbackPhaseMetadataForHint(args.phaseHint ?? null);
     if (Object.keys(hintedFallback).length > 0) return hintedFallback;
     return buildPhaseMetadataForNewStep(args.graph, args.phases);
   }
 
-  function buildPhaseMetadataForPhase(current: PhaseCard): Record<string, unknown> {
+  function buildPhaseMetadataForPhase(current: PhaseCard, policyPrompt?: string | null): Record<string, unknown> {
     const stepType = resolvePhaseStepType(current.phaseKey);
+    const missionPrompt = [getMissionPromptForPlanningPolicy(), policyPrompt]
+      .map((entry) => nonEmptyString(entry))
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n\n") || null;
+    const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+      phase: current,
+      missionPrompt,
+    });
+    const maxQuestions = current.askQuestions.enabled === true
+      ? current.askQuestions.maxQuestions == null
+        ? null
+        : Math.max(1, Math.min(10, Number(current.askQuestions.maxQuestions) || 5))
+      : undefined;
     return {
       phaseKey: current.phaseKey,
       phaseName: current.name,
@@ -1958,15 +2041,69 @@ export function createCoordinatorToolSet(deps: {
       phaseInstructions: current.instructions,
       phaseAskQuestions: {
         enabled: current.askQuestions.enabled === true,
-        maxQuestions: current.askQuestions.enabled === true
-          ? Math.max(1, Math.min(10, Number(current.askQuestions.maxQuestions ?? 5) || 5))
-          : undefined,
+        maxQuestions,
+        requiredBeforeExit,
       },
       phaseValidation: current.validationGate,
       phaseBudget: current.budget ?? {},
       stepType,
       taskType: stepType,
       readOnlyExecution: stepType === "planning"
+    };
+  }
+
+  function applyPlanningQuestionPolicyToWorkerMetadata(args: {
+    metadata: Record<string, unknown>;
+    phases: PhaseCard[];
+    policyPrompt?: string | null;
+  }): Record<string, unknown> {
+    const metadata = args.metadata;
+    const phaseKey = typeof metadata.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+    const phaseName = typeof metadata.phaseName === "string" ? metadata.phaseName.trim().toLowerCase() : "";
+    if (phaseKey !== "planning" && phaseName !== "planning") return metadata;
+    const phaseAskQuestions = asRecord(metadata.phaseAskQuestions);
+    if (phaseAskQuestions?.enabled !== true || phaseAskQuestions.requiredBeforeExit === true) return metadata;
+    const phase = args.phases.find((entry) =>
+      entry.phaseKey.trim().toLowerCase() === phaseKey
+      || entry.name.trim().toLowerCase() === phaseName
+    ) ?? null;
+    const phaseForPolicy = {
+      ...(phase ?? {}),
+      phaseKey: typeof metadata.phaseKey === "string" && metadata.phaseKey.trim().length > 0
+        ? metadata.phaseKey.trim()
+        : phase?.phaseKey ?? "planning",
+      name: typeof metadata.phaseName === "string" && metadata.phaseName.trim().length > 0
+        ? metadata.phaseName.trim()
+        : phase?.name ?? "Planning",
+      instructions: [
+        typeof phase?.instructions === "string" ? phase.instructions : "",
+        typeof metadata.phaseInstructions === "string" ? metadata.phaseInstructions : "",
+      ]
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .join("\n"),
+      askQuestions: {
+        ...(phase?.askQuestions ?? {}),
+        ...phaseAskQuestions,
+        enabled: true,
+        requiredBeforeExit: phaseAskQuestions.requiredBeforeExit === true,
+      },
+    } as PhaseCard;
+    const missionPrompt = [getMissionPromptForPlanningPolicy(), args.policyPrompt]
+      .map((entry) => nonEmptyString(entry))
+      .filter((entry): entry is string => Boolean(entry))
+      .join("\n\n") || null;
+    const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+      phase: phaseForPolicy,
+      missionPrompt,
+    });
+    if (!requiredBeforeExit) return metadata;
+    return {
+      ...metadata,
+      phaseAskQuestions: {
+        ...phaseAskQuestions,
+        requiredBeforeExit: true,
+      },
     };
   }
 
@@ -2173,9 +2310,12 @@ export function createCoordinatorToolSet(deps: {
     return mission.interventions.filter((entry) => {
       if (entry.interventionType !== "manual_input") return false;
       const metadata = asRecord(entry.metadata);
-      if (metadata?.source !== "ask_user") return false;
+      if (!isPlanningQuestionIntervention(entry, { runId })) return false;
       const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
-      return phase.length === 0 || phase === "planning" || phase === normalizedPhase;
+      const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
+      const phaseMatches = phase.length === 0 || phase === "planning" || phase === normalizedPhase;
+      const phaseKeyMatches = phaseKey.length === 0 || phaseKey === "planning" || phaseKey === normalizedPhase;
+      return phaseMatches && phaseKeyMatches;
     });
   }
 
@@ -5445,6 +5585,27 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
             ok: false,
             error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
           };
+        }
+
+        if (
+          currentPhase
+          && targetPhase.phaseKey !== currentPhase.phaseKey
+          && phaseRequiresPlanningQuestionBeforeExit({
+            phase: currentPhase,
+            missionPrompt: getMissionPromptForPlanningPolicy(),
+          })
+        ) {
+          const mission = missionService.get(missionId);
+          const hasAnsweredPlanningQuestion = hasResolvedPlanningQuestionIntervention(
+            mission?.interventions ?? [],
+            { runId },
+          );
+          if (!hasAnsweredPlanningQuestion) {
+            return {
+              ok: false,
+              error: `Planning requires a resolved blocking question before entering "${targetPhase.name}". Retry the planning worker and have it open an ADE chat question, or answer the pending planning intervention if ADE opened one.`,
+            };
+          }
         }
 
         const explicitMustFollow = (targetPhase.orderingConstraints.mustFollow ?? [])

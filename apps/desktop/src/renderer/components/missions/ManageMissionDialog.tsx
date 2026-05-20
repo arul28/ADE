@@ -3,7 +3,7 @@ import { X, Stop, Trash, SpinnerGap, Play, Pause } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import type { MissionSummary } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, dangerButton } from "../lanes/laneDesignTokens";
-import { STATUS_CONFIG, TERMINAL_MISSION_STATUSES } from "./missionHelpers";
+import { LIFECYCLE_ACTIONS, STATUS_CONFIG, TERMINAL_MISSION_STATUSES } from "./missionHelpers";
 import { useMissionsStore } from "./useMissionsStore";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useAppStore } from "../../state/appStore";
@@ -49,6 +49,10 @@ export function ManageMissionDialog() {
       setManageMissionError("Only completed, failed, or canceled missions can be archived.");
       return;
     }
+    const message = manageMissionCleanupLanes
+      ? "Archive this mission and also archive lanes created by this mission? This removes the mission from the Missions UI and archives managed lanes ADE can find across this mission's runs."
+      : "Archive this mission? This will remove it from the Missions UI.";
+    if (!window.confirm(message)) return;
     setManageMissionBusy(true);
     setManageMissionError(null);
     try {
@@ -74,6 +78,8 @@ export function ManageMissionDialog() {
 
   const handleCancel = useCallback(async () => {
     if (!manageMission || TERMINAL_MISSION_STATUSES.has(manageMission.status)) return;
+    const message = LIFECYCLE_ACTIONS.cancel_mission.confirmText ?? "Cancel this mission?";
+    if (!window.confirm(message)) return;
     setManageMissionBusy(true);
     setManageMissionError(null);
     try {

@@ -4055,6 +4055,396 @@ describe("orchestratorService", () => {
     }
   });
 
+  it("blocks a planning worker that skips a required blocking question before returning a plan", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      fixture.db.run(
+        `update missions set prompt = ? where id = ?`,
+        [
+          "Build a launch dashboard with a planning phase that asks blocking questions before implementation.",
+          fixture.missionId,
+        ],
+      );
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                position: 0,
+                instructions: "Ask one clarification before planning.",
+                model: { provider: "codex", modelId: "openai/gpt-5.3-codex-spark" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: true, requiredBeforeExit: true },
+                validationGate: { tier: "none", required: false },
+                isBuiltIn: true,
+                isCustom: true,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          phaseRuntime: { currentPhaseKey: "planning", currentPhaseName: "Planning" },
+        },
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "codex",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              phaseAskQuestions: { enabled: true, requiredBeforeExit: true },
+              readOnlyExecution: true,
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Expected planning step");
+      fixture.service.updateStepMetadata({
+        runId: started.run.id,
+        stepId: step.id,
+        metadata: {
+          ...step.metadata,
+          lastResultReport: {
+            outcome: "succeeded",
+            summary: "Planning complete.",
+            filesChanged: [],
+            testsRun: { commands: [] },
+            plan: { markdown: "## Plan\n- Implement the dashboard." },
+          },
+        },
+      });
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "planner-owner",
+        executorKind: "codex",
+      });
+
+      const completed = await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+      });
+
+      expect(completed.status).toBe("blocked");
+      expect(completed.errorMessage ?? "").toContain("required blocking question");
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      expect(graph.steps.find((entry) => entry.id === step.id)?.status).toBe("blocked");
+      expect(graph.run.status).toBe("paused");
+      const intervention = fixture.db.get<{ status: string; intervention_type: string; metadata_json: string | null }>(
+        `
+          select status, intervention_type, metadata_json
+          from mission_interventions
+          where mission_id = ?
+          limit 1
+        `,
+        [fixture.missionId],
+      );
+      expect(intervention).toEqual(expect.objectContaining({
+        status: "open",
+        intervention_type: "manual_input",
+      }));
+      expect(JSON.parse(intervention?.metadata_json ?? "{}")).toEqual(expect.objectContaining({
+        reasonCode: "planner_required_question_missing",
+        attemptId: attempt.id,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("counts resolved managed chat questions before enforcing required planning clarification", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      const transcriptDir = path.join(fixture.projectRoot, ".ade", "transcripts");
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      const sessionId = "managed-planner-session";
+      const transcriptPath = path.join(transcriptDir, `${sessionId}.chat.jsonl`);
+      fixture.db.run(
+        `update missions set prompt = ? where id = ?`,
+        [
+          "Build a launch dashboard with a planning phase that asks blocking questions before implementation.",
+          fixture.missionId,
+        ],
+      );
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                position: 0,
+                instructions: "Ask one clarification before planning.",
+                model: { provider: "codex", modelId: "openai/gpt-5.3-codex-spark" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: true, requiredBeforeExit: true },
+                validationGate: { tier: "none", required: false },
+                isBuiltIn: true,
+                isCustom: true,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          phaseRuntime: { currentPhaseKey: "planning", currentPhaseName: "Planning" },
+        },
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            laneId: fixture.laneId,
+            executorKind: "codex",
+            metadata: {
+              stepType: "planning",
+              phaseKey: "planning",
+              phaseName: "Planning",
+              phaseAskQuestions: { enabled: true, requiredBeforeExit: true },
+              readOnlyExecution: true,
+            },
+          },
+        ],
+      });
+      const step = fixture.service.listSteps(started.run.id)[0];
+      if (!step) throw new Error("Expected planning step");
+      fixture.service.updateStepMetadata({
+        runId: started.run.id,
+        stepId: step.id,
+        metadata: {
+          ...step.metadata,
+          lastResultReport: {
+            outcome: "succeeded",
+            summary: "Planning complete after asking the launch-scope question.",
+            filesChanged: [],
+            testsRun: { commands: [] },
+            plan: { markdown: "## Plan\n- Implement the dashboard with the approved launch scope." },
+          },
+        },
+      });
+      const attempt = await fixture.service.startAttempt({
+        runId: started.run.id,
+        stepId: step.id,
+        ownerId: "planner-owner",
+        executorKind: "codex",
+      });
+      const legacyInterventionId = "legacy-required-planner-question";
+      fixture.db.run(
+        `
+          insert into mission_interventions(
+            id,
+            mission_id,
+            project_id,
+            intervention_type,
+            status,
+            resolution_kind,
+            title,
+            body,
+            requested_action,
+            resolution_note,
+            lane_id,
+            metadata_json,
+            created_at,
+            updated_at,
+            resolved_at
+          ) values (?, ?, ?, 'manual_input', 'open', null, ?, ?, ?, null, ?, ?, ?, ?, null)
+        `,
+        [
+          legacyInterventionId,
+          fixture.missionId,
+          fixture.projectId,
+          "Required planner question",
+          "Which launch scope should the planner assume?",
+          "Answer the required planning question.",
+          fixture.laneId,
+          JSON.stringify({
+            source: "planner_required_question_missing",
+            reasonCode: "planner_required_question_missing",
+            question: "Which launch scope should the planner assume?",
+            runId: started.run.id,
+            stepId: step.id,
+            stepKey: step.stepKey,
+            attemptId: attempt.id,
+            sessionId,
+            phaseKey: "planning",
+            stepType: "planning",
+          }),
+          now,
+          now,
+        ],
+      );
+
+      fs.writeFileSync(
+        transcriptPath,
+        [
+          {
+            sessionId,
+            timestamp: now,
+            sequence: 1,
+            event: {
+              type: "approval_request",
+              itemId: "question-1",
+              kind: "tool_call",
+              description: "Which launch scope should the planner assume?",
+              detail: {
+                request: {
+                  itemId: "question-1",
+                  source: "codex",
+                  kind: "structured_question",
+                  questions: [
+                    {
+                      id: "scope",
+                      header: "Scope",
+                      question: "Which launch scope should the planner assume?",
+                      options: [{ label: "Internal drill" }, { label: "Customer launch" }],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          {
+            sessionId,
+            timestamp: now,
+            sequence: 2,
+            event: {
+              type: "pending_input_resolved",
+              itemId: "question-1",
+              resolution: "accepted",
+            },
+          },
+        ].map((entry) => JSON.stringify(entry)).join("\n"),
+        "utf8",
+      );
+
+      const completed = await fixture.service.completeAttempt({
+        attemptId: attempt.id,
+        status: "succeeded",
+        metadata: { trackedSessionId: sessionId, transcriptPath },
+      });
+
+      expect(completed.status).toBe("succeeded");
+      const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
+      expect(graph.steps.find((entry) => entry.id === step.id)?.status).toBe("succeeded");
+      const interventions = fixture.db.all<{ id: string; status: string; intervention_type: string; body: string; resolution_kind: string | null; resolution_note: string | null; metadata_json: string | null }>(
+        `
+          select id, status, intervention_type, body, resolution_kind, resolution_note, metadata_json
+          from mission_interventions
+          where mission_id = ?
+        `,
+        [fixture.missionId],
+      );
+      const intervention = interventions.find((entry) => {
+        const metadata = JSON.parse(entry.metadata_json ?? "{}");
+        return metadata.reasonCode === "planner_chat_question";
+      });
+      expect(intervention).toEqual(expect.objectContaining({
+        status: "resolved",
+        intervention_type: "manual_input",
+      }));
+      expect(intervention?.body).toContain("Which launch scope");
+      expect(JSON.parse(intervention?.metadata_json ?? "{}")).toEqual(expect.objectContaining({
+        source: "request_user_input",
+        reasonCode: "planner_chat_question",
+        attemptId: attempt.id,
+        itemId: "question-1",
+      }));
+      const legacyIntervention = interventions.find((entry) => entry.id === legacyInterventionId);
+      expect(legacyIntervention).toEqual(expect.objectContaining({
+        status: "resolved",
+        resolution_kind: "answer_provided",
+        resolution_note: "Answered in ADE chat.",
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("promotes generated planning worker metadata when the mission prompt requires questions", async () => {
+    const fixture = await createFixture();
+    try {
+      const now = "2026-02-19T00:00:00.000Z";
+      fixture.db.run(
+        `update missions set prompt = ? where id = ?`,
+        [
+          "Planning is blocked until the planner asks required clarification questions before implementation.",
+          fixture.missionId,
+        ],
+      );
+      const started = fixture.service.startRun({
+        missionId: fixture.missionId,
+        metadata: {
+          phaseConfiguration: {
+            selectedPhases: [
+              {
+                id: "phase-planning",
+                phaseKey: "planning",
+                name: "Planning",
+                description: "Plan first",
+                position: 0,
+                instructions: "Research, clarify requirements, and design the execution DAG.",
+                model: { provider: "codex", modelId: "openai/gpt-5.5", thinkingLevel: "low" },
+                budget: {},
+                orderingConstraints: { mustBeFirst: true },
+                askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+                validationGate: { tier: "none", required: false },
+                isBuiltIn: true,
+                isCustom: false,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          },
+          phaseRuntime: { currentPhaseKey: "planning", currentPhaseName: "Planning" },
+        },
+        steps: [],
+      });
+
+      const [step] = fixture.service.addSteps({
+        runId: started.run.id,
+        steps: [
+          {
+            stepKey: "planning-worker",
+            title: "Planning worker",
+            stepIndex: 0,
+            executorKind: "codex",
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              phaseInstructions: "Investigate dependencies before implementation.",
+              phaseAskQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+              stepType: "planning",
+              taskType: "planning",
+              readOnlyExecution: true,
+              instructions: "Ask the required clarification questions through ADE before returning a plan.",
+            },
+          },
+        ],
+      });
+
+      expect(step?.metadata?.phaseAskQuestions).toEqual(expect.objectContaining({
+        enabled: true,
+        requiredBeforeExit: true,
+      }));
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("recovers Codex final-answer markdown result summaries from tracked worker transcripts", async () => {
     const fixture = await createFixture();
     try {

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatApprovalDecision, AgentChatEvent, AgentChatEventEnvelope, OrchestratorChatMessage } from "../../../shared/types";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { AgentChatMessageList } from "../chat/AgentChatMessageList";
@@ -25,6 +25,9 @@ type MissionThreadMessageListProps = {
     answers?: Record<string, string | string[]>,
   ) => void;
 };
+
+const MISSION_THREAD_HISTORY_MAX_EVENTS = 20_000;
+const MISSION_THREAD_TRANSCRIPT_MAX_BYTES = 2_000_000;
 
 function normalizeInlineText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -479,37 +482,70 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
 }: MissionThreadMessageListProps) {
   const [sessionEvents, setSessionEvents] = useState<AgentChatEventEnvelope[] | null>(null);
   const fallbackEvents = useMemo(() => adaptMissionThreadMessagesToAgentEvents(messages), [messages]);
-  const lastTranscriptRawRef = React.useRef<string | null>(null);
+  const lastTranscriptRawRef = useRef<string | null>(null);
+  const transcriptRequestIdRef = useRef(0);
 
   useEffect(() => {
     setSessionEvents(null);
     lastTranscriptRawRef.current = null;
+    transcriptRequestIdRef.current += 1;
   }, [sessionId]);
 
   const refreshSessionTranscript = useCallback(() => {
-    if (!sessionId || !transcriptPollingEnabled) {
+    const trimmedSessionId = sessionId?.trim() ?? "";
+    if (!trimmedSessionId) {
       setSessionEvents(null);
       lastTranscriptRawRef.current = null;
       return;
     }
-    window.ade.sessions.readTranscriptTail({
-      sessionId,
-      maxBytes: 320_000,
-      raw: true,
-    }).then(
-      (raw) => {
+    const requestId = ++transcriptRequestIdRef.current;
+
+    const applyEvents = (events: AgentChatEventEnvelope[]) => {
+      if (transcriptRequestIdRef.current !== requestId) return;
+      setSessionEvents(events);
+    };
+
+    (async () => {
+      let parsed: AgentChatEventEnvelope[] | null = null;
+      try {
+        if (typeof window.ade.agentChat?.getEventHistory === "function") {
+          const snapshot = await window.ade.agentChat.getEventHistory({
+            sessionId: trimmedSessionId,
+            maxEvents: MISSION_THREAD_HISTORY_MAX_EVENTS,
+          });
+          const historyEvents = Array.isArray(snapshot?.events) ? snapshot.events : [];
+          if (snapshot?.sessionId === trimmedSessionId && (snapshot.sessionFound === true || historyEvents.length > 0)) {
+            parsed = historyEvents.filter((entry) => entry.sessionId === trimmedSessionId);
+          }
+        }
+      } catch {
+        parsed = null;
+      }
+
+      if (parsed) {
+        applyEvents(parsed);
+        return;
+      }
+
+      try {
+        const raw = await window.ade.sessions.readTranscriptTail({
+          sessionId: trimmedSessionId,
+          maxBytes: MISSION_THREAD_TRANSCRIPT_MAX_BYTES,
+          raw: true,
+        });
         if (raw === lastTranscriptRawRef.current) return;
         lastTranscriptRawRef.current = raw;
-        const parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
-        setSessionEvents(parsed);
-      },
-      () => setSessionEvents([]),
-    );
-  }, [sessionId, transcriptPollingEnabled]);
+        applyEvents(parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === trimmedSessionId));
+      } catch {
+        applyEvents([]);
+      }
+    })();
+  }, [sessionId]);
 
   useEffect(() => {
+    if (!transcriptPollingEnabled) return;
     refreshSessionTranscript();
-  }, [refreshSessionTranscript]);
+  }, [refreshSessionTranscript, transcriptPollingEnabled]);
 
   useMissionPolling(refreshSessionTranscript, 4_000, Boolean(sessionId && transcriptPollingEnabled));
 

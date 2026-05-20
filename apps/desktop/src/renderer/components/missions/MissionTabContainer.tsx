@@ -359,13 +359,12 @@ export function MissionTabContent({ runView }: { runView: MissionRunView | null 
         )}
 
         {activeTab === "chat" && selectedMissionId && (
-          <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
+          <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
             <MissionChatV2
               missionId={selectedMissionId}
               missionStatus={selectedMission?.status ?? null}
               runId={runGraph?.run.id ?? null}
               runStatus={runGraph?.run.status ?? null}
-              runMetadata={runGraph?.run.metadata ?? null}
               runView={runView}
               interventions={selectedMission?.interventions ?? []}
               jumpTarget={chatJumpTarget}

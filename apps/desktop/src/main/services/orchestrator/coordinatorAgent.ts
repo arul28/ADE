@@ -73,6 +73,10 @@ import {
   updateDelegationContract,
 } from "./delegationContracts";
 import { findPhaseByRef, resolveMustPrecedePredecessors } from "../missions/phaseEngine";
+import {
+  hasResolvedPlanningQuestionIntervention,
+  phaseRequiresPlanningQuestionBeforeExit,
+} from "./planningQuestionPolicy";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2212,6 +2216,61 @@ export class CoordinatorAgent {
     });
   }
 
+  private planningQuestionRequiredBeforeExit(): boolean {
+    const planningPhase = [...(this.deps.phases ?? [])]
+      .sort((a, b) => a.position - b.position)
+      .find((phase) => phase.phaseKey.trim().toLowerCase() === "planning" || phase.name.trim().toLowerCase() === "planning") ?? null;
+    return phaseRequiresPlanningQuestionBeforeExit({
+      phase: planningPhase,
+      missionPrompt: this.missionPromptForPlanningPolicy(),
+    });
+  }
+
+  private nonEmptyString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value : null;
+  }
+
+  private missionPromptForPlanningPolicy(): string | null {
+    const candidates: string[] = [];
+    const addCandidate = (value: unknown) => {
+      const candidate = this.nonEmptyString(value);
+      if (candidate && !candidates.includes(candidate)) candidates.push(candidate);
+    };
+    addCandidate(this.deps.missionService.get(this.deps.missionId)?.prompt);
+    try {
+      const missionPromptRow = this.deps.db.get<{ prompt?: unknown }>(
+        `select prompt from missions where id = ? and project_id = ? limit 1`,
+        [this.deps.missionId, this.deps.projectId],
+      );
+      addCandidate(missionPromptRow?.prompt);
+    } catch {
+      // Fall back to run metadata below.
+    }
+    try {
+      const runMetadataRow = this.deps.db.get<{ metadata_json?: unknown }>(
+        `select metadata_json from orchestrator_runs where id = ? limit 1`,
+        [this.deps.runId],
+      );
+      const metadataJson = this.nonEmptyString(runMetadataRow?.metadata_json);
+      if (metadataJson) {
+        const metadata = asRecord(JSON.parse(metadataJson));
+        addCandidate(metadata?.missionPrompt);
+        addCandidate(metadata?.missionGoal);
+      }
+    } catch {
+      // Fall back to the dependency value below.
+    }
+    addCandidate(this.deps.missionGoal);
+    return candidates.length > 0 ? candidates.join("\n\n") : null;
+  }
+
+  private hasResolvedPlanningQuestion(): boolean {
+    const mission = this.deps.missionService.get(this.deps.missionId);
+    return hasResolvedPlanningQuestionIntervention(mission?.interventions ?? [], {
+      runId: this.deps.runId,
+    });
+  }
+
   private hasPlanningExecutionRecord(): boolean {
     try {
       const graph = this.deps.orchestratorService.getRunGraph({
@@ -2261,6 +2320,7 @@ export class CoordinatorAgent {
     const currentPhaseKey = this.getCurrentPhaseKeyFromRun()?.trim().toLowerCase();
     if (currentPhaseKey !== "planning") return null;
     if (!this.hasSucceededPlanningExecutionRecord()) return null;
+    if (this.planningQuestionRequiredBeforeExit() && !this.hasResolvedPlanningQuestion()) return null;
     const nextPhase = this.resolveFirstPostPlanningPhase();
     const nextPhaseKey = nextPhase?.phaseKey.trim();
     if (!nextPhaseKey || nextPhaseKey.toLowerCase() === "planning") return null;
@@ -2651,6 +2711,14 @@ export class CoordinatorAgent {
     const descriptor = resolveModelDescriptor(modelId);
     const provider = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
     const stepType = this.resolveRuntimePhaseStepType(phase);
+    const workerPrompt = this.buildRuntimePhaseWorkerPrompt(phase);
+    const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+      phase,
+      missionPrompt: [this.missionPromptForPlanningPolicy(), workerPrompt]
+        .map((entry) => this.nonEmptyString(entry))
+        .filter((entry): entry is string => Boolean(entry))
+        .join("\n\n") || null,
+    });
     return {
       phaseKey: phase.phaseKey,
       phaseName: phase.name,
@@ -2662,13 +2730,14 @@ export class CoordinatorAgent {
         maxQuestions: phase.askQuestions.enabled === true
           ? Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions ?? 5) || 5))
           : undefined,
+        requiredBeforeExit,
       },
       phaseValidation: phase.validationGate,
       phaseBudget: phase.budget ?? {},
       stepType,
       taskType: stepType,
       readOnlyExecution: stepType === "planning",
-      instructions: this.buildRuntimePhaseWorkerPrompt(phase),
+      instructions: workerPrompt,
       workerName,
       spawnedByCoordinator: true,
       modelId,
@@ -2824,8 +2893,8 @@ export class CoordinatorAgent {
         "- Identify dependencies, risks, sequencing, and the best execution DAG.",
         "- Do not modify files, run write operations, or ask for plan-exit approval.",
         "- Do NOT use ExitPlanMode or any provider-native plan approval flow.",
-        "- Return the plan through report_result with a first-class plan payload; ADE will persist the canonical plan artifact.",
-        "- If you need clarification, use `ask_user` to surface structured questions.",
+        "- Return the plan through the runtime result channel: tracked mission workers use report_result; managed ADE chat workers use a final `### report_result` section with plan.markdown. ADE will persist the canonical plan artifact.",
+        "- If you need clarification, use the runtime's ADE question UI: tracked mission workers use `ask_user`; managed Codex chat workers use `request_user_input`; Claude uses AskUserQuestion / ask_user; Cursor/OpenCode/Droid use the provider question mechanism ADE renders inline.",
         "- Return a concrete plan the coordinator can use to enter Development automatically.",
       ].join("\n"),
     ].filter((entry): entry is string => Boolean(entry));
@@ -3875,6 +3944,7 @@ export class CoordinatorAgent {
     ) ?? sortedPhases.find((phase) => phase.phaseKey.trim().toLowerCase() !== "planning") ?? null;
     const firstPostPlanningPhaseKey = firstPostPlanningPhase?.phaseKey.trim() || "development";
     const firstPostPlanningPhaseName = firstPostPlanningPhase?.name.trim() || "Development";
+    const missionPromptForPlanningPolicy = this.missionPromptForPlanningPolicy();
     if (sortedPhases.length > 0) {
       const phaseLines = sortedPhases
         .map((p, i) => {
@@ -3885,8 +3955,15 @@ export class CoordinatorAgent {
           if (p.instructions) parts.push(`   Instructions: ${p.instructions}`);
           if (p.validationGate.tier !== "none") parts.push(`   Validation: ${p.validationGate.tier.replace("-", " ")} ${p.validationGate.required ? "(required)" : "(optional)"}`);
           if (p.askQuestions.enabled) {
+            const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+              phase: p,
+              missionPrompt: missionPromptForPlanningPolicy,
+            });
+            const requiredText = requiredBeforeExit
+              ? "must ask at least one blocking question before finalizing this phase"
+              : "may ask clarification questions when needed";
             parts.push(
-              `   Ask Questions: enabled (must ask at least one clarification or confirmation question before finalizing this phase${p.askQuestions.maxQuestions == null ? ", unlimited follow-up rounds allowed" : `, max ${Math.max(0, Math.min(10, Number.isFinite(Number(p.askQuestions.maxQuestions)) ? Number(p.askQuestions.maxQuestions) : 5))} questions`})`
+              `   Ask Questions: enabled (${requiredText}${p.askQuestions.maxQuestions == null ? ", unlimited follow-up rounds allowed" : `, max ${Math.max(0, Math.min(10, Number.isFinite(Number(p.askQuestions.maxQuestions)) ? Number(p.askQuestions.maxQuestions) : 5))} questions`})`
             );
           } else {
             parts.push("   Ask Questions: disabled");
@@ -3897,11 +3974,12 @@ export class CoordinatorAgent {
           return parts.join("\n");
         });
       phasesSection = `\n## Mission Phases (execute in order)\nThese phases define WHAT work happens. You decide HOW — how many workers, what prompts, what approach.\nQuestion rules per phase govern the ACTIVE PHASE OWNER for that phase:
-- If Ask Questions is enabled, the worker actively executing that phase may open blocking clarification questions with ask_user when needed.
-- Additional ask_user rounds are allowed up to the phase max question limit, or without a cap when the planning phase is explicitly configured for unlimited clarifications. Avoid trivial or low-value questions.
+- If Ask Questions is enabled, the worker actively executing that phase may open blocking clarification questions through ADE's inline question UI when needed.
+- If the Planning phase says questions are required before exit, the planning worker must open a blocking ADE question before returning a successful plan.
+- Additional question rounds are allowed up to the phase max question limit, or without a cap when the planning phase is explicitly configured for unlimited clarifications. Avoid trivial or low-value questions.
 - If Ask Questions is disabled, do not ask questions in that phase; proceed with reasonable assumptions.
-- ask_user is transport/UI plumbing, not ownership. Coordinator should not ask planning, development, or validation questions on behalf of a worker unless there is no responsible phase worker yet and the mission cannot even be framed.
-- When using ask_user, bundle ALL related questions into a single call. The tool accepts an array of structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
+- The question tool is transport/UI plumbing, not ownership. Coordinator should not ask planning, development, or validation questions on behalf of a worker unless there is no responsible phase worker yet and the mission cannot even be framed.
+- When asking, bundle ALL related questions into a single call/card. Use structured questions with optional multiple-choice options, context, default assumptions, and impact descriptions.\n${phaseLines.join("\n")}`;
     }
 
     // Build planning phase guidance
@@ -3912,14 +3990,14 @@ The first coordinator turn of a mission whose first phase is Planning must creat
 - Do not reply with text only on the first turn.
 - First call get_project_context, using the ade_ prefix only if ADE asks for it.
 - Then call spawn_worker exactly once, using the ade_ prefix only if needed.
-- The planning worker must be read-only, must receive the full mission goal and planning phase instructions, and must return the plan through report_result.
+- The planning worker must be read-only, must receive the full mission goal and planning phase instructions, and must return the plan through the runtime result channel (report_result for tracked mission workers, final ### report_result for managed ADE chat workers).
 - Do not call native OpenCode repo/search/shell/web/planner tools before the planner exists. Runtime pauses the run on those startup violations.
 
 ## Planning Phase Protocol
 When you enter the Planning phase (your first phase), follow this protocol:
 1. IF the Planning phase has askQuestions enabled:
    - Spawn the planning worker first. The planner owns planning clarification.
-   - If the planner needs clarification, it should use ask_user itself, then stop. Do NOT ask planning questions on the planner's behalf just because ask_user exists.
+   - If the planner needs clarification, it should use its ADE question UI itself, then stop. Do NOT ask planning questions on the planner's behalf just because a question tool exists.
    - While a planner-owned question is open, do not spawn additional planning workers or continue planning actions.
 2. Start the Planning phase immediately:
    - Your first turn must be: get_project_context, then spawn ONE planning worker.
@@ -4023,7 +4101,7 @@ These flags are enforced deterministically by the tools — violations are rejec
 
 ### Approval Model
 - Mission runs do NOT use provider-native approval prompts. Do not rely on ExitPlanMode or any out-of-band provider approval flow.
-- If you need user input, use ask_user during Planning only. Outside Planning, continue with the best reasonable assumption unless runtime opens its own intervention.
+- If you need user input, use ADE's question UI during Planning only. Outside Planning, continue with the best reasonable assumption unless runtime opens its own intervention.
 ${phasesSection}${planningPhaseSection}
 ${workersSection}
 ${projectSection}

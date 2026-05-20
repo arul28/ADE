@@ -860,7 +860,9 @@ describe("missionService lifecycle", () => {
         position: index,
         askQuestions: phase.phaseKey === "development"
           ? { enabled: true, maxQuestions: 9 }
-          : phase.askQuestions,
+          : phase.phaseKey === "planning"
+            ? { ...phase.askQuestions, requiredBeforeExit: true }
+            : phase.askQuestions,
         validationGate: phase.phaseKey === "planning"
           ? { tier: "self", required: true, criteria: "Should be removed" }
           : phase.validationGate,
@@ -871,8 +873,63 @@ describe("missionService lifecycle", () => {
     const development = created.phaseConfiguration?.selectedPhases.find((phase) => phase.phaseKey === "development");
     expect(planning?.validationGate.tier).toBe("none");
     expect(planning?.validationGate.required).toBe(false);
+    expect(planning?.askQuestions.requiredBeforeExit).toBe(true);
+    expect(planning?.requiresApproval).toBe(true);
     expect(development?.askQuestions.enabled).toBe(false);
     expect(development?.askQuestions.maxQuestions).toBeUndefined();
+
+    dispose();
+  });
+
+  it("preserves ask-question settings on custom phases", async () => {
+    const { db, projectId, laneId, dispose } = await createDbWithProjectAndLane();
+    const service = createMissionService({ db, projectId });
+    const defaultProfile = service.listPhaseProfiles().find((profile) => profile.isDefault);
+    if (!defaultProfile) throw new Error("Expected default profile");
+
+    const now = "2026-03-25T00:00:00.000Z";
+    const customPhase: PhaseCard = {
+      id: "custom:discovery",
+      phaseKey: "discovery_requirements",
+      name: "Discovery / Requirements",
+      description: "Clarify requirements before development.",
+      instructions: "Ask blocking questions, produce a requirements brief, and report risks before development.",
+      model: defaultProfile.phases[0]!.model,
+      budget: {},
+      orderingConstraints: { mustFollow: ["planning"], mustPrecede: ["development"] },
+      askQuestions: { enabled: true, maxQuestions: 5, requiredBeforeExit: true },
+      validationGate: { tier: "none", required: false },
+      isBuiltIn: false,
+      isCustom: true,
+      position: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const phaseOverride = [
+      defaultProfile.phases.find((phase) => phase.phaseKey === "planning")!,
+      customPhase,
+      ...defaultProfile.phases.filter((phase) => phase.phaseKey !== "planning"),
+    ].map((phase, index) => ({ ...phase, position: index }));
+
+    const created = service.create({
+      prompt: "Build a launch dashboard after discovery.",
+      laneId,
+      phaseProfileId: defaultProfile.id,
+      phaseOverride,
+    });
+
+    const selected = created.phaseConfiguration?.selectedPhases ?? [];
+    const persistedCustom = selected.find((phase) => phase.phaseKey === "discovery_requirements");
+    expect(selected.map((phase) => phase.phaseKey).slice(0, 3)).toEqual([
+      "planning",
+      "discovery_requirements",
+      "development",
+    ]);
+    expect(persistedCustom?.askQuestions).toEqual({
+      enabled: true,
+      maxQuestions: 5,
+      requiredBeforeExit: true,
+    });
 
     dispose();
   });

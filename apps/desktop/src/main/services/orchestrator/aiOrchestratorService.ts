@@ -3,6 +3,7 @@ import fs from "node:fs";
 import nodePath from "node:path";
 import type {
   MissionDetail,
+  MissionInterventionResolutionKind,
   MissionStepStatus,
   MissionStatus,
   CancelOrchestratorRunArgs,
@@ -254,7 +255,6 @@ import {
   resolveAttemptOwnerIdFromRows,
   TERMINAL_PHASE_STEP_STATUSES,
   discoverProjectDocs as discoverProjectDocsCtx,
-  resolveActivePolicy as resolveActivePolicyCtx,
   resolveActivePhaseSettings as resolveActivePhaseSettingsCtx,
   resolveActiveRuntimeProfile as resolveActiveRuntimeProfileCtx,
   transitionMissionStatus as transitionMissionStatusCtx,
@@ -462,6 +462,38 @@ function buildPhaseSyncTargetFromCard(card: PhaseSyncCard, sourceStepId: string 
     phaseBudget: card.budget,
     sourceStepId,
   };
+}
+
+function resolvePhaseCardsFromRunMetadata(runMetadata: Record<string, unknown>): PhaseCard[] {
+  const coercePhaseCards = (value: unknown): PhaseCard[] => {
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry): entry is PhaseCard => {
+      const phase = asRecord(entry);
+      if (!phase) return false;
+      return typeof phase.id === "string"
+        && typeof phase.phaseKey === "string"
+        && typeof phase.name === "string"
+        && typeof phase.description === "string"
+        && typeof phase.instructions === "string"
+        && Number.isFinite(Number(phase.position))
+        && asRecord(phase.model) !== null
+        && asRecord(phase.orderingConstraints) !== null
+        && asRecord(phase.askQuestions) !== null
+        && asRecord(phase.validationGate) !== null;
+    });
+  };
+  const phaseConfiguration = asRecord(runMetadata.phaseConfiguration);
+  if (phaseConfiguration && Array.isArray(phaseConfiguration.selectedPhases)) {
+    return coercePhaseCards(phaseConfiguration.selectedPhases);
+  }
+  if (Array.isArray(runMetadata.phaseOverride)) {
+    return coercePhaseCards(runMetadata.phaseOverride);
+  }
+  const phaseOverride = asRecord(runMetadata.phaseOverride);
+  if (phaseOverride && Array.isArray(phaseOverride.selectedPhases)) {
+    return coercePhaseCards(phaseOverride.selectedPhases);
+  }
+  return [];
 }
 
 export function deriveMissionPhaseSyncTarget(graph: OrchestratorRunGraph): PhaseSyncTarget | null {
@@ -2837,12 +2869,23 @@ Check all worker statuses and continue managing the mission from here. Read work
     const modifiedFiles = args.stateDoc?.modifiedFiles ?? [];
     const completionDiagnostics = args.graph.completionEvaluation?.diagnostics ?? [];
     const explicitValidationVerdict = args.graph.completionEvaluation?.validation?.canComplete;
+    const persistedCompletionValidation = isRecord(args.graph.run.metadata?.completionValidation)
+      ? args.graph.run.metadata.completionValidation
+      : null;
+    const persistedValidationVerdict = typeof persistedCompletionValidation?.canComplete === "boolean"
+      ? persistedCompletionValidation.canComplete
+      : undefined;
     const stepMetadata = args.graph.steps
       .map((step) => isRecord(step.metadata) ? step.metadata : {})
       .filter((meta) => Object.keys(meta).length > 0);
-    const requiredValidationStepMetadata = stepMetadata.filter((meta) => {
+    const requiredValidationStepMetadata = args.graph.steps.flatMap((step) => {
+      const meta = isRecord(step.metadata) ? step.metadata : null;
+      if (!meta || Object.keys(meta).length === 0) return [];
       const validationContract = isRecord(meta.validationContract) ? meta.validationContract : null;
-      return validationContract?.required === true;
+      const isValidationWorker =
+        step.stepKey.startsWith("validate_")
+        || step.title.trim().toLowerCase().startsWith("validate:");
+      return validationContract?.required === true && !isValidationWorker ? [meta] : [];
     });
     const hasRuntimeValidationPass = (meta: Record<string, unknown>): boolean => {
       const lastValidationReport = isRecord(meta.lastValidationReport) ? meta.lastValidationReport : null;
@@ -2863,6 +2906,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     );
     const validationVerdict = typeof explicitValidationVerdict === "boolean"
       ? explicitValidationVerdict
+      : typeof persistedValidationVerdict === "boolean"
+        ? persistedValidationVerdict
       : typeof runtimeValidationVerdict === "boolean"
         ? runtimeValidationVerdict
       : validationPhaseSucceeded
@@ -2942,6 +2987,30 @@ Check all worker statuses and continue managing the mission from here. Read work
       collectRiskSummary(report.summary, details);
       return details;
     });
+    const runtimeRiskValidationDetails = stepMetadata.flatMap((meta) => {
+      const validationReport = isRecord(meta.lastValidationReport) ? meta.lastValidationReport : null;
+      if (!validationReport) return [];
+      const validationContract = isRecord(validationReport.contract)
+        ? validationReport.contract
+        : isRecord(meta.validationContract)
+          ? meta.validationContract
+          : null;
+      const validationPhase = isRecord(meta.phaseValidation) ? meta.phaseValidation : null;
+      const verdict = typeof validationReport.verdict === "string" ? validationReport.verdict.trim().toLowerCase() : "";
+      const findings = Array.isArray(validationReport.findings) ? validationReport.findings : [];
+      const riskAwareText = [
+        typeof validationReport.summary === "string" ? validationReport.summary : "",
+        typeof validationContract?.criteria === "string" ? validationContract.criteria : "",
+        typeof validationPhase?.criteria === "string" ? validationPhase.criteria : "",
+      ].join(" ");
+      if (verdict !== "pass" || findings.length > 0 || !/\brisks?\b|\brisk notes?\b|\bremaining risks?\b/i.test(riskAwareText)) {
+        return [];
+      }
+      const summary = typeof validationReport.summary === "string" && validationReport.summary.trim().length > 0
+        ? validationReport.summary.trim()
+        : "Validation passed with no unresolved risk findings.";
+      return [`No unresolved risk findings were reported by validation: ${summary}`];
+    });
     const runtimeCloseoutRiskDetails = (args.graph.runtimeEvents ?? []).flatMap((event) => {
       if (event.eventType !== "done") return [];
       const payload = isRecord(event.payload) ? event.payload : {};
@@ -2953,7 +3022,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       collectRiskSummary(payload.summary, details);
       return details;
     });
-    const allRuntimeRiskDetails = [...runtimeRiskDetails, ...runtimeCloseoutRiskDetails];
+    const allRuntimeRiskDetails = [...runtimeRiskDetails, ...runtimeRiskValidationDetails, ...runtimeCloseoutRiskDetails];
     const phaseRequiresRiskNotes = (args.mission.phaseConfiguration?.selectedPhases ?? [])
       .some((phase) =>
         phase.validationGate.required
@@ -3266,9 +3335,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       requirement.required && requirement.status !== "present" && requirement.status !== "waived",
     );
     const closeoutSatisfied = unmetRequirements.length === 0;
+    const finalizationBlocked = args.finalization.status === "finalization_failed" || args.finalization.blocked === true;
     const nextStatus = args.finalization.status === "finalization_failed"
       ? "finalization_failed"
-      : closeoutSatisfied
+      : finalizationBlocked
+        ? args.finalization.status
+        : closeoutSatisfied
         ? "completed"
         : args.finalization.status === "completed"
           ? "finalizing"
@@ -3277,17 +3349,21 @@ Check all worker statuses and continue managing the mission from here. Read work
       policy: args.finalization.policy,
       status: nextStatus,
       executionComplete: true,
-      contractSatisfied: args.finalization.status !== "finalization_failed" && closeoutSatisfied,
+      contractSatisfied: !finalizationBlocked && closeoutSatisfied,
       requirements: closeoutRequirements,
-      summary: unmetRequirements.length > 0
+      summary: finalizationBlocked
+        ? args.finalization.summary
+        : unmetRequirements.length > 0
         ? "Execution finished, but the closeout contract is still incomplete."
         : args.finalization.summary?.includes("closeout contract is still incomplete")
           ? "Mission finalization completed."
           : args.finalization.summary,
-      detail: unmetRequirements.length > 0
+      detail: finalizationBlocked
+        ? args.finalization.detail
+        : unmetRequirements.length > 0
         ? unmetRequirements.map((requirement) => requirement.label).join(", ")
         : args.finalization.detail,
-      completedAt: closeoutSatisfied ? (args.finalization.completedAt ?? nowIso()) : null,
+      completedAt: !finalizationBlocked && closeoutSatisfied ? (args.finalization.completedAt ?? nowIso()) : null,
     }, { graph: args.graph });
     if (!nextFinalization) return;
     if (nextFinalization.status === "finalization_failed") {
@@ -7207,9 +7283,14 @@ Check all worker statuses and continue managing the mission from here. Read work
             && requirement.status !== "waived"
           );
           const closeoutSatisfied = unmetRequirements.length === 0;
+          const finalizationBlocked =
+            stateDocAfterFinalization.finalization.status === "finalization_failed"
+            || stateDocAfterFinalization.finalization.blocked === true;
           const nextFinalizationStatus = stateDocAfterFinalization.finalization.status === "finalization_failed"
             ? "finalization_failed"
-            : closeoutSatisfied
+            : finalizationBlocked
+              ? stateDocAfterFinalization.finalization.status
+              : closeoutSatisfied
               ? "completed"
               : stateDocAfterFinalization.finalization.status === "completed"
                 ? "finalizing"
@@ -7218,17 +7299,21 @@ Check all worker statuses and continue managing the mission from here. Read work
             policy: stateDocAfterFinalization.finalization.policy,
             status: nextFinalizationStatus,
             executionComplete: true,
-            contractSatisfied: stateDocAfterFinalization.finalization.status !== "finalization_failed" && closeoutSatisfied,
+            contractSatisfied: !finalizationBlocked && closeoutSatisfied,
             requirements: closeoutRequirements,
-            summary: unmetRequirements.length > 0
+            summary: finalizationBlocked
+              ? stateDocAfterFinalization.finalization.summary
+              : unmetRequirements.length > 0
               ? "Execution finished, but the closeout contract is still incomplete."
               : stateDocAfterFinalization.finalization.summary?.includes("closeout contract is still incomplete")
                 ? "Mission finalization completed."
                 : stateDocAfterFinalization.finalization.summary,
-            detail: unmetRequirements.length > 0
+            detail: finalizationBlocked
+              ? stateDocAfterFinalization.finalization.detail
+              : unmetRequirements.length > 0
               ? unmetRequirements.map((requirement) => requirement.label).join(", ")
               : stateDocAfterFinalization.finalization.detail,
-            completedAt: closeoutSatisfied ? (stateDocAfterFinalization.finalization.completedAt ?? nowIso()) : null,
+            completedAt: !finalizationBlocked && closeoutSatisfied ? (stateDocAfterFinalization.finalization.completedAt ?? nowIso()) : null,
           }, { graph });
             stateDocAfterFinalization = projectRoot
             ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
@@ -7326,7 +7411,6 @@ Check all worker statuses and continue managing the mission from here. Read work
 
   // ── Project Docs Discovery ──────────────────────────────────
   const discoverProjectDocs = () => discoverProjectDocsCtx(ctx);
-  const resolveActivePolicy = (missionId: string) => resolveActivePolicyCtx(ctx, missionId);
 
   const startMissionRun = async (args: MissionRunStartArgs): Promise<MissionRunStartResult> => {
     const missionId = String(args.missionId ?? "").trim();
@@ -7433,12 +7517,8 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (knowledgeStatus?.diverged) {
       await humanWorkDigestService?.syncKnowledge?.();
     }
-    const activePolicy = resolveActivePolicy(missionId);
     const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
-    const runtimePhases = activePolicy.planning.mode === "off"
-      ? sortedPhases.filter((phase) => phase.phaseKey.trim().toLowerCase() !== "planning")
-      : sortedPhases;
-    const effectivePhases = runtimePhases.length > 0 ? runtimePhases : sortedPhases;
+    const effectivePhases = sortedPhases;
     const initialPhase = effectivePhases[0] ?? null;
     const phaseRuntime = initialPhase
       ? {
@@ -8294,6 +8374,135 @@ Check all worker statuses and continue managing the mission from here. Read work
         return null;
       }
     };
+    const applyPhaseApprovalTransition = (args: {
+      interventionId: string;
+      interventionType: string;
+      interventionMetadata: Record<string, unknown> | null;
+      runId: string;
+    }): boolean => {
+      if (args.interventionType !== "phase_approval") return false;
+      if (resolutionKind === "cancel_run" || resolutionKind === "skip_question") return false;
+      const sourcePhaseKey = typeof args.interventionMetadata?.phaseKey === "string"
+        ? args.interventionMetadata.phaseKey.trim()
+        : "";
+      const targetPhaseKey = typeof args.interventionMetadata?.targetPhaseKey === "string"
+        ? args.interventionMetadata.targetPhaseKey.trim()
+        : "";
+      if (!args.runId || !targetPhaseKey) return false;
+
+      const graph = loadRunGraph(args.runId);
+      if (!graph) return false;
+      const metadata = { ...(isRecord(graph.run.metadata) ? graph.run.metadata : {}) };
+      const phaseRuntimeSource = asRecord(metadata.phaseRuntime);
+      const phaseRuntime: Record<string, unknown> = phaseRuntimeSource ? { ...phaseRuntimeSource } : {};
+      const currentPhaseKey = typeof phaseRuntime.currentPhaseKey === "string"
+        ? phaseRuntime.currentPhaseKey.trim()
+        : "";
+      if (!sourcePhaseKey || !currentPhaseKey || currentPhaseKey !== sourcePhaseKey) {
+        logger.debug("ai_orchestrator.phase_approval_stale", {
+          missionId,
+          runId: args.runId,
+          interventionId: args.interventionId,
+          sourcePhaseKey,
+          currentPhaseKey,
+          targetPhaseKey,
+        });
+        return false;
+      }
+
+      const targetPhase = resolvePhaseCardsFromRunMetadata(metadata)
+        .find((phase) => phase.phaseKey === targetPhaseKey);
+      if (!targetPhase) return false;
+      const previousPhaseKey = typeof phaseRuntime.currentPhaseKey === "string"
+        ? phaseRuntime.currentPhaseKey
+        : null;
+      const previousPhaseName = typeof phaseRuntime.currentPhaseName === "string"
+        ? phaseRuntime.currentPhaseName
+        : null;
+      if (previousPhaseKey === targetPhase.phaseKey && previousPhaseName === targetPhase.name) {
+        return true;
+      }
+
+      const transitionedAt = nowIso();
+      const transitions = Array.isArray(phaseRuntime.transitions) ? [...phaseRuntime.transitions] : [];
+      const transitionReason = "phase_approval_resolved";
+      transitions.unshift({
+        fromPhaseKey: previousPhaseKey,
+        fromPhaseName: previousPhaseName,
+        toPhaseKey: targetPhase.phaseKey,
+        toPhaseName: targetPhase.name,
+        at: transitionedAt,
+        reason: transitionReason,
+      });
+      const existingPhaseBudgets = asRecord(phaseRuntime.phaseBudgets) ?? {};
+      const targetPhaseBudget = asRecord(existingPhaseBudgets[targetPhase.phaseKey]);
+      phaseRuntime.transitions = transitions.slice(0, 64);
+      phaseRuntime.currentPhaseKey = targetPhase.phaseKey;
+      phaseRuntime.currentPhaseName = targetPhase.name;
+      phaseRuntime.currentPhaseModel = targetPhase.model;
+      phaseRuntime.currentPhaseInstructions = targetPhase.instructions;
+      phaseRuntime.currentPhaseValidation = targetPhase.validationGate;
+      phaseRuntime.currentPhaseBudget = targetPhase.budget ?? {};
+      phaseRuntime.transitionedAt = transitionedAt;
+      phaseRuntime.phaseBudgets = {
+        ...existingPhaseBudgets,
+        [targetPhase.phaseKey]: {
+          enteredAt: typeof targetPhaseBudget?.enteredAt === "string" && targetPhaseBudget.enteredAt.trim().length > 0
+            ? targetPhaseBudget.enteredAt
+            : transitionedAt,
+          usedTokens: Number.isFinite(Number(targetPhaseBudget?.usedTokens))
+            ? Number(targetPhaseBudget?.usedTokens)
+            : 0,
+          usedCostUsd: Number.isFinite(Number(targetPhaseBudget?.usedCostUsd))
+            ? Number(targetPhaseBudget?.usedCostUsd)
+            : 0,
+        },
+      };
+      db.run(
+        `
+          update orchestrator_runs
+          set metadata_json = json_set(coalesce(nullif(metadata_json, ''), '{}'), '$.phaseRuntime', json(?)),
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [JSON.stringify(phaseRuntime), transitionedAt, args.runId, graph.run.projectId],
+      );
+      orchestratorService.appendTimelineEvent({
+        runId: args.runId,
+        eventType: "phase_transition",
+        reason: transitionReason,
+        detail: {
+          fromPhaseKey: previousPhaseKey,
+          fromPhaseName: previousPhaseName,
+          toPhaseKey: targetPhase.phaseKey,
+          toPhaseName: targetPhase.name,
+          phaseModel: targetPhase.model,
+          phaseValidation: targetPhase.validationGate,
+          phaseBudget: targetPhase.budget ?? {},
+          transitionedAt,
+          source: "phase_approval_resolution",
+          interventionId: args.interventionId,
+        },
+      });
+      recordRuntimeEvent({
+        runId: args.runId,
+        eventType: "progress",
+        eventKey: `phase_approval_transition:${args.interventionId}`,
+        payload: {
+          transition: "phase_approval_resolved",
+          interventionId: args.interventionId,
+          fromPhaseKey: previousPhaseKey,
+          toPhaseKey: targetPhase.phaseKey,
+        },
+      });
+      orchestratorService.emitRuntimeUpdate({
+        runId: args.runId,
+        reason: "phase_transition",
+      });
+      runGraphById.delete(args.runId);
+      return true;
+    };
     const isLiveSteeringWorker = (attemptId: string, ws: OrchestratorWorkerState): boolean => {
       if (!ws.runId || ws.state !== "working" || !ws.sessionId) return false;
       if (!missionRunIds.has(ws.runId)) return false;
@@ -8336,6 +8545,45 @@ Check all worker statuses and continue managing the mission from here. Read work
     });
 
     const projectedStepCount = projectSteeringDirectiveToActiveSteps(directive);
+    const steeringAppliedAt = nowIso();
+    const steeringRunTargets = missionRuns.filter(
+      (run) =>
+        run.status === "active"
+        || run.status === "bootstrapping"
+        || run.status === "queued"
+        || run.status === "paused",
+    );
+    for (const run of steeringRunTargets) {
+      const steeringPayload = {
+        directive: clipTextForContext(directive.directive, 360),
+        priority: directive.priority,
+        targetStepKey: directive.targetStepKey ?? null,
+        interventionId: targetedInterventionId,
+        projectedStepCount,
+        appliedAt: steeringAppliedAt,
+      };
+      recordRuntimeEvent({
+        runId: run.id,
+        eventType: "coordinator_steering",
+        eventKey: `coordinator_steering:${run.id}:${steeringAppliedAt}:${directive.targetStepKey ?? "all"}`,
+        occurredAt: steeringAppliedAt,
+        payload: steeringPayload,
+      });
+      try {
+        orchestratorService.appendTimelineEvent({
+          runId: run.id,
+          eventType: "coordinator_steering",
+          reason: clipTextForContext(directive.directive, 180),
+          detail: steeringPayload,
+        });
+      } catch (error) {
+        logger.debug("ai_orchestrator.steering_timeline_append_failed", {
+          missionId,
+          runId: run.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const resolvedInterventions: string[] = [];
     let resolvedNonManualInterventionCount = 0;
@@ -8347,8 +8595,28 @@ Check all worker statuses and continue managing the mission from here. Read work
     const openManualInput = targetedInterventionId
       ? targetedOpenIntervention?.interventionType === "manual_input" ? [targetedOpenIntervention] : []
       : [];
+    const targetedPhaseApprovalMeta = targetedOpenIntervention?.interventionType === "phase_approval" && isRecord(targetedOpenIntervention.metadata)
+      ? targetedOpenIntervention.metadata
+      : null;
+    const targetedPhaseApprovalRunId = typeof targetedPhaseApprovalMeta?.runId === "string"
+      ? targetedPhaseApprovalMeta.runId.trim()
+      : "";
+    const stalePhaseApprovalSiblings =
+      targetedOpenIntervention?.interventionType === "phase_approval"
+      && resolutionKind !== "cancel_run"
+      && resolutionKind !== "skip_question"
+      && targetedPhaseApprovalRunId.length > 0
+        ? (refreshedMission?.interventions ?? []).filter((entry) => {
+            if (entry.id === targetedOpenIntervention.id) return false;
+            if (entry.status !== "open" || entry.interventionType !== "phase_approval") return false;
+            if (entry.createdAt > targetedOpenIntervention.createdAt) return false;
+            const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+            const runId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+            return runId === targetedPhaseApprovalRunId;
+          })
+        : [];
     const openNonManualInterventions = targetedOpenIntervention && targetedOpenIntervention.interventionType !== "manual_input"
-      ? [targetedOpenIntervention]
+      ? [targetedOpenIntervention, ...stalePhaseApprovalSiblings]
       : [];
 
     for (const intervention of openNonManualInterventions) {
@@ -8357,19 +8625,43 @@ Check all worker statuses and continue managing the mission from here. Read work
         const runId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
         const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
         const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
+        let appliedPhaseTransition = false;
+        let phaseApprovalStale = false;
+        let interventionResolutionKind: MissionInterventionResolutionKind = resolutionKind ?? "answer_provided";
+        let interventionResolutionNote =
+          resolutionKind === "accept_defaults"
+            ? "Resolved by accepting defaults."
+            : resolutionKind === "skip_question"
+              ? "Resolved by dismissing the intervention."
+              : resolutionKind === "cancel_run"
+                ? "Resolved by canceling the run."
+                : `Resolved by operator directive (${directive.priority}).`;
+        if (
+          intervention.interventionType === "phase_approval"
+          && resolutionKind !== "cancel_run"
+          && resolutionKind !== "skip_question"
+        ) {
+          appliedPhaseTransition = runId.length > 0
+            ? applyPhaseApprovalTransition({
+                interventionId: intervention.id,
+                interventionType: intervention.interventionType,
+                interventionMetadata: meta,
+                runId,
+              })
+            : false;
+          if (!appliedPhaseTransition) {
+            phaseApprovalStale = true;
+            interventionResolutionKind = "stale_phase_approval";
+            interventionResolutionNote =
+              "Resolved as stale because this phase approval no longer matches the run's current phase; no phase transition was applied.";
+          }
+        }
         missionService.resolveIntervention({
           missionId,
           interventionId: intervention.id,
           status: "resolved",
-          resolutionKind: resolutionKind ?? "answer_provided",
-          note:
-            resolutionKind === "accept_defaults"
-              ? "Resolved by accepting defaults."
-              : resolutionKind === "skip_question"
-                ? "Resolved by dismissing the intervention."
-                : resolutionKind === "cancel_run"
-                  ? "Resolved by canceling the run."
-                  : `Resolved by operator directive (${directive.priority}).`,
+          resolutionKind: interventionResolutionKind,
+          note: interventionResolutionNote,
         });
         resolvedInterventions.push(intervention.id);
         resolvedNonManualInterventionCount += 1;
@@ -8383,10 +8675,13 @@ Check all worker statuses and continue managing the mission from here. Read work
             eventKey: `intervention_resolved:${intervention.id}:${directive.priority}`,
             payload: {
               interventionId: intervention.id,
-              reason: resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
+              reason: phaseApprovalStale
+                ? "stale_phase_approval"
+                : resolutionKind === "cancel_run" ? "cancel_run" : "steering_directive",
               priority: directive.priority,
               directive: clipTextForContext(directive.directive, 220),
-              resolutionKind,
+              resolutionKind: interventionResolutionKind,
+              appliedPhaseTransition,
             },
           });
           if (resolutionKind === "cancel_run") {
@@ -8429,7 +8724,8 @@ Check all worker statuses and continue managing the mission from here. Read work
           String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "planning"
           || String(ownerStepMeta?.stepType ?? "").trim().toLowerCase() === "analysis"
           || String(ownerStepMeta?.phaseKey ?? "").trim().toLowerCase() === "planning";
-        const plannerNaturalQuestionRetry = reasonCode === "planner_natural_question";
+        const plannerNaturalQuestionRetry =
+          reasonCode === "planner_natural_question" || reasonCode === "planner_required_question_missing";
         const ownerCanResume =
           attemptId.length === 0
           || Boolean(ownerAttempt && ownerAttempt.status === "running")
@@ -9786,7 +10082,9 @@ Check all worker statuses and continue managing the mission from here. Read work
             ? "Question skipped"
             : payload?.resolutionKind === "cancel_run"
               ? "Run canceled"
-              : "Operator decision applied";
+              : payload?.resolutionKind === "stale_phase_approval"
+                ? "Stale phase approval closed"
+                : "Operator decision applied";
       return {
         id: `runtime:${event.id}`,
         at: event.occurredAt,
@@ -9794,7 +10092,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         title: resolutionLabel,
         detail: detail ?? (payload?.resolutionKind === "answer_provided"
           ? "ADE resolved the intervention and resumed mission coordination."
-          : "ADE applied the intervention outcome."),
+          : payload?.resolutionKind === "stale_phase_approval"
+            ? "ADE closed a stale phase approval without changing the run phase."
+            : "ADE applied the intervention outcome."),
         severity: payload?.resolutionKind === "cancel_run" ? "warning" : "info",
         audience: "mission_feed",
         source: "runtime",
@@ -9892,6 +10192,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           if (payload?.resolutionKind === "accept_defaults") return "Defaults accepted";
           if (payload?.resolutionKind === "skip_question") return "Question skipped";
           if (payload?.resolutionKind === "cancel_run") return "Run canceled";
+          if (payload?.resolutionKind === "stale_phase_approval") return "Stale phase approval closed";
           return "Intervention resolved";
         })(),
         detail: event.summary,
@@ -9947,13 +10248,13 @@ Check all worker statuses and continue managing the mission from here. Read work
   ): Promise<MissionRunView | null> => {
     const missionId = String(viewArgs.missionId ?? "").trim();
     if (!missionId.length) return null;
-    const mission = missionService.get(missionId);
+    let mission = missionService.get(missionId);
     if (!mission) return null;
 
     const runs = orchestratorService.listRuns({ missionId, limit: 200 });
     const run = pickPreferredMissionRun(runs, viewArgs.runId);
     const graph = run ? orchestratorService.getRunGraph({ runId: run.id, timelineLimit: 200 }) : null;
-    const stateDoc = run ? await getMissionStateDocument({ runId: run.id }) : null;
+    let stateDoc = run ? await getMissionStateDocument({ runId: run.id }) : null;
     const workerStates = run ? getWorkerStates({ runId: run.id }) : [];
     const latestIntervention = toRunViewLatestIntervention(mission);
     const openIntervention = getScopedOpenIntervention({ mission, run });
@@ -9989,7 +10290,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       latestIntervention,
       openIntervention,
     });
-    const closeoutRequirements = graph
+    let closeoutRequirements = graph
       ? buildMissionCloseoutRequirements({
           mission,
           graph,
@@ -9998,11 +10299,47 @@ Check all worker statuses and continue managing the mission from here. Read work
           stateDoc,
         })
       : [];
-    const unmetCloseoutRequirements = closeoutRequirements.filter((requirement) =>
+    let unmetCloseoutRequirements = closeoutRequirements.filter((requirement) =>
       requirement.required
       && requirement.status !== "present"
       && requirement.status !== "waived"
     );
+    const closeoutRequirementsChanged = stateDoc?.finalization
+      ? JSON.stringify(stateDoc.finalization.requirements ?? []) !== JSON.stringify(closeoutRequirements)
+      : false;
+    if (
+      run?.status === "succeeded"
+      && graph
+      && stateDoc?.finalization
+      && stateDoc.finalization.status !== "finalization_failed"
+      && stateDoc.finalization.blocked !== true
+      && (
+        mission.status !== "completed"
+        || stateDoc.finalization.contractSatisfied !== true
+        || closeoutRequirementsChanged
+      )
+    ) {
+      await updateMissionCompletionFromStateDoc({
+        runId: run.id,
+        graph,
+        mission,
+        finalization: stateDoc.finalization,
+      });
+      mission = missionService.get(missionId) ?? mission;
+      stateDoc = await getMissionStateDocument({ runId: run.id });
+      closeoutRequirements = buildMissionCloseoutRequirements({
+        mission,
+        graph,
+        policy: resolveMissionFinalizationPolicyForMission(mission.id),
+        finalization: stateDoc?.finalization ?? null,
+        stateDoc,
+      });
+      unmetCloseoutRequirements = closeoutRequirements.filter((requirement) =>
+        requirement.required
+        && requirement.status !== "present"
+        && requirement.status !== "waived"
+      );
+    }
     const closeoutBlocked =
       run?.status === "succeeded"
       && mission.status !== "completed"

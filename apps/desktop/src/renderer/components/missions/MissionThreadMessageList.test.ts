@@ -343,6 +343,13 @@ describe("MissionThreadMessageList usage", () => {
         sessions: {
           readTranscriptTail: vi.fn(() => Promise.resolve("")),
         },
+        agentChat: {
+          getEventHistory: vi.fn(({ sessionId }: { sessionId: string }) => Promise.resolve({
+            sessionId,
+            sessionFound: true,
+            events: [],
+          })),
+        },
       },
     });
   });
@@ -371,14 +378,32 @@ describe("MissionThreadMessageList usage", () => {
     );
   });
 
-  it("does not read raw transcript tails for closed mission history threads", async () => {
+  it("does not fetch closed mission history when transcript polling is disabled", async () => {
     const readTranscriptTail = vi.fn(() => Promise.resolve(""));
+    const historyEvent: AgentChatEventEnvelope = {
+      sessionId: "session-closed",
+      timestamp: "2026-03-10T12:00:00.000Z",
+      event: {
+        type: "text",
+        text: "Closed worker transcript from agent-chat history.",
+        turnId: "turn-1",
+        itemId: "assistant-1",
+      },
+    };
+    const getEventHistory = vi.fn(({ sessionId }: { sessionId: string }) => Promise.resolve({
+      sessionId,
+      sessionFound: true,
+      events: [historyEvent],
+    }));
     Object.defineProperty(globalThis.window, "ade", {
       configurable: true,
       writable: true,
       value: {
         sessions: {
           readTranscriptTail,
+        },
+        agentChat: {
+          getEventHistory,
         },
       },
     });
@@ -389,7 +414,10 @@ describe("MissionThreadMessageList usage", () => {
       transcriptPollingEnabled: false,
     }));
 
-    await Promise.resolve();
+    await waitFor(() => {
+      expect(useMissionPolling).toHaveBeenCalledWith(expect.any(Function), 4_000, false);
+    });
+    expect(getEventHistory).not.toHaveBeenCalled();
     expect(readTranscriptTail).not.toHaveBeenCalled();
   });
 

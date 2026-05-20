@@ -30,6 +30,25 @@ describe("narrativeForEvent", () => {
       stepId: "e57e9ac4-8efd-4a8b-ad17-24f99d299b10",
     })).toBe("Step update: readiness_recomputed");
   });
+
+  it("renders steering and replan timeline events with operator context", () => {
+    expect(narrativeForEvent({
+      eventType: "coordinator_steering",
+      reason: "operator directive",
+      detail: {
+        directive: "Prioritize the schedule-risk console and defer broad dashboard polish.",
+        targetStepKey: "implement-risk-console",
+      },
+    })).toBe("User steering for implement risk console: Prioritize the schedule-risk console and defer broad dashboard polish.");
+
+    expect(narrativeForEvent({
+      eventType: "plan_revised",
+      reason: "revise_plan",
+      detail: {
+        reason: "Scope changed after operator review.",
+      },
+    })).toBe("Plan revised: Scope changed after operator review.");
+  });
 });
 
 describe("computeProgress", () => {
@@ -289,6 +308,11 @@ describe("getMissionStatusBadgeConfig", () => {
     expect(config.label).toBe("Running");
     expect(config.color).toBe("#22C55E");
   });
+
+  it("lets terminal mission status override a stale running run-view status", () => {
+    const config = getMissionStatusBadgeConfig("completed", "running");
+    expect(config.label).toBe("Done");
+  });
 });
 
 describe("isMissionVisiblyActive", () => {
@@ -299,5 +323,9 @@ describe("isMissionVisiblyActive", () => {
   it("keeps active styling for run-view starting and running states", () => {
     expect(isMissionVisiblyActive("queued", "starting")).toBe(true);
     expect(isMissionVisiblyActive("queued", "running")).toBe(true);
+  });
+
+  it("does not keep active styling when a terminal mission has a stale active run-view", () => {
+    expect(isMissionVisiblyActive("completed", "running")).toBe(false);
   });
 });

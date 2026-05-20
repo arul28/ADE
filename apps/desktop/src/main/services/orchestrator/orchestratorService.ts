@@ -61,6 +61,7 @@ import type {
   FanOutDecision,
   AgentChatExecutionMode,
   AgentChatPermissionMode,
+  AgentChatEventEnvelope,
   WorkerResultReport,
 } from "../../../shared/types";
 import {
@@ -142,6 +143,12 @@ import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { mapPermissionToCodex, mergeMissionPermissionConfig, normalizeMissionPermissions, providerPermissionsToLegacyConfig, mapPermissionToInProcess } from "./permissionMapping";
 import type { MissionPermissionConfig, MissionProviderPermissions } from "../../../shared/types/missions";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  hasResolvedPlanningQuestionIntervention,
+  phaseRequiresPlanningQuestionBeforeExit,
+} from "./planningQuestionPolicy";
+
+type PlannerQuestionReasonCode = "planner_natural_question" | "planner_required_question_missing";
 
 // Row types, StepPolicy, and other extracted types are imported from
 // ./orchestratorQueries and ./stepPolicyResolver
@@ -1995,6 +2002,91 @@ export function createOrchestratorService({
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
   };
+  const collectUniqueStrings = (...values: unknown[]): string[] => {
+    const out: string[] = [];
+    for (const value of values) {
+      const candidate = toOptionalNonEmptyString(value);
+      if (candidate && !out.includes(candidate)) out.push(candidate);
+    }
+    return out;
+  };
+  const resolvePlanningPolicyPrompt = (args: {
+    missionId?: string | null;
+    runMetadata?: Record<string, unknown> | null;
+    stepMetadata?: Record<string, unknown> | null;
+  }): string | null => {
+    const runMetadata = asRecord(args.runMetadata);
+    const stepMetadata = asRecord(args.stepMetadata);
+    const candidates: string[] = [];
+    const push = (...values: unknown[]) => {
+      for (const candidate of collectUniqueStrings(...values)) {
+        if (!candidates.includes(candidate)) candidates.push(candidate);
+      }
+    };
+    push(runMetadata?.missionPrompt, runMetadata?.missionGoal);
+    if (args.missionId) {
+      try {
+        const row = db.get<{ prompt?: unknown }>(
+          `select prompt from missions where id = ? and project_id = ? limit 1`,
+          [args.missionId, projectId],
+        );
+        push(row?.prompt);
+      } catch {
+        // The policy can still use runtime and step text.
+      }
+    }
+    push(stepMetadata?.instructions, stepMetadata?.phaseInstructions);
+    return candidates.length > 0 ? candidates.join("\n\n") : null;
+  };
+  const normalizePlanningQuestionStepMetadata = (args: {
+    missionId?: string | null;
+    runMetadata?: Record<string, unknown> | null;
+    metadata: Record<string, unknown>;
+  }): Record<string, unknown> => {
+    const metadata = args.metadata;
+    const phaseKey = toOptionalNonEmptyString(metadata.phaseKey)?.toLowerCase() ?? "";
+    const phaseName = toOptionalNonEmptyString(metadata.phaseName)?.toLowerCase() ?? "";
+    if (phaseKey !== "planning" && phaseName !== "planning") return metadata;
+    const phaseAskQuestions = asRecord(metadata.phaseAskQuestions);
+    if (phaseAskQuestions?.enabled !== true || phaseAskQuestions.requiredBeforeExit === true) return metadata;
+
+    const phases = resolveRunPhaseCardsFromMetadata(args.runMetadata) ?? [];
+    const matchingPhase = phases.find((phase) =>
+      phase.phaseKey.trim().toLowerCase() === phaseKey || phase.name.trim().toLowerCase() === phaseName
+    ) ?? null;
+    const phaseForPolicy = {
+      ...(matchingPhase ?? {}),
+      phaseKey: toOptionalNonEmptyString(metadata.phaseKey) ?? matchingPhase?.phaseKey ?? "planning",
+      name: toOptionalNonEmptyString(metadata.phaseName) ?? matchingPhase?.name ?? "Planning",
+      instructions: collectUniqueStrings(
+        matchingPhase?.instructions,
+        metadata.phaseInstructions,
+        metadata.instructions,
+      ).join("\n\n"),
+      askQuestions: {
+        ...(matchingPhase?.askQuestions ?? {}),
+        ...phaseAskQuestions,
+        enabled: true,
+        requiredBeforeExit: matchingPhase?.askQuestions?.requiredBeforeExit === true,
+      },
+    } as PhaseCard;
+    const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+      phase: phaseForPolicy,
+      missionPrompt: resolvePlanningPolicyPrompt({
+        missionId: args.missionId,
+        runMetadata: args.runMetadata,
+        stepMetadata: metadata,
+      }),
+    });
+    if (!requiredBeforeExit) return metadata;
+    return {
+      ...metadata,
+      phaseAskQuestions: {
+        ...phaseAskQuestions,
+        requiredBeforeExit: true,
+      },
+    };
+  };
   const resolveRunMissionLaneId = (metadata: Record<string, unknown> | null | undefined): string | null => {
     const metadataRecord = metadata ? asRecord(metadata) : null;
     if (!metadataRecord) return null;
@@ -2721,7 +2813,7 @@ export function createOrchestratorService({
     return getRunInterventionGateState(run).blocked;
   };
 
-  const ensurePlannerNaturalQuestionIntervention = (args: {
+  const ensurePlannerQuestionIntervention = (args: {
     missionId: string;
     runId: string;
     step: OrchestratorStep;
@@ -2732,6 +2824,10 @@ export function createOrchestratorService({
     sessionId: string | null;
     phaseKey: string;
     stepType: string;
+    reasonCode: PlannerQuestionReasonCode;
+    source: PlannerQuestionReasonCode;
+    requestedAction: string;
+    pauseReason: string;
   }): string | null => {
     const missionId = args.missionId.trim();
     const question = args.question.trim();
@@ -2749,7 +2845,7 @@ export function createOrchestratorService({
     );
     for (const row of existingRows) {
       const metadata = parseJsonRecord(row.metadata_json);
-      if (metadata?.reasonCode === "planner_natural_question" && metadata?.attemptId === args.attempt.id) {
+      if (metadata?.reasonCode === args.reasonCode && metadata?.attemptId === args.attempt.id) {
         return row.id;
       }
     }
@@ -2757,8 +2853,8 @@ export function createOrchestratorService({
     const id = randomUUID();
     const title = question.length > 96 ? "Planner question ready" : `Question: ${question}`;
     const metadata = {
-      source: "planner_natural_question",
-      reasonCode: "planner_natural_question",
+      source: args.source,
+      reasonCode: args.reasonCode,
       question,
       runId: args.runId,
       stepId: args.step.id,
@@ -2797,7 +2893,7 @@ export function createOrchestratorService({
         projectId,
         title,
         question,
-        "Answer the planning question to retry the planner with your guidance.",
+        args.requestedAction,
         args.step.laneId ?? null,
         JSON.stringify(metadata),
         args.detectedAt,
@@ -2821,7 +2917,7 @@ export function createOrchestratorService({
       const run = toRun(runRow);
       if (!TERMINAL_RUN_STATUSES.has(run.status) && run.status !== "paused") {
         updateRunStatus(args.runId, "paused", {
-          last_error: `Planning question needs an answer: ${question.slice(0, 140)}`,
+          last_error: `${args.pauseReason}: ${question.slice(0, 140)}`,
           metadata_json: JSON.stringify({
             ...(parseJsonRecord(runRow.metadata_json) ?? {}),
             pendingPlannerQuestion: {
@@ -2836,15 +2932,272 @@ export function createOrchestratorService({
         appendTimelineEvent({
           runId: args.runId,
           eventType: "run_paused",
-          reason: "planner_natural_question",
+          reason: args.reasonCode,
           detail: {
             interventionId: id,
             question,
+            reasonCode: args.reasonCode,
           },
         });
       }
     }
 
+    return id;
+  };
+
+  const extractResolvedPlannerChatQuestion = (
+    events: AgentChatEventEnvelope[],
+  ): {
+    itemId: string;
+    question: string;
+    requestedAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
+  } | null => {
+    const pendingQuestions = new Map<string, { question: string; requestedAt: string }>();
+    const resolvedItems = new Map<string, { resolvedAt: string; resolutionKind: "answer_provided" | "skip_question" }>();
+
+    const readQuestion = (event: AgentChatEventEnvelope["event"]): string | null => {
+      if (event.type !== "approval_request") return null;
+      if (event.kind !== "tool_call") return null;
+      const detail = asRecord(event.detail);
+      const request = asRecord(detail?.request);
+      if (!request) return null;
+      const kind = typeof request.kind === "string" ? request.kind.trim().toLowerCase() : "";
+      if (kind === "plan_approval" || kind === "approval" || kind === "permissions") return null;
+      const questions = Array.isArray(request.questions) ? request.questions : [];
+      const hasQuestionPayload =
+        kind === "question"
+        || kind === "structured_question"
+        || questions.some((entry) => {
+          const question = asRecord(entry);
+          return typeof question?.question === "string" && question.question.trim().length > 0;
+        });
+      if (!hasQuestionPayload) return null;
+      const firstQuestion = questions.map((entry) => asRecord(entry)).find((entry) =>
+        typeof entry?.question === "string" && entry.question.trim().length > 0
+      );
+      const questionText =
+        typeof firstQuestion?.question === "string" && firstQuestion.question.trim().length > 0
+          ? firstQuestion.question.trim()
+          : typeof request.description === "string" && request.description.trim().length > 0
+            ? request.description.trim()
+            : event.description.trim();
+      return questionText.length > 0 ? questionText : null;
+    };
+
+    for (const envelope of events) {
+      const event = envelope.event;
+      if (event.type === "approval_request") {
+        const question = readQuestion(event);
+        if (!question) continue;
+        const itemId = typeof event.itemId === "string" ? event.itemId.trim() : "";
+        if (!itemId) continue;
+        const requestedAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length > 0
+          ? envelope.timestamp
+          : nowIso();
+        const resolvedItem = resolvedItems.get(itemId);
+        if (resolvedItem) {
+          return { itemId, question, requestedAt, ...resolvedItem };
+        }
+        pendingQuestions.set(itemId, { question, requestedAt });
+        continue;
+      }
+      if (event.type !== "pending_input_resolved" || (event.resolution !== "accepted" && event.resolution !== "declined")) continue;
+      const itemId = typeof event.itemId === "string" ? event.itemId.trim() : "";
+      if (!itemId) continue;
+      const resolvedAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length > 0
+        ? envelope.timestamp
+        : nowIso();
+      const resolutionKind = event.resolution === "accepted" ? "answer_provided" : "skip_question";
+      const pending = pendingQuestions.get(itemId);
+      if (pending) {
+        return { itemId, question: pending.question, requestedAt: pending.requestedAt, resolvedAt, resolutionKind };
+      }
+      resolvedItems.set(itemId, { resolvedAt, resolutionKind });
+    }
+
+    return null;
+  };
+
+  const readResolvedPlannerChatQuestion = (args: {
+    sessionId: string | null;
+    transcriptPath: string;
+  }): {
+    itemId: string;
+    question: string;
+    requestedAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
+  } | null => {
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!sessionId) return null;
+    const events: AgentChatEventEnvelope[] = [];
+    try {
+      const snapshot = agentChatService?.getChatEventHistory(sessionId, { maxEvents: 20_000 });
+      if (snapshot?.sessionFound !== false && Array.isArray(snapshot?.events)) {
+        events.push(...snapshot.events.filter((entry) => entry.sessionId === sessionId));
+      }
+    } catch {
+      // Fall back to the persisted transcript path below.
+    }
+    const fromHistory = extractResolvedPlannerChatQuestion(events);
+    if (fromHistory) return fromHistory;
+
+    const transcriptPath = args.transcriptPath.trim();
+    if (transcriptPath && fs.existsSync(transcriptPath)) {
+      try {
+        events.push(
+          ...parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+            .filter((entry) => entry.sessionId === sessionId),
+        );
+      } catch {
+        // A malformed or missing transcript should not block normal planner completion.
+      }
+    }
+    return extractResolvedPlannerChatQuestion(events);
+  };
+
+  const ensureResolvedPlannerChatQuestionIntervention = (args: {
+    missionId: string;
+    runId: string;
+    step: OrchestratorStep;
+    attempt: OrchestratorAttempt;
+    sessionId: string | null;
+    phaseKey: string;
+    stepType: string;
+    itemId: string;
+    question: string;
+    requestedAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
+  }): string | null => {
+    const missionId = args.missionId.trim();
+    const itemId = args.itemId.trim();
+    const question = args.question.trim();
+    if (!missionId || !itemId || !question) return null;
+    const resolutionNote = args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.";
+    const existingRows = db.all<{ id: string; status: string; metadata_json: string | null }>(
+      `
+        select id, status, metadata_json
+        from mission_interventions
+        where project_id = ?
+          and mission_id = ?
+          and intervention_type = 'manual_input'
+      `,
+      [projectId, missionId],
+    );
+    const isRelatedResolvedPlannerQuestion = (metadata: Record<string, unknown> | null): boolean => {
+      const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+      if (
+        reasonCode !== "planner_chat_question"
+        && reasonCode !== "planner_natural_question"
+        && reasonCode !== "planner_required_question_missing"
+      ) {
+        return false;
+      }
+      if (metadata?.attemptId !== args.attempt.id) return false;
+      const metadataRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      if (metadataRunId && metadataRunId !== args.runId) return false;
+      const metadataStepId = typeof metadata?.stepId === "string" ? metadata.stepId.trim() : "";
+      if (metadataStepId && metadataStepId !== args.step.id) return false;
+      if (reasonCode === "planner_chat_question") {
+        const metadataItemId = typeof metadata?.itemId === "string" ? metadata.itemId.trim() : "";
+        return !metadataItemId || metadataItemId === itemId;
+      }
+      const metadataQuestion = typeof metadata?.question === "string" ? metadata.question.trim() : "";
+      return !metadataQuestion || metadataQuestion === question;
+    };
+    const resolveExistingPlannerQuestion = (row: { id: string; status: string }): void => {
+      if (row.status === "resolved") return;
+      db.run(
+        `
+          update mission_interventions
+          set status = 'resolved',
+              resolution_kind = ?,
+              resolution_note = ?,
+              resolved_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          args.resolutionKind,
+          resolutionNote,
+          args.resolvedAt,
+          args.resolvedAt,
+          row.id,
+          projectId,
+        ],
+      );
+    };
+    let existingChatQuestionId: string | null = null;
+    for (const row of existingRows) {
+      const metadata = parseJsonRecord(row.metadata_json);
+      if (metadata?.reasonCode === "planner_chat_question" && metadata?.attemptId === args.attempt.id && metadata?.itemId === itemId) {
+        existingChatQuestionId = row.id;
+      }
+      if (isRelatedResolvedPlannerQuestion(metadata)) {
+        resolveExistingPlannerQuestion(row);
+      }
+    }
+    if (existingChatQuestionId) return existingChatQuestionId;
+
+    const id = randomUUID();
+    const title = question.length > 96 ? "Planner question answered" : `Question: ${question}`;
+    const metadata = {
+      source: "request_user_input",
+      reasonCode: "planner_chat_question",
+      questionOwnerKind: "planner",
+      question,
+      runId: args.runId,
+      stepId: args.step.id,
+      stepKey: args.step.stepKey,
+      attemptId: args.attempt.id,
+      sessionId: args.sessionId,
+      itemId,
+      phase: args.phaseKey || null,
+      phaseKey: args.phaseKey || null,
+      stepType: args.stepType || null,
+    };
+    db.run(
+      `
+        insert into mission_interventions(
+          id,
+          mission_id,
+          project_id,
+          intervention_type,
+          status,
+          resolution_kind,
+          title,
+          body,
+          requested_action,
+          resolution_note,
+          lane_id,
+          metadata_json,
+          created_at,
+          updated_at,
+          resolved_at
+        ) values (?, ?, ?, 'manual_input', 'resolved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        id,
+        missionId,
+        projectId,
+        args.resolutionKind,
+        title,
+        question,
+        args.resolutionKind === "skip_question"
+          ? "Planner question was skipped in the ADE chat thread."
+          : "Planner question was answered in the ADE chat thread.",
+        resolutionNote,
+        args.step.laneId ?? null,
+        JSON.stringify(metadata),
+        args.requestedAt,
+        args.resolvedAt,
+        args.resolvedAt,
+      ],
+    );
     return id;
   };
 
@@ -7569,11 +7922,16 @@ export function createOrchestratorService({
               }))
             : []
         };
-        const metadataJson = JSON.stringify({
-          ...(input.metadata ?? {}),
-          ...(input.executorKind ? { executorKind: input.executorKind } : {}),
-          policy
+        const stepMetadata = normalizePlanningQuestionStepMetadata({
+          missionId,
+          runMetadata: metadata,
+          metadata: {
+            ...(input.metadata ?? {}),
+            ...(input.executorKind ? { executorKind: input.executorKind } : {}),
+            policy
+          },
         });
+        const metadataJson = JSON.stringify(stepMetadata);
         db.run(
           `
             insert into orchestrator_steps(
@@ -9373,39 +9731,115 @@ export function createOrchestratorService({
 	        ?? phaseCardsForQuestionRecovery.find((phase) => phase.name.trim().toLowerCase() === String(stepMetadata.phaseName ?? "").trim().toLowerCase())
 	        ?? null;
 	      const phaseAllowsQuestions = phaseForQuestionRecovery?.askQuestions?.enabled === true;
+	      const missionPromptRow = db.get<{ prompt: string | null }>(
+	        `select prompt from missions where id = ? and project_id = ? limit 1`,
+	        [run.missionId, projectId],
+	      );
+	      const planningQuestionRequiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
+	        phase: phaseForQuestionRecovery,
+	        missionPrompt: missionPromptRow?.prompt ?? null,
+	      });
+	      const stepPhaseAskQuestions = asRecord(stepMetadata.phaseAskQuestions);
+	      const normalizedPlanningQuestionRequiredBeforeExit =
+	        typeof stepPhaseAskQuestions?.requiredBeforeExit === "boolean"
+	          ? stepPhaseAskQuestions.requiredBeforeExit
+	          : planningQuestionRequiredBeforeExit;
+	      const planningQuestionRows = normalizedPlanningQuestionRequiredBeforeExit
+	        ? db.all<{ status: string; intervention_type: string; metadata_json: string | null }>(
+	            `
+	              select status, intervention_type, metadata_json
+	              from mission_interventions
+	              where project_id = ?
+	                and mission_id = ?
+	                and intervention_type = 'manual_input'
+	            `,
+	            [projectId, run.missionId],
+	          )
+	        : [];
+	      let hasResolvedRequiredPlanningQuestion = hasResolvedPlanningQuestionIntervention(
+	        planningQuestionRows.map((row) => ({
+	          status: row.status,
+	          interventionType: row.intervention_type,
+	          metadata: parseJsonRecord(row.metadata_json),
+	        })),
+	        { runId: run.id },
+	      );
+	      if (
+	        status === "succeeded"
+	        && planningStep
+	        && normalizedPlanningQuestionRequiredBeforeExit
+	        && !hasResolvedRequiredPlanningQuestion
+	      ) {
+	        const resolvedChatQuestion = readResolvedPlannerChatQuestion({ sessionId, transcriptPath });
+	        if (resolvedChatQuestion) {
+	          ensureResolvedPlannerChatQuestionIntervention({
+	            missionId: run.missionId,
+	            runId: run.id,
+	            step,
+	            attempt,
+	            sessionId,
+	            phaseKey,
+	            stepType,
+	            itemId: resolvedChatQuestion.itemId,
+	            question: resolvedChatQuestion.question,
+	            requestedAt: resolvedChatQuestion.requestedAt,
+	            resolvedAt: resolvedChatQuestion.resolvedAt,
+	            resolutionKind: resolvedChatQuestion.resolutionKind,
+	          });
+	          hasResolvedRequiredPlanningQuestion = true;
+	        }
+	      }
 	      const naturalPlannerQuestion =
 	        status === "succeeded" && planningStep && reportedPlanMarkdown.length === 0 && phaseAllowsQuestions
 	          ? extractNaturalQuestionFromTranscriptPath(transcriptPath)
 	          : null;
-		      if (naturalPlannerQuestion) {
-		        const questionLink = buildQuestionThreadLink({
-		          attemptId: attempt.id,
-		          preview: naturalPlannerQuestion,
-		          occurredAt: completedAt,
-		        });
-		        const interventionId = ensurePlannerNaturalQuestionIntervention({
-		          missionId: run.missionId,
-		          runId: run.id,
-		          step,
-		          attempt,
-		          question: naturalPlannerQuestion,
-		          questionLink,
-		          detectedAt: completedAt,
-		          sessionId,
-		          phaseKey,
-		          stepType,
-		        });
-		        status = "blocked";
-		        stepMetadata = {
-		          ...stepMetadata,
-		          awaitingUserInput: {
-		            source: "planner_natural_question",
-		            question: naturalPlannerQuestion,
-		            interventionId,
-		            questionLink,
-		            detectedAt: completedAt,
-		          },
-		        };
+	      const requiredPlanningQuestion =
+	        status === "succeeded"
+	        && planningStep
+	        && reportedPlanMarkdown.length > 0
+	        && normalizedPlanningQuestionRequiredBeforeExit
+	        && !hasResolvedRequiredPlanningQuestion
+	          ? "What blocking requirements, acceptance criteria, scope decisions, or constraints should the planner account for before implementation starts?"
+	          : null;
+	      const openPlannerQuestion = (args: {
+	        question: string;
+	        reasonCode: PlannerQuestionReasonCode;
+	        requestedAction: string;
+	        pauseReason: string;
+	        timelineSource: string;
+	      }) => {
+	        const questionLink = buildQuestionThreadLink({
+	          attemptId: attempt.id,
+	          preview: args.question,
+	          occurredAt: completedAt,
+	        });
+	        const interventionId = ensurePlannerQuestionIntervention({
+	          missionId: run.missionId,
+	          runId: run.id,
+	          step,
+	          attempt,
+	          question: args.question,
+	          questionLink,
+	          detectedAt: completedAt,
+	          sessionId,
+	          phaseKey,
+	          stepType,
+	          reasonCode: args.reasonCode,
+	          source: args.reasonCode,
+	          requestedAction: args.requestedAction,
+	          pauseReason: args.pauseReason,
+	        });
+	        status = "blocked";
+	        stepMetadata = {
+	          ...stepMetadata,
+	          awaitingUserInput: {
+	            source: args.reasonCode,
+	            question: args.question,
+	            interventionId,
+	            questionLink,
+	            detectedAt: completedAt,
+	          },
+	        };
 	        this.updateStepMetadata({
 	          runId: run.id,
 	          stepId: step.id,
@@ -9419,11 +9853,11 @@ export function createOrchestratorService({
 	          sessionId,
 	          eventType: "question",
 	          eventKey: questionLink.messageId,
-		          payload: {
-		            interventionId,
-		            preview: naturalPlannerQuestion,
-		            runtimeState: "waiting-input",
-		            source: "planner_natural_question",
+	          payload: {
+	            interventionId,
+	            preview: args.question,
+	            runtimeState: "waiting-input",
+	            source: args.reasonCode,
 	            threadId: questionLink.threadId,
 	            messageId: questionLink.messageId,
 	            replyTo: questionLink.replyTo,
@@ -9434,12 +9868,30 @@ export function createOrchestratorService({
 	          stepId: step.id,
 	          attemptId: attempt.id,
 	          eventType: "intervention_opened",
-		          reason: "planner_natural_question",
-		          detail: {
-		            interventionId,
-		            question: naturalPlannerQuestion,
-		            source: "transcript_question_recovery",
-		          },
+	          reason: args.reasonCode,
+	          detail: {
+	            interventionId,
+	            question: args.question,
+	            source: args.timelineSource,
+	          },
+	        });
+	      };
+	      if (naturalPlannerQuestion) {
+	        openPlannerQuestion({
+	          question: naturalPlannerQuestion,
+	          reasonCode: "planner_natural_question",
+	          requestedAction: "Answer the planning question to retry the planner with your guidance.",
+	          pauseReason: "Planning question needs an answer",
+	          timelineSource: "transcript_question_recovery",
+	        });
+	      }
+	      if (requiredPlanningQuestion) {
+	        openPlannerQuestion({
+	          question: requiredPlanningQuestion,
+	          reasonCode: "planner_required_question_missing",
+	          requestedAction: "Answer the required planning question so ADE can retry planning with your guidance.",
+	          pauseReason: "Required planning question needs an answer",
+	          timelineSource: "planning_question_policy",
 	        });
 	      }
 	      const plannerContractViolation =
@@ -9480,6 +9932,8 @@ export function createOrchestratorService({
 	        ? "PLANNER CONTRACT VIOLATION: Planning worker completed without returning report_result.plan.markdown."
 	        : naturalPlannerQuestion
 	          ? `Planning worker is waiting for input: ${naturalPlannerQuestion}`
+	        : requiredPlanningQuestion
+	          ? `Planning worker skipped a required blocking question: ${requiredPlanningQuestion}`
 	        : softFailureOverride
 	          ? softFailureOverride.detail
 	          : reservationBlocks
@@ -9489,6 +9943,8 @@ export function createOrchestratorService({
 	        plannerContractViolation
 	          ? "planner_contract_violation" as OrchestratorErrorClass
 	          : naturalPlannerQuestion
+	            ? "deterministic" as OrchestratorErrorClass
+	          : requiredPlanningQuestion
 	            ? "deterministic" as OrchestratorErrorClass
 	          : softFailureOverride
 	          ? "soft_success_blocking_failure" as OrchestratorErrorClass
@@ -9564,59 +10020,59 @@ export function createOrchestratorService({
 	      const reportedTests = asRecord(lastResultReport?.testsRun);
 	      const implicitOutputs = (() => {
 	        if (status !== "succeeded") return null;
-		        const outputs: Record<string, unknown> = {};
-		        if (typeof reportedPlan?.markdown === "string" && reportedPlan.markdown.trim().length > 0) {
-		          outputs.planMarkdown = reportedPlan.markdown.trim();
-		          outputs.planPath =
-		            typeof reportedPlan.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
-		              ? reportedPlan.artifactPath.trim()
-		              : ".ade/plans/mission-plan.md";
-		          if (typeof reportedPlan.summary === "string" && reportedPlan.summary.trim().length > 0) {
-		            outputs.planSummary = reportedPlan.summary.trim();
-		          }
-		        }
-		        if (reportedFilesChanged.length > 0) {
-		          outputs.filesChanged = reportedFilesChanged;
-		        }
-		        if (reportedTests) {
-		          if (typeof reportedTests.command === "string" && reportedTests.command.trim().length > 0) {
-		            outputs.testsCommand = reportedTests.command.trim();
-		          }
-		          const passed = Number(reportedTests.passed);
-		          if (Number.isFinite(passed)) outputs.testsPassed = Math.max(0, Math.floor(passed));
-		          const failed = Number(reportedTests.failed);
-		          if (Number.isFinite(failed)) outputs.testsFailed = Math.max(0, Math.floor(failed));
-		          const skipped = Number(reportedTests.skipped);
-		          if (Number.isFinite(skipped)) outputs.testsSkipped = Math.max(0, Math.floor(skipped));
-		          if (typeof reportedTests.raw === "string" && reportedTests.raw.trim().length > 0) {
-		            outputs.testsSummary = reportedTests.raw.trim();
-		          }
-		        }
-		        return Object.keys(outputs).length > 0 ? outputs : null;
-		      })();
-		      const defaultSummary =
-		        status === "succeeded"
-		          ? reportedSummary
-		            || transcriptSummary
-		            || (
-		              stepMetadata.readOnlyExecution === true
-		                || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning"
-		                ? "Planning session completed."
-		                : "Step completed."
-		            )
-		          : status === "failed"
-		            ? effectiveErrorMessage?.trim() || "Step attempt failed."
-		            : status === "blocked"
+	        const outputs: Record<string, unknown> = {};
+	        if (typeof reportedPlan?.markdown === "string" && reportedPlan.markdown.trim().length > 0) {
+	          outputs.planMarkdown = reportedPlan.markdown.trim();
+	          outputs.planPath =
+	            typeof reportedPlan.artifactPath === "string" && reportedPlan.artifactPath.trim().length > 0
+	              ? reportedPlan.artifactPath.trim()
+	              : ".ade/plans/mission-plan.md";
+	          if (typeof reportedPlan.summary === "string" && reportedPlan.summary.trim().length > 0) {
+	            outputs.planSummary = reportedPlan.summary.trim();
+	          }
+	        }
+	        if (reportedFilesChanged.length > 0) {
+	          outputs.filesChanged = reportedFilesChanged;
+	        }
+	        if (reportedTests) {
+	          if (typeof reportedTests.command === "string" && reportedTests.command.trim().length > 0) {
+	            outputs.testsCommand = reportedTests.command.trim();
+	          }
+	          const passed = Number(reportedTests.passed);
+	          if (Number.isFinite(passed)) outputs.testsPassed = Math.max(0, Math.floor(passed));
+	          const failed = Number(reportedTests.failed);
+	          if (Number.isFinite(failed)) outputs.testsFailed = Math.max(0, Math.floor(failed));
+	          const skipped = Number(reportedTests.skipped);
+	          if (Number.isFinite(skipped)) outputs.testsSkipped = Math.max(0, Math.floor(skipped));
+	          if (typeof reportedTests.raw === "string" && reportedTests.raw.trim().length > 0) {
+	            outputs.testsSummary = reportedTests.raw.trim();
+	          }
+	        }
+	        return Object.keys(outputs).length > 0 ? outputs : null;
+	      })();
+	      const defaultSummary =
+	        status === "succeeded"
+	          ? reportedSummary
+	            || transcriptSummary
+	            || (
+	              stepMetadata.readOnlyExecution === true
+	                || String(stepMetadata.stepType ?? "").trim().toLowerCase() === "planning"
+	                ? "Planning session completed."
+	                : "Step completed."
+	            )
+	          : status === "failed"
+	            ? effectiveErrorMessage?.trim() || "Step attempt failed."
+	            : status === "blocked"
 	              ? effectiveErrorMessage?.trim() || "Step attempt blocked."
 	              : "Step attempt canceled.";
-		      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
-		        args.result ?? {
-		          success: status === "succeeded",
+	      const envelope: OrchestratorAttemptResultEnvelope = normalizeEnvelope(
+	        args.result ?? {
+	          success: status === "succeeded",
 	          summary: defaultSummary,
 	          outputs: implicitOutputs,
 	          warnings: status === "failed" || status === "blocked" ? [defaultSummary] : [],
 	          sessionId: attemptRow.executor_session_id,
-		          trackedSession: true
+	          trackedSession: true
 	        }
 	      );
 	      if (reservationWarns && fileReservationMessage && !envelope.warnings.includes(fileReservationMessage)) {
@@ -11000,11 +11456,16 @@ export function createOrchestratorService({
               }))
             : []
         };
-        const metadataJson = JSON.stringify({
-          ...(input.metadata ?? {}),
-          ...(input.executorKind ? { executorKind: input.executorKind } : {}),
-          policy
+        const stepMetadata = normalizePlanningQuestionStepMetadata({
+          missionId: run.missionId,
+          runMetadata: run.metadata,
+          metadata: {
+            ...(input.metadata ?? {}),
+            ...(input.executorKind ? { executorKind: input.executorKind } : {}),
+            policy
+          },
         });
+        const metadataJson = JSON.stringify(stepMetadata);
         db.run(
           `
             insert into orchestrator_steps(
@@ -12034,7 +12495,11 @@ export function createOrchestratorService({
       }
 
       const existingMeta = (step.metadata && typeof step.metadata === "object" && !Array.isArray(step.metadata)) ? step.metadata as Record<string, unknown> : {};
-      const mergedMeta = { ...existingMeta, ...args.metadata };
+      const mergedMeta = normalizePlanningQuestionStepMetadata({
+        missionId: run.missionId,
+        runMetadata: run.metadata,
+        metadata: { ...existingMeta, ...args.metadata },
+      });
       const retryLimit = Number(args.retryLimit);
       const hasRetryLimit = Number.isFinite(retryLimit) && retryLimit >= 0;
 

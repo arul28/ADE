@@ -4,7 +4,9 @@ import type { ComputerUseOwnerSnapshot, MissionCloseoutRequirement } from "../..
 import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { MissionComputerUsePanel } from "./MissionComputerUsePanel";
 
-type ArtifactGroupMode = "phase" | "step" | "type";
+type ArtifactGroupMode = "phase" | "step" | "worker" | "type";
+
+const ARTIFACT_GROUP_MODES: ArtifactGroupMode[] = ["phase", "step", "worker", "type"];
 
 function isExternalUri(value: string): boolean {
   return /^https?:\/\//i.test(value);
@@ -96,6 +98,7 @@ function ArtifactPreview({ artifact }: { artifact: MissionArtifactRecord | null 
           <span>{artifact.artifactType}</span>
           {artifact.phaseName ? <span>{artifact.phaseName}</span> : null}
           {artifact.stepTitle ? <span>{artifact.stepTitle}</span> : null}
+          {artifact.workerLabel ? <span>{artifact.workerLabel}</span> : null}
           {artifact.declared ? <span>declared</span> : <span>discovered</span>}
           {artifact.missingExpectedEvidence ? <span style={{ color: COLORS.warning }}>missing</span> : null}
         </div>
@@ -134,9 +137,10 @@ export function MissionArtifactsTab({
 
   const groups = useMemo(() => {
     if (groupMode === "step") return groupedArtifacts.byStep;
+    if (groupMode === "worker") return groupedArtifacts.byWorker;
     if (groupMode === "type") return groupedArtifacts.byType;
     return groupedArtifacts.byPhase;
-  }, [groupMode, groupedArtifacts.byPhase, groupedArtifacts.byStep, groupedArtifacts.byType]);
+  }, [groupMode, groupedArtifacts.byPhase, groupedArtifacts.byStep, groupedArtifacts.byType, groupedArtifacts.byWorker]);
 
   const selectedArtifact = groupedArtifacts.all.find((artifact) => artifact.id === selectedArtifactId)
     ?? groupedArtifacts.all[0]
@@ -156,27 +160,28 @@ export function MissionArtifactsTab({
         <MissionComputerUsePanel missionId={missionId} laneId={laneId} initialSnapshot={computerUseSnapshot} />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-      <div className="min-h-0 min-w-0 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
-        <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            {(["phase", "step", "type"] as ArtifactGroupMode[]).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                style={outlineButton({
-                  height: 24,
-                  padding: "0 8px",
-                  fontSize: 9,
-                  background: groupMode === mode ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : COLORS.cardBg,
-                  color: groupMode === mode ? COLORS.accent : COLORS.textMuted,
-                  border: `1px solid ${groupMode === mode ? "color-mix(in srgb, var(--color-accent) 35%, transparent)" : COLORS.border}`,
-                })}
-                onClick={() => setGroupMode(mode)}
-              >
-                {mode.toUpperCase()}
-              </button>
-            ))}
-          </div>
+        <div className="min-h-0 min-w-0 lg:w-[380px] lg:max-w-[40%] lg:shrink-0">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              {ARTIFACT_GROUP_MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  style={outlineButton({
+                    height: 24,
+                    padding: "0 8px",
+                    fontSize: 9,
+                    background: groupMode === mode ? "color-mix(in srgb, var(--color-accent) 14%, transparent)" : COLORS.cardBg,
+                    color: groupMode === mode ? COLORS.accent : COLORS.textMuted,
+                    border: `1px solid ${groupMode === mode ? "color-mix(in srgb, var(--color-accent) 35%, transparent)" : COLORS.border}`,
+                  })}
+                  onClick={() => setGroupMode(mode)}
+                  aria-pressed={groupMode === mode}
+                >
+                  {mode.toUpperCase()}
+                </button>
+              ))}
+            </div>
 
           {groupedArtifacts.expectedEvidence.length > 0 ? (
             <div className="rounded-sm p-3" style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}>

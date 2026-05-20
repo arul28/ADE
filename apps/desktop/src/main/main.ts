@@ -532,9 +532,12 @@ async function createWindow(args: {
     icon = nativeImage.createEmpty();
   }
 
+  const defaultWindowBounds = isDev
+    ? { width: 1460, height: 880 }
+    : { width: 1280, height: 820 };
+
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    ...defaultWindowBounds,
     icon,
     // Hide the native title bar but keep macOS traffic lights.
     titleBarStyle: "hiddenInset",

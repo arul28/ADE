@@ -72,13 +72,11 @@ export function LinearQuickViewButton() {
         });
     };
     window.addEventListener("focus", refresh);
-    const retryTimer = visible ? null : window.setInterval(refresh, 15_000);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", refresh);
-      if (retryTimer != null) window.clearInterval(retryTimer);
     };
-  }, [loadVisibility, project?.rootPath, visible]);
+  }, [loadVisibility, project?.rootPath]);
 
   const openAtButton = useCallback(() => {
     const el = buttonRef.current;

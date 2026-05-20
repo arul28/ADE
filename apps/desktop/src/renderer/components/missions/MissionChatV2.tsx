@@ -3,7 +3,6 @@ import {
   type MissionIntervention,
   type OrchestratorChatThread,
   type OrchestratorChatMessage,
-  type OrchestratorMetadata,
   type OrchestratorWorkerState,
   type OrchestratorChatTarget,
   type MissionStatus,
@@ -25,7 +24,11 @@ import { ChatSurfaceShell } from "../chat/ChatSurfaceShell";
 import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { useAppStore } from "../../state/appStore";
 import { useMissionsStoreApi } from "./useMissionsStore";
-import { resolveWorkerThreadChannelStatus } from "./missionChatChannelModel";
+import {
+  resolveChatTargetChannelId,
+  resolveWorkerThreadChannelStatus,
+  shouldShowWorkerStreamingIndicator,
+} from "./missionChatChannelModel";
 import { useMissionPageActive } from "./MissionActiveContext";
 
 const BG_PAGE = COLORS.pageBg;
@@ -123,7 +126,6 @@ type MissionChatV2Props = {
   missionStatus: MissionStatus | null;
   runId: string | null;
   runStatus: OrchestratorRunStatus | null;
-  runMetadata: OrchestratorMetadata | null;
   runView?: MissionRunView | null;
   interventions: MissionIntervention[];
   jumpTarget: OrchestratorChatTarget | null;
@@ -132,7 +134,7 @@ type MissionChatV2Props = {
 };
 
 export const MissionChatV2 = React.memo(function MissionChatV2({
-  missionId, missionStatus, runId, runStatus, runMetadata, runView = null, interventions, jumpTarget, onJumpHandled, onOpenIntervention,
+  missionId, missionStatus, runId, runStatus, runView = null, interventions, jumpTarget, onJumpHandled, onOpenIntervention,
 }: MissionChatV2Props) {
   const missionsStore = useMissionsStoreApi();
   const active = useMissionPageActive();
@@ -356,16 +358,27 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   useEffect(() => {
     if (!jumpTarget) return;
     setJumpNotice(null);
-    if (jumpTarget.kind === "worker") {
-      if (jumpTarget.attemptId) { setSelectedChannelId(`thread:worker:${missionId}:${jumpTarget.attemptId}`); onJumpHandled(); return; }
+    const targetChannelId = resolveChatTargetChannelId({ target: jumpTarget, threads });
+    if (targetChannelId) {
+      setSelectedChannelId(targetChannelId);
+      onJumpHandled();
+      return;
+    }
+    if (
+      (jumpTarget.kind === "worker" || jumpTarget.kind === "teammate" || jumpTarget.kind === "coordinator" || jumpTarget.kind === "agent")
+      && !threads.length
+    ) {
+      return;
+    }
+    if (jumpTarget.kind === "worker" || jumpTarget.kind === "agent") {
       if (!threads.length) return;
-      const wt = threads.find((t) => t.threadType === "worker" && ((jumpTarget.attemptId && t.attemptId === jumpTarget.attemptId) || (jumpTarget.stepId && t.stepId === jumpTarget.stepId) || (jumpTarget.sessionId && t.sessionId === jumpTarget.sessionId) || (jumpTarget.stepKey && t.stepKey === jumpTarget.stepKey)));
-      if (wt) setSelectedChannelId(`thread:${wt.id}`);
-      else { const ct = threads.find((t) => t.threadType === "coordinator"); setSelectedChannelId(ct ? `thread:${ct.id}` : "global"); setJumpNotice("ADE has not hydrated that worker thread yet, so I landed you on the coordinator instead."); }
+      const ct = threads.find((t) => t.threadType === "coordinator");
+      setSelectedChannelId(ct ? `thread:${ct.id}` : "global");
+      setJumpNotice("ADE has not hydrated that worker thread yet, so I landed you on the coordinator instead.");
     } else if (jumpTarget.kind === "teammate") { const tt = threads.find((t) => t.threadType === "teammate"); if (tt) setSelectedChannelId(`thread:${tt.id}`); }
     else { const ct = threads.find((t) => t.threadType === "coordinator"); if (ct) setSelectedChannelId(`thread:${ct.id}`); }
     onJumpHandled();
-  }, [jumpTarget, onJumpHandled, threads, missionId]);
+  }, [jumpTarget, onJumpHandled, threads]);
 
   useEffect(() => { if (selectedChannel?.kind !== "worker" && selectedChannel?.kind !== "orchestrator") return; if (threadMessages.length > 0) setJumpNotice(null); }, [selectedChannel, threadMessages.length]);
 
@@ -433,7 +446,17 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     return null;
   }, [missionStatus, runId, runStatus, runView?.coordinator.available, selectedChannel, workerStateByAttempt]);
 
-  const showStreaming = useMemo(() => { if (selectedChannel?.kind !== "worker" || !selectedChannel.attemptId) return false; const s = workerStateByAttempt.get(selectedChannel.attemptId)?.state; return s === "initializing" || s === "working"; }, [selectedChannel, workerStateByAttempt]);
+  const showStreaming = useMemo(() => {
+    const workerState = selectedChannel?.attemptId
+      ? workerStateByAttempt.get(selectedChannel.attemptId)?.state
+      : null;
+    return shouldShowWorkerStreamingIndicator({
+      channelKind: selectedChannel?.kind,
+      channelStatus: selectedChannel?.status,
+      attemptId: selectedChannel?.attemptId,
+      workerState,
+    });
+  }, [selectedChannel, workerStateByAttempt]);
 
   const missionNarrative = useMemo(() => buildMissionStateNarrative(runView), [runView]);
 
@@ -585,7 +608,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
   }, [chatBlocked, selectedChannel?.kind, selectedChannel?.status]);
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 max-w-full overflow-hidden">
+    <div className="flex h-full w-full min-h-0 min-w-0 flex-1 overflow-hidden">
       <ChatChannelList
         channels={channels}
         orchestratorChannel={orchestratorChannel}
@@ -598,7 +621,7 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
         onSelectChannel={setSelectedChannelId}
         onToggleCompletedCollapsed={() => setCompletedCollapsed((p) => !p)}
       />
-      <div className="flex min-w-0 max-w-full flex-1 flex-col overflow-hidden" style={{ background: BG_PAGE }}>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden" style={{ background: BG_PAGE }}>
         <div
           data-chat-appearance-root
           style={chatAppearanceRootStyle}

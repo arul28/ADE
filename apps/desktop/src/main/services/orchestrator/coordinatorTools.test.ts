@@ -7,6 +7,10 @@ import {
   createCoordinatorToolSet,
   type CoordinatorWorkerDeliveryStatus,
 } from "./coordinatorTools";
+import {
+  hasResolvedPlanningQuestionIntervention,
+  phaseRequiresPlanningQuestionBeforeExit,
+} from "./planningQuestionPolicy";
 
 function createTestDeps(args: {
   graph: any;
@@ -113,6 +117,62 @@ function testPhase(overrides: Record<string, any> = {}) {
     updatedAt: overrides.updatedAt ?? "2026-03-02T00:00:00.000Z",
   };
 }
+
+describe("planning question policy", () => {
+  it("promotes generated false values when prompt text requires planning questions", () => {
+    const required = phaseRequiresPlanningQuestionBeforeExit({
+      phase: testPhase({
+        phaseKey: "planning",
+        name: "Planning",
+        instructions: "Research, clarify requirements, and design the execution DAG.",
+        askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+        isBuiltIn: true,
+        isCustom: false,
+      }),
+      missionPrompt: [
+        "Build a FleetOps launch-drill evidence console.",
+        "Required planning questions before implementation:",
+        "1. Should this use a static app or Vite?",
+      ].join("\n"),
+    });
+
+    expect(required).toBe(true);
+  });
+
+  it("does not require a planning question when text explicitly disables clarification", () => {
+    const required = phaseRequiresPlanningQuestionBeforeExit({
+      phase: testPhase({
+        phaseKey: "planning",
+        name: "Planning",
+        instructions: "Research, clarify requirements, and design the execution DAG.",
+        askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+        isBuiltIn: true,
+        isCustom: false,
+      }),
+      missionPrompt: "Proceed without asking clarification questions before implementation.",
+    });
+
+    expect(required).toBe(false);
+  });
+
+  it("counts resolved ADE chat question cards as planning clarification", () => {
+    const resolved = hasResolvedPlanningQuestionIntervention([
+      {
+        status: "resolved",
+        interventionType: "manual_input",
+        metadata: {
+          source: "request_user_input",
+          reasonCode: "planner_chat_question",
+          questionOwnerKind: "planner",
+          phaseKey: "planning",
+          runId: "run-1",
+        },
+      },
+    ], { runId: "run-1" });
+
+    expect(resolved).toBe(true);
+  });
+});
 
 describe("coordinator memory tools", () => {
   it("memory_search queries project memory with mission scope defaults", async () => {
@@ -240,6 +300,9 @@ describe("classifyPlannerLaunchFailure", () => {
 function createCoordinatorHarness(args: {
   graph: any;
   missionMetadata?: Record<string, unknown> | null;
+  missionPrompt?: string | null;
+  missionServicePrompt?: string | null;
+  runMetadataJson?: Record<string, unknown> | null;
   onRunFinalize?: (input: { runId: string; succeeded: boolean; summary?: string; reason?: string }) => void;
   finalizeRunResult?: { finalized: boolean; blockers: string[]; finalStatus: string };
   missionLaneId?: string | null;
@@ -284,8 +347,14 @@ function createCoordinatorHarness(args: {
   const db = {
     run: vi.fn(),
     get: vi.fn((query: string) => {
-      if (query.includes("from missions") && args.missionMetadata) {
+      if (query.includes("from missions") && query.includes("metadata_json") && args.missionMetadata) {
         return { metadata_json: JSON.stringify(args.missionMetadata) };
+      }
+      if (query.includes("from missions") && query.includes("prompt") && Object.hasOwn(args, "missionPrompt")) {
+        return { prompt: args.missionPrompt };
+      }
+      if (query.includes("from orchestrator_runs") && args.runMetadataJson) {
+        return { metadata_json: JSON.stringify(args.runMetadataJson) };
       }
       return null;
     }),
@@ -393,6 +462,7 @@ function createCoordinatorHarness(args: {
 
   const mission = {
     id: "mission-1",
+    prompt: args.missionServicePrompt ?? undefined,
     interventions: [] as any[],
   };
   const missionService = {
@@ -2079,6 +2149,260 @@ describe("coordinatorTools planning manual-input blocking", () => {
     expect(addedStep?.metadata?.instructions).toContain("### report_result");
   });
 
+  it("stamps planning workers when phase policy requires a blocking question before exit", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              ...testPhase({
+                phaseKey: "planning",
+                name: "Planning",
+                instructions: "Ask one clarification before planning.",
+                askQuestions: { enabled: true, maxQuestions: null },
+                orderingConstraints: { mustBeFirst: true },
+                position: 0,
+              }),
+              isBuiltIn: true,
+              isCustom: false,
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "planning-worker",
+      prompt: "Research the codebase and produce the plan.",
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            phaseAskQuestions: expect.objectContaining({
+              enabled: true,
+              maxQuestions: null,
+              requiredBeforeExit: true,
+            }),
+          }),
+        }),
+      ],
+    }));
+  });
+
+  it("uses the persisted mission prompt when stamping required planning questions", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionPrompt: [
+        "Build a FleetOps launch-drill evidence console.",
+        "Required planning questions before implementation:",
+        "1. Should this mission use static HTML or Vite?",
+      ].join("\n"),
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              ...testPhase({
+                phaseKey: "planning",
+                name: "Planning",
+                instructions: "Investigate the codebase and produce a concrete execution plan.",
+                askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+                orderingConstraints: { mustBeFirst: true },
+                position: 0,
+              }),
+              isBuiltIn: true,
+              isCustom: false,
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "planning-worker",
+      prompt: "Research the codebase and produce the plan.",
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            phaseAskQuestions: expect.objectContaining({
+              enabled: true,
+              maxQuestions: null,
+              requiredBeforeExit: true,
+            }),
+          }),
+        }),
+      ],
+    }));
+  });
+
+  it("does not let a short mission-service prompt hide required planning text from persistence", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionServicePrompt: "Build a FleetOps launch-drill evidence console.",
+      missionPrompt: [
+        "Build a FleetOps launch-drill evidence console.",
+        "Planning is blocked until the planner asks clarification questions through ADE.",
+        "Required planning questions before implementation:",
+        "1. Should this mission use static HTML or Vite?",
+      ].join("\n"),
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              ...testPhase({
+                phaseKey: "planning",
+                name: "Planning",
+                instructions: "Investigate the codebase and produce a concrete execution plan.",
+                askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+                orderingConstraints: { mustBeFirst: true },
+                position: 0,
+              }),
+              isBuiltIn: true,
+              isCustom: false,
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "planning-worker",
+      prompt: "Research the codebase and produce the plan.",
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            phaseAskQuestions: expect.objectContaining({
+              enabled: true,
+              maxQuestions: null,
+              requiredBeforeExit: true,
+            }),
+          }),
+        }),
+      ],
+    }));
+  });
+
+  it("uses the worker prompt as a planning-question policy fallback", async () => {
+    const { tools, orchestratorService } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: {
+                modelId: "anthropic/claude-sonnet-4-6",
+                thinkingLevel: "medium",
+              },
+            },
+          },
+        },
+        steps: [],
+        attempts: [],
+      },
+      missionServicePrompt: "Build a FleetOps launch-drill evidence console.",
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [
+            {
+              ...testPhase({
+                phaseKey: "planning",
+                name: "Planning",
+                instructions: "Investigate the codebase and produce a concrete execution plan.",
+                askQuestions: { enabled: true, maxQuestions: null, requiredBeforeExit: false },
+                orderingConstraints: { mustBeFirst: true },
+                position: 0,
+              }),
+              isBuiltIn: true,
+              isCustom: false,
+            },
+          ],
+        },
+      },
+    });
+
+    const result = await (tools.spawn_worker as any).execute({
+      name: "planning-worker",
+      prompt: [
+        "Research the codebase and produce the plan.",
+        "Planning is blocked until the planner asks clarification questions through ADE.",
+        "Required planning questions before implementation:",
+        "1. Should this mission use static HTML or Vite?",
+      ].join("\n"),
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(orchestratorService.addSteps).toHaveBeenCalledWith(expect.objectContaining({
+      steps: [
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            phaseAskQuestions: expect.objectContaining({
+              enabled: true,
+              maxQuestions: null,
+              requiredBeforeExit: true,
+            }),
+          }),
+        }),
+      ],
+    }));
+  });
+
   it("allows implementation workers whose prompts mention a validation checklist", async () => {
     const phases = [
       {
@@ -2529,6 +2853,96 @@ describe("coordinatorTools planning manual-input blocking", () => {
       error: "Planning phase has not completed yet. Wait for a planning worker to succeed before transitioning."
     });
     expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it("blocks leaving planning until a required planning question has been resolved", async () => {
+    const planningPhase = testPhase({
+      phaseKey: "planning",
+      name: "Planning",
+      instructions: "Ask one clarification before planning.",
+      askQuestions: { enabled: true, requiredBeforeExit: true },
+      orderingConstraints: { mustBeFirst: true },
+      isBuiltIn: true,
+      isCustom: false,
+      position: 0,
+    });
+    const developmentPhase = testPhase({
+      phaseKey: "development",
+      name: "Development",
+      instructions: "Implement the planned changes.",
+      orderingConstraints: { mustFollow: ["planning"] },
+      position: 1,
+    });
+    const { tools, db, mission } = createCoordinatorHarness({
+      graph: {
+        run: {
+          metadata: {
+            phaseRuntime: {
+              currentPhaseKey: "planning",
+              currentPhaseName: "Planning",
+              currentPhaseModel: planningPhase.model,
+            },
+          },
+        },
+        steps: [
+          {
+            id: "step-plan-1",
+            stepKey: "worker-plan",
+            stepIndex: 0,
+            title: "Planning worker",
+            laneId: null,
+            status: "succeeded",
+            dependencyStepIds: [],
+            retryLimit: 1,
+            retryCount: 0,
+            metadata: {
+              phaseKey: "planning",
+              phaseName: "Planning",
+              stepType: "planning",
+              readOnlyExecution: true,
+            },
+          },
+        ],
+        attempts: [],
+      },
+      missionMetadata: {
+        phaseConfiguration: {
+          selectedPhases: [planningPhase, developmentPhase],
+        },
+      },
+    });
+
+    const blocked = await (tools.set_current_phase as any).execute({
+      phaseKey: "development",
+    });
+
+    expect(blocked).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Planning requires a resolved blocking question"),
+    });
+    expect(db.run).not.toHaveBeenCalled();
+
+    mission.interventions.push({
+      id: "intervention-answered",
+      status: "resolved",
+      interventionType: "manual_input",
+      metadata: {
+        source: "ask_user",
+        runId: "run-1",
+        phase: "planning",
+      },
+    });
+
+    const allowed = await (tools.set_current_phase as any).execute({
+      phaseKey: "development",
+    });
+
+    expect(allowed).toMatchObject({
+      ok: true,
+      changed: true,
+      currentPhaseKey: "development",
+    });
+    expect(db.run).toHaveBeenCalled();
   });
 
   it("blocks required phase transitions when the predecessor only skipped", async () => {

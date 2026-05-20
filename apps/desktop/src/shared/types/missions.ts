@@ -119,13 +119,15 @@ export type MissionInterventionResolutionKind =
   | "answer_provided"
   | "accept_defaults"
   | "skip_question"
-  | "cancel_run";
+  | "cancel_run"
+  | "stale_phase_approval";
 
 export const RESOLUTION_KINDS = new Set<MissionInterventionResolutionKind>([
   "answer_provided",
   "accept_defaults",
   "skip_question",
   "cancel_run",
+  "stale_phase_approval",
 ]);
 
 export function isValidResolutionKind(value: string): value is MissionInterventionResolutionKind {
@@ -137,6 +139,7 @@ export function resolutionKindLabel(kind: MissionInterventionResolutionKind): st
     case "accept_defaults": return "Accept the default assumptions and continue.";
     case "skip_question": return "Skip this clarification and continue with best-effort assumptions.";
     case "cancel_run": return "Cancel the run.";
+    case "stale_phase_approval": return "Close stale phase approval without changing phases.";
     case "answer_provided": return "Answer provided.";
   }
 }
@@ -295,6 +298,8 @@ export type PhaseCardBudget = {
 export type PhaseCardAskQuestions = {
   enabled: boolean;
   maxQuestions?: number | null;
+  /** When true, Planning cannot exit until a planning question has been answered or explicitly skipped. */
+  requiredBeforeExit?: boolean;
 };
 
 export type PhaseCardValidationGate = {

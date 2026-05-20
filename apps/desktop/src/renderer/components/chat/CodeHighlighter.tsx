@@ -150,16 +150,40 @@ function copyTextToClipboard(text: string): Promise<boolean> {
 
 function CodeCopyButton({ code, position }: { code: string; position: CodeBlockCopyButtonPosition }) {
   const [copied, setCopied] = useState(false);
+  const mountedRef = useRef(true);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (resetTimerRef.current !== null) {
+        clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(() => {
     void copyTextToClipboard(code)
       .then((ok) => {
+        if (!mountedRef.current) return;
         if (!ok) {
+          if (resetTimerRef.current !== null) {
+            clearTimeout(resetTimerRef.current);
+            resetTimerRef.current = null;
+          }
           setCopied(false);
           return;
         }
+        if (resetTimerRef.current !== null) {
+          clearTimeout(resetTimerRef.current);
+        }
         setCopied(true);
-        window.setTimeout(() => setCopied(false), 1_500);
+        resetTimerRef.current = window.setTimeout(() => {
+          resetTimerRef.current = null;
+          if (!mountedRef.current) return;
+          setCopied(false);
+        }, 1_500);
       });
   }, [code]);
 

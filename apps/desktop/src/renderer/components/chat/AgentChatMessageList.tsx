@@ -517,15 +517,40 @@ function MessageCopyButton({
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const mountedRef = useRef(true);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (resetTimerRef.current !== null) {
+        clearTimeout(resetTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleCopy = useCallback(() => {
     if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
     void navigator.clipboard.writeText(value)
       .then(() => {
+        if (!mountedRef.current) return;
+        if (resetTimerRef.current !== null) {
+          clearTimeout(resetTimerRef.current);
+        }
         setCopied(true);
-        window.setTimeout(() => setCopied(false), 1_500);
+        resetTimerRef.current = window.setTimeout(() => {
+          resetTimerRef.current = null;
+          if (!mountedRef.current) return;
+          setCopied(false);
+        }, 1_500);
       })
       .catch(() => {
+        if (!mountedRef.current) return;
+        if (resetTimerRef.current !== null) {
+          clearTimeout(resetTimerRef.current);
+          resetTimerRef.current = null;
+        }
         setCopied(false);
       });
   }, [value]);

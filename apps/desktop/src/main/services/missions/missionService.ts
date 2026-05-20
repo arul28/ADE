@@ -507,6 +507,7 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
     askQuestions: {
       enabled: coerceBoolean(askQuestions.enabled),
       maxQuestions: coerceNumber(askQuestions.maxQuestions),
+      requiredBeforeExit: askQuestions.requiredBeforeExit === true ? true : undefined,
     },
     validationGate: {
       tier,
@@ -515,6 +516,7 @@ function toPhaseCard(value: unknown, fallbackPosition = 0): PhaseCard | null {
       evidenceRequirements: toEvidenceRequirements(validationGate.evidenceRequirements),
       capabilityFallback: toCapabilityFallback(validationGate.capabilityFallback),
     },
+    requiresApproval: coerceBoolean(value.requiresApproval),
     isBuiltIn: coerceBoolean(value.isBuiltIn),
     isCustom: coerceBoolean(value.isCustom, true),
     position,
@@ -537,7 +539,10 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
       const phaseKey = String(phase.phaseKey ?? "").trim().toLowerCase();
       const planningPhase = phaseKey === "planning";
       const testingOrValidation = phaseKey === "testing" || phaseKey === "validation";
-      const askQuestionsEnabled = planningPhase && phase.askQuestions.enabled !== false;
+      const customPhase = phase.isCustom === true || phase.isBuiltIn !== true;
+      const askQuestionsEnabled = planningPhase
+        ? phase.askQuestions.enabled !== false
+        : customPhase && phase.askQuestions.enabled === true;
       const rawMaxQuestions = phase.askQuestions.maxQuestions;
       const askQuestions: PhaseCard["askQuestions"] = {
         ...phase.askQuestions,
@@ -547,6 +552,7 @@ function normalizePhaseCards(phases: PhaseCard[]): PhaseCard[] {
             ? null
             : Math.max(1, Math.min(10, Number(rawMaxQuestions) || 5))
           : undefined,
+        requiredBeforeExit: askQuestionsEnabled && phase.askQuestions.requiredBeforeExit === true ? true : undefined,
       };
       const validationGate: PhaseCard["validationGate"] = planningPhase || phaseKey === "development"
         ? {
@@ -4277,6 +4283,7 @@ export function createMissionService({
         if (resolutionKind === "accept_defaults") return `${row.title} — user accepted defaults.`;
         if (resolutionKind === "skip_question") return `${row.title} — user skipped the question.`;
         if (resolutionKind === "cancel_run") return `${row.title} — user canceled the run.`;
+        if (resolutionKind === "stale_phase_approval") return `${row.title} — stale phase approval closed.`;
         if (targetStatus === "dismissed") return `${row.title} — dismissed.`;
         return `${row.title} — answer provided.`;
       })();

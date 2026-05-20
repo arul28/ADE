@@ -425,6 +425,70 @@ describe("providerOrchestratorAdapter", () => {
       permissionMode: "config-toml",
       codexConfigSource: "config-toml",
     }));
+    expect((result as any).launch.prompt).toContain("Your full ADE chat transcript is captured");
+    expect((result as any).launch.prompt).toContain("final `### report_result` section");
+    expect((result as any).launch.prompt).not.toContain("This worker runs as a bounded in-process execution");
+  });
+
+  it("tells managed planning workers to ask through ADE chat input controls", async () => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-adapter-"));
+    const createSession = vi.fn(async () => ({ id: "managed-session-1" }));
+    const adapter = createProviderOrchestratorAdapter({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      agentChatService: {
+        createSession,
+      } as any,
+    });
+
+    const result = await adapter.start({
+      run: {
+        id: "run-1",
+        missionId: "mission-1",
+        metadata: {},
+      },
+      step: {
+        id: "step-1",
+        runId: "run-1",
+        stepKey: "planning",
+        title: "Planning",
+        stepIndex: 0,
+        dependencyStepIds: [],
+        dependencyStepKeys: [],
+        laneId: "lane-1",
+        status: "ready",
+        metadata: {
+          modelId: "openai/gpt-5.3-codex",
+          stepType: "planning",
+          readOnlyExecution: true,
+          phaseAskQuestions: {
+            enabled: true,
+            requiredBeforeExit: true,
+          },
+        },
+      },
+      attempt: {
+        id: "attempt-1",
+        runId: "run-1",
+        stepId: "step-1",
+      },
+      allSteps: [],
+      contextProfile: {} as any,
+      laneExport: null,
+      projectExport: { content: "", truncated: false },
+      docsRefs: [],
+      fullDocs: [],
+      createTrackedSession: vi.fn(),
+      permissionConfig: {},
+    } as any);
+
+    expect(result.status).toBe("accepted");
+    const prompt = (result as any).launch.prompt as string;
+    expect(prompt).toContain("This planning phase requires at least one blocking user question");
+    expect(prompt).toContain("Use ADE's native chat question UI");
+    expect(prompt).toContain("Codex: call `request_user_input`");
+    expect(prompt).toContain("Return your plan directly in the final assistant response under a `### report_result` heading");
+    expect(prompt).not.toContain("Use `ask_user` before `report_result`");
   });
 
   it("uses phase model thinking level for managed chat worker reasoning", async () => {

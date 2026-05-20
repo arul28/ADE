@@ -131,6 +131,9 @@ function createTestCoordinatorAgent(args?: {
   phases?: any[];
   runStatus?: string;
   modelId?: string;
+  missionPrompt?: string | null;
+  missionServicePrompt?: string | null;
+  runMetadataJson?: Record<string, unknown> | null;
 }) {
   const graph = {
     run: {
@@ -203,6 +206,16 @@ function createTestCoordinatorAgent(args?: {
         if (sql.includes("SELECT status FROM orchestrator_runs")) {
           return { status: args?.runStatus ?? "active" };
         }
+        if (sql.toLowerCase().includes("from missions") && sql.toLowerCase().includes("prompt")) {
+          return { prompt: args?.missionPrompt ?? null };
+        }
+        if (sql.toLowerCase().includes("from orchestrator_runs") && sql.toLowerCase().includes("metadata_json")) {
+          return {
+            metadata_json: args?.runMetadataJson === null
+              ? null
+              : JSON.stringify(args?.runMetadataJson ?? {}),
+          };
+        }
         return null;
       }),
       all: vi.fn(() => []),
@@ -212,7 +225,7 @@ function createTestCoordinatorAgent(args?: {
     projectRoot: "/tmp/ade-project",
     workspaceRoot: "/tmp/ade-worktree",
     missionService: {
-      get: vi.fn(() => ({ interventions: [] })),
+      get: vi.fn(() => ({ prompt: args?.missionServicePrompt ?? undefined, interventions: [] })),
     } as any,
     aiIntegrationService: {
       executeTask: vi.fn(async () => ({
@@ -306,6 +319,32 @@ describe("CoordinatorAgent", () => {
       expect(metadata.stepType).toBe("testing");
       expect(metadata.taskType).toBe("testing");
       expect(metadata.modelProviderHint).toBe("codex");
+    } finally {
+      agent.shutdown();
+    }
+  });
+
+  it("uses the persisted mission prompt when planning questions are required by the mission text", () => {
+    const agent = createTestCoordinatorAgent({
+      phases: createPlanningPhases(),
+      missionServicePrompt: "Build a FleetOps launch-drill evidence console.",
+      missionPrompt: [
+        "Planning is blocked until the planner asks clarification questions through ADE.",
+        "Required planning questions before implementation:",
+        "1. Should this mission use a static app or Vite?",
+      ].join("\n"),
+    }) as any;
+
+    try {
+      const planningPhase = agent.deps.phases.find((phase: any) => phase.phaseKey === "planning");
+      const metadata = agent.buildRuntimePhaseStepMetadata(
+        planningPhase,
+        "anthropic/claude-sonnet-4-6",
+        "planning-worker",
+      );
+
+      expect(metadata.phaseAskQuestions.requiredBeforeExit).toBe(true);
+      expect(agent.systemPrompt).toContain("must ask at least one blocking question before finalizing this phase");
     } finally {
       agent.shutdown();
     }

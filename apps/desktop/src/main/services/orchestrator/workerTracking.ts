@@ -1093,17 +1093,18 @@ export function extractAndRegisterArtifacts(
         const awaitingUserInput = isRecord(stepMeta.awaitingUserInput) ? stepMeta.awaitingUserInput : null;
         const awaitingSource = typeof awaitingUserInput?.source === "string" ? awaitingUserInput.source : "";
         const awaitingQuestion = typeof awaitingUserInput?.question === "string" ? awaitingUserInput.question.trim() : "";
-        const naturalPlannerQuestion =
-          awaitingSource === "planner_natural_question" && awaitingQuestion.length > 0
-            ? awaitingQuestion
-            : "";
-        if (naturalPlannerQuestion.length > 0) {
+        const plannerQuestionReason =
+          awaitingSource === "planner_required_question_missing" || awaitingSource === "planner_natural_question"
+            ? awaitingSource
+            : null;
+        if (plannerQuestionReason && awaitingQuestion.length > 0) {
+          const naturalPlannerQuestion = awaitingQuestion;
           const questionLink = isRecord(awaitingUserInput?.questionLink) ? awaitingUserInput.questionLink : null;
           const mission = ctx.missionService.get(graph.run.missionId);
           const existing = mission?.interventions.some((entry) => {
             if (entry.status !== "open" || entry.interventionType !== "manual_input") return false;
             const metadata = isRecord(entry.metadata) ? entry.metadata : null;
-            return metadata?.reasonCode === "planner_natural_question" && metadata?.attemptId === attempt.id;
+            return (metadata?.reasonCode === "planner_natural_question" || metadata?.reasonCode === "planner_required_question_missing") && metadata?.attemptId === attempt.id;
           }) ?? false;
           if (!existing) {
             const intervention = ctx.missionService.addIntervention({
@@ -1113,8 +1114,8 @@ export function extractAndRegisterArtifacts(
               body: naturalPlannerQuestion,
               requestedAction: "Answer the planning question to retry the planner with your guidance.",
               metadata: {
-                source: "planner_natural_question",
-                reasonCode: "planner_natural_question",
+                source: plannerQuestionReason,
+                reasonCode: plannerQuestionReason,
                 question: naturalPlannerQuestion,
                 runId: attempt.runId,
                 stepId: step?.id ?? attempt.stepId,
@@ -1138,14 +1139,14 @@ export function extractAndRegisterArtifacts(
               payload: {
                 interventionId: intervention.id,
                 interventionType: intervention.interventionType,
-                reason: "planner_natural_question",
+                reason: plannerQuestionReason,
                 question: naturalPlannerQuestion,
               },
             });
             try {
               ctx.orchestratorService.pauseRun({
                 runId: attempt.runId,
-                reason: `Planning question needs an answer: ${naturalPlannerQuestion.slice(0, 140)}`,
+                reason: `${plannerQuestionReason === "planner_required_question_missing" ? "Required planning question" : "Planning question"} needs an answer: ${naturalPlannerQuestion.slice(0, 140)}`,
                 metadata: {
                   pendingPlannerQuestion: {
                     interventionId: intervention.id,
