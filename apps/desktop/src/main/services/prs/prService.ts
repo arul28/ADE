@@ -5536,37 +5536,6 @@ export function createPrService({
     return null;
   };
 
-  const upsertGithubPrCache = (items: GitHubPrListItem[], syncedAt = nowIso()): void => {
-    for (const item of items) {
-      db.run(
-        `
-          insert or replace into github_pr_cache(
-            project_id,
-            repo_owner,
-            repo_name,
-            github_pr_number,
-            item_json,
-            state,
-            head_branch,
-            updated_at,
-            synced_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        [
-          projectId,
-          item.repoOwner,
-          item.repoName,
-          Number(item.githubPrNumber),
-          JSON.stringify(item),
-          item.state,
-          item.headBranch,
-          item.updatedAt,
-          syncedAt,
-        ],
-      );
-    }
-  };
-
   const getGithubSnapshotUncached = async (
     precheckedGithubStatus?: GitHubStatus,
   ): Promise<GitHubPrSnapshot> => {
@@ -5649,7 +5618,6 @@ export function createPrService({
     }
     const repoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
     const syncedAt = nowIso();
-    upsertGithubPrCache(repoPullRequests, syncedAt);
 
     return {
       repo,

@@ -809,6 +809,52 @@ describe("reviewService", () => {
     expect(harness.runSessionTurn).not.toHaveBeenCalled();
   });
 
+  it("enforces the final prompt budget after exact diff hunks are inserted", async () => {
+    const longDiff = [
+      "diff --git a/src/review.ts b/src/review.ts",
+      "@@ -1,2 +1,200 @@",
+      " context",
+      ...Array.from({ length: 1_000 }, (_, index) => `+exact changed line ${index}: ${"x".repeat(60)}`),
+    ].join("\n");
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+        makeOutput("No security findings.", []),
+        makeOutput("No UI findings.", []),
+      ],
+      config: {
+        budgets: {
+          maxFiles: 60,
+          maxDiffChars: 100_000,
+          maxPromptChars: 4_000,
+          maxFindings: 12,
+          maxFindingsPerPass: 6,
+          maxPublishedFindings: 6,
+        },
+      },
+    });
+    mockMaterializer.materialize.mockResolvedValueOnce(makeMaterializedTarget({
+      fullPatchText: longDiff,
+      changedFiles: [makeChangedFile({ excerpt: longDiff.slice(0, 4_000) })],
+    }));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const passPrompts = detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt") ?? [];
+    expect(passPrompts).toHaveLength(5);
+    for (const prompt of passPrompts) {
+      expect(prompt.contentText ?? "").toHaveLength(4_000);
+      expect(prompt.contentText ?? "").toContain("...(truncated)...");
+    }
+  });
+
   it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {
     const harness = createHarness({
       outputs: [

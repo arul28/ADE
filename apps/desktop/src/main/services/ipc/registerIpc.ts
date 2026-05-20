@@ -9007,7 +9007,11 @@ export function registerIpc({
     return ctx.prService.getDeployments(args.prId);
   });
   ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.getSummary(args.prId) ?? null);
-  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.regenerateSummary(args.prId) ?? null);
+  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => {
+    const service = getCtx().prSummaryService;
+    if (!service) throw new Error("PR summary service is unavailable for this project window.");
+    return service.regenerateSummary(args.prId);
+  });
   ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
   ipcMain.handle(
     IPC.prsSetReviewThreadResolved,

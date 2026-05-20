@@ -557,7 +557,7 @@ describe("prService.getGithubSnapshot", () => {
     }));
   });
 
-  it("does not read durable GitHub PR cache when the token is missing", async () => {
+  it("does not inspect repository data when the token is missing", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus({
         tokenStored: false,
@@ -567,35 +567,8 @@ describe("prService.getGithubSnapshot", () => {
       apiRequest: vi.fn(async () => ({ data: [makeGitHubPull({ title: "Private live PR" })] })),
     });
     const db = makeMockDb();
-    db.all.mockImplementation((sql: string) => {
-      const text = String(sql);
-      if (text.includes("from github_pr_cache")) {
-        return [{
-          project_id: "proj-1",
-          repo_owner: REPO.owner,
-          repo_name: REPO.name,
-          github_pr_number: 777,
-          item_json: JSON.stringify({
-            ...makeGitHubPull({
-              number: 777,
-              title: "Private cached PR",
-            }),
-            repoOwner: REPO.owner,
-            repoName: REPO.name,
-            githubPrNumber: 777,
-            githubUrl: "https://github.com/test-owner/test-repo/pull/777",
-            updatedAt: "2026-01-02T00:00:00Z",
-          }),
-          state: "open",
-          head_branch: "feature/private",
-          updated_at: "2026-01-02T00:00:00Z",
-          synced_at: "2026-01-02T00:00:00Z",
-        }];
-      }
-      if (text.includes("from pull_requests")) {
-        return [makePrRow({ title: "Private linked PR" })];
-      }
-      return [];
+    db.all.mockImplementation(() => {
+      throw new Error("Repository state should not be inspected without a usable GitHub token.");
     });
     const { service } = buildService({ db, githubService });
 

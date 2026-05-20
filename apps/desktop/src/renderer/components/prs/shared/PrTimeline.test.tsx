@@ -336,6 +336,36 @@ describe("PrTimeline", () => {
     });
   });
 
+  it("distinguishes empty filtered results from an empty timeline", () => {
+    render(
+      <PrTimeline
+        events={[
+          makeEvent({
+            id: "resolved-only",
+            type: "review_thread",
+            threadId: "resolved-only",
+            path: "a.ts",
+            line: 1,
+            startLine: null,
+            isResolved: true,
+            isOutdated: false,
+            commentCount: 1,
+            firstCommentBody: "resolved",
+          }),
+        ]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("No events match the current filters.")).toBeTruthy();
+  });
+
   it("renders the AI summary card when a summary is provided", () => {
     const summary: PrAiSummary = {
       prId: "pr-1",

@@ -17,13 +17,16 @@ vi.mock("../detail/PrDetailPane", () => ({
   PrDetailPane: ({
     pr,
     queueContext,
+    onUnmap,
   }: {
     pr: { id: string };
     queueContext?: { groupId: string } | null;
+    onUnmap?: () => void;
   }) => (
     <div data-testid="pr-detail-pane">
       {pr.id}
       {queueContext ? <span data-testid="queue-context">{queueContext.groupId}</span> : null}
+      {onUnmap ? <button type="button" onClick={onUnmap}>Unmap from lane</button> : null}
     </div>
   ),
 }));
@@ -396,6 +399,24 @@ describe("GitHubTab", () => {
     await waitFor(() => {
       expect(screen.getByTestId("queue-context").textContent).toContain("queue-group-1");
     });
+  });
+
+  it("requires confirmation before unmapping a GitHub PR from its lane", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Open PR")).toBeTruthy();
+    });
+    await user.click(screen.getByRole("button", { name: /#101 Open PR/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+    });
+    await user.click(screen.getByRole("button", { name: /unmap from lane/i }));
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Unmap PR #101"));
+    expect(window.ade.prs.delete).not.toHaveBeenCalled();
   });
 
   it("renders a cached ADE detail shell while a linked PR hydrates", async () => {

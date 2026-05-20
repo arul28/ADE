@@ -321,7 +321,9 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function truncateText(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}\n...(truncated)...\n`;
+  const marker = "\n...(truncated)...\n";
+  if (maxChars <= marker.length) return value.slice(0, Math.max(0, maxChars));
+  return `${value.slice(0, maxChars - marker.length)}${marker}`;
 }
 
 function cleanLine(value: string): string {
@@ -2146,7 +2148,7 @@ export function createReviewService({
         throw new Error("Review run cancelled before reviewer prompt dispatch.");
       }
 
-      const prompt = buildPassPrompt({
+      const prompt = truncateText(buildPassPrompt({
         run: args.run,
         pass: args.pass,
         manifestPrompt: truncateText(args.manifestPrompt, args.run.config.budgets.maxPromptChars),
@@ -2154,7 +2156,7 @@ export function createReviewService({
         changedFiles: args.changedFiles,
         context: args.context,
         contextArtifactIds: args.contextArtifactIds,
-      });
+      }), args.run.config.budgets.maxPromptChars);
       const promptArtifact = insertArtifact(args.runId, {
         artifactType: "pass_prompt",
         title: `${args.pass.label} prompt`,

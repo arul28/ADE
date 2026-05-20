@@ -420,7 +420,6 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
 }
 
 const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
-  "github_pr_cache",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -1412,23 +1411,7 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
   try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
 
-  db.run(`
-    create table if not exists github_pr_cache (
-      project_id text not null,
-      repo_owner text not null,
-      repo_name text not null,
-      github_pr_number integer not null,
-      item_json text not null,
-      state text not null,
-      head_branch text,
-      updated_at text not null,
-      synced_at text not null,
-      primary key(project_id, repo_owner, repo_name, github_pr_number),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_github_pr_cache_project_state on github_pr_cache(project_id, state, updated_at)");
-  db.run("create index if not exists idx_github_pr_cache_project_repo on github_pr_cache(project_id, repo_owner, repo_name)");
+  db.run("drop table if exists github_pr_cache");
 
   db.run(`
     create table if not exists pr_auto_link_ignores (

@@ -360,7 +360,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             className="py-8 text-center text-[12px]"
             style={{ color: COLORS.textDim }}
           >
-            No events yet.
+            {events.length > 0 ? "No events match the current filters." : "No events yet."}
           </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>

@@ -561,6 +561,7 @@ export function PrDetailPane({
     detailAiSummary,
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
+    detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
     setTimelineFilters,
     setAiSummaryDismissed,
@@ -633,12 +634,18 @@ export function PrDetailPane({
     [pr.id, setTimelineFilters],
   );
   const reviewThreadsForTimeline = React.useMemo(
-    () => ((ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
-    [ctxReviewThreads, reviewThreads],
+    () => (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
+    [ctxDetailPrId, ctxReviewThreads, pr.id, reviewThreads],
   );
   React.useEffect(() => {
-    if (ctxReviewThreads) setReviewThreads(ctxReviewThreads);
-  }, [ctxReviewThreads, pr.id]);
+    if (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0) {
+      setReviewThreads(ctxReviewThreads);
+    }
+  }, [ctxDetailPrId, ctxReviewThreads, pr.id]);
+  const deploymentsForTimeline = React.useMemo(
+    () => (ctxDetailPrId === pr.id ? detailDeployments : []),
+    [ctxDetailPrId, detailDeployments, pr.id],
+  );
   const aiSummaryDismissedForPr = Boolean(dismissedAiSummaries?.[pr.id]);
   const handleDismissAiSummary = React.useCallback(() => {
     setAiSummaryDismissed?.(pr.id, true);
@@ -2536,7 +2543,7 @@ export function PrDetailPane({
             commits={commits}
             files={files}
             reviewThreads={reviewThreadsForTimeline}
-            deployments={detailDeployments}
+            deployments={deploymentsForTimeline}
             viewerLogin={viewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}

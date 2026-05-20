@@ -2735,7 +2735,6 @@ final class DatabaseService {
   /// the host does NOT register them as CRR — so exporting CRDT changes for
   /// them produces "could not find schema information" errors upstream.
   private static let localOnlyCacheTables: Set<String> = [
-    "github_pr_cache",
     "lane_detail_snapshots",
     "lane_list_snapshots",
     "pr_auto_link_ignores",

@@ -1181,6 +1181,10 @@ export function GitHubTab({
 
   const handleUnlink = React.useCallback(async (item: GitHubPrListItem | null = selectedItem) => {
     if (!item?.linkedPrId) return;
+    const confirmed = typeof window.confirm !== "function"
+      ? true
+      : window.confirm(`Unmap PR #${item.githubPrNumber} from its ADE lane? ADE will keep the GitHub PR open and remember not to relink it automatically.`);
+    if (!confirmed) return;
     setUnlinkingPrId(item.linkedPrId);
     setError(null);
     try {
