@@ -731,7 +731,7 @@ describe("reviewService", () => {
     expect(String(persistedFindings[0]?.adjudication_json)).toContain("publicationEligible");
   });
 
-  it("fails the review run when a specialist reviewer fails", async () => {
+  it("completes with partial coverage when one specialist reviewer fails", async () => {
     const harness = createHarness({
       outputs: [
         makeOutput("Cross-file clear.", []),
@@ -745,13 +745,32 @@ describe("reviewService", () => {
     const run = await harness.start();
     await waitFor(
       () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.errorMessage).toBeNull();
+    expect(saved?.summary).toContain("Partial review");
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
+    expect(detail?.findings).toEqual([]);
+    expect(detail?.artifacts.some((artifact) => artifact.title === "Reviewer failure summary")).toBe(true);
+  });
+
+  it("fails the review run when all specialist reviewers fail", async () => {
+    const harness = createHarness({ outputs: [] });
+    harness.runSessionTurn.mockRejectedValue(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
       (runs) => runs.some((entry) => entry.id === run.id && entry.status === "failed"),
     );
 
     const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
     expect(saved?.errorMessage).toContain("specialist reviewer");
     const detail = await harness.service.getRunDetail({ runId: run.id });
-    expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
+    expect(detail?.reviewerRuns.every((reviewer) => reviewer.status === "failed")).toBe(true);
     expect(detail?.findings).toEqual([]);
   });
 

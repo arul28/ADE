@@ -2594,42 +2594,70 @@ export function createReviewService({
         return;
       }
 
+      const completedPassResults = passResults.filter((result) => result.status === "completed");
       const failedPassResults = passResults.filter((result) => result.status === "failed");
       if (failedPassResults.length > 0) {
-        const endedAt = nowIso();
         const failedLabels = failedPassResults.map((result) => result.pass.label).join(", ");
-        updateRun(runId, {
-          status: "failed",
-          summary: null,
-          error_message: `Review failed because ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed: ${failedLabels}.`,
-          ended_at: endedAt,
-          updated_at: endedAt,
-        });
-        emit({ type: "run-completed", runId, laneId: run.laneId, status: "failed" });
-        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "failed" });
-        return;
+        if (completedPassResults.length > 0) {
+          insertArtifact(runId, {
+            artifactType: "tool_evidence",
+            title: "Reviewer failure summary",
+            mimeType: "application/json",
+            contentText: JSON.stringify({
+              failedReviewers: failedPassResults.map((result) => ({
+                passKey: result.pass.key,
+                label: result.pass.label,
+                errorMessage: result.errorMessage,
+              })),
+              completedReviewerCount: completedPassResults.length,
+            }, null, 2),
+            metadata: {
+              stage: "reviewer_failures",
+              failedReviewerCount: failedPassResults.length,
+              completedReviewerCount: completedPassResults.length,
+            },
+          });
+        } else {
+          const endedAt = nowIso();
+          updateRun(runId, {
+            status: "failed",
+            summary: null,
+            error_message: `Review failed because ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed: ${failedLabels}.`,
+            ended_at: endedAt,
+            updated_at: endedAt,
+          });
+          emit({ type: "run-completed", runId, laneId: run.laneId, status: "failed" });
+          emit({ type: "runs-updated", runId, laneId: run.laneId, status: "failed" });
+          return;
+        }
       }
 
       if (disposed) return;
       const adjudication = adjudicatePassFindings({
         runId,
-        passResults,
+        passResults: completedPassResults,
         budgets: effectiveRun.config.budgets,
         context: reviewContext,
         artifactIds: contextArtifactIds,
       });
+      const failedReviewerSummary = failedPassResults.length > 0
+        ? ` Partial review: ${failedPassResults.length} specialist reviewer${failedPassResults.length === 1 ? "" : "s"} failed (${failedPassResults.map((result) => result.pass.label).join(", ")}), so ADE adjudicated the completed reviewer outputs.`
+        : "";
+      const finalSummary = `${adjudication.summary}${failedReviewerSummary}`;
       insertArtifact(runId, {
         artifactType: "adjudication_result",
         title: "Review adjudication",
         mimeType: "application/json",
         contentText: JSON.stringify({
-          summary: adjudication.summary,
+          summary: finalSummary,
           totalCandidateCount: adjudication.totalCandidateCount,
           publicationEligibleCount: adjudication.publicationEligibleCount,
           rejected: adjudication.rejected,
           passSummaries: passResults.map((result) => ({
             passKey: result.pass.key,
+            status: result.status,
             summary: result.summary,
+            errorMessage: result.errorMessage,
             keptCount: result.candidates.length,
             budgetTrimmedCount: result.budgetTrimmedCount,
             findingsArtifactId: result.findingsArtifactId,
@@ -2646,7 +2674,7 @@ export function createReviewService({
         title: "Merged review findings",
         mimeType: "application/json",
         contentText: JSON.stringify({
-          summary: adjudication.summary,
+          summary: finalSummary,
           findings: adjudication.findings,
         }, null, 2),
         metadata: {
@@ -2659,7 +2687,7 @@ export function createReviewService({
         title: "Adjudicated review output",
         mimeType: "application/json",
         contentText: JSON.stringify({
-          summary: adjudication.summary,
+          summary: finalSummary,
           findings: adjudication.findings,
         }, null, 2),
         metadata: {
@@ -2737,7 +2765,7 @@ export function createReviewService({
       await publishRun({
         runId,
         targetLabel: materialized.targetLabel,
-        summary: adjudication.summary,
+        summary: finalSummary,
         config: effectiveRun.config,
         findings: publishableFindings,
         publicationTarget: materialized.publicationTarget,
@@ -2753,7 +2781,7 @@ export function createReviewService({
       if (cancelledDuringPublish) cancelledRuns.delete(runId);
       updateRun(runId, {
         status: cancelledDuringPublish ? "cancelled" : "completed",
-        summary: adjudication.summary,
+        summary: finalSummary,
         error_message: null,
         finding_count: findings.length,
         severity_summary_json: serializeSeveritySummary(severitySummary),
