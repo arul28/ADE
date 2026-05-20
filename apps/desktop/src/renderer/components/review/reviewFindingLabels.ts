@@ -66,8 +66,8 @@ export function reviewPublicationLabel(args: {
   }
   if (args.adjudication?.publicationEligible) {
     return {
-      label: "Saved locally",
-      tooltip: "This finding is ready for follow-up, but this run is currently kept local.",
+      label: "Strong evidence",
+      tooltip: "This finding has enough evidence to post if publishing is enabled; this run kept it local.",
     };
   }
   return {

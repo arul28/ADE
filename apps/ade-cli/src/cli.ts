@@ -2704,11 +2704,20 @@ function buildLanePlan(args: string[]): CliPlan {
   };
 }
 
-function resolveStashOidForCli(listResult: unknown, stashRef: string): string {
+function resolveStashSelectionForCli(listResult: unknown, stashRef: string | null): {
+  stashRef: string;
+  stashOid: string;
+} {
   const stashes = firstArray(listResult, ["stashes"]);
-  const match = stashes.find((stash) => asString(stash.ref) === stashRef);
+  const match = stashRef
+    ? stashes.find((stash) => asString(stash.ref) === stashRef)
+    : stashes[0];
+  const selectedRef = asString(match?.ref);
   const stashOid = asString(match?.oid);
-  if (stashOid) return stashOid;
+  if (selectedRef && stashOid) return { stashRef: selectedRef, stashOid };
+  if (!stashRef) {
+    throw new CliUsageError("No saved stashes were found for this lane.");
+  }
   throw new CliUsageError(
     `Stash ${stashRef} is not saved for this lane. Run ade git stash list --lane <lane>.`,
   );
@@ -2978,12 +2987,7 @@ function buildGitPlan(args: string[]): CliPlan {
   if (sub === "stash") {
     const action = firstPositional(args) ?? "list";
     const stashOid = readValue(args, ["--oid", "--stash-oid"]);
-    const stashRef =
-      readValue(args, ["--ref", "--stash-ref"]) ??
-      firstPositional(args) ??
-      (action === "apply" || action === "pop" || action === "drop"
-        ? "stash@{0}"
-        : null);
+    const stashRef = readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
     const message = readValue(args, ["--message", "-m"]);
     const includeUntracked = !readFlag(args, ["--tracked-only"]);
     const toolNameByAction: Record<string, string> = {
@@ -3007,13 +3011,10 @@ function buildGitPlan(args: string[]): CliPlan {
         ? { includeUntracked, ...(message ? { message } : {}) }
         : {}),
     });
-    if (stashRefTool && !stashRef) {
-      throw new CliUsageError(`git stash ${action} requires a stash ref.`);
-    }
-    if ((toolName === "stash_pop" || toolName === "stash_drop") && !stashOid) {
-      const selectedStashRef = stashRef;
-      if (!selectedStashRef)
-        throw new CliUsageError(`git stash ${action} requires a stash ref.`);
+    const needsStashSelection = stashRefTool && (
+      !stashRef || ((toolName === "stash_pop" || toolName === "stash_drop") && !stashOid)
+    );
+    if (needsStashSelection) {
       const listArgs: JsonObject = {};
       if (typeof common.laneId === "string") listArgs.laneId = common.laneId;
       return {
@@ -3024,13 +3025,19 @@ function buildGitPlan(args: string[]): CliPlan {
           {
             key: "result",
             method: "ade/actions/call",
-            params: (values) => ({
-              name: toolName,
-              arguments: {
-                ...common,
-                stashOid: resolveStashOidForCli(values.stashes, selectedStashRef),
-              },
-            }),
+            params: (values) => {
+              const selection = resolveStashSelectionForCli(values.stashes, stashRef);
+              return {
+                name: toolName,
+                arguments: {
+                  ...common,
+                  stashRef: selection.stashRef,
+                  ...(toolName === "stash_apply" || !stashOid
+                    ? { stashOid: selection.stashOid }
+                    : {}),
+                },
+              };
+            },
             unwrapToolResult: true,
           },
         ],
