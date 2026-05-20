@@ -10,6 +10,8 @@ import {
   Sparkle,
   ArrowClockwise,
   ArrowSquareOut,
+  Checks,
+  CopySimple,
 } from "@phosphor-icons/react";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type { LaneSummary } from "../../../shared/types";
@@ -32,6 +34,10 @@ import {
 } from "./reviewApi";
 import { ReviewFindingCard, type FindingActionRequest } from "./ReviewFindingCard";
 import { ReviewLearningsPanel } from "./ReviewLearningsPanel";
+import {
+  formatReviewFindingForClipboard,
+  formatReviewFindingsForClipboard,
+} from "./reviewFindingCopy";
 import type {
   ReviewArtifact,
   ReviewFinding,
@@ -662,6 +668,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const [error, setError] = React.useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(readReviewRunId(location.search));
   const [launching, setLaunching] = React.useState(false);
+  const [copyAllFindingsState, setCopyAllFindingsState] = React.useState<"idle" | "copied" | "error">("idle");
   const [launchDraft, setLaunchDraft] = React.useState<LaunchDraft>(() => ({
     laneId: defaultLaneId ?? "",
     targetMode: "lane_diff",
@@ -721,6 +728,12 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       setLaunchDraft((prev) => ({ ...prev, laneId: defaultLaneId }));
     }
   }, [defaultLaneId, launchDraft.laneId]);
+
+  React.useEffect(() => {
+    if (copyAllFindingsState === "idle") return undefined;
+    const timer = window.setTimeout(() => setCopyAllFindingsState("idle"), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copyAllFindingsState]);
 
   React.useEffect(() => {
     const nextRunId = readReviewRunId(location.search);
@@ -1144,6 +1157,35 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       setFeedbackError(err instanceof Error ? err.message : String(err));
     }
   }, [loadDetail, selectedRunId]);
+
+  const copyTextToClipboard = React.useCallback(async (text: string) => {
+    if (window.ade?.app?.writeClipboardText) {
+      await window.ade.app.writeClipboardText(text);
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    throw new Error("Clipboard is not available.");
+  }, []);
+
+  const handleCopyFinding = React.useCallback(async (finding: ReviewFinding) => {
+    await copyTextToClipboard(formatReviewFindingForClipboard(finding));
+  }, [copyTextToClipboard]);
+
+  const handleCopyAllFindings = React.useCallback(async (findings: ReviewFinding[]) => {
+    try {
+      await copyTextToClipboard(formatReviewFindingsForClipboard({
+        findings,
+        targetLabel: selectedRun?.targetLabel ?? null,
+        summary: selectedRun?.summary ?? null,
+      }));
+      setCopyAllFindingsState("copied");
+    } catch {
+      setCopyAllFindingsState("error");
+    }
+  }, [copyTextToClipboard, selectedRun?.summary, selectedRun?.targetLabel]);
 
   const handleCancelRun = React.useCallback(async (run: NormalizedRun) => {
     if (run.status !== "running" && run.status !== "queued") return;
@@ -1840,38 +1882,49 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     </div>
                   ) : null}
                   {rawFindings.length > 0 ? (
-                    <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
-                      <span className="text-[#6E7F92] uppercase tracking-[0.14em]">Severity:</span>
-                      {(["all", "critical", "high", "medium", "low", "info"] as const).map((sev) => {
-                        const count = sev === "all" ? rawFindings.length : rawFindings.filter((f) => f.severity === sev).length;
-                        if (sev !== "all" && count === 0) return null;
-                        return (
-                          <button
-                            key={sev}
-                            type="button"
-                            onClick={() => setSeverityFilter(sev)}
-                            className={cn(
-                              "rounded-full border px-2 py-0.5 font-medium transition",
-                              severityFilter === sev
-                                ? "border-sky-400/40 bg-sky-400/[0.10] text-sky-100"
-                                : "border-white/[0.08] bg-white/[0.02] text-[#93A4B8] hover:border-white/[0.16]",
-                            )}
-                          >
-                            {sev} <span className="text-[#6E7F92]">{count}</span>
-                          </button>
-                        );
-                      })}
-                      {suppressedCount > 0 ? (
-                        <label className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-[#93A4B8]">
-                          <input
-                            type="checkbox"
-                            checked={showSuppressed}
-                            onChange={(e) => setShowSuppressed(e.target.checked)}
-                            className="h-3 w-3 accent-violet-400"
-                          />
-                          Show {suppressedCount} filtered
-                        </label>
-                      ) : null}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <span className="text-[#6E7F92] uppercase tracking-[0.14em]">Severity:</span>
+                        {(["all", "critical", "high", "medium", "low", "info"] as const).map((sev) => {
+                          const count = sev === "all" ? rawFindings.length : rawFindings.filter((f) => f.severity === sev).length;
+                          if (sev !== "all" && count === 0) return null;
+                          return (
+                            <button
+                              key={sev}
+                              type="button"
+                              onClick={() => setSeverityFilter(sev)}
+                              className={cn(
+                                "rounded-full border px-2 py-0.5 font-medium transition",
+                                severityFilter === sev
+                                  ? "border-sky-400/40 bg-sky-400/[0.10] text-sky-100"
+                                  : "border-white/[0.08] bg-white/[0.02] text-[#93A4B8] hover:border-white/[0.16]",
+                              )}
+                            >
+                              {sev} <span className="text-[#6E7F92]">{count}</span>
+                            </button>
+                          );
+                        })}
+                        {suppressedCount > 0 ? (
+                          <label className="inline-flex items-center gap-1.5 text-[10px] text-[#93A4B8]">
+                            <input
+                              type="checkbox"
+                              checked={showSuppressed}
+                              onChange={(e) => setShowSuppressed(e.target.checked)}
+                              className="h-3 w-3 accent-violet-400"
+                            />
+                            Show {suppressedCount} filtered
+                          </label>
+                        ) : null}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleCopyAllFindings(rawFindings)}
+                        title="Copy all findings from this run as one message."
+                      >
+                        {copyAllFindingsState === "copied" ? <Checks size={12} /> : <CopySimple size={12} />}
+                        {copyAllFindingsState === "copied" ? "Copied" : copyAllFindingsState === "error" ? "Copy failed" : "Copy all findings"}
+                      </Button>
                     </div>
                   ) : null}
                   <div className="space-y-2">
@@ -1888,6 +1941,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         key={finding.id ?? `${finding.title}-${index}`}
                         finding={finding}
                         onRequestAction={handleFindingAction}
+                        onCopyFinding={handleCopyFinding}
                         onOpenInFiles={finding.filePath ? handleOpenFindingInFiles : undefined}
                         onOpenInEditor={finding.filePath ? handleOpenFindingInEditor : undefined}
                       />

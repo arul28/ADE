@@ -5,6 +5,8 @@ import {
   CaretDown,
   CaretRight,
   CheckCircle,
+  Checks,
+  CopySimple,
   FileText,
   MagnifyingGlass,
   Prohibit,
@@ -45,6 +47,7 @@ export type FindingActionRequest = {
 type ReviewFindingCardProps = {
   finding: ReviewFinding;
   onRequestAction: (request: FindingActionRequest) => Promise<void> | void;
+  onCopyFinding?: (finding: ReviewFinding) => Promise<void> | void;
   onOpenInFiles?: (finding: ReviewFinding) => void;
   onOpenInEditor?: (finding: ReviewFinding) => void;
   disabled?: boolean;
@@ -445,12 +448,20 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
 export function ReviewFindingCard({
   finding,
   onRequestAction,
+  onCopyFinding,
   onOpenInFiles,
   onOpenInEditor,
   disabled,
 }: ReviewFindingCardProps) {
   const [expanded, setExpanded] = React.useState(false);
   const [modalKind, setModalKind] = React.useState<Exclude<ReviewFeedbackKind, "acknowledge"> | null>(null);
+  const [copyState, setCopyState] = React.useState<"idle" | "copied" | "error">("idle");
+
+  React.useEffect(() => {
+    if (copyState === "idle") return undefined;
+    const timer = window.setTimeout(() => setCopyState("idle"), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
 
   const feedback = finding.feedback ?? null;
   const feedbackBadge = describeFeedback(feedback);
@@ -470,6 +481,16 @@ export function ReviewFindingCard({
 
   const handleAcknowledge = async () => {
     await onRequestAction({ finding, kind: "acknowledge" });
+  };
+
+  const handleCopyFinding = async () => {
+    if (!onCopyFinding) return;
+    try {
+      await onCopyFinding(finding);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
   };
 
   const handleModalSubmit = async (args: {
@@ -673,6 +694,17 @@ export function ReviewFindingCard({
         {finding.filePath && onOpenInEditor ? (
           <Button size="sm" variant="outline" onClick={() => onOpenInEditor(finding)}>
             <ArrowSquareOut size={12} /> Open editor
+          </Button>
+        ) : null}
+        {onCopyFinding ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void handleCopyFinding()}
+            title="Copy this finding as a shareable message."
+          >
+            {copyState === "copied" ? <Checks size={12} /> : <CopySimple size={12} />}
+            {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy finding"}
           </Button>
         ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
