@@ -294,7 +294,7 @@ function PendingImageAttachmentPreview({
       title={`Attaching ${attachment.name}`}
       aria-label={`Attaching ${attachment.name}`}
       role="status"
-      tabIndex={-1}
+      tabIndex={0}
       data-chat-image-attachment-focus-target="true"
       onKeyDown={(event) => handleImageAttachmentKeyDown(event, {
         onRemove: onRemove ? () => onRemove(attachment.id) : undefined,
@@ -354,7 +354,7 @@ function ImageUrlAttachmentChip({
         toneClassName,
       )}
       title={url}
-      tabIndex={-1}
+      tabIndex={0}
       data-chat-image-attachment-focus-target="true"
       onKeyDown={(event) => handleImageAttachmentKeyDown(event, {
         onRemove: onRemove ? () => onRemove(path) : undefined,

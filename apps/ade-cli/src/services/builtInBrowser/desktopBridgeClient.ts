@@ -23,6 +23,22 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 const REQUEST_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 3_000;
 
+async function raceWithTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<T>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export type BuiltInBrowserDesktopBridgeClient = {
   getStatus: (args?: unknown) => Promise<unknown>;
   showPanel: (args?: unknown) => Promise<unknown>;
@@ -63,27 +79,32 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
         `Desktop browser bridge not running at ${socketPath}. Open ADE Desktop with a project to enable \`ade browser\` commands.`,
       );
     }
-    const timer = new Promise<JsonRpcClient>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`Timed out connecting to desktop browser bridge at ${socketDescription}.`)),
-        CONNECT_TIMEOUT_MS,
-      ),
+    return await raceWithTimeout(
+      JsonRpcClient.connect(socketPath),
+      CONNECT_TIMEOUT_MS,
+      `Timed out connecting to desktop browser bridge at ${socketDescription}.`,
     );
-    return await Promise.race([JsonRpcClient.connect(socketPath), timer]);
   }
 
   async function ensureClient(): Promise<JsonRpcClient> {
+    if (disposed) throw new Error("Desktop browser bridge client has been disposed.");
     if (client) return client;
     if (!connecting) {
       connecting = connect()
         .then((c) => {
+          if (disposed) {
+            try {
+              c.close();
+            } catch {
+              // ignore
+            }
+            throw new Error("Desktop browser bridge client has been disposed.");
+          }
           client = c;
-          connecting = null;
           return c;
         })
-        .catch((error) => {
+        .finally(() => {
           connecting = null;
-          throw error;
         });
     }
     return await connecting;
@@ -108,17 +129,12 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
 
   async function callBridge(method: string, params?: unknown): Promise<unknown> {
     const c = await ensureClient();
-    const timer = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`)),
-        REQUEST_TIMEOUT_MS,
-      ),
-    );
     try {
-      return await Promise.race([
+      return await raceWithTimeout(
         c.request(`built_in_browser.${method}`, params),
-        timer,
-      ]);
+        REQUEST_TIMEOUT_MS,
+        `Desktop browser bridge call ${method} timed out after ${REQUEST_TIMEOUT_MS}ms.`,
+      );
     } catch (error) {
       // Drop the connection on any error so the next call reconnects.
       drop(error);

@@ -1088,13 +1088,22 @@ app.whenReady().then(async () => {
   const builtInBrowserBridgeLogger = createFileLogger(
     path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
   );
-  const builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
-    socketPath:
-      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || machineAdeLayout.desktopBridgeSocketPath,
-    service: builtInBrowserService,
-    logger: builtInBrowserBridgeLogger,
-  });
+  const builtInBrowserBridgeSocketPath =
+    process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || machineAdeLayout.desktopBridgeSocketPath;
+  let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  try {
+    builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
+      socketPath: builtInBrowserBridgeSocketPath,
+      service: builtInBrowserService,
+      logger: builtInBrowserBridgeLogger,
+    });
+  } catch (error) {
+    builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
+      socketPath: builtInBrowserBridgeSocketPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
@@ -5524,7 +5533,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
-        builtInBrowserBridgeServer.dispose();
+        builtInBrowserBridgeServer?.dispose();
       } catch {
         // ignore
       }

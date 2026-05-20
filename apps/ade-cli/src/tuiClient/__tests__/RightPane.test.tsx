@@ -183,8 +183,14 @@ describe("RightPane chat info", () => {
 
     expect(frame).toContain("subagents");
     expect(frame).toContain("background");
-    expect(frame.indexOf("explore-code")).toBeLessThan(frame.indexOf("background"));
-    expect(frame.indexOf("background")).toBeLessThan(frame.indexOf("dev:desktop"));
+    const exploreIndex = frame.indexOf("explore-code");
+    const backgroundIndex = frame.indexOf("background");
+    const desktopIndex = frame.indexOf("dev:desktop");
+    expect(exploreIndex).toBeGreaterThanOrEqual(0);
+    expect(backgroundIndex).toBeGreaterThanOrEqual(0);
+    expect(desktopIndex).toBeGreaterThanOrEqual(0);
+    expect(exploreIndex).toBeLessThan(backgroundIndex);
+    expect(backgroundIndex).toBeLessThan(desktopIndex);
     // bg count shows up in the header
     expect(frame).toMatch(/2\s+bg/);
   });
@@ -420,7 +426,7 @@ describe("RightPane lane-details", () => {
 });
 
 describe("RightPane setup panes", () => {
-  it("renders lane delete as a real preflight with scope, force, remote, and confirmation rows", () => {
+  it("renders lane delete as a real preflight with scope, remote, force, and confirmation rows", () => {
     const result = render(
       <RightPane
         content={{
@@ -428,14 +434,15 @@ describe("RightPane setup panes", () => {
           title: "Delete lane",
           command: "lane-delete",
           laneDelete: {
+            laneId: "lane-delete-1",
             laneName: "scratch-delete-tui",
             branchRef: "ade/scratch-delete-tui",
             dirty: true,
           },
           fields: [
             { name: "scope", label: "Scope", initialValue: "remote_branch" },
-            { name: "force", label: "Force delete", initialValue: "yes" },
             { name: "remoteName", label: "Remote name", initialValue: "origin" },
+            { name: "force", label: "Force delete", initialValue: "yes" },
             { name: "confirm", label: "Type lane name", required: true, placeholder: "scratch-delete-tui" },
           ],
         }}

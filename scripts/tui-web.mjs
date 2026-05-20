@@ -501,10 +501,31 @@ async function main() {
   const ptyReplayChunks = [];
   let ptyReplayBytes = 0;
 
+  function boundedPtyReplayChunk(text) {
+    if (Buffer.byteLength(text) <= ptyReplayLimitBytes) {
+      return text;
+    }
+    let slice = Buffer.from(text)
+      .subarray(Math.max(0, Buffer.byteLength(text) - ptyReplayLimitBytes))
+      .toString();
+    while (Buffer.byteLength(slice) > ptyReplayLimitBytes) {
+      slice = slice.slice(1);
+    }
+    return slice;
+  }
+
   function rememberPtyOutput(text) {
     if (!text.length) return;
-    ptyReplayChunks.push(text);
-    ptyReplayBytes += Buffer.byteLength(text);
+    const chunk = boundedPtyReplayChunk(text);
+    const chunkBytes = Buffer.byteLength(chunk);
+    if (chunkBytes >= ptyReplayLimitBytes) {
+      ptyReplayChunks.length = 0;
+      ptyReplayChunks.push(chunk);
+      ptyReplayBytes = chunkBytes;
+      return;
+    }
+    ptyReplayChunks.push(chunk);
+    ptyReplayBytes += chunkBytes;
     while (ptyReplayBytes > ptyReplayLimitBytes && ptyReplayChunks.length > 1) {
       const removed = ptyReplayChunks.shift();
       ptyReplayBytes -= removed ? Buffer.byteLength(removed) : 0;

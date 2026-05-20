@@ -2779,6 +2779,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     : null;
   const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
   const statusRows = statusLineRows;
+  const modelStatusOverlayRows = statusRows
+    + (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) || modelState.codexFastMode ? 1 : 0);
   const goalBannerRows = goalBannerText ? 1 : 0;
   const rightPaneMaxWidth = RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
@@ -3739,6 +3741,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       kind: "form",
       title: "Move unstaged → new lane",
       command: "new-lane-from-unstaged",
+      laneId,
       description: `Carries unstaged + untracked changes from ${lane.name} into a new child lane.`,
       fields: [
         { name: "name", label: "Name", required: true, placeholder: "rescue-work" },
@@ -3763,7 +3766,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       kind: "form",
       title: "Delete lane",
       command: "lane-delete",
+      laneId,
       laneDelete: {
+        laneId,
         laneName: lane.name,
         branchRef: lane.branchRef,
         dirty: lane.status?.dirty === true,
@@ -3775,15 +3780,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           initialValue: "worktree",
         },
         {
-          name: "force",
-          label: "Force delete",
-          initialValue: "no",
-        },
-        {
           name: "remoteName",
           label: "Remote name",
           placeholder: "origin",
           initialValue: "origin",
+        },
+        {
+          name: "force",
+          label: "Force delete",
+          initialValue: "no",
         },
         {
           name: "confirm",
@@ -5854,7 +5859,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (form.command === "new-lane-from-unstaged") {
-      const sourceLaneId = activeLaneIdRef.current;
+      const sourceLaneId = form.laneId ?? activeLaneIdRef.current;
       if (!sourceLaneId) {
         addNotice("No active lane to rescue from.", "error");
         return;
@@ -5917,10 +5922,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     }
 
     if (form.command === "lane-delete") {
-      if (!laneId) return;
-      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+      const targetLaneId = form.laneDelete?.laneId ?? form.laneId ?? laneId;
+      if (!targetLaneId) return;
+      const lane = lanes.find((entry) => entry.id === targetLaneId) ?? null;
       if (!lane) {
-        addNotice("Active lane is no longer loaded.", "error");
+        addNotice("Selected lane is no longer loaded.", "error");
         return;
       }
       if (lane.laneType === "primary") {
@@ -5935,7 +5941,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const scope = normalizeLaneDeleteScope(values.scope);
       const deleteArgs: Record<string, unknown> = {
-        laneId,
+        laneId: targetLaneId,
         deleteBranch: scope !== "worktree",
         force: values.force === "yes",
       };
@@ -5956,7 +5962,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       setRightOpen(false);
       setRightPane({ kind: "empty" });
       lastUserOpenedPaneRef.current = null;
-      const fallbackLane = lanes.find((entry) => entry.id !== laneId && !entry.archivedAt) ?? null;
+      const fallbackLane = lanes.find((entry) => entry.id !== targetLaneId && !entry.archivedAt) ?? null;
       selectActiveLaneId(fallbackLane?.id ?? null);
       selectActiveSessionId(null);
       setDrawerLaneId(fallbackLane?.id ?? null);
@@ -6267,6 +6273,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           laneId,
           title: pendingNewChatTitleRef.current ?? "Claude Code",
           model: normalized.modelId ?? normalized.model,
+          reasoningEffort: normalized.reasoningEffort,
           permissionMode: normalized.permissionMode,
           initialInput: terminalPrompt.trim() ? terminalPrompt : null,
           cols,
@@ -7036,6 +7043,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           y: mouse.y,
           rows,
           promptRowCount: promptRows.length,
+          modelStatusRows: modelStatusOverlayRows,
+          footerRows: 1,
         })) {
           stopChatSelectionEdgeScroll();
           chatSelectionAnchorRef.current = null;
@@ -7682,7 +7691,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           const nextScope = cycleLaneDeleteScope(nextValues.scope, key.leftArrow ? -1 : 1);
           const values = { ...nextValues, scope: nextScope };
           setFormValues(values);
-          setPrompt(nextScope);
+          setPrompt("");
           return;
         }
         const scopeByKey: Record<string, LaneDeleteScope> = {
@@ -7694,7 +7703,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           const nextScope = scopeByKey[input];
           const values = { ...nextValues, scope: nextScope };
           setFormValues(values);
-          setPrompt(nextScope);
+          setPrompt("");
           return;
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
@@ -7704,7 +7713,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           const nextForce = nextValues.force === "yes" ? "no" : "yes";
           const values = { ...nextValues, force: nextForce };
           setFormValues(values);
-          setPrompt(nextForce);
+          setPrompt("");
           return;
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
@@ -7728,7 +7737,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const nextIndex = fields.length ? (formFieldIndex + delta + fields.length) % fields.length : 0;
       setFormValues(nextValues);
       setFormFieldIndex(nextIndex);
-      setPrompt(fields[nextIndex] ? nextValues[fields[nextIndex]!.name] ?? "" : "");
+      setPrompt(
+        fields[nextIndex] && formFieldUsesPromptInput(rightPane.command, fields[nextIndex]!.name)
+          ? nextValues[fields[nextIndex]!.name] ?? ""
+          : "",
+      );
       return;
     }
 
@@ -8292,8 +8305,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showMentionPalette = activeMentionRange != null && mentionSuggestions.length > 0;
   const showSlashPalette = prompt.startsWith("/") && slashRows.length > 0;
-  const modelStatusOverlayRows = statusRows
-    + (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) || modelState.codexFastMode ? 1 : 0);
   const paletteBottomRows = 5
     + (promptRows.length - 1)
     + modelStatusOverlayRows

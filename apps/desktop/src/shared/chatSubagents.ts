@@ -22,6 +22,20 @@ export type SubagentSnapshot = {
   lastToolName?: string;
 };
 
+const SUBAGENT_TASK_TYPES = new Set<NonNullable<SubagentSnapshot["taskType"]>>([
+  "subagent",
+  "background",
+  "local_workflow",
+  "cron",
+  "other",
+]);
+
+function normalizeSubagentTaskType(value: unknown): SubagentSnapshot["taskType"] | undefined {
+  return typeof value === "string" && SUBAGENT_TASK_TYPES.has(value as NonNullable<SubagentSnapshot["taskType"]>)
+    ? value as SubagentSnapshot["taskType"]
+    : undefined;
+}
+
 export type ChatInfoPlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
@@ -232,7 +246,8 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const summaryFromEvent = [event.summary, event.finalSummary, event.text, event.description]
       .find((value): value is string => typeof value === "string" && value.trim().length > 0);
     const summary = summaryFromEvent ?? existing?.summary ?? "";
-    const incomingTaskType = typeof event.taskType === "string" ? event.taskType : undefined;
+    const incomingTaskType = normalizeSubagentTaskType(event.taskType);
+    const existingTaskType = normalizeSubagentTaskType(existing?.taskType);
     const incomingWorkflowName = typeof event.workflowName === "string" && event.workflowName.trim().length
       ? event.workflowName.trim()
       : undefined;
@@ -245,8 +260,8 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       parentToolUseId,
       turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId ?? null,
       background: event.background === true || existing?.background === true,
-      ...(incomingTaskType || existing?.taskType
-        ? { taskType: (incomingTaskType ?? existing?.taskType) as SubagentSnapshot["taskType"] }
+      ...(incomingTaskType || existingTaskType
+        ? { taskType: incomingTaskType ?? existingTaskType }
         : {}),
       ...(incomingWorkflowName || existing?.workflowName
         ? { workflowName: incomingWorkflowName ?? existing?.workflowName }

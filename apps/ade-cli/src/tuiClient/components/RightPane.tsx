@@ -32,11 +32,12 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   slashCommand: string;
   detail?: string;
   glyph?: string;
+  glyphColorKind: "additive" | "navigation" | "destructive" | "rescue";
   intent?: "rescue-unstaged";
 }> = [
-  { k: "n", label: "new chat", slashCommand: "/new chat", glyph: "✦" },
-  { k: "o", label: "open / create PR", slashCommand: "/pr open", detail: "draft when missing", glyph: "↗" },
-  { k: "a", label: "stage all", slashCommand: "/stage all", glyph: "+" },
+  { k: "n", label: "new chat", slashCommand: "/new chat", glyph: "✦", glyphColorKind: "additive" },
+  { k: "o", label: "open / create PR", slashCommand: "/pr open", detail: "draft when missing", glyph: "↗", glyphColorKind: "navigation" },
+  { k: "a", label: "stage all", slashCommand: "/stage all", glyph: "+", glyphColorKind: "additive" },
   {
     k: "u",
     label: "move unstaged to new lane",
@@ -44,12 +45,13 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
     intent: "rescue-unstaged" as const,
     detail: "child lane from unstaged work",
     glyph: "⇄",
+    glyphColorKind: "rescue",
   },
-  { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message", glyph: "✓" },
-  { k: "p", label: "push", slashCommand: "/push", glyph: "↑" },
-  { k: "d", label: "diff", slashCommand: "/diff", glyph: "≡" },
-  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref", glyph: "⎇" },
-  { k: "x", label: "delete lane", slashCommand: "/lane delete", detail: "requires name", glyph: "✗" },
+  { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message", glyph: "✓", glyphColorKind: "additive" },
+  { k: "p", label: "push", slashCommand: "/push", glyph: "↑", glyphColorKind: "additive" },
+  { k: "d", label: "diff", slashCommand: "/diff", glyph: "≡", glyphColorKind: "navigation" },
+  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref", glyph: "⎇", glyphColorKind: "navigation" },
+  { k: "x", label: "delete lane", slashCommand: "/lane delete", detail: "requires name", glyph: "✗", glyphColorKind: "destructive" },
 ];
 
 export const LANE_DETAIL_PR_ACTION_INDEX = LANE_DETAIL_ACTIONS.length;
@@ -151,17 +153,10 @@ function SectionHead({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
-// Tint a lane-detail action's glyph by its semantic kind.
-// Additive (new chat / stage / commit / push) → running-green.
-// Navigational (PR / diff / reparent) → violet.
-// Destructive (delete) → error-red. Rescue (move unstaged) → attention amber.
-function actionGlyphColor(label: string): string {
-  if (label === "new chat" || label === "stage all" || label === "commit" || label === "push") {
-    return theme.color.running;
-  }
-  if (label === "delete lane") return theme.color.error;
-  if (label === "move unstaged to new lane") return theme.color.attention;
-  // open/create PR, diff, reparent → navigational
+function actionGlyphColor(kind: typeof LANE_DETAIL_ACTIONS[number]["glyphColorKind"]): string {
+  if (kind === "additive") return theme.color.running;
+  if (kind === "destructive") return theme.color.error;
+  if (kind === "rescue") return theme.color.attention;
   return theme.color.violet;
 }
 
@@ -170,6 +165,7 @@ function ActionRow({
   label,
   detail,
   glyph,
+  glyphColorKind,
   selected,
   width,
 }: {
@@ -177,11 +173,12 @@ function ActionRow({
   label: string;
   detail?: string;
   glyph?: string;
+  glyphColorKind: typeof LANE_DETAIL_ACTIONS[number]["glyphColorKind"];
   selected?: boolean;
   width: number;
 }) {
   const glyphChar = glyph ?? " ";
-  const glyphColor = actionGlyphColor(label);
+  const glyphColor = actionGlyphColor(glyphColorKind);
   // Reserve at least a small budget so we never produce a negative width.
   const safeWidth = Math.max(8, width);
   if (!selected) {
@@ -393,6 +390,7 @@ function LaneDetailsPane({
                 label={action.label}
                 detail={action.detail}
                 glyph={action.glyph}
+                glyphColorKind={action.glyphColorKind}
                 selected={idx === content.selectedActionIndex}
                 width={contentWidth}
               />
@@ -753,7 +751,7 @@ function detailsBodyLines(body: string): string[] {
 function isDetailsSectionLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 36) return false;
-  if (/^[A-Z][A-Z0-9 /_.-]+$/.test(trimmed) && /[A-Z]/.test(trimmed)) return true;
+  if (/^[A-Z][A-Z0-9 /_.-]+$/.test(trimmed)) return true;
   return /^[A-Z][A-Za-z0-9 /_.-]+:$/.test(trimmed);
 }
 

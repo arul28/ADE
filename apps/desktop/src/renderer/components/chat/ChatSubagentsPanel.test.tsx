@@ -84,10 +84,9 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     );
 
     expect(screen.getByText("Subagents")).toBeTruthy();
-    expect(screen.getByText("Background tasks")).toBeTruthy();
+    expect(screen.getByText("Background")).toBeTruthy();
     expect(screen.getByText("Explore")).toBeTruthy();
-    // Background row gets a "bg" suffix (no parentheses in the redesign).
-    expect(screen.getByText("bg")).toBeTruthy();
+    expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
   });
 
   it("calls onSelectSubagent with the snapshot identity when a row is clicked", () => {

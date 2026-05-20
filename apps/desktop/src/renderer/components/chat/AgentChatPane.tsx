@@ -148,7 +148,7 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
-const LAST_LAUNCH_CONFIG_KEY = "ade.chat.lastLaunchConfig.v1";
+const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
@@ -495,6 +495,21 @@ type ParallelModelRowState = NativeControlState & {
   codexFastMode: boolean;
   executionMode: AgentChatExecutionMode;
 };
+
+function launchConfigStorageKey(scope: {
+  projectRoot: string | null | undefined;
+  laneId: string | null | undefined;
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: "chat" | "cli";
+}): string {
+  return [
+    LAST_LAUNCH_CONFIG_KEY_PREFIX,
+    scope.projectRoot?.trim() || "project",
+    scope.laneId?.trim() || "no-lane",
+    scope.surfaceProfile,
+    scope.workDraftKind,
+  ].map(encodeURIComponent).join(":");
+}
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
   if (profile === "persistent_identity") {
@@ -1292,9 +1307,9 @@ function normalizeStoredLaunchConfig(
   };
 }
 
-function readLastLaunchConfig(defaults: NativeControlState): LastLaunchConfig | null {
+function readLastLaunchConfig(storageKey: string, defaults: NativeControlState): LastLaunchConfig | null {
   try {
-    const raw = window.localStorage.getItem(LAST_LAUNCH_CONFIG_KEY);
+    const raw = window.localStorage.getItem(storageKey);
     if (raw) {
       const parsed = normalizeStoredLaunchConfig(JSON.parse(raw), defaults);
       if (parsed) return parsed;
@@ -1306,9 +1321,9 @@ function readLastLaunchConfig(defaults: NativeControlState): LastLaunchConfig | 
   return null;
 }
 
-function writeLastLaunchConfig(config: LastLaunchConfig): void {
+function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
   try {
-    window.localStorage.setItem(LAST_LAUNCH_CONFIG_KEY, JSON.stringify(config));
+    window.localStorage.setItem(storageKey, JSON.stringify(config));
     window.localStorage.setItem(LAST_MODEL_ID_KEY, config.modelId);
   } catch {
     // ignore
@@ -1772,6 +1787,12 @@ export function AgentChatPane({
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
+  const lastLaunchConfigStorageKey = useMemo(() => launchConfigStorageKey({
+    projectRoot,
+    laneId,
+    surfaceProfile,
+    workDraftKind,
+  }), [laneId, projectRoot, surfaceProfile, workDraftKind]);
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -2857,7 +2878,7 @@ export function AgentChatPane({
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
-      const lastLaunchConfig = readLastLaunchConfig(initialNativeControls);
+      const lastLaunchConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
       if (lastLaunchConfig) {
         applyLaunchConfigToComposer(lastLaunchConfig);
         return;
@@ -2900,7 +2921,7 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [applyLaunchConfigToComposer, initialNativeControls]);
+  }, [applyLaunchConfigToComposer, initialNativeControls, lastLaunchConfigStorageKey]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -3567,19 +3588,28 @@ export function AgentChatPane({
   useEffect(() => {
     if (selectedSessionId || lockSessionId) return;
     const draftKey = `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftKind}`;
-    if (draftLaunchConfigHydratedRef.current === draftKey) return;
-
     const latestSessionConfig = sessions[0]
       ? buildLastLaunchConfig(sessions[0], initialNativeControls)
       : null;
-    const config = readLastLaunchConfig(initialNativeControls) ?? latestSessionConfig;
-    if (!config) return;
-    applyLaunchConfigToComposer(config);
-    draftLaunchConfigHydratedRef.current = draftKey;
+    const sessionHydrationKey = `${draftKey}:session`;
+    if (latestSessionConfig) {
+      if (draftLaunchConfigHydratedRef.current === sessionHydrationKey) return;
+      applyLaunchConfigToComposer(latestSessionConfig);
+      draftLaunchConfigHydratedRef.current = sessionHydrationKey;
+      return;
+    }
+
+    const storageHydrationKey = `${draftKey}:storage`;
+    if (draftLaunchConfigHydratedRef.current === storageHydrationKey) return;
+    const storedConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+    if (!storedConfig) return;
+    applyLaunchConfigToComposer(storedConfig);
+    draftLaunchConfigHydratedRef.current = storageHydrationKey;
   }, [
     applyLaunchConfigToComposer,
     initialNativeControls,
     laneId,
+    lastLaunchConfigStorageKey,
     lockSessionId,
     projectRoot,
     selectedSessionId,
@@ -4621,7 +4651,7 @@ export function AgentChatPane({
         cursorModeId: launchControls.cursorModeId,
         cursorConfigValues: launchControls.cursorConfigValues,
       }, initialNativeControls);
-      if (launchConfig) writeLastLaunchConfig(launchConfig);
+      if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -5664,6 +5694,7 @@ export function AgentChatPane({
     initialSessionId,
     forceDraft,
     embeddedWorkLayout,
+    lastLaunchConfigStorageKey,
     projectRoot,
     activeLaneWorktreePath,
     navigate,

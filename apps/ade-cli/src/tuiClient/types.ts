@@ -172,7 +172,9 @@ export type RightPaneContent =
       title: string;
       command: "new-lane" | "rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged";
       description?: string;
+      laneId?: string;
       laneDelete?: {
+        laneId: string;
         laneName: string;
         branchRef: string | null;
         dirty: boolean;

@@ -20391,9 +20391,7 @@ export function createAgentChatService(args: {
     provider: AgentChatModelCatalogRefreshProvider,
   ): boolean => {
     return (catalog.groups ?? []).some((group) => {
-      const groupMatches = provider === "droid"
-        ? group.key === "droid"
-        : group.key === provider;
+      const groupMatches = group.key === provider;
       if (!groupMatches) return false;
       return (group.providers ?? []).some((entry) => entry.modelCount > 0);
     });
