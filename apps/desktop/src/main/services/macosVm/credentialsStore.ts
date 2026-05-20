@@ -85,8 +85,37 @@ function defaultRunCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    const finish = (result: { exitCode: number | null; stdout: string; stderr: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearTimeout(killTimer);
+      resolve(result);
+    };
+    let killTimer: ReturnType<typeof setTimeout> = setTimeout(() => {}, 0);
+    clearTimeout(killTimer);
     const timeout = setTimeout(() => {
-      child.kill("SIGTERM");
+      // Match macosVmService.ts: try SIGTERM, then SIGKILL 500 ms later,
+      // and settle the promise even if the child never exits so callers
+      // never await indefinitely (e.g. a permission dialog blocking
+      // `security add-generic-password`).
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 500);
+      finish({
+        exitCode: null,
+        stdout,
+        stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
+      });
     }, options.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer | string) => {
       stdout += chunk.toString();
@@ -98,13 +127,11 @@ function defaultRunCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      clearTimeout(killTimer);
       reject(error);
     });
     child.once("exit", (exitCode) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve({ exitCode, stdout, stderr });
+      finish({ exitCode, stdout, stderr });
     });
     child.stdin?.end(options.stdin ?? undefined);
   });

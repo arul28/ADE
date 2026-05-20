@@ -117,8 +117,12 @@ export function FirstBootCard({
 }) {
   const [position] = useState<CardPosition>(() => loadStoredPosition() ?? { right: 24, bottom: 24 });
   const [showAllSteps, setShowAllSteps] = useState(false);
+  // Guard against an empty `steps` array: `Math.max(_, 0)` then
+  // `Math.min(_, steps.length - 1)` resolves to -1 when steps is empty,
+  // which would make `currentStep.number/title` throw on render.
+  if (steps.length === 0) return null;
   const safeIndex = Math.min(Math.max(currentStepIndex, 0), steps.length - 1);
-  const currentStep = steps[safeIndex];
+  const currentStep = steps[safeIndex]!;
   const canAdvance = safeIndex < steps.length - 1;
 
   return (

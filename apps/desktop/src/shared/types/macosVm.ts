@@ -407,8 +407,13 @@ export type MacosVmRestartArgs = {
 export type MacosVmWipeArgs = {
   vmName?: string | null;
   laneId?: string | null;
-  /** Must be true; the renderer is responsible for the user-facing confirm. */
-  confirm: boolean;
+  /**
+   * Must be `true`; the renderer is responsible for the user-facing confirm.
+   * Typed as the literal `true` so accidentally passing `false` at a call
+   * site is a compile-time error instead of silently routing to the service
+   * (which still enforces the same check at runtime).
+   */
+  confirm: true;
 };
 
 export type MacosVmWipeResult = {

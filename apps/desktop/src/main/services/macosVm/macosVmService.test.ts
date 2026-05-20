@@ -257,7 +257,7 @@ describe("createMacosVmService", () => {
     const commands: Array<{ command: string; args: string[] }> = [];
     const runCommand = vi.fn(async (command: string, args: string[]) => {
       commands.push({ command, args });
-      if (command === "rsync") return { exitCode: 0, signal: null, stdout: "", stderr: "" };
+      if (path.basename(command) === "rsync") return { exitCode: 0, signal: null, stdout: "", stderr: "" };
       if (args[0] === "--version") return { exitCode: 0, signal: null, stdout: "lume 1.0", stderr: "" };
       if (args[0] === "get") {
         if (!vmExists) return { exitCode: 1, signal: null, stdout: "", stderr: "missing" };
@@ -305,8 +305,8 @@ describe("createMacosVmService", () => {
     expect(started.metadata.shareMode).toBe("sanitized-mirror");
     expect(started.metadata.originalHostPath).toBe(primaryLaneRoot);
     expect(started.metadata.mirrorPath).toBe(policy.hostPath);
-    expect(commands.filter(({ command }) => command === "rsync")).toHaveLength(1);
-    expect(commands.find(({ command }) => command === "rsync")?.args).toEqual(expect.arrayContaining(["--exclude", "/.ade/secrets/***"]));
+    expect(commands.filter(({ command }) => path.basename(command) === "rsync")).toHaveLength(1);
+    expect(commands.find(({ command }) => path.basename(command) === "rsync")?.args).toEqual(expect.arrayContaining(["--exclude", "/.ade/secrets/***"]));
     expect(commands.some(({ command, args }) =>
       path.basename(command) === "lume"
         && args[0] === "run"

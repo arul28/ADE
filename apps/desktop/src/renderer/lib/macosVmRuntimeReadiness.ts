@@ -136,7 +136,18 @@ export function macosVmPhaseFromReadiness(
   readiness: MacosVmGuestReadiness | null | undefined,
 ): MacosVmPhaseNumber {
   if (!vm) return 1;
-  if (vm.currentPhase) return vm.currentPhase;
+  // Validate `vm.currentPhase` before returning it: the record can arrive
+  // from older clients or a stale persisted state with a value outside the
+  // current MACOS_VM_PHASES range. Returning an unchecked value would let
+  // `macosVmPhase()` index past the array and crash a label lookup.
+  if (
+    typeof vm.currentPhase === "number"
+    && Number.isFinite(vm.currentPhase)
+    && vm.currentPhase >= 1
+    && vm.currentPhase <= MACOS_VM_PHASES.length
+  ) {
+    return vm.currentPhase as MacosVmPhaseNumber;
+  }
   const state = readiness?.state ?? vm.guestReadiness?.state ?? "not_created";
   switch (state) {
     case "not_created":
@@ -167,7 +178,11 @@ export function macosVmPhaseFromReadiness(
 }
 
 export function macosVmPhase(phaseNumber: MacosVmPhaseNumber): MacosVmPhase {
-  return MACOS_VM_PHASES[phaseNumber - 1]!;
+  // Defensive bounds check: if a caller still slips an out-of-range number
+  // through (e.g. legacy persisted state or a future phase added to the
+  // type but not the runtime array), fall back to the first phase rather
+  // than throwing on `.label` access downstream.
+  return MACOS_VM_PHASES[phaseNumber - 1] ?? MACOS_VM_PHASES[0]!;
 }
 
 export function macosVmPhaseLabel(phaseNumber: MacosVmPhaseNumber): string {

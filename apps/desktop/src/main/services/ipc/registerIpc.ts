@@ -2344,13 +2344,35 @@ export function registerIpc({
     return service;
   };
 
+  /**
+   * The macOS VM feature is unsigned-dev only — `MacVmProductionGate` hides
+   * the renderer UI in packaged builds, but the IPC handlers were still
+   * reachable from anywhere in the renderer. Block side-effectful VM
+   * operations in packaged builds so a packaged build cannot reach VM
+   * provisioning, runtime install, or credential storage even if a stale tab
+   * or compromised renderer asks for it. Read-only `getStatus`/`getStorageInfo`
+   * remain reachable so other UI surfaces (e.g. LanesPage gating logic) keep
+   * working. Bypassable via ADE_FORCE_ENABLE_MACOS_VM=1 for QA.
+   */
+  const requireMacosVmEnabledInProduction = (channel: string): void => {
+    if (!app.isPackaged) return;
+    if (process.env.ADE_FORCE_ENABLE_MACOS_VM === "1") return;
+    throw new Error(
+      `macOS VM is disabled in packaged builds (${channel}). Run from source or set ADE_FORCE_ENABLE_MACOS_VM=1.`,
+    );
+  };
+
   const resolveMacosVmProjectRootForEvent = (event: IpcMainInvokeEvent): string => {
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const session = getWindowSession?.(windowId) ?? null;
     if (session?.binding?.kind === "local") return session.binding.rootPath;
     if (session?.project?.rootPath) return session.project.rootPath;
-    const ctxProjectRoot = getCtx().project?.rootPath;
-    if (ctxProjectRoot) return ctxProjectRoot;
+    // `ctx.project` is otherwise treated as unsafe unless the user has
+    // explicitly selected a project — without that guard a window with no
+    // selected project would silently delete VM state from whichever project
+    // happened to be in ctx, instead of failing closed.
+    const ctx = getCtx();
+    if (ctx.hasUserSelectedProject && ctx.project?.rootPath) return ctx.project.rootPath;
     throw new Error("A project is required to remove a macOS VM.");
   };
 
@@ -7614,21 +7636,25 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.macosVmProvision, async (event, arg): Promise<MacosVmRecord> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmProvision);
     guardMacosVmIpc(event, IPC.macosVmProvision, { windowMs: 60_000, max: 4 });
     return ensureMacosVm().provision(parseMacosVmProvisionArgs(arg, IPC.macosVmProvision));
   });
 
   ipcMain.handle(IPC.macosVmStart, async (event, arg): Promise<MacosVmRecord> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmStart);
     guardMacosVmIpc(event, IPC.macosVmStart, { windowMs: 60_000, max: 8 });
     return ensureMacosVm().start(parseMacosVmStartArgs(arg, IPC.macosVmStart));
   });
 
   ipcMain.handle(IPC.macosVmStop, async (event, arg): Promise<MacosVmRecord | null> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmStop);
     guardMacosVmIpc(event, IPC.macosVmStop, { windowMs: 60_000, max: 12 });
     return ensureMacosVm().stop(parseMacosVmStopArgs(arg, IPC.macosVmStop));
   });
 
   ipcMain.handle(IPC.macosVmDelete, async (event, arg): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmDelete);
     guardMacosVmIpc(event, IPC.macosVmDelete, { windowMs: 60_000, max: 4 });
     const args = parseMacosVmDeleteArgs(arg, IPC.macosVmDelete);
     const service = getCtx().macosVmService;
@@ -7645,114 +7671,121 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.macosVmFocusWindow, async (event, arg): Promise<MacosVmWindowTarget> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmFocusWindow);
     guardMacosVmIpc(event, IPC.macosVmFocusWindow, { windowMs: 10_000, max: 30 });
     return ensureMacosVm().focusWindow(parseMacosVmFocusWindowArgs(arg, IPC.macosVmFocusWindow));
   });
 
   ipcMain.handle(IPC.macosVmGetDisplaySession, async (event, arg): Promise<MacosVmDisplaySession> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmGetDisplaySession);
     guardMacosVmIpc(event, IPC.macosVmGetDisplaySession, { windowMs: 10_000, max: 30 });
     return ensureMacosVm().getDisplaySession(parseMacosVmDisplaySessionArgs(arg, IPC.macosVmGetDisplaySession));
   });
 
   ipcMain.handle(IPC.macosVmCaptureScreenshot, async (event, arg): Promise<MacosVmCaptureScreenshotResult> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmCaptureScreenshot);
     guardMacosVmIpc(event, IPC.macosVmCaptureScreenshot, { windowMs: 30_000, max: 20 });
     return ensureMacosVm().captureScreenshot(parseMacosVmCaptureScreenshotArgs(arg, IPC.macosVmCaptureScreenshot));
   });
 
   ipcMain.handle(IPC.macosVmSelectPoint, async (event, arg): Promise<MacosVmSelectPointResult> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmSelectPoint);
     guardMacosVmIpc(event, IPC.macosVmSelectPoint, { windowMs: 30_000, max: 40 });
     return ensureMacosVm().selectPoint(parseMacosVmSelectPointArgs(arg, IPC.macosVmSelectPoint));
   });
 
   ipcMain.handle(IPC.macosVmClick, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmClick);
     guardMacosVmIpc(event, IPC.macosVmClick, { windowMs: 10_000, max: 80 });
     return ensureMacosVm().click(parseMacosVmClickArgs(arg, IPC.macosVmClick));
   });
 
   ipcMain.handle(IPC.macosVmTypeText, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget }> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmTypeText);
     guardMacosVmIpc(event, IPC.macosVmTypeText, { windowMs: 10_000, max: 40 });
     return ensureMacosVm().typeText(parseMacosVmTypeTextArgs(arg, IPC.macosVmTypeText));
   });
 
   // ---------------------------------------------------------------------------
-  // Singleton-VM onboarding handlers (foundations stubs).
+  // Singleton-VM onboarding handlers.
   //
-  // Bodies delegate to optional methods on macosVmService; backend-vm task #2
-  // implements them. Until then, calls throw a clear "not implemented" error
-  // so the IPC surface is observable in dev but no silent fallback occurs.
+  // These methods are now implemented on `macosVmService`, but the IPC surface
+  // continues to runtime-check before invoking so a partially-initialized
+  // service or stale build cannot reach a missing method. The narrow extension
+  // interface below preserves compile-time argument checking (the previous
+  // `Record<string, (...a: unknown[]) => unknown>` cast lost all type info).
   // ---------------------------------------------------------------------------
+  type MacosVmExtensionService = NonNullable<AppContext["macosVmService"]> & {
+    restart?: (args: MacosVmRestartArgs) => Promise<MacosVmRecord | null>;
+    wipe?: (args: MacosVmWipeArgs) => Promise<MacosVmWipeResult>;
+    installRuntime?: (args: MacosVmInstallRuntimeArgs) => Promise<MacosVmRuntimeInstallStatus>;
+    setCredentials?: (args: MacosVmSetCredentialsArgs) => Promise<{ ok: true }>;
+    getCredentials?: (args: MacosVmGetCredentialsArgs) => Promise<MacosVmStoredCredentialsSummary>;
+    getStorageInfo?: () => Promise<MacosVmStorageInfo>;
+  };
+
   const callMacosVmExtension = async <T>(
-    methodName: string,
-    invoke: (svc: unknown) => Promise<T> | T,
+    methodName: keyof MacosVmExtensionService,
+    invoke: (svc: MacosVmExtensionService) => Promise<T> | T,
   ): Promise<T> => {
-    const svc = ensureMacosVm() as unknown as Record<string, (...a: unknown[]) => unknown>;
+    const svc = ensureMacosVm() as MacosVmExtensionService;
     if (typeof svc[methodName] !== "function") {
-      throw new Error(`macosVmService.${methodName} is not implemented yet`);
+      throw new Error(`macosVmService.${String(methodName)} is not implemented yet`);
     }
     return invoke(svc);
   };
 
   ipcMain.handle(IPC.macosVmRestart, async (event, arg): Promise<MacosVmRecord | null> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmRestart);
     guardMacosVmIpc(event, IPC.macosVmRestart, { windowMs: 60_000, max: 6 });
     const args = parseMacosVmRestartArgs(arg, IPC.macosVmRestart);
-    return callMacosVmExtension("restart", (svc) =>
-      (svc as { restart: (a: MacosVmRestartArgs) => Promise<MacosVmRecord | null> }).restart(args),
-    );
+    return callMacosVmExtension("restart", (svc) => svc.restart!(args));
   });
 
   ipcMain.handle(IPC.macosVmWipe, async (event, arg): Promise<MacosVmWipeResult> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmWipe);
     guardMacosVmIpc(event, IPC.macosVmWipe, { windowMs: 60_000, max: 2 });
     const args = parseMacosVmWipeArgs(arg, IPC.macosVmWipe);
-    return callMacosVmExtension("wipe", (svc) =>
-      (svc as { wipe: (a: MacosVmWipeArgs) => Promise<MacosVmWipeResult> }).wipe(args),
-    );
+    return callMacosVmExtension("wipe", (svc) => svc.wipe!(args));
   });
 
   ipcMain.handle(IPC.macosVmInstallRuntime, async (event, arg): Promise<MacosVmRuntimeInstallStatus> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmInstallRuntime);
     guardMacosVmIpc(event, IPC.macosVmInstallRuntime, { windowMs: 300_000, max: 4 });
     const args = parseMacosVmInstallRuntimeArgs(arg, IPC.macosVmInstallRuntime);
-    return callMacosVmExtension("installRuntime", (svc) =>
-      (svc as {
-        installRuntime: (a: MacosVmInstallRuntimeArgs) => Promise<MacosVmRuntimeInstallStatus>;
-      }).installRuntime(args),
-    );
+    return callMacosVmExtension("installRuntime", (svc) => svc.installRuntime!(args));
   });
 
   ipcMain.handle(IPC.macosVmSetCredentials, async (event, arg): Promise<{ ok: true }> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmSetCredentials);
     guardMacosVmIpc(event, IPC.macosVmSetCredentials, { windowMs: 60_000, max: 12 });
     const args = parseMacosVmSetCredentialsArgs(arg, IPC.macosVmSetCredentials);
-    return callMacosVmExtension("setCredentials", (svc) =>
-      (svc as { setCredentials: (a: MacosVmSetCredentialsArgs) => Promise<{ ok: true }> }).setCredentials(args),
-    );
+    return callMacosVmExtension("setCredentials", (svc) => svc.setCredentials!(args));
   });
 
   ipcMain.handle(IPC.macosVmGetCredentials, async (event, arg): Promise<MacosVmStoredCredentialsSummary> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmGetCredentials);
     guardMacosVmIpc(event, IPC.macosVmGetCredentials, { windowMs: 10_000, max: 60 });
     const args = parseMacosVmGetCredentialsArgs(arg, IPC.macosVmGetCredentials);
-    return callMacosVmExtension("getCredentials", (svc) =>
-      (svc as {
-        getCredentials: (a: MacosVmGetCredentialsArgs) => Promise<MacosVmStoredCredentialsSummary>;
-      }).getCredentials(args),
-    );
+    return callMacosVmExtension("getCredentials", (svc) => svc.getCredentials!(args));
   });
 
   ipcMain.handle(IPC.macosVmGetStorageInfo, async (event): Promise<MacosVmStorageInfo> => {
     guardMacosVmIpc(event, IPC.macosVmGetStorageInfo, { windowMs: 10_000, max: 30 });
-    return callMacosVmExtension("getStorageInfo", (svc) =>
-      (svc as { getStorageInfo: () => Promise<MacosVmStorageInfo> }).getStorageInfo(),
-    );
+    return callMacosVmExtension("getStorageInfo", (svc) => svc.getStorageInfo!());
   });
 
   ipcMain.handle(IPC.macosVmDetachLane, async (event, arg): Promise<MacosVmDetachLaneResult> => {
+    requireMacosVmEnabledInProduction(IPC.macosVmDetachLane);
     guardMacosVmIpc(event, IPC.macosVmDetachLane, { windowMs: 60_000, max: 12 });
     const args = parseMacosVmDetachLaneArgs(arg, IPC.macosVmDetachLane);
-    const laneService = getCtx().laneService as unknown as Record<string, (...a: unknown[]) => unknown>;
-    if (typeof laneService["detachVmLane"] !== "function") {
+    const laneService = getCtx().laneService as AppContext["laneService"] & {
+      detachVmLane?: (a: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>;
+    };
+    if (typeof laneService.detachVmLane !== "function") {
       throw new Error("laneService.detachVmLane is not implemented yet");
     }
-    return (
-      laneService["detachVmLane"] as (a: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>
-    )(args);
+    return laneService.detachVmLane(args);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

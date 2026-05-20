@@ -2254,7 +2254,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!createOpen) return;
-    if (!createVmRuntimeAuthConfirmed && createRuntimePlacement !== "macos-vm") return;
+    // Always require the VM auth-confirm flag — earlier this short-circuit
+    // allowed a deep-link / dialog-bus open with `runtimePlacement: "macos-vm"`
+    // to fetch VM status and flip `createVmRuntimeAvailable` true even when
+    // the user had never confirmed the VM auth prompt. Auth confirmation is a
+    // prerequisite for any VM status fetch.
+    if (!createVmRuntimeAuthConfirmed) return;
     let cancelled = false;
     setCreateVmStatusLoading(true);
     setCreateVmStatusError(null);
@@ -2299,7 +2304,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const reservedVmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm" && !lane.archivedAt) ?? null;
   const createVmRuntimeAvailable = Boolean(
-    createVmStatus?.supported
+    createVmRuntimeAuthConfirmed
+    && createVmStatus?.supported
     && createVmStatus.activeProvider.available
     && !createVmStatus.globalLease
     && createVmStatus.vms.length === 0
@@ -2307,11 +2313,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   );
   const createVmRuntimeUnavailableReason = reservedVmLane
     ? `A VM lane already exists: ${reservedVmLane.name}.`
-    : createVmRuntimeStatusReason({
-      loading: createVmStatusLoading,
-      status: createVmStatus,
-      error: createVmStatusError,
-    });
+    : !createVmRuntimeAuthConfirmed
+      ? "Confirm Mac VM runtime access in the VM tab before creating a VM-backed lane."
+      : createVmRuntimeStatusReason({
+        loading: createVmStatusLoading,
+        status: createVmStatus,
+        error: createVmStatusError,
+      });
   const createSetupStatus = useMemo(() => {
     switch (createSetupPhase) {
       case "creating":
@@ -2467,17 +2475,32 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         ]);
         setCreateVmStatus(freshStatus);
         const freshReservedVmLane = freshLanes.find((lane) => lane.runtimePlacement === "macos-vm" && !lane.archivedAt) ?? null;
-        if (freshReservedVmLane) {
-          setCreateError(`A VM lane already exists: ${freshReservedVmLane.name}.`);
-          return;
-        }
-        const freshStatusReason = createVmRuntimeStatusReason({
-          loading: false,
-          status: freshStatus,
-          error: null,
-        });
-        if (freshStatusReason) {
-          setCreateError(freshStatusReason);
+        // Mirror the full `createVmRuntimeAvailable` predicate so the
+        // singleton-VM invariants (auth-confirmed, supported, no global
+        // lease, no other VM running, no other VM lane) are all rechecked
+        // against the fresh data. Earlier this only checked the reserved
+        // lane + the loading-status reason, so a VM appearing or a
+        // `globalLease` being taken between dialog-open and submit could
+        // race past the gate.
+        const freshVmAvailable = Boolean(
+          createVmRuntimeAuthConfirmed
+          && freshStatus.supported
+          && freshStatus.activeProvider.available
+          && !freshStatus.globalLease
+          && freshStatus.vms.length === 0
+          && !freshReservedVmLane,
+        );
+        if (!freshVmAvailable) {
+          const reason = freshReservedVmLane
+            ? `A VM lane already exists: ${freshReservedVmLane.name}.`
+            : !createVmRuntimeAuthConfirmed
+              ? "Confirm Mac VM runtime access in the VM tab before creating a VM-backed lane."
+              : createVmRuntimeStatusReason({
+                loading: false,
+                status: freshStatus,
+                error: null,
+              }) ?? "Mac VM is no longer available for a new lane.";
+          setCreateError(reason);
           return;
         }
       } catch (error) {
@@ -3961,7 +3984,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onOpenVmTab={() => navigate("/vm")}
         onOpenVmLaneInWork={(laneId) => {
           selectLane(laneId);
-          navigate("/work");
+          // The rest of this file opens the Work surface via "/project" (see
+          // the lane context-menu onOpenRun handler above). Navigating to
+          // "/work" here would land on the legacy Work route which is no
+          // longer the canonical destination for opening a lane.
+          navigate("/project");
         }}
         createBranches={createBranches}
         lanes={lanes}

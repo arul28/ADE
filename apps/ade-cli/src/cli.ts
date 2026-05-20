@@ -6791,7 +6791,17 @@ function buildMacosVmPlan(args: string[]): CliPlan {
     required: boolean,
   ): { vmName?: string; laneId?: string } => {
     const vmName = readVmName();
-    const laneId = readValue(args, ["--lane", "--lane-id"]);
+    // Accept the lane via flag OR positional argument so sibling commands
+    // such as `ade macos-vm wipe <lane> --force`, `ade macos-vm restart
+    // <lane>`, and `ade macos-vm install-runtime <lane>` consume the
+    // positional lane id consistently with the rest of `macos-vm`.
+    const laneId =
+      readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
+    if (vmName && laneId) {
+      throw new CliUsageError(
+        "Use either --vm-name <name> or --lane <lane>, not both.",
+      );
+    }
     if (required && !vmName && !laneId) {
       throw new CliUsageError(
         "Provide --vm-name <name> or --lane <lane> to identify the VM.",

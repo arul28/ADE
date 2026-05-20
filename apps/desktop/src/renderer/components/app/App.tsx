@@ -187,6 +187,7 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/lanes",
     "/files",
     "/work",
+    "/vm",
     "/graph",
     "/prs",
     "/review",

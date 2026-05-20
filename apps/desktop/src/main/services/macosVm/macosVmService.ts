@@ -834,9 +834,44 @@ function ipswCacheFilename(url: URL): string {
   return safe.endsWith(".ipsw") ? safe : `${safe || "macos-restore"}.ipsw`;
 }
 
-function recoverLargestPartialDownload(cacheDir: string, destination: string): void {
+function partialDownloadUrlMarkerPath(destination: string): string {
+  return `${destination}.part.url`;
+}
+
+/**
+ * Recover an interrupted IPSW download by promoting an existing `.part-*`
+ * sibling to the stable `.part` name so `curl --continue-at -` can resume.
+ *
+ * IMPORTANT: only recover when we can prove the partial belongs to the same
+ * remote URL — IPSW filenames are not content-addressed, so two unrelated
+ * IPSWs can share a filename (e.g. when Apple rotates restore images). A
+ * `.part.url` sidecar records the URL that produced the current `.part`;
+ * if it does not match, we discard the partials rather than resuming into
+ * incompatible bytes.
+ */
+function recoverLargestPartialDownload(cacheDir: string, destination: string, sourceUrl: string): void {
   const stablePartial = `${destination}.part`;
-  if (fs.existsSync(stablePartial)) return;
+  const urlMarker = partialDownloadUrlMarkerPath(destination);
+  if (fs.existsSync(stablePartial)) {
+    // If the existing partial does not match the requested URL, drop it so
+    // curl restarts from byte 0 instead of resuming into the wrong content.
+    let storedUrl: string | null = null;
+    try {
+      storedUrl = fs.readFileSync(urlMarker, "utf8").trim();
+    } catch {
+      storedUrl = null;
+    }
+    if (storedUrl !== sourceUrl) {
+      try {
+        fs.rmSync(stablePartial, { force: true });
+        fs.rmSync(urlMarker, { force: true });
+      } catch {
+        // ignore — curl will overwrite on next attempt
+      }
+    } else {
+      return;
+    }
+  }
   const prefix = `${path.basename(destination)}.part-`;
   let largest: { path: string; size: number } | null = null;
   try {
@@ -851,6 +886,13 @@ function recoverLargestPartialDownload(cacheDir: string, destination: string): v
   }
   if (!largest || largest.size <= 0) return;
   fs.renameSync(largest.path, stablePartial);
+  try {
+    fs.writeFileSync(urlMarker, sourceUrl, "utf8");
+  } catch {
+    // Best-effort: if we cannot write the marker we may re-resume against
+    // a stale partial later. That is the existing behavior; the marker is
+    // an additive safeguard.
+  }
 }
 
 export function createMacosVmService(args: CreateMacosVmServiceArgs) {
@@ -1090,7 +1132,8 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     } catch {
       // Download below.
     }
-    recoverLargestPartialDownload(cacheDir, destination);
+    const sourceUrl = url.toString();
+    recoverLargestPartialDownload(cacheDir, destination, sourceUrl);
     const partial = `${destination}.part`;
     emitOperation("provision", "started", lane.id, record.name, `Downloading macOS restore image ${path.basename(destination)} from Apple.`);
     // Probe Content-Length up front via a HEAD request so the progress bar
@@ -1146,6 +1189,14 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       }
     }, 500);
     progressTimer.unref?.();
+    // Stamp the URL marker so future `recoverLargestPartialDownload` calls
+    // can detect when the partial belongs to a different remote and discard
+    // it rather than resuming into incompatible bytes.
+    try {
+      fs.writeFileSync(partialDownloadUrlMarkerPath(destination), sourceUrl, "utf8");
+    } catch {
+      // Best-effort.
+    }
     try {
       const result = await runCommand("/usr/bin/curl", [
         "--fail",
@@ -1163,6 +1214,12 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         throw new Error(detail);
       }
       fs.renameSync(partial, destination);
+      // The download is complete; the URL marker is no longer needed.
+      try {
+        fs.rmSync(partialDownloadUrlMarkerPath(destination), { force: true });
+      } catch {
+        // ignore
+      }
       // Emit a final 100% progress event so renderers can clear the bar.
       try {
         const size = fs.statSync(destination).size;
@@ -1899,7 +1956,11 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       withTrailingSeparator(source),
       withTrailingSeparator(destination),
     ];
-    await runHostCommand("rsync", rsyncArgs, 15 * 60_000);
+    // Use the absolute path to match the rest of this file (curl, ssh, open,
+    // osascript). rsync ships with every macOS install at /usr/bin/rsync,
+    // so we do not need PATH resolution and bypassing PATH closes a minor
+    // hijack vector in unusual user environments.
+    await runHostCommand("/usr/bin/rsync", rsyncArgs, 15 * 60_000);
   };
 
   const syncLaneToMirror = async (lane: LaneContext, mirrorPath: string): Promise<void> => {
@@ -2793,31 +2854,26 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         runner: runtimeBootstrapRunner,
       });
 
+      // NOTE: v1 of the bootstrap script only drops a host-side success marker
+      // in the guest — no `ade-runtime` binary is downloaded or installed yet
+      // (see runtimeBootstrap.ts GUEST_BOOTSTRAP_SCRIPT TODO). Advancing the
+      // state to "installed" would propagate through `guestReadinessForRecord`
+      // as `state: "runtime_ready"` / `canRunCode: true`, and any caller that
+      // acts on that signal would attempt to invoke a missing binary. Until
+      // the real download/install lands, mark the install as failed with an
+      // explanatory error so the UI and agent guidance reflect reality.
       const completedAt = nowIso();
+      const stubDetail = "Runtime install bootstrap is a stub: the guest marker was written, but no ade-runtime binary was downloaded yet.";
       status = {
-        state: "installed",
-        detail: "ADE agent runtime is installed and ready in the guest.",
+        state: "failed",
+        detail: stubDetail,
         startedAt,
         completedAt,
-        lastError: null,
+        lastError: stubDetail,
       };
       const updated = upsertRecord({ ...record, runtimeInstall: status });
       emit({ type: "runtime-install", vmName: updated.name, status });
-      emitOperation("install-runtime", "completed", record.laneId, record.name, status.detail);
-
-      // Notify the connection pool registry that the VM is now a usable target.
-      try {
-        await args.onRuntimeReady?.({
-          vmName: record.name,
-          ipAddress: record.ipAddress,
-          username: stored.username,
-        });
-      } catch (registerError) {
-        args.logger.warn("macos_vm.register_remote_target_failed", {
-          vmName: record.name,
-          err: registerError instanceof Error ? registerError.message : String(registerError),
-        });
-      }
+      emitOperation("install-runtime", "failed", record.laneId, record.name, stubDetail);
 
       return status;
     } catch (error) {

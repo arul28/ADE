@@ -1331,6 +1331,17 @@ function LumeMissingNotice({ tool }: { tool: MacosVmToolStatus | null }) {
   );
 }
 
+/**
+ * POSIX-safe single-quote escape: wraps `value` in single quotes and
+ * neutralizes any embedded single quote with the canonical close-escape-reopen
+ * sequence. Single-quoted strings disable every shell expansion (including
+ * `$(...)`, `` `...` ``, and parameter expansion), so a path captured here
+ * cannot execute unintended commands when the user pastes the copied line.
+ */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function ManualCleanupBanner({
   paths,
   onDismiss,
@@ -1339,7 +1350,7 @@ function ManualCleanupBanner({
   onDismiss: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const command = `sudo rm -rf ${paths.map((p) => `"${p.replace(/"/g, '\\"')}"`).join(" ")}`;
+  const command = `sudo rm -rf ${paths.map((p) => shellSingleQuote(p)).join(" ")}`;
   const copy = useCallback(() => {
     void navigator.clipboard.writeText(command).then(() => {
       setCopied(true);

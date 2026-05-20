@@ -1,5 +1,5 @@
 import { CaretDown, Check, CheckCircle, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { MacosVmPhaseNumber } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
@@ -13,7 +13,7 @@ export type PhaseDescriptor = {
 };
 
 function PhaseBadge({ status, number }: { status: PhaseStatus; number: MacosVmPhaseNumber }) {
-  const baseStyle: React.CSSProperties = {
+  const baseStyle: CSSProperties = {
     fontFamily: "system-ui, -apple-system, 'Helvetica Neue', sans-serif",
     fontVariantNumeric: "tabular-nums",
   };

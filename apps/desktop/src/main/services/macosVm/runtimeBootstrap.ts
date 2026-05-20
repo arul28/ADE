@@ -20,8 +20,41 @@ import path from "node:path";
  */
 
 const SSH_BINARY = "/usr/bin/ssh";
-const SSHPASS_BINARY = "/opt/homebrew/bin/sshpass";
 const SCP_BINARY = "/usr/bin/scp";
+
+/**
+ * Resolve the `sshpass` binary across the macOS install layouts we see in the
+ * wild: Apple Silicon Homebrew (`/opt/homebrew/bin`), Intel Homebrew
+ * (`/usr/local/bin`), MacPorts (`/opt/local/bin`), and PATH for custom builds.
+ * If nothing is found we still return the bare name so the eventual spawn
+ * surfaces a clear `ENOENT` rather than dispatching to a phantom path.
+ */
+const SSHPASS_KNOWN_PATHS: readonly string[] = [
+  "/opt/homebrew/bin/sshpass",
+  "/usr/local/bin/sshpass",
+  "/opt/local/bin/sshpass",
+];
+
+function resolveSshpassBinary(): string {
+  for (const candidate of SSHPASS_KNOWN_PATHS) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // ignore and keep scanning
+    }
+  }
+  const pathDirs = String(process.env.PATH ?? "").split(path.delimiter);
+  for (const dir of pathDirs) {
+    if (!dir) continue;
+    const candidate = path.join(dir, "sshpass");
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      // ignore
+    }
+  }
+  return "sshpass";
+}
 
 export type RuntimeBootstrapPhase =
   | "ssh-probe"
@@ -153,7 +186,7 @@ function buildSshCommand(args: InstallRuntimeArgs): { command: string; baseArgs:
   // `sshpass -e` reads the password from the SSHPASS env var so it never
   // appears in argv (i.e. `ps aux` cannot see it).
   return {
-    command: SSHPASS_BINARY,
+    command: resolveSshpassBinary(),
     baseArgs: ["-e", SSH_BINARY, ...COMMON_SSH_OPTS, `${username}@${ipAddress}`],
     extraEnv: { SSHPASS: password },
   };
@@ -174,7 +207,7 @@ function buildScpCommand(
     };
   }
   return {
-    command: SSHPASS_BINARY,
+    command: resolveSshpassBinary(),
     baseArgs: ["-e", SCP_BINARY, ...COMMON_SSH_OPTS, source, remote],
     extraEnv: { SSHPASS: password },
   };
@@ -214,61 +247,77 @@ export async function installAdeRuntimeInVm(args: InstallRuntimeArgs): Promise<I
 
   // 2. Write the bootstrap script to a host-side temp file.
   emit("write-script", "Staging bootstrap script on the host.");
+  const ownsTempDir = !args.tempDir;
   const tempDir = args.tempDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-bootstrap-"));
   const localScriptPath = path.join(tempDir, "ade-runtime-bootstrap.sh");
   fs.writeFileSync(localScriptPath, GUEST_BOOTSTRAP_SCRIPT, { mode: 0o755 });
 
-  // 3. scp the script into the guest.
-  emit("scp-script", `Copying bootstrap script to ${args.ipAddress}:/tmp.`);
-  const remoteScriptPath = "/tmp/ade-runtime-bootstrap.sh";
-  const scpCommand = buildScpCommand(args, localScriptPath, remoteScriptPath);
-  const scpResult = await runner(scpCommand.command, scpCommand.baseArgs, {
-    timeoutMs: 30_000,
-    extraEnv: scpCommand.extraEnv,
-  });
-  if (scpResult.exitCode !== 0) {
-    const detail = (scpResult.stderr || scpResult.stdout || "").trim()
-      || `scp of bootstrap script failed (exit ${scpResult.exitCode ?? "unknown"}).`;
-    throw new Error(detail);
-  }
+  try {
+    // 3. scp the script into the guest.
+    emit("scp-script", `Copying bootstrap script to ${args.ipAddress}:/tmp.`);
+    const remoteScriptPath = "/tmp/ade-runtime-bootstrap.sh";
+    const scpCommand = buildScpCommand(args, localScriptPath, remoteScriptPath);
+    const scpResult = await runner(scpCommand.command, scpCommand.baseArgs, {
+      timeoutMs: 30_000,
+      extraEnv: scpCommand.extraEnv,
+    });
+    if (scpResult.exitCode !== 0) {
+      const detail = (scpResult.stderr || scpResult.stdout || "").trim()
+        || `scp of bootstrap script failed (exit ${scpResult.exitCode ?? "unknown"}).`;
+      throw new Error(detail);
+    }
 
-  // 4. Run the script via ssh.
-  emit("run-script", "Running bootstrap script inside the guest.");
-  const runResult = await runner(sshCommand.command, [
-    ...sshCommand.baseArgs,
-    "bash",
-    remoteScriptPath,
-  ], { timeoutMs: 120_000, extraEnv: sshCommand.extraEnv });
-  if (runResult.exitCode !== 0 || !/\bOK\b/.test(runResult.stdout)) {
-    const detail = (runResult.stderr || runResult.stdout || "").trim()
-      || `Bootstrap script exited with code ${runResult.exitCode ?? "unknown"}.`;
-    throw new Error(detail);
-  }
+    // 4. Run the script via ssh.
+    emit("run-script", "Running bootstrap script inside the guest.");
+    const runResult = await runner(sshCommand.command, [
+      ...sshCommand.baseArgs,
+      "bash",
+      remoteScriptPath,
+    ], { timeoutMs: 120_000, extraEnv: sshCommand.extraEnv });
+    if (runResult.exitCode !== 0 || !/\bOK\b/.test(runResult.stdout)) {
+      const detail = (runResult.stderr || runResult.stdout || "").trim()
+        || `Bootstrap script exited with code ${runResult.exitCode ?? "unknown"}.`;
+      throw new Error(detail);
+    }
 
-  // 5. Verify the success marker.
-  emit("verify-marker", "Verifying ade-runtime installation marker.");
-  // We don't know the guest's HOME, so build the marker path from the
-  // conventional macOS user home for surface display only. The actual
-  // check runs in the remote shell against $HOME.
-  const markerPath = `/Users/${args.username}/.ade-runtime-installed`;
-  const verifyResult = await runner(sshCommand.command, [
-    ...sshCommand.baseArgs,
-    "test",
-    "-f",
-    "$HOME/.ade-runtime-installed",
-    "&&",
-    "cat",
-    "$HOME/.ade-runtime-installed",
-  ], { timeoutMs: 15_000, extraEnv: sshCommand.extraEnv });
-  if (verifyResult.exitCode !== 0) {
-    const detail = (verifyResult.stderr || verifyResult.stdout || "").trim()
-      || `Marker verification failed (exit ${verifyResult.exitCode ?? "unknown"}).`;
-    throw new Error(detail);
-  }
+    // 5. Verify the success marker.
+    emit("verify-marker", "Verifying ade-runtime installation marker.");
+    // We don't know the guest's HOME, so build the marker path from the
+    // conventional macOS user home for surface display only. The actual
+    // check runs in the remote shell against $HOME.
+    const markerPath = `/Users/${args.username}/.ade-runtime-installed`;
+    const verifyResult = await runner(sshCommand.command, [
+      ...sshCommand.baseArgs,
+      "test",
+      "-f",
+      "$HOME/.ade-runtime-installed",
+      "&&",
+      "cat",
+      "$HOME/.ade-runtime-installed",
+    ], { timeoutMs: 15_000, extraEnv: sshCommand.extraEnv });
+    if (verifyResult.exitCode !== 0) {
+      const detail = (verifyResult.stderr || verifyResult.stdout || "").trim()
+        || `Marker verification failed (exit ${verifyResult.exitCode ?? "unknown"}).`;
+      throw new Error(detail);
+    }
 
-  return {
-    ok: true,
-    markerPath,
-    detail: `ade-runtime bootstrap completed on ${args.username}@${args.ipAddress}.`,
-  };
+    return {
+      ok: true,
+      markerPath,
+      detail: `ade-runtime bootstrap completed on ${args.username}@${args.ipAddress}.`,
+    };
+  } finally {
+    // Best-effort cleanup of the staged bootstrap script so repeated runs do
+    // not leak host temp files. If the caller supplied `tempDir`, we only
+    // remove the script we created inside it (the caller owns the directory).
+    try {
+      if (ownsTempDir) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } else {
+        fs.rmSync(localScriptPath, { force: true });
+      }
+    } catch {
+      // ignore
+    }
+  }
 }
