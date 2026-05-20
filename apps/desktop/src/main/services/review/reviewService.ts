@@ -239,6 +239,11 @@ type MaterializedChangedFile = {
   diffPositionsByLine: Record<number, number>;
 };
 
+type ChangedFileEvidenceContext = {
+  excerpt: string;
+  lineNumbers: Set<number>;
+};
+
 type PassDefinition = {
   key: ReviewPassKey;
   label: string;
@@ -773,10 +778,9 @@ function computeAnchorState(args: {
 
 function hasConcreteEvidence(evidence: ReviewEvidence[]): boolean {
   return evidence.some((entry) => {
-    if (entry.kind === "artifact") return false;
+    if (entry.kind === "artifact" || entry.kind === "tool_signal") return false;
     return Boolean(
-      (typeof entry.quote === "string" && entry.quote.trim().length > 0)
-      || (entry.filePath && entry.line != null)
+      (entry.filePath && entry.line != null)
       || (entry.filePath && entry.kind === "diff_hunk"),
     );
   });
@@ -784,7 +788,12 @@ function hasConcreteEvidence(evidence: ReviewEvidence[]): boolean {
 
 function scoreEvidence(evidence: ReviewEvidence[]): number {
   if (evidence.length === 0) return 0;
-  const quoteCount = evidence.filter((entry) => typeof entry.quote === "string" && entry.quote.trim().length > 0).length;
+  const quoteCount = evidence.filter((entry) =>
+    Boolean(entry.filePath)
+    && (entry.line != null || entry.kind === "diff_hunk")
+    && typeof entry.quote === "string"
+    && entry.quote.trim().length > 0,
+  ).length;
   const anchoredCount = evidence.filter((entry) => Boolean(entry.filePath) && entry.line != null).length;
   const artifactCount = evidence.filter((entry) => entry.kind === "artifact" && entry.artifactId).length;
   return clampNumber(
@@ -922,12 +931,44 @@ function dedupeEvidenceEntries(evidence: ReviewEvidence[]): ReviewEvidence[] {
   return deduped;
 }
 
+function sanitizeParsedEvidence(
+  evidence: ReviewEvidence[],
+  changedFilesByPath: Map<string, ChangedFileEvidenceContext>,
+): ReviewEvidence[] {
+  return evidence.flatMap((entry) => {
+    if (entry.kind === "artifact") return [entry];
+    if (!entry.filePath) return [];
+    const changedFile = changedFilesByPath.get(entry.filePath);
+    if (!changedFile) return [];
+    if (entry.line != null && !changedFile.lineNumbers.has(entry.line)) return [];
+    return [entry];
+  });
+}
+
+function buildFallbackDiffEvidence(args: {
+  filePath: string | null;
+  line: number | null;
+  changedFilesByPath: Map<string, ChangedFileEvidenceContext>;
+}): ReviewEvidence[] {
+  if (!args.filePath) return [];
+  const fallbackFile = args.changedFilesByPath.get(args.filePath);
+  if (!fallbackFile) return [];
+  return [{
+    kind: "diff_hunk" as const,
+    summary: `Relevant diff context from ${args.filePath}`,
+    filePath: args.filePath,
+    line: args.line != null && fallbackFile.lineNumbers.has(args.line) ? args.line : null,
+    quote: fallbackFile.excerpt || null,
+    artifactId: null,
+  }];
+}
+
 function normalizeParsedFindings(args: {
   runId: string;
   reviewerRunId: string;
   passKey: ReviewPassKey;
   parsed: Record<string, unknown> | null;
-  changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
+  changedFilesByPath: Map<string, ChangedFileEvidenceContext>;
 }): { summary: string | null; findings: PassCandidateFinding[] } {
   const findingsRaw = Array.isArray(args.parsed?.findings) ? args.parsed?.findings : [];
   const findings = findingsRaw.flatMap((entry, index) => {
@@ -937,20 +978,11 @@ function normalizeParsedFindings(args: {
     if (!title || !body) return [];
     const filePath = typeof entry.filePath === "string" ? entry.filePath.trim() || null : null;
     const line = typeof entry.line === "number" && Number.isInteger(entry.line) && entry.line > 0 ? entry.line : null;
-    const computedEvidence = parseEvidence(entry.evidence);
-    const fallbackFile = filePath ? args.changedFilesByPath.get(filePath) : null;
-    const evidence: ReviewEvidence[] = computedEvidence.length > 0
+    const computedEvidence = sanitizeParsedEvidence(parseEvidence(entry.evidence), args.changedFilesByPath);
+    const fallbackEvidence = buildFallbackDiffEvidence({ filePath, line, changedFilesByPath: args.changedFilesByPath });
+    const evidence: ReviewEvidence[] = computedEvidence.length > 0 && hasConcreteEvidence(computedEvidence)
       ? computedEvidence
-      : fallbackFile
-        ? [{
-            kind: "diff_hunk" as const,
-            summary: `Relevant diff context from ${filePath}`,
-            filePath,
-            line,
-            quote: fallbackFile.excerpt || null,
-            artifactId: null,
-          }]
-        : [];
+      : dedupeEvidenceEntries([...computedEvidence, ...fallbackEvidence]);
     const anchorState = computeAnchorState({
       filePath,
       line,
@@ -1088,7 +1120,7 @@ function countConcreteAnchorFiles(evidence: ReviewEvidence[]): number {
   return new Set(
     evidence
       .filter((entry) => entry.kind !== "artifact")
-      .filter((entry) => Boolean(entry.filePath) && (entry.line != null || (entry.quote?.trim() ?? "").length > 0 || entry.kind === "diff_hunk"))
+      .filter((entry) => Boolean(entry.filePath) && (entry.line != null || entry.kind === "diff_hunk"))
       .map((entry) => entry.filePath as string),
   ).size;
 }
@@ -2762,18 +2794,38 @@ export function createReviewService({
           metadata: { suppressedCount },
         });
       }
-      await publishRun({
-        runId,
-        targetLabel: materialized.targetLabel,
-        summary: finalSummary,
-        config: effectiveRun.config,
-        findings: publishableFindings,
-        publicationTarget: materialized.publicationTarget,
-        changedFiles: materialized.changedFiles.map((entry) => ({
-          filePath: entry.filePath,
-          diffPositionsByLine: entry.diffPositionsByLine,
-        })),
-      });
+      if (failedPassResults.length > 0) {
+        insertArtifact(runId, {
+          artifactType: "tool_evidence",
+          title: "Publication skipped for partial review",
+          mimeType: "application/json",
+          contentText: JSON.stringify({
+            reason: "partial_review",
+            failedReviewers: failedPassResults.map((result) => ({
+              passKey: result.pass.key,
+              label: result.pass.label,
+              errorMessage: result.errorMessage,
+            })),
+          }, null, 2),
+          metadata: {
+            skippedPublication: true,
+            failedReviewerCount: failedPassResults.length,
+          },
+        });
+      } else {
+        await publishRun({
+          runId,
+          targetLabel: materialized.targetLabel,
+          summary: finalSummary,
+          config: effectiveRun.config,
+          findings: publishableFindings,
+          publicationTarget: materialized.publicationTarget,
+          changedFiles: materialized.changedFiles.map((entry) => ({
+            filePath: entry.filePath,
+            diffPositionsByLine: entry.diffPositionsByLine,
+          })),
+        });
+      }
       if (disposed) return;
       const severitySummary = tallySeveritySummary(findings);
       const endedAt = nowIso();

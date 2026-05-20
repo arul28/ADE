@@ -308,6 +308,8 @@ function renderPane(args: {
   getDetail?: ReturnType<typeof vi.fn>;
   getFiles?: ReturnType<typeof vi.fn>;
   getCommits?: ReturnType<typeof vi.fn>;
+  getActivity?: ReturnType<typeof vi.fn>;
+  addComment?: ReturnType<typeof vi.fn>;
   getActionRuns?: ReturnType<typeof vi.fn>;
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
@@ -482,7 +484,8 @@ function renderPane(args: {
         getFiles: args.getFiles ?? vi.fn().mockResolvedValue([]),
         getCommits: args.getCommits,
         getActionRuns,
-        getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
+        getActivity: args.getActivity ?? vi.fn().mockResolvedValue(args.activity ?? []),
+        addComment: args.addComment ?? vi.fn().mockResolvedValue(undefined),
         getReviewThreads,
         issueInventorySync,
         issueInventoryReset,
@@ -574,6 +577,8 @@ function renderPane(args: {
     aiResolutionStop,
     getReviewThreads,
     getActionRuns,
+    getActivity: window.ade.prs.getActivity,
+    addComment: window.ade.prs.addComment,
     issueInventorySync,
     issueInventoryReset,
     getChecks,
@@ -867,6 +872,38 @@ describe("PrDetailPane issue resolver CTA", () => {
     await waitFor(() => {
       expect(screen.getByText("New CI: failure")).toBeTruthy();
       expect(screen.queryByText("Old CI: success")).toBeNull();
+    });
+  });
+
+  it("refetches activity after posting a PR comment", async () => {
+    const user = userEvent.setup();
+    const addComment = vi.fn().mockResolvedValue(undefined);
+    const getActivity = vi.fn().mockResolvedValue([
+      {
+        id: "comment-new",
+        type: "comment",
+        author: "octocat",
+        avatarUrl: null,
+        body: "Freshly posted comment",
+        timestamp: "2026-03-23T12:05:00.000Z",
+        metadata: {},
+      } satisfies PrActivityEvent,
+    ]);
+    renderPane({
+      checks: [],
+      comments: [makeComment({ id: "comment-old", body: "Old cached comment" })],
+      reviewThreads: [],
+      getActivity,
+      addComment,
+    });
+
+    await user.type(screen.getByPlaceholderText(/leave a comment/i), "Freshly posted comment");
+    await user.click(screen.getByRole("button", { name: /^comment$/i }));
+
+    await waitFor(() => {
+      expect(addComment).toHaveBeenCalledWith({ prId: "pr-80", body: "Freshly posted comment" });
+      expect(getActivity).toHaveBeenCalled();
+      expect(screen.getByText("Freshly posted comment")).toBeTruthy();
     });
   });
 

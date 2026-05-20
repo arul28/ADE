@@ -532,6 +532,12 @@ function createHarness(args: {
   outputs: string[];
   targetLabel?: string;
   publicationTarget?: ReviewPublicationDestination | null;
+  materializedTarget?: Partial<{
+    targetLabel: string;
+    publicationTarget: ReviewPublicationDestination | null;
+    fullPatchText: string;
+    changedFiles: ReturnType<typeof makeChangedFile>[];
+  }>;
   config?: Partial<ReviewRunConfig>;
   target?: { mode: "lane_diff" | "pr" | "commit_range" | "working_tree"; laneId: string; prId?: string; baseCommit?: string; headCommit?: string };
 }) {
@@ -547,6 +553,7 @@ function createHarness(args: {
   mockMaterializer.materialize.mockResolvedValue(makeMaterializedTarget({
     targetLabel: args.targetLabel,
     publicationTarget: args.publicationTarget ?? null,
+    ...(args.materializedTarget ?? {}),
   }));
   mockContextBuilder.buildContext.mockResolvedValue(makeContextPacket());
 
@@ -755,6 +762,44 @@ describe("reviewService", () => {
     expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
     expect(detail?.findings).toEqual([]);
     expect(detail?.artifacts.some((artifact) => artifact.title === "Reviewer failure summary")).toBe(true);
+  });
+
+  it("keeps partial PR reviews local even when auto-publish is enabled", async () => {
+    const destination: ReviewPublicationDestination = {
+      kind: "github_pr_review",
+      prId: "pr-80",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      prNumber: 80,
+      githubUrl: "https://github.com/ade-dev/ade/pull/80",
+    };
+    const harness = createHarness({
+      publicationTarget: destination,
+      targetLabel: "PR #80 feature/pr-80 -> main",
+      target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      config: { publishBehavior: "auto_publish" },
+      outputs: [
+        makeOutput("Cross-file found one issue.", [makeFinding()]),
+        makeOutput("Checks clear.", []),
+        makeOutput("Security clear.", []),
+        makeOutput("UI clear.", []),
+      ],
+    });
+    harness.runSessionTurn.mockRejectedValueOnce(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.publishReviewPublication).not.toHaveBeenCalled();
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.summary).toContain("Partial review");
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.publicationState).toBe("local_only");
+    expect(detail?.publications).toEqual([]);
+    expect(detail?.artifacts.some((artifact) => artifact.title === "Publication skipped for partial review")).toBe(true);
   });
 
   it("fails the review run when all specialist reviewers fail", async () => {
@@ -1273,6 +1318,42 @@ describe("reviewService", () => {
     expect(adjudicationArtifact?.contentText).toContain("low_evidence");
   });
 
+  it("filters reviewer evidence that cannot be anchored to the reviewed diff", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Unanchored finding.", [
+          makeFinding({
+            title: "External file risk",
+            severity: "high",
+            body: "This cites a file and line that are not in the reviewed diff.",
+            confidence: 0.93,
+            filePath: "src/unrelated.ts",
+            line: 999,
+            evidence: [{
+              summary: "The reviewer cited a line outside the materialized patch.",
+              filePath: "src/unrelated.ts",
+              line: 999,
+              quote: "+outsideReviewedDiff()",
+            }],
+          }),
+        ]),
+      ],
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs[0]?.status === "completed",
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.candidateFindings).toHaveLength(1);
+    expect(detail?.candidateFindings[0]?.evidence).toEqual([]);
+    expect(detail?.findings).toEqual([]);
+    const adjudicationArtifact = detail?.artifacts.find((artifact) => artifact.artifactType === "adjudication_result");
+    expect(adjudicationArtifact?.contentText).toContain("low_evidence");
+  });
+
   it("applies run and publication budgets and only publishes adjudicated findings", async () => {
     const destination: ReviewPublicationDestination = {
       kind: "github_pr_review",
@@ -1286,6 +1367,21 @@ describe("reviewService", () => {
       publicationTarget: destination,
       targetLabel: "PR #80 feature/pr-80 -> main",
       target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      materializedTarget: {
+        changedFiles: [
+          makeChangedFile({
+            excerpt: "@@ -1,2 +1,5 @@\n context\n+return null;\n+missing fallback\n+missing test coverage\n",
+            lineNumbers: [2, 3, 200],
+            diffPositionsByLine: { 2: 1, 3: 2, 200: 3 },
+          }),
+          makeChangedFile({
+            filePath: "src/worker.ts",
+            excerpt: "@@ -7,2 +7,4 @@\n context\n+dispatchWithoutInvariant()\n",
+            lineNumbers: [10],
+            diffPositionsByLine: { 10: 4 },
+          }),
+        ],
+      },
       config: {
         publishBehavior: "auto_publish",
         budgets: {

@@ -1582,7 +1582,7 @@ export function createPrService({
     const owner = rawPullHeadOwner(rawPr);
     const name = rawPullHeadRepoName(rawPr);
     if (!owner || owner.toLowerCase() !== repo.owner.toLowerCase()) return false;
-    if (name && name.toLowerCase() !== repo.name.toLowerCase()) return false;
+    if (!name || name.toLowerCase() !== repo.name.toLowerCase()) return false;
     return true;
   };
 
@@ -3284,6 +3284,8 @@ export function createPrService({
     db.run("delete from pr_convergence_state where pr_id = ?", [row.id]);
     db.run("delete from pr_pipeline_settings where pr_id = ?", [row.id]);
     db.run("delete from pr_issue_inventory where pr_id = ?", [row.id]);
+    db.run("delete from pull_request_ai_summaries where pr_id = ?", [row.id]);
+    db.run("delete from pull_request_snapshots where pr_id = ?", [row.id]);
     db.run("delete from pull_requests where id = ? and project_id = ?", [row.id, projectId]);
 
     let laneArchived = false;

@@ -68,8 +68,14 @@ function buildLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   };
 }
 
-function buildStash(ref: string, subject: string, createdAt = "2026-03-31T12:00:00.000Z"): GitStashSummary {
+function buildStash(
+  ref: string,
+  subject: string,
+  createdAt = "2026-03-31T12:00:00.000Z",
+  oid = `${ref}-oid`,
+): GitStashSummary {
   return {
+    oid,
     ref,
     subject,
     createdAt,
@@ -507,11 +513,14 @@ describe("LaneGitActionsPane rescue action", () => {
   it("updates the stash count after deleting a stash", async () => {
     const user = userEvent.setup();
     mockStashesByLaneId["lane-1"] = [
-      buildStash("stash@{0}", "drop me"),
+      buildStash("stash@{0}", "drop me", "2026-03-31T12:00:00.000Z", "oid-drop"),
       buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
     ];
-    (window.ade.git.stashDrop as any).mockImplementationOnce(async ({ stashRef }: { stashRef: string }) => {
+    (window.ade.git.stashDrop as any).mockImplementationOnce(async (
+      { stashRef, stashOid }: { stashRef: string; stashOid?: string },
+    ) => {
       expect(stashRef).toBe("stash@{0}");
+      expect(stashOid).toBe("oid-drop");
       mockStashesByLaneId["lane-1"] = [buildStash("stash@{0}", "keep me", "2026-03-30T12:00:00.000Z")];
       return { operationId: "stash-drop", preHeadSha: "abc", postHeadSha: "abc" };
     });
@@ -526,7 +535,11 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: "DELETE STASH" }));
 
     await waitFor(() => {
-      expect(window.ade.git.stashDrop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{0}" });
+      expect(window.ade.git.stashDrop).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-drop",
+      });
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
@@ -538,11 +551,14 @@ describe("LaneGitActionsPane rescue action", () => {
   it("updates the stash count after restoring a stash", async () => {
     const user = userEvent.setup();
     mockStashesByLaneId["lane-1"] = [
-      buildStash("stash@{0}", "restore me"),
+      buildStash("stash@{0}", "restore me", "2026-03-31T12:00:00.000Z", "oid-restore"),
       buildStash("stash@{1}", "keep me", "2026-03-30T12:00:00.000Z"),
     ];
-    (window.ade.git.stashPop as any).mockImplementationOnce(async ({ stashRef }: { stashRef: string }) => {
+    (window.ade.git.stashPop as any).mockImplementationOnce(async (
+      { stashRef, stashOid }: { stashRef: string; stashOid?: string },
+    ) => {
       expect(stashRef).toBe("stash@{0}");
+      expect(stashOid).toBe("oid-restore");
       mockStashesByLaneId["lane-1"] = [buildStash("stash@{0}", "keep me", "2026-03-30T12:00:00.000Z")];
       return { operationId: "stash-pop", preHeadSha: "abc", postHeadSha: "abc" };
     });
@@ -555,13 +571,37 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getAllByRole("button", { name: "RESTORE" })[0]);
 
     await waitFor(() => {
-      expect(window.ade.git.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{0}" });
+      expect(window.ade.git.stashPop).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-restore",
+      });
     });
     await waitFor(() => {
       expect(screen.getByText("1 saved")).toBeTruthy();
     });
     expect(screen.queryByText("restore me")).toBeNull();
     expect(screen.getByText("keep me")).toBeTruthy();
+  });
+
+  it("sends stash oid when copying a stash to the worktree", async () => {
+    const user = userEvent.setup();
+    mockStashesByLaneId["lane-1"] = [
+      buildStash("stash@{0}", "copy me", "2026-03-31T12:00:00.000Z", "oid-copy"),
+    ];
+
+    renderPane();
+
+    await screen.findByText("1 saved");
+    await user.click(screen.getByRole("button", { name: "COPY TO WORKTREE" }));
+
+    await waitFor(() => {
+      expect(window.ade.git.stashApply).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-copy",
+      });
+    });
   });
 
   it("updates the stash section even if the broader refresh fails afterward", async () => {

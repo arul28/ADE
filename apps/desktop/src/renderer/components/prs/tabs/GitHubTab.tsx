@@ -65,19 +65,18 @@ type CreateLaneFromPrBranchApi = {
   ) => Promise<CreateLaneFromPrBranchResult>;
 };
 
-type CreateLaneFromPrBranchSuccess = {
-  item: GitHubPrListItem;
-  preflight: CreateLaneFromPrBranchPreflight;
-  result: CreateLaneFromPrBranchResult;
-};
-
 let githubTabWarmCache: GitHubTabWarmCache | null = null;
+
+function normalizeGitHubFilter(value: unknown): GitHubFilter {
+  return value === "open" || value === "closed" || value === "merged" ? value : "open";
+}
 
 function readGitHubTabWarmCache(projectRoot: string | null): GitHubTabWarmCache | null {
   if (GITHUB_TAB_CACHE_DISABLED) return null;
   if (!projectRoot) return null;
   if (githubTabWarmCache?.projectRoot !== projectRoot) return null;
-  return githubTabWarmCache;
+  const filter = normalizeGitHubFilter((githubTabWarmCache as { filter?: unknown }).filter);
+  return filter === githubTabWarmCache.filter ? githubTabWarmCache : { ...githubTabWarmCache, filter };
 }
 
 function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
@@ -745,7 +744,7 @@ export function GitHubTab({
   );
   const [loading, setLoading] = React.useState(() => !initialWarmCacheRef.current?.snapshot);
   const [error, setError] = React.useState<string | null>(null);
-  const [filter, setFilter] = React.useState<GitHubFilter>(() => initialWarmCacheRef.current?.filter ?? "open");
+  const [filter, setFilter] = React.useState<GitHubFilter>(() => normalizeGitHubFilter(initialWarmCacheRef.current?.filter));
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
   );
@@ -866,7 +865,7 @@ export function GitHubTab({
     setSnapshot(warmCache?.snapshot ?? null);
     setLoading(!warmCache?.snapshot);
     setError(null);
-    setFilter(warmCache?.filter ?? "open");
+    setFilter(normalizeGitHubFilter(warmCache?.filter));
     setSelectedItemId(warmCache?.selectedItemId ?? null);
     setScopeFilter(warmCache?.scopeFilter ?? "all");
     setSearchQuery(warmCache?.searchQuery ?? "");

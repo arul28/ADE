@@ -2637,7 +2637,7 @@ export function LaneGitActionsPane({
                             onClick={() => {
                               if (!laneId) return;
                               void runAction("stash pop", async () => {
-                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref });
+                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
                                 await refreshGitMeta(laneId);
                               });
                             }}
@@ -2658,7 +2658,7 @@ export function LaneGitActionsPane({
                             onClick={() => {
                               if (!laneId) return;
                               void runAction("stash apply", async () => {
-                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref });
+                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid });
                               });
                             }}
                           >
@@ -2687,7 +2687,7 @@ export function LaneGitActionsPane({
                                   validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
                                 });
                                 if (confirmation == null) throw new Error("__ade_cancelled__");
-                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref });
+                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid });
                                 await refreshGitMeta(laneId);
                               });
                             }}

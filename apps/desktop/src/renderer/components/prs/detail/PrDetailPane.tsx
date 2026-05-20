@@ -1142,8 +1142,16 @@ export function PrDetailPane({
     return runAction(async () => {
       await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
       setCommentDraft("");
-      await onRefresh();
-      await loadDetail({ forceLive: true });
+      activityFetchKeyRef.current = null;
+      setActivity([]);
+      const activityPromise = window.ade.prs.getActivity(pr.id)
+        .then((events) => setActivity(events))
+        .catch(() => undefined);
+      await Promise.all([
+        onRefresh(),
+        loadDetail({ forceLive: true }),
+        activityPromise,
+      ]);
     });
   };
 

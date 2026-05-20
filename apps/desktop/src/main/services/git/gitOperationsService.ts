@@ -149,6 +149,7 @@ function sortStashesForDrop<T extends GitStashSummary>(stashes: T[]): T[] {
 
 function toPublicStash(stash: BranchStashSummary): GitStashSummary {
   return {
+    oid: stash.oid,
     ref: stash.ref,
     subject: stash.subject,
     createdAt: stash.createdAt,
@@ -300,8 +301,11 @@ export function createGitOperationsService({
       .filter((entry) => stashMatchesBranch(entry.subject, lane.branchRef));
   }
 
-  async function requireBranchStash(lane: LaneInfo, stashRef: string): Promise<BranchStashSummary> {
-    const stash = (await listBranchStashes(lane)).find((entry) => entry.ref === stashRef);
+  async function requireBranchStash(lane: LaneInfo, stashRef: string, stashOid?: string): Promise<BranchStashSummary> {
+    const normalizedOid = stashOid?.trim();
+    const stash = (await listBranchStashes(lane)).find((entry) =>
+      normalizedOid?.length ? entry.oid === normalizedOid : entry.ref === stashRef
+    );
     if (!stash) {
       const branch = normalizeBranchForStashComparison(lane.branchRef);
       throw new Error(`Stash ${stashRef} is not saved for branch ${branch || lane.branchRef}.`);
@@ -1047,14 +1051,15 @@ export function createGitOperationsService({
 
     async stashApply(args: GitStashRefArgs): Promise<GitActionResult> {
       const stashRef = args.stashRef.trim();
+      const stashOid = args.stashOid?.trim();
       if (!stashRef.length) throw new Error("stashRef is required");
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_stash_apply",
         reason: "stash_apply",
-        metadata: { stashRef },
+        metadata: { stashRef, stashOid: stashOid || null },
         fn: async (lane) => {
-          const stash = await requireBranchStash(lane, stashRef);
+          const stash = await requireBranchStash(lane, stashRef, stashOid);
           const currentRef = await resolveCurrentBranchStashRef(lane, stash);
           await runGitOrThrow(["stash", "apply", currentRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }
@@ -1064,14 +1069,15 @@ export function createGitOperationsService({
 
     async stashPop(args: GitStashRefArgs): Promise<GitActionResult> {
       const stashRef = args.stashRef.trim();
+      const stashOid = args.stashOid?.trim();
       if (!stashRef.length) throw new Error("stashRef is required");
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_stash_pop",
         reason: "stash_pop",
-        metadata: { stashRef },
+        metadata: { stashRef, stashOid: stashOid || null },
         fn: async (lane) => {
-          const stash = await requireBranchStash(lane, stashRef);
+          const stash = await requireBranchStash(lane, stashRef, stashOid);
           const currentApplyRef = await resolveCurrentBranchStashRef(lane, stash);
           await runGitOrThrow(["stash", "apply", currentApplyRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
           try {
@@ -1083,6 +1089,7 @@ export function createGitOperationsService({
             logger.warn("git.stash_pop_drop_failed", {
               laneId: args.laneId,
               stashRef,
+              stashOid: stashOid || null,
               error: message,
             });
           }
@@ -1093,15 +1100,16 @@ export function createGitOperationsService({
 
     async stashDrop(args: GitStashRefArgs): Promise<GitActionResult> {
       const stashRef = args.stashRef.trim();
+      const stashOid = args.stashOid?.trim();
       if (!stashRef.length) throw new Error("stashRef is required");
       invalidateStashReadCaches();
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_stash_drop",
         reason: "stash_drop",
-        metadata: { stashRef },
+        metadata: { stashRef, stashOid: stashOid || null },
         fn: async (lane) => {
-          const stash = await requireBranchStash(lane, stashRef);
+          const stash = await requireBranchStash(lane, stashRef, stashOid);
           const currentRef = await resolveCurrentBranchStashRef(lane, stash);
           await runGitOrThrow(["stash", "drop", currentRef], { cwd: lane.worktreePath, timeoutMs: 30_000 });
         }

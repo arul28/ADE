@@ -234,11 +234,13 @@ describe("gitOperationsService stash item commands", () => {
 
     await expect(service.listStashes({ laneId: "lane-1" })).resolves.toEqual([
       {
+        oid: "oid-0",
         ref: "stash@{0}",
         createdAt: "2026-05-12T02:09:32-04:00",
         subject: "On feature/stash-test: test",
       },
       {
+        oid: "oid-1",
         ref: "stash@{1}",
         createdAt: "2026-05-12T02:08:32-04:00",
         subject: "WIP on feature/stash-test: abc123 work",
@@ -306,7 +308,7 @@ describe("gitOperationsService stash item commands", () => {
       expect.objectContaining({
         laneId: "lane-1",
         kind: "git_stash_pop",
-        metadata: expect.objectContaining({ stashRef: "stash@{1}" }),
+        metadata: expect.objectContaining({ stashRef: "stash@{1}", stashOid: null }),
       }),
     );
     expect(mockFinish).toHaveBeenCalledWith(
@@ -456,22 +458,24 @@ describe("gitOperationsService stash item commands", () => {
     );
   });
 
-  it("re-resolves a selected stash by oid before dropping it", async () => {
+  it("uses stash oid when the selected ordinal shifted before dropping it", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    let listCalls = 0;
     mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
       if (args[0] === "stash" && args[1] === "list") {
-        listCalls += 1;
-        return listCalls === 1
-          ? "oid-0\u001fstash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: shifted"
-          : "oid-0\u001fstash@{1}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: shifted";
+        return [
+          "oid-new\u001fstash@{0}\u001f2026-05-12T02:10:32-04:00\u001fOn feature/stash-test: newer",
+          "oid-0\u001fstash@{1}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: shifted",
+        ].join("\n");
       }
-      if (args[0] === "rev-parse" && args[1] === "--verify") return "oid-0\n";
+      if (args[0] === "rev-parse" && args[1] === "--verify") {
+        if (args[2] === "stash@{0}") return "oid-new\n";
+        if (args[2] === "stash@{1}") return "oid-0\n";
+      }
       return undefined;
     });
-    const { service } = createTestGitOperationsService();
+    const { service, mockStart } = createTestGitOperationsService();
 
-    await service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}" });
+    await service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}", stashOid: "oid-0" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       3,
@@ -482,6 +486,13 @@ describe("gitOperationsService stash item commands", () => {
       4,
       ["stash", "drop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        laneId: "lane-1",
+        kind: "git_stash_drop",
+        metadata: expect.objectContaining({ stashRef: "stash@{0}", stashOid: "oid-0" }),
+      }),
     );
   });
 

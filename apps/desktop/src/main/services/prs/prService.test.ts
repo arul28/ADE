@@ -1769,6 +1769,47 @@ describe("prService.createLaneFromPrBranch", () => {
     expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "ls-remote")).toBe(false);
   });
 
+  it("blocks PR branches when GitHub omits the head repository", async () => {
+    const githubService = makeBranchPrGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/404`) {
+          return {
+            data: makeUnmappedBranchPull({
+              head: {
+                ref: "feature/unmapped",
+                sha: "head-sha-unmapped",
+                user: { login: REPO.owner },
+                repo: null,
+              },
+            }),
+            response: { status: 200, headers: new Headers() },
+          };
+        }
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }),
+    });
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+    });
+
+    expect(preflightDisposition(result.preflight)).toBe("blocked");
+    expect(preflightConflicts(result.preflight)).toEqual([
+      expect.objectContaining({ code: "fork_unavailable" }),
+    ]);
+    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/test-owner|unknown repository|cannot be imported/i);
+    expect(result.lane ?? null).toBeNull();
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+    expect(mockGit.runGit.mock.calls.some(([args]) => Array.isArray(args) && args[0] === "ls-remote")).toBe(false);
+  });
+
   it("creates a lane from the PR branch, maps the PR to that lane, and returns lane/pr summaries", async () => {
     const importedLane = makeFakeLane({
       id: "lane-imported",
@@ -2058,6 +2099,31 @@ describe("prService.createLaneFromPrBranch", () => {
     expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/branch owner|feature\/unmapped|owned|already/i);
     expect(result.lane ?? null).toBeNull();
     expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("prService.delete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes cached PR children before deleting the PR row", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const { service } = buildService({ db });
+
+    await service.delete({ prId: "pr-row-1", closeOnGitHub: false, archiveLane: false });
+
+    const runSql: string[] = db.run.mock.calls.map((call: unknown[]) => String(call[0]));
+    const summaryDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_ai_summaries"));
+    const snapshotDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_request_snapshots"));
+    const prDeleteIndex = runSql.findIndex((sql: string) => sql.includes("delete from pull_requests"));
+
+    expect(summaryDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(snapshotDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(prDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(summaryDeleteIndex).toBeLessThan(prDeleteIndex);
+    expect(snapshotDeleteIndex).toBeLessThan(prDeleteIndex);
   });
 });
 
