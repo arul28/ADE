@@ -17,7 +17,7 @@ export default defineConfig({
   external: ["electron", "sql.js", "node-pty", "onnxruntime-node", "@cursor/sdk", "@factory/droid-sdk", "sqlite3"],
   // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
   // the CJS bundle doesn't emit a bare require() that Node/Electron can't resolve.
-  noExternal: ["@opencode-ai/sdk"],
+  noExternal: ["@opencode-ai/sdk", /^@opencode-ai\/sdk\/v2(?:\/.*)?$/],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   clean: true,

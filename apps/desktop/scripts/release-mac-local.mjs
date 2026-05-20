@@ -220,6 +220,15 @@ try {
       path.join(
         appDir,
         "node_modules",
+        "opencode-darwin-x64",
+        "bin",
+        "opencode",
+      ),
+    )) &&
+    (await pathExists(
+      path.join(
+        appDir,
+        "node_modules",
         "@huggingface",
         "transformers",
         "node_modules",

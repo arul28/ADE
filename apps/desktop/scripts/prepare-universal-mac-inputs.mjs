@@ -216,6 +216,12 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
+    "Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-x64",
+    "node_modules/opencode-darwin-x64",
+    "OpenCode x64 package",
+  );
+  await copyFromAppBundle(
+    x64AppPath,
     "Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-x64",
     "node_modules/@img/sharp-darwin-x64",
     "sharp x64 package",
@@ -241,6 +247,12 @@ async function seedFromLockfileAndPinnedArtifacts() {
     "node_modules/@openai/codex-darwin-x64",
     "node_modules/@openai/codex-darwin-x64",
     "Codex x64 package",
+  );
+  await seedPackageFromResolvedUrl(
+    packageLock,
+    "node_modules/opencode-darwin-x64",
+    "node_modules/opencode-darwin-x64",
+    "OpenCode x64 package",
   );
   await seedPackageFromResolvedUrl(
     packageLock,
@@ -270,6 +282,10 @@ async function assertUniversalInputsReady() {
       "codex",
     ),
     "x64 Codex CLI binary",
+  );
+  await assertPathExists(
+    path.join(appDir, "node_modules", "opencode-darwin-x64", "bin", "opencode"),
+    "x64 OpenCode CLI binary",
   );
   await assertPathExists(
     path.join(appDir, "node_modules", "@img", "sharp-darwin-x64", "lib", "sharp-darwin-x64.node"),

@@ -122,9 +122,9 @@ const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
   if (permissionMode === "config-toml") return null;
   if (permissionMode === "full-auto") return "allow";
-  if (permissionMode === "edit") return { "*": "ask", edit: "allow" };
-  if (permissionMode === "plan") return { "*": "ask", edit: "deny", bash: "deny" };
-  return { "*": "ask" };
+  if (permissionMode === "edit") return { "*": "ask", edit: "allow", question: "allow" };
+  if (permissionMode === "plan") return { "*": "ask", edit: "deny", bash: "deny", question: "allow" };
+  return { "*": "ask", question: "allow" };
 }
 
 function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | undefined): string | null {
@@ -147,6 +147,36 @@ function buildOpenCodeResumeCommand(args: {
   } else {
     commandArgs.push("--continue");
   }
+  const config = openCodeConfigEnv(args.permissionMode);
+  const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
+  return `${assignment}${commandArrayToLine(commandArgs)}`;
+}
+
+export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
+
+export function buildOpenCodeReplayResumeCommand(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  targetId: string | null;
+  model?: string | null;
+  prompt: string;
+  replayLimit?: number | null;
+}): string {
+  const commandArgs = [
+    "opencode",
+    "run",
+    "--interactive",
+    ...permissionModeToOpenCodeArgs(args.permissionMode),
+    ...modelToCliFlag(args.model),
+  ];
+  if (args.targetId) {
+    commandArgs.push("--session", args.targetId);
+  } else {
+    commandArgs.push("--continue");
+  }
+  const replayLimit = Number.isFinite(args.replayLimit)
+    ? Math.max(1, Math.floor(Number(args.replayLimit)))
+    : OPENCODE_RESUME_REPLAY_LIMIT;
+  commandArgs.push("--replay", "--replay-limit", String(replayLimit), "--", args.prompt);
   const config = openCodeConfigEnv(args.permissionMode);
   const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
   return `${assignment}${commandArrayToLine(commandArgs)}`;

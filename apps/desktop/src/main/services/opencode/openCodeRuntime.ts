@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import { createServer } from "node:net";
-import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   createOpencodeClient,
@@ -11,6 +9,10 @@ import {
   type OpencodeClient,
   type TextPartInput,
 } from "@opencode-ai/sdk";
+import {
+  createOpencodeClient as createOpenCodeV2Client,
+  type OpencodeClient as OpenCodeV2Client,
+} from "@opencode-ai/sdk/v2/client";
 import {
   decodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
@@ -55,6 +57,7 @@ const ADE_PLAN_TOOL_SELECTION: Record<string, boolean> = {
 
 export type OpenCodeSessionHandle = {
   client: OpencodeClient;
+  v2Client: OpenCodeV2Client;
   server: {
     url: string;
     close(): Promise<void>;
@@ -68,6 +71,47 @@ export type OpenCodeSessionHandle = {
   touch(): void;
   setBusy(busy: boolean): void;
   setEvictionHandler(handler: ((reason: OpenCodeServerShutdownReason) => void) | null): void;
+};
+
+export type OpenCodeQuestionInfo = {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description?: string }>;
+  multiple?: boolean;
+  custom?: boolean;
+};
+
+export type OpenCodeRuntimeEvent = Event | {
+  type: "question.asked";
+  properties: {
+    id: string;
+    sessionID: string;
+    questions: OpenCodeQuestionInfo[];
+    tool?: { messageID: string; callID: string };
+  };
+} | {
+  type: "question.replied";
+  properties: {
+    sessionID: string;
+    requestID: string;
+    answers: string[][];
+  };
+} | {
+  type: "question.rejected";
+  properties: {
+    sessionID: string;
+    requestID: string;
+  };
+} | {
+  type: "permission.asked";
+  properties: {
+    id: string;
+    sessionID: string;
+    permission: string;
+    patterns?: string[];
+    metadata?: Record<string, unknown>;
+    tool?: { messageID: string; callID: string };
+  };
 };
 
 export type OpenCodePromptFile = {
@@ -155,6 +199,7 @@ function buildPermissionConfig(
   webfetch: "allow" | "ask" | "deny";
   doom_loop: "allow" | "ask" | "deny";
   external_directory: "allow" | "ask" | "deny";
+  question: "allow" | "ask" | "deny";
 } {
   if (permissionMode === "full-auto") {
     return {
@@ -163,6 +208,7 @@ function buildPermissionConfig(
       webfetch: "allow",
       doom_loop: "allow",
       external_directory: "ask",
+      question: "allow",
     };
   }
 
@@ -173,6 +219,7 @@ function buildPermissionConfig(
       webfetch: "allow",
       doom_loop: "ask",
       external_directory: "deny",
+      question: "allow",
     };
   }
 
@@ -182,6 +229,7 @@ function buildPermissionConfig(
     webfetch: "allow",
     doom_loop: "ask",
     external_directory: "ask",
+    question: "allow",
   };
 }
 
@@ -286,6 +334,7 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     webfetch: "deny",
     doom_loop: "deny",
     external_directory: "deny",
+    question: "deny",
   } as const;
 
   return {
@@ -389,6 +438,7 @@ export function buildOpenCodePromptParts(args: {
 
 function createOpenCodeSessionHandle(args: {
   client: OpencodeClient;
+  v2Client: OpenCodeV2Client;
   lease: OpenCodeServerLease;
   sessionId: string;
   initialTitle?: string | null;
@@ -397,6 +447,7 @@ function createOpenCodeSessionHandle(args: {
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
+    v2Client: args.v2Client,
     server: {
       url: args.lease.url,
       async close() {
@@ -452,6 +503,10 @@ async function startOpenCodeSessionInternal(
     baseUrl: lease.url,
     directory: args.directory,
   });
+  const v2Client = createOpenCodeV2Client({
+    baseUrl: lease.url,
+    directory: args.directory,
+  });
   const resolvedSessionId = trimToUndefined(args.sessionId);
 
   if (resolvedSessionId) {
@@ -459,9 +514,11 @@ async function startOpenCodeSessionInternal(
       const existing = await client.session.get({
         path: { id: resolvedSessionId },
         query: { directory: args.directory },
+        throwOnError: true,
       });
       return createOpenCodeSessionHandle({
         client,
+        v2Client,
         lease,
         sessionId: resolvedSessionId,
         initialTitle: existing.data?.title,
@@ -476,6 +533,7 @@ async function startOpenCodeSessionInternal(
   const created = await client.session.create({
     query: { directory: args.directory },
     body: trimToUndefined(args.title) ? { title: trimToUndefined(args.title) } : {},
+    throwOnError: true,
   });
 
   if (!created.data) {
@@ -485,6 +543,7 @@ async function startOpenCodeSessionInternal(
 
   return createOpenCodeSessionHandle({
     client,
+    v2Client,
     lease,
     sessionId: created.data.id,
     initialTitle: created.data.title,
@@ -514,12 +573,12 @@ export async function openCodeEventStream(args: {
   client: OpencodeClient;
   directory: string;
   signal?: AbortSignal;
-}): Promise<AsyncGenerator<Event>> {
+}): Promise<AsyncGenerator<OpenCodeRuntimeEvent>> {
   const result = await args.client.event.subscribe({
     query: { directory: args.directory },
     signal: args.signal,
   });
-  return result.stream;
+  return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
 
 export async function refreshOpenCodeSessionToolSelection(
@@ -556,6 +615,7 @@ export async function runOpenCodeTextPrompt(
     await handle.client.session.promptAsync({
       path: { id: handle.sessionId },
       query: { directory: handle.directory },
+      throwOnError: true,
       body: {
         agent: args.agent ?? "ade-helper",
         model,

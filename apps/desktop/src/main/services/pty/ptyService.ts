@@ -15,6 +15,7 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
+import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import type {
   PtyDataEvent,
@@ -50,6 +51,7 @@ import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
 import {
+  buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -105,6 +107,9 @@ const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
 const PTY_SEND_DEFAULT_ROWS = 30;
 const CLAUDE_INITIAL_INPUT_CONFIRM_DELAY_MS = 1200;
+const OPENCODE_REPLAY_RESUME_ENV = "ADE_OPENCODE_REPLAY_RESUME";
+
+let cachedOpenCodeReplayResumeSupport: boolean | null = null;
 
 type CodexStorageSessionMatch = {
   id: string;
@@ -120,6 +125,32 @@ type ClaudeStorageSessionMatch = {
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
+}
+
+function openCodeSupportsReplayResume(): boolean {
+  const override = process.env[OPENCODE_REPLAY_RESUME_ENV]?.trim().toLowerCase();
+  if (override === "1" || override === "true" || override === "yes") return true;
+  if (override === "0" || override === "false" || override === "no") return false;
+  if (cachedOpenCodeReplayResumeSupport != null) return cachedOpenCodeReplayResumeSupport;
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+    delete env.FORCE_COLOR;
+    const executable = resolveOpenCodeBinaryPath() ?? "opencode";
+    const result = spawnSync(executable, ["run", "--help"], {
+      encoding: "utf8",
+      timeout: 3000,
+      maxBuffer: 512 * 1024,
+      env,
+    });
+    const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
+    cachedOpenCodeReplayResumeSupport = result.status === 0
+      && /\b--replay\b/.test(output)
+      && /\b--interactive\b/.test(output);
+    return cachedOpenCodeReplayResumeSupport;
+  } catch {
+    cachedOpenCodeReplayResumeSupport = false;
+    return false;
+  }
 }
 
 function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -409,6 +440,27 @@ function quotePosixShellArg(value: string): string {
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
   if (process.platform === "win32") return null;
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
+}
+
+function isOpenCodeToolType(toolType: TerminalToolType | null): boolean {
+  return toolType === "opencode" || toolType === "opencode-chat" || toolType === "opencode-orchestrated";
+}
+
+function isOpenCodeCommandName(command: string): boolean {
+  const basename = command.trim().split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return basename === "opencode" || basename === "opencode.exe" || basename === "opencode.cmd" || basename === "opencode.bat";
+}
+
+function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolType | null): string {
+  if (!isOpenCodeToolType(toolType) || !isOpenCodeCommandName(command)) return command;
+  return resolveOpenCodeBinaryPath() ?? command;
+}
+
+function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
+  if (!isOpenCodeToolType(toolType)) return commandLine;
+  const bundled = resolveOpenCodeBinaryPath();
+  if (!bundled) return commandLine;
+  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quotePosixShellArg(bundled)}`);
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -1610,7 +1662,8 @@ export function createPtyService({
     try {
       const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
       delete env.FORCE_COLOR;
-      const result = spawnSync("opencode", ["session", "list", "--format", "json", "--max-count", "80"], {
+      const executable = resolveOpenCodeBinaryPath() ?? "opencode";
+      const result = spawnSync(executable, ["session", "list", "--format", "json", "--max-count", "80"], {
         cwd: args.cwd,
         encoding: "utf8",
         timeout: 4000,
@@ -2413,7 +2466,7 @@ export function createPtyService({
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";
-      let startupCommand = requestedStartupCommand.trim();
+      let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
 
       let transcriptStream: fs.WriteStream | null = null;
@@ -2479,13 +2532,14 @@ export function createPtyService({
         if (updatedSession?.resumeCommand?.trim()) {
           initialResumeCommand = updatedSession.resumeCommand.trim();
           initialResumeMetadata = updatedSession.resumeMetadata ?? initialResumeMetadata;
-          startupCommand = initialResumeCommand;
+          startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
-      const directCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
+      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
       const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
       const useCleanInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
       const shellCandidates = resolveShellCandidates({ clean: useCleanInteractiveShell });
@@ -2904,13 +2958,24 @@ export function createPtyService({
       const requestedPermissionMode = typeof args.permissionMode === "string" && args.permissionMode.trim().length
         ? args.permissionMode
         : null;
-      const metadataResumeCommand = session.resumeMetadata
+      const openCodeReplayCommand = provider === "opencode"
+        && session.resumeMetadata?.provider === "opencode"
+        && openCodeSupportsReplayResume()
+        ? buildOpenCodeReplayResumeCommand({
+            permissionMode: requestedPermissionMode ?? session.resumeMetadata.launch.permissionMode ?? null,
+            targetId: sanitizeResumeTargetId(session.resumeMetadata.targetId ?? null),
+            model: requestedModel,
+            prompt: text,
+          })
+        : null;
+      const metadataResumeCommand = openCodeReplayCommand
+        ?? (session.resumeMetadata
         ? buildTrackedCliResumeCommand(session.resumeMetadata, {
           model: requestedModel,
           reasoningEffort: requestedReasoningEffort,
           permissionMode: requestedPermissionMode,
         })
-        : null;
+        : null);
       const rawResumeCommand = metadataResumeCommand != null
         ? metadataResumeCommand
         : normalizeResumeCommand(session.resumeCommand, session.toolType);
@@ -2922,11 +2987,13 @@ export function createPtyService({
       }
 
       let resumeFlight = resumeRuntimeFlights.get(sessionId);
+      let replayResumeLaunch = false;
       if (!resumeFlight) {
         const { cols, rows } = clampDims(
           typeof args.cols === "number" ? args.cols : PTY_SEND_DEFAULT_COLS,
           typeof args.rows === "number" ? args.rows : PTY_SEND_DEFAULT_ROWS,
         );
+        replayResumeLaunch = Boolean(openCodeReplayCommand);
         resumeFlight = service.create({
           sessionId,
           laneId: session.laneId,
@@ -2948,6 +3015,10 @@ export function createPtyService({
       }
 
       const created = await resumeFlight;
+      if (replayResumeLaunch) {
+        return buildResult(created, { resumed: true, reusedExistingRuntime: false });
+      }
+
       const written = service.writeBySessionId(created.sessionId, `${text}\r`);
       if (!written) {
         try {

@@ -903,17 +903,13 @@ async function defaultOpenCodeServerLauncher(
       output += chunk.toString();
       const lines = output.split("\n");
       for (const line of lines) {
-        if (!line.startsWith("opencode server listening")) continue;
-        const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
-        if (!match) {
-          fail(new Error(`Failed to parse server url from output: ${line}`));
-          return;
-        }
+        const url = parseOpenCodeServerListenUrl(line);
+        if (!url) continue;
         resolved = true;
         cleanup();
         const listenerPid = resolveOpenCodeListenerPid(args.port) ?? proc.pid ?? null;
         resolve({
-          url: match[1],
+          url,
           close() {
             cleanup();
             terminateOpenCodeServerProcesses(proc, listenerPid);
@@ -947,6 +943,14 @@ async function defaultOpenCodeServerLauncher(
     proc.on("exit", onExit);
     proc.on("error", onError);
   });
+}
+
+function parseOpenCodeServerListenUrl(line: string): string | null {
+  const normalized = line.trim();
+  if (!/\bopencode\s+server\s+listening\b/i.test(normalized)) return null;
+  const match = normalized.match(/\bon\s+(https?:\/\/[^\s]+)/i)
+    ?? normalized.match(/\b(https?:\/\/[^\s]+)/i);
+  return match?.[1] ?? null;
 }
 
 async function createOpencodeServerWithRetry(
@@ -1351,6 +1355,10 @@ export function __buildOpenCodeServeLaunchSpecForTests(args: {
 
 export function __resolveOpenCodeListenerPidForTests(port: number): number | null {
   return resolveOpenCodeListenerPid(port);
+}
+
+export function __parseOpenCodeServerListenUrlForTests(line: string): string | null {
+  return parseOpenCodeServerListenUrl(line);
 }
 
 /** Test hook: whether a WMIC/CIM command line would be treated as an ADE-managed OpenCode serve. */

@@ -2,6 +2,7 @@ import os from "node:os";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "./services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "./services/ai/codexExecutable";
+import { resolveOpenCodeBinary } from "./services/opencode/openCodeBinaryManager";
 import {
   classifyClaudeStartupFailure,
   type ClaudeStartupProbeResult,
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
   const claude = await import("@anthropic-ai/claude-agent-sdk");
   const claudeExecutable = resolveClaudeCodeExecutable();
   const codexExecutable = resolveCodexExecutable();
+  const openCodeExecutable = resolveOpenCodeBinary();
   const ptyProbe = await probePty();
   const claudeStartup = await probeClaudeStartup();
 
@@ -138,6 +140,9 @@ async function main(): Promise<void> {
     codexExecutable: typeof resolveCodexExecutable,
     codexExecutablePath: codexExecutable.path,
     codexExecutableSource: codexExecutable.source,
+    openCodeExecutable: typeof resolveOpenCodeBinary,
+    openCodeExecutablePath: openCodeExecutable.path,
+    openCodeExecutableSource: openCodeExecutable.source,
     ptyProbe,
   }));
 }

@@ -220,6 +220,41 @@ describe("openCodeInventory", () => {
     });
   });
 
+  it("treats OpenCode attachment-capable models as vision-capable", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["openai"],
+        all: [
+          {
+            id: "openai",
+            name: "OpenAI",
+            models: {
+              "gpt-5.4": {
+                id: "gpt-5.4",
+                name: "GPT-5.4",
+                attachment: true,
+                capabilities: {
+                  toolcall: true,
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/openai/gpt-5.4");
+    expect(descriptor?.capabilities.vision).toBe(true);
+  });
+
   it("allows passive cache reads after a probe warmed inventory with discovered local models", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({

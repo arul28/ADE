@@ -92,6 +92,17 @@ function collectDesktopRuntimeExecutableCandidates(rootPath) {
     });
   }
 
+  for (const packageDir of listDirectories(path.join(rootPath, "node_modules"))) {
+    const packageName = path.basename(packageDir);
+    if (packageName !== "opencode-ai" && !packageName.startsWith("opencode-")) continue;
+    for (const binaryName of ["opencode", "opencode.exe"]) {
+      candidates.push({
+        filePath: path.join(packageDir, "bin", binaryName),
+        label: "OpenCode CLI binary",
+      });
+    }
+  }
+
   return candidates;
 }
 

@@ -411,6 +411,14 @@ async function validatePackagedRuntime(appPath, description) {
   if (payload?.codexExecutable !== "function") {
     throw new Error(`[release:mac] Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
+  if (payload?.openCodeExecutable !== "function") {
+    throw new Error(`[release:mac] Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
+  }
+  if (payload?.openCodeExecutableSource !== "bundled") {
+    throw new Error(
+      `[release:mac] Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`
+    );
+  }
 
   const { stdout: adeCliHelp } = await execFileAsync(adeCliBinPath, ["--help"], {
     cwd: resourcesPath,
