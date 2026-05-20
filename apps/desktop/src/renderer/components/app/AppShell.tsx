@@ -57,7 +57,7 @@ type PrToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/settings"];
+  const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/missions", "/cto", "/vm", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
@@ -84,6 +84,7 @@ function serializeLocationRoute(location: ReturnType<typeof useLocation>): strin
     "/automations",
     "/missions",
     "/cto",
+    "/vm",
     "/settings",
   ];
   if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
@@ -1018,6 +1019,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/history": "tab-tint-history",
       "/automations": "tab-tint-automations",
       "/missions": "tab-tint-missions",
+      "/cto": "tab-tint-missions",
+      "/vm": "tab-tint-work",
       "/settings": "tab-tint-settings",
     };
     return tintMap[primaryTabPath(location.pathname)] ?? "";

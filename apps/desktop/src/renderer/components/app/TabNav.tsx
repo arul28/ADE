@@ -12,6 +12,7 @@ import {
   Robot,
   Strategy,
   Brain,
+  DesktopTower,
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -26,13 +27,14 @@ const mainItems = [
   { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/files", label: "Files", icon: FileCode },
   { to: "/project", label: "Run", icon: PlayCircle },
-  { to: "/graph", label: "Graph", icon: Graph },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
   { to: "/review", label: "Review", icon: MagnifyingGlass },
-  { to: "/history", label: "History", icon: ClockCounterClockwise },
   { to: "/automations", label: "Automations", icon: Robot },
-  { to: "/missions", label: "Missions", icon: Strategy },
   { to: "/cto", label: "CTO", icon: Brain },
+  { to: "/graph", label: "Graph", icon: Graph },
+  { to: "/history", label: "History", icon: ClockCounterClockwise },
+  { to: "/missions", label: "Missions", icon: Strategy },
+  { to: "/vm", label: "VM", icon: DesktopTower },
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
@@ -49,6 +51,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const project = useAppStore((s) => s.project);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
+  const macosVmTabIndicator = useAppStore((s) => s.macosVmTabIndicator);
   const location = useLocation();
   const hasActiveProject = Boolean(project?.rootPath);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -167,9 +170,32 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                 )}
               />
             ) : null}
+            {it.to === "/vm" && macosVmTabIndicator ? (
+              <span
+                title={
+                  macosVmTabIndicator === "failed"
+                    ? "Mac VM is in a failed state"
+                    : "Mac VM setup has an open step"
+                }
+                className={cn(
+                  "absolute -right-1 -top-1 ade-status-dot",
+                  macosVmTabIndicator === "failed"
+                    ? "ade-status-dot-error"
+                    : "ade-status-dot-warning",
+                )}
+              />
+            ) : null}
             {it.to === "/missions" && isPackaged ? (
               <span
                 title="Missions are coming soon in production builds"
+                className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
+              >
+                Soon
+              </span>
+            ) : null}
+            {it.to === "/vm" && isPackaged ? (
+              <span
+                title="Mac VM is coming soon in production builds"
                 className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"
               >
                 Soon

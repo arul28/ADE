@@ -513,4 +513,34 @@ describe("registerIpc sync bridge", () => {
     expect(localRuntimeConnectionPool.callSyncForRoot).not.toHaveBeenCalled();
     expect(resolveSyncService).toHaveBeenCalledTimes(1);
   });
+
+  it("returns a dev-tools snapshot instead of throwing when the service is unavailable", async () => {
+    registerIpc({
+      getCtx: () => ({
+        devToolsService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.devToolsDetect)?.(eventForSender(), { force: true }),
+    ).resolves.toMatchObject({
+      platform: process.platform,
+      tools: [
+        {
+          id: "git",
+          installed: false,
+          required: true,
+        },
+      ],
+    });
+  });
 });

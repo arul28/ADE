@@ -711,18 +711,31 @@ import type {
   MacosVmCaptureScreenshotResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
+  MacosVmDetachLaneArgs,
+  MacosVmDetachLaneResult,
+  MacosVmDisplaySession,
+  MacosVmDisplaySessionArgs,
   MacosVmEventPayload,
   MacosVmFocusWindowArgs,
+  MacosVmGetCredentialsArgs,
+  MacosVmInstallRuntimeArgs,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRestartArgs,
+  MacosVmRuntimeInstallStatus,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
+  MacosVmSetCredentialsArgs,
   MacosVmStartArgs,
   MacosVmStatus,
   MacosVmStatusArgs,
   MacosVmStopArgs,
+  MacosVmStorageInfo,
+  MacosVmStoredCredentialsSummary,
   MacosVmTypeTextArgs,
   MacosVmWindowTarget,
+  MacosVmWipeArgs,
+  MacosVmWipeResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
@@ -1746,6 +1759,9 @@ declare global {
         focusWindow: (
           args: MacosVmFocusWindowArgs,
         ) => Promise<MacosVmWindowTarget>;
+        getDisplaySession: (
+          args: MacosVmDisplaySessionArgs,
+        ) => Promise<MacosVmDisplaySession>;
         captureScreenshot: (
           args: MacosVmCaptureScreenshotArgs,
         ) => Promise<MacosVmCaptureScreenshotResult>;
@@ -1763,6 +1779,17 @@ declare global {
         typeText: (
           args: MacosVmTypeTextArgs,
         ) => Promise<{ ok: true; window: MacosVmWindowTarget }>;
+        restart: (args?: MacosVmRestartArgs) => Promise<MacosVmRecord | null>;
+        wipe: (args: MacosVmWipeArgs) => Promise<MacosVmWipeResult>;
+        installRuntime: (
+          args?: MacosVmInstallRuntimeArgs,
+        ) => Promise<MacosVmRuntimeInstallStatus>;
+        setCredentials: (args: MacosVmSetCredentialsArgs) => Promise<{ ok: true }>;
+        getCredentials: (
+          args: MacosVmGetCredentialsArgs,
+        ) => Promise<MacosVmStoredCredentialsSummary>;
+        detachLane: (args: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>;
+        getStorageInfo: () => Promise<MacosVmStorageInfo>;
         onEvent: (cb: (ev: MacosVmEventPayload) => void) => () => void;
       };
       terminal: {

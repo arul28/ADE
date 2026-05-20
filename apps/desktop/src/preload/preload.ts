@@ -721,18 +721,31 @@ import type {
   MacosVmCaptureScreenshotResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
+  MacosVmDetachLaneArgs,
+  MacosVmDetachLaneResult,
+  MacosVmDisplaySession,
+  MacosVmDisplaySessionArgs,
   MacosVmEventPayload,
   MacosVmFocusWindowArgs,
+  MacosVmGetCredentialsArgs,
+  MacosVmInstallRuntimeArgs,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRestartArgs,
+  MacosVmRuntimeInstallStatus,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
+  MacosVmSetCredentialsArgs,
   MacosVmStartArgs,
   MacosVmStatus,
   MacosVmStatusArgs,
   MacosVmStopArgs,
+  MacosVmStorageInfo,
+  MacosVmStoredCredentialsSummary,
   MacosVmTypeTextArgs,
   MacosVmWindowTarget,
+  MacosVmWipeArgs,
+  MacosVmWipeResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
@@ -1022,7 +1035,7 @@ const builtInBrowserStatusCache = createShortIpcCache<BuiltInBrowserStatus>(
 
 const macosVmStatusCache = createKeyedShortIpcCache<MacosVmStatus>((key) => {
   const args = parseIpcCacheArgs<MacosVmStatusArgs>(key, {});
-  return callProjectRuntimeActionOr("macos_vm", "getStatus", { args }, () =>
+  return callRemoteProjectRuntimeActionOr("macos_vm", "getStatus", { args }, () =>
     ipcRenderer.invoke(IPC.macosVmGetStatus, args),
   );
 }, 750);
@@ -5937,7 +5950,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => macosVmStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("macos_vm", "provision", { args }, () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "provision", { args }, () =>
             ipcRenderer.invoke(IPC.macosVmProvision, args),
           ),
       ),
@@ -5945,7 +5958,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => macosVmStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("macos_vm", "start", { args }, () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "start", { args }, () =>
             ipcRenderer.invoke(IPC.macosVmStart, args),
           ),
       ),
@@ -5953,7 +5966,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => macosVmStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("macos_vm", "stop", { args }, () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "stop", { args }, () =>
             ipcRenderer.invoke(IPC.macosVmStop, args),
           ),
       ),
@@ -5963,26 +5976,35 @@ contextBridge.exposeInMainWorld("ade", {
       clearAround(
         () => macosVmStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("macos_vm", "delete", { args }, () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "delete", { args }, () =>
             ipcRenderer.invoke(IPC.macosVmDelete, args),
           ),
       ),
     getAgentGuide: async (
       args: MacosVmAgentGuideArgs,
     ): Promise<MacosVmAgentGuide> =>
-      callProjectRuntimeActionOr("macos_vm", "getAgentGuide", { args }, () =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "getAgentGuide", { args }, () =>
         ipcRenderer.invoke(IPC.macosVmGetAgentGuide, args),
       ),
     focusWindow: async (
       args: MacosVmFocusWindowArgs,
     ): Promise<MacosVmWindowTarget> =>
-      callProjectRuntimeActionOr("macos_vm", "focusWindow", { args }, () =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "focusWindow", { args }, () =>
         ipcRenderer.invoke(IPC.macosVmFocusWindow, args),
+      ),
+    getDisplaySession: async (
+      args: MacosVmDisplaySessionArgs,
+    ): Promise<MacosVmDisplaySession> =>
+      callRemoteProjectRuntimeActionOr(
+        "macos_vm",
+        "getDisplaySession",
+        { args },
+        () => ipcRenderer.invoke(IPC.macosVmGetDisplaySession, args),
       ),
     captureScreenshot: async (
       args: MacosVmCaptureScreenshotArgs,
     ): Promise<MacosVmCaptureScreenshotResult> =>
-      callProjectRuntimeActionOr(
+      callRemoteProjectRuntimeActionOr(
         "macos_vm",
         "captureScreenshot",
         { args },
@@ -5991,7 +6013,7 @@ contextBridge.exposeInMainWorld("ade", {
     selectPoint: async (
       args: MacosVmSelectPointArgs,
     ): Promise<MacosVmSelectPointResult> =>
-      callProjectRuntimeActionOr("macos_vm", "selectPoint", { args }, () =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.macosVmSelectPoint, args),
       ),
     click: async (
@@ -6002,14 +6024,66 @@ contextBridge.exposeInMainWorld("ade", {
       x: number;
       y: number;
     }> =>
-      callProjectRuntimeActionOr("macos_vm", "click", { args }, () =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "click", { args }, () =>
         ipcRenderer.invoke(IPC.macosVmClick, args),
       ),
     typeText: async (
       args: MacosVmTypeTextArgs,
     ): Promise<{ ok: true; window: MacosVmWindowTarget }> =>
-      callProjectRuntimeActionOr("macos_vm", "typeText", { args }, () =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "typeText", { args }, () =>
         ipcRenderer.invoke(IPC.macosVmTypeText, args),
+      ),
+    restart: async (args: MacosVmRestartArgs = {}): Promise<MacosVmRecord | null> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "restart", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmRestart, args),
+          ),
+      ),
+    wipe: async (args: MacosVmWipeArgs): Promise<MacosVmWipeResult> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "wipe", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmWipe, args),
+          ),
+      ),
+    installRuntime: async (
+      args: MacosVmInstallRuntimeArgs = {},
+    ): Promise<MacosVmRuntimeInstallStatus> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "installRuntime", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmInstallRuntime, args),
+          ),
+      ),
+    setCredentials: async (args: MacosVmSetCredentialsArgs): Promise<{ ok: true }> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "setCredentials", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmSetCredentials, args),
+          ),
+      ),
+    getCredentials: async (
+      args: MacosVmGetCredentialsArgs,
+    ): Promise<MacosVmStoredCredentialsSummary> =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "getCredentials", { args }, () =>
+        ipcRenderer.invoke(IPC.macosVmGetCredentials, args),
+      ),
+    detachLane: async (args: MacosVmDetachLaneArgs): Promise<MacosVmDetachLaneResult> =>
+      clearAround(
+        () => macosVmStatusCache.clear(),
+        () =>
+          callRemoteProjectRuntimeActionOr("macos_vm", "detachLane", { args }, () =>
+            ipcRenderer.invoke(IPC.macosVmDetachLane, args),
+          ),
+      ),
+    getStorageInfo: async (): Promise<MacosVmStorageInfo> =>
+      callRemoteProjectRuntimeActionOr("macos_vm", "getStorageInfo", {}, () =>
+        ipcRenderer.invoke(IPC.macosVmGetStorageInfo),
       ),
     onEvent: macosVmEventFanout,
   },

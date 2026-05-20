@@ -3221,6 +3221,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         frame: { x: 0, y: 0, width: 1280, height: 800 },
         focusedAt: now,
       }),
+      getDisplaySession: resolvedArg({
+        ok: true,
+        laneId: "lane-main",
+        vmName: "browser-preview-vm",
+        websocketUrl: "ws://127.0.0.1:0/mock",
+        password: "mock",
+        width: 1280,
+        height: 800,
+        expiresAt: now,
+      }),
       captureScreenshot: resolvedArg({
         ok: true,
         laneId: "lane-main",

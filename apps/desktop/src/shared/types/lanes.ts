@@ -16,6 +16,7 @@ import type { TerminalSessionSummary } from "./sessions";
 // ---------------------------------------------------------------------------
 
 export type LaneType = "primary" | "worktree" | "attached";
+export type LaneRuntimePlacement = "local" | "macos-vm";
 export type MissionLaneRole = "mission_root" | "worker" | "integration" | "result";
 
 export type LaneStatus = {
@@ -55,6 +56,7 @@ export type LaneSummary = {
   folder?: string | null;
   missionId?: string | null;
   laneRole?: MissionLaneRole | null;
+  runtimePlacement?: LaneRuntimePlacement;
   createdAt: string;
   archivedAt?: string | null;
   devicesOpen?: DeviceMarker[];
@@ -167,6 +169,7 @@ export type CreateLaneArgs = {
   baseBranch?: string;
   branchName?: string;
   linearIssue?: LaneLinearIssue | null;
+  runtimePlacement?: LaneRuntimePlacement;
 };
 
 export type CreateChildLaneArgs = {
@@ -179,6 +182,7 @@ export type CreateChildLaneArgs = {
   baseBranchRef?: string;
   branchName?: string;
   linearIssue?: LaneLinearIssue | null;
+  runtimePlacement?: LaneRuntimePlacement;
 };
 
 export type CreateLaneFromUnstagedArgs = {

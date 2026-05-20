@@ -32,6 +32,7 @@ create table if not exists lanes (
       folder text,
       mission_id text,
       lane_role text,
+      runtime_placement text not null default 'local',
       status text not null,
       created_at text not null,
       archived_at text,
@@ -43,6 +44,8 @@ create table if not exists lanes (
 alter table lanes add column mission_id text;
 
 alter table lanes add column lane_role text;
+
+alter table lanes add column runtime_placement text not null default 'local';
 
 create index if not exists idx_lanes_project_id on lanes(project_id);
 

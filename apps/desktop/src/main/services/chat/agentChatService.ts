@@ -1704,6 +1704,7 @@ const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 120_000;
 const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
 const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
+  "- Do not rely on host-side ADE screenshot/click/type VM tools for new work.",
   "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
   "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git.",
   "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
@@ -22478,6 +22479,57 @@ export function createAgentChatService(args: {
     };
   };
 
+  /**
+   * Called from main.ts when laneService emits a `lane-placement-changed`
+   * event (i.e. a VM lane was detached, or a local lane was attached to the
+   * VM). Refreshes the launch context for every managed chat that references
+   * the lane and emits a system notice so the chat banner can flip between
+   * "Running locally" and "Running inside Mac VM" without a reload.
+   */
+  const handleLanePlacementChanged = (event: {
+    laneId: string;
+    from: "macos-vm" | "local";
+    to: "macos-vm" | "local";
+  }): void => {
+    const laneId = String(event?.laneId ?? "").trim();
+    if (!laneId.length) return;
+    for (const managed of managedSessions.values()) {
+      const candidateLaneIds = [
+        managed.session.laneId,
+        managed.preferredExecutionLaneId,
+        managed.selectedExecutionLaneId,
+      ];
+      if (!candidateLaneIds.includes(laneId)) continue;
+      try {
+        refreshManagedLaneLaunchContext(managed, { purpose: "follow lane placement change" });
+      } catch (error) {
+        logger.warn("agent_chat.refresh_after_placement_change_failed", {
+          laneId,
+          sessionId: managed.session.id,
+          from: event.from,
+          to: event.to,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      const message = event.to === "local"
+        ? "Lane detached from Mac VM; further turns run locally."
+        : "Lane attached to Mac VM; further turns run inside the VM at /Volumes/My Shared Files.";
+      try {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.placement_change_notice_failed", {
+          laneId,
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
   return {
     createSession,
     suggestLaneNameFromPrompt,
@@ -22536,6 +22588,7 @@ export function createAgentChatService(args: {
         eventSubscribers.delete(callback);
       };
     },
+    handleLanePlacementChanged,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

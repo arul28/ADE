@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -27,19 +27,28 @@ vi.mock("../shared/utils", () => ({
 // Import the module under test AFTER mocks are set up
 // ---------------------------------------------------------------------------
 
-import { resolveLaneLaunchContext } from "./laneLaunchContext";
+import {
+  invalidateVmLaneLaunchCache,
+  refreshVmLaneLaunchCache,
+  resolveLaneLaunchContext,
+  setMacosVmLaunchProvider,
+  VmNotReadyError,
+  type MacosVmLaunchProvider,
+} from "./laneLaunchContext";
+import type { MacosVmStatus } from "../../../shared/types/macosVm";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-function makeLaneService(worktreePath: string) {
+function makeLaneService(worktreePath: string, runtimePlacement: "local" | "macos-vm" = "local") {
   return {
     getLaneBaseAndBranch: vi.fn(() => ({
       baseRef: "main",
       branchRef: "feature/test",
       worktreePath,
       laneType: "standard" as const,
+      runtimePlacement,
     })),
   } as unknown as Parameters<typeof resolveLaneLaunchContext>[0]["laneService"];
 }
@@ -49,6 +58,76 @@ function setupDirectoryExists(realPath: string) {
   mocks.realpathSync.mockReturnValue(realPath);
 }
 
+function makeVmStatus(args: {
+  laneId: string;
+  readinessState?: string;
+  ipAddress?: string | null;
+  vmName?: string;
+  phase?: number | null;
+}): MacosVmStatus {
+  const vmRecord = {
+    id: "vm-1",
+    provider: "lume" as const,
+    name: args.vmName ?? "ade-vm",
+    laneId: args.laneId,
+    laneName: "lane",
+    laneRoot: "/lane",
+    state: "running" as const,
+    cpuCores: 4,
+    memory: "8gb",
+    diskSize: "64gb",
+    display: "1920x1080",
+    guestSharedPath: "/Volumes/My Shared Files",
+    sharedDirectory: "/lane",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    lastStartedAt: null,
+    lastStoppedAt: null,
+    ipAddress: args.ipAddress ?? "192.168.64.11",
+    sshCommand: null,
+    vncUrl: null,
+    lastError: null,
+    guestReadiness: {
+      state: (args.readinessState ?? "runtime_ready") as "runtime_ready",
+      canControlGui: true,
+      canRunCode: true,
+      sshAvailable: true,
+      setupAssistantLikely: false,
+      detail: "",
+      nextAction: "",
+    },
+    currentPhase: (args.phase ?? 10) as 10,
+    metadata: {},
+  };
+  return {
+    platform: "darwin" as const,
+    arch: "arm64",
+    supported: true,
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    activeProvider: { kind: "lume", available: true, version: "1.0", detail: "", docsUrl: "" },
+    tools: [],
+    laneVm: vmRecord,
+    vms: [vmRecord],
+    globalLease: null,
+    docs: { appleVirtualization: "", appleSharedDirectories: "", lume: "" },
+  };
+}
+
+function makeVmProvider(args: {
+  status: MacosVmStatus;
+  username?: string | null;
+  hasPassword?: boolean;
+}): MacosVmLaunchProvider {
+  return {
+    getStatus: vi.fn(async () => args.status),
+    getCredentials: vi.fn(async () => ({
+      vmName: args.status.vms[0]?.name ?? "ade-vm",
+      username: args.username !== undefined ? args.username : "ade",
+      hasPassword: args.hasPassword !== undefined ? args.hasPassword : true,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -56,10 +135,17 @@ function setupDirectoryExists(realPath: string) {
 describe("resolveLaneLaunchContext", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    invalidateVmLaneLaunchCache();
+    setMacosVmLaunchProvider(null);
+  });
+
+  afterEach(() => {
+    invalidateVmLaneLaunchCache();
+    setMacosVmLaunchProvider(null);
   });
 
   describe("happy path: no custom cwd", () => {
-    it("returns lane root as both laneWorktreePath and cwd", () => {
+    it("returns lane root as both laneWorktreePath and cwd with local execStrategy", () => {
       setupDirectoryExists("/real/lane/root");
 
       const result = resolveLaneLaunchContext({
@@ -71,6 +157,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/lane/root",
+        execStrategy: "local",
       });
     });
 
@@ -87,6 +174,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/lane/root",
+        execStrategy: "local",
       });
     });
 
@@ -103,6 +191,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/lane/root",
+        execStrategy: "local",
       });
     });
   });
@@ -125,6 +214,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/lane/root/src",
+        execStrategy: "local",
       });
       expect(mocks.resolvePathWithinRoot).toHaveBeenCalledOnce();
     });
@@ -134,8 +224,8 @@ describe("resolveLaneLaunchContext", () => {
     it("resolves absolute cwd within lane root", () => {
       mocks.statSync.mockReturnValue({ isDirectory: () => true });
       mocks.realpathSync
-        .mockReturnValueOnce("/real/lane/root")                // first ensureDirectoryExists (lane root)
-        .mockReturnValueOnce("/real/lane/root/packages/core"); // second ensureDirectoryExists (cwd)
+        .mockReturnValueOnce("/real/lane/root")
+        .mockReturnValueOnce("/real/lane/root/packages/core");
       mocks.resolvePathWithinRoot.mockReturnValue("/real/lane/root/packages/core");
 
       const result = resolveLaneLaunchContext({
@@ -148,6 +238,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/lane/root/packages/core",
+        execStrategy: "local",
       });
       expect(mocks.resolvePathWithinRoot).toHaveBeenCalledWith(
         "/real/lane/root",
@@ -174,6 +265,7 @@ describe("resolveLaneLaunchContext", () => {
       expect(result).toEqual({
         laneWorktreePath: "/real/lane/root",
         cwd: "/real/project/root",
+        execStrategy: "local",
       });
       expect(mocks.resolvePathWithinRoot).not.toHaveBeenCalled();
     });
@@ -290,19 +382,15 @@ describe("resolveLaneLaunchContext", () => {
 
   describe("error: requested cwd doesn't exist inside worktree", () => {
     it("throws when cwd directory does not exist after path validation", () => {
-      // First ensureDirectoryExists (for lane root) succeeds
       setupDirectoryExists("/real/lane/root");
       mocks.resolvePathWithinRoot.mockReturnValue("/real/lane/root/nonexistent");
 
-      // Second ensureDirectoryExists (for resolved cwd) fails
       let callCount = 0;
       mocks.statSync.mockImplementation(() => {
         callCount++;
         if (callCount <= 1) {
-          // First call: lane root check succeeds
           return { isDirectory: () => true };
         }
-        // Second call: cwd check fails
         throw new Error("ENOENT");
       });
 
@@ -328,7 +416,6 @@ describe("resolveLaneLaunchContext", () => {
         purpose: "test",
       });
 
-      // Verify getLaneBaseAndBranch was called with the trimmed laneId
       expect(laneService.getLaneBaseAndBranch).toHaveBeenCalledWith("lane-1");
     });
 
@@ -340,6 +427,123 @@ describe("resolveLaneLaunchContext", () => {
           purpose: "",
         }),
       ).toThrow("ADE cannot launch work outside the selected lane");
+    });
+  });
+
+  describe("VM lanes", () => {
+    it("returns SSH context when VM is runtime_ready and credentials are saved", async () => {
+      setupDirectoryExists("/real/lane/root");
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm" }),
+      });
+      setMacosVmLaunchProvider(provider);
+      const cache = await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+      expect(cache.kind).toBe("ready");
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+        laneId: "lane-vm",
+        purpose: "start agent",
+      });
+
+      expect(result.execStrategy).toBe("ssh");
+      expect(result.cwd).toBe("/Volumes/My Shared Files");
+      expect(result.sshTarget).toEqual({ ip: "192.168.64.11", username: "ade", vmName: "ade-vm" });
+    });
+
+    it("throws VmNotReadyError with phase when VM is still in setup_required", async () => {
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", readinessState: "setup_required", phase: 6 }),
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+
+      let caught: unknown = null;
+      try {
+        resolveLaneLaunchContext({
+          laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+          laneId: "lane-vm",
+          purpose: "start agent",
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(VmNotReadyError);
+      const err = caught as VmNotReadyError;
+      expect(err.code).toBe("macos-vm-not-ready");
+      expect(err.phase).toBe(6);
+      expect(err.readinessState).toBe("setup_required");
+    });
+
+    it("throws VmNotReadyError when credentials are missing", async () => {
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm" }),
+        hasPassword: false,
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+
+      let caught: unknown = null;
+      try {
+        resolveLaneLaunchContext({
+          laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+          laneId: "lane-vm",
+          purpose: "start agent",
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(VmNotReadyError);
+    });
+
+    it("throws VmNotReadyError when provider is uninitialized", () => {
+      expect(() =>
+        resolveLaneLaunchContext({
+          laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+          laneId: "lane-vm",
+          purpose: "start agent",
+        }),
+      ).toThrow(VmNotReadyError);
+    });
+
+    it("local launch context is returned unchanged for non-VM lanes even when a VM provider is installed", async () => {
+      setupDirectoryExists("/real/lane/root");
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-other" }),
+      });
+      setMacosVmLaunchProvider(provider);
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "local"),
+        laneId: "lane-local",
+        purpose: "start agent",
+      });
+
+      expect(result.execStrategy).toBe("local");
+      expect(result.sshTarget).toBeUndefined();
+    });
+
+    it("detached lane (now local) gets local context — no SSH routing", async () => {
+      // Simulate a lane that was previously macos-vm but has been detached and
+      // is now `local`. The launch context must reflect the new placement.
+      setupDirectoryExists("/real/lane/root");
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-detached" }),
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-detached", provider });
+      // Caller invalidates the cache after a detach.
+      invalidateVmLaneLaunchCache("lane-detached");
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "local"),
+        laneId: "lane-detached",
+        purpose: "start agent",
+      });
+
+      expect(result.execStrategy).toBe("local");
+      expect(result.sshTarget).toBeUndefined();
+      expect(result.cwd).toBe("/real/lane/root");
     });
   });
 });

@@ -780,7 +780,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ios_simulator: ["getStatus", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "launch", "launchInTerminal", "connect", "stop", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: ["getStatus", "showPanel", "setBounds", "navigate", "createTab", "switchTab", "closeTab", "reload", "goBack", "goForward", "stop", "startInspect", "stopInspect", "captureScreenshot", "selectPoint", "selectCurrent", "clearSelection"],
-  macos_vm: ["getStatus", "provision", "start", "stop", "delete", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
+  // Note: detachLane is intentionally NOT in this allowlist — it lives on
+  // laneService.detachVmLane, not on macosVmService. Wire it through a lane
+  // action if/when it needs to be agent-callable.
+  //
+  // Note: setCredentials and getDisplaySession are intentionally NOT in this
+  // allowlist either. setCredentials mutates Keychain-backed VM credentials;
+  // getDisplaySession returns the live VNC password. Neither belongs on the
+  // generic agent-callable surface — keep them behind the typed CLI / IPC
+  // paths (`ade macos-vm set-credentials`, `ade macos-vm display-session`)
+  // which run with CTO-level authentication.
+  macos_vm: ["getStatus", "getStorageInfo", "provision", "start", "stop", "restart", "delete", "wipe", "installRuntime", "getCredentials", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
   automations: [
     "list",
     "get",

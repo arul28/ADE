@@ -9,7 +9,7 @@ function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
-function lane(id: string, name: string, branchRef: string, createdAt: string, ahead = 0, behind = 0, laneType: LaneSummary["laneType"] = "worktree"): LaneSummary {
+function lane(id: string, name: string, branchRef: string, createdAt: string, ahead = 0, behind = 0, laneType: LaneSummary["laneType"] = "worktree", overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
     id,
     name,
@@ -33,6 +33,7 @@ function lane(id: string, name: string, branchRef: string, createdAt: string, ah
     icon: null,
     tags: [],
     createdAt,
+    ...overrides,
   };
 }
 
@@ -232,6 +233,55 @@ describe("Drawer PR pill", () => {
     ).lastFrame() ?? "");
 
     expect(frame).not.toContain("[#168");
+  });
+});
+
+describe("Drawer macOS VM badge", () => {
+  it("flags lanes with runtimePlacement=macos-vm with a VM badge", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[
+          lane(
+            "lane-vm",
+            "vm lane",
+            "feature/vm",
+            "2026-05-12T11:55:00.000Z",
+            0,
+            0,
+            "worktree",
+            { runtimePlacement: "macos-vm" },
+          ),
+        ]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("VM");
+  });
+
+  it("omits the VM badge for local lanes", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-local", "local lane", "feature/local", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+      />,
+    ).lastFrame() ?? "");
+
+    // Status chip is "idle" for plain worktree lanes; ensure no VM token leaks.
+    const lines = frame.split("\n");
+    expect(lines.some((line) => /\bVM\b/.test(line))).toBe(false);
   });
 });
 

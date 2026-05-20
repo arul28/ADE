@@ -161,9 +161,9 @@ Renderer surfaces:
   (`WorkSidebarContextTarget`): chat sessions get the legacy
   `ade:agent-chat:add-attachment` / `add-ios-context` /
   `add-app-control-context` / `add-builtin-browser-context` /
-  `add-macos-vm-context` / `insert-draft` events, while tracked agent
+  `insert-draft` events, while tracked agent
   CLI PTYs (Claude / Codex / Cursor / OpenCode / Droid) receive the
-  same iOS / App Control / browser / macOS VM / attachment / draft
+  same iOS / App Control / browser / attachment / draft
   payloads formatted into prompt text by
   `apps/desktop/src/renderer/lib/visualContextFormatting.ts` and
   written into the PTY through `window.ade.pty.write` as a
@@ -177,11 +177,11 @@ Renderer surfaces:
   warning. The tab strip must stay reachable when the Work pane is
   narrow: labels collapse to accessible icon buttons while preserving
   stable hit targets and tooltips.
-- `apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` —
-  Work sidebar panel for the active lane's macOS VM. It shows provider
-  readiness, provisioning/start/stop/delete controls, sanitized share
-  status, screenshot capture, point selection, click/type controls, and
-  chat context attachment for selected VM targets.
+- `apps/desktop/src/renderer/components/vm/MacVmPage.tsx` —
+  dedicated `/vm` route for the lane-tied macOS VM. It shows host and
+  Lume readiness, the single-VM lane reservation, stale attachment
+  cleanup, runtime sign-in confirmation, embedded noVNC display, and
+  diagnostic frame/focus/click/type controls.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -361,10 +361,11 @@ Renderer surfaces:
 - `apps/desktop/src/main/services/macosVm/macosVmService.ts` —
   lane-tied macOS VM lifecycle and control service. Uses Lume as the
   first provider, stores per-lane records under `.ade/cache/macos-vms`,
-  keeps VNC credentials in `.ade/secrets`, mounts direct lane roots when
-  safe, and otherwise maintains a sanitized rsync mirror that excludes
-  ADE secrets, runtime databases, caches, transcripts, generated local
-  memory/history, worktrees, agents, and `.git`.
+  keeps VNC credentials in `.ade/secrets`, enforces a machine-wide
+  single-VM lease, mounts direct lane roots when safe, and otherwise
+  maintains a sanitized rsync mirror that excludes ADE secrets, runtime
+  databases, caches, transcripts, generated local memory/history,
+  worktrees, agents, and `.git`.
 - `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
   headless VNC bridge for screenshot, click, and type operations. It
   disables unsupported audio negotiation for Lume VNC sessions and

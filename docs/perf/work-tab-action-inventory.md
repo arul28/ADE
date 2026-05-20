@@ -20,6 +20,8 @@ Coverage states:
 - `external-skip`: opens another app, browser, Xcode, docs, Simulator.app, or
   host VM viewer. Measure only up to the ADE preflight/button state unless
   explicitly allowed.
+- `moved`: no longer a Work-tab surface. Historical evidence stays below for
+  traceability, but current coverage belongs to the destination route's matrix.
 
 ## Work shell and layout
 
@@ -57,7 +59,7 @@ Coverage states:
 | work.sidebar.tab.ios | Select iOS Sim tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.app-control | Select App Control tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.browser | Select Browser tools tab | measured | `WorkSidebar.tsx` |
-| work.sidebar.tab.macos-vm | Select Mac VM tools tab | measured | `WorkSidebar.tsx` |
+| work.sidebar.tab.macos-vm | Select Mac VM tools tab | moved | Mac VM moved from `WorkSidebar.tsx` to `/vm` (`MacVmPage.tsx`) |
 | work.sidebar.compact-tabs | Verify all tools tabs remain reachable in narrow pane | measured | `WorkSidebar.tsx` |
 
 ## Session list
@@ -439,28 +441,33 @@ Coverage states:
 
 ## Mac VM tools
 
+Current status: these rows describe the retired Work-sidebar
+`MacosVmPanel.tsx`. The current desktop surface is `/vm`
+(`apps/desktop/src/renderer/components/vm/MacVmPage.tsx`), so new VM coverage
+belongs in a VM-tab inventory rather than this Work matrix.
+
 | id | action | state | source |
 | --- | --- | --- | --- |
-| work.vm.mount | Mount Mac VM tab | measured | `MacosVmPanel.tsx` |
-| work.vm.refresh | Refresh macOS VM status | measured | `MacosVmPanel.tsx` |
-| work.vm.setup-docs | Open provider setup docs | external-skip | `MacosVmPanel.tsx` |
-| work.vm.cpu | Change CPU cores | measured | `MacosVmPanel.tsx` |
-| work.vm.memory | Change memory value | measured | `MacosVmPanel.tsx` |
-| work.vm.disk | Change disk size value | measured | `MacosVmPanel.tsx` |
-| work.vm.display | Change display value | measured | `MacosVmPanel.tsx` |
-| work.vm.source-mode | Change source mode | measured | `MacosVmPanel.tsx` |
-| work.vm.source-image | Change source image | measured | `MacosVmPanel.tsx` |
-| work.vm.open-viewer | Toggle local viewer window | measured | `MacosVmPanel.tsx` |
-| work.vm.start | Start VM | sandbox-only | `MacosVmPanel.tsx` |
-| work.vm.provision | Provision VM | sandbox-only | `MacosVmPanel.tsx` |
-| work.vm.stop | Stop VM | prompt-only | `MacosVmPanel.tsx` |
-| work.vm.focus | Focus VM window | external-skip | `MacosVmPanel.tsx` |
-| work.vm.screenshot | Capture VM screenshot | sandbox-only | `MacosVmPanel.tsx` |
-| work.vm.delete | Delete VM | prompt-only | `MacosVmPanel.tsx` |
-| work.vm.select-point | Select point on screenshot | measured | `MacosVmPanel.tsx` |
-| work.vm.click-point | Click selected point | sandbox-only | `MacosVmPanel.tsx` |
-| work.vm.type-input | Type text input | measured | `MacosVmPanel.tsx` |
-| work.vm.type-send | Send text to VM | sandbox-only | `MacosVmPanel.tsx` |
+| work.vm.mount | Mount Mac VM tab | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.refresh | Refresh macOS VM status | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.setup-docs | Open provider setup docs | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.cpu | Change CPU cores | moved | retired panel control |
+| work.vm.memory | Change memory value | moved | retired panel control |
+| work.vm.disk | Change disk size value | moved | retired panel control |
+| work.vm.display | Change display value | moved | retired panel control |
+| work.vm.source-mode | Change source mode | moved | retired panel control |
+| work.vm.source-image | Change source image | moved | retired panel control |
+| work.vm.open-viewer | Toggle local viewer window | moved | retired panel control |
+| work.vm.start | Start VM | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.provision | Provision VM | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.stop | Stop VM | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.focus | Focus VM window | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.screenshot | Capture VM screenshot | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.delete | Delete VM | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.select-point | Select point on screenshot | moved | ADE CLI / `macos_vm` action |
+| work.vm.click-point | Click selected point | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.type-input | Type text input | moved | `/vm` (`MacVmPage.tsx`) |
+| work.vm.type-send | Send text to VM | moved | `/vm` (`MacVmPage.tsx`) |
 
 ## Run evidence
 

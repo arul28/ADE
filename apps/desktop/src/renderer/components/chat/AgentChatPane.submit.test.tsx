@@ -1041,7 +1041,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("automatically injects lane macOS VM capability context into sends", async () => {
+  it("does not automatically inject lane macOS VM capability context into sends", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { send } = installAdeMocks({ sessions: [session] });
     (window.ade as any).macosVm = {
@@ -1099,16 +1099,12 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(window.ade.macosVm.getStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(window.ade.macosVm.getStatus).not.toHaveBeenCalled();
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         displayText: "Use the ADE VM to check the app.",
-        text: expect.stringContaining("ADE macOS VM capability for this lane"),
+        text: "Use the ADE VM to check the app.",
       }));
-      const sentText = send.mock.calls[0]?.[0]?.text as string;
-      expect(sentText).toContain("macos_vm_status");
-      expect(sentText).toContain("ade-lane-one (running)");
-      expect(sentText).toContain("Use the ADE VM to check the app.");
     });
   });
 

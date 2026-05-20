@@ -104,33 +104,6 @@ vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
   };
 });
 
-vi.mock("./MacosVmPanel", async () => {
-  const React = await import("react");
-  return {
-    MacosVmPanel: (props: { onAddContext?: (item: unknown) => void }) => React.createElement("button", {
-      type: "button",
-      disabled: !props.onAddContext,
-      onClick: () => props.onAddContext?.({
-        kind: "macos_vm_target",
-        id: "vm-context-1",
-        provider: "lume",
-        state: "running",
-        laneId: "lane-1",
-        laneName: "Lane 1",
-        vmName: "ADE VM",
-        hostLanePath: "/repo",
-        guestLanePath: "/Volumes/ADE",
-        runCommand: "lume run ADE",
-        sshCommand: "ssh ade-vm",
-        vncUrl: null,
-        windowTitleQuery: null,
-        metadata: {},
-        selectedAt: "2026-05-13T00:00:00.000Z",
-      }),
-    }, "Add VM context"),
-  };
-});
-
 vi.mock("../files/FilesPage", async () => {
   const React = await import("react");
   return { FilesPage: () => React.createElement("div", null, "Files") };
@@ -302,7 +275,7 @@ function installAdeMock(options: {
 }
 
 function renderSidebar(args: {
-  tab: "ios" | "app-control" | "browser" | "macos-vm";
+  tab: "ios" | "app-control" | "browser";
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason?: string | null;
   laneId?: string;

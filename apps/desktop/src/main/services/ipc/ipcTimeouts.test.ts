@@ -26,9 +26,48 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.macosVmProvision)).toBe(120 * 60_000);
   });
 
-  it("uses shorter control timeouts for macOS VM actions after provisioning", () => {
-    expect(ipcInvokeTimeoutMs(IPC.macosVmStart)).toBe(2 * 60_000);
+  it("lets macOS VM start include first-run provisioning", () => {
+    expect(ipcInvokeTimeoutMs(IPC.macosVmStart)).toBe(120 * 60_000);
+  });
+
+  it("uses shorter control timeouts for macOS VM actions after start", () => {
     expect(ipcInvokeTimeoutMs(IPC.macosVmStop)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.macosVmCaptureScreenshot)).toBe(60_000);
+  });
+
+  it("extends generic local runtime action timeouts for macOS VM operations", () => {
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "provision", args: {} },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "delete", args: {} },
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "start", args: { createIfMissing: true } },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "restart", args: {} },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "wipe", args: { confirm: true } },
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "macos_vm", action: "installRuntime", args: {} },
+    }])).toBe(120 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "macos_vm", action: "click", args: {} },
+    }])).toBe(60_000);
+  });
+
+  it("extends lane creation timeouts on direct and local runtime paths", () => {
+    expect(ipcInvokeTimeoutMs(IPC.lanesCreate)).toBe(4 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "lane", action: "create", args: {} },
+    }])).toBe(4 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "lane", action: "createChild", args: {} },
+    }])).toBe(4 * 60_000);
   });
 });

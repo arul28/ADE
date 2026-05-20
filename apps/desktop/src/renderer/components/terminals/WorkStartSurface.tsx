@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  CircleNotch,
-} from "@phosphor-icons/react";
-import type { AgentChatSession, LaneLinearIssue, LaneSummary } from "../../../shared/types";
+import { CircleNotch } from "@phosphor-icons/react";
+import type {
+  AgentChatSession,
+  LaneLinearIssue,
+  LaneSummary,
+} from "../../../shared/types";
 import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
@@ -161,3 +163,4 @@ export function WorkStartSurface({
     </div>
   );
 }
+
