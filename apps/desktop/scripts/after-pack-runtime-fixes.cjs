@@ -177,6 +177,19 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
     ? [
         path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
         path.join("node_modules", "@openai", "codex-win32-arm64"),
+        path.join(
+          "node_modules",
+          "@huggingface",
+          "transformers",
+          "node_modules",
+          "onnxruntime-node",
+          "bin",
+          "napi-v3",
+          "win32",
+          "arm64",
+        ),
+        path.join("node_modules", "node-pty", "build", "Release", "conpty"),
+        path.join("node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
         path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
       ]
     : [];

@@ -13,7 +13,9 @@ const packageJsonPath = path.join(desktopRoot, "package.json");
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
-const DEFAULT_MAX_UNPACKED_BYTES = 600 * 1024 * 1024;
+// The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
+// ONNX payloads. Keep a ceiling, but size it to the current required toolset.
+const DEFAULT_MAX_UNPACKED_BYTES = 720 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 
 function readFlag(name) {
@@ -451,6 +453,15 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-x64"), "Codex Linux x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
+  await assertPathMissing(
+    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "win32", "arm64"),
+    "Windows arm64 ONNX Runtime payload in Windows x64 package",
+  );
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "build", "Release", "conpty"), "duplicate node-pty build conpty payload in Windows package");
+  await assertPathMissing(
+    path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
+    "node-pty Windows arm64 conpty payload in Windows x64 package",
+  );
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "duplicate OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
