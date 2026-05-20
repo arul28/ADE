@@ -8595,8 +8595,28 @@ Check all worker statuses and continue managing the mission from here. Read work
     const openManualInput = targetedInterventionId
       ? targetedOpenIntervention?.interventionType === "manual_input" ? [targetedOpenIntervention] : []
       : [];
+    const targetedPhaseApprovalMeta = targetedOpenIntervention?.interventionType === "phase_approval" && isRecord(targetedOpenIntervention.metadata)
+      ? targetedOpenIntervention.metadata
+      : null;
+    const targetedPhaseApprovalRunId = typeof targetedPhaseApprovalMeta?.runId === "string"
+      ? targetedPhaseApprovalMeta.runId.trim()
+      : "";
+    const stalePhaseApprovalSiblings =
+      targetedOpenIntervention?.interventionType === "phase_approval"
+      && resolutionKind !== "cancel_run"
+      && resolutionKind !== "skip_question"
+      && targetedPhaseApprovalRunId.length > 0
+        ? (refreshedMission?.interventions ?? []).filter((entry) => {
+            if (entry.id === targetedOpenIntervention.id) return false;
+            if (entry.status !== "open" || entry.interventionType !== "phase_approval") return false;
+            if (entry.createdAt > targetedOpenIntervention.createdAt) return false;
+            const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+            const runId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+            return runId === targetedPhaseApprovalRunId;
+          })
+        : [];
     const openNonManualInterventions = targetedOpenIntervention && targetedOpenIntervention.interventionType !== "manual_input"
-      ? [targetedOpenIntervention]
+      ? [targetedOpenIntervention, ...stalePhaseApprovalSiblings]
       : [];
 
     for (const intervention of openNonManualInterventions) {

@@ -3076,6 +3076,7 @@ export function createOrchestratorService({
     const itemId = args.itemId.trim();
     const question = args.question.trim();
     if (!missionId || !itemId || !question) return null;
+    const resolutionNote = args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.";
     const existingRows = db.all<{ id: string; status: string; metadata_json: string | null }>(
       `
         select id, status, metadata_json
@@ -3086,34 +3087,61 @@ export function createOrchestratorService({
       `,
       [projectId, missionId],
     );
+    const isRelatedResolvedPlannerQuestion = (metadata: Record<string, unknown> | null): boolean => {
+      const reasonCode = typeof metadata?.reasonCode === "string" ? metadata.reasonCode.trim() : "";
+      if (
+        reasonCode !== "planner_chat_question"
+        && reasonCode !== "planner_natural_question"
+        && reasonCode !== "planner_required_question_missing"
+      ) {
+        return false;
+      }
+      if (metadata?.attemptId !== args.attempt.id) return false;
+      const metadataRunId = typeof metadata?.runId === "string" ? metadata.runId.trim() : "";
+      if (metadataRunId && metadataRunId !== args.runId) return false;
+      const metadataStepId = typeof metadata?.stepId === "string" ? metadata.stepId.trim() : "";
+      if (metadataStepId && metadataStepId !== args.step.id) return false;
+      if (reasonCode === "planner_chat_question") {
+        const metadataItemId = typeof metadata?.itemId === "string" ? metadata.itemId.trim() : "";
+        return !metadataItemId || metadataItemId === itemId;
+      }
+      const metadataQuestion = typeof metadata?.question === "string" ? metadata.question.trim() : "";
+      return !metadataQuestion || metadataQuestion === question;
+    };
+    const resolveExistingPlannerQuestion = (row: { id: string; status: string }): void => {
+      if (row.status === "resolved") return;
+      db.run(
+        `
+          update mission_interventions
+          set status = 'resolved',
+              resolution_kind = ?,
+              resolution_note = ?,
+              resolved_at = ?,
+              updated_at = ?
+          where id = ?
+            and project_id = ?
+        `,
+        [
+          args.resolutionKind,
+          resolutionNote,
+          args.resolvedAt,
+          args.resolvedAt,
+          row.id,
+          projectId,
+        ],
+      );
+    };
+    let existingChatQuestionId: string | null = null;
     for (const row of existingRows) {
       const metadata = parseJsonRecord(row.metadata_json);
       if (metadata?.reasonCode === "planner_chat_question" && metadata?.attemptId === args.attempt.id && metadata?.itemId === itemId) {
-        if (row.status !== "resolved") {
-          db.run(
-            `
-              update mission_interventions
-              set status = 'resolved',
-                  resolution_kind = ?,
-                  resolution_note = ?,
-                  resolved_at = ?,
-                  updated_at = ?
-              where id = ?
-                and project_id = ?
-            `,
-            [
-              args.resolutionKind,
-              args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.",
-              args.resolvedAt,
-              args.resolvedAt,
-              row.id,
-              projectId,
-            ],
-          );
-        }
-        return row.id;
+        existingChatQuestionId = row.id;
+      }
+      if (isRelatedResolvedPlannerQuestion(metadata)) {
+        resolveExistingPlannerQuestion(row);
       }
     }
+    if (existingChatQuestionId) return existingChatQuestionId;
 
     const id = randomUUID();
     const title = question.length > 96 ? "Planner question answered" : `Question: ${question}`;
@@ -3162,7 +3190,7 @@ export function createOrchestratorService({
         args.resolutionKind === "skip_question"
           ? "Planner question was skipped in the ADE chat thread."
           : "Planner question was answered in the ADE chat thread.",
-        args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.",
+        resolutionNote,
         args.step.laneId ?? null,
         JSON.stringify(metadata),
         args.requestedAt,

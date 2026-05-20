@@ -4242,6 +4242,51 @@ describe("orchestratorService", () => {
         ownerId: "planner-owner",
         executorKind: "codex",
       });
+      const legacyInterventionId = "legacy-required-planner-question";
+      fixture.db.run(
+        `
+          insert into mission_interventions(
+            id,
+            mission_id,
+            project_id,
+            intervention_type,
+            status,
+            resolution_kind,
+            title,
+            body,
+            requested_action,
+            resolution_note,
+            lane_id,
+            metadata_json,
+            created_at,
+            updated_at,
+            resolved_at
+          ) values (?, ?, ?, 'manual_input', 'open', null, ?, ?, ?, null, ?, ?, ?, ?, null)
+        `,
+        [
+          legacyInterventionId,
+          fixture.missionId,
+          fixture.projectId,
+          "Required planner question",
+          "Which launch scope should the planner assume?",
+          "Answer the required planning question.",
+          fixture.laneId,
+          JSON.stringify({
+            source: "planner_required_question_missing",
+            reasonCode: "planner_required_question_missing",
+            question: "Which launch scope should the planner assume?",
+            runId: started.run.id,
+            stepId: step.id,
+            stepKey: step.stepKey,
+            attemptId: attempt.id,
+            sessionId,
+            phaseKey: "planning",
+            stepType: "planning",
+          }),
+          now,
+          now,
+        ],
+      );
 
       fs.writeFileSync(
         transcriptPath,
@@ -4295,15 +4340,18 @@ describe("orchestratorService", () => {
       expect(completed.status).toBe("succeeded");
       const graph = fixture.service.getRunGraph({ runId: started.run.id, timelineLimit: 20 });
       expect(graph.steps.find((entry) => entry.id === step.id)?.status).toBe("succeeded");
-      const intervention = fixture.db.get<{ status: string; intervention_type: string; body: string; metadata_json: string | null }>(
+      const interventions = fixture.db.all<{ id: string; status: string; intervention_type: string; body: string; resolution_kind: string | null; resolution_note: string | null; metadata_json: string | null }>(
         `
-          select status, intervention_type, body, metadata_json
+          select id, status, intervention_type, body, resolution_kind, resolution_note, metadata_json
           from mission_interventions
           where mission_id = ?
-          limit 1
         `,
         [fixture.missionId],
       );
+      const intervention = interventions.find((entry) => {
+        const metadata = JSON.parse(entry.metadata_json ?? "{}");
+        return metadata.reasonCode === "planner_chat_question";
+      });
       expect(intervention).toEqual(expect.objectContaining({
         status: "resolved",
         intervention_type: "manual_input",
@@ -4314,6 +4362,12 @@ describe("orchestratorService", () => {
         reasonCode: "planner_chat_question",
         attemptId: attempt.id,
         itemId: "question-1",
+      }));
+      const legacyIntervention = interventions.find((entry) => entry.id === legacyInterventionId);
+      expect(legacyIntervention).toEqual(expect.objectContaining({
+        status: "resolved",
+        resolution_kind: "answer_provided",
+        resolution_note: "Answered in ADE chat.",
       }));
     } finally {
       fixture.dispose();

@@ -7313,6 +7313,22 @@ describe("aiOrchestratorService", () => {
         ],
       });
       fixture.missionService.update({ missionId: mission.id, status: "in_progress" });
+      const olderApproval = fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "phase_approval",
+        title: "Approve transition from older Planning phase",
+        body: "Approve the older planning output.",
+        requestedAction: "Approve the Planning output to proceed to Development.",
+        pauseMission: true,
+        metadata: {
+          runId: started.run.id,
+          phaseKey: "planning",
+          phaseName: "Planning",
+          targetPhaseKey: "development",
+          targetPhaseName: "Development",
+          source: "phase_approval_gate",
+        },
+      });
       const approval = fixture.missionService.addIntervention({
         missionId: mission.id,
         interventionType: "phase_approval",
@@ -7354,6 +7370,9 @@ describe("aiOrchestratorService", () => {
       expect(resolvedApproval?.status).toBe("resolved");
       expect(resolvedApproval?.resolutionKind).toBe("stale_phase_approval");
       expect(resolvedApproval?.resolutionNote).toContain("no phase transition was applied");
+      const resolvedOlderApproval = fixture.missionService.get(mission.id)?.interventions.find((entry) => entry.id === olderApproval.id);
+      expect(resolvedOlderApproval?.status).toBe("resolved");
+      expect(resolvedOlderApproval?.resolutionKind).toBe("stale_phase_approval");
 
       const runtimeEvents = fixture.orchestratorService.listRuntimeEvents({
         runId: started.run.id,
