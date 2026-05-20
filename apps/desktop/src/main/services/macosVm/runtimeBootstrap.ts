@@ -103,11 +103,17 @@ function defaultRunner(
     let stderr = "";
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
-    const finish = (result: { exitCode: number | null; stdout: string; stderr: string }): void => {
+    // `clearKill` defaults to true so error/exit paths cancel the pending
+    // SIGKILL fallback. The timeout path passes false so the SIGKILL still
+    // fires 500 ms later if the child keeps ignoring SIGTERM.
+    const finish = (
+      result: { exitCode: number | null; stdout: string; stderr: string },
+      clearKill = true,
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
+      if (clearKill && killTimer) clearTimeout(killTimer);
       resolve(result);
     };
     const timeout = setTimeout(() => {
@@ -123,11 +129,14 @@ function defaultRunner(
           /* ignore */
         }
       }, 500);
-      finish({
-        exitCode: null,
-        stdout,
-        stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
-      });
+      finish(
+        {
+          exitCode: null,
+          stdout,
+          stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
+        },
+        false,
+      );
     }, options.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer | string) => {
       stdout += chunk.toString();

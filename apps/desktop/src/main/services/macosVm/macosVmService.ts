@@ -1484,7 +1484,12 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       return;
     }
     await closeStaleExternalVncClientWindows(record);
-    const viewerUrl = `vnc://:${encodeURIComponent(connection.password)}@${connection.host}:${connection.port}`;
+    // Do NOT embed the VNC credential in argv: anything in the process table
+    // (ps aux) would leak it for the brief lifetime of the `open` child.
+    // macOS Screen Sharing accepts vnc://host:port and prompts the user when
+    // no credential is stored in Keychain. The SSH path uses `sshpass -e` for
+    // the same reason — keep the two consistent.
+    const viewerUrl = `vnc://${connection.host}:${connection.port}`;
     try {
       const result = await runCommand("/usr/bin/open", [viewerUrl], { timeoutMs: 10_000, cwd: projectRoot });
       if (result.exitCode !== 0) {

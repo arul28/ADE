@@ -783,7 +783,14 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // Note: detachLane is intentionally NOT in this allowlist — it lives on
   // laneService.detachVmLane, not on macosVmService. Wire it through a lane
   // action if/when it needs to be agent-callable.
-  macos_vm: ["getStatus", "getStorageInfo", "provision", "start", "stop", "restart", "delete", "wipe", "installRuntime", "setCredentials", "getCredentials", "getAgentGuide", "getSharePolicy", "focusWindow", "getDisplaySession", "captureScreenshot", "click", "selectPoint", "typeText"],
+  //
+  // Note: setCredentials and getDisplaySession are intentionally NOT in this
+  // allowlist either. setCredentials mutates Keychain-backed VM credentials;
+  // getDisplaySession returns the live VNC password. Neither belongs on the
+  // generic agent-callable surface — keep them behind the typed CLI / IPC
+  // paths (`ade macos-vm set-credentials`, `ade macos-vm display-session`)
+  // which run with CTO-level authentication.
+  macos_vm: ["getStatus", "getStorageInfo", "provision", "start", "stop", "restart", "delete", "wipe", "installRuntime", "getCredentials", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
   automations: [
     "list",
     "get",

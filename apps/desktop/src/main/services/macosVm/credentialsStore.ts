@@ -85,15 +85,20 @@ function defaultRunCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const finish = (result: { exitCode: number | null; stdout: string; stderr: string }): void => {
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    // `clearKill` defaults to true so error/exit paths cancel the pending
+    // SIGKILL fallback. The timeout path passes false so the SIGKILL still
+    // fires 500 ms later if the child keeps ignoring SIGTERM.
+    const finish = (
+      result: { exitCode: number | null; stdout: string; stderr: string },
+      clearKill = true,
+    ): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      clearTimeout(killTimer);
+      if (clearKill && killTimer) clearTimeout(killTimer);
       resolve(result);
     };
-    let killTimer: ReturnType<typeof setTimeout> = setTimeout(() => {}, 0);
-    clearTimeout(killTimer);
     const timeout = setTimeout(() => {
       // Match macosVmService.ts: try SIGTERM, then SIGKILL 500 ms later,
       // and settle the promise even if the child never exits so callers
@@ -111,11 +116,14 @@ function defaultRunCommand(
           // ignore
         }
       }, 500);
-      finish({
-        exitCode: null,
-        stdout,
-        stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
-      });
+      finish(
+        {
+          exitCode: null,
+          stdout,
+          stderr: stderr || `${command} timed out after ${options.timeoutMs}ms.`,
+        },
+        false,
+      );
     }, options.timeoutMs);
     child.stdout?.on("data", (chunk: Buffer | string) => {
       stdout += chunk.toString();
@@ -127,7 +135,7 @@ function defaultRunCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      clearTimeout(killTimer);
+      if (killTimer) clearTimeout(killTimer);
       reject(error);
     });
     child.once("exit", (exitCode) => {
