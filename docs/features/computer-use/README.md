@@ -119,11 +119,11 @@ See [`app-control.md`](./app-control.md) for the full surface (service, IPC, ren
 ## macOS VM bridge
 
 ADE also exposes a lane-tied **macOS VM** bridge for isolated macOS GUI work.
-The VM belongs to one lane, mounts that lane into the guest, and can attach a
-screenshot-backed `MacosVmContextItem` to an active Work chat. The bridge lives
-outside the proof broker for lifecycle/control, but screenshot and selection
-tools still register proof artifacts through the broker when called from the
-ADE CLI or agent tool surface.
+The VM is reserved for one fresh lane at a time, mounts that lane into the
+guest, and can feed screenshot-backed `MacosVmContextItem` payloads through the
+ADE CLI or agent tool surface. The bridge lives outside the proof broker for
+lifecycle/control, but screenshot and selection tools still register proof
+artifacts through the broker when called from `ade proof`-aware surfaces.
 
 `apps/desktop/src/main/services/macosVm/macosVmService.ts` owns the lifecycle.
 It uses Lume as the first provider, keeps VM records under
@@ -136,12 +136,75 @@ worktrees, agent state, and `.git`.
 Control flows through `ade.macosVm.*` IPC and the `macos_vm` ADE action domain:
 `getStatus`, `provision`, `start`, `stop`, `delete`, `getAgentGuide`,
 `getSharePolicy`, `focusWindow`, `captureScreenshot`, `selectPoint`, `click`,
-and `typeText`. The Work sidebar's Mac VM tab renders the desktop panel, while
-`ade --socket macos-vm ...` gives agents the same status/start/screenshot/select
-and click/type controls from the CLI. Headless screenshot capture uses direct
-VNC first; ADE waits through transient black framebuffer updates, wakes the
-display with a pointer move plus a Shift key tap, and refuses to attach a
-persistent black frame as review context.
+`getDisplaySession`, and `typeText`. The desktop surface is the dedicated
+`/vm` tab (`MacVmPage.tsx`), with `/macos-vm` retained as a redirect. The tab
+creates VM-reserved lanes, enforces the single-VM lease, embeds a noVNC display
+when ADE has managed VNC credentials, and exposes diagnostic frame/click/type
+controls. `ade --socket macos-vm ...` gives agents the same
+status/start/screenshot/select and click/type controls from the CLI. Headless
+screenshot capture uses direct VNC first; ADE waits through transient black
+framebuffer updates, wakes the display with a pointer move plus a Shift key
+tap, and refuses to attach a persistent black frame as review context.
+
+### Source file map
+
+Main process — `apps/desktop/src/main/services/macosVm/`:
+
+- `macosVmService.ts` — lifecycle owner. Lume `pull`/`create`/`run`/`stop`/`delete`
+  drivers, VM state file (`records.json`) and global single-VM lease
+  (`lease.json`) under `.ade/cache/macos-vms`, sanitized rsync mirror builder,
+  noVNC display proxy with idle/max timeouts, RFB framebuffer wake heuristics,
+  and the `ade.macosVm.event` push channel.
+- `rfbDirectClient.ts` — minimal direct-VNC client used for headless capture
+  and input. Negotiates RFB, waits through transient black framebuffer updates,
+  wakes the display with a pointer move + Shift tap, encodes the framebuffer
+  as PNG via `encodeRgbaPng`, and exposes `captureVncScreenshot`, `clickVnc`,
+  and `typeTextVnc`.
+- `credentialsStore.ts` — macOS Keychain-backed store for guest user
+  credentials. Shells out to `/usr/bin/security` (no `keytar` dependency),
+  scopes entries by `ade-macos-vm-<vmName>` service + `ade-cli` account, and
+  enforces a safe username charset so a stored credential cannot redirect SSH
+  to a different host. Renderers receive a summary; the password never crosses
+  IPC.
+- `runtimeBootstrap.ts` — in-guest ade-runtime installer over SSH+SCP.
+  Five-phase progress (`ssh-probe`, `write-script`, `scp-script`,
+  `run-script`, `verify-marker`); v1 ships a marker-only bootstrap script so
+  the UI flow is exercisable end-to-end while the real runtime download lands
+  in a follow-up.
+- `macosVmRecovery.ts` — standalone CLI cleanup path. Reads the same records,
+  lease, and VNC credential files as `macosVmService.ts` and tears down stale
+  state when the desktop surface cannot reach them (e.g. after a crash or
+  uninstall). Used by `ade-cli` recovery commands.
+
+Renderer — `apps/desktop/src/renderer/components/vm/`:
+
+- `MacVmPage.tsx` — top-level `/vm` route. Owns the noVNC mount via
+  `@novnc/novnc`, the single-VM lane lease UI, host/Lume readiness, runtime
+  sign-in status, and diagnostic frame/click/type controls. `/macos-vm` is a
+  redirect to this route.
+- `FirstBootCard.tsx` — six-step macOS first-boot walkthrough (region,
+  transfer, sign-in, agree, account, FDA), with inline shell commands and
+  copy buttons. Exports `FIRST_BOOT_STEPS`.
+- `PhaseStepper.tsx` — phase progress badge stack driven by
+  `MacosVmPhaseNumber` and `PhaseStatus` (`complete | active | pending |
+  blocked`); rendered above the page body whenever provisioning, install, or
+  runtime sign-in is in flight.
+- `VmLifecycleMenu.tsx` — overflow menu for restart / wipe / force-stop on a
+  running or failed VM.
+- `CredentialsPromptDialog.tsx` — modal for capturing and updating the
+  Keychain-backed guest credentials used by `credentialsStore`.
+- `CurrentVmLaneRow.tsx` — single-line lane lease summary used on the tab and
+  in the lanes surface.
+- `MacMiniGlyph.tsx` — Mac mini illustration used in empty/coming-soon states.
+- `MacVmComingSoon.tsx` (`ProductionMacVmComingSoon`) — production-build
+  fallback when the feature is not yet enabled for shipped builds.
+
+`apps/desktop/src/renderer/components/terminals/MacosVmPanel.tsx` and its
+test have been removed; the Work sidebar no longer carries a Mac VM tab. The
+dedicated `/vm` page is now the only desktop surface for the VM.
+
+Current audit coverage for the tab lives in
+[`../../perf/macos-vm-tab-action-inventory.md`](../../perf/macos-vm-tab-action-inventory.md).
 
 ## Cross-links
 

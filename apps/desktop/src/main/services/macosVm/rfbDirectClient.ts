@@ -12,6 +12,15 @@ export type DirectVncScreenshot = {
   height: number;
   pngData: Buffer;
   blankFrameAttempts?: number;
+  imageState: "visible" | "blank";
+};
+
+type ClosableVncClient = VncClient & {
+  _connection?: {
+    destroy?: () => void;
+    unref?: () => void;
+    removeAllListeners?: () => void;
+  } | null;
 };
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -56,7 +65,7 @@ function pngChunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([length, typeBuffer, data, crc]);
 }
 
-function encodeRgbaPng(width: number, height: number, rgba: Buffer): Buffer {
+export function encodeRgbaPng(width: number, height: number, rgba: Buffer): Buffer {
   const stride = width * 4;
   const scanlines = Buffer.alloc((stride + 1) * height);
   for (let row = 0; row < height; row += 1) {
@@ -107,6 +116,26 @@ export function isLikelyBlankRgbaFrame(width: number, height: number, rgba: Buff
   return nonBlack / sampled < BLANK_FRAME_NON_BLACK_RATIO;
 }
 
+export function imageStateForFramebuffer(rgba: Buffer): DirectVncScreenshot["imageState"] {
+  const pixelCount = Math.floor(rgba.length / 4);
+  if (pixelCount <= 0) return "blank";
+
+  let visiblePixels = 0;
+  const minimumVisiblePixels = Math.max(8, Math.ceil(pixelCount * 0.001));
+  for (let offset = 0; offset + 2 < rgba.length; offset += 4) {
+    const red = rgba[offset] ?? 0;
+    const green = rgba[offset + 1] ?? 0;
+    const blue = rgba[offset + 2] ?? 0;
+    const maxChannel = Math.max(red, green, blue);
+    const minChannel = Math.min(red, green, blue);
+    if (maxChannel > 24 || (maxChannel > 16 && maxChannel - minChannel > 12)) {
+      visiblePixels += 1;
+      if (visiblePixels >= minimumVisiblePixels) return "visible";
+    }
+  }
+  return "blank";
+}
+
 function createClient(): VncClient {
   const client = new VncClient({
     debug: false,
@@ -142,6 +171,23 @@ function wakeVncDisplay(client: VncClient, width: number, height: number): void 
   }
 }
 
+function closeClient(client: VncClient): void {
+  const connection = (client as ClosableVncClient)._connection;
+  const steps: Array<() => void> = [
+    () => client.disconnect(),
+    () => connection?.removeAllListeners?.(),
+    () => connection?.destroy?.(),
+    () => connection?.unref?.(),
+  ];
+  for (const step of steps) {
+    try {
+      step();
+    } catch {
+      // Best-effort cleanup; ignore individual failures.
+    }
+  }
+}
+
 function connectVnc(connection: DirectVncConnection, timeoutMs: number): Promise<VncClient> {
   return new Promise((resolve, reject) => {
     const client = createClient();
@@ -149,14 +195,14 @@ function connectVnc(connection: DirectVncConnection, timeoutMs: number): Promise
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
-      client.disconnect();
+      closeClient(client);
       reject(new Error(`Timed out connecting to VNC at ${connection.host}:${connection.port}.`));
     }, timeoutMs);
     const fail = (error: unknown): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      client.disconnect();
+      closeClient(client);
       reject(error instanceof Error ? error : new Error(String(error)));
     };
     client.once("authenticated", () => {
@@ -189,8 +235,49 @@ async function withVncClient<T>(
   try {
     return await operation(client);
   } finally {
-    client.disconnect();
+    closeClient(client);
   }
+}
+
+function waitForFramebufferSize(client: VncClient, timeoutMs: number): Promise<{ width: number; height: number }> {
+  if (client.clientWidth > 0 && client.clientHeight > 0) {
+    return Promise.resolve({ width: client.clientWidth, height: client.clientHeight });
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      client.removeListener("firstFrameUpdate", onFrame);
+      client.removeListener("frameUpdated", onFrame);
+      client.removeListener("connectError", onError);
+      client.removeListener("authError", onAuthError);
+      client.removeListener("closed", onClosed);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve({ width: client.clientWidth, height: client.clientHeight });
+    };
+    const onFrame = (): void => {
+      if (client.clientWidth > 0 && client.clientHeight > 0) finish();
+    };
+    const onError = (error: unknown): void => finish(error instanceof Error ? error : new Error(String(error)));
+    const onAuthError = (): void => finish(new Error("VNC authentication failed before framebuffer size was available."));
+    const onClosed = (): void => finish(new Error("VNC connection closed before framebuffer size was available."));
+    const timeout = setTimeout(() => finish(new Error("Timed out waiting for VNC framebuffer size.")), timeoutMs);
+    client.once("firstFrameUpdate", onFrame);
+    client.once("frameUpdated", onFrame);
+    client.once("connectError", onError);
+    client.once("authError", onAuthError);
+    client.once("closed", onClosed);
+    try {
+      client.requestFrameUpdate(false, 0, 0, 1, 1);
+    } catch {
+      // The socket error handlers will surface a useful failure if the client closed.
+    }
+  });
 }
 
 export async function captureVncScreenshot(
@@ -201,10 +288,21 @@ export async function captureVncScreenshot(
     let settled = false;
     let blankFrameAttempts = 0;
     let retryTimer: NodeJS.Timeout | null = null;
+    let latestScreenshot: DirectVncScreenshot | null = null;
     const requestFullFrame = (): void => {
-      client.requestFrameUpdate(true, 0, 0, 0, Math.max(1, client.clientWidth), Math.max(1, client.clientHeight));
+      try {
+        client.requestFrameUpdate(true, 0, 0, 0, Math.max(1, client.clientWidth), Math.max(1, client.clientHeight));
+      } catch (error) {
+        onError(error);
+      }
     };
     const timeout = setTimeout(() => {
+      if (latestScreenshot) {
+        // Fall back to the latest (potentially blank) frame so callers can surface
+        // a diagnostic image instead of failing outright.
+        finishWithScreenshot({ ...latestScreenshot, blankFrameAttempts });
+        return;
+      }
       const suffix = blankFrameAttempts > 0
         ? ` VNC returned ${blankFrameAttempts} black frame${blankFrameAttempts === 1 ? "" : "s"} while ADE waited, so ADE skipped attaching the unusable frame. The VM display may be asleep or still booting; try the screenshot again in a few seconds.`
         : "";
@@ -235,15 +333,25 @@ export async function captureVncScreenshot(
       const width = Math.max(1, client.clientWidth);
       const height = Math.max(1, client.clientHeight);
       const rgba = Buffer.from(client.fb);
+      const imageState = imageStateForFramebuffer(rgba);
       if (!isLikelyBlankRgbaFrame(width, height, rgba)) {
         finishWithScreenshot({
           width,
           height,
           pngData: encodeRgbaPng(width, height, makeOpaqueRgba(width, height, rgba)),
           blankFrameAttempts,
+          imageState,
         });
         return;
       }
+
+      // Track the latest (blank) frame so a timeout can still surface a diagnostic image.
+      latestScreenshot = {
+        width,
+        height,
+        pngData: encodeRgbaPng(width, height, makeOpaqueRgba(width, height, rgba)),
+        imageState,
+      };
 
       blankFrameAttempts += 1;
       if (blankFrameAttempts === 1 || blankFrameAttempts % 3 === 0) {
@@ -252,11 +360,7 @@ export async function captureVncScreenshot(
       if (!retryTimer) {
         retryTimer = setTimeout(() => {
           retryTimer = null;
-          try {
-            requestFullFrame();
-          } catch (error) {
-            onError(error);
-          }
+          requestFullFrame();
         }, BLANK_FRAME_RETRY_MS);
       }
     }
@@ -285,13 +389,14 @@ export async function clickVnc(
   timeoutMs = 10_000,
 ): Promise<{ width: number; height: number; x: number; y: number }> {
   return await withVncClient(connection, timeoutMs, async (client) => {
-    const targetX = Math.max(0, Math.min(Math.max(0, client.clientWidth - 1), Math.round(x)));
-    const targetY = Math.max(0, Math.min(Math.max(0, client.clientHeight - 1), Math.round(y)));
+    const { width, height } = await waitForFramebufferSize(client, timeoutMs);
+    const targetX = Math.max(0, Math.min(width - 1, Math.round(x)));
+    const targetY = Math.max(0, Math.min(height - 1, Math.round(y)));
     client.sendPointerEvent(targetX, targetY, MOUSE_LEFT_BUTTON);
     await delay(40);
     client.sendPointerEvent(targetX, targetY, 0);
     await delay(80);
-    return { width: client.clientWidth, height: client.clientHeight, x: targetX, y: targetY };
+    return { width, height, x: targetX, y: targetY };
   });
 }
 
@@ -319,12 +424,13 @@ export async function typeTextVnc(
   timeoutMs = 30_000,
 ): Promise<{ width: number; height: number; typedLength: number }> {
   return await withVncClient(connection, timeoutMs, async (client) => {
+    const { width, height } = await waitForFramebufferSize(client, timeoutMs);
     client.clientCutText(text);
     for (const keysym of textToKeysyms(text)) {
       client.sendKeyEvent(keysym, true);
       client.sendKeyEvent(keysym, false);
     }
     await delay(100);
-    return { width: client.clientWidth, height: client.clientHeight, typedLength: text.length };
+    return { width, height, typedLength: text.length };
   });
 }

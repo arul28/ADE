@@ -7,7 +7,6 @@ export type WorkPtyContextInsertKind =
   | "ios"
   | "app-control"
   | "browser"
-  | "macos-vm"
   | "draft";
 
 export type WorkPtyContextInsertedDetail = {

@@ -70,17 +70,30 @@ import type {
   MacosVmCaptureScreenshotResult,
   MacosVmClickArgs,
   MacosVmDeleteArgs,
+  MacosVmDetachLaneArgs,
+  MacosVmDetachLaneResult,
+  MacosVmDisplaySession,
+  MacosVmDisplaySessionArgs,
   MacosVmFocusWindowArgs,
+  MacosVmGetCredentialsArgs,
+  MacosVmInstallRuntimeArgs,
   MacosVmProvisionArgs,
   MacosVmRecord,
+  MacosVmRestartArgs,
+  MacosVmRuntimeInstallStatus,
   MacosVmSelectPointArgs,
   MacosVmSelectPointResult,
+  MacosVmSetCredentialsArgs,
   MacosVmStartArgs,
   MacosVmStatus,
   MacosVmStatusArgs,
   MacosVmStopArgs,
+  MacosVmStorageInfo,
+  MacosVmStoredCredentialsSummary,
   MacosVmTypeTextArgs,
   MacosVmWindowTarget,
+  MacosVmWipeArgs,
+  MacosVmWipeResult,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -659,6 +672,7 @@ import type { createKeybindingsService } from "../keybindings/keybindingsService
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
+import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
@@ -722,6 +736,7 @@ import {
 } from "../chat/codexCliLauncher";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
+import { deleteMacosVmFromProjectState } from "../macosVm/macosVmRecovery";
 
 export type AppContext = {
   db: AdeDb;
@@ -735,7 +750,7 @@ export type AppContext = {
   keybindingsService: ReturnType<typeof createKeybindingsService>;
   agentToolsService: ReturnType<typeof createAgentToolsService>;
   adeCliService: ReturnType<typeof createAdeCliService>;
-  devToolsService: ReturnType<typeof createDevToolsService>;
+  devToolsService: ReturnType<typeof createDevToolsService> | null;
   onboardingService: ReturnType<typeof createOnboardingService>;
   laneService: ReturnType<typeof createLaneService>;
   laneWorktreeLockService?: LaneWorktreeLockService | null;
@@ -2329,6 +2344,16 @@ export function registerIpc({
     return service;
   };
 
+  const resolveMacosVmProjectRootForEvent = (event: IpcMainInvokeEvent): string => {
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    const session = getWindowSession?.(windowId) ?? null;
+    if (session?.binding?.kind === "local") return session.binding.rootPath;
+    if (session?.project?.rootPath) return session.project.rootPath;
+    const ctxProjectRoot = getCtx().project?.rootPath;
+    if (ctxProjectRoot) return ctxProjectRoot;
+    throw new Error("A project is required to remove a macOS VM.");
+  };
+
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
     if (!rawUrl) return false;
     try {
@@ -2742,8 +2767,12 @@ export function registerIpc({
 
   const parseMacosVmDeleteArgs = (value: unknown, channel: string): MacosVmDeleteArgs => {
     const record = macosVmRecord(value, channel, true);
+    const laneId = macosVmString(record, "laneId", channel, 512);
+    const vmName = macosVmString(record, "vmName", channel, 256);
+    if (!laneId && !vmName) invalidMacosVmArg(channel, "laneId or vmName is required");
     return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
+      laneId,
+      vmName,
       force: macosVmBoolean(record, "force", channel),
     };
   };
@@ -2758,6 +2787,9 @@ export function registerIpc({
       windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
     };
   };
+
+  const parseMacosVmDisplaySessionArgs = (value: unknown, channel: string): MacosVmDisplaySessionArgs =>
+    macosVmLaneArgs(value, channel);
 
   const parseMacosVmCaptureScreenshotArgs = (value: unknown, channel: string): MacosVmCaptureScreenshotArgs => {
     const record = macosVmRecord(value, channel, true);
@@ -2813,6 +2845,56 @@ export function registerIpc({
       laneId: macosVmString(record, "laneId", channel, 512, true) as string,
       text: macosVmRawString(record, "text", channel, 20_000, true) as string,
       windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
+    };
+  };
+
+  const parseMacosVmRestartArgs = (value: unknown, channel: string): MacosVmRestartArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      vmName: macosVmString(record, "vmName", channel, 256),
+      laneId: macosVmString(record, "laneId", channel, 512),
+      force: macosVmBoolean(record, "force", channel),
+    };
+  };
+
+  const parseMacosVmWipeArgs = (value: unknown, channel: string): MacosVmWipeArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const confirm = macosVmBoolean(record, "confirm", channel);
+    if (confirm !== true) invalidMacosVmArg(channel, "confirm must be true to wipe a VM");
+    return {
+      vmName: macosVmString(record, "vmName", channel, 256),
+      laneId: macosVmString(record, "laneId", channel, 512),
+      confirm: true,
+    };
+  };
+
+  const parseMacosVmInstallRuntimeArgs = (value: unknown, channel: string): MacosVmInstallRuntimeArgs => {
+    const record = macosVmRecord(value, channel, false);
+    return {
+      vmName: macosVmString(record, "vmName", channel, 256),
+      laneId: macosVmString(record, "laneId", channel, 512),
+    };
+  };
+
+  const parseMacosVmSetCredentialsArgs = (value: unknown, channel: string): MacosVmSetCredentialsArgs => {
+    const record = macosVmRecord(value, channel, true);
+    const vmName = macosVmString(record, "vmName", channel, 256, true) as string;
+    const username = macosVmString(record, "username", channel, 64, true) as string;
+    const password = macosVmRawString(record, "password", channel, 1024, true) as string;
+    return { vmName, username, password };
+  };
+
+  const parseMacosVmGetCredentialsArgs = (value: unknown, channel: string): MacosVmGetCredentialsArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      vmName: macosVmString(record, "vmName", channel, 256, true) as string,
+    };
+  };
+
+  const parseMacosVmDetachLaneArgs = (value: unknown, channel: string): MacosVmDetachLaneArgs => {
+    const record = macosVmRecord(value, channel, true);
+    return {
+      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
     };
   };
 
@@ -4571,6 +4653,23 @@ export function registerIpc({
 
   ipcMain.handle(IPC.devToolsDetect, async (_event: unknown, arg?: { force?: boolean }) => {
     const ctx = getCtx();
+    if (!ctx.devToolsService) {
+      const result: DevToolsCheckResult = {
+        platform: process.platform,
+        tools: [
+          {
+            id: "git",
+            label: "Git",
+            command: "git",
+            installed: false,
+            detectedPath: null,
+            detectedVersion: null,
+            required: true,
+          },
+        ],
+      };
+      return result;
+    }
     return ctx.devToolsService.detect(arg?.force);
   });
 
@@ -5761,6 +5860,7 @@ export function registerIpc({
       baseBranch: arg.baseBranch,
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
+      runtimePlacement: arg.runtimePlacement,
     });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -7530,7 +7630,13 @@ export function registerIpc({
 
   ipcMain.handle(IPC.macosVmDelete, async (event, arg): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> => {
     guardMacosVmIpc(event, IPC.macosVmDelete, { windowMs: 60_000, max: 4 });
-    return ensureMacosVm().delete(parseMacosVmDeleteArgs(arg, IPC.macosVmDelete));
+    const args = parseMacosVmDeleteArgs(arg, IPC.macosVmDelete);
+    const service = getCtx().macosVmService;
+    if (service) return service.delete(args);
+    return deleteMacosVmFromProjectState({
+      projectRoot: resolveMacosVmProjectRootForEvent(event),
+      args,
+    });
   });
 
   ipcMain.handle(IPC.macosVmGetAgentGuide, async (event, arg): Promise<MacosVmAgentGuide> => {
@@ -7541,6 +7647,11 @@ export function registerIpc({
   ipcMain.handle(IPC.macosVmFocusWindow, async (event, arg): Promise<MacosVmWindowTarget> => {
     guardMacosVmIpc(event, IPC.macosVmFocusWindow, { windowMs: 10_000, max: 30 });
     return ensureMacosVm().focusWindow(parseMacosVmFocusWindowArgs(arg, IPC.macosVmFocusWindow));
+  });
+
+  ipcMain.handle(IPC.macosVmGetDisplaySession, async (event, arg): Promise<MacosVmDisplaySession> => {
+    guardMacosVmIpc(event, IPC.macosVmGetDisplaySession, { windowMs: 10_000, max: 30 });
+    return ensureMacosVm().getDisplaySession(parseMacosVmDisplaySessionArgs(arg, IPC.macosVmGetDisplaySession));
   });
 
   ipcMain.handle(IPC.macosVmCaptureScreenshot, async (event, arg): Promise<MacosVmCaptureScreenshotResult> => {
@@ -7561,6 +7672,87 @@ export function registerIpc({
   ipcMain.handle(IPC.macosVmTypeText, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget }> => {
     guardMacosVmIpc(event, IPC.macosVmTypeText, { windowMs: 10_000, max: 40 });
     return ensureMacosVm().typeText(parseMacosVmTypeTextArgs(arg, IPC.macosVmTypeText));
+  });
+
+  // ---------------------------------------------------------------------------
+  // Singleton-VM onboarding handlers (foundations stubs).
+  //
+  // Bodies delegate to optional methods on macosVmService; backend-vm task #2
+  // implements them. Until then, calls throw a clear "not implemented" error
+  // so the IPC surface is observable in dev but no silent fallback occurs.
+  // ---------------------------------------------------------------------------
+  const callMacosVmExtension = async <T>(
+    methodName: string,
+    invoke: (svc: unknown) => Promise<T> | T,
+  ): Promise<T> => {
+    const svc = ensureMacosVm() as unknown as Record<string, (...a: unknown[]) => unknown>;
+    if (typeof svc[methodName] !== "function") {
+      throw new Error(`macosVmService.${methodName} is not implemented yet`);
+    }
+    return invoke(svc);
+  };
+
+  ipcMain.handle(IPC.macosVmRestart, async (event, arg): Promise<MacosVmRecord | null> => {
+    guardMacosVmIpc(event, IPC.macosVmRestart, { windowMs: 60_000, max: 6 });
+    const args = parseMacosVmRestartArgs(arg, IPC.macosVmRestart);
+    return callMacosVmExtension("restart", (svc) =>
+      (svc as { restart: (a: MacosVmRestartArgs) => Promise<MacosVmRecord | null> }).restart(args),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmWipe, async (event, arg): Promise<MacosVmWipeResult> => {
+    guardMacosVmIpc(event, IPC.macosVmWipe, { windowMs: 60_000, max: 2 });
+    const args = parseMacosVmWipeArgs(arg, IPC.macosVmWipe);
+    return callMacosVmExtension("wipe", (svc) =>
+      (svc as { wipe: (a: MacosVmWipeArgs) => Promise<MacosVmWipeResult> }).wipe(args),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmInstallRuntime, async (event, arg): Promise<MacosVmRuntimeInstallStatus> => {
+    guardMacosVmIpc(event, IPC.macosVmInstallRuntime, { windowMs: 300_000, max: 4 });
+    const args = parseMacosVmInstallRuntimeArgs(arg, IPC.macosVmInstallRuntime);
+    return callMacosVmExtension("installRuntime", (svc) =>
+      (svc as {
+        installRuntime: (a: MacosVmInstallRuntimeArgs) => Promise<MacosVmRuntimeInstallStatus>;
+      }).installRuntime(args),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmSetCredentials, async (event, arg): Promise<{ ok: true }> => {
+    guardMacosVmIpc(event, IPC.macosVmSetCredentials, { windowMs: 60_000, max: 12 });
+    const args = parseMacosVmSetCredentialsArgs(arg, IPC.macosVmSetCredentials);
+    return callMacosVmExtension("setCredentials", (svc) =>
+      (svc as { setCredentials: (a: MacosVmSetCredentialsArgs) => Promise<{ ok: true }> }).setCredentials(args),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmGetCredentials, async (event, arg): Promise<MacosVmStoredCredentialsSummary> => {
+    guardMacosVmIpc(event, IPC.macosVmGetCredentials, { windowMs: 10_000, max: 60 });
+    const args = parseMacosVmGetCredentialsArgs(arg, IPC.macosVmGetCredentials);
+    return callMacosVmExtension("getCredentials", (svc) =>
+      (svc as {
+        getCredentials: (a: MacosVmGetCredentialsArgs) => Promise<MacosVmStoredCredentialsSummary>;
+      }).getCredentials(args),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmGetStorageInfo, async (event): Promise<MacosVmStorageInfo> => {
+    guardMacosVmIpc(event, IPC.macosVmGetStorageInfo, { windowMs: 10_000, max: 30 });
+    return callMacosVmExtension("getStorageInfo", (svc) =>
+      (svc as { getStorageInfo: () => Promise<MacosVmStorageInfo> }).getStorageInfo(),
+    );
+  });
+
+  ipcMain.handle(IPC.macosVmDetachLane, async (event, arg): Promise<MacosVmDetachLaneResult> => {
+    guardMacosVmIpc(event, IPC.macosVmDetachLane, { windowMs: 60_000, max: 12 });
+    const args = parseMacosVmDetachLaneArgs(arg, IPC.macosVmDetachLane);
+    const laneService = getCtx().laneService as unknown as Record<string, (...a: unknown[]) => unknown>;
+    if (typeof laneService["detachVmLane"] !== "function") {
+      throw new Error("laneService.detachVmLane is not implemented yet");
+    }
+    return (
+      laneService["detachVmLane"] as (a: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>
+    )(args);
   });
 
   ipcMain.handle(IPC.ptyCreate, async (_event, arg: PtyCreateArgs): Promise<PtyCreateResult> => {

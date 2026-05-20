@@ -15,7 +15,7 @@ import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { QuickRunMenu } from "../run/QuickRunMenu";
-import { CreateLaneDialog, type CreateLaneMode } from "./CreateLaneDialog";
+import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog } from "./ManageLaneDialog";
@@ -77,7 +77,10 @@ import type {
   LaneBranchActiveWorkItem,
   LaneListSnapshot,
   LaneLinearIssue,
+  LaneRuntimePlacement,
   LaneSummary,
+  MacosVmStatus,
+  MacosVmEventPayload,
   PrSummary,
   RebaseRun,
   RebaseScope,
@@ -88,6 +91,12 @@ import type {
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { docs } from "../../onboarding/docsLinks";
+import {
+  fallbackMacosVmGuestReadiness,
+  macosVmGuestReadinessLabel,
+  macosVmIsRuntimeReady,
+  readMacosVmRuntimeAuthConfirmed,
+} from "../../lib/macosVmRuntimeReadiness";
 
 type RebaseScopePromptState = {
   laneId: string;
@@ -96,6 +105,12 @@ type RebaseScopePromptState = {
 };
 
 type LanePaneSurface = "inline" | "git-actions-fullscreen" | "lane-fullscreen";
+type CreateSetupPhase =
+  | "creating"
+  | "appearance"
+  | "refreshing"
+  | "starting-vm"
+  | "environment";
 
 export function shouldMountGitActionsPane({
   laneId,
@@ -117,6 +132,34 @@ type RebasePushReviewState = {
 
 const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
+
+function normalizeLaneRuntimePlacement(value: unknown): LaneRuntimePlacement {
+  return value === "macos-vm" ? "macos-vm" : "local";
+}
+
+export function createVmRuntimeStatusReason({
+  loading,
+  status,
+  error,
+}: {
+  loading: boolean;
+  status: MacosVmStatus | null;
+  error: string | null;
+}): string | null {
+  if (loading) return "Checking VM setup...";
+  if (error) return error;
+  if (!status) return "Set up your Mac VM first.";
+  if (!status.supported) return "Mac VMs require ADE on Apple silicon macOS.";
+  if (!status.activeProvider.available) return status.activeProvider.detail || "Install Lume from the VM tab first.";
+  if (status.vms.some((vm) => vm.laneState === "missing")) return "Remove the stale VM attachment from the VM tab before creating another VM lane.";
+  const vm = status.vms[0] ?? status.laneVm ?? null;
+  if (!vm) return "Set up your Mac VM first.";
+  const readiness = fallbackMacosVmGuestReadiness(vm);
+  if (!macosVmIsRuntimeReady(readiness)) {
+    return `Finish Mac VM setup first (current phase: ${macosVmGuestReadinessLabel(readiness.state)}).`;
+  }
+  return null;
+}
 
 function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
   const names = (devicesOpen ?? [])
@@ -267,6 +310,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       sessionId: p.get("sessionId"),
       inspectorTab: p.get("inspectorTab"),
       focus: p.get("focus"),
+      runtimePlacement: p.get("runtimePlacement"),
     };
   }, [location.search]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -289,6 +333,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [createLaneName, setCreateLaneName] = useState("");
   const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
   const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
+  const [createRuntimePlacement, setCreateRuntimePlacement] = useState<LaneRuntimePlacement>("local");
+  const [createVmStatus, setCreateVmStatus] = useState<MacosVmStatus | null>(null);
+  const [createVmStatusLoading, setCreateVmStatusLoading] = useState(false);
+  const [createVmStatusError, setCreateVmStatusError] = useState<string | null>(null);
+  const [createVmRuntimeAuthConfirmed, setCreateVmRuntimeAuthConfirmed] = useState(readMacosVmRuntimeAuthConfirmed);
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
@@ -301,6 +350,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
   const [laneCreated, setLaneCreated] = useState(false);
+  const [createSetupPhase, setCreateSetupPhase] = useState<CreateSetupPhase | null>(null);
+  const [createVmSetupDetail, setCreateVmSetupDetail] = useState<string | null>(null);
   const createEnvInitLaneIdRef = useRef<string | null>(null);
   const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
@@ -1936,22 +1987,36 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateLaneName("");
     setCreateParentLaneId("");
     setCreateMode("primary");
+    setCreateRuntimePlacement("local");
+    setCreateVmStatus(null);
+    setCreateVmStatusError(null);
+    setCreateVmStatusLoading(false);
+    setCreateVmRuntimeAuthConfirmed(readMacosVmRuntimeAuthConfirmed());
     setCreateBaseBranch("");
     setCreateImportBranch("");
     setCreateChildBaseBranch("");
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
+    setCreateSetupPhase(null);
+    setCreateVmSetupDetail(null);
     setSelectedTemplateId("");
     setCreateSelectedColor(null);
     setCreateSelectedLinearIssue(null);
     createLinearIssueAutoNameRef.current = null;
   }, []);
 
-  const prepareCreateDialog = useCallback(() => {
+  const prepareCreateDialog = useCallback((options?: { runtimePlacement?: LaneRuntimePlacement }) => {
+    const runtimePlacement = normalizeLaneRuntimePlacement(options?.runtimePlacement);
     setCreateLaneName("");
     setCreateParentLaneId("");
     setCreateMode("primary");
+    setCreateRuntimePlacement(runtimePlacement);
+    setCreateVmStatus(null);
+    setCreateVmStatusError(null);
+    setCreateVmStatusLoading(false);
+    setCreateVmRuntimeAuthConfirmed(readMacosVmRuntimeAuthConfirmed());
+    setCreateVmSetupDetail(null);
     setCreateBaseBranch("");
     setCreateImportBranch("");
     setCreateChildBaseBranch("");
@@ -2016,14 +2081,24 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // ?laneId / focus=single from the URL overwrites the user's current tab/split
   // selection. Multi-lane ?laneIds= re-tries as `availableLaneIds` changes.
 
-  // Intentionally depend only on `urlLaneDeeplinks.action` (not
-  // prepareCreateDialog) so the create dialog is not re-opened from hook churn.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (urlLaneDeeplinks.action === "create") {
-      prepareCreateDialog();
-    }
-  }, [urlLaneDeeplinks.action]);
+    if (urlLaneDeeplinks.action !== "create") return;
+    prepareCreateDialog({
+      runtimePlacement: normalizeLaneRuntimePlacement(urlLaneDeeplinks.runtimePlacement),
+    });
+    const next = new URLSearchParams(location.search);
+    next.delete("action");
+    next.delete("runtimePlacement");
+    const search = next.toString();
+    navigate(`${location.pathname}${search ? `?${search}` : ""}`, { replace: true });
+  }, [
+    location.pathname,
+    location.search,
+    navigate,
+    prepareCreateDialog,
+    urlLaneDeeplinks.action,
+    urlLaneDeeplinks.runtimePlacement,
+  ]);
 
   // ?action=manage&laneId=X opens ManageLaneDialog for that lane. Used by other
   // pages (graph, PR cleanup, Work-tab lane right-click) to route through the
@@ -2177,6 +2252,117 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateOpen(open);
   }, [createBusy, resetCreateDialogState]);
 
+  useEffect(() => {
+    if (!createOpen) return;
+    if (!createVmRuntimeAuthConfirmed && createRuntimePlacement !== "macos-vm") return;
+    let cancelled = false;
+    setCreateVmStatusLoading(true);
+    setCreateVmStatusError(null);
+    window.ade.macosVm.getStatus({})
+      .then((status) => {
+        if (!cancelled) setCreateVmStatus(status);
+      })
+      .catch((error) => {
+        if (!cancelled) setCreateVmStatusError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setCreateVmStatusLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [createOpen, createRuntimePlacement, createVmRuntimeAuthConfirmed]);
+
+  useEffect(() => {
+    if (!createOpen || createRuntimePlacement !== "macos-vm") return;
+    void refreshLanes({ includeStatus: false }).catch(() => {
+      // The VM status check below still reports provider availability. A stale
+      // lane list is also checked again when the user submits.
+    });
+  }, [createOpen, createRuntimePlacement, refreshLanes]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const unsubscribe = window.ade.macosVm.onEvent((event: MacosVmEventPayload) => {
+      if (event.type === "status") {
+        setCreateVmStatus(event.status);
+        return;
+      }
+      if (event.type !== "operation") return;
+      const laneId = createEnvInitLaneIdRef.current;
+      if (laneId && event.laneId && event.laneId !== laneId) return;
+      if (event.operation !== "provision" && event.operation !== "start") return;
+      setCreateVmSetupDetail(event.message);
+    });
+    return unsubscribe;
+  }, [createOpen]);
+
+  const reservedVmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm" && !lane.archivedAt) ?? null;
+  const createVmRuntimeAvailable = Boolean(
+    createVmStatus?.supported
+    && createVmStatus.activeProvider.available
+    && !createVmStatus.globalLease
+    && createVmStatus.vms.length === 0
+    && !reservedVmLane,
+  );
+  const createVmRuntimeUnavailableReason = reservedVmLane
+    ? `A VM lane already exists: ${reservedVmLane.name}.`
+    : createVmRuntimeStatusReason({
+      loading: createVmStatusLoading,
+      status: createVmStatus,
+      error: createVmStatusError,
+    });
+  const createSetupStatus = useMemo(() => {
+    switch (createSetupPhase) {
+      case "creating":
+        return createMode === "existing"
+          ? "Importing branch and creating the lane worktree..."
+          : "Creating the lane branch and worktree...";
+      case "appearance":
+        return "Saving lane appearance...";
+      case "refreshing":
+        return "Refreshing the lane list...";
+      case "starting-vm":
+        return createVmSetupDetail ?? "Opening the VM tab. VM install starts only when you press Set up VM there.";
+      case "environment":
+        return selectedTemplateId ? "Applying the lane template..." : "Running lane environment setup...";
+      default:
+        return laneCreated ? "Lane exists. Finish setup or retry the failed step." : null;
+    }
+  }, [createMode, createSetupPhase, createVmSetupDetail, laneCreated, selectedTemplateId]);
+  const createSetupSteps = useMemo<CreateLaneSetupStep[]>(() => {
+    if (!createBusy && !laneCreated) return [];
+    let laneLabel: string;
+    if (createMode === "child") laneLabel = "Create child lane";
+    else if (createMode === "existing") laneLabel = "Import branch";
+    else laneLabel = "Create lane";
+    let laneState: CreateLaneSetupStep["state"];
+    if (createSetupPhase === "creating") laneState = "active";
+    else if (laneCreated) laneState = "done";
+    else laneState = "pending";
+    const steps: CreateLaneSetupStep[] = [{
+      label: laneLabel,
+      detail: "Create the branch metadata and worktree on disk.",
+      state: laneState,
+    }];
+    if (createRuntimePlacement === "macos-vm") {
+      steps.push({
+        label: "Reserve VM lane",
+        detail: "Tag this lane for the Mac VM. VM setup continues in the VM tab after creation.",
+        state: laneCreated ? "done" : "pending",
+      });
+    } else {
+      steps.push({
+        label: selectedTemplateId ? "Apply template" : "Initialize environment",
+        detail: selectedTemplateId
+          ? "Run the selected lane template setup."
+          : "Run the default lane setup checks.",
+        state: createSetupPhase === "environment" ? "active" : "pending",
+      });
+    }
+    return steps;
+  }, [createBusy, createMode, createRuntimePlacement, createSetupPhase, laneCreated, selectedTemplateId]);
+
   /** Wraps setCreateBaseBranch so we can track user-driven selections and avoid
    *  the async branch-list fetch from overwriting a value the user already picked. */
   const handleSetCreateBaseBranch = useCallback((v: string) => {
@@ -2203,14 +2389,26 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateMode((mode) => mode === "existing" ? "primary" : mode);
   }, []);
 
-  /** Run only the environment-setup phase (applyTemplate / initEnv) for a lane
-   *  that has already been created.  Used as the retry path when env setup fails. */
-  const runEnvSetupForCreatedLane = useCallback(async (laneId: string) => {
+  /** Run post-create setup for a lane that already exists. Used as the retry path
+   *  when environment setup fails. VM lanes are only reserved here; VM setup runs
+   *  from the VM tab so lane creation never hides a long macOS install. */
+  const runSetupForCreatedLane = useCallback(async (laneId: string) => {
+    const shouldReturnToVm = createRuntimePlacement === "macos-vm";
     setCreateBusy(true);
     setCreateError(null);
     setCreateEnvInitProgress(null);
+    setCreateVmSetupDetail(null);
+    setCreateSetupPhase(shouldReturnToVm ? "starting-vm" : "environment");
 
     try {
+      if (shouldReturnToVm) {
+        await refreshLanes({ includeStatus: false });
+        resetCreateDialogState();
+        setCreateOpen(false);
+        navigate("/vm");
+        return;
+      }
+
       const envProgress = selectedTemplateId
         ? await window.ade.lanes.applyTemplate({ laneId, templateId: selectedTemplateId })
         : await window.ade.lanes.initEnv({ laneId });
@@ -2226,15 +2424,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));
     } finally {
+      setCreateSetupPhase(null);
       setCreateBusy(false);
     }
-  }, [selectedTemplateId, resetCreateDialogState]);
+  }, [createRuntimePlacement, navigate, refreshLanes, selectedTemplateId, resetCreateDialogState]);
 
   const handleCreateSubmit = useCallback(async () => {
-    // If the lane was already created (e.g. env-setup failed on a previous
-    // attempt), retry only the environment setup — never re-run creation.
+    // If the lane was already created (e.g. VM or env setup failed on a previous
+    // attempt), retry setup only — never re-run creation.
     if (createEnvInitLaneIdRef.current) {
-      await runEnvSetupForCreatedLane(createEnvInitLaneIdRef.current);
+      await runSetupForCreatedLane(createEnvInitLaneIdRef.current);
       return;
     }
 
@@ -2247,14 +2446,53 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setCreateError("Detach the Linear issue before importing an existing branch.");
       return;
     }
+    if (createRuntimePlacement === "macos-vm" && createMode === "existing") {
+      setCreateError("VM-backed lanes must start from a base lane, not an imported branch.");
+      return;
+    }
+    if (createRuntimePlacement === "macos-vm" && !createVmRuntimeAvailable) {
+      setCreateError(createVmRuntimeUnavailableReason ?? "Complete VM setup before creating this lane.");
+      return;
+    }
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
       return;
+    }
+    if (createRuntimePlacement === "macos-vm") {
+      setCreateVmStatusLoading(true);
+      try {
+        const [freshStatus, freshLanes] = await Promise.all([
+          window.ade.macosVm.getStatus({}),
+          window.ade.lanes.list({ includeArchived: false, includeStatus: false }),
+        ]);
+        setCreateVmStatus(freshStatus);
+        const freshReservedVmLane = freshLanes.find((lane) => lane.runtimePlacement === "macos-vm" && !lane.archivedAt) ?? null;
+        if (freshReservedVmLane) {
+          setCreateError(`A VM lane already exists: ${freshReservedVmLane.name}.`);
+          return;
+        }
+        const freshStatusReason = createVmRuntimeStatusReason({
+          loading: false,
+          status: freshStatus,
+          error: null,
+        });
+        if (freshStatusReason) {
+          setCreateError(freshStatusReason);
+          return;
+        }
+      } catch (error) {
+        setCreateError(error instanceof Error ? error.message : String(error));
+        return;
+      } finally {
+        setCreateVmStatusLoading(false);
+      }
     }
 
     setCreateBusy(true);
     setCreateError(null);
     setCreateEnvInitProgress(null);
+    setCreateVmSetupDetail(null);
+    setCreateSetupPhase("creating");
 
     try {
       const request = resolveCreateLaneRequest({
@@ -2282,14 +2520,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         if (!parentLane) {
           setCreateError("Parent lane no longer exists. Please close and reopen the dialog.");
           setCreateBusy(false);
+          setCreateSetupPhase(null);
           return;
         }
         const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
           ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs }
           : { ...request.args, ...linearIssueArgs };
-        lane = await window.ade.lanes.createChild(childArgs);
+        lane = await window.ade.lanes.createChild({ ...childArgs, runtimePlacement: createRuntimePlacement });
       } else {
-        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs });
+        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs, runtimePlacement: createRuntimePlacement });
       }
 
       // Lane created successfully — record its id so retries skip creation.
@@ -2298,22 +2537,53 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
       if (createSelectedColor) {
         try {
+          setCreateSetupPhase("appearance");
           await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor });
         } catch {
           // Color collisions or transient errors shouldn't block lane creation.
         }
       }
 
+      if (createRuntimePlacement === "macos-vm") {
+        setCreateSetupPhase("refreshing");
+        await refreshLanes({ includeStatus: false });
+        resetCreateDialogState();
+        setCreateOpen(false);
+        navigate("/vm");
+        return;
+      }
+      setCreateSetupPhase("refreshing");
       await refreshLanes();
       navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
 
       // Now run environment setup as a separate phase.
-      await runEnvSetupForCreatedLane(lane.id);
+      await runSetupForCreatedLane(lane.id);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));
+      setCreateSetupPhase(null);
       setCreateBusy(false);
     }
-  }, [createLaneName, createMode, createParentLaneId, createBaseBranch, createImportBranch, createChildBaseBranch, lanes, createBusy, navigate, refreshLanes, runEnvSetupForCreatedLane, selectedTemplateId, templates, createSelectedColor, createSelectedLinearIssue]);
+  }, [
+    createLaneName,
+    createMode,
+    createParentLaneId,
+    createBaseBranch,
+    createImportBranch,
+    createChildBaseBranch,
+    lanes,
+    createBusy,
+    createRuntimePlacement,
+    createVmRuntimeAvailable,
+    createVmRuntimeUnavailableReason,
+    navigate,
+    refreshLanes,
+    resetCreateDialogState,
+    runSetupForCreatedLane,
+    selectedTemplateId,
+    templates,
+    createSelectedColor,
+    createSelectedLinearIssue,
+  ]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -2354,7 +2624,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     setAddLaneDropdownOpen(false);
     setStackGraphHeaderOpen(false);
-    prepareCreateDialog();
+    prepareCreateDialog({
+      runtimePlacement: normalizeLaneRuntimePlacement(props?.runtimePlacement),
+    });
     const name = typeof props?.name === "string" ? props.name.trim() : "";
     if (name) setCreateLaneName(name);
   }, [prepareCreateDialog]);
@@ -3676,6 +3948,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         setCreateImportBranch={setCreateImportBranch}
         createChildBaseBranch={createChildBaseBranch}
         setCreateChildBaseBranch={setCreateChildBaseBranch}
+        runtimePlacement={createRuntimePlacement}
+        setRuntimePlacement={setCreateRuntimePlacement}
+        vmRuntimeAvailable={createVmRuntimeAvailable}
+        vmRuntimeUnavailableReason={createVmRuntimeUnavailableReason}
+        vmRuntimeGateKind={createVmRuntimeAvailable
+          ? "none"
+          : reservedVmLane
+            ? "existing-vm-lane"
+            : "vm-setup"}
+        existingVmLane={reservedVmLane}
+        onOpenVmTab={() => navigate("/vm")}
+        onOpenVmLaneInWork={(laneId) => {
+          selectLane(laneId);
+          navigate("/work");
+        }}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}
@@ -3683,6 +3970,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         error={createError}
         envInitProgress={createEnvInitProgress}
         laneCreated={laneCreated}
+        setupStatus={createSetupStatus}
+        setupSteps={createSetupSteps}
         templates={templates}
         selectedTemplateId={selectedTemplateId}
         setSelectedTemplateId={setSelectedTemplateId}

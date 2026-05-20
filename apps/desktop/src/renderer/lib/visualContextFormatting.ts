@@ -285,7 +285,7 @@ export function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): stri
   return [
     "macOS VM target context attached by the user.",
     "Use this VM for isolated GUI validation tied to the active lane. The host lane path is shared into the guest with VirtioFS, so edits in the mounted folder stay synced between host and guest. When visualAttachmentPath or selectedPoint is present, treat it as screenshot-backed VM context.",
-    "For GUI computer use, prefer ADE macos-vm screenshot/click/type tools; they use headless VNC when available and only fall back to a visible Lume/VNC/macOS VM window. Do not target the host ADE window unless the user asks to switch back.",
+    "For GUI work, use the VM itself as the target machine. The ADE VM tab owns the user-facing console; agents that need GUI automation should run inside a VM-backed lane rather than driving the host ADE window.",
     "For shell commands inside the guest, use sshCommand when present or configure SSH/in-guest agent access, then work from guestLanePath.",
     "Keep secrets out of the VM; ADE blocks lane roots that contain .ade/secrets from being mounted.",
     ...rows,
@@ -308,9 +308,9 @@ function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: s
     `- Guest lane path: ${guestPath}`,
     vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
     state === "running"
-      ? "- VM is running; use macos_vm_screenshot before VM clicks/types."
-      : "- Do not start the VM unless the user asked for ADE VM use or isolated macOS GUI validation.",
-    "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
+      ? "- VM is running. Use in-guest agent/runtime capabilities for GUI automation."
+      : "- Use the ADE VM tab to prepare and attach a VM-backed lane before doing VM work.",
+    "- Do not rely on host-side ADE screenshot/click/type VM tools for new work.",
     "",
   ];
   return lines.filter((line): line is string => Boolean(line)).join("\n");
@@ -329,7 +329,7 @@ export async function buildAutomaticMacosVmContextForPrompt(
   laneId: string,
   options: { promptText?: string; force?: boolean } = {},
 ): Promise<string> {
-  if (!options.force && !shouldAttachAutomaticMacosVmContext(options.promptText ?? "")) return "";
+  if (!options.force) return "";
   const api = window.ade?.macosVm;
   if (!api?.getStatus) return "";
   try {

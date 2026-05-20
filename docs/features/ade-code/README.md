@@ -191,7 +191,7 @@ Several slash commands forward to a desktop route when issued from `ade code`:
 /computer             -> /proof
 /computer-use         -> /proof
 /ios, /ios-sim        -> /ios-sim
-/macos-vm             -> /macos-vm
+/macos-vm             -> /vm
 /mission, /missions   -> /missions
 /pencil               -> /pencil
 /proof                -> /proof

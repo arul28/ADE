@@ -1,5 +1,5 @@
 import React from "react";
-import { CaretDown, CaretRight, GitBranch, GitFork, Plus, StackSimple, Tag } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretDown, CaretRight, CheckCircle, Circle, DesktopTower, GitBranch, GitFork, Plus, SpinnerGap, StackSimple, Tag } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import type {
   BranchPullRequest,
@@ -7,6 +7,7 @@ import type {
   LaneSummary,
   LaneEnvInitProgress,
   LaneTemplate,
+  LaneRuntimePlacement,
 } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
@@ -35,6 +36,11 @@ import {
 } from "./laneDialogTokens";
 
 export type CreateLaneMode = "primary" | "existing" | "child";
+export type CreateLaneSetupStep = {
+  label: string;
+  detail: string;
+  state: "pending" | "active" | "done";
+};
 
 type ModeMeta = {
   icon: typeof GitBranch;
@@ -66,9 +72,16 @@ const MODE_META: Record<CreateLaneMode, ModeMeta> = {
 
 const MODE_ORDER: readonly CreateLaneMode[] = ["primary", "existing", "child"];
 
-function submitLabel(busy: boolean | undefined, mode: CreateLaneMode, baseBranch: string, laneCreated: boolean | undefined): string {
-  if (busy) return "Setting up lane…";
-  if (laneCreated) return "Retry environment setup";
+function submitLabel(
+  busy: boolean | undefined,
+  mode: CreateLaneMode,
+  baseBranch: string,
+  laneCreated: boolean | undefined,
+  runtimePlacement: LaneRuntimePlacement,
+): string {
+  if (busy) return runtimePlacement === "macos-vm" ? "Creating VM lane…" : "Setting up lane…";
+  if (laneCreated) return "Retry setup";
+  if (runtimePlacement === "macos-vm") return "Create VM lane";
   if (mode === "child") return "Create child lane";
   if (mode === "existing") return "Import as lane";
   return `Create from ${baseBranch || "primary"}`;
@@ -89,6 +102,14 @@ export function CreateLaneDialog({
   setCreateImportBranch,
   createChildBaseBranch,
   setCreateChildBaseBranch,
+  runtimePlacement,
+  setRuntimePlacement,
+  vmRuntimeAvailable = false,
+  vmRuntimeUnavailableReason = "Complete VM setup in the VM tab before creating this lane.",
+  vmRuntimeGateKind = "vm-setup",
+  existingVmLane = null,
+  onOpenVmTab,
+  onOpenVmLaneInWork,
   createBranches,
   lanes,
   onSubmit,
@@ -96,6 +117,8 @@ export function CreateLaneDialog({
   error,
   envInitProgress,
   laneCreated,
+  setupStatus,
+  setupSteps = [],
   templates,
   selectedTemplateId,
   setSelectedTemplateId,
@@ -124,6 +147,18 @@ export function CreateLaneDialog({
   setCreateImportBranch: (v: string) => void;
   createChildBaseBranch: string;
   setCreateChildBaseBranch: (v: string) => void;
+  runtimePlacement: LaneRuntimePlacement;
+  setRuntimePlacement: (v: LaneRuntimePlacement) => void;
+  vmRuntimeAvailable?: boolean;
+  vmRuntimeUnavailableReason?: string | null;
+  /** Identifies which CTA to render under the gated VM-lane radio. */
+  vmRuntimeGateKind?: "vm-setup" | "existing-vm-lane" | "none";
+  /** When `vmRuntimeGateKind === "existing-vm-lane"`, the lane that owns the VM. */
+  existingVmLane?: LaneSummary | null;
+  /** Open the VM tab. Used when the VM is missing or not yet runtime-ready. */
+  onOpenVmTab?: () => void;
+  /** Open the Work tab on the existing VM lane. Used when a VM lane already exists. */
+  onOpenVmLaneInWork?: (laneId: string) => void;
   createBranches: LaneBranchOption[];
   lanes: LaneSummary[];
   onSubmit: () => void;
@@ -132,6 +167,8 @@ export function CreateLaneDialog({
   envInitProgress?: LaneEnvInitProgress | null;
   /** When true, the lane has already been created and the CTA only retries env setup. */
   laneCreated?: boolean;
+  setupStatus?: string | null;
+  setupSteps?: CreateLaneSetupStep[];
   templates: LaneTemplate[];
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
@@ -183,6 +220,13 @@ export function CreateLaneDialog({
     }
   }, [createMode, selectedLinearIssue, setCreateImportBranch, setCreateMode]);
 
+  React.useEffect(() => {
+    if (runtimePlacement === "macos-vm" && createMode === "existing") {
+      setCreateMode("primary");
+      setCreateImportBranch("");
+    }
+  }, [createMode, runtimePlacement, setCreateImportBranch, setCreateMode]);
+
   const prByBranch = React.useMemo(() => {
     const map = new Map<string, BranchPullRequest>();
     for (const pr of branchPullRequests ?? []) map.set(pr.branch, pr);
@@ -209,6 +253,9 @@ export function CreateLaneDialog({
   const selectedLinearBranchConflict = selectedLinearIssue
     ? branchExistsForLinearIssue(selectedLinearBranchName, createBranches)
     : false;
+  const vmRuntimeSelected = runtimePlacement === "macos-vm";
+  const vmRuntimeBlocked = vmRuntimeSelected && !vmRuntimeAvailable;
+  const vmRuntimeReason = vmRuntimeUnavailableReason ?? "Complete VM setup in the VM tab before creating this lane.";
 
   React.useEffect(() => {
     if (open && selectedColor === null) {
@@ -224,7 +271,8 @@ export function CreateLaneDialog({
       || (createMode === "child" && !createParentLaneId)
       || (createMode === "primary" && !createBaseBranch)
       || (createMode === "existing" && !createImportBranch)
-      || selectedLinearBranchConflict);
+      || selectedLinearBranchConflict
+      || vmRuntimeBlocked);
 
   return (
     <LaneDialogShell
@@ -307,22 +355,33 @@ export function CreateLaneDialog({
               const Icon = meta.icon;
               const active = createMode === mode;
               const disabledByLinearIssue = Boolean(selectedLinearIssue && mode === "existing");
-              const disabled = Boolean(busy || laneCreated || disabledByLinearIssue);
+              const disabledByVmRuntime = Boolean(vmRuntimeSelected && mode === "existing");
+              const disabled = Boolean(busy || laneCreated || disabledByLinearIssue || disabledByVmRuntime);
               const cardClass = active
                 ? `${CARD_CLASS_NAME} ${CARD_ACTIVE_CLASS_NAME}`
                 : CARD_CLASS_NAME;
+              let disabledTitle: string | undefined;
+              let disabledDescription: string | null = null;
+              if (disabledByLinearIssue) {
+                disabledTitle = "Detach the Linear issue before importing an existing branch.";
+                disabledDescription = "Unavailable while a Linear issue is connected";
+              } else if (disabledByVmRuntime) {
+                disabledTitle = "VM-backed lanes must start from a base lane, not an imported branch.";
+                disabledDescription = "Unavailable for VM-backed lanes";
+              }
+              const dataTourByMode: Record<CreateLaneMode, string> = {
+                primary: "lanes.createDialog.primaryTab",
+                existing: "lanes.createDialog.branchTab",
+                child: "lanes.createDialog.childTab",
+              };
               return (
                 <button
                   key={mode}
                   type="button"
                   aria-pressed={active}
                   disabled={disabled}
-                  title={disabledByLinearIssue ? "Detach the Linear issue before importing an existing branch." : undefined}
-                  {...(mode === "primary"
-                    ? { "data-tour": "lanes.createDialog.primaryTab" }
-                    : mode === "existing"
-                      ? { "data-tour": "lanes.createDialog.branchTab" }
-                      : { "data-tour": "lanes.createDialog.childTab" })}
+                  title={disabledTitle}
+                  data-tour={dataTourByMode[mode]}
                   onClick={() => {
                     setCreateMode(mode);
                     if (mode !== "child") {
@@ -341,7 +400,7 @@ export function CreateLaneDialog({
                     </div>
                   </div>
                   <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
-                    {disabledByLinearIssue ? "Unavailable while a Linear issue is connected" : meta.description}
+                    {disabledDescription ?? meta.description}
                   </div>
                 </button>
               );
@@ -373,6 +432,10 @@ export function CreateLaneDialog({
                     </div>
                   ) : null}
                 </>
+              ) : loadingBranches ? (
+                <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                  Loading branches...
+                </div>
               ) : (
                 <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
                   No local branches found.
@@ -496,6 +559,90 @@ export function CreateLaneDialog({
           </div>
         </section>
 
+        <section className={SECTION_CLASS_NAME}>
+          <span className={LABEL_CLASS_NAME}>Runtime</span>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              aria-pressed={runtimePlacement === "local"}
+              disabled={busy || laneCreated}
+              onClick={() => setRuntimePlacement("local")}
+              className={runtimePlacement === "local" ? `${CARD_CLASS_NAME} ${CARD_ACTIVE_CLASS_NAME}` : CARD_CLASS_NAME}
+            >
+              <div className="flex items-start gap-2">
+                <span className={CHIP_PRIMARY} aria-hidden="true">
+                  <GitBranch size={16} weight="duotone" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-fg">Local Mac</div>
+                </div>
+              </div>
+              <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
+                Use this ADE runtime and local worktree.
+              </div>
+            </button>
+            <button
+              type="button"
+              aria-pressed={vmRuntimeSelected}
+              disabled={busy || laneCreated || !vmRuntimeAvailable}
+              title={vmRuntimeAvailable ? "Reserve the Mac VM for this fresh lane." : vmRuntimeReason}
+              data-testid="create-lane-vm-radio"
+              onClick={() => {
+                setRuntimePlacement("macos-vm");
+                if (createMode === "existing") {
+                  setCreateMode("primary");
+                  setCreateImportBranch("");
+                }
+              }}
+              className={vmRuntimeSelected ? `${CARD_CLASS_NAME} ${CARD_ACTIVE_CLASS_NAME}` : CARD_CLASS_NAME}
+            >
+              <div className="flex items-start gap-2">
+                <span className={CHIP_CHILD} aria-hidden="true">
+                  <DesktopTower size={16} weight="duotone" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-fg">Mac VM</div>
+                </div>
+              </div>
+              <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
+                {vmRuntimeAvailable ? "Reserve the Mac VM for this fresh lane." : "Set up once; subsequent lanes mount in seconds."}
+              </div>
+            </button>
+          </div>
+          {(() => {
+            if (vmRuntimeAvailable || vmRuntimeGateKind === "none") return null;
+            const existingVmCta = vmRuntimeGateKind === "existing-vm-lane" && existingVmLane && onOpenVmLaneInWork
+              ? { label: "Open in Work", action: () => onOpenVmLaneInWork(existingVmLane.id) }
+              : null;
+            const openVmTabCta = onOpenVmTab
+              ? { label: "Open VM tab", action: onOpenVmTab }
+              : null;
+            const cta = existingVmCta ?? openVmTabCta;
+            return (
+              <div
+                className="mt-2 flex items-start justify-between gap-3 rounded-lg border border-amber-400/20 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-100/90"
+                data-testid="create-lane-vm-gate"
+              >
+                <span className="flex-1 leading-relaxed">{vmRuntimeReason}</span>
+                {cta ? (
+                  <button
+                    type="button"
+                    className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber-300/30 bg-amber-500/15 px-2 text-[10.5px] font-medium text-amber-50 transition-colors hover:bg-amber-500/25"
+                    onClick={() => {
+                      cta.action();
+                      onOpenChange(false);
+                    }}
+                    data-testid="create-lane-vm-gate-cta"
+                  >
+                    <ArrowSquareOut size={11} weight="bold" />
+                    {cta.label}
+                  </button>
+                ) : null}
+              </div>
+            );
+          })()}
+        </section>
+
         {/* Advanced — Linear issue + template */}
         <details open className="group rounded-xl border border-white/[0.06] bg-white/[0.02] open:bg-white/[0.03]">
           <summary className="flex cursor-pointer select-none items-center justify-between gap-3 rounded-xl px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-fg/70 transition-colors hover:text-fg [&::-webkit-details-marker]:hidden">
@@ -605,13 +752,50 @@ export function CreateLaneDialog({
           </div>
         </details>
 
+        {setupStatus || setupSteps.length > 0 ? (
+          <section
+            className="rounded-xl border px-3 py-3"
+            style={{
+              background: "rgba(124, 92, 255, 0.08)",
+              borderColor: "rgba(167, 139, 250, 0.22)",
+            }}
+          >
+            {setupStatus ? (
+              <div className="text-sm font-medium text-zinc-100">{setupStatus}</div>
+            ) : null}
+            {setupSteps.length > 0 ? (
+              <div className="mt-2 space-y-2">
+                {setupSteps.map((step) => {
+                  const icon = step.state === "done"
+                    ? <CheckCircle size={15} weight="fill" className="text-emerald-300" />
+                    : step.state === "active"
+                      ? <SpinnerGap size={15} className="animate-spin text-violet-200" />
+                      : <Circle size={15} className="text-zinc-500" />;
+                  return (
+                    <div key={step.label} className="flex items-start gap-2 text-xs">
+                      <span className="mt-0.5 shrink-0">{icon}</span>
+                      <div className="min-w-0">
+                        <div className={step.state === "pending" ? "text-zinc-400" : "text-zinc-100"}>{step.label}</div>
+                        <div className="mt-0.5 text-[11px] text-zinc-500">{step.detail}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         {error ? (
           <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
             {error}
           </div>
         ) : null}
 
-        <div className="flex items-center justify-end gap-2 pt-1">
+        <div
+          className="sticky bottom-0 z-10 -mx-4 flex items-center justify-end gap-2 border-t border-white/[0.06] px-4 pb-1 pt-3 backdrop-blur"
+          style={{ background: "color-mix(in srgb, var(--color-modal-bg, var(--color-card, #1A1830)) 92%, transparent)" }}
+        >
           <Button
             variant="outline"
             disabled={busy}
@@ -623,6 +807,7 @@ export function CreateLaneDialog({
               setCreateBaseBranch("");
               setCreateImportBranch("");
               setCreateChildBaseBranch("");
+              setRuntimePlacement("local");
               setSelectedColor(null);
               setSelectedLinearIssue(null);
             }}
@@ -630,7 +815,7 @@ export function CreateLaneDialog({
             Cancel
           </Button>
           <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
-            {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
+            {submitLabel(busy, createMode, createBaseBranch, laneCreated, runtimePlacement)}
           </Button>
         </div>
 

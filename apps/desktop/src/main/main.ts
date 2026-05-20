@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -19,6 +19,11 @@ import {
   writeGlobalState,
 } from "./services/state/globalState";
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
+import {
+  invalidateVmLaneLaunchCache,
+  refreshVmLaneLaunchCache,
+  setMacosVmLaunchProvider,
+} from "./services/lanes/laneLaunchContext";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
@@ -67,6 +72,7 @@ import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import type {
   OpenProjectBinding,
+  LaneSummary,
   PortLease,
   PrEventPayload,
   ProjectInfo,
@@ -1851,6 +1857,34 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
+      onPlacementChanged: (event) => {
+        // Refresh the VM launch-context cache so subsequent
+        // resolveLaneLaunchContext() calls see the new placement.
+        // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
+        // CreateLaneDialog re-gate + Work-tab banner can react without
+        // polling. Requires adding a new IPC channel in shared/ipc.ts.
+        invalidateVmLaneLaunchCache(event.laneId);
+        if (event.to === "macos-vm") {
+          void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
+            logger.warn("lane.placement_changed_refresh_failed", {
+              laneId: event.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+        try {
+          agentChatServiceRef?.handleLanePlacementChanged?.({
+            laneId: event.laneId,
+            from: event.from,
+            to: event.to,
+          });
+        } catch (error) {
+          logger.warn("lane.placement_changed_chat_propagate_failed", {
+            laneId: event.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
@@ -3343,7 +3377,73 @@ app.whenReady().then(async () => {
       resolveLanes: async () => laneService.list({ includeArchived: false }),
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      captureWindowSources: async () => {
+        const sources = await desktopCapturer.getSources({
+          types: ["window"],
+          thumbnailSize: { width: 1280, height: 1280 },
+        });
+        return sources.map((source) => ({
+          id: source.id,
+          name: source.name,
+          thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+        }));
+      },
+      // TODO: once the in-guest ade-runtime install lands, route this to
+      // RemoteConnectionPool.registerMacosVmTarget so chat exec can RPC into
+      // the VM. The pool currently lives inside registerRuntimeBridge; this
+      // wire-up needs the pool/registry to be lifted into a shared scope.
+      onRuntimeReady: ({ vmName, ipAddress, username }) => {
+        logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+      },
     });
+    // Wire macosVmService into laneService now that both exist. The hooks let
+    // detachVmLane / attachLaneToVm trigger share-stale + mirror-sync teardown
+    // without laneService importing the macosVm barrel.
+    const macosVmSvcAny = macosVmService as unknown as {
+      markShareStale?: (args: { laneId: string }) => Promise<void> | void;
+      stopMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
+      startMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
+      linkLaneToCurrentVm?: (args: { laneId: string }) => Promise<void> | void;
+      getStatus?: typeof macosVmService.getStatus;
+      getCredentials?: (args: { vmName: string }) => Promise<{
+        vmName: string;
+        username: string | null;
+        hasPassword: boolean;
+      }>;
+    };
+    if (typeof laneService.setMacosVmHooks === "function" && typeof macosVmSvcAny.getStatus === "function") {
+      laneService.setMacosVmHooks({
+        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+        markShareStale: async ({ laneId }) => {
+          if (typeof macosVmSvcAny.markShareStale === "function") {
+            await macosVmSvcAny.markShareStale({ laneId });
+          }
+        },
+        stopMirrorSyncForLane: async ({ laneId }) => {
+          if (typeof macosVmSvcAny.stopMirrorSyncForLane === "function") {
+            await macosVmSvcAny.stopMirrorSyncForLane({ laneId });
+          }
+        },
+        startMirrorSyncForLane: async ({ laneId }) => {
+          if (typeof macosVmSvcAny.startMirrorSyncForLane === "function") {
+            await macosVmSvcAny.startMirrorSyncForLane({ laneId });
+          }
+        },
+        linkLaneToCurrentVm: async ({ laneId }) => {
+          if (typeof macosVmSvcAny.linkLaneToCurrentVm === "function") {
+            await macosVmSvcAny.linkLaneToCurrentVm({ laneId });
+          }
+        },
+      });
+    }
+    // Register the launch-context provider so resolveLaneLaunchContext can
+    // synthesize an SSH launch context for VM lanes.
+    if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
+      setMacosVmLaunchProvider({
+        getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
+        getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
+      });
+    }
     missionPreflightService = createMissionPreflightService({
       logger,
       projectRoot,
@@ -4363,6 +4463,42 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot);
+    const macosVmService = createMacosVmService({
+      projectRoot,
+      logger,
+      resolveLanes: async () => {
+        const response = await localRuntimePool.callActionForRoot(projectRoot, {
+          domain: "lane",
+          action: "list",
+          args: { includeArchived: false, includeStatus: false },
+        });
+        const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+        return lanes.map((lane) => ({
+          id: lane.id,
+          name: lane.name,
+          worktreePath: lane.worktreePath,
+        }));
+      },
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      captureWindowSources: async () => {
+        const sources = await desktopCapturer.getSources({
+          types: ["window"],
+          thumbnailSize: { width: 1280, height: 1280 },
+        });
+        return sources.map((source) => ({
+          id: source.id,
+          name: source.name,
+          thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
+        }));
+      },
+      // TODO: route to RemoteConnectionPool.registerMacosVmTarget once the
+      // in-guest ade-runtime bootstrap installs the binary (today the
+      // bootstrap script only writes a marker file).
+      onRuntimeReady: ({ vmName, ipAddress, username }) => {
+        logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+      },
+    });
     logger.info("project.runtime_bound", {
       projectRoot,
       projectId: runtimeProject.projectId,
@@ -4377,6 +4513,7 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
+      macosVmService,
     } as AppContext;
   };
 
@@ -4429,7 +4566,7 @@ app.whenReady().then(async () => {
       keybindingsService: null,
       agentToolsService: null,
       adeCliService,
-      devToolsService: null,
+      devToolsService: createDevToolsService({ logger }),
       onboardingService: null,
       laneService: null,
       laneWorktreeLockService: null,

@@ -1,27 +1,52 @@
 import { IPC } from "../../../shared/ipc";
 
-function isRuntimeLaneDeleteAction(args: unknown[] | undefined): boolean {
-  const first = args?.[0];
-  if (!first || typeof first !== "object" || Array.isArray(first)) return false;
-  const request = (first as { request?: unknown }).request;
-  if (!request || typeof request !== "object" || Array.isArray(request)) return false;
-  const record = request as { domain?: unknown; action?: unknown };
-  return record.domain === "lane" && record.action === "delete";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-export function ipcInvokeTimeoutMs(channel: string, args?: unknown[]): number {
+const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
+  macos_vm: {
+    provision: IPC.macosVmProvision,
+    start: IPC.macosVmStart,
+    stop: IPC.macosVmStop,
+    delete: IPC.macosVmDelete,
+    captureScreenshot: IPC.macosVmCaptureScreenshot,
+  },
+  lane: {
+    create: IPC.lanesCreate,
+    createChild: IPC.lanesCreateChild,
+    createFromUnstaged: IPC.lanesCreateFromUnstaged,
+    importBranch: IPC.lanesImportBranch,
+    delete: IPC.lanesDelete,
+  },
+};
+
+function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
+  const payload = args[0];
+  const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
+  if (typeof request?.domain !== "string" || typeof request.action !== "string") return null;
+  const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
+  return channel ? ipcInvokeTimeoutMs(channel) : null;
+}
+
+export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
+  if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+    const actionTimeoutMs = runtimeActionTimeoutMs(args);
+    if (actionTimeoutMs != null) return actionTimeoutMs;
+    return 30_000;
+  }
   switch (channel) {
+    case IPC.lanesCreate:
+    case IPC.lanesCreateChild:
+    case IPC.lanesCreateFromUnstaged:
+    case IPC.lanesImportBranch:
     case IPC.lanesDelete:
       return 4 * 60_000;
-    case IPC.localRuntimeCallAction:
-    case IPC.remoteRuntimeCallAction:
-      if (isRuntimeLaneDeleteAction(args)) return 4 * 60_000;
-      return 30_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.macosVmProvision:
-      return 120 * 60_000;
     case IPC.macosVmStart:
+      return 120 * 60_000;
     case IPC.macosVmStop:
     case IPC.macosVmDelete:
       return 2 * 60_000;

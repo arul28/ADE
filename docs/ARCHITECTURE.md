@@ -407,7 +407,7 @@ ade.iosSimulator.*           # macOS-only iOS Simulator drawer + Preview Lab: ge
 ade.appControl.*             # Electron app control bridge over Chrome DevTools Protocol: getStatus/launch/launchInTerminal/connect/stop/screenshot/getSnapshot/inspectPoint/selectPoint/click/typeText/scroll/dispatchKey/listTargets/attachToTarget, plus the ade.appControl.event push channel (session-started/updated/stopped, selection, screencast frame)
 ade.builtInBrowser.*         # in-app web browser owned by `builtInBrowserService`: getStatus/showPanel/setBounds/attachWebview/navigate/createTab/switchTab/closeTab/reload/goBack/goForward/stop/startInspect/stopInspect/captureScreenshot/selectPoint/selectCurrent/clearSelection, plus the ade.builtInBrowser.event push channel (status / open-request / selection / selection-cleared / error). Backs the Work sidebar's Browser tab and the renderer-wide `openUrlInAdeBrowser()` link router.
 ade.terminal.*               # chat-owned terminal control: list/read/write/signal/activeForChat. Resolves a chat's active terminal via chatSessionId so in-chat agents and the App Control panel can drive the visible launch terminal.
-ade.macosVm.*                # lane-tied macOS VM lifecycle and GUI control: getStatus/provision/start/stop/delete/getAgentGuide/getSharePolicy/focusWindow/captureScreenshot/selectPoint/click/typeText, plus the ade.macosVm.event push channel. Uses Lume first, direct/headless VNC when ADE has managed credentials, and sanitized mirrors for lane roots that contain ADE local state.
+ade.macosVm.*                # lane-tied macOS VM lifecycle and GUI control: getStatus/provision/start/stop/restart/delete/wipe/installRuntime/setCredentials/getCredentials/detachLane/getStorageInfo/getAgentGuide/focusWindow/getDisplaySession/captureScreenshot/selectPoint/click/typeText, plus the ade.macosVm.event push channel. Uses Lume first, direct/headless VNC when ADE has managed credentials, and sanitized mirrors for lane roots that contain ADE local state. `setCredentials`/`getCredentials` are Keychain-backed (`security`-shelled service `ade-macos-vm-<vmName>` / account `ade-cli`); `installRuntime` drives the in-guest ade-runtime bootstrap over SSH+SCP through `runtimeBootstrap.ts`.
 ade.updates.*
 ```
 
@@ -478,7 +478,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `lanes/` | `laneService.ts`, `laneEnvironmentService.ts`, `laneTemplateService.ts`, `laneProxyService.ts`, `portAllocationService.ts`, `autoRebaseService.ts`, `rebaseSuggestionService.ts`, `laneLaunchContext.ts`, `oauthRedirectService.ts`, `runtimeDiagnosticsService.ts` | Worktree lifecycle, env bootstrap, templates, reverse proxy, port leases, auto-rebase, suggestions, OAuth redirect, diagnostics. |
 | `logging/` | `logger.ts` | File-backed structured logger. |
 | `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions with per-call timeouts where needed, polls runtime events, and installs the background service best-effort in packaged builds. |
-| `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts` | Lane-tied macOS VM lifecycle and GUI control. Uses Lume, stores VM records in `.ade/cache`, stores VNC credentials in `.ade/secrets`, mounts direct lane roots when safe, otherwise keeps a sanitized rsync mirror, and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. |
+| `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts`, `credentialsStore.ts`, `runtimeBootstrap.ts`, `macosVmRecovery.ts` | Lane-tied macOS VM lifecycle and GUI control. `macosVmService.ts` uses Lume, stores VM records in `.ade/cache`, mounts direct lane roots when safe (otherwise a sanitized rsync mirror), and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. `credentialsStore.ts` keeps guest user credentials in the macOS Keychain (`/usr/bin/security`, service `ade-macos-vm-<vmName>` / account `ade-cli`); renderers only see a summary. `runtimeBootstrap.ts` installs the in-guest ade-runtime over SSH+SCP with a five-phase progress signal (`ssh-probe`, `write-script`, `scp-script`, `run-script`, `verify-marker`). `macosVmRecovery.ts` is a standalone CLI cleanup path for stale records / lease / VNC credentials when the desktop surface cannot reach them. |
 | `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |
 | `onboarding/` | `onboardingService.ts` | First-run flow, defaults detection, existing lane discovery. |
@@ -559,7 +559,8 @@ app/            # shell, App.tsx, TopBar, TabNav, startup, splash
 project/        # Play tab, run/test/process controls
 lanes/          # list/detail/inspector, stacks, laneDesignTokens.ts
 files/          # tree, editor, diffs
-terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), WorkSidebar, MacosVmPanel, workSessionTiling, LaneCombobox
+terminals/      # TerminalView, WorkViewArea (PaneTilingLayout-backed grid), WorkSidebar, workSessionTiling, LaneCombobox
+vm/             # MacVmPage dedicated lane-tied macOS VM surface
 conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
@@ -663,7 +664,7 @@ webPreferences: {
 
 **CSP**: `default-src 'self'`; `script-src 'self'` (no eval, no inline scripts); `style-src 'self' 'unsafe-inline'` (required for Tailwind); `connect-src 'self'`; `img-src 'self' data:`.
 
-Every IPC handler **validates** its arguments; invalid args return structured errors, never crash. Every handler has a bounded timeout: 30 seconds by default, with named longer budgets for direct long-running lifecycle and control-plane calls. Every handler emits structured tracing.
+Every IPC handler **validates** its arguments; invalid args return structured errors, never crash. Every handler has a **30s timeout** by default; `ipcTimeouts.ts` carries per-channel overrides for long-running operations and inspects the payload of `localRuntime.callAction` / `remoteRuntime.callAction` so action-specific timeouts (e.g. `macos_vm.provision`, `macos_vm.start` → 2 h; `lane.create` / `lane.delete` → 4 min; `ios_simulator.launch` → 10 min) apply even when the channel itself is generic. Every handler emits structured tracing.
 
 ### 8.3 ADE CLI auth + API-key storage
 

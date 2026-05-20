@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import type { FSWatcher } from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
 import {
   type MacosVmAgentGuide,
   type MacosVmAgentGuideArgs,
@@ -12,34 +15,56 @@ import {
   type MacosVmClickArgs,
   type MacosVmContextItem,
   type MacosVmDeleteArgs,
+  type MacosVmDisplaySession,
+  type MacosVmDisplaySessionArgs,
+  type MacosVmDownloadProgress,
   type MacosVmEventPayload,
   type MacosVmFocusWindowArgs,
+  type MacosVmGlobalLease,
+  type MacosVmGuestReadiness,
+  type MacosVmInstallRuntimeArgs,
   type MacosVmLifecycleState,
   type MacosVmOperation,
   type MacosVmProviderStatus,
   type MacosVmProvisionArgs,
   type MacosVmRecord,
+  type MacosVmRestartArgs,
+  type MacosVmRuntimeInstallStatus,
   type MacosVmSelectPointArgs,
   type MacosVmSelectPointResult,
+  type MacosVmSetCredentialsArgs,
+  type MacosVmGetCredentialsArgs,
+  type MacosVmShareEntry,
   type MacosVmSharePolicy,
   type MacosVmStartArgs,
+  type MacosVmStorageInfo,
   type MacosVmStatus,
   type MacosVmStatusArgs,
   type MacosVmStopArgs,
+  type MacosVmStoredCredentialsSummary,
   type MacosVmToolStatus,
   type MacosVmTypeTextArgs,
   type MacosVmWindowFrame,
   type MacosVmWindowTarget,
+  type MacosVmWipeArgs,
+  type MacosVmWipeResult,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import {
   captureVncScreenshot,
   clickVnc,
+  encodeRgbaPng,
   type DirectVncConnection,
   type DirectVncScreenshot,
   typeTextVnc,
 } from "./rfbDirectClient";
+import { createCredentialsStore, type CredentialsStore } from "./credentialsStore";
+import {
+  installAdeRuntimeInVm,
+  type BootstrapRunner,
+  type RuntimeBootstrapPhase,
+} from "./runtimeBootstrap";
 
 const APPLE_VIRTUALIZATION_DOCS = "https://developer.apple.com/documentation/virtualization";
 const APPLE_SHARED_DIRECTORIES_DOCS = "https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration";
@@ -49,11 +74,16 @@ const LUME_GUEST_SHARED_PATH = "/Volumes/My Shared Files";
 const DEFAULT_CPU_CORES = 4;
 const DEFAULT_MEMORY = "8GB";
 const DEFAULT_DISK_SIZE = "80GB";
-const DEFAULT_DISPLAY = "1920x1200";
+const DEFAULT_DISPLAY = "1920x1440";
 const DEFAULT_PULL_IMAGE = "macos-tahoe-vanilla:latest";
+const DEFAULT_CREATE_IPSW = "https://updates.cdn-apple.com/2025SummerFCS/fullrestores/093-10809/CFD6DD38-DAF0-40DA-854F-31AAD1294C6F/UniversalMac_15.6.1_24G90_Restore.ipsw";
 const MACOS_VM_STATE_FILE = "records.json";
+const MACOS_VM_GLOBAL_LEASE_FILE = "lease.json";
 const MACOS_VM_VNC_CREDENTIALS_FILE = "macos-vm-vnc.v1.json";
 const MACOS_VM_HEADLESS_WINDOW_TITLE = "Headless VNC";
+const MACOS_VM_IPSW_CACHE_DIR = "ipsw";
+const DISPLAY_PROXY_IDLE_MS = 60_000;
+const DISPLAY_PROXY_MAX_MS = 12 * 60 * 60_000;
 const MIRROR_SYNC_EXCLUDES = [
   "/.ade/local.yaml",
   "/.ade/local.secret.yaml",
@@ -104,6 +134,12 @@ type DirectVncClient = {
   typeText(connection: DirectVncConnection, text: string, timeoutMs?: number): Promise<{ width: number; height: number; typedLength: number }>;
 };
 
+type WindowCaptureSource = {
+  id: string;
+  name: string;
+  thumbnailDataUrl: string | null;
+};
+
 type SharePlan = {
   hostPath: string;
   guestPath: string;
@@ -130,21 +166,44 @@ type MirrorSyncSession = {
   disposed: boolean;
 };
 
+type DisplayProxySession = {
+  laneId: string;
+  vmName: string;
+  websocketUrl: string;
+  password: string;
+  width: number;
+  height: number;
+  expiresAt: number;
+  close: () => void;
+};
+
 type CreateMacosVmServiceArgs = {
   projectRoot: string;
   logger: Logger;
   resolveLanes: () => Promise<LaneContext[]>;
   onEvent?: ((payload: MacosVmEventPayload) => void) | null;
   runCommand?: CommandRunner;
+  validateProviderSignature?: boolean;
   directVncClient?: DirectVncClient;
+  captureWindowSources?: (() => Promise<WindowCaptureSource[]>) | null;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
+  credentialsStore?: CredentialsStore;
+  runtimeBootstrapRunner?: BootstrapRunner;
+  onRuntimeReady?:
+    | ((info: { vmName: string; ipAddress: string; username: string }) => void | Promise<void>)
+    | null;
 };
 
 type VmStoreFile = {
   version: 1;
   records: MacosVmRecord[];
+};
+
+type VmGlobalLeaseFile = {
+  version: 1;
+  lease: MacosVmGlobalLease | null;
 };
 
 type VncCredentialStoreFile = {
@@ -161,7 +220,9 @@ type ExternalVmInfo = {
   name: string;
   state: MacosVmLifecycleState;
   ipAddress: string | null;
+  sshAvailable: boolean | null;
   vncUrl: string | null;
+  vncPassword: string | null;
   raw: Record<string, unknown>;
 };
 
@@ -181,7 +242,7 @@ function normalizeLifecycleState(value: unknown): MacosVmLifecycleState {
   const normalized = typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
   if (normalized === "created" || normalized === "not_created") return "not_created";
   if (normalized === "creating") return "creating";
-  if (normalized === "installing") return "installing";
+  if (normalized === "installing" || normalized === "provisioning" || normalized === "ipsw_install") return "installing";
   if (normalized === "stopped" || normalized === "shutoff" || normalized === "shutdown") return "stopped";
   if (normalized === "starting" || normalized === "booting") return "starting";
   if (normalized === "running" || normalized === "started") return "running";
@@ -189,6 +250,10 @@ function normalizeLifecycleState(value: unknown): MacosVmLifecycleState {
   if (normalized === "paused" || normalized === "suspended") return "paused";
   if (normalized === "failed" || normalized === "error") return "failed";
   return "unknown";
+}
+
+function stateLabelForError(value: MacosVmLifecycleState): string {
+  return value.replace(/_/g, " ");
 }
 
 function asString(value: unknown): string | null {
@@ -241,6 +306,19 @@ function appleScriptString(value: string): string {
 
 function sanitizeArtifactName(value: string): string {
   return sanitizeVmName(value).replace(/[^a-z0-9-]+/g, "-") || "macos-vm";
+}
+
+function pngDataFromDataUrl(dataUrl: string | null | undefined): Buffer | null {
+  if (!dataUrl) return null;
+  const match = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
+  if (!match) return null;
+  return Buffer.from(match[1] ?? "", "base64");
+}
+
+function isVmWindowCaptureSource(sourceName: string, record: MacosVmRecord): boolean {
+  const name = sourceName.toLowerCase();
+  return name.includes(record.name.toLowerCase())
+    || /\bvirtualization\b|\bscreen sharing\b|\blume\b|\bvnc\b/.test(name);
 }
 
 function withTrailingSeparator(value: string): string {
@@ -365,11 +443,21 @@ function parseVmInfo(value: unknown): ExternalVmInfo | null {
   if (!name) return null;
   const rawIp = value.ip ?? value.ipAddress ?? value.ip_address ?? value.address;
   const rawVnc = value.vncUrl ?? value.vnc_url ?? value.vnc ?? value.displayUrl;
+  const parsedVnc = parseVncUrl(asString(rawVnc));
+  const provisioningOperation = asString(value.provisioningOperation ?? value.provisioning_operation);
+  const state = normalizeLifecycleState(value.state ?? value.status ?? value.powerState);
+  const sshAvailable = typeof value.sshAvailable === "boolean"
+    ? value.sshAvailable
+    : typeof value.ssh_available === "boolean"
+      ? value.ssh_available
+      : null;
   return {
     name,
-    state: normalizeLifecycleState(value.state ?? value.status ?? value.powerState),
+    state: state === "unknown" && provisioningOperation ? "installing" : state,
     ipAddress: asString(rawIp),
+    sshAvailable,
     vncUrl: sanitizeVncUrl(asString(rawVnc)),
+    vncPassword: parsedVnc?.password ?? null,
     raw: sanitizeExternalVmRaw(value),
   };
 }
@@ -397,7 +485,9 @@ function parseVmList(stdout: string): ExternalVmInfo[] {
         name: parts[0] ?? "",
         state: normalizeLifecycleState(parts[1]),
         ipAddress: parts.find((part) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(part)) ?? null,
+        sshAvailable: null,
         vncUrl: sanitizeVncUrl(parts.find((part) => /^vnc:\/\//i.test(part)) ?? null),
+        vncPassword: parseVncUrl(parts.find((part) => /^vnc:\/\//i.test(part)) ?? null)?.password ?? null,
         raw: { line: sanitizeVncUrlsInText(line) },
       });
     }
@@ -410,6 +500,135 @@ function parseVmGet(stdout: string, name: string): ExternalVmInfo | null {
   if (direct) return direct;
   const list = parseVmList(stdout);
   return list.find((info) => info.name === name) ?? null;
+}
+
+function guestReadinessForRecord(
+  record: Pick<MacosVmRecord, "state" | "guestSharedPath" | "sshCommand" | "lastError" | "guestReadiness" | "runtimeInstall">,
+  info: ExternalVmInfo | null,
+): MacosVmGuestReadiness {
+  const state = info?.state ?? record.state;
+  const previousSshAvailable = state === "running" ? record.guestReadiness?.sshAvailable ?? null : null;
+  const sshAvailable = info?.sshAvailable ?? previousSshAvailable ?? (record.sshCommand ? true : null);
+  if (state === "running") {
+    if (sshAvailable === true) {
+      const runtimeState = record.runtimeInstall?.state ?? "not_installed";
+      if (runtimeState === "installed") {
+        return {
+          state: "runtime_ready",
+          canControlGui: true,
+          canRunCode: true,
+          sshAvailable,
+          setupAssistantLikely: false,
+          detail: "The guest is running and the ADE agent runtime is installed.",
+          nextAction: `Open or create a VM lane to run agents inside the guest at ${record.guestSharedPath}.`,
+        };
+      }
+      if (runtimeState === "installing") {
+        return {
+          state: "runtime_installing",
+          canControlGui: true,
+          canRunCode: false,
+          sshAvailable,
+          setupAssistantLikely: false,
+          detail: record.runtimeInstall?.detail ?? "Installing the ADE agent runtime in the guest.",
+          nextAction: "Wait for the runtime install to finish, then open a VM lane.",
+        };
+      }
+      return {
+        state: "code_ready",
+        canControlGui: true,
+        canRunCode: true,
+        sshAvailable,
+        setupAssistantLikely: false,
+        detail: "The guest is running and reports SSH availability.",
+        nextAction: `Save guest credentials and install the ADE agent runtime, or SSH into the guest and work from ${record.guestSharedPath}.`,
+      };
+    }
+    if (sshAvailable === false) {
+      return {
+        state: "setup_required",
+        canControlGui: true,
+        canRunCode: false,
+        sshAvailable,
+        setupAssistantLikely: true,
+        detail: "The guest is running, but SSH is unavailable. Fresh IPSW-created macOS VMs usually stop in Setup Assistant here.",
+        nextAction: "Finish macOS Setup Assistant in the VM console, create the guest user, enable Remote Login if needed, then refresh.",
+      };
+    }
+    return {
+      state: "desktop_unverified",
+      canControlGui: true,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: "The guest is running, but the provider did not report SSH readiness.",
+      nextAction: "Use the VM console to confirm the desktop is usable and enable Remote Login before relying on guest command execution.",
+    };
+  }
+  if (state === "creating" || state === "installing") {
+    return {
+      state: "provisioning",
+      canControlGui: false,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: "macOS is still being created or installed.",
+      nextAction: "Wait for provisioning to finish, then start the VM.",
+    };
+  }
+  if (state === "starting") {
+    return {
+      state: "booting",
+      canControlGui: false,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: "The VM is booting.",
+      nextAction: "Wait for the VM to report running.",
+    };
+  }
+  if (state === "failed") {
+    return {
+      state: "blocked",
+      canControlGui: false,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: record.lastError ?? "The VM failed before the guest became usable.",
+      nextAction: "Fix the provider error, retry start, or remove the VM and create a fresh VM lane.",
+    };
+  }
+  if (state === "not_created") {
+    return {
+      state: "not_created",
+      canControlGui: false,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: "No macOS guest has been created for this lane yet.",
+      nextAction: "Create or start the VM from the VM tab.",
+    };
+  }
+  if (state === "stopped" || state === "paused" || state === "stopping") {
+    return {
+      state: "not_running",
+      canControlGui: false,
+      canRunCode: false,
+      sshAvailable,
+      setupAssistantLikely: false,
+      detail: `The VM is ${stateLabelForError(state)}.`,
+      nextAction: "Start the VM to continue setup or guest work.",
+    };
+  }
+  return {
+    state: "unknown",
+    canControlGui: false,
+    canRunCode: false,
+    sshAvailable,
+    setupAssistantLikely: false,
+    detail: "ADE could not determine guest readiness from the provider state.",
+    nextAction: "Refresh VM status or capture a frame from the VM tab.",
+  };
 }
 
 function readStoreFile(storePath: string): VmStoreFile {
@@ -425,6 +644,39 @@ function readStoreFile(storePath: string): VmStoreFile {
 }
 
 function writeStoreFile(storePath: string, store: VmStoreFile): void {
+  fs.mkdirSync(path.dirname(storePath), { recursive: true });
+  const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpPath, storePath);
+}
+
+function parseGlobalLease(value: unknown): MacosVmGlobalLease | null {
+  if (!isRecord(value)) return null;
+  const projectRoot = asString(value.projectRoot);
+  const laneId = asString(value.laneId);
+  const vmId = asString(value.vmId);
+  const vmName = asString(value.vmName);
+  if (!projectRoot || !laneId || !vmId || !vmName) return null;
+  return {
+    projectRoot,
+    laneId,
+    laneName: asString(value.laneName) ?? laneId,
+    vmId,
+    vmName,
+    updatedAt: asString(value.updatedAt) ?? nowIso(),
+  };
+}
+
+function readGlobalLeaseFile(storePath: string): VmGlobalLeaseFile {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8")) as Partial<VmGlobalLeaseFile>;
+    return { version: 1, lease: parseGlobalLease(parsed.lease) };
+  } catch {
+    return { version: 1, lease: null };
+  }
+}
+
+function writeGlobalLeaseFile(storePath: string, store: VmGlobalLeaseFile): void {
   fs.mkdirSync(path.dirname(storePath), { recursive: true });
   const tmpPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
@@ -472,6 +724,12 @@ function parseDisplaySize(display: string | null | undefined): { width: number; 
   };
 }
 
+function displaySizeForRecord(record: MacosVmRecord): { width: number; height: number } {
+  const lume = record.metadata.lume;
+  const liveDisplay = isRecord(lume) ? asString(lume.display) : null;
+  return parseDisplaySize(liveDisplay || record.display);
+}
+
 function parseVncUrl(value: string | null | undefined): { host: string; port: number; password: string | null } | null {
   const raw = value?.trim();
   if (!raw) return null;
@@ -513,16 +771,23 @@ function sanitizeVncUrlsInText(value: string): string {
   return value.replace(/vnc:\/\/(?:[^@\s/]*@)?([^:\s/]+):(\d{1,5})/gi, "vnc://$1:$2");
 }
 
+function sanitizeLumeRunText(value: string): string {
+  return sanitizeVncUrlsInText(value).replace(/--vnc-password(?:=|\s+)\S+/g, "--vnc-password=<redacted>");
+}
+
 function commonLumePaths(env: NodeJS.ProcessEnv): string[] {
-  const home = os.homedir();
+  const home = env.HOME?.trim() || os.homedir();
+  const cuaAppBinary = path.join(home, ".local", "share", "lume", "lume.app", "Contents", "MacOS", "lume");
+  const cuaCliWrapper = path.join(home, ".local", "bin", "lume");
   const entries = [
     env.ADE_LUME_PATH,
+    cuaAppBinary,
+    cuaCliWrapper,
     ...String(env.PATH ?? "").split(path.delimiter).map((entry) => entry ? path.join(entry, "lume") : ""),
-    path.join(home, ".local", "bin", "lume"),
     "/opt/homebrew/bin/lume",
     "/usr/local/bin/lume",
   ];
-  return entries.filter((entry): entry is string => Boolean(entry?.trim()));
+  return [...new Set(entries.filter((entry): entry is string => Boolean(entry?.trim())))];
 }
 
 function resolveLumeCommand(env: NodeJS.ProcessEnv): string {
@@ -536,6 +801,58 @@ function resolveLumeCommand(env: NodeJS.ProcessEnv): string {
   return "lume";
 }
 
+function normalizeLumeUnavailableDetail(value: string): string {
+  const detail = value.trim();
+  if (/(no such file or directory|cannot execute|enoent|command not found|not found)/i.test(detail)) {
+    return "Lume is not installed or its CLI shim is broken. Install Lume from Cua, then refresh this panel.";
+  }
+  return detail || "Lume is not available. Install Lume from Cua, then refresh this panel.";
+}
+
+function normalizeLumeVersion(value: string): string | null {
+  const firstLine = value.trim().split(/\r?\n/)[0]?.trim() || "";
+  const semver = /\b(?:lume\s*)?(v?\d+\.\d+\.\d+)\b/i.exec(firstLine)?.[1];
+  return semver ?? (firstLine || null);
+}
+
+function describeLumeCommand(command: string): string {
+  return command === "lume" ? "lume on PATH" : command;
+}
+
+function parseHttpUrl(value: string): URL | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+function ipswCacheFilename(url: URL): string {
+  const filename = decodeURIComponent(path.basename(url.pathname));
+  const safe = filename.replace(/[^A-Za-z0-9._-]/g, "-");
+  return safe.endsWith(".ipsw") ? safe : `${safe || "macos-restore"}.ipsw`;
+}
+
+function recoverLargestPartialDownload(cacheDir: string, destination: string): void {
+  const stablePartial = `${destination}.part`;
+  if (fs.existsSync(stablePartial)) return;
+  const prefix = `${path.basename(destination)}.part-`;
+  let largest: { path: string; size: number } | null = null;
+  try {
+    for (const entry of fs.readdirSync(cacheDir)) {
+      if (!entry.startsWith(prefix)) continue;
+      const candidate = path.join(cacheDir, entry);
+      const size = fs.statSync(candidate).size;
+      if (!largest || size > largest.size) largest = { path: candidate, size };
+    }
+  } catch {
+    return;
+  }
+  if (!largest || largest.size <= 0) return;
+  fs.renameSync(largest.path, stablePartial);
+}
+
 export function createMacosVmService(args: CreateMacosVmServiceArgs) {
   const platform = args.platform ?? process.platform;
   const arch = args.arch ?? process.arch;
@@ -546,13 +863,18 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     click: clickVnc,
     typeText: typeTextVnc,
   };
+  const credentialsStore = args.credentialsStore ?? createCredentialsStore({ platform });
+  const runtimeBootstrapRunner = args.runtimeBootstrapRunner;
   const layout = resolveAdeLayout(args.projectRoot);
   const storeDir = path.join(layout.cacheDir, "macos-vms");
   const storePath = path.join(storeDir, MACOS_VM_STATE_FILE);
+  const adeHome = env.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(layout.cacheDir, "runtime-home");
+  const globalLeasePath = path.join(adeHome, "cache", "macos-vms", MACOS_VM_GLOBAL_LEASE_FILE);
   const vncCredentialStorePath = path.join(layout.secretsDir, MACOS_VM_VNC_CREDENTIALS_FILE);
   const projectRoot = path.resolve(args.projectRoot);
   const lumeCommand = resolveLumeCommand(env);
   const mirrorSyncSessions = new Map<string, MirrorSyncSession>();
+  const displayProxySessions = new Map<string, DisplayProxySession>();
   let disposed = false;
 
   const emit = (payload: MacosVmEventPayload): void => {
@@ -576,16 +898,119 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     emit({ type: "operation", operation, state, laneId, vmName, message, occurredAt: nowIso() });
   };
 
-  const loadRecords = (): MacosVmRecord[] => readStoreFile(storePath).records;
+  const loadRecords = (): MacosVmRecord[] => readStoreFile(storePath).records.map((record) => ({
+    ...record,
+    guestReadiness: record.guestReadiness ?? guestReadinessForRecord(record, null),
+  }));
 
   const saveRecords = (records: MacosVmRecord[]): void => {
     writeStoreFile(storePath, { version: 1, records });
   };
 
+  const readGlobalLease = (): MacosVmGlobalLease | null => readGlobalLeaseFile(globalLeasePath).lease;
+
+  const writeGlobalLease = (lease: MacosVmGlobalLease | null): void => {
+    writeGlobalLeaseFile(globalLeasePath, { version: 1, lease });
+  };
+
+  const recordToGlobalLease = (record: MacosVmRecord): MacosVmGlobalLease => ({
+    projectRoot,
+    laneId: record.laneId,
+    laneName: record.laneName,
+    vmId: record.id,
+    vmName: record.name,
+    updatedAt: nowIso(),
+  });
+
+  const markLaneAttachment = (
+    record: MacosVmRecord,
+    validLaneIds: ReadonlySet<string>,
+  ): MacosVmRecord => ({
+    ...record,
+    laneState: validLaneIds.has(record.laneId) ? "attached" : "missing",
+  });
+
+  const leaseMatchesCurrentProjectLane = (lease: MacosVmGlobalLease, lane: LaneContext): boolean => (
+    path.resolve(lease.projectRoot) === projectRoot && lease.laneId === lane.id
+  );
+
+  const reconcileGlobalLease = (
+    externalByName: Map<string, ExternalVmInfo>,
+    records = loadRecords(),
+  ): MacosVmGlobalLease | null => {
+    const current = readGlobalLease();
+    if (current) {
+      const currentProjectLease = path.resolve(current.projectRoot) === projectRoot;
+      const localRecord = records.find((record) => record.name === current.vmName || record.laneId === current.laneId) ?? null;
+      if (currentProjectLease && localRecord) {
+        if (localRecord.laneState === "missing") {
+          if (externalByName.has(current.vmName)) return current;
+          writeGlobalLease(null);
+          return null;
+        }
+        const refreshed = recordToGlobalLease(localRecord);
+        writeGlobalLease(refreshed);
+        return refreshed;
+      }
+      if (externalByName.has(current.vmName)) return current;
+      if (currentProjectLease) {
+        writeGlobalLease(null);
+        return null;
+      }
+      return current;
+    }
+
+    const localRecord = records.find((record) => record.laneState !== "missing" && record.state === "running")
+      ?? records.find((record) => record.laneState !== "missing")
+      ?? null;
+    if (!localRecord) return null;
+    const lease = recordToGlobalLease(localRecord);
+    writeGlobalLease(lease);
+    return lease;
+  };
+
+  const ensureGlobalLeaseAvailable = async (lane: LaneContext): Promise<void> => {
+    const external = await listExternalVms();
+    const externalByName = new Map(external.map((info) => [info.name, info]));
+    const validLaneIds = new Set((await args.resolveLanes()).map((entry) => entry.id));
+    const records = loadRecords().map((record) => markLaneAttachment(record, validLaneIds));
+    const blockingRecord = records.find((record) => record.laneId !== lane.id) ?? null;
+    if (blockingRecord?.laneState === "missing") {
+      throw new Error(
+        `A stale Mac VM record still points at deleted lane ${blockingRecord.laneName}. Remove it from the VM tab before attaching a new VM lane.`,
+      );
+    }
+    if (blockingRecord) {
+      throw new Error(
+        `Mac VM is already attached to ${blockingRecord.laneName}. Finish or delete that VM before creating another VM lane.`,
+      );
+    }
+    const lease = reconcileGlobalLease(externalByName, records);
+    if (!lease || leaseMatchesCurrentProjectLane(lease, lane)) return;
+    throw new Error(
+      `Mac VM is already attached to ${lease.laneName} in ${lease.projectRoot}. Finish or delete that VM before creating another VM lane.`,
+    );
+  };
+
+  const claimGlobalLease = (record: MacosVmRecord): void => {
+    writeGlobalLease(recordToGlobalLease(record));
+  };
+
+  const clearGlobalLeaseForRecord = (record: MacosVmRecord): void => {
+    const lease = readGlobalLease();
+    if (!lease) return;
+    if (lease.vmName !== record.name && lease.laneId !== record.laneId) return;
+    writeGlobalLease(null);
+  };
+
   const upsertRecord = (record: MacosVmRecord): MacosVmRecord => {
     const records = loadRecords();
     const index = records.findIndex((entry) => entry.id === record.id || entry.laneId === record.laneId);
-    const next = { ...record, updatedAt: nowIso() };
+    const next = {
+      ...record,
+      guestReadiness: guestReadinessForRecord(record, null),
+      updatedAt: nowIso(),
+    };
     if (index >= 0) records[index] = next;
     else records.push(next);
     saveRecords(records);
@@ -622,6 +1047,18 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     return password;
   };
 
+  const saveVncPassword = (laneId: string, vmName: string, password: string): void => {
+    if (!password.trim()) return;
+    const store = readVncCredentialStore(vncCredentialStorePath);
+    store.credentials[vncCredentialKey(laneId, vmName)] = {
+      laneId,
+      vmName,
+      password,
+      updatedAt: nowIso(),
+    };
+    writeVncCredentialStore(vncCredentialStorePath, store);
+  };
+
   const removeVncPassword = (laneId: string, vmName: string): void => {
     const store = readVncCredentialStore(vncCredentialStorePath);
     const key = vncCredentialKey(laneId, vmName);
@@ -639,33 +1076,372 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     return result;
   };
 
+  const resolveCreateIpsw = async (lane: LaneContext, record: MacosVmRecord, ipsw: string): Promise<string> => {
+    const url = parseHttpUrl(ipsw);
+    if (!url) return ipsw;
+    const cacheDir = path.join(storeDir, MACOS_VM_IPSW_CACHE_DIR);
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const destination = path.join(cacheDir, ipswCacheFilename(url));
+    try {
+      if (fs.statSync(destination).size > 0) {
+        emitOperation("provision", "started", lane.id, record.name, `Using cached macOS restore image ${path.basename(destination)}.`);
+        return destination;
+      }
+    } catch {
+      // Download below.
+    }
+    recoverLargestPartialDownload(cacheDir, destination);
+    const partial = `${destination}.part`;
+    emitOperation("provision", "started", lane.id, record.name, `Downloading macOS restore image ${path.basename(destination)} from Apple.`);
+    // Probe Content-Length up front via a HEAD request so the progress bar
+    // can show "X / Y GB" and a real ETA. Apple's CDN serves Content-Length
+    // on HEAD reliably; if it fails for any reason we degrade to the
+    // bytes-only display rather than blocking the download.
+    const startedAt = nowIso();
+    let totalBytes: number | null = null;
+    try {
+      const headResult = await runCommand("/usr/bin/curl", [
+        "--head",
+        "--silent",
+        "--show-error",
+        "--location",
+        url.toString(),
+      ], { timeoutMs: 15_000 });
+      if (headResult.exitCode === 0) {
+        const match = /^content-length:\s*(\d+)/im.exec(headResult.stdout);
+        if (match) {
+          const parsed = Number.parseInt(match[1], 10);
+          if (Number.isFinite(parsed) && parsed > 0) totalBytes = parsed;
+        }
+      }
+    } catch {
+      // Best-effort; download still proceeds without total.
+    }
+    let lastDownloadedBytes = 0;
+    let lastSampleMs = Date.now();
+    const progressTimer = setInterval(() => {
+      try {
+        const size = fs.statSync(partial).size;
+        const now = Date.now();
+        const elapsedMs = Math.max(1, now - lastSampleMs);
+        const deltaBytes = Math.max(0, size - lastDownloadedBytes);
+        const bytesPerSecond = (deltaBytes / elapsedMs) * 1000;
+        const etaSeconds = totalBytes != null && bytesPerSecond > 0
+          ? Math.max(0, Math.round((totalBytes - size) / bytesPerSecond))
+          : null;
+        lastDownloadedBytes = size;
+        lastSampleMs = now;
+        const progress: MacosVmDownloadProgress = {
+          source: "ipsw",
+          downloadedBytes: size,
+          totalBytes,
+          etaSeconds,
+          startedAt,
+          updatedAt: new Date(now).toISOString(),
+          resumable: true,
+        };
+        emit({ type: "download-progress", vmName: record.name, progress });
+      } catch {
+        // The partial file may not exist yet; ignore until curl creates it.
+      }
+    }, 500);
+    progressTimer.unref?.();
+    try {
+      const result = await runCommand("/usr/bin/curl", [
+        "--fail",
+        "--location",
+        "--continue-at",
+        "-",
+        "--silent",
+        "--show-error",
+        "--output",
+        partial,
+        url.toString(),
+      ], { timeoutMs: 2 * 60 * 60_000, cwd: projectRoot });
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr || result.stdout || `curl exited with code ${result.exitCode ?? "unknown"}`).trim();
+        throw new Error(detail);
+      }
+      fs.renameSync(partial, destination);
+      // Emit a final 100% progress event so renderers can clear the bar.
+      try {
+        const size = fs.statSync(destination).size;
+        emit({
+          type: "download-progress",
+          vmName: record.name,
+          progress: {
+            source: "ipsw",
+            downloadedBytes: size,
+            totalBytes: size,
+            etaSeconds: 0,
+            startedAt,
+            updatedAt: nowIso(),
+            resumable: false,
+          },
+        });
+      } catch {
+        // Best-effort progress emit.
+      }
+      return destination;
+    } catch (error) {
+      throw error;
+    } finally {
+      clearInterval(progressTimer);
+    }
+  };
+
+  /**
+   * On service init, check for a `.part` file in the IPSW cache. If present,
+   * emit a `resume-available` event so the renderer can offer to resume the
+   * download.
+   */
+  const checkForResumableDownload = (): void => {
+    try {
+      const cacheDir = path.join(storeDir, MACOS_VM_IPSW_CACHE_DIR);
+      if (!fs.existsSync(cacheDir)) return;
+      for (const entry of fs.readdirSync(cacheDir)) {
+        if (!entry.endsWith(".part")) continue;
+        const partPath = path.join(cacheDir, entry);
+        let bytesAvailable = 0;
+        try {
+          bytesAvailable = fs.statSync(partPath).size;
+        } catch {
+          continue;
+        }
+        if (bytesAvailable <= 0) continue;
+        emit({
+          type: "resume-available",
+          vmName: null,
+          source: "ipsw",
+          bytesAvailable,
+        });
+      }
+    } catch (error) {
+      args.logger.debug("macos_vm.resume_check_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const launchLumeRun = async (lumeArgs: string[]): Promise<{ pid: number | null }> => {
     if (args.runCommand) {
       await runLume(lumeArgs, 5_000);
       return { pid: null };
     }
+    fs.mkdirSync(storeDir, { recursive: true });
+    const logPath = path.join(storeDir, `lume-run-${process.pid}-${Date.now()}.log`);
+    const outputFd = fs.openSync(logPath, "a");
     return new Promise<{ pid: number | null }>((resolve, reject) => {
+      let logClosed = false;
+      const closeLog = (): void => {
+        if (logClosed) return;
+        logClosed = true;
+        try {
+          fs.closeSync(outputFd);
+        } catch {
+          // Best effort cleanup.
+        }
+      };
+      const removeLog = (): void => {
+        try {
+          fs.rmSync(logPath, { force: true });
+        } catch {
+          // Best effort cleanup.
+        }
+      };
       const child = spawn(lumeCommand, lumeArgs, {
         cwd: projectRoot,
         detached: true,
         env: { ...process.env, ...env },
-        stdio: "ignore",
+        stdio: ["ignore", outputFd, outputFd],
       });
       let settled = false;
       const finish = (error?: Error): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        closeLog();
+        removeLog();
         if (error) reject(error);
         else {
           child.unref();
           resolve({ pid: child.pid ?? null });
         }
       };
-      const timeout = setTimeout(() => finish(), 750);
+      const providerOutput = (): string => {
+        closeLog();
+        let detail = "";
+        try {
+          detail = fs.readFileSync(logPath, "utf8").trim();
+        } catch {
+          detail = "";
+        }
+        if (detail) return sanitizeLumeRunText(detail);
+        return `Lume run exited before the VM reported running: ${sanitizeLumeRunText(lumeArgs.join(" "))}`;
+      };
+      const timeout = setTimeout(() => finish(), 1_500);
       child.once("error", (error) => finish(error));
-      child.once("spawn", () => finish());
+      child.once("exit", (exitCode, signal) => {
+        // `lume run` can return cleanly after launching the VM, especially
+        // in `--no-display` mode where there's no GUI to keep alive.
+        // Treat a zero exit as a successful kickoff; the caller still verifies
+        // the VM reached `running` via waitForExternalVm. Only non-zero
+        // exits are real failures and need the provider output surfaced.
+        if (exitCode === 0) {
+          finish();
+        } else {
+          finish(new Error(`${providerOutput()} (exit ${exitCode ?? signal ?? "unknown"})`));
+        }
+      });
     });
+  };
+
+  const ensureVmDisplaySize = async (record: MacosVmRecord): Promise<void> => {
+    await runLume(["set", record.name, "--display", record.display], 2 * 60_000);
+  };
+
+  const countConnectedScreenSharingClients = async (connection: DirectVncConnection): Promise<number> => {
+    if (platform !== "darwin") return 0;
+    try {
+      const result = await runCommand("/usr/sbin/lsof", [
+        "-nP",
+        "-Fpcn",
+        `-iTCP:${connection.port}`,
+        "-sTCP:ESTABLISHED",
+      ], { timeoutMs: 5_000, cwd: projectRoot });
+      if (result.exitCode !== 0) return 0;
+      const pids = new Set<string>();
+      let currentPid = "";
+      for (const line of result.stdout.split(/\r?\n/)) {
+        if (line.startsWith("p")) {
+          currentPid = line.slice(1).trim();
+          continue;
+        }
+        if (line.startsWith("c") && line.slice(1).trim() === "Screen Sharing") {
+          pids.add(currentPid || `unknown-${pids.size}`);
+        }
+      }
+      return pids.size;
+    } catch {
+      return 0;
+    }
+  };
+
+  const minimizeExternalVncClientWindows = async (record: MacosVmRecord): Promise<void> => {
+    if (platform !== "darwin") return;
+    const script = [
+      "delay 0.8",
+      "tell application \"System Events\"",
+      "  if exists process \"Screen Sharing\" then",
+      "    tell process \"Screen Sharing\"",
+      "      repeat with targetWindow in windows",
+      "        set windowTitle to \"\"",
+      "        try",
+      "          set windowTitle to name of targetWindow as text",
+      "        end try",
+      `        if windowTitle is "Virtualization" or windowTitle contains ${appleScriptString(record.name)} then`,
+      "          try",
+      "            set value of attribute \"AXMinimized\" of targetWindow to true",
+      "          end try",
+      "        end if",
+      "      end repeat",
+      "    end tell",
+      "  end if",
+      "end tell",
+    ].join("\n");
+    try {
+      const result = await runCommand("/usr/bin/osascript", ["-e", script], { timeoutMs: 5_000, cwd: projectRoot });
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr || result.stdout || `/usr/bin/osascript exited with code ${result.exitCode ?? "unknown"}`).trim();
+        throw new Error(detail);
+      }
+    } catch (error) {
+      args.logger.warn("macos_vm.hide_external_vnc_failed", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const closeStaleExternalVncClientWindows = async (record: MacosVmRecord): Promise<void> => {
+    if (platform !== "darwin") return;
+    const script = [
+      "set matchedWindowCount to 0",
+      "tell application \"System Events\"",
+      "  if exists process \"Screen Sharing\" then",
+      "    tell process \"Screen Sharing\"",
+      "      repeat with targetWindow in windows",
+      "        set windowTitle to \"\"",
+      "        try",
+      "          set windowTitle to name of targetWindow as text",
+      "        end try",
+      `        if windowTitle is "Virtualization" or windowTitle contains ${appleScriptString(record.name)} then`,
+      "          set matchedWindowCount to matchedWindowCount + 1",
+      "          try",
+      "            perform action \"AXClose\" of targetWindow",
+      "          on error",
+      "            try",
+      "              click button 1 of targetWindow",
+      "            end try",
+      "          end try",
+      "        end if",
+      "      end repeat",
+      "    end tell",
+      "  end if",
+      "end tell",
+      "if matchedWindowCount > 0 then",
+      "  tell application \"Screen Sharing\" to quit",
+      "  delay 0.5",
+      "end if",
+      "return matchedWindowCount as text",
+    ].join("\n");
+    try {
+      const result = await runCommand("/usr/bin/osascript", ["-e", script], { timeoutMs: 5_000, cwd: projectRoot });
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr || result.stdout || `/usr/bin/osascript exited with code ${result.exitCode ?? "unknown"}`).trim();
+        throw new Error(detail);
+      }
+      const matchedWindowCount = Number.parseInt(result.stdout.trim(), 10);
+      if (matchedWindowCount > 0) {
+        const killResult = await runCommand("/usr/bin/pkill", ["-x", "Screen Sharing"], { timeoutMs: 5_000, cwd: projectRoot });
+        if (killResult.exitCode !== 0 && killResult.exitCode !== 1) {
+          const detail = (killResult.stderr || killResult.stdout || `/usr/bin/pkill exited with code ${killResult.exitCode ?? "unknown"}`).trim();
+          throw new Error(detail);
+        }
+      }
+    } catch (error) {
+      args.logger.warn("macos_vm.close_stale_external_vnc_failed", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const openExternalVncClient = async (lane: LaneContext, record: MacosVmRecord): Promise<void> => {
+    const connection = directVncConnectionForRecord(record);
+    if (!connection?.password) return;
+    const connectedScreenSharingClients = await countConnectedScreenSharingClients(connection);
+    if (connectedScreenSharingClients === 1) {
+      await minimizeExternalVncClientWindows(record);
+      emitOperation("focus-window", "completed", lane.id, record.name, "macOS Screen Sharing is already connected and hidden behind ADE's embedded VM display.");
+      return;
+    }
+    await closeStaleExternalVncClientWindows(record);
+    const viewerUrl = `vnc://:${encodeURIComponent(connection.password)}@${connection.host}:${connection.port}`;
+    try {
+      const result = await runCommand("/usr/bin/open", [viewerUrl], { timeoutMs: 10_000, cwd: projectRoot });
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr || result.stdout || `/usr/bin/open exited with code ${result.exitCode ?? "unknown"}`).trim();
+        throw new Error(detail);
+      }
+      await minimizeExternalVncClientWindows(record);
+      emitOperation("focus-window", "completed", lane.id, record.name, "Attached and hid macOS Screen Sharing behind ADE's embedded VM display.");
+    } catch (error) {
+      args.logger.warn("macos_vm.open_external_vnc_failed", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    }
   };
 
   const runHostCommand = async (command: string, commandArgs: string[], timeoutMs = 5_000): Promise<CommandResult> => {
@@ -683,29 +1459,62 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     }
   };
 
-  const detectLume = async (): Promise<{ available: boolean; version: string | null; detail: string }> => {
+  const validateLumeSignature = args.validateProviderSignature ?? !args.runCommand;
+
+  const detectLume = async (): Promise<{ available: boolean; version: string | null; detail: string; command: string }> => {
     if (platform !== "darwin") {
-      return { available: false, version: null, detail: "macOS virtual machines are only available from ADE on macOS." };
+      return {
+        available: false,
+        version: null,
+        detail: "macOS virtual machines are only available from ADE on macOS.",
+        command: lumeCommand,
+      };
     }
     if (arch !== "arm64") {
-      return { available: false, version: null, detail: "macOS guests require an Apple silicon Mac." };
+      return {
+        available: false,
+        version: null,
+        detail: "macOS guests require an Apple silicon Mac.",
+        command: lumeCommand,
+      };
     }
     try {
       const result = await runCommand(lumeCommand, ["--version"], { timeoutMs: 4_000, cwd: projectRoot });
       if (result.exitCode === 0) {
-        const version = (result.stdout || result.stderr).trim().split(/\r?\n/)[0] ?? null;
-        return { available: true, version: version || null, detail: version || "Lume is installed." };
+        const version = normalizeLumeVersion(result.stdout || result.stderr);
+        if (validateLumeSignature) {
+          const signature = await runCommand("/usr/bin/codesign", ["-d", "--entitlements", ":-", lumeCommand], {
+            timeoutMs: 4_000,
+            cwd: projectRoot,
+          });
+          const signatureOutput = `${signature.stdout}\n${signature.stderr}`;
+          if (
+            signature.exitCode !== 0 ||
+            !signatureOutput.includes("com.apple.security.virtualization") ||
+            !signatureOutput.includes("com.apple.vm.networking")
+          ) {
+            return {
+              available: false,
+              version: version ?? null,
+              detail: `ADE found Lume at ${lumeCommand}, but it is not the signed Cua app bundle with Apple Virtualization entitlements. Install Lume from Cua's installer or set ADE_LUME_PATH to the signed lume.app binary.`,
+              command: lumeCommand,
+            };
+          }
+        }
+        return { available: true, version: version || null, detail: version || "Lume is installed.", command: lumeCommand };
       }
       return {
         available: false,
         version: null,
-        detail: (result.stderr || result.stdout || "Lume is not available.").trim(),
+        detail: normalizeLumeUnavailableDetail(result.stderr || result.stdout),
+        command: lumeCommand,
       };
     } catch (error) {
       return {
         available: false,
         version: null,
-        detail: error instanceof Error ? error.message : String(error),
+        detail: normalizeLumeUnavailableDetail(error instanceof Error ? error.message : String(error)),
+        command: lumeCommand,
       };
     }
   };
@@ -717,7 +1526,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       available: lume.available,
       version: lume.version,
       detail: lume.available
-        ? "Lume is available. ADE will use it as the first macOS VM provider."
+        ? `Lume ${lume.version ?? ""}`.trim() + ` is available at ${describeLumeCommand(lume.command)}. ADE will use it as the first macOS VM provider.`
         : lume.detail,
       docsUrl: LUME_INSTALL_DOCS,
     };
@@ -739,7 +1548,9 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       {
         name: "lume",
         available: lume.available,
-        detail: lume.available ? (lume.version ?? "Lume is installed.") : lume.detail,
+        detail: lume.available
+          ? `${lume.version ?? "Lume is installed."} (${describeLumeCommand(lume.command)})`
+          : lume.detail,
         installHint: "Install Lume from Cua, then refresh this panel.",
         docsUrl: LUME_INSTALL_DOCS,
       },
@@ -787,17 +1598,42 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     return info;
   };
 
-  const mergeExternalInfo = (record: MacosVmRecord, info: ExternalVmInfo | null): MacosVmRecord => ({
-    ...record,
-    state: info?.state ?? record.state,
-    ipAddress: info ? info.ipAddress : record.ipAddress,
-    vncUrl: info ? info.vncUrl : record.vncUrl,
-    sshCommand: info ? (info.ipAddress ? `ssh lume@${info.ipAddress}` : null) : record.sshCommand,
-    metadata: {
-      ...record.metadata,
-      ...(info?.raw ? { lume: info.raw } : {}),
-    },
-  });
+  const mergeExternalInfo = (record: MacosVmRecord, info: ExternalVmInfo | null): MacosVmRecord => {
+    if (!info) {
+      const wasLive = record.state === "running" || record.state === "starting" || record.state === "stopping";
+      const next = {
+        ...record,
+        state: wasLive ? "stopped" : record.state,
+        ipAddress: wasLive ? null : record.ipAddress,
+        vncUrl: wasLive ? null : record.vncUrl,
+        sshCommand: wasLive ? null : record.sshCommand,
+        lastError: record.lastError,
+      };
+      return {
+        ...next,
+        guestReadiness: guestReadinessForRecord(next, null),
+      };
+    }
+    if (info.vncPassword) saveVncPassword(record.laneId, record.name, info.vncPassword);
+    const healthyState = info.state === "running" || info.state === "stopped" || info.state === "paused";
+    const next = {
+      ...record,
+      state: info.state,
+      lastStartedAt: info.state === "running" ? record.lastStartedAt ?? nowIso() : record.lastStartedAt,
+      lastError: healthyState ? null : record.lastError,
+      ipAddress: info.ipAddress,
+      vncUrl: info.vncUrl,
+      sshCommand: info.ipAddress && info.sshAvailable !== false ? `ssh lume@${info.ipAddress}` : null,
+      metadata: {
+        ...record.metadata,
+        ...(info.raw ? { lume: info.raw } : {}),
+      },
+    };
+    return {
+      ...next,
+      guestReadiness: guestReadinessForRecord(next, info),
+    };
+  };
 
   const directVncConnectionForRecord = (record: MacosVmRecord): DirectVncConnection | null => {
     if (record.state !== "running") return null;
@@ -817,7 +1653,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     record: MacosVmRecord,
     size?: { width: number; height: number } | null,
   ): MacosVmWindowTarget => {
-    const displaySize = size ?? parseDisplaySize(record.display);
+    const displaySize = size ?? displaySizeForRecord(record);
     return {
       laneId: lane.id,
       vmName: record.name,
@@ -832,6 +1668,147 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       },
       focusedAt: nowIso(),
     };
+  };
+
+  const closeDisplayProxySession = (key: string): void => {
+    const session = displayProxySessions.get(key);
+    if (!session) return;
+    displayProxySessions.delete(key);
+    session.close();
+  };
+
+  const closeDisplayProxySessionsForRecord = (record: MacosVmRecord): void => {
+    closeDisplayProxySession(record.id);
+    closeDisplayProxySession(record.laneId);
+  };
+
+  const createDisplayProxySession = async (
+    lane: LaneContext,
+    record: MacosVmRecord,
+    connection: DirectVncConnection,
+    password: string,
+  ): Promise<DisplayProxySession> => {
+    const displaySize = displaySizeForRecord(record);
+    const token = randomBytes(16).toString("hex");
+    const sockets = new Set<net.Socket>();
+    const expiresAt = Date.now() + DISPLAY_PROXY_MAX_MS;
+    const wss = new WebSocketServer({
+      host: "127.0.0.1",
+      port: 0,
+      clientTracking: true,
+    });
+    let idleTimer: NodeJS.Timeout | null = null;
+    const maxTimer = setTimeout(() => closeDisplayProxySession(record.id), DISPLAY_PROXY_MAX_MS);
+    maxTimer.unref?.();
+    const scheduleIdleClose = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => closeDisplayProxySession(record.id), DISPLAY_PROXY_IDLE_MS);
+      idleTimer.unref?.();
+    };
+
+    const closeSession = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      for (const client of wss.clients) {
+        try {
+          client.close();
+        } catch {
+          // ignore close races
+        }
+      }
+      for (const socket of sockets) socket.destroy();
+      try {
+        wss.close();
+      } catch {
+        // ignore close races
+      }
+    };
+
+    scheduleIdleClose();
+    wss.on("connection", (ws, request) => {
+      const requestUrl = new URL(request.url ?? "/", "ws://127.0.0.1");
+      if (requestUrl.pathname !== `/${token}`) {
+        ws.close(1008, "Invalid macOS VM display session.");
+        return;
+      }
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      const vncSocket = net.createConnection({ host: connection.host, port: connection.port });
+      sockets.add(vncSocket);
+      const closeBoth = (): void => {
+        sockets.delete(vncSocket);
+        vncSocket.destroy();
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+        if (wss.clients.size === 0) scheduleIdleClose();
+      };
+      vncSocket.on("data", (chunk) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(chunk);
+      });
+      vncSocket.on("error", (error) => {
+        args.logger.warn("macos_vm.display_proxy_vnc_error", {
+          vmName: record.name,
+          err: error instanceof Error ? error.message : String(error),
+        });
+        closeBoth();
+      });
+      vncSocket.on("close", closeBoth);
+      ws.on("message", (data) => {
+        if (!vncSocket.writable) return;
+        if (Buffer.isBuffer(data)) {
+          vncSocket.write(data);
+        } else if (data instanceof ArrayBuffer) {
+          vncSocket.write(Buffer.from(data));
+        } else if (Array.isArray(data)) {
+          vncSocket.write(Buffer.concat(data));
+        } else {
+          vncSocket.write(Buffer.from(String(data)));
+        }
+      });
+      ws.on("error", closeBoth);
+      ws.on("close", closeBoth);
+    });
+    wss.on("error", (error) => {
+      args.logger.warn("macos_vm.display_proxy_error", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out starting macOS VM display proxy.")), 5_000);
+      wss.once("listening", () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      wss.once("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") {
+      closeSession();
+      clearTimeout(maxTimer);
+      throw new Error("macOS VM display proxy did not bind to a local TCP port.");
+    }
+    const session: DisplayProxySession = {
+      laneId: lane.id,
+      vmName: record.name,
+      websocketUrl: `ws://127.0.0.1:${address.port}/${token}`,
+      password,
+      width: displaySize.width,
+      height: displaySize.height,
+      expiresAt,
+      close: () => {
+        clearTimeout(maxTimer);
+        closeSession();
+      },
+    };
+    displayProxySessions.set(record.id, session);
+    return session;
   };
 
   const parseWindowTarget = (
@@ -874,27 +1851,35 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     };
   };
 
-  const mirrorPathForLane = (lane: LaneContext): string =>
-    path.join(storeDir, "shares", sanitizeArtifactName(lane.id), "worktree");
-
   const sharePlanForLane = (lane: LaneContext): SharePlan => {
     const originalHostPath = path.resolve(lane.worktreePath);
-    const adeLocalStatePath = path.join(originalHostPath, ".ade");
-    const hasAdeLocalState = fs.existsSync(adeLocalStatePath);
-    const mirrorPath = hasAdeLocalState ? mirrorPathForLane(lane) : null;
+    const containsAdeState = fs.existsSync(path.join(originalHostPath, ".ade"));
+    if (containsAdeState) {
+      const mirrorPath = path.join(storeDir, "shares", sanitizeArtifactName(lane.id), "worktree");
+      return {
+        hostPath: mirrorPath,
+        guestPath: LUME_GUEST_SHARED_PATH,
+        readOnly: false,
+        allowed: true,
+        blockedReason: null,
+        syncMode: "sanitized-mirror",
+        mirrorPath,
+        originalHostPath,
+        excludedPaths: MIRROR_SYNC_EXCLUDES,
+        detail: "ADE mounts a sanitized rsync mirror because the lane root contains ADE local state.",
+      };
+    }
     return {
-      hostPath: mirrorPath ?? originalHostPath,
+      hostPath: originalHostPath,
       guestPath: LUME_GUEST_SHARED_PATH,
       readOnly: false,
       allowed: true,
       blockedReason: null,
-      syncMode: hasAdeLocalState ? "sanitized-mirror" : "direct",
-      mirrorPath,
+      syncMode: "direct",
+      mirrorPath: null,
       originalHostPath,
-      excludedPaths: hasAdeLocalState ? [...MIRROR_SYNC_EXCLUDES] : [],
-      detail: hasAdeLocalState
-        ? "This lane root contains ADE local state, so ADE mounts a sanitized mirror and keeps code synced without exposing secrets or runtime databases to the VM."
-        : "ADE mounts the lane root directly because no .ade directory was found.",
+      excludedPaths: [],
+      detail: "ADE mounts the lane worktree directly into the VM.",
     };
   };
 
@@ -1079,6 +2064,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       laneId: lane.id,
       laneName: lane.name,
       laneRoot: lane.worktreePath,
+      laneState: "attached",
       state: existing?.state ?? "not_created",
       cpuCores: asPositiveInteger(config.cpuCores, existing?.cpuCores ?? DEFAULT_CPU_CORES),
       memory: normalizeSize(config.memory, existing?.memory ?? DEFAULT_MEMORY),
@@ -1094,6 +2080,13 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       sshCommand: existing?.sshCommand ?? null,
       vncUrl: existing?.vncUrl ?? null,
       lastError: existing?.lastError ?? null,
+      guestReadiness: existing?.guestReadiness ?? guestReadinessForRecord({
+        state: existing?.state ?? "not_created",
+        guestSharedPath: LUME_GUEST_SHARED_PATH,
+        sshCommand: existing?.sshCommand ?? null,
+        lastError: existing?.lastError ?? null,
+        guestReadiness: existing?.guestReadiness,
+      }, null),
       metadata: {
         ...(existing?.metadata ?? {}),
         shareMode: share.syncMode,
@@ -1109,8 +2102,12 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
   const getStatus = async (statusArgs: MacosVmStatusArgs = {}): Promise<MacosVmStatus> => {
     const external = await listExternalVms();
     const externalByName = new Map(external.map((info) => [info.name, info]));
-    const records = loadRecords().map((record) => mergeExternalInfo(record, externalByName.get(record.name) ?? null));
+    const validLaneIds = new Set((await args.resolveLanes()).map((entry) => entry.id));
+    const records = loadRecords()
+      .map((record) => mergeExternalInfo(record, externalByName.get(record.name) ?? null))
+      .map((record) => markLaneAttachment(record, validLaneIds));
     saveRecords(records);
+    const globalLease = reconcileGlobalLease(externalByName, records);
     const laneId = statusArgs.laneId?.trim() || null;
     const status: MacosVmStatus = {
       platform,
@@ -1121,6 +2118,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       tools: await toolStatuses(),
       laneVm: laneId ? records.find((record) => record.laneId === laneId) ?? null : null,
       vms: records,
+      globalLease,
       docs: {
         appleVirtualization: APPLE_VIRTUALIZATION_DOCS,
         appleSharedDirectories: APPLE_SHARED_DIRECTORIES_DOCS,
@@ -1133,6 +2131,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
 
   const provision = async (provisionArgs: MacosVmProvisionArgs): Promise<MacosVmRecord> => {
     const lane = await getLane(provisionArgs.laneId);
+    await ensureGlobalLeaseAvailable(lane);
     await ensureShareReady(lane);
     await requireProviderReady();
 
@@ -1140,6 +2139,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     const existingInfo = await getExternalVm(record.name);
     if (existingInfo && !provisionArgs.force) {
       record = upsertRecord(mergeExternalInfo({ ...record, state: existingInfo.state }, existingInfo));
+      claimGlobalLease(record);
       emitOperation("provision", "completed", lane.id, record.name, "macOS VM already exists for this lane.");
       return record;
     }
@@ -1147,10 +2147,25 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     emitOperation("provision", "started", lane.id, record.name, "Provisioning lane macOS VM.");
     record = upsertRecord({ ...record, state: "creating", lastError: null });
     try {
-      const mode = provisionArgs.mode === "create" ? "create" : "pull-image";
+      const mode = provisionArgs.mode === "pull-image" ? "pull-image" : "create";
       if (mode === "pull-image") {
         const image = provisionArgs.sourceImage?.trim() || DEFAULT_PULL_IMAGE;
-        await runLume(["pull", image, record.name], 60 * 60_000);
+        emitOperation("provision", "started", lane.id, record.name, `Downloading prepared macOS image ${image}. First run can take several minutes.`);
+        try {
+          await runLume(["pull", image, record.name], 60 * 60_000);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `Lume could not pull ${image} into VM ${record.name}. The image may be incompatible with this Lume version. ${message}`,
+          );
+        }
+        const pulledInfo = await getExternalVm(record.name);
+        if (!pulledInfo) {
+          throw new Error(
+            `Lume finished pulling ${image}, but did not create a VM named ${record.name}. The image may be incompatible with this Lume version.`,
+          );
+        }
+        emitOperation("provision", "started", lane.id, record.name, "Configuring VM CPU, memory, disk, and display.");
         await runLume([
           "set",
           record.name,
@@ -1164,14 +2179,16 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
           record.display,
         ], 10 * 60_000);
       } else {
-        const ipsw = provisionArgs.ipsw?.trim() || "latest";
+        const ipsw = provisionArgs.ipsw?.trim() || env.ADE_MACOS_VM_IPSW_URL?.trim() || DEFAULT_CREATE_IPSW;
+        emitOperation("provision", "started", lane.id, record.name, "Installing macOS from Apple's IPSW. First run can take a long time.");
+        const resolvedIpsw = await resolveCreateIpsw(lane, record, ipsw);
         const createArgs = [
           "create",
           record.name,
           "--os",
           "macOS",
           "--ipsw",
-          ipsw,
+          resolvedIpsw,
           "--cpu",
           String(record.cpuCores),
           "--memory",
@@ -1187,6 +2204,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       }
       const info = await getExternalVm(record.name);
       record = upsertRecord(mergeExternalInfo({ ...record, state: info?.state ?? "stopped", lastError: null }, info));
+      claimGlobalLease(record);
       emitOperation("provision", "completed", lane.id, record.name, "macOS VM is ready for this lane.");
       return record;
     } catch (error) {
@@ -1199,6 +2217,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
 
   const start = async (startArgs: MacosVmStartArgs): Promise<MacosVmRecord> => {
     const lane = await getLane(startArgs.laneId);
+    await ensureGlobalLeaseAvailable(lane);
     await requireProviderReady();
     let record = recordForLane(lane, startArgs);
     const info = await getExternalVm(record.name);
@@ -1216,23 +2235,59 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
           lastStartedAt: record.lastStartedAt ?? nowIso(),
           lastError: null,
         });
+        if (startArgs.openDisplay !== false) {
+          await openExternalVncClient(lane, record);
+          record = upsertRecord({
+            ...record,
+            metadata: {
+              ...record.metadata,
+              controlBackend: "vnc-window-and-embedded",
+              externalVncClientRequested: true,
+              externalVncClientHidden: true,
+            },
+          });
+        }
+        claimGlobalLease(record);
         emitOperation("start", "completed", lane.id, record.name, "macOS VM is already running with the lane mounted.");
         return record;
+      }
+      if (info.state === "installing" || info.state === "creating") {
+        record = upsertRecord(record);
+        claimGlobalLease(record);
+        throw new Error("macOS VM is still installing. Wait for provisioning to finish before starting it.");
+      }
+      if (info.state === "starting" || info.state === "stopping") {
+        record = upsertRecord(record);
+        claimGlobalLease(record);
+        throw new Error(`macOS VM is currently ${stateLabelForError(info.state)}. Wait for it to finish before starting it.`);
       }
     }
 
     emitOperation("start", "started", lane.id, record.name, "Starting lane macOS VM.");
     record = upsertRecord({ ...record, state: "starting", lastError: null });
     try {
+      await ensureVmDisplaySize(record);
       const runArgs = ["run", record.name, "--shared-dir", record.sharedDirectory];
+      const vncPassword = getOrCreateVncPassword(lane, record);
       if (startArgs.openDisplay === false) {
-        const vncPassword = getOrCreateVncPassword(lane, record);
-        runArgs.push("--no-display", "--vnc-password", vncPassword);
+        runArgs.push("--no-display");
+      }
+      runArgs.push(`--vnc-password=${vncPassword}`);
+      if (startArgs.openDisplay === false) {
         record = upsertRecord({
           ...record,
           metadata: {
             ...record.metadata,
             controlBackend: "direct-vnc",
+            vncCredentialStored: true,
+          },
+        });
+      } else {
+        record = upsertRecord({
+          ...record,
+          metadata: {
+            ...record.metadata,
+            controlBackend: "vnc-window-and-embedded",
             vncCredentialStored: true,
           },
         });
@@ -1257,6 +2312,18 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         lastStartedAt: nowIso(),
         lastError: null,
       }, nextInfo));
+      if (startArgs.openDisplay !== false) {
+        await openExternalVncClient(lane, record);
+        record = upsertRecord({
+          ...record,
+          metadata: {
+            ...record.metadata,
+            externalVncClientRequested: true,
+            externalVncClientHidden: true,
+          },
+        });
+      }
+      claimGlobalLease(record);
       emitOperation("start", "completed", lane.id, record.name, "macOS VM started with the lane mounted.");
       return record;
     } catch (error) {
@@ -1271,6 +2338,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     const lane = await getLane(stopArgs.laneId);
     const record = loadRecords().find((entry) => entry.laneId === lane.id) ?? null;
     if (!record) return null;
+    closeDisplayProxySessionsForRecord(record);
     await requireProviderReady();
     emitOperation("stop", "started", lane.id, record.name, "Stopping lane macOS VM.");
     const stopping = upsertRecord({ ...record, state: "stopping", lastError: null });
@@ -1291,6 +2359,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       if (stoppedInfo?.state === "running") {
         throw stopError ?? new Error(`Timed out waiting for macOS VM to stop: ${record.name}`);
       }
+      await closeStaleExternalVncClientWindows(stopping);
       await stopMirrorSync(lane, stopping.metadata.mirrorPath as string | null | undefined, true);
       const next = upsertRecord(mergeExternalInfo({
         ...stopping,
@@ -1313,19 +2382,60 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
   };
 
   const deleteVm = async (deleteArgs: MacosVmDeleteArgs): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> => {
-    const lane = await getLane(deleteArgs.laneId);
-    const record = loadRecords().find((entry) => entry.laneId === lane.id) ?? null;
-    if (!record) return { deleted: false, previous: null };
-    await requireProviderReady();
-    emitOperation("delete", "started", lane.id, record.name, "Deleting lane macOS VM.");
-    try {
-      const deleteCommand = ["delete", record.name];
+    const laneId = deleteArgs.laneId?.trim() || null;
+    const vmName = deleteArgs.vmName?.trim() || null;
+    if (!laneId && !vmName) throw new Error("A lane id or VM name is required to remove a macOS VM.");
+    const record = loadRecords().find((entry) =>
+      (laneId && entry.laneId === laneId) || (vmName && entry.name === vmName),
+    ) ?? null;
+    if (!record) {
+      if (!vmName) return { deleted: false, previous: null };
+      const provider = await providerStatus();
+      if (!provider.available) throw new Error(`${provider.detail} Install Lume to delete this VM.`);
+      const externalInfo = await getExternalVm(vmName);
+      if (!externalInfo) return { deleted: false, previous: null };
+      emitOperation("delete", "started", null, vmName, "Deleting macOS VM.");
+      const deleteCommand = ["delete", vmName];
       if (deleteArgs.force) deleteCommand.push("--force");
       await runLume(deleteCommand, 10 * 60_000);
+      const lease = readGlobalLease();
+      if (lease?.vmName === vmName) writeGlobalLease(null);
+      emitOperation("delete", "completed", null, vmName, "macOS VM deleted.");
+      return { deleted: true, previous: null };
+    }
+    closeDisplayProxySessionsForRecord(record);
+    let laneMissingForDelete = false;
+    const lane = await getLane(record.laneId).catch((): LaneContext => {
+      laneMissingForDelete = true;
+      return {
+        id: record.laneId,
+        name: record.laneName,
+        worktreePath: path.resolve(record.laneRoot),
+      };
+    });
+    const provider = await providerStatus();
+    if (!provider.available && !laneMissingForDelete) {
+      throw new Error(`${provider.detail} Install Lume to delete this VM.`);
+    }
+    const externalInfo = provider.available ? await getExternalVm(record.name) : null;
+    emitOperation("delete", "started", lane.id, record.name, "Deleting lane macOS VM.");
+    try {
+      if (externalInfo) {
+        const deleteCommand = ["delete", record.name];
+        if (deleteArgs.force) deleteCommand.push("--force");
+        await runLume(deleteCommand, 10 * 60_000);
+      }
       await stopMirrorSync(lane, record.metadata.mirrorPath as string | null | undefined, true);
       removeVncPassword(lane.id, record.name);
       removeRecord(lane.id);
-      emitOperation("delete", "completed", lane.id, record.name, "macOS VM deleted.");
+      clearGlobalLeaseForRecord(record);
+      emitOperation(
+        "delete",
+        "completed",
+        lane.id,
+        record.name,
+        externalInfo ? "macOS VM deleted." : "Stale macOS VM record removed.",
+      );
       return { deleted: true, previous: record };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1333,6 +2443,419 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       emitOperation("delete", "failed", lane.id, record.name, message);
       throw error;
     }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Singleton-VM lifecycle: restart / wipe / install-runtime / credentials.
+  // ---------------------------------------------------------------------------
+
+  const findRecordByNameOrLane = (vmName: string | null, laneId: string | null): MacosVmRecord | null => {
+    const records = loadRecords();
+    if (vmName) {
+      const byName = records.find((entry) => entry.name === vmName);
+      if (byName) return byName;
+    }
+    if (laneId) {
+      const byLane = records.find((entry) => entry.laneId === laneId);
+      if (byLane) return byLane;
+    }
+    return null;
+  };
+
+  const restart = async (restartArgs: MacosVmRestartArgs): Promise<MacosVmRecord | null> => {
+    const vmName = restartArgs.vmName?.trim() || null;
+    const laneId = restartArgs.laneId?.trim() || null;
+    const record = findRecordByNameOrLane(vmName, laneId);
+    if (!record) {
+      throw new Error("No Mac VM is currently attached. Create a VM lane first.");
+    }
+    const lane: LaneContext = {
+      id: record.laneId,
+      name: record.laneName,
+      worktreePath: path.resolve(record.laneRoot),
+    };
+
+    emitOperation("restart", "started", lane.id, record.name, "Restarting macOS VM.");
+    try {
+      // 1. Stop. Reuse the existing stop() path so mirror sync, display proxy,
+      //    and lume-run cleanup follow the same code path. If stop fails and
+      //    force was requested, surface the error from terminateLumeRunProcess.
+      const stoppedInfo = await getExternalVm(record.name).catch(() => null);
+      if (stoppedInfo?.state === "running" || stoppedInfo?.state === "starting") {
+        try {
+          await stop({ laneId: lane.id, force: restartArgs.force ?? null });
+        } catch (stopError) {
+          if (!restartArgs.force) throw stopError;
+          await terminateLumeRunProcess(record);
+        }
+      }
+
+      // 2. Sweep stale share entries so the next start mounts a clean share set.
+      const beforeStart = loadRecords().find((entry) => entry.laneId === lane.id) ?? record;
+      const liveEntries = (beforeStart.shareEntries ?? []).filter((entry) => entry.state === "live");
+      const sweptRecord = upsertRecord({
+        ...beforeStart,
+        shareEntries: liveEntries,
+      });
+
+      // 3. Start. start() will recreate the share mount and re-emit phase events.
+      const started = await start({
+        laneId: lane.id,
+        openDisplay: false,
+        createIfMissing: false,
+      });
+      emitOperation("restart", "completed", lane.id, started.name, "macOS VM restarted.");
+      return started;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const after = loadRecords().find((entry) => entry.laneId === lane.id);
+      if (after) upsertRecord({ ...after, lastError: message });
+      emitOperation("restart", "failed", lane.id, record.name, message);
+      throw error;
+    }
+  };
+
+  /**
+   * Recursively remove `target`, skipping paths the process cannot touch.
+   * macOS auto-creates a root-owned `.Trashes/` inside any directory that
+   * was mounted as a Lume shared volume; the Electron main process can't
+   * remove that without sudo. Rather than failing the whole wipe, we walk
+   * the tree, remove what we can, and return the list of survivors so the
+   * renderer can hand the user a copyable `sudo rm -rf` to finish up.
+   */
+  const safeRmRecursive = async (target: string): Promise<string[]> => {
+    if (!fs.existsSync(target)) return [];
+    const unreachable: string[] = [];
+    try {
+      await fsp.rm(target, { recursive: true, force: true });
+      return [];
+    } catch {
+      // Fall through to per-entry walk.
+    }
+    const walk = async (current: string): Promise<boolean> => {
+      let stat: fs.Stats;
+      try {
+        stat = await fsp.lstat(current);
+      } catch {
+        // Already gone, or unreadable — treat as needing sudo.
+        unreachable.push(current);
+        return false;
+      }
+      if (stat.isDirectory()) {
+        let entries: string[];
+        try {
+          entries = await fsp.readdir(current);
+        } catch {
+          unreachable.push(current);
+          return false;
+        }
+        let allRemoved = true;
+        for (const entry of entries) {
+          const child = path.join(current, entry);
+          const ok = await walk(child);
+          if (!ok) allRemoved = false;
+        }
+        if (!allRemoved) return false;
+        try {
+          await fsp.rmdir(current);
+          return true;
+        } catch {
+          unreachable.push(current);
+          return false;
+        }
+      }
+      try {
+        await fsp.rm(current, { force: true });
+        return true;
+      } catch {
+        unreachable.push(current);
+        return false;
+      }
+    };
+    await walk(target);
+    return unreachable;
+  };
+
+  const wipe = async (wipeArgs: MacosVmWipeArgs): Promise<MacosVmWipeResult> => {
+    if (!wipeArgs.confirm) {
+      throw new Error("Wipe requires explicit confirmation. Pass { confirm: true }.");
+    }
+    const vmName = wipeArgs.vmName?.trim() || null;
+    const laneId = wipeArgs.laneId?.trim() || null;
+    const record = findRecordByNameOrLane(vmName, laneId);
+
+    // Paths cleared on every wipe — covers both the no-record path and the
+    // post-deleteVm path so a stale partial download or orphan share gets
+    // swept either way.
+    const sweepPaths = (): string[] => [
+      path.join(storeDir, MACOS_VM_IPSW_CACHE_DIR),
+      path.join(storeDir, "shares"),
+      path.join(storeDir, MACOS_VM_STATE_FILE),
+      path.join(layout.artifactsDir, "macos-vms"),
+      vncCredentialStorePath,
+      path.join(adeHome, "cache", "macos-vms"),
+    ];
+
+    const sweep = async (): Promise<string[]> => {
+      const unreachable: string[] = [];
+      for (const target of sweepPaths()) {
+        try {
+          const survivors = await safeRmRecursive(target);
+          unreachable.push(...survivors);
+        } catch (error) {
+          args.logger.warn("macos_vm.wipe_sweep_failed", {
+            target,
+            err: error instanceof Error ? error.message : String(error),
+          });
+          unreachable.push(target);
+        }
+      }
+      return unreachable;
+    };
+
+    if (!record) {
+      const unreachablePaths = await sweep();
+      return { wiped: false, previousVm: null, unreachablePaths };
+    }
+    const lane: LaneContext = {
+      id: record.laneId,
+      name: record.laneName,
+      worktreePath: path.resolve(record.laneRoot),
+    };
+    emitOperation("wipe", "started", lane.id, record.name, "Wiping macOS VM and clearing image caches.");
+    try {
+      await deleteVm({ laneId: lane.id, force: true });
+      // Clear keychain credentials.
+      await credentialsStore.clearCredentials(record.name).catch((error) => {
+        args.logger.warn("macos_vm.wipe_clear_credentials_failed", {
+          vmName: record.name,
+          err: error instanceof Error ? error.message : String(error),
+        });
+      });
+      const unreachablePaths = await sweep();
+      const detail = unreachablePaths.length === 0
+        ? "macOS VM wiped. Setup repeats on next VM lane."
+        : `macOS VM wiped; ${unreachablePaths.length} path(s) need a manual sudo cleanup.`;
+      emitOperation("wipe", "completed", lane.id, record.name, detail);
+      return { wiped: true, previousVm: record, unreachablePaths };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitOperation("wipe", "failed", lane.id, record.name, message);
+      throw error;
+    }
+  };
+
+  const ESTIMATED_IPSW_BYTES = 16_800_000_000; // ~16 GB observed for macOS 15 IPSW
+  const ESTIMATED_FULL_SETUP_BYTES = 50_000_000_000; // IPSW + post-install VM disk
+  const RECOMMENDED_FREE_BYTES = 60_000_000_000; // leaves headroom for OS use
+
+  const measureVolume = async (target: string): Promise<{
+    path: string;
+    availableBytes: number;
+    totalBytes: number;
+    volumeId: number;
+  }> => {
+    // Walk up to the first existing ancestor so statfs doesn't ENOENT.
+    let probe = path.resolve(target);
+    while (probe !== path.dirname(probe) && !fs.existsSync(probe)) {
+      probe = path.dirname(probe);
+    }
+    const stats = await fsp.statfs(probe);
+    const dirStats = fs.statSync(probe);
+    return {
+      path: probe,
+      availableBytes: stats.bavail * stats.bsize,
+      totalBytes: stats.blocks * stats.bsize,
+      volumeId: dirStats.dev,
+    };
+  };
+
+  const measureExistingIpswBytes = (ipswPath: string): number => {
+    try {
+      if (!fs.existsSync(ipswPath)) return 0;
+      let maxBytes = 0;
+      for (const entry of fs.readdirSync(ipswPath)) {
+        if (!entry.endsWith(".ipsw") && !entry.endsWith(".part")) continue;
+        try {
+          const size = fs.statSync(path.join(ipswPath, entry)).size;
+          if (size > maxBytes) maxBytes = size;
+        } catch {
+          // ignore individual entry failures
+        }
+      }
+      return maxBytes;
+    } catch {
+      return 0;
+    }
+  };
+
+  const getStorageInfo = async (): Promise<MacosVmStorageInfo> => {
+    const ipswPath = path.join(storeDir, MACOS_VM_IPSW_CACHE_DIR);
+    // Lume stores VMs under ~/.lume/<vmName>/disk.img; ~/.lume may not exist
+    // pre-Lume-install, so measureVolume walks to the nearest ancestor.
+    const lumeRoot = path.join(os.homedir(), ".lume");
+    const [ipswCache, vmDisk] = await Promise.all([
+      measureVolume(ipswPath),
+      measureVolume(lumeRoot),
+    ]);
+    return {
+      ipswCache,
+      vmDisk,
+      estimatedIpswBytes: ESTIMATED_IPSW_BYTES,
+      estimatedFullSetupBytes: ESTIMATED_FULL_SETUP_BYTES,
+      recommendedFreeBytes: RECOMMENDED_FREE_BYTES,
+      existingIpswBytes: measureExistingIpswBytes(ipswPath),
+    };
+  };
+
+  const setCredentials = async (
+    credentialsArgs: MacosVmSetCredentialsArgs,
+  ): Promise<{ ok: true }> => {
+    const vmName = credentialsArgs.vmName.trim();
+    const username = credentialsArgs.username.trim();
+    if (!vmName) throw new Error("vmName is required to save guest credentials.");
+    if (!username) throw new Error("username is required to save guest credentials.");
+    if (!credentialsArgs.password) throw new Error("password is required to save guest credentials.");
+    const record = findRecordByNameOrLane(vmName, null);
+    const laneId = record?.laneId ?? null;
+    emitOperation("set-credentials", "started", laneId, vmName, "Saving guest credentials in Keychain.");
+    try {
+      await credentialsStore.saveCredentials(vmName, username, credentialsArgs.password);
+      emitOperation("set-credentials", "completed", laneId, vmName, "Guest credentials saved.");
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitOperation("set-credentials", "failed", laneId, vmName, message);
+      throw error;
+    }
+  };
+
+  const getCredentials = async (
+    credentialsArgs: MacosVmGetCredentialsArgs,
+  ): Promise<MacosVmStoredCredentialsSummary> => {
+    const vmName = credentialsArgs.vmName.trim();
+    if (!vmName) throw new Error("vmName is required to load guest credentials.");
+    const stored = await credentialsStore.loadCredentials(vmName);
+    return {
+      vmName,
+      username: stored?.username ?? null,
+      hasPassword: Boolean(stored?.password),
+      savedAt: stored?.savedAt ?? null,
+    };
+  };
+
+  const installRuntime = async (
+    installArgs: MacosVmInstallRuntimeArgs,
+  ): Promise<MacosVmRuntimeInstallStatus> => {
+    const vmName = installArgs.vmName?.trim() || null;
+    const laneId = installArgs.laneId?.trim() || null;
+    const baseRecord = findRecordByNameOrLane(vmName, laneId);
+    if (!baseRecord) {
+      throw new Error("No Mac VM is currently attached. Create a VM lane first.");
+    }
+    const info = await getExternalVm(baseRecord.name).catch(() => null);
+    const record = mergeExternalInfo(baseRecord, info);
+    if (record.state !== "running") {
+      throw new Error("The VM must be running before installing the agent runtime.");
+    }
+    if (!record.ipAddress) {
+      throw new Error("The VM is running, but ADE could not resolve its IP address. Try refreshing the VM status.");
+    }
+    const stored = await credentialsStore.loadCredentials(record.name);
+    if (!stored?.password) {
+      throw new Error("Save guest credentials before installing the agent runtime.");
+    }
+
+    const startedAt = nowIso();
+    let status: MacosVmRuntimeInstallStatus = {
+      state: "installing",
+      detail: "Installing the ADE agent runtime in the guest.",
+      startedAt,
+      completedAt: null,
+      lastError: null,
+    };
+    upsertRecord({ ...record, runtimeInstall: status });
+    emit({ type: "runtime-install", vmName: record.name, status });
+    emitOperation("install-runtime", "started", record.laneId, record.name, status.detail);
+
+    try {
+      const onPhase = (phase: RuntimeBootstrapPhase, message: string): void => {
+        status = { ...status, detail: `${phase}: ${message}` };
+        upsertRecord({ ...record, runtimeInstall: status });
+        emit({ type: "runtime-install", vmName: record.name, status });
+      };
+      await installAdeRuntimeInVm({
+        ipAddress: record.ipAddress,
+        username: stored.username,
+        password: stored.password,
+        vmName: record.name,
+        onProgress: onPhase,
+        runner: runtimeBootstrapRunner,
+      });
+
+      const completedAt = nowIso();
+      status = {
+        state: "installed",
+        detail: "ADE agent runtime is installed and ready in the guest.",
+        startedAt,
+        completedAt,
+        lastError: null,
+      };
+      const updated = upsertRecord({ ...record, runtimeInstall: status });
+      emit({ type: "runtime-install", vmName: updated.name, status });
+      emitOperation("install-runtime", "completed", record.laneId, record.name, status.detail);
+
+      // Notify the connection pool registry that the VM is now a usable target.
+      try {
+        await args.onRuntimeReady?.({
+          vmName: record.name,
+          ipAddress: record.ipAddress,
+          username: stored.username,
+        });
+      } catch (registerError) {
+        args.logger.warn("macos_vm.register_remote_target_failed", {
+          vmName: record.name,
+          err: registerError instanceof Error ? registerError.message : String(registerError),
+        });
+      }
+
+      return status;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedAt = nowIso();
+      status = {
+        state: "failed",
+        detail: "Failed to install the ADE agent runtime in the guest.",
+        startedAt,
+        completedAt: failedAt,
+        lastError: message,
+      };
+      upsertRecord({ ...record, runtimeInstall: status });
+      emit({ type: "runtime-install", vmName: record.name, status });
+      emitOperation("install-runtime", "failed", record.laneId, record.name, message);
+      throw error;
+    }
+  };
+
+  const markShareStale = (markArgs: { laneId: string }): MacosVmRecord | null => {
+    const laneId = markArgs.laneId.trim();
+    if (!laneId) return null;
+    const records = loadRecords();
+    // A share entry could live on any VM record (singleton model means we only
+    // expect one). Iterate to defensively find the entry.
+    for (const record of records) {
+      const shareEntries = record.shareEntries ?? [];
+      let mutated = false;
+      const nextEntries: MacosVmShareEntry[] = shareEntries.map((entry) => {
+        if (entry.laneId !== laneId || entry.state === "stale") return entry;
+        mutated = true;
+        return { ...entry, state: "stale" as const };
+      });
+      if (mutated) {
+        return upsertRecord({ ...record, shareEntries: nextEntries });
+      }
+    }
+    return null;
   };
 
   const controlRecordForLane = async (
@@ -1344,9 +2867,12 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     return { lane, record: mergeExternalInfo(record, currentInfo) };
   };
 
-  const focusWindow = async (focusArgs: MacosVmFocusWindowArgs): Promise<MacosVmWindowTarget> => {
+  const focusWindowInternal = async (
+    focusArgs: MacosVmFocusWindowArgs,
+    options: { preferHostWindow?: boolean } = {},
+  ): Promise<MacosVmWindowTarget> => {
     const { lane, record } = await controlRecordForLane(focusArgs.laneId);
-    if (directVncConnectionForRecord(record)) {
+    if (!options.preferHostWindow && directVncConnectionForRecord(record)) {
       const target = directVncTargetForRecord(lane, record);
       emitOperation("focus-window", "completed", lane.id, record.name, "Selected headless macOS VM VNC target.");
       return target;
@@ -1361,16 +2887,22 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       `set allowVncFallback to ${allowVncFallback ? "true" : "false"}`,
       `set restrictToVmViewer to ${restrictToVmViewer ? "true" : "false"}`,
       "tell application \"System Events\"",
-      "  repeat with proc in (application processes whose background only is false)",
-      "    set procName to name of proc as text",
-      "    if (not restrictToVmViewer) or procName is \"Screen Sharing\" or procName is \"Lume\" then",
-      "      repeat with targetWindow in windows of proc",
+      "  if restrictToVmViewer then",
+      "    set candidateNames to {\"Virtualization\", \"Lume\", \"Screen Sharing\"}",
+      "  else",
+      "    set candidateNames to name of (application processes whose background only is false)",
+      "  end if",
+      "  repeat with procNameItem in candidateNames",
+      "    set procName to procNameItem as text",
+      "    if exists application process procName then",
+      "      tell application process procName",
+      "      repeat with targetWindow in windows",
       "        set windowTitle to \"\"",
       "        try",
       "          set windowTitle to name of targetWindow as text",
       "        end try",
       "        if windowTitle contains queryText then",
-      "          set frontmost of proc to true",
+      "          set frontmost of application process procName to true",
       "          try",
       "            perform action \"AXRaise\" of targetWindow",
       "          end try",
@@ -1383,15 +2915,17 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       "          return procName & tab & windowTitle & tab & ((item 1 of windowPosition) as text) & tab & ((item 2 of windowPosition) as text) & tab & ((item 1 of windowSize) as text) & tab & ((item 2 of windowSize) as text)",
       "        end if",
       "      end repeat",
+      "      end tell",
       "      end if",
       "  end repeat",
       "  if allowVncFallback then",
       "    set fallbackCount to 0",
       "    set fallbackRow to \"\"",
-      "    repeat with proc in (application processes whose background only is false)",
-      "      set procName to name of proc as text",
-      "      if procName is \"Screen Sharing\" or procName is \"Lume\" then",
-      "        repeat with targetWindow in windows of proc",
+      "    repeat with procNameItem in {\"Virtualization\", \"Lume\", \"Screen Sharing\"}",
+      "      set procName to procNameItem as text",
+      "      if exists application process procName then",
+      "        tell application process procName",
+      "        repeat with targetWindow in windows",
       "          set windowTitle to \"\"",
       "          try",
       "            set windowTitle to name of targetWindow as text",
@@ -1403,7 +2937,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       "          if isVncWindow then",
       "            set fallbackCount to fallbackCount + 1",
       "            if fallbackCount is 1 then",
-      "              set frontmost of proc to true",
+      "              set frontmost of application process procName to true",
       "              try",
       "                perform action \"AXRaise\" of targetWindow",
       "              end try",
@@ -1417,6 +2951,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       "            end if",
       "          end if",
       "        end repeat",
+      "        end tell",
       "      end if",
       "    end repeat",
       "    if fallbackCount is 1 then return fallbackRow",
@@ -1431,38 +2966,35 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     return target;
   };
 
-  const captureScreenshot = async (
-    captureArgs: MacosVmCaptureScreenshotArgs,
-  ): Promise<MacosVmCaptureScreenshotResult> => {
-    const { lane, record } = await controlRecordForLane(captureArgs.laneId);
+  const focusWindow = async (focusArgs: MacosVmFocusWindowArgs): Promise<MacosVmWindowTarget> =>
+    focusWindowInternal(focusArgs);
+
+  const getDisplaySession = async (sessionArgs: MacosVmDisplaySessionArgs): Promise<MacosVmDisplaySession> => {
+    const { lane, record } = await controlRecordForLane(sessionArgs.laneId);
     const directVnc = directVncConnectionForRecord(record);
-    if (directVnc) {
-      const screenshotDir = path.join(layout.artifactsDir, "macos-vms", lane.id);
-      fs.mkdirSync(screenshotDir, { recursive: true });
-      const outputPath = captureArgs.outputPath?.trim()
-        ? path.resolve(captureArgs.outputPath)
-        : path.join(screenshotDir, `${sanitizeArtifactName(record.name)}-${Date.now()}.png`);
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-      const screenshot = await directVncClient.captureScreenshot(directVnc, 15_000);
-      fs.writeFileSync(outputPath, screenshot.pngData);
-      const target = directVncTargetForRecord(lane, record, screenshot);
-      const retryDetail = screenshot.blankFrameAttempts && screenshot.blankFrameAttempts > 0
-        ? ` after waiting through ${screenshot.blankFrameAttempts} black frame${screenshot.blankFrameAttempts === 1 ? "" : "s"}`
-        : "";
-      emitOperation("screenshot", "completed", lane.id, record.name, `Captured macOS VM screenshot through headless VNC${retryDetail}.`);
-      return {
-        ok: true,
-        laneId: lane.id,
-        vmName: record.name,
-        path: outputPath,
-        dataUrl: readPngDataUrl(outputPath),
-        capturedAt: nowIso(),
-        captureMode: "direct-vnc",
-        window: target,
-      };
+    if (!directVnc?.password) {
+      throw new Error("This VM is running, but Lume did not expose a VNC display that ADE can embed.");
     }
+    closeDisplayProxySessionsForRecord(record);
+    const proxy = await createDisplayProxySession(lane, record, directVnc, directVnc.password);
+    emitOperation("focus-window", "completed", lane.id, record.name, "Opened embedded macOS VM display session.");
+    return {
+      ok: true,
+      laneId: lane.id,
+      vmName: record.name,
+      websocketUrl: proxy.websocketUrl,
+      password: proxy.password,
+      width: proxy.width,
+      height: proxy.height,
+      expiresAt: new Date(proxy.expiresAt).toISOString(),
+    };
+  };
+
+  const captureHostWindowScreenshot = async (
+    captureArgs: MacosVmCaptureScreenshotArgs,
+    target: MacosVmWindowTarget,
+  ): Promise<MacosVmCaptureScreenshotResult> => {
     requireMacWindowControl();
-    const target = await focusWindow(captureArgs);
     const screenshotDir = path.join(layout.artifactsDir, "macos-vms", target.laneId);
     fs.mkdirSync(screenshotDir, { recursive: true });
     const outputPath = captureArgs.outputPath?.trim()
@@ -1501,8 +3033,198 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       dataUrl: readPngDataUrl(outputPath),
       capturedAt: nowIso(),
       captureMode,
+      imageState: "unknown",
+      imageDetail: null,
       window: target,
     };
+  };
+
+  const captureElectronWindowScreenshot = async (
+    captureArgs: MacosVmCaptureScreenshotArgs,
+    lane: LaneContext,
+    record: MacosVmRecord,
+  ): Promise<MacosVmCaptureScreenshotResult | null> => {
+    if (!args.captureWindowSources) return null;
+    let sources: WindowCaptureSource[];
+    try {
+      sources = await args.captureWindowSources();
+    } catch (error) {
+      args.logger.warn("macos_vm.desktop_capturer_sources_failed", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    const explicitQuery = captureArgs.windowTitleQuery?.trim().toLowerCase();
+    const vmName = record.name.toLowerCase();
+    const candidates = sources
+      .map((source) => {
+        const name = source.name.toLowerCase();
+        if (!isVmWindowCaptureSource(source.name, record)) return { source, score: 0 };
+        const score = explicitQuery && name.includes(explicitQuery)
+          ? 5
+          : name.includes(vmName)
+            ? 4
+            : 3;
+        return { source, score };
+      })
+      .filter((entry) => entry.score > 0 && Boolean(entry.source.thumbnailDataUrl))
+      .sort((a, b) => b.score - a.score);
+    const match = candidates[0]?.source;
+    const pngData = pngDataFromDataUrl(match?.thumbnailDataUrl);
+    if (!match || !pngData) return null;
+
+    const screenshotDir = path.join(layout.artifactsDir, "macos-vms", lane.id);
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    const outputPath = captureArgs.outputPath?.trim()
+      ? path.resolve(captureArgs.outputPath)
+      : path.join(screenshotDir, `${sanitizeArtifactName(record.name)}-${Date.now()}.png`);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, pngData);
+    const target: MacosVmWindowTarget = {
+      laneId: lane.id,
+      vmName: record.name,
+      windowTitleQuery: captureArgs.windowTitleQuery?.trim() || record.name,
+      processName: "desktop-capturer",
+      windowTitle: match.name,
+      frame: null,
+      focusedAt: nowIso(),
+    };
+    emitOperation("screenshot", "completed", lane.id, record.name, `Captured macOS VM window "${match.name}".`);
+    return {
+      ok: true,
+      laneId: lane.id,
+      vmName: record.name,
+      path: outputPath,
+      dataUrl: readPngDataUrl(outputPath),
+      capturedAt: nowIso(),
+      captureMode: "window-region",
+      imageState: "unknown",
+      imageDetail: null,
+      window: target,
+    };
+  };
+
+  const captureDiagnosticBlankScreenshot = async (
+    captureArgs: MacosVmCaptureScreenshotArgs,
+    lane: LaneContext,
+    record: MacosVmRecord,
+    imageDetail: string,
+  ): Promise<MacosVmCaptureScreenshotResult> => {
+    const displaySize = displaySizeForRecord(record);
+    const rgba = Buffer.alloc(displaySize.width * displaySize.height * 4);
+    for (let offset = 3; offset < rgba.length; offset += 4) rgba[offset] = 255;
+    const screenshotDir = path.join(layout.artifactsDir, "macos-vms", lane.id);
+    fs.mkdirSync(screenshotDir, { recursive: true });
+    const outputPath = captureArgs.outputPath?.trim()
+      ? path.resolve(captureArgs.outputPath)
+      : path.join(screenshotDir, `${sanitizeArtifactName(record.name)}-${Date.now()}.png`);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, encodeRgbaPng(displaySize.width, displaySize.height, rgba));
+    const target = directVncTargetForRecord(lane, record, displaySize);
+    emitOperation("screenshot", "completed", lane.id, record.name, "Captured diagnostic black macOS VM frame.");
+    return {
+      ok: true,
+      laneId: lane.id,
+      vmName: record.name,
+      path: outputPath,
+      dataUrl: readPngDataUrl(outputPath),
+      capturedAt: nowIso(),
+      captureMode: "direct-vnc",
+      imageState: "blank",
+      imageDetail,
+      window: target,
+    };
+  };
+
+  const captureScreenshot = async (
+    captureArgs: MacosVmCaptureScreenshotArgs,
+  ): Promise<MacosVmCaptureScreenshotResult> => {
+    const { lane, record } = await controlRecordForLane(captureArgs.laneId);
+    const directVnc = directVncConnectionForRecord(record);
+    if (directVnc) {
+      try {
+        const screenshotDir = path.join(layout.artifactsDir, "macos-vms", lane.id);
+        fs.mkdirSync(screenshotDir, { recursive: true });
+        const outputPath = captureArgs.outputPath?.trim()
+          ? path.resolve(captureArgs.outputPath)
+          : path.join(screenshotDir, `${sanitizeArtifactName(record.name)}-${Date.now()}.png`);
+        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+        const screenshot = await directVncClient.captureScreenshot(directVnc, 15_000);
+        fs.writeFileSync(outputPath, screenshot.pngData);
+        const target = directVncTargetForRecord(lane, record, screenshot);
+        const directResult: MacosVmCaptureScreenshotResult = {
+          ok: true,
+          laneId: lane.id,
+          vmName: record.name,
+          path: outputPath,
+          dataUrl: readPngDataUrl(outputPath),
+          capturedAt: nowIso(),
+          captureMode: "direct-vnc",
+          imageState: screenshot.imageState,
+          imageDetail: screenshot.imageState === "blank"
+            ? "The VNC server returned an all-black frame. The VM provider is running, but macOS has not exposed a usable desktop yet. This can happen while a first-boot image is still initializing or when the selected base image is incompatible with this Mac."
+            : null,
+          window: target,
+        };
+        if (screenshot.imageState !== "blank") {
+          emitOperation("screenshot", "completed", lane.id, record.name, "Captured macOS VM screenshot through headless VNC.");
+          return directResult;
+        }
+        try {
+          const electronCapture = await captureElectronWindowScreenshot(captureArgs, lane, record);
+          if (electronCapture) return electronCapture;
+          const hostTarget = await focusWindowInternal(captureArgs, { preferHostWindow: true });
+          return await captureHostWindowScreenshot(captureArgs, hostTarget);
+        } catch (error) {
+          args.logger.warn("macos_vm.direct_vnc_blank_window_fallback_failed", {
+            vmName: record.name,
+            err: error instanceof Error ? error.message : String(error),
+          });
+          emitOperation("screenshot", "completed", lane.id, record.name, "Captured blank macOS VM screenshot through headless VNC.");
+          return directResult;
+        }
+      } catch (directError) {
+        args.logger.warn("macos_vm.direct_vnc_screenshot_failed", {
+          vmName: record.name,
+          err: directError instanceof Error ? directError.message : String(directError),
+        });
+        try {
+          const electronCapture = await captureElectronWindowScreenshot(captureArgs, lane, record);
+          if (electronCapture) return electronCapture;
+          const hostTarget = await focusWindowInternal(captureArgs, { preferHostWindow: true });
+          return await captureHostWindowScreenshot(captureArgs, hostTarget);
+        } catch (fallbackError) {
+          args.logger.warn("macos_vm.direct_vnc_error_window_fallback_failed", {
+            vmName: record.name,
+            err: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          });
+          return await captureDiagnosticBlankScreenshot(
+            captureArgs,
+            lane,
+            record,
+            "ADE could not read a usable VM frame through VNC, and macOS window capture is unavailable. The VM may still be visible in Lume's external Virtualization window.",
+          );
+        }
+      }
+    }
+    try {
+      const electronCapture = await captureElectronWindowScreenshot(captureArgs, lane, record);
+      if (electronCapture) return electronCapture;
+      const target = await focusWindowInternal(captureArgs, { preferHostWindow: true });
+      return await captureHostWindowScreenshot(captureArgs, target);
+    } catch (error) {
+      args.logger.warn("macos_vm.window_screenshot_failed", {
+        vmName: record.name,
+        err: error instanceof Error ? error.message : String(error),
+      });
+      return await captureDiagnosticBlankScreenshot(
+        captureArgs,
+        lane,
+        record,
+        "ADE could not find or capture a VM viewer window for this running VM.",
+      );
+    }
   };
 
   const click = async (clickArgs: MacosVmClickArgs): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> => {
@@ -1593,7 +3315,7 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         providerDocs: LUME_DOCS,
         appleVirtualizationDocs: APPLE_VIRTUALIZATION_DOCS,
         sharedDirectoryDocs: APPLE_SHARED_DIRECTORIES_DOCS,
-        controlModel: "Use ADE macos-vm screenshot/click/type/select actions. ADE uses direct headless VNC when it has a managed VNC credential, then falls back to a visible VM viewer window.",
+        controlModel: "Use the ADE VM tab or an agent runtime running inside the VM. Host-side screenshot/click/type tools are legacy diagnostics only.",
       },
     };
   };
@@ -1658,12 +3380,13 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         cpuCores: merged.cpuCores,
         memory: merged.memory,
         sharedDirectory: merged.sharedDirectory,
+        guestReadiness: merged.guestReadiness,
         shareMode: merged.metadata.shareMode ?? "direct",
         excludedPaths: merged.metadata.excludedPaths ?? [],
         providerDocs: LUME_DOCS,
         appleVirtualizationDocs: APPLE_VIRTUALIZATION_DOCS,
         sharedDirectoryDocs: APPLE_SHARED_DIRECTORIES_DOCS,
-        controlModel: "Use ADE macos-vm screenshot/click/type actions. ADE uses direct headless VNC when it has a managed VNC credential, then falls back to a visible VM viewer window.",
+        controlModel: "Use the ADE VM tab or an agent runtime running inside the VM. Host-side screenshot/click/type tools are legacy diagnostics only.",
       },
     };
     const text = [
@@ -1673,19 +3396,28 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
       `- Host lane path: ${merged.laneRoot}`,
       `- Shared directory mounted into the VM: ${merged.sharedDirectory}`,
       `- Guest mount path: ${merged.guestSharedPath}`,
+      `- Guest readiness: ${merged.guestReadiness?.state ?? "unknown"}${merged.guestReadiness?.canRunCode ? " (code-ready)" : ""}`,
       `- Start command if needed: \`${runCommandText}\``,
       sshLine,
-      "- For GUI computer use, prefer ADE's macos-vm screenshot/click/type tools. They target the headless VNC endpoint when available, then fall back to a visible Lume/VNC/macOS VM window.",
-      `- ADE VM control commands: \`ade --socket macos-vm screenshot --lane ${shellQuote(lane.id)} --text\`, \`ade --socket macos-vm click --lane ${shellQuote(lane.id)} <x> <y>\`, and \`ade --socket macos-vm type --lane ${shellQuote(lane.id)} --value <text>\`. Coordinates are window-relative by default.`,
-      `- To attach a screenshot-backed point context, use \`ade --socket macos-vm select --lane ${shellQuote(lane.id)} --x <x> --y <y> --text\`.`,
-      merged.metadata.shareMode === "sanitized-mirror"
-        ? "- This lane contains ADE local state, so ADE mounts a sanitized mirror and syncs code changes between the host lane and the VM without exposing secrets, runtime databases, or generated local history."
-        : "- Keep edits inside the mounted lane folder so host and guest stay in sync through VirtioFS.",
-      "- Do not copy host secrets into the VM. ADE excludes `.ade/secrets`, ADE runtime databases, caches, transcripts, generated memory/history, and `.git` from sanitized VM shares.",
-    ].join("\n");
+      merged.guestReadiness?.state === "setup_required"
+        ? "- First boot is still in macOS Setup Assistant. Use the VM console to finish setup before expecting SSH or guest-side coding."
+        : null,
+      "- For GUI computer use, run the agent/runtime inside a VM-backed lane or use the ADE VM tab console directly.",
+      "- Host-side screenshot/click/type VM commands are legacy diagnostics, not the default agent control model.",
+      "- Keep edits inside the mounted lane folder so host and guest stay in sync through VirtioFS.",
+      "- The VM lane is a direct mount of the lane worktree. Do not copy unrelated host secrets into the VM.",
+    ].filter((line): line is string => typeof line === "string").join("\n");
     emitOperation("agent-guide", "completed", lane.id, merged.name, "Built macOS VM agent guidance.");
     return { laneId: lane.id, vmName: merged.name, text, target };
   };
+
+  // Surface any resumable IPSW download on startup so the renderer can offer
+  // a "Resume download" prompt. Deferred to the next tick so subscribers can
+  // attach before the event fires.
+  setImmediate(() => {
+    if (disposed) return;
+    checkForResumableDownload();
+  });
 
   return {
     getStatus,
@@ -1693,8 +3425,16 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
     start,
     stop,
     delete: deleteVm,
+    restart,
+    wipe,
+    installRuntime,
+    setCredentials,
+    getCredentials,
+    getStorageInfo,
+    markShareStale,
     getAgentGuide,
     focusWindow,
+    getDisplaySession,
     captureScreenshot,
     click,
     selectPoint,
@@ -1713,6 +3453,8 @@ export function createMacosVmService(args: CreateMacosVmServiceArgs) {
         session.mirrorWatcher?.close();
       }
       mirrorSyncSessions.clear();
+      for (const session of displayProxySessions.values()) session.close();
+      displayProxySessions.clear();
     },
   };
 }

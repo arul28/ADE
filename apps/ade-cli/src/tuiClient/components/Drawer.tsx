@@ -325,7 +325,22 @@ function LaneCard({
   const prPillText = pr?.state === "open" ? formatPrPillText(pr) : null;
   const prPillWidth = prPillText?.length ?? 0;
   const canShowPrPill = Boolean(prPillText) && contentWidth >= 24 && contentWidth - indicatorWidth - chipWidth - prPillWidth - 3 >= 4;
-  const nameMax = Math.max(3, contentWidth - indicatorWidth - chipWidth - (canShowPrPill ? prPillWidth + 1 : 0) - 1);
+  // VM lanes live on the Mac VM, not the host worktree path. Surface a small
+  // badge so users in the TUI know `/commit`, `/push`, etc. operate against
+  // the VM-attached lane (not a normal local worktree).
+  const isVmLane = lane.runtimePlacement === "macos-vm";
+  const VM_BADGE_WIDTH = 2;
+  const canShowVmBadge = isVmLane
+    && contentWidth - indicatorWidth - chipWidth - (canShowPrPill ? prPillWidth + 1 : 0) - VM_BADGE_WIDTH - 2 >= 3;
+  const nameMax = Math.max(
+    3,
+    contentWidth
+      - indicatorWidth
+      - chipWidth
+      - (canShowPrPill ? prPillWidth + 1 : 0)
+      - (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0)
+      - 1,
+  );
   const name = truncate(lane.name, nameMax);
 
   const line2Indent = " ".repeat(Math.min(indicatorWidth, 4));
@@ -361,6 +376,14 @@ function LaneCard({
             <>
               <Text> </Text>
               <PrPill pr={pr} />
+            </>
+          ) : null}
+          {canShowVmBadge ? (
+            <>
+              <Text> </Text>
+              <Text color={theme.color.info} bold>
+                VM
+              </Text>
             </>
           ) : null}
         </Text>
@@ -564,7 +587,9 @@ function MiniDrawer({
         const meta = rowMeta[index] ?? { depth: 0, prefix: "", isLast: false };
         const selected = index === selectedLaneIndex;
         const detail = formatLaneAge(lane);
-        const nameMax = Math.max(4, inner - 3 - detail.length - meta.prefix.length);
+        const isVmLane = lane.runtimePlacement === "macos-vm";
+        const vmSuffixWidth = isVmLane ? 3 : 0;
+        const nameMax = Math.max(4, inner - 3 - detail.length - meta.prefix.length - vmSuffixWidth);
         return (
           <Box key={lane.id} paddingX={1}>
             <Text color={theme.laneStatusColor(status)} bold>
@@ -577,6 +602,11 @@ function MiniDrawer({
             >
               {pad(truncate(lane.name, nameMax), nameMax)}
             </Text>
+            {isVmLane ? (
+              <Text color={theme.color.info} bold>
+                {" "}VM
+              </Text>
+            ) : null}
             <Text color={theme.color.t4}> {detail}</Text>
           </Box>
         );

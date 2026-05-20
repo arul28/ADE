@@ -2968,6 +2968,42 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("removed residual files");
   });
 
+  it("recovers stale worktree directories with VM guest-created unreadable folders", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const childPath = path.join(repoRoot, "child");
+    const guestTrashPath = path.join(childPath, ".Trashes");
+    fs.mkdirSync(guestTrashPath, { recursive: true });
+    fs.chmodSync(guestTrashPath, 0o311);
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" } as any;
+      if (args[0] === "worktree" && args[1] === "remove") {
+        return {
+          exitCode: 128,
+          stdout: "",
+          stderr: `fatal: '${childPath}' is not a working tree`,
+        } as any;
+      }
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+    try {
+      await service.delete({ laneId: "lane-child", deleteBranch: false });
+    } finally {
+      if (fs.existsSync(guestTrashPath)) fs.chmodSync(guestTrashPath, 0o700);
+    }
+
+    expect(fs.existsSync(childPath)).toBe(false);
+    const last = events[events.length - 1];
+    expect(last.progress.overallStatus).toBe("completed");
+    expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("recovered from stale state");
+  });
+
   it("keeps recent delete progress queryable for remounted renderers", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();

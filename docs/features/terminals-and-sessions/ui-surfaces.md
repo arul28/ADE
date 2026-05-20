@@ -318,15 +318,14 @@ focused Work session is Claude / Codex / Cursor / OpenCode / Droid.
 Chat targets receive selections through window events
 (`ade:agent-chat:add-attachment`, `add-ios-context`,
 `add-app-control-context`, `add-builtin-browser-context`,
-`add-macos-vm-context`, `insert-draft`); the matching `AgentChatPane`
+`insert-draft`); the matching `AgentChatPane`
 listens for its session id and feeds the payload into the same
 handlers that the in-pane drawers use. PTY targets get the same
 selections formatted into prompt text by
 `apps/desktop/src/renderer/lib/visualContextFormatting.ts`
 (`formatIosElementContextForPrompt`,
 `formatAppControlContextForPrompt`,
-`formatBuiltInBrowserContextForPrompt`,
-`formatMacosVmContextForPrompt`) and written into the PTY as a
+`formatBuiltInBrowserContextForPrompt`) and written into the PTY as a
 bracketed-paste payload (`\x1b[200~…\x1b[201~`) through
 `window.ade.pty.write`. After the write succeeds the sidebar dispatches
 `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`

@@ -68,7 +68,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `laneProxyService.ts` | `*.localhost` reverse proxy, per-lane routes, cookie isolation (Phase 5 W4) |
 | `oauthRedirectService.ts` | OAuth callback routing for multi-lane (Phase 5 W5) |
 | `runtimeDiagnosticsService.ts` | Aggregate lane health checks, fallback mode (Phase 5 W6) |
-| `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools |
+| `laneLaunchContext.ts` | Pure helper: resolves launch cwd/env for terminals and tools. Returns `{ laneWorktreePath, cwd, execStrategy: "local" \| "ssh", sshTarget? }`. For lanes whose `runtimePlacement` is `macos-vm`, the helper consults a pluggable `MacosVmLaunchProvider` (installed during main-process bootstrap) and routes the launch to an in-guest `ssh user@host` target under `/Volumes/My Shared Files`. When the VM is missing, not runtime-ready, or not yet fetched, it throws `VmNotReadyError` (`code: "macos-vm-not-ready"`) carrying the current `MacosVmPhaseNumber` so the renderer can prompt "Open VM tab". |
 | `laneListSnapshotService.ts` | Desktop-side snapshot assembly: takes runtime-supplied lane summaries and decorates them with sync presence (`devicesOpen`), conflict status, rebase suggestions, auto-rebase status, and runtime session bucket counts. Used to build the lane list for the renderer without round-tripping every overlay separately. |
 
 Renderer components:

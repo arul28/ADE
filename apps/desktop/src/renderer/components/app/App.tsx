@@ -53,6 +53,9 @@ const MissionsPage = React.lazy(() =>
 const CtoPage = React.lazy(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
+const MacVmPage = React.lazy(() =>
+  import("../vm/MacVmPage").then((m) => ({ default: m.MacVmPage }))
+);
 
 import {
   AppStoreProvider,
@@ -323,6 +326,12 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <Route path="/cto" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
+            </PageErrorBoundary>
+          } />
+          <Route path="/macos-vm" element={<Navigate to="/vm" replace />} />
+          <Route path="/vm" element={
+            <PageErrorBoundary>
+              <React.Suspense fallback={LazyFallback}>{React.createElement(MacVmPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
             </PageErrorBoundary>
           } />
           <Route path="/settings" element={
