@@ -4,6 +4,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type {
   BranchPullRequest,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchBlock,
+  CreateLaneFromPrBranchPreflight,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
@@ -169,6 +174,28 @@ type PullRequestRow = {
   created_at: string;
   updated_at: string;
   creation_strategy: string | null;
+};
+
+type GithubPrCacheRow = {
+  project_id: string;
+  repo_owner: string;
+  repo_name: string;
+  github_pr_number: number;
+  item_json: string;
+  state: string;
+  head_branch: string | null;
+  updated_at: string;
+  synced_at: string;
+};
+
+type PrAutoLinkIgnoreRow = {
+  project_id: string;
+  repo_owner: string;
+  repo_name: string;
+  github_pr_number: number;
+  lane_id: string;
+  head_branch: string | null;
+  created_at: string;
 };
 
 type LanePrLookupRow = {
@@ -1057,14 +1084,19 @@ export function createPrService({
     }
   };
 
-  const markHotRefresh = (prIds: string[]): void => {
+  const markHotRefresh = (
+    prIds: string[],
+    options: { invalidateGithubSnapshot?: boolean } = {},
+  ): void => {
     const nowMs = Date.now();
     const uniquePrIds = [...new Set(prIds.map((prId) => String(prId ?? "").trim()).filter(Boolean))];
     if (uniquePrIds.length === 0) return;
     for (const prId of uniquePrIds) {
       hotRefreshStartedAtByPrId.set(prId, nowMs);
     }
-    invalidateGithubSnapshotCache();
+    if (options.invalidateGithubSnapshot !== false) {
+      invalidateGithubSnapshotCache();
+    }
     onHotRefreshChanged?.();
   };
 
@@ -1559,6 +1591,74 @@ export function createPrService({
     return true;
   };
 
+  const autoLinkIgnoreKey = (args: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    laneId: string;
+  }): string => `${repoPrKey(args.owner, args.repo, args.prNumber)}:${args.laneId}`;
+
+  const listAutoLinkIgnores = (repo: GitHubRepoRef): Set<string> => {
+    const rows = db.all<PrAutoLinkIgnoreRow>(
+      `select project_id, repo_owner, repo_name, github_pr_number, lane_id, head_branch, created_at
+         from pr_auto_link_ignores
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)`,
+      [projectId, repo.owner, repo.name],
+    );
+    return new Set(rows.map((row) => autoLinkIgnoreKey({
+      owner: row.repo_owner,
+      repo: row.repo_name,
+      prNumber: Number(row.github_pr_number),
+      laneId: row.lane_id,
+    })));
+  };
+
+  const rememberAutoLinkIgnore = (row: PullRequestRow): void => {
+    db.run(
+      `
+        insert or replace into pr_auto_link_ignores(
+          project_id,
+          repo_owner,
+          repo_name,
+          github_pr_number,
+          lane_id,
+          head_branch,
+          created_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        projectId,
+        row.repo_owner,
+        row.repo_name,
+        Number(row.github_pr_number),
+        row.lane_id,
+        row.head_branch,
+        nowIso(),
+      ],
+    );
+  };
+
+  const clearAutoLinkIgnore = (args: {
+    repoOwner: string;
+    repoName: string;
+    githubPrNumber: number;
+    laneId: string;
+  }): void => {
+    db.run(
+      `
+        delete from pr_auto_link_ignores
+         where project_id = ?
+           and lower(repo_owner) = lower(?)
+           and lower(repo_name) = lower(?)
+           and github_pr_number = ?
+           and lane_id = ?
+      `,
+      [projectId, args.repoOwner, args.repoName, Number(args.githubPrNumber), args.laneId],
+    );
+  };
+
   const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
     const activeLaneByBranch = new Map<string, LaneSummary>();
     for (const lane of lanes) {
@@ -1570,6 +1670,7 @@ export function createPrService({
     if (activeLaneByBranch.size === 0) return 0;
 
     const backfilledIds: string[] = [];
+    const ignoredAutoLinks = listAutoLinkIgnores(repo);
     for (const rawPr of rawPulls) {
       const headBranch = rawPullHeadBranch(rawPr);
       const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
@@ -1580,6 +1681,9 @@ export function createPrService({
 
       const prNumber = asNumber(rawPr?.number);
       if (!prNumber) continue;
+      if (ignoredAutoLinks.has(autoLinkIgnoreKey({ owner: repo.owner, repo: repo.name, prNumber, laneId: lane.id }))) {
+        continue;
+      }
 
       const existingRepoRow = getRowForRepoPr(repo.owner, repo.name, prNumber);
       if (existingRepoRow && existingRepoRow.lane_id !== lane.id) continue;
@@ -1610,12 +1714,18 @@ export function createPrService({
         updatedAt: asString(rawPr?.updated_at) || nowIso(),
         creationStrategy: "pr_target",
       };
-      backfilledIds.push(upsertRow(summary, { allowRepoPrAdoption: true }));
+      const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+      clearAutoLinkIgnore({
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        githubPrNumber: prNumber,
+        laneId: lane.id,
+      });
+      backfilledIds.push(prId);
     }
 
     if (backfilledIds.length > 0) {
-      markHotRefresh(backfilledIds);
-      invalidateGithubSnapshotCache();
+      markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
   };
@@ -1875,6 +1985,265 @@ export function createPrService({
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
     });
     return data;
+  };
+
+  const createLaneFromPrBranchBlock = (
+    code: CreateLaneFromPrBranchBlock["code"],
+    message: string,
+    extra: Omit<CreateLaneFromPrBranchBlock, "code" | "message"> = {},
+  ): CreateLaneFromPrBranchBlock => ({ code, message, ...extra });
+
+  const resolveCreateLaneFromPrBranchLocator = async (
+    args: CreateLaneFromPrBranchArgs,
+  ): Promise<{ repo: GitHubRepoRef; prNumber: number }> => {
+    const locatorText = asString(args.prUrlOrNumber).trim();
+    if (locatorText) {
+      const locator = parsePrLocator(locatorText);
+      const repo = locator.owner && locator.repo
+        ? { owner: locator.owner, name: locator.repo }
+        : await githubService.getRepoOrThrow();
+      return { repo, prNumber: locator.number };
+    }
+
+    const repoOwner = asString(args.repoOwner).trim();
+    const repoName = asString(args.repoName).trim();
+    const prNumber = Number(args.githubPrNumber ?? args.prNumber ?? 0);
+    if (!repoOwner || !repoName) throw new Error("Repository owner and name are required.");
+    if (!Number.isFinite(prNumber) || prNumber <= 0) throw new Error("GitHub PR number is required.");
+    return { repo: { owner: repoOwner, name: repoName }, prNumber };
+  };
+
+  const parseRemoteBranchSha = (stdout: string, branchName: string): string | null => {
+    const suffix = `refs/heads/${branchName}`;
+    for (const line of stdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const [sha, ref] = trimmed.split(/\s+/);
+      if (sha && (!ref || ref === suffix || ref.endsWith(suffix))) return sha;
+    }
+    const first = stdout.trim().split(/\s+/)[0];
+    return first || null;
+  };
+
+  const findCheckedOutWorktreeForBranch = async (branchName: string): Promise<string | null> => {
+    const res = await runGit(["worktree", "list", "--porcelain"], {
+      cwd: projectRoot,
+      timeoutMs: 10_000,
+    });
+    if (res.exitCode !== 0) return null;
+
+    for (const block of res.stdout.split(/\n\n+/)) {
+      const lines = block.split(/\r?\n/);
+      const worktreeLine = lines.find((line) => line.startsWith("worktree "));
+      const branchLine = lines.find((line) => line.startsWith("branch "));
+      const worktreePath = worktreeLine?.slice("worktree ".length).trim() ?? "";
+      const checkedBranch = branchLine?.slice("branch ".length).trim() ?? "";
+      if (!worktreePath || !checkedBranch) continue;
+      if (normalizeBranchName(branchNameFromRef(checkedBranch)) === branchName) {
+        return path.resolve(worktreePath);
+      }
+    }
+    return null;
+  };
+
+  const resolveConfiguredRemoteBranch = async (args: {
+    headBranch: string;
+    headSha: string | null;
+    sameRepoHead: boolean;
+  }): Promise<CreateLaneFromPrBranchBlock | null> => {
+    const remoteRef = `origin/${args.headBranch}`;
+    const lsRemote = await runGit(["ls-remote", "--heads", "origin", args.headBranch], {
+      cwd: projectRoot,
+      timeoutMs: 30_000,
+    });
+    let remoteSha = lsRemote.exitCode === 0
+      ? parseRemoteBranchSha(lsRemote.stdout, args.headBranch)
+      : null;
+
+    if (!remoteSha) {
+      await runGit(["fetch", "--prune", "origin"], {
+        cwd: projectRoot,
+        timeoutMs: 60_000,
+      }).catch(() => null);
+      const cached = await runGit(["rev-parse", "--verify", `refs/remotes/${remoteRef}`], {
+        cwd: projectRoot,
+        timeoutMs: 8_000,
+      });
+      remoteSha = cached.exitCode === 0 ? cached.stdout.trim() || null : null;
+    }
+
+    if (!remoteSha) {
+      return createLaneFromPrBranchBlock(
+        args.sameRepoHead ? "remote_branch_missing" : "fork_unavailable",
+        args.sameRepoHead
+          ? `Remote branch '${remoteRef}' was not found. It may have been deleted.`
+          : `Fork PR branch '${args.headBranch}' is not fetchable from the configured remote.`,
+      );
+    }
+
+    if (args.headSha && remoteSha !== args.headSha) {
+      return createLaneFromPrBranchBlock(
+        args.sameRepoHead ? "remote_branch_mismatch" : "fork_unavailable",
+        args.sameRepoHead
+          ? `Remote branch '${remoteRef}' does not match the current PR head. Refresh the branch and try again.`
+          : `Fork PR branch '${args.headBranch}' does not match a branch on the configured remote.`,
+      );
+    }
+
+    return null;
+  };
+
+  const buildCreateLaneFromPrBranchPreflight = async (
+    args: CreateLaneFromPrBranchArgs,
+  ): Promise<CreateLaneFromPrBranchPreflight> => {
+    const { repo, prNumber } = await resolveCreateLaneFromPrBranchLocator(args);
+    const pr = await fetchPr(repo, prNumber);
+    const githubPrNumber = Number(pr?.number) || prNumber;
+    const title = asString(pr?.title) || `PR #${githubPrNumber}`;
+    const githubUrl = asString(pr?.html_url) || `https://github.com/${repo.owner}/${repo.name}/pull/${githubPrNumber}`;
+    const headBranch = rawPullHeadBranch(pr) || null;
+    const headRepoOwner = rawPullHeadOwner(pr) || null;
+    const headRepoName = rawPullHeadRepoName(pr) || null;
+    const baseBranch = asString(pr?.base?.ref) || null;
+    const headSha = asString(pr?.head?.sha) || null;
+    const targetLaneName = asString(args.laneName).trim() || title || headBranch || `PR #${githubPrNumber}`;
+    const importBranchRef = headBranch ? `origin/${headBranch}` : null;
+
+    const finish = (block: CreateLaneFromPrBranchBlock | null): CreateLaneFromPrBranchPreflight => ({
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      githubPrNumber,
+      githubUrl,
+      title,
+      headBranch,
+      headSha,
+      headRepoOwner,
+      headRepoName,
+      remoteBranch: importBranchRef,
+      importBranchRef,
+      targetLaneName,
+      baseBranch,
+      canCreate: block == null,
+      status: block == null ? "ready" : "blocked",
+      blockingConflict: block,
+      blockingConflicts: block ? [block] : [],
+    });
+
+    const existingPr = getRowForRepoPr(repo.owner, repo.name, githubPrNumber);
+    if (existingPr) {
+      const lane = (await laneService.list({ includeArchived: true, includeStatus: false }))
+        .find((entry) => entry.id === existingPr.lane_id);
+      return finish(createLaneFromPrBranchBlock(
+        "already_mapped",
+        `PR #${githubPrNumber} is already mapped to lane '${lane?.name ?? existingPr.lane_id}'.`,
+        { laneId: existingPr.lane_id, laneName: lane?.name ?? null },
+      ));
+    }
+
+    if (!headBranch) {
+      return finish(createLaneFromPrBranchBlock(
+        "missing_head_branch",
+        `PR #${githubPrNumber} does not have a head branch to import.`,
+      ));
+    }
+
+    const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+    const branchOwner = lanes.find((lane) => normalizeBranchName(branchNameFromRef(lane.branchRef)) === headBranch);
+    if (branchOwner) {
+      const isPrimary = branchOwner.laneType === "primary";
+      const archived = branchOwner.archivedAt ? " archived" : "";
+      return finish(createLaneFromPrBranchBlock(
+        isPrimary ? "default_branch" : "branch_owned",
+        isPrimary
+          ? `Branch '${headBranch}' is the primary workspace branch and cannot be imported as a lane.`
+          : `Branch '${headBranch}' is already owned by${archived} lane '${branchOwner.name}'.`,
+        { laneId: branchOwner.id, laneName: branchOwner.name },
+      ));
+    }
+
+    if (baseBranch && normalizeBranchName(baseBranch) === headBranch) {
+      return finish(createLaneFromPrBranchBlock(
+        "default_branch",
+        `PR #${githubPrNumber} uses '${headBranch}' as both head and base; ADE will not import the default branch as a lane.`,
+      ));
+    }
+
+    const sameRepoHead = rawPullHasSameRepoHead(pr, repo);
+    const remoteBlock = await resolveConfiguredRemoteBranch({ headBranch, headSha, sameRepoHead });
+    if (remoteBlock) return finish(remoteBlock);
+
+    const checkedOutPath = await findCheckedOutWorktreeForBranch(headBranch).catch(() => null);
+    if (checkedOutPath && path.resolve(checkedOutPath) !== path.resolve(projectRoot)) {
+      return finish(createLaneFromPrBranchBlock(
+        "worktree_collision",
+        `Branch '${headBranch}' is already checked out at '${checkedOutPath}'. Attach or remove that worktree before importing it as a lane.`,
+        { worktreePath: checkedOutPath },
+      ));
+    }
+
+    return finish(null);
+  };
+
+  const preflightCreateLaneFromPrBranch = async (
+    args: CreateLaneFromPrBranchArgs,
+  ): Promise<CreateLaneFromPrBranchPreflightResult> => {
+    const preflight = await buildCreateLaneFromPrBranchPreflight(args);
+    return { preflight, lane: null, pr: null };
+  };
+
+  const createLaneFromPrBranch = async (
+    args: CreateLaneFromPrBranchArgs,
+  ): Promise<CreateLaneFromPrBranchResult> => {
+    const preflight = await buildCreateLaneFromPrBranchPreflight(args);
+    if (!preflight.canCreate || !preflight.importBranchRef || !preflight.headBranch) {
+      throw new Error(preflight.blockingConflict?.message || "PR branch cannot be imported as a lane.");
+    }
+
+    const sameRepoHead =
+      Boolean(preflight.headRepoOwner && preflight.headRepoName)
+      && preflight.headRepoOwner?.toLowerCase() === preflight.repoOwner.toLowerCase()
+      && preflight.headRepoName?.toLowerCase() === preflight.repoName.toLowerCase();
+    const remoteBlock = await resolveConfiguredRemoteBranch({
+      headBranch: preflight.headBranch,
+      headSha: preflight.headSha,
+      sameRepoHead,
+    });
+    if (remoteBlock) {
+      throw new Error(remoteBlock.message);
+    }
+
+    let lane: Awaited<ReturnType<typeof laneService.importBranch>> | null = null;
+    try {
+      lane = await laneService.importBranch({
+        branchRef: preflight.importBranchRef,
+        name: preflight.targetLaneName,
+        ...(preflight.baseBranch ? { baseBranch: preflight.baseBranch } : {}),
+      });
+      const pr = await linkToLane({
+        laneId: lane.id,
+        prUrlOrNumber: preflight.githubUrl,
+      });
+      return { preflight, lane, pr };
+    } catch (error) {
+      if (!lane) throw error;
+      try {
+        await laneService.delete({
+          laneId: lane.id,
+          deleteBranch: false,
+          deleteRemoteBranch: false,
+          force: true,
+        });
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        logger.warn("prs.create_lane_from_pr_branch.cleanup_failed", {
+          laneId: lane.id,
+          error: cleanupMessage,
+        });
+        const originalMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`${originalMessage} Imported lane cleanup failed: ${cleanupMessage}`);
+      }
+      throw error;
+    }
   };
 
   const graphqlRequest = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
@@ -2822,6 +3191,7 @@ export function createPrService({
     const row = getRow(args.prId);
     if (!row) throw new Error(`PR not found: ${args.prId}`);
     const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const localUnmapOnly = args.closeOnGitHub !== true && args.archiveLane !== true;
 
     let githubClosed = false;
     let githubCloseError: string | null = null;
@@ -2841,6 +3211,10 @@ export function createPrService({
           error: githubCloseError
         });
       }
+    }
+
+    if (localUnmapOnly) {
+      rememberAutoLinkIgnore(row);
     }
 
     db.run("delete from pr_group_members where pr_id = ?", [row.id]);
@@ -2877,6 +3251,8 @@ export function createPrService({
         logger.warn("prs.archive_lane_failed", { prId: row.id, laneId: row.lane_id, error: laneArchiveError });
       }
     }
+
+    invalidateGithubSnapshotCache();
 
     return {
       prId: row.id,
@@ -3172,6 +3548,12 @@ export function createPrService({
     // with an already-existing PR for this branch, we need to adopt the row
     // that represents that PR (regardless of prior lane attribution).
     const prId = upsertRow(summary, { allowRepoPrAdoption: true });
+    clearAutoLinkIgnore({
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      githubPrNumber: prNumber,
+      laneId: lane.id,
+    });
     markHotRefresh([prId]);
 
     return await refreshOne(prId);
@@ -3200,6 +3582,13 @@ export function createPrService({
     // behavior (follow-up 3) instead of being treated as "unset". The
     // upsertRow path uses COALESCE so we never clobber an existing value.
     const existingRow = getRowForRepoPr(repo.owner, repo.name, locator.number);
+    if (existingRow && existingRow.lane_id !== lane.id) {
+      const existingLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
+        .find((entry) => entry.id === existingRow.lane_id);
+      throw new Error(
+        `Cannot link PR #${locator.number} to lane "${lane.name}" because it is already mapped to lane "${existingLane?.name ?? existingRow.lane_id}".`
+      );
+    }
     const creationStrategy: PrCreationStrategy =
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
@@ -3227,6 +3616,12 @@ export function createPrService({
     };
 
     const prId = upsertRow(summary);
+    clearAutoLinkIgnore({
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      githubPrNumber: locator.number,
+      laneId: lane.id,
+    });
     markHotRefresh([prId]);
     return await refreshOne(prId);
   };
@@ -5061,27 +5456,20 @@ export function createPrService({
     cachedGithubSnapshotAt = capturedAt;
   };
 
-  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
-    const githubStatus = await githubService.getStatus();
-    if (!githubStatus.tokenStored) {
-      throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
-    }
+  type GithubSnapshotMetadata = {
+    lanes: LaneSummary[];
+    laneById: Map<string, LaneSummary>;
+    pullRequestRows: PullRequestRow[];
+    linkedPrByRepoKey: Map<string, PullRequestRow>;
+    groupByPrId: Map<string, { pr_id: string; group_id: string; group_type: "queue" | "integration" }>;
+    workflowByPrId: Map<string, IntegrationProposalRow>;
+  };
 
-    const repo = githubStatus.repo;
-    if (!repo) {
-      return {
-        repo: null,
-        viewerLogin: githubStatus.userLogin,
-        repoPullRequests: [],
-        externalPullRequests: [],
-        syncedAt: nowIso(),
-      };
-    }
-
+  const loadGithubSnapshotMetadata = async (): Promise<GithubSnapshotMetadata> => {
     const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane]));
-    let pullRequestRows = listRows();
-    let linkedPrByRepoKey = new Map(
+    const pullRequestRows = listRows();
+    const linkedPrByRepoKey = new Map(
       pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
     );
     const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
@@ -5099,17 +5487,227 @@ export function createPrService({
       if (linkedPrId) workflowByPrId.set(linkedPrId, row);
     }
 
-    const deriveAdeKind = (
-      workflow: IntegrationProposalRow | null,
-      group: { group_type: string } | null | undefined,
-      linked: PullRequestRow | null,
-    ): GitHubPrListItem["adeKind"] => {
-      if (workflow) return "integration";
-      if (group?.group_type === "queue") return "queue";
-      if (group?.group_type === "integration") return "integration";
-      if (linked) return "single";
-      return null;
+    return {
+      lanes,
+      laneById,
+      pullRequestRows,
+      linkedPrByRepoKey,
+      groupByPrId,
+      workflowByPrId,
     };
+  };
+
+  const deriveGithubSnapshotAdeKind = (
+    workflow: IntegrationProposalRow | null,
+    group: { group_type: string } | null | undefined,
+    linked: PullRequestRow | null,
+  ): GitHubPrListItem["adeKind"] => {
+    if (workflow) return "integration";
+    if (group?.group_type === "queue") return "queue";
+    if (group?.group_type === "integration") return "integration";
+    if (linked) return "single";
+    return null;
+  };
+
+  const selectLocalGithubSnapshotRepo = (
+    cacheRows: GithubPrCacheRow[],
+    prRows: PullRequestRow[],
+  ): GitHubRepoRef | null => {
+    const firstCacheRow = cacheRows.find((row) => asString(row.repo_owner).trim() && asString(row.repo_name).trim());
+    if (firstCacheRow) return { owner: firstCacheRow.repo_owner, name: firstCacheRow.repo_name };
+    const firstPrRow = prRows.find((row) => asString(row.repo_owner).trim() && asString(row.repo_name).trim());
+    return firstPrRow ? { owner: firstPrRow.repo_owner, name: firstPrRow.repo_name } : null;
+  };
+
+  const snapshotSyncedAtFromRows = (rows: Array<PullRequestRow | GithubPrCacheRow>): string => {
+    let latestValue: string | null = null;
+    let latestMs = 0;
+    for (const row of rows) {
+      const values =
+        "last_synced_at" in row
+          ? [row.last_synced_at, row.updated_at, row.created_at]
+          : [row.synced_at, row.updated_at];
+      for (const value of values) {
+        const ms = parseIsoMs(value);
+        if (ms > latestMs) {
+          latestMs = ms;
+          latestValue = value ?? null;
+        }
+      }
+    }
+    return latestValue ?? nowIso();
+  };
+
+  const overlayGithubSnapshotLinkage = (
+    item: GitHubPrListItem,
+    metadata: GithubSnapshotMetadata,
+  ): GitHubPrListItem => {
+    const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(item.repoOwner, item.repoName, Number(item.githubPrNumber))) ?? null;
+    const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
+    const groupRow = linkedPrRow ? metadata.groupByPrId.get(linkedPrRow.id) ?? null : null;
+    return {
+      ...item,
+      linkedPrId: linkedPrRow?.id ?? null,
+      linkedGroupId: linkedPrRow ? (asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null) : null,
+      linkedLaneId: linkedPrRow?.lane_id ?? null,
+      linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
+      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
+      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+    };
+  };
+
+  const parseGithubPrCacheItem = (
+    row: GithubPrCacheRow,
+    metadata: GithubSnapshotMetadata,
+  ): GitHubPrListItem | null => {
+    try {
+      const parsed = JSON.parse(row.item_json) as GitHubPrListItem;
+      if (!parsed || typeof parsed !== "object") return null;
+      return overlayGithubSnapshotLinkage({
+        ...parsed,
+        repoOwner: row.repo_owner,
+        repoName: row.repo_name,
+        githubPrNumber: Number(row.github_pr_number),
+        state: (row.state as PrState) ?? parsed.state,
+        headBranch: row.head_branch ?? parsed.headBranch ?? null,
+        updatedAt: row.updated_at || parsed.updatedAt,
+      }, metadata);
+    } catch {
+      return null;
+    }
+  };
+
+  const listGithubPrCacheRows = (): GithubPrCacheRow[] => db.all<GithubPrCacheRow>(
+    `select project_id, repo_owner, repo_name, github_pr_number, item_json, state, head_branch, updated_at, synced_at
+       from github_pr_cache
+      where project_id = ?
+      order by datetime(updated_at) desc, github_pr_number desc`,
+    [projectId],
+  );
+
+  const upsertGithubPrCache = (items: GitHubPrListItem[], syncedAt = nowIso()): void => {
+    for (const item of items) {
+      db.run(
+        `
+          insert or replace into github_pr_cache(
+            project_id,
+            repo_owner,
+            repo_name,
+            github_pr_number,
+            item_json,
+            state,
+            head_branch,
+            updated_at,
+            synced_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          projectId,
+          item.repoOwner,
+          item.repoName,
+          Number(item.githubPrNumber),
+          JSON.stringify(item),
+          item.state,
+          item.headBranch,
+          item.updatedAt,
+          syncedAt,
+        ],
+      );
+    }
+  };
+
+  const rowToGithubSnapshotItem = (
+    row: PullRequestRow,
+    metadata: GithubSnapshotMetadata,
+  ): GitHubPrListItem => {
+    const workflowRow = metadata.workflowByPrId.get(row.id) ?? null;
+    const groupRow = metadata.groupByPrId.get(row.id) ?? null;
+    const state: PrState =
+      row.state === "draft" || row.state === "merged" || row.state === "closed"
+        ? row.state
+        : "open";
+    return {
+      id: row.github_node_id || `repo-${row.repo_owner}-${row.repo_name}-${Number(row.github_pr_number)}`,
+      scope: "repo",
+      repoOwner: row.repo_owner,
+      repoName: row.repo_name,
+      githubPrNumber: Number(row.github_pr_number),
+      githubUrl: row.github_url,
+      title: row.title || `PR #${Number(row.github_pr_number)}`,
+      state,
+      isDraft: row.state === "draft",
+      baseBranch: row.base_branch || null,
+      headBranch: row.head_branch || null,
+      headRepoOwner: row.repo_owner,
+      headRepoName: row.repo_name,
+      author: null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at || row.created_at,
+      linkedPrId: row.id,
+      linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
+      linkedLaneId: row.lane_id,
+      linkedLaneName: metadata.laneById.get(row.lane_id)?.name ?? row.lane_id,
+      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, row),
+      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
+      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+      labels: [],
+      isBot: false,
+      commentCount: 0,
+    };
+  };
+
+  const getGithubSnapshotFromLocalCache = async (): Promise<GitHubPrSnapshot | null> => {
+    const cacheRows = listGithubPrCacheRows();
+    const metadata = await loadGithubSnapshotMetadata();
+    const repo = selectLocalGithubSnapshotRepo(cacheRows, metadata.pullRequestRows);
+    if (!repo) return null;
+
+    const repoPrefix = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#`;
+    const repoCacheRows = cacheRows.filter((row) =>
+      repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)).startsWith(repoPrefix),
+    );
+    const cachedItems = repoCacheRows
+      .map((row) => parseGithubPrCacheItem(row, metadata))
+      .filter((item): item is GitHubPrListItem => item !== null);
+    const seenKeys = new Set(cachedItems.map((item) => repoPrKey(item.repoOwner, item.repoName, Number(item.githubPrNumber))));
+    const repoPrRows = metadata.pullRequestRows
+      .filter((row) => repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)).startsWith(repoPrefix));
+    const linkedOnlyItems = repoPrRows
+      .filter((row) => !seenKeys.has(repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number))))
+      .map((row) => rowToGithubSnapshotItem(row, metadata));
+    const repoPullRequests = [...cachedItems, ...linkedOnlyItems]
+      .sort((left, right) => parseIsoMs(right.updatedAt) - parseIsoMs(left.updatedAt));
+
+    if (repoPullRequests.length === 0) return null;
+
+    return {
+      repo,
+      viewerLogin: null,
+      repoPullRequests,
+      externalPullRequests: [],
+      syncedAt: snapshotSyncedAtFromRows([...repoCacheRows, ...repoPrRows]),
+    };
+  };
+
+  const getGithubSnapshotUncached = async (): Promise<GitHubPrSnapshot> => {
+    const githubStatus = await githubService.getStatus();
+    if (!githubStatus.tokenStored) {
+      throw new Error("GitHub token missing. Set it in Settings to sync pull requests.");
+    }
+
+    const repo = githubStatus.repo;
+    if (!repo) {
+      return {
+        repo: null,
+        viewerLogin: githubStatus.userLogin,
+        repoPullRequests: [],
+        externalPullRequests: [],
+        syncedAt: nowIso(),
+      };
+    }
+
+    let metadata = await loadGithubSnapshotMetadata();
 
     const toGitHubState = (rawPr: any): PrState => {
       if (rawPr?.merged_at) return "merged";
@@ -5127,9 +5725,9 @@ export function createPrService({
       const repoOwner = asString(rawRepo?.owner?.login) || repositoryParts[0] || repo.owner;
       const repoName = asString(rawRepo?.name) || repositoryParts[1] || repo.name;
       const githubPrNumber = Number(rawPr?.number) || 0;
-      const linkedPrRow = linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
-      const workflowRow = linkedPrRow ? workflowByPrId.get(linkedPrRow.id) ?? null : null;
-      const groupRow = linkedPrRow ? groupByPrId.get(linkedPrRow.id) ?? null : null;
+      const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
+      const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
+      const groupRow = linkedPrRow ? metadata.groupByPrId.get(linkedPrRow.id) ?? null : null;
 
       return {
         id: asString(rawPr?.node_id) || `${scope}-${repoOwner}-${repoName}-${githubPrNumber}`,
@@ -5151,8 +5749,8 @@ export function createPrService({
         linkedPrId: linkedPrRow?.id ?? null,
         linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
         linkedLaneId: linkedPrRow?.lane_id ?? null,
-        linkedLaneName: linkedPrRow ? (laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
-        adeKind: deriveAdeKind(workflowRow, groupRow, linkedPrRow),
+        linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+        adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
         workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
         cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
         labels: Array.isArray(rawPr?.labels)
@@ -5169,20 +5767,20 @@ export function createPrService({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: { state: "all", sort: "updated", direction: "desc" },
     });
-    repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(repoPullRequestsRaw, repo, lanes);
-    if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, lanes) > 0) {
-      pullRequestRows = listRows();
-      linkedPrByRepoKey = new Map(
-        pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
-      );
+    repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(repoPullRequestsRaw, repo, metadata.lanes);
+    if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0) {
+      metadata = await loadGithubSnapshotMetadata();
     }
+    const repoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
+    const syncedAt = nowIso();
+    upsertGithubPrCache(repoPullRequests, syncedAt);
 
     return {
       repo,
       viewerLogin: githubStatus.userLogin,
-      repoPullRequests: repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo")),
+      repoPullRequests,
       externalPullRequests: [],
-      syncedAt: nowIso(),
+      syncedAt,
     };
   };
 
@@ -5232,6 +5830,16 @@ export function createPrService({
         void startSnapshotRequest(true).catch(() => {});
       }
       return cachedSnapshot;
+    }
+    if (!force) {
+      const localSnapshot = await getGithubSnapshotFromLocalCache();
+      if (localSnapshot) {
+        publishGithubSnapshot(localSnapshot);
+        if (!githubSnapshotInFlight) {
+          void startSnapshotRequest(true).catch(() => {});
+        }
+        return localSnapshot;
+      }
     }
     if (!force && githubSnapshotInFlight) {
       return githubSnapshotInFlight.request;
@@ -6087,6 +6695,14 @@ export function createPrService({
 
     async linkToLane(args: LinkPrToLaneArgs): Promise<PrSummary> {
       return await linkToLane(args);
+    },
+
+    async preflightCreateLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> {
+      return await preflightCreateLaneFromPrBranch(args);
+    },
+
+    async createLaneFromPrBranch(args: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult> {
+      return await createLaneFromPrBranch(args);
     },
 
     async cleanupBranch(args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> {

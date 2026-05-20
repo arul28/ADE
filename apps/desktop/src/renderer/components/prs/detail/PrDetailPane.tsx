@@ -5,7 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import {
   GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
-  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
+  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code,
   PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
   CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Stack as Layers,
 } from "@phosphor-icons/react";
@@ -19,6 +19,8 @@ import type {
   PrConvergenceState,
   PrConvergenceStatePatch,
   PrSnapshotHydration,
+  PrChecksStatus,
+  PrReviewStatus,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
@@ -42,9 +44,14 @@ import { modifierKeyLabel } from "../../../lib/platform";
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
 const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
+const DETAIL_BACKGROUND_ACTIVITY_DELAY_MS = 250;
 
 function isDetailTab(value: unknown): value is DetailTab {
-  return value === "overview" || value === "convergence" || value === "files" || value === "checks" || value === "activity";
+  return value === "overview" || value === "convergence" || value === "files" || value === "checks";
+}
+
+function normalizeDetailTab(tab: DetailTab | "activity" | null | undefined): DetailTab {
+  return tab === "activity" || tab == null ? "overview" : tab;
 }
 
 function isPrsRouteRuntime(): boolean {
@@ -62,7 +69,7 @@ function readStoredDetailTab(prId: string): DetailTab | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const value = parsed?.[prId];
-    return isDetailTab(value) ? value : null;
+    return isDetailTab(value) ? normalizeDetailTab(value) : null;
   } catch {
     return null;
   }
@@ -276,7 +283,7 @@ function CheckIcon({ check }: { check: PrCheck }) {
   return <Circle size={16} weight="regular" style={{ color: COLORS.textMuted }} />;
 }
 
-// ---- Shared activity event helpers (used by OverviewTab and ActivityTab) ----
+// ---- Shared activity event helpers for the overview thread ----
 function activityEventColor(ev: PrActivityEvent): string {
   if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
   if (ev.type === "review") return COLORS.accent;
@@ -509,6 +516,8 @@ type PrDetailPaneProps = {
   onOpenQueueView?: (groupId: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
+  onUnmap?: () => void;
+  unmapBusy?: boolean;
 };
 
 export function PrDetailPane({
@@ -531,6 +540,8 @@ export function PrDetailPane({
   onOpenQueueView,
   initialDetailTab,
   onDetailTabChange,
+  onUnmap,
+  unmapBusy = false,
 }: PrDetailPaneProps) {
   const {
     convergenceStatesByPrId,
@@ -555,16 +566,17 @@ export function PrDetailPane({
     setAiSummaryDismissed,
     regeneratePrAiSummary,
   } = usePrs();
+  const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const [activeTab, setActiveTabState] = React.useState<DetailTab>(
-    () => initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview",
+    () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
-  const [detail, setDetail] = React.useState<PrDetail | null>(null);
-  const [files, setFiles] = React.useState<PrFile[]>([]);
-  const [commits, setCommits] = React.useState<PrCommit[]>([]);
-  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(null);
-  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>([]);
-  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>([]);
-  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>([]);
+  const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? null);
+  const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? []);
+  const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? []);
+  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? null);
+  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? []);
+  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? []);
+  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? []);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
@@ -586,22 +598,18 @@ export function PrDetailPane({
   }, [onDetailTabChange, pr.id]);
 
   React.useEffect(() => {
-    const next = initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview";
+    const next = normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id));
     setActiveTabState(next);
-    setSnapshotStatus(null);
-    setSnapshotChecks([]);
-    setSnapshotReviews([]);
-    setSnapshotComments([]);
     if (initialDetailTab) {
-      writeStoredDetailTab(pr.id, initialDetailTab);
+      writeStoredDetailTab(pr.id, normalizeDetailTab(initialDetailTab));
     }
   }, [initialDetailTab, pr.id]);
 
   React.useEffect(() => {
     const onTourTab = (event: Event) => {
-      const tab = (event as CustomEvent<DetailTab>).detail;
+      const tab = (event as CustomEvent<DetailTab | "activity">).detail;
       if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
-        setActiveTab(tab);
+        setActiveTab(normalizeDetailTab(tab));
       }
     };
     window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
@@ -638,6 +646,10 @@ export function PrDetailPane({
   const handleRegenerateAiSummary = React.useCallback(() => {
     void regeneratePrAiSummary?.(pr.id);
   }, [pr.id, regeneratePrAiSummary]);
+  const timelineAiSummary = React.useMemo(
+    () => (detailAiSummary?.prId === pr.id ? detailAiSummary : null),
+    [detailAiSummary, pr.id],
+  );
 
   // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
   // Only attach listeners when the flag is on AND the overview tab is active.
@@ -842,6 +854,9 @@ export function PrDetailPane({
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
   const snapshotHydrationRef = React.useRef<PrSnapshotHydration | null>(snapshotHydration);
+  const snapshotPrefillPendingRef = React.useRef(false);
+  const visibleActivityCountRef = React.useRef(0);
+  const activityFetchKeyRef = React.useRef<string | null>(null);
   const liveDetailLoadedForPrRef = React.useRef<string | null>(null);
   const liveFilesLoadedForPrRef = React.useRef<string | null>(null);
   const liveCommitsLoadedForPrRef = React.useRef<string | null>(null);
@@ -869,15 +884,16 @@ export function PrDetailPane({
     }
   }, [applySnapshotHydration, pr.id, snapshotHydration]);
 
-  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean } = {}) => {
+  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
       if (options.hydrateSnapshot) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
-        const cachedSnapshot = contextSnapshot ?? (!snapshotHydrationOwnedByContext && typeof window.ade.prs.listSnapshots === "function"
+        const cachedSnapshot = contextSnapshot ?? (typeof window.ade.prs.listSnapshots === "function"
           ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]
           : null);
-        if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
+        if (requestId !== detailLoadSeqRef.current) return;
+        if (cachedSnapshot) {
           applySnapshotHydration(cachedSnapshot);
         }
       }
@@ -911,8 +927,12 @@ export function PrDetailPane({
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise]);
     } catch {
       // silently fail - basic data still available from context
+    } finally {
+      if (requestId === detailLoadSeqRef.current) {
+        snapshotPrefillPendingRef.current = false;
+      }
     }
-  }, [applySnapshotHydration, pr.id, snapshotHydrationOwnedByContext]);
+  }, [applySnapshotHydration, pr.id]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -954,17 +974,23 @@ export function PrDetailPane({
     setShowReviewerEditor(false);
     setShowReviewModal(false);
     setActivity([]);
+    activityFetchKeyRef.current = null;
     liveDetailLoadedForPrRef.current = null;
     liveFilesLoadedForPrRef.current = null;
     liveCommitsLoadedForPrRef.current = null;
-    setDetail(null);
-    setFiles([]);
-    setCommits([]);
+    const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
+    if (contextSnapshot) {
+      applySnapshotHydration(contextSnapshot);
+    } else {
+      setDetail(null);
+      setFiles([]);
+      setCommits([]);
+      setSnapshotStatus(null);
+      setSnapshotChecks([]);
+      setSnapshotReviews([]);
+      setSnapshotComments([]);
+    }
     setActionRuns([]);
-    setSnapshotStatus(null);
-    setSnapshotChecks([]);
-    setSnapshotReviews([]);
-    setSnapshotComments([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
@@ -981,13 +1007,14 @@ export function PrDetailPane({
         }
       });
 
+    snapshotPrefillPendingRef.current = true;
     void loadDetail({ hydrateSnapshot: true });
     return () => {
       detailLoadSeqRef.current += 1;
       inventoryLoadSeqRef.current += 1;
       convergenceLoadSeqRef.current += 1;
     };
-  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
+  }, [applyConvergenceRuntime, applySnapshotHydration, loadConvergenceState, loadDetail, pr.id]);
 
   React.useEffect(() => {
     const key = [
@@ -1003,7 +1030,7 @@ export function PrDetailPane({
     }
     if (prev === key) return;
     detailStatusRefreshKeyRef.current = key;
-    void loadDetail();
+    void loadDetail({ forceLive: true });
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
@@ -1014,25 +1041,39 @@ export function PrDetailPane({
   const visibleActivity = activity.length > 0 ? activity : derivedActivity;
 
   React.useEffect(() => {
-    const shouldLoadImmediately = activeTab === "activity" || Boolean(deepLinkState.eventId);
+    visibleActivityCountRef.current = visibleActivity.length;
+  }, [visibleActivity.length]);
+
+  React.useEffect(() => {
+    const shouldLoadImmediately = activeTab === "overview" || Boolean(deepLinkState.eventId);
     if (!shouldLoadImmediately) return undefined;
+    const key = `${pr.id}|${activeTab}|${deepLinkState.eventId ?? ""}`;
+    if (activityFetchKeyRef.current === key) return undefined;
+    activityFetchKeyRef.current = key;
     let cancelled = false;
-    window.ade.prs.getActivity(pr.id).then((events) => {
-      if (!cancelled) setActivity(events);
-    }).catch(() => {});
+    const hasLocalActivity = visibleActivityCountRef.current > 0;
+    const delay = !deepLinkState.eventId && (hasLocalActivity || snapshotPrefillPendingRef.current)
+      ? DETAIL_BACKGROUND_ACTIVITY_DELAY_MS
+      : 0;
+    const timeoutId = window.setTimeout(() => {
+      window.ade.prs.getActivity(pr.id).then((events) => {
+        if (!cancelled) setActivity(events);
+      }).catch(() => {});
+    }, delay);
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
   }, [activeTab, deepLinkState.eventId, pr.id]);
 
   // Poll checks + actionRuns + reviewThreads every 60s so the
   // Path to Merge readiness panel stays fresh without requiring a manual refresh.
   // Full activity fetches include comments/reviews/checks again, so only do that
-  // while the Activity tab is actually visible.
+  // while the Overview thread is actually visible.
   React.useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
-      const activityPromise = activeTab === "activity"
+      const activityPromise = activeTab === "overview"
         ? window.ade.prs.getActivity(pr.id)
         : Promise.resolve(null);
       Promise.allSettled([
@@ -1091,7 +1132,7 @@ export function PrDetailPane({
       await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
       setCommentDraft("");
       await onRefresh();
-      await loadDetail();
+      await loadDetail({ forceLive: true });
     });
   };
 
@@ -1108,20 +1149,20 @@ export function PrDetailPane({
     await window.ade.prs.updateBody({ prId: pr.id, body: bodyDraft });
     setEditingBody(false);
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels });
     setShowLabelEditor(false);
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleRequestReviewers = (reviewers: string[]) => runAction(async () => {
     await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
     setShowReviewerEditor(false);
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleSubmitReview = () => runAction(async () => {
@@ -1144,7 +1185,7 @@ export function PrDetailPane({
   const handleRerunChecks = () => runAction(async () => {
     await window.ade.prs.rerunChecks({ prId: pr.id });
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleAiSummary = async () => {
@@ -1288,7 +1329,7 @@ export function PrDetailPane({
   }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
-    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail(), refreshReviewThreads()];
+    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail({ forceLive: true }), refreshReviewThreads()];
     if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
@@ -2255,14 +2296,27 @@ export function PrDetailPane({
   const localBehindCount = laneForPr?.status?.behind ?? 0;
 
   const sc = getPrStateBadge(pr.state);
-  const cc = getPrChecksBadge(pr.checksStatus);
-  const rc = getPrReviewsBadge(pr.reviewStatus);
+  const resolvedChecksStatus = React.useMemo<PrChecksStatus>(() => {
+    if (status?.checksStatus) return status.checksStatus;
+    if (checks.length === 0) return pr.checksStatus;
+    if (checks.some((check) => check.status === "queued" || check.status === "in_progress")) return "pending";
+    if (checks.some((check) => check.conclusion === "failure" || check.conclusion === "cancelled")) return "failing";
+    if (checks.some((check) => check.status === "completed")) return "passing";
+    return pr.checksStatus;
+  }, [checks, pr.checksStatus, status?.checksStatus]);
+  const resolvedReviewStatus = React.useMemo<PrReviewStatus>(() => {
+    if (status?.reviewStatus) return status.reviewStatus;
+    if (reviews.some((review) => review.state === "changes_requested")) return "changes_requested";
+    if (reviews.some((review) => review.state === "approved")) return "approved";
+    return pr.reviewStatus;
+  }, [pr.reviewStatus, reviews, status?.reviewStatus]);
+  const cc = getPrChecksBadge(resolvedChecksStatus);
+  const rc = getPrReviewsBadge(resolvedReviewStatus);
   const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
     overview: COLORS.accent,
     convergence: COLORS.accent,
     files: COLORS.info,
     checks: COLORS.success,
-    activity: COLORS.warning,
   };
 
   const isTerminalPr = pr.state === "merged" || pr.state === "closed";
@@ -2289,11 +2343,12 @@ export function PrDetailPane({
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
-    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: visibleActivity.length },
   ];
 
+  const overviewRailsActive = activeTab === "overview" && prsTimelineRailsEnabled;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.pageBg }}>
       {/* ===== HEADER ===== */}
       <div style={{ padding: "18px 20px 0", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.04) 0%, transparent 100%)` }}>
         {/* Title row */}
@@ -2401,6 +2456,22 @@ export function PrDetailPane({
             <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
               <ArrowsClockwise size={14} weight="bold" />
             </button>
+            {onUnmap ? (
+              <button
+                type="button"
+                disabled={unmapBusy}
+                onClick={() => void onUnmap()}
+                style={outlineButton({
+                  height: 30,
+                  padding: "0 10px",
+                  color: COLORS.warning,
+                  borderColor: "color-mix(in srgb, var(--color-warning) 38%, transparent)",
+                  opacity: unmapBusy ? 0.55 : 1,
+                })}
+              >
+                {unmapBusy ? "Unmapping..." : "Unmap"}
+              </button>
+            ) : null}
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
@@ -2449,7 +2520,7 @@ export function PrDetailPane({
       )}
 
       {/* ===== TAB CONTENT ===== */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
         {activeTab === "overview" && prsTimelineRailsEnabled && (
           <TimelineRailsOverview
             ref={timelineRailsRef}
@@ -2467,10 +2538,14 @@ export function PrDetailPane({
             viewerLogin={viewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}
-            aiSummary={detailAiSummary}
+            aiSummary={timelineAiSummary}
             aiSummaryDismissed={aiSummaryDismissedForPr}
             onDismissAiSummary={handleDismissAiSummary}
             onRegenerateAiSummary={handleRegenerateAiSummary}
+            commentDraft={commentDraft}
+            setCommentDraft={setCommentDraft}
+            actionBusy={actionBusy}
+            onAddComment={handleAddComment}
             deepLink={deepLinkState}
           />
         )}
@@ -2604,13 +2679,6 @@ export function PrDetailPane({
             onOpenIssueResolver={handleOpenIssueResolver}
           />
           </div>
-        )}
-        {activeTab === "activity" && (
-          <ActivityTab
-            activity={visibleActivity} comments={comments} reviews={reviews}
-            commentDraft={commentDraft} setCommentDraft={setCommentDraft}
-            actionBusy={actionBusy} onAddComment={handleAddComment}
-          />
         )}
       </div>
 
@@ -3126,10 +3194,9 @@ function OverviewTab(props: OverviewTabProps) {
             Activity ({activity.length > 0 ? activity.length : comments.length})
           </span>
           {(() => {
-            // Use full activity timeline if available, else fall back to comments.
-            // Filter out ci_run events — they're shown in the CI/Checks tab.
+            // Use the full activity timeline if available, else fall back to comments.
             const timeline = activity.length > 0
-              ? [...activity].filter((ev) => ev.type !== "ci_run").sort((a, b) => {
+              ? [...activity].sort((a, b) => {
                   const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
                   const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
                   return ta - tb;
@@ -4079,140 +4146,6 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-// ================================================================
-// ACTIVITY TAB
-// ================================================================
-
-function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraft, actionBusy, onAddComment }: {
-  activity: PrActivityEvent[];
-  comments: PrComment[];
-  reviews: PrReview[];
-  commentDraft: string;
-  setCommentDraft: (v: string) => void;
-  actionBusy: boolean;
-  onAddComment: () => void;
-}) {
-  // Merge comments and reviews into a timeline if activity is empty
-  const timeline = React.useMemo(() => {
-    if (activity.length > 0) return activity;
-    const events: PrActivityEvent[] = [];
-    for (const c of comments) {
-      events.push({
-        id: c.id, type: "comment", author: c.author, avatarUrl: c.authorAvatarUrl || null,
-        body: c.body, timestamp: c.createdAt ?? "", metadata: { path: c.path, line: c.line },
-      });
-    }
-    for (let ri = 0; ri < reviews.length; ri++) {
-      const r = reviews[ri];
-      events.push({
-        id: `review-${r.reviewer}-${r.submittedAt}-${ri}`, type: "review", author: r.reviewer, avatarUrl: r.reviewerAvatarUrl || null,
-        body: r.body, timestamp: r.submittedAt ?? "", metadata: { state: r.state },
-      });
-    }
-    return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [activity, comments, reviews]);
-
-  return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Comment input at top */}
-      <div style={cardStyle()}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <textarea
-            value={commentDraft}
-            onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
-            style={{
-              flex: 1, minHeight: 60, resize: "vertical", padding: 12,
-              fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary,
-              background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
-            }}
-          />
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-          <button type="button" onClick={() => void onAddComment()} disabled={actionBusy || !commentDraft.trim()} style={primaryButton({ height: 30, opacity: actionBusy || !commentDraft.trim() ? 0.4 : 1 })}>
-            <ChatText size={13} /> Comment
-          </button>
-        </div>
-      </div>
-
-      {/* Timeline */}
-      <div style={cardStyle()}>
-        <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 16, display: "block" }}>Timeline ({timeline.length})</span>
-        {timeline.length === 0 ? (
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No activity yet</div>
-        ) : (
-          <div style={{ position: "relative", paddingLeft: 32 }}>
-            {/* Vertical timeline line with gradient */}
-            <div style={{
-              position: "absolute", left: 11, top: 4, bottom: 4, width: 2,
-              background: `linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 40%, transparent) 0%, ${COLORS.border} 50%, color-mix(in srgb, var(--color-muted-fg) 20%, transparent) 100%)`,
-              borderRadius: 1,
-            }} />
-            {timeline.map((event, idx) => {
-              const evColor = activityEventColor(event);
-              return (
-                <div key={event.id} style={{ position: "relative", paddingBottom: idx < timeline.length - 1 ? 20 : 0 }}>
-                  {/* Icon dot */}
-                  <div style={{
-                    position: "absolute", left: -26, top: 2, width: 24, height: 24,
-                    borderRadius: "50%",
-                    background: `${evColor}18`,
-                    border: `2px solid ${evColor}40`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: `0 0 8px ${evColor}20`,
-                  }}>
-                    <ActivityEventIcon event={event} withGlow />
-                  </div>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{event.author}</span>
-                      <span style={inlineBadge(evColor)}>
-                        {activityEventLabel(event)}
-                      </span>
-                      {event.type === "review" && typeof event.metadata?.state === "string" ? (
-                        <span style={inlineBadge(event.metadata.state === "approved" ? COLORS.success : event.metadata.state === "changes_requested" ? COLORS.warning : COLORS.textSecondary)}>
-                          {String(event.metadata.state).replace(/_/g, " ")}
-                        </span>
-                      ) : null}
-                      {event.type === "comment" && typeof event.metadata?.path === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.path)}{typeof event.metadata?.line === "number" ? `:${event.metadata.line}` : ""}
-                        </span>
-                      ) : null}
-                      {event.type === "deployment" && typeof event.metadata?.environment === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.environment)}
-                        </span>
-                      ) : null}
-                      {event.type === "commit" && typeof event.metadata?.shortSha === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.shortSha)}
-                        </span>
-                      ) : null}
-                      {event.type === "force_push" && (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {typeof event.metadata?.beforeSha === "string" ? `${String(event.metadata.beforeSha).slice(0, 7)} → ${String(event.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
-                        </span>
-                      )}
-                      <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: "#8B7355" }}>{formatTimeAgo(event.timestamp)}</span>
-                    </div>
-                    {event.body && (
-                      <div style={{ padding: "4px 0 4px 0" }}>
-                        <MarkdownBody markdown={event.body} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

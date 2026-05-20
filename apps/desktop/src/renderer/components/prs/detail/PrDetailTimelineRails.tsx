@@ -1,5 +1,6 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { ChatText } from "@phosphor-icons/react";
 import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
   PrActivityEvent,
@@ -20,7 +21,7 @@ import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
 import { PrStatusRail, type PrStatusRailMergeState } from "../shared/PrStatusRail";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import { PrCheckLogDrawer } from "../shared/PrCheckLogDrawer";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, primaryButton } from "../../lanes/laneDesignTokens";
 
 export type PrDetailTimelineRailsRef = {
   scrollToEventId: (id: string) => void;
@@ -68,6 +69,10 @@ type Props = {
   aiSummaryDismissed: boolean;
   onDismissAiSummary: () => void;
   onRegenerateAiSummary: () => void;
+  commentDraft: string;
+  setCommentDraft: (value: string) => void;
+  actionBusy: boolean;
+  onAddComment: () => void;
   deepLink: { eventId: string | null; threadId: string | null; commitSha: string | null };
 };
 
@@ -399,6 +404,10 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       aiSummaryDismissed,
       onDismissAiSummary,
       onRegenerateAiSummary,
+      commentDraft,
+      setCommentDraft,
+      actionBusy,
+      onAddComment,
       deepLink,
     } = props;
 
@@ -566,21 +575,61 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         </div>
 
         <div className="min-h-0">
-          <PrTimeline
-            ref={timelineRef}
-            events={events}
-            prId={pr.id}
-            laneId={pr.laneId}
-            repoOwner={pr.repoOwner}
-            repoName={pr.repoName}
-            viewerLogin={viewerLogin}
-            filters={filters}
-            onFiltersChange={onFiltersChange}
-            summary={summaryForTimeline}
-            onRegenerateSummary={onRegenerateAiSummary}
-            onDismissSummary={onDismissAiSummary}
-            onVisibleEventChange={handleVisibleEventChange}
-          />
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 flex-1">
+              <PrTimeline
+                ref={timelineRef}
+                events={events}
+                prId={pr.id}
+                laneId={pr.laneId}
+                repoOwner={pr.repoOwner}
+                repoName={pr.repoName}
+                viewerLogin={viewerLogin}
+                filters={filters}
+                onFiltersChange={onFiltersChange}
+                summary={summaryForTimeline}
+                onRegenerateSummary={onRegenerateAiSummary}
+                onDismissSummary={onDismissAiSummary}
+                onVisibleEventChange={handleVisibleEventChange}
+              />
+            </div>
+            <div
+              className="shrink-0 p-3"
+              style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}
+            >
+              <textarea
+                value={commentDraft}
+                onChange={(event) => setCommentDraft(event.target.value)}
+                placeholder="Leave a comment"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void onAddComment();
+                }}
+                style={{
+                  width: "100%",
+                  minHeight: 58,
+                  resize: "vertical",
+                  padding: 10,
+                  fontFamily: SANS_FONT,
+                  fontSize: 12,
+                  color: COLORS.textPrimary,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 8,
+                  outline: "none",
+                }}
+              />
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  disabled={actionBusy || !commentDraft.trim()}
+                  onClick={() => void onAddComment()}
+                  style={primaryButton({ height: 30, opacity: actionBusy || !commentDraft.trim() ? 0.45 : 1 })}
+                >
+                  <ChatText size={13} /> Comment
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="min-h-0">

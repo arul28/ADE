@@ -6,7 +6,6 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ReviewPage } from "./ReviewPage";
 import { useAppStore } from "../../state/appStore";
-import { AgentChatPane } from "../chat/AgentChatPane";
 
 vi.mock("../ui/PaneTilingLayout", () => ({
   PaneTilingLayout: ({ panes }: { panes: Record<string, { children: React.ReactNode }> }) => (
@@ -18,10 +17,6 @@ vi.mock("../ui/PaneTilingLayout", () => ({
       ))}
     </div>
   ),
-}));
-
-vi.mock("../chat/AgentChatPane", () => ({
-  AgentChatPane: vi.fn(() => <div data-testid="agent-chat-pane" />),
 }));
 
 function LocationProbe() {
@@ -68,7 +63,6 @@ describe("ReviewPage", () => {
 
   beforeEach(() => {
     resetStore();
-    (AgentChatPane as unknown as { mockClear?: () => void }).mockClear?.();
     const run1 = {
       id: "run-1",
       projectId: "project-1",
@@ -165,6 +159,8 @@ describe("ReviewPage", () => {
         ...run1,
         findings: [],
         artifacts: [],
+        reviewerRuns: [],
+        candidateFindings: [],
         publications: [],
         chatSession: {
           sessionId: "session-1",
@@ -283,6 +279,49 @@ describe("ReviewPage", () => {
           },
           { id: "artifact-1", runId: "run-2", artifactType: "diff_bundle", title: "Captured diff", mimeType: "text/plain", contentText: "diff --git a/src/review/run.ts b/src/review/run.ts", metadata: null, createdAt: "2026-04-03T12:03:00.000Z" },
         ],
+        reviewerRuns: [
+          {
+            id: "reviewer-diff",
+            runId: "run-2",
+            reviewerKey: "diff-risk",
+            label: "Diff risk",
+            focus: "direct diff risks",
+            status: "completed",
+            chatSessionId: "session-2",
+            promptArtifactId: "prompt-diff",
+            outputArtifactId: "output-diff",
+            findingsArtifactId: "artifact-pass-diff-risk",
+            candidateCount: 1,
+            keptCount: 1,
+            summary: "Direct diff risk",
+            errorMessage: null,
+            startedAt: "2026-04-03T12:01:00.000Z",
+            endedAt: "2026-04-03T12:02:00.000Z",
+            createdAt: "2026-04-03T12:01:00.000Z",
+            updatedAt: "2026-04-03T12:02:00.000Z",
+          },
+        ],
+        candidateFindings: [
+          {
+            id: "candidate-1",
+            runId: "run-2",
+            reviewerRunId: "reviewer-diff",
+            reviewerKey: "diff-risk",
+            title: "Missing guard on empty result",
+            severity: "high",
+            findingClass: "intent_drift",
+            body: "The branch can surface a blank state instead of the expected fallback.",
+            confidence: 0.92,
+            evidence: [],
+            filePath: "src/review/run.ts",
+            line: 42,
+            anchorState: "anchored",
+            evidenceScore: 0.8,
+            lowSignal: false,
+            score: 8.1,
+            createdAt: "2026-04-03T12:02:00.000Z",
+          },
+        ],
         publications: [],
         chatSession: {
           sessionId: "session-2",
@@ -302,6 +341,8 @@ describe("ReviewPage", () => {
         ...run3,
         findings: [],
         artifacts: [],
+        reviewerRuns: [],
+        candidateFindings: [],
         publications: [],
         chatSession: null,
       }],
@@ -359,16 +400,10 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toContain("runId=run-2"));
     expect((await screen.findAllByText("Reviewed lane-to-lane diff")).length).toBeGreaterThan(0);
     expect(await screen.findByText("Missing guard on empty result")).toBeTruthy();
-    expect(await screen.findByText("Passes and adjudication")).toBeTruthy();
-    expect(await screen.findByText("publication eligible")).toBeTruthy();
-    expect(AgentChatPane).toHaveBeenCalled();
-    expect(AgentChatPane).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        lockSessionId: "session-2",
-        presentation: expect.objectContaining({ mode: "resolver", assistantLabel: "Review" }),
-      }),
-      expect.anything(),
-    );
+    expect(await screen.findByText("Reviewer outputs")).toBeTruthy();
+    expect(await screen.findByText(/strong evidence/i)).toBeTruthy();
+    expect(await screen.findByText("Review agent transcript available")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /open in work/i })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /rerun/i }));
 
@@ -392,7 +427,7 @@ describe("ReviewPage", () => {
     expect(await screen.findByText("4 items")).toBeTruthy();
     expect(await screen.findByText("2 items")).toBeTruthy();
     expect(await screen.findByText("3 items")).toBeTruthy();
-    expect(await screen.findByText("intent drift")).toBeTruthy();
+    expect(await screen.findByText("Goal mismatch")).toBeTruthy();
   });
 
   it("opens findings in ADE files first and keeps the editor handoff secondary", async () => {
@@ -441,6 +476,123 @@ describe("ReviewPage", () => {
       reasoningEffort: "medium",
       publishBehavior: "local_only",
     });
+  });
+
+  it("starts a review with Codex fast mode enabled", async () => {
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    expect(screen.getByText(/Can inspect files and run read-only analysis/i)).toBeTruthy();
+    expect(screen.getByText("Read-only")).toBeTruthy();
+
+    const fastModeButton = screen.getByRole("button", { name: "Fast mode" });
+    fireEvent.click(fastModeButton);
+    expect(fastModeButton.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: /start review/i }));
+
+    await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
+    const [{ config }] = (window.ade.review as any).startRun.mock.calls[0];
+    expect(config).toMatchObject({
+      modelId: "openai/gpt-5.5",
+      codexFastMode: true,
+    });
+  });
+
+  it("starts a review without ADE budget limits", async () => {
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByText("Advanced review budgets"));
+    fireEvent.click(screen.getByRole("button", { name: "No limits" }));
+
+    expect(screen.getByText(/No ADE budget limits will be applied/i)).toBeTruthy();
+    expect(screen.queryByLabelText("Files")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /start review/i }));
+
+    await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
+    const [{ config }] = (window.ade.review as any).startRun.mock.calls[0];
+    expect(config.budgets).toMatchObject({
+      unlimited: true,
+      maxFiles: Number.MAX_SAFE_INTEGER,
+      maxDiffChars: Number.MAX_SAFE_INTEGER,
+      maxPromptChars: Number.MAX_SAFE_INTEGER,
+      maxFindings: Number.MAX_SAFE_INTEGER,
+      maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
+      maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  it("uses explicit local base language for non-primary lane comparisons", async () => {
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+
+    expect(screen.getByText("Compare with main")).toBeTruthy();
+    expect(screen.getByText(/compares this lane's branch to local main/i)).toBeTruthy();
+    expect(screen.getByText(/feature\/review-tab: branch changes vs local main/i)).toBeTruthy();
+    expect(screen.getByText(/Pull remote changes into that local base first/i)).toBeTruthy();
+  });
+
+  it("uses local upstream ref language for primary lane comparisons", async () => {
+    useAppStore.setState({
+      selectedLaneId: "lane-primary",
+      lanes: [
+        {
+          id: "lane-primary",
+          name: "Primary",
+          branchRef: "refs/heads/main",
+          baseRef: "main",
+          laneType: "primary",
+          color: null,
+          worktreePath: "/Users/arul/ADE",
+          status: {} as any,
+        },
+      ] as any,
+    });
+    (window.ade.review as any).listLaunchContext.mockResolvedValueOnce({
+      lanes: [
+        { id: "lane-primary", name: "Primary", branchRef: "refs/heads/main", baseRef: "main", laneType: "primary", color: null },
+      ],
+      defaultLaneId: "lane-primary",
+      defaultBranchName: "main",
+      recentCommitsByLane: {},
+      recommendedModelId: "openai/gpt-5.5",
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/review"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+
+    expect(screen.getByText("Compare with origin/main")).toBeTruthy();
+    expect(screen.getByText(/local main vs local origin\/main/i)).toBeTruthy();
+    expect(screen.getByText(/local primary branch to local origin\/main/i)).toBeTruthy();
+    expect(screen.getAllByText(/fetch or pull first when you want latest remote changes included/i).length).toBeGreaterThan(0);
   });
 
   it("defaults commit range to the newest commit as head and the previous commit as base", async () => {
@@ -547,6 +699,9 @@ describe("ReviewPage", () => {
       ...missingTimeRun,
       findings: [],
       artifacts: [],
+      reviewerRuns: [],
+      candidateFindings: [],
+      publications: [],
       chatSession: null,
     });
 

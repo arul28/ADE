@@ -209,6 +209,9 @@ import type {
   GitSyncArgs,
   GitHubRepoRef,
   GitHubStatus,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
   DeletePrArgs,
   DeletePrResult,
@@ -1291,6 +1294,18 @@ async function callProjectRuntimeActionOr<T>(
   return runtime.handled ? runtime.result : local();
 }
 
+async function callProjectRuntimeActionStrictOr<T>(
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  const remote = await callRemoteProjectActionIfBound<T>(domain, action, request);
+  if (remote.handled) return remote.result;
+  const localRuntime = await callLocalProjectActionStrictIfBound<T>(domain, action, request);
+  return localRuntime.handled ? localRuntime.result : local();
+}
+
 async function callRemoteProjectRuntimeActionOr<T>(
   domain: string,
   action: string,
@@ -1310,7 +1325,7 @@ function callPrReadRuntimeActionOr<T>(
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  return callRemoteProjectRuntimeActionOr("pr", action, request, local);
+  return callProjectRuntimeActionOr("pr", action, request, local);
 }
 
 async function callProjectFileRuntimeActionOr<T>(
@@ -3570,7 +3585,7 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.reviewGetRunDetail, { runId }),
       ),
     startRun: async (args: ReviewStartRunArgs): Promise<ReviewRun> =>
-      callProjectRuntimeActionOr("review", "startRun", { args }, () =>
+      callProjectRuntimeActionStrictOr("review", "startRun", { args }, () =>
         ipcRenderer.invoke(IPC.reviewStartRun, args),
       ),
     rerun: async (runId: string): Promise<ReviewRun> =>
@@ -7033,6 +7048,18 @@ contextBridge.exposeInMainWorld("ade", {
     linkToLane: async (args: LinkPrToLaneArgs): Promise<PrSummary> =>
       callProjectRuntimeActionOr("pr", "linkToLane", { args }, () =>
         ipcRenderer.invoke(IPC.prsLinkToLane, args),
+      ),
+    preflightCreateLaneFromPrBranch: async (
+      args: CreateLaneFromPrBranchArgs,
+    ): Promise<CreateLaneFromPrBranchPreflightResult> =>
+      callProjectRuntimeActionStrictOr("pr", "preflightCreateLaneFromPrBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.prsPreflightCreateLaneFromPrBranch, args),
+      ),
+    createLaneFromPrBranch: async (
+      args: CreateLaneFromPrBranchArgs,
+    ): Promise<CreateLaneFromPrBranchResult> =>
+      callProjectRuntimeActionStrictOr("pr", "createLaneFromPrBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.prsCreateLaneFromPrBranch, args),
       ),
     getForLane: async (laneId: string): Promise<PrSummary | null> =>
       callPrReadRuntimeActionOr("getForLane", { arg: laneId }, () =>

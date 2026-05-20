@@ -67,16 +67,36 @@ describe("gitOperationsService.stashClear", () => {
     vi.clearAllMocks();
   });
 
-  it("calls git stash clear with the lane worktree path and returns the action result", async () => {
+  it("drops only stashes saved for the lane branch", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
+      if (args[0] === "stash" && args[1] === "list") {
+        return [
+          "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: keep for this lane",
+          "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fOn other-branch: leave alone",
+          "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+        ].join("\n");
+      }
+      return undefined;
+    });
     const { service, mockStart, mockFinish, mockInvalidateListCache } = createTestGitOperationsService();
 
     const result = await service.stashClear({ laneId: "lane-1" });
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "clear"],
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
       { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["stash", "drop", "stash@{2}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["stash", "drop", "stash@{0}"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
     expect(result).toEqual({
       operationId: "op-1",
@@ -133,19 +153,34 @@ describe("gitOperationsService.getSyncStatus", () => {
 });
 
 describe("gitOperationsService stash item commands", () => {
+  const branchStashList = [
+    "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: first",
+    "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+    "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
+  ].join("\n");
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("lists stashes with ordinal refs and ISO timestamps", async () => {
-    mockGit.runGitOrThrow.mockResolvedValue("stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn main: test\n");
+    mockGit.runGitOrThrow.mockResolvedValue([
+      "stash@{0}\u001f2026-05-12T02:09:32-04:00\u001fOn feature/stash-test: test",
+      "stash@{1}\u001f2026-05-12T02:08:32-04:00\u001fWIP on feature/stash-test: abc123 work",
+      "stash@{2}\u001f2026-05-12T02:07:32-04:00\u001fOn other-branch: hidden",
+    ].join("\n"));
     const { service } = createTestGitOperationsService();
 
     await expect(service.listStashes({ laneId: "lane-1" })).resolves.toEqual([
       {
         ref: "stash@{0}",
         createdAt: "2026-05-12T02:09:32-04:00",
-        subject: "On main: test",
+        subject: "On feature/stash-test: test",
+      },
+      {
+        ref: "stash@{1}",
+        createdAt: "2026-05-12T02:08:32-04:00",
+        subject: "WIP on feature/stash-test: abc123 work",
       },
     ]);
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
@@ -156,20 +191,29 @@ describe("gitOperationsService stash item commands", () => {
 
   it("applies then drops a stash when restoring it", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) =>
+      args[0] === "stash" && args[1] === "list" ? branchStashList : undefined
+    );
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
 
     const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
       ["stash", "apply", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
       ["stash", "drop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(3);
     expect(result).toEqual({
       operationId: "op-1",
       preHeadSha: "abc123",
@@ -192,13 +236,18 @@ describe("gitOperationsService stash item commands", () => {
 
   it("keeps the stash when restore apply fails", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow.mockRejectedValueOnce(new Error("apply failed"));
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
+      if (args[0] === "stash" && args[1] === "list") return branchStashList;
+      if (args[0] === "stash" && args[1] === "apply") throw new Error("apply failed");
+      return undefined;
+    });
     const { service } = createTestGitOperationsService();
 
     await expect(service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" })).rejects.toThrow("apply failed");
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(2);
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
       ["stash", "apply", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
@@ -206,20 +255,27 @@ describe("gitOperationsService stash item commands", () => {
 
   it("reports restore success when drop fails after apply", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("drop failed"));
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) => {
+      if (args[0] === "stash" && args[1] === "list") return branchStashList;
+      if (args[0] === "stash" && args[1] === "drop") throw new Error("drop failed");
+      return undefined;
+    });
     const { service, mockFinish, mockLogger } = createTestGitOperationsService();
 
     const result = await service.stashPop({ laneId: "lane-1", stashRef: "stash@{1}" });
 
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
+      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
       ["stash", "apply", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
-      2,
+      3,
       ["stash", "drop", "stash@{1}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
@@ -246,12 +302,20 @@ describe("gitOperationsService stash item commands", () => {
 
   it("calls git stash drop with the lane worktree path and stash ref", async () => {
     mockGit.getHeadSha.mockResolvedValue("abc123");
-    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) =>
+      args[0] === "stash" && args[1] === "list" ? branchStashList : undefined
+    );
     const { service, mockStart, mockFinish } = createTestGitOperationsService();
 
     const result = await service.stashDrop({ laneId: "lane-1", stashRef: "stash@{0}" });
 
-    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["stash", "list", "--format=%gd%x1f%cI%x1f%gs"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 15_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
       ["stash", "drop", "stash@{0}"],
       { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
     );
@@ -273,6 +337,18 @@ describe("gitOperationsService stash item commands", () => {
         status: "succeeded",
       }),
     );
+  });
+
+  it("does not apply a stash from another branch", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGitOrThrow.mockImplementation(async (args: string[]) =>
+      args[0] === "stash" && args[1] === "list" ? branchStashList : undefined
+    );
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.stashApply({ laneId: "lane-1", stashRef: "stash@{2}" }))
+      .rejects.toThrow("Stash stash@{2} is not saved for branch feature/stash-test.");
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -507,6 +507,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     detailReviews,
     detailComments,
     detailSnapshot,
+    detailSnapshotsByPrId = {},
     detailLiveDataPrId,
     detailBusy,
     rebaseNeeds,
@@ -1991,12 +1992,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {selectedPrLiveModel?.isCommittedIntegration ? (
           <div style={{ marginTop: 20 }}>
             <PrDetailPane
+              key={selectedPr.id}
               pr={selectedPr}
               status={detailStatus}
               checks={detailChecks}
               reviews={detailReviews}
               comments={detailComments}
-              snapshotHydration={detailSnapshot?.prId === selectedPr.id ? detailSnapshot : null}
+              snapshotHydration={
+                detailSnapshot?.prId === selectedPr.id
+                  ? detailSnapshot
+                  : detailSnapshotsByPrId[selectedPr.id] ?? null
+              }
               snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedPr.id}
               detailBusy={detailBusy}

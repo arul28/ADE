@@ -1,6 +1,6 @@
 export type PrWorkflowTab = "queue" | "integration" | "rebase";
 export type PrActiveTab = "github" | "normal" | PrWorkflowTab;
-export type PrDetailRouteTab = "overview" | "convergence" | "files" | "checks" | "activity";
+export type PrDetailRouteTab = "overview" | "convergence" | "files" | "checks";
 
 export const PRS_LAST_ROUTE_STORAGE_KEY = "ade:prs:lastRoute";
 
@@ -28,7 +28,7 @@ function parseSearch(search: string): URLSearchParams {
 
 const WORKFLOW_TABS: ReadonlySet<string> = new Set<PrWorkflowTab>(["queue", "integration", "rebase"]);
 const VALID_TABS: ReadonlySet<string> = new Set(["github", "normal", "workflows", ...WORKFLOW_TABS]);
-const DETAIL_TABS: ReadonlySet<string> = new Set<PrDetailRouteTab>(["overview", "convergence", "files", "checks", "activity"]);
+const DETAIL_TABS: ReadonlySet<string> = new Set<PrDetailRouteTab>(["overview", "convergence", "files", "checks"]);
 
 function parseTab(value: string | null): ParsedPrsRouteState["tab"] {
   if (value && VALID_TABS.has(value)) return value as ParsedPrsRouteState["tab"];
@@ -41,6 +41,7 @@ function parseWorkflowTab(value: string | null): PrWorkflowTab | null {
 }
 
 function parseDetailTab(value: string | null): PrDetailRouteTab | null {
+  if (value === "activity") return "overview";
   if (value && DETAIL_TABS.has(value)) return value as PrDetailRouteTab;
   return null;
 }

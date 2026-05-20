@@ -1,13 +1,23 @@
 import React from "react";
-import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { GitHubPrListItem, GitHubPrSnapshot, LaneSummary, MergeMethod, PrSummary, PrWithConflicts } from "../../../../shared/types";
+import type {
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflight,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
+  GitHubPrListItem,
+  GitHubPrSnapshot,
+  LaneSummary,
+  MergeMethod,
+  PrSummary,
+  PrWithConflicts,
+} from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
-import { isMissionResultLane } from "../../lanes/laneUtils";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
-import { useAppStore } from "../../../state/appStore";
+import { useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
@@ -32,18 +42,31 @@ type GitHubTabProps = {
   onOpenQueueView?: (groupId: string) => void;
 };
 
-type GitHubFilter = "open" | "closed" | "merged" | "all";
-type ScopeFilter = "all" | "ade" | "external";
+type GitHubFilter = "open" | "closed" | "merged";
 
 type GitHubTabWarmCache = {
   projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
   selectedItemId: string | null;
-  scopeFilter: ScopeFilter;
   searchQuery: string;
   externalHistoryLoaded: boolean;
   cachedAt: number;
+};
+
+type CreateLaneFromPrBranchApi = {
+  preflightCreateLaneFromPrBranch: (
+    args: CreateLaneFromPrBranchArgs,
+  ) => Promise<CreateLaneFromPrBranchPreflightResult>;
+  createLaneFromPrBranch: (
+    args: CreateLaneFromPrBranchArgs,
+  ) => Promise<CreateLaneFromPrBranchResult>;
+};
+
+type CreateLaneFromPrBranchSuccess = {
+  item: GitHubPrListItem;
+  preflight: CreateLaneFromPrBranchPreflight;
+  result: CreateLaneFromPrBranchResult;
 };
 
 let githubTabWarmCache: GitHubTabWarmCache | null = null;
@@ -73,8 +96,93 @@ function formatGitHubSnapshotError(err: unknown): string {
   return message || "Unable to sync pull requests.";
 }
 
+function formatActionError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  return raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim() || "Action failed.";
+}
+
+function createLaneFromPrBranchApi(): CreateLaneFromPrBranchApi {
+  return window.ade.prs as typeof window.ade.prs & CreateLaneFromPrBranchApi;
+}
+
+function createLaneFromPrBranchArgs(item: GitHubPrListItem): CreateLaneFromPrBranchArgs {
+  return {
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    githubPrNumber: item.githubPrNumber,
+  };
+}
+
+function preflightText(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const message = preflightText(record.message) ?? preflightText(record.reason) ?? preflightText(record.summary);
+    if (message) return message;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "Conflict details unavailable.";
+    }
+  }
+  return String(value);
+}
+
+function preflightPrNumber(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): number {
+  return Number(preflight?.githubPrNumber ?? item.githubPrNumber);
+}
+
+function preflightTitle(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
+  return preflightText(preflight?.title) ?? item.title;
+}
+
+function preflightRemoteBranch(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
+  return preflightText(preflight?.remoteBranch) ?? preflightText(preflight?.headBranch) ?? item.headBranch ?? "---";
+}
+
+function preflightTargetLaneName(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
+  const remoteBranch = preflightRemoteBranch(preflight, item);
+  const fallback = branchNameFromRef(remoteBranch);
+  return preflightText(preflight?.targetLaneName) ?? (fallback || "New lane");
+}
+
+function preflightBaseBranch(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
+  return preflightText(preflight?.baseBranch) ?? item.baseBranch ?? "---";
+}
+
+function preflightBlockingConflict(preflight: CreateLaneFromPrBranchPreflight | null): string | null {
+  return preflightText(preflight?.blockingConflict);
+}
+
+function createLaneMappedPrId(result: CreateLaneFromPrBranchResult): string | null {
+  return preflightText(result.pr?.id);
+}
+
+function createLaneMappedLaneId(result: CreateLaneFromPrBranchResult): string | null {
+  return preflightText(result.pr?.laneId) ?? preflightText(result.lane?.id);
+}
+
+function createLaneMappedLaneName(result: CreateLaneFromPrBranchResult): string | null {
+  return preflightText(result.lane?.name);
+}
+
+function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): LaneSummary[] {
+  const index = lanes.findIndex((entry) => entry.id === lane.id);
+  if (index === -1) return [lane, ...lanes];
+  const next = lanes.slice();
+  next[index] = lane;
+  return next;
+}
+
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
-  if (filter === "all") return true;
   if (filter === "open") return item.state === "open" || item.state === "draft";
   return item.state === filter;
 }
@@ -186,13 +294,6 @@ function labelTextColor(hexColor: string): string {
   return luminance > 0.5 ? "#1a1a2e" : "#f0f0f0";
 }
 
-/* -- Scope filter match -- */
-function matchesScope(item: GitHubPrListItem, scope: ScopeFilter): boolean {
-  if (scope === "all") return true;
-  if (scope === "ade") return item.adeKind !== null;
-  return item.adeKind === null;
-}
-
 /* -- Filter button styles -- */
 const FILTER_COLORS: Record<GitHubFilter, { active: { bg: string; border: string; text: string; shadow: string }; inactive: { text: string } }> = {
   open: {
@@ -207,10 +308,6 @@ const FILTER_COLORS: Record<GitHubFilter, { active: { bg: string; border: string
     active: { bg: "linear-gradient(135deg, rgba(34,197,94,0.14) 0%, rgba(22,163,74,0.06) 100%)", border: "rgba(34,197,94,0.28)", text: "#4ADE80", shadow: "0 0 10px rgba(34,197,94,0.10)" },
     inactive: { text: "#4ADE80" },
   },
-  all: {
-    active: { bg: "linear-gradient(135deg, rgba(167,139,250,0.14) 0%, rgba(139,92,246,0.06) 100%)", border: "rgba(167,139,250,0.25)", text: "#C4B5FD", shadow: "0 0 10px rgba(167,139,250,0.10)" },
-    inactive: { text: "#A1A1AA" },
-  },
 };
 
 function useLaneColorById(laneId: string | null | undefined): string | null {
@@ -220,6 +317,49 @@ function useLaneColorById(laneId: string | null | undefined): string | null {
   });
 }
 
+function branchNameFromRef(ref: string | null | undefined): string {
+  return String(ref ?? "").replace(/^refs\/heads\//, "").trim();
+}
+
+function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: LaneSummary[]): boolean {
+  if (item.linkedPrId || item.scope !== "repo") return false;
+  if (item.state !== "open" && item.state !== "draft") return false;
+  const headBranch = branchNameFromRef(item.headBranch);
+  if (!headBranch) return false;
+  return !lanes.some((lane) => branchNameFromRef(lane.branchRef) === headBranch);
+}
+
+function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean {
+  return left.repoOwner === right.repoOwner
+    && left.repoName === right.repoName
+    && Number(left.githubPrNumber) === Number(right.githubPrNumber);
+}
+
+function patchSnapshotWithMappedPr(
+  snapshot: GitHubPrSnapshot,
+  item: GitHubPrListItem,
+  args: {
+    mappedPrId: string;
+    laneId: string | null;
+    laneName: string | null;
+  },
+): GitHubPrSnapshot {
+  const patchItems = (items: GitHubPrListItem[]) => items.map((candidate) => {
+    if (candidate.id !== item.id && !sameGitHubPr(candidate, item)) return candidate;
+    return {
+      ...candidate,
+      linkedPrId: args.mappedPrId,
+      linkedLaneId: args.laneId ?? candidate.linkedLaneId,
+      linkedLaneName: args.laneName ?? candidate.linkedLaneName,
+    };
+  });
+  return {
+    ...snapshot,
+    repoPullRequests: patchItems(snapshot.repoPullRequests),
+    externalPullRequests: patchItems(snapshot.externalPullRequests),
+  };
+}
+
 function GitHubReadOnlyPane({
   item,
   lanes,
@@ -227,6 +367,9 @@ function GitHubReadOnlyPane({
   linkLaneId,
   onLinkLaneChange,
   onLink,
+  unlinkBusy,
+  onUnlink,
+  onCreateLaneFromPrBranch,
 }: {
   item: GitHubPrListItem;
   lanes: LaneSummary[];
@@ -234,13 +377,22 @@ function GitHubReadOnlyPane({
   linkLaneId: string;
   onLinkLaneChange: (laneId: string) => void;
   onLink: () => Promise<void>;
+  unlinkBusy: boolean;
+  onUnlink: () => Promise<void>;
+  onCreateLaneFromPrBranch: () => void;
 }) {
   const linkableLanes = React.useMemo(
-    () => lanes.filter((lane) => !lane.archivedAt && lane.laneType !== "primary" && isMissionResultLane(lane)),
-    [lanes],
+    () => lanes.filter((lane) => {
+      if (lane.archivedAt || lane.laneType === "primary") return false;
+      const headBranch = branchNameFromRef(item.headBranch);
+      if (!headBranch) return true;
+      return branchNameFromRef(lane.branchRef) === headBranch;
+    }),
+    [item.headBranch, lanes],
   );
 
   const linkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
+  const showCreateLaneFromPrBranch = canCreateLaneFromPrBranch(item, lanes);
 
   const sc = stateColor(item.state);
 
@@ -292,25 +444,42 @@ function GitHubReadOnlyPane({
         <div>
           <div style={LABEL_STYLE}>ADE Status</div>
           {item.linkedPrId ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 4 }}>
-              Linked to{" "}
-              <span
-                style={{
-                  fontFamily: MONO_FONT,
-                  color: linkedLaneColor ?? COLORS.accent,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  verticalAlign: "middle",
-                }}
+            <div style={{ display: "grid", gap: 10, marginTop: 4 }}>
+              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
+                Linked to{" "}
+                <span
+                  style={{
+                    fontFamily: MONO_FONT,
+                    color: linkedLaneColor ?? COLORS.accent,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    verticalAlign: "middle",
+                  }}
+                >
+                  {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={7} /> : null}
+                  {item.linkedLaneName ?? item.linkedLaneId ?? "lane"}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={unlinkBusy}
+                onClick={() => void onUnlink()}
+                style={outlineButton({
+                  width: "fit-content",
+                  height: 30,
+                  padding: "0 10px",
+                  color: COLORS.warning,
+                  borderColor: "color-mix(in srgb, var(--color-warning) 38%, transparent)",
+                  opacity: unlinkBusy ? 0.55 : 1,
+                })}
               >
-                {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={7} /> : null}
-                {item.linkedLaneName ?? item.linkedLaneId ?? "lane"}
-              </span>
+                {unlinkBusy ? "Unmapping..." : "Unmap from lane"}
+              </button>
             </div>
           ) : item.scope === "external" ? (
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6, marginTop: 4 }}>
-              External pull request, not modeled as a local lane.
+              Unmapped pull request, not linked to an ADE lane.
             </div>
           ) : (
             <div style={{ display: "grid", gap: 10 }}>
@@ -329,11 +498,20 @@ function GitHubReadOnlyPane({
                   This PR exists on GitHub but is not linked to an ADE lane.
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {showCreateLaneFromPrBranch ? (
+                  <button
+                    type="button"
+                    onClick={onCreateLaneFromPrBranch}
+                    style={primaryButton({ borderRadius: 8, whiteSpace: "nowrap" })}
+                  >
+                    <GitBranch size={14} /> Create lane from PR branch
+                  </button>
+                ) : null}
                 <select
                   value={linkLaneId}
                   onChange={(event) => onLinkLaneChange(event.target.value)}
-                  aria-label="Select result lane to link"
+                  aria-label="Select lane to link"
                   style={{
                     flex: 1,
                     height: 34,
@@ -346,7 +524,7 @@ function GitHubReadOnlyPane({
                     borderRadius: 8,
                   }}
                 >
-                  <option value="">Select lane to link</option>
+                  <option value="">Select matching lane to link</option>
                   {linkableLanes.map((lane) => (
                     <option key={lane.id} value={lane.id}>
                       {lane.name}
@@ -357,7 +535,7 @@ function GitHubReadOnlyPane({
                   type="button"
                   disabled={!linkLaneId || linkingBusy}
                   onClick={() => void onLink()}
-                  aria-label={linkingBusy ? "Linking result lane to pull request" : "Link selected result lane to pull request"}
+                  aria-label={linkingBusy ? "Linking lane to pull request" : "Link selected lane to pull request"}
                   style={primaryButton({ opacity: !linkLaneId || linkingBusy ? 0.5 : 1, borderRadius: 8 })}
                 >
                   <Link size={14} /> {linkingBusy ? "Linking..." : "Link"}
@@ -400,6 +578,123 @@ function GitHubReadOnlyPane({
   );
 }
 
+function CreateLaneFromPrBranchDialog({
+  item,
+  preflight,
+  loading,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  item: GitHubPrListItem;
+  preflight: CreateLaneFromPrBranchPreflight | null;
+  loading: boolean;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const blockingConflict = preflightBlockingConflict(preflight);
+  const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy;
+  const rows = [
+    ["PR", `#${preflightPrNumber(preflight, item)} ${preflightTitle(preflight, item)}`],
+    ["Remote branch", preflightRemoteBranch(preflight, item)],
+    ["Target lane", preflightTargetLaneName(preflight, item)],
+    ["Base branch", preflightBaseBranch(preflight, item)],
+  ] as const;
+
+  return (
+    <div
+      role="presentation"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0,0,0,0.52)",
+        backdropFilter: "blur(10px)",
+        padding: 20,
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-lane-from-pr-title"
+        style={{
+          width: "min(560px, 100%)",
+          borderRadius: 12,
+          border: `1px solid ${COLORS.border}`,
+          background: COLORS.cardBgSolid,
+          boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
+          <div id="create-lane-from-pr-title" style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>
+            Create lane from PR branch
+          </div>
+        </div>
+        <div style={{ padding: 20, display: "grid", gap: 14 }}>
+          {loading ? (
+            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
+              Checking branch ownership and remote availability...
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {rows.map(([label, value]) => (
+                <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
+                  <div style={LABEL_STYLE}>{label}</div>
+                  <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>
+                    {value}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {blockingConflict ? (
+            <div style={{
+              display: "flex",
+              gap: 10,
+              padding: "10px 12px",
+              borderRadius: 9,
+              background: "rgba(239,68,68,0.08)",
+              border: "1px solid rgba(239,68,68,0.18)",
+              color: COLORS.danger,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}>
+              <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
+              <span>{blockingConflict}</span>
+            </div>
+          ) : null}
+          {error ? (
+            <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
+              {error}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
+          <button type="button" onClick={onCancel} disabled={busy} style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={!canConfirm}
+            style={primaryButton({ height: 34, opacity: canConfirm ? 1 : 0.5 })}
+          >
+            <GitBranch size={14} /> {busy ? "Creating..." : "Create lane"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function GitHubTab({
   lanes,
   mergeMethod,
@@ -412,6 +707,7 @@ export function GitHubTab({
   onOpenQueueView,
 }: GitHubTabProps) {
   const navigate = useNavigate();
+  const appStore = useAppStoreApi();
   const {
     prs,
     mergeContextByPrId,
@@ -420,12 +716,15 @@ export function GitHubTab({
     detailReviews,
     detailComments,
     detailSnapshot,
+    detailSnapshotsByPrId = {},
     detailLiveDataPrId,
     detailBusy,
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
   } = usePrs();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
+  const selectLane = useAppStore((s) => s.selectLane);
 
   const initialWarmCacheRef = React.useRef<GitHubTabWarmCache | null>(readGitHubTabWarmCache(projectRoot));
   const [snapshot, setSnapshot] = React.useState<GitHubPrSnapshot | null>(
@@ -437,11 +736,14 @@ export function GitHubTab({
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
   );
-  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>(
-    () => initialWarmCacheRef.current?.scopeFilter ?? "all",
-  );
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
+  const [unlinkingPrId, setUnlinkingPrId] = React.useState<string | null>(null);
+  const [createLaneItem, setCreateLaneItem] = React.useState<GitHubPrListItem | null>(null);
+  const [createLanePreflight, setCreateLanePreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
+  const [createLaneLoading, setCreateLaneLoading] = React.useState(false);
+  const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
+  const [createLaneError, setCreateLaneError] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
@@ -458,6 +760,7 @@ export function GitHubTab({
   const loadingSnapshotRequestCountRef = React.useRef(0);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const missingLinkedPrHydrationRef = React.useRef<string | null>(null);
+  const visibleLinkedHydrationKeyRef = React.useRef<string>("");
   const filterRef = React.useRef(filter);
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
   const projectRootRef = React.useRef(projectRoot);
@@ -547,7 +850,6 @@ export function GitHubTab({
     setError(null);
     setFilter(warmCache?.filter ?? "open");
     setSelectedItemId(warmCache?.selectedItemId ?? null);
-    setScopeFilter(warmCache?.scopeFilter ?? "all");
     setSearchQuery(warmCache?.searchQuery ?? "");
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
@@ -602,12 +904,11 @@ export function GitHubTab({
       snapshot,
       filter,
       selectedItemId,
-      scopeFilter,
       searchQuery,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, scopeFilter, searchQuery, selectedItemId, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, snapshot]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -664,31 +965,21 @@ export function GitHubTab({
 
   const filteredItems = React.useMemo(
     () => allItems
-      .filter((item) => matchesFilter(item, filter) && matchesScope(item, scopeFilter) && matchesSearch(item))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
-    [allItems, filter, scopeFilter, matchesSearch],
+      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
+      .sort((a, b) =>
+        new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
+      ),
+    [allItems, filter, matchesSearch],
   );
 
-  // Counts for filter tabs (scoped but not search-filtered)
+  // Counts for filter tabs (not search-filtered)
   const filterCounts = React.useMemo(() => {
-    const scoped = allItems.filter((item) => matchesScope(item, scopeFilter));
     return {
-      open: scoped.filter((item) => item.state === "open" || item.state === "draft").length,
-      closed: scoped.filter((item) => item.state === "closed").length,
-      merged: scoped.filter((item) => item.state === "merged").length,
-      all: scoped.length,
+      open: allItems.filter((item) => item.state === "open" || item.state === "draft").length,
+      closed: allItems.filter((item) => item.state === "closed").length,
+      merged: allItems.filter((item) => item.state === "merged").length,
     };
-  }, [allItems, scopeFilter]);
-
-  // Counts for scope sub-tabs (status-filtered but not search-filtered)
-  const scopeCounts = React.useMemo(() => {
-    const statusFiltered = allItems.filter((item) => matchesFilter(item, filter));
-    return {
-      all: statusFiltered.length,
-      ade: statusFiltered.filter((item) => item.adeKind !== null).length,
-      external: statusFiltered.filter((item) => item.adeKind === null).length,
-    };
-  }, [allItems, filter]);
+  }, [allItems]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -753,13 +1044,28 @@ export function GitHubTab({
     void onRefreshAll({ prId: missingLinkedPrId }).catch(() => {});
   }, [missingLinkedPrId, onRefreshAll]);
 
+  React.useEffect(() => {
+    const prIds = filteredItems
+      .slice(0, 8)
+      .map((item) => item.linkedPrId)
+      .filter((prId): prId is string => Boolean(prId));
+    if (prIds.length === 0) return undefined;
+    const uniquePrIds = [...new Set(prIds)];
+    const key = uniquePrIds.join(",");
+    if (visibleLinkedHydrationKeyRef.current === key) return undefined;
+    visibleLinkedHydrationKeyRef.current = key;
+    const timer = window.setTimeout(() => {
+      void onRefreshAll({ prIds: uniquePrIds }).catch(() => {});
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [filteredItems, onRefreshAll]);
+
   const selectedLinkedPr = React.useMemo(
     (): PrWithConflicts | null => {
       if (!selectedItem?.linkedPrId) return null;
       const linked = prs.find((pr) => pr.id === selectedItem.linkedPrId);
       if (linked) return linked;
-      const fallbackProjectId = prs[0]?.projectId;
-      if (!fallbackProjectId) return null;
+      const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
       return {
         id: selectedItem.linkedPrId,
         laneId: selectedItem.linkedLaneId ?? "",
@@ -840,16 +1146,114 @@ export function GitHubTab({
     }
   }, [handleSync, linkLaneId, selectedItem]);
 
-  if (loading && !snapshot) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <CircleNotch size={16} className="animate-spin" style={{ color: COLORS.accent }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textMuted }}>Syncing with GitHub...</span>
-        </div>
-      </div>
-    );
-  }
+  const handleUnlink = React.useCallback(async (item: GitHubPrListItem | null = selectedItem) => {
+    if (!item?.linkedPrId) return;
+    setUnlinkingPrId(item.linkedPrId);
+    setError(null);
+    try {
+      await window.ade.prs.delete({
+        prId: item.linkedPrId,
+        closeOnGitHub: false,
+        archiveLane: false,
+      });
+      onSelectPr(null);
+      setSelectedItemId(item.id);
+      await Promise.all([
+        onRefreshAll().catch(() => {}),
+        loadSnapshot({
+          force: true,
+          silent: true,
+          ...(externalHistoryLoadedRef.current || filterRef.current !== "open" ? { includeExternalClosed: true } : {}),
+        }).catch(() => null),
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUnlinkingPrId(null);
+    }
+  }, [loadSnapshot, onRefreshAll, onSelectPr, selectedItem]);
+
+  const handleOpenCreateLaneFromPrBranch = React.useCallback((item: GitHubPrListItem | null = selectedItem) => {
+    if (!item) return;
+    setCreateLaneItem(item);
+    setCreateLanePreflight(null);
+    setCreateLaneError(null);
+    setCreateLaneLoading(true);
+    void createLaneFromPrBranchApi()
+      .preflightCreateLaneFromPrBranch(createLaneFromPrBranchArgs(item))
+      .then((result) => {
+        setCreateLanePreflight(result);
+      })
+      .catch((err) => {
+        setCreateLaneError(formatActionError(err));
+      })
+      .finally(() => {
+        setCreateLaneLoading(false);
+      });
+  }, [selectedItem]);
+
+  const handleCancelCreateLaneFromPrBranch = React.useCallback(() => {
+    if (createLaneBusy) return;
+    setCreateLaneItem(null);
+    setCreateLanePreflight(null);
+    setCreateLaneError(null);
+    setCreateLaneLoading(false);
+  }, [createLaneBusy]);
+
+  const handleConfirmCreateLaneFromPrBranch = React.useCallback(async () => {
+    if (!createLaneItem) return;
+    setCreateLaneBusy(true);
+    setCreateLaneError(null);
+    const createProjectRoot = projectRoot;
+    try {
+      const result = await createLaneFromPrBranchApi()
+        .createLaneFromPrBranch(createLaneFromPrBranchArgs(createLaneItem));
+      const mappedPrId = createLaneMappedPrId(result);
+      const mappedLaneId = createLaneMappedLaneId(result);
+      if (mappedPrId) {
+        setSnapshot((current) => current
+          ? patchSnapshotWithMappedPr(current, createLaneItem, {
+              mappedPrId,
+              laneId: mappedLaneId,
+              laneName: createLaneMappedLaneName(result),
+            })
+          : current);
+        setSelectedItemId(createLaneItem.id);
+        onSelectPr(mappedPrId);
+      }
+      setCreateLaneItem(null);
+      setCreateLanePreflight(null);
+      const syncCreatedLane = result.lane?.id
+        ? refreshLanes({ includeStatus: false, includeSnapshots: false })
+          .catch(() => {})
+          .then(() => {
+            const currentProjectRoot = appStore.getState().project?.rootPath ?? null;
+            if (createProjectRoot && currentProjectRoot !== createProjectRoot) return;
+            appStore.setState((prev) => ({
+              lanes: upsertLaneSummary(prev.lanes, result.lane),
+              laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+                snapshot.lane.id === result.lane.id ? { ...snapshot, lane: result.lane } : snapshot,
+              ),
+              lanesLoading: false,
+            }));
+            selectLane(result.lane.id);
+          })
+        : Promise.resolve();
+      await Promise.all([
+        mappedPrId ? onRefreshAll({ prId: mappedPrId }).catch(() => {}) : onRefreshAll().catch(() => {}),
+        loadSnapshot({
+          force: true,
+          silent: true,
+          ...(externalHistoryLoadedRef.current || filterRef.current !== "open" ? { includeExternalClosed: true } : {}),
+        }).catch(() => null),
+        syncCreatedLane,
+      ]);
+    } catch (err) {
+      setCreateLaneError(formatActionError(err));
+    } finally {
+      setCreateLaneBusy(false);
+    }
+  }, [appStore, createLaneItem, loadSnapshot, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
 
   if (error && !snapshot) {
     return (
@@ -997,44 +1401,6 @@ export function GitHubTab({
             );
           })}
         </div>
-        {/* Scope sub-tabs: All / ADE / External */}
-        <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "4px 16px 6px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
-          {(["all", "ade", "external"] as ScopeFilter[]).map((scope) => {
-            const active = scopeFilter === scope;
-            const count = scopeCounts[scope];
-            const label = scope === "ade" ? "ADE" : scope === "external" ? "External" : "All";
-            return (
-              <button
-                key={scope}
-                type="button"
-                onClick={() => {
-                  setScopeFilter(scope);
-                  setSelectedItemId(null);
-                  onSelectPr(null);
-                }}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  height: 24,
-                  padding: "0 10px",
-                  fontSize: 11,
-                  fontWeight: active ? 600 : 400,
-                  fontFamily: SANS_FONT,
-                  color: active ? "#C4B5FD" : COLORS.textMuted,
-                  background: active ? "rgba(167,139,250,0.10)" : "transparent",
-                  border: active ? "1px solid rgba(167,139,250,0.15)" : "1px solid transparent",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  transition: "all 150ms ease",
-                }}
-              >
-                {label}
-                <span style={{ fontSize: 10, fontFamily: MONO_FONT, opacity: 0.7 }}>{count}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       {error ? (
@@ -1080,7 +1446,10 @@ export function GitHubTab({
 
           {filteredItems.length === 0 ? (
             <div style={{ padding: 20 }}>
-              <EmptyState title="No pull requests" description="No pull requests match the current filters." />
+              <EmptyState
+                title={loading && !snapshot ? "Preparing pull requests" : "No pull requests"}
+                description={loading && !snapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
+              />
             </div>
           ) : filteredItems.length > VIRTUALIZE_AT ? (
             <GitHubTabVirtualList
@@ -1109,12 +1478,17 @@ export function GitHubTab({
         <div data-tour="prs.detailDrawer" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
           {selectedItem && selectedLinkedPr ? (
             <PrDetailPane
+              key={selectedLinkedPr.id}
               pr={selectedLinkedPr}
               status={detailStatus}
               checks={detailChecks}
               reviews={detailReviews}
               comments={detailComments}
-              snapshotHydration={detailSnapshot?.prId === selectedLinkedPr.id ? detailSnapshot : null}
+              snapshotHydration={
+                detailSnapshot?.prId === selectedLinkedPr.id
+                  ? detailSnapshot
+                  : detailSnapshotsByPrId[selectedLinkedPr.id] ?? null
+              }
               snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
               detailBusy={detailBusy}
@@ -1127,6 +1501,8 @@ export function GitHubTab({
               onOpenQueueView={onOpenQueueView}
               initialDetailTab={selectedDetailTab}
               onDetailTabChange={onDetailTabChange}
+              onUnmap={() => handleUnlink(selectedItem)}
+              unmapBusy={unlinkingPrId === selectedLinkedPr.id}
             />
           ) : selectedItem ? (
             <GitHubReadOnlyPane
@@ -1136,6 +1512,9 @@ export function GitHubTab({
               linkLaneId={linkLaneId}
               onLinkLaneChange={setLinkLaneId}
               onLink={handleLink}
+              unlinkBusy={unlinkingPrId === selectedItem.linkedPrId}
+              onUnlink={() => handleUnlink(selectedItem)}
+              onCreateLaneFromPrBranch={() => handleOpenCreateLaneFromPrBranch(selectedItem)}
             />
           ) : (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
@@ -1144,6 +1523,17 @@ export function GitHubTab({
           )}
         </div>
       </div>
+      {createLaneItem ? (
+        <CreateLaneFromPrBranchDialog
+          item={createLaneItem}
+          preflight={createLanePreflight?.preflight ?? null}
+          loading={createLaneLoading}
+          busy={createLaneBusy}
+          error={createLaneError}
+          onCancel={handleCancelCreateLaneFromPrBranch}
+          onConfirm={handleConfirmCreateLaneFromPrBranch}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1324,7 +1714,7 @@ function GitHubTabPrRow({
             {item.repoOwner}/{item.repoName}
           </span>
         ) : null}
-        {item.linkedLaneName ? (
+        {item.linkedLaneName || item.linkedLaneId ? (
           <span
             style={{
               ...inlineBadge(COLORS.textSecondary),
@@ -1338,7 +1728,7 @@ function GitHubTabPrRow({
             }}
           >
             {rowLinkedLaneColor ? <LaneAccentDot lane={{ color: rowLinkedLaneColor }} size={6} /> : null}
-            {item.linkedLaneName}
+            {item.linkedLaneName ?? item.linkedLaneId}
           </span>
         ) : (
           <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 7px", fontSize: 10, fontWeight: 600, fontFamily: SANS_FONT, color: "#FBBF24", background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.18)", borderRadius: 5 }}>

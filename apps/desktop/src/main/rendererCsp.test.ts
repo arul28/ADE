@@ -19,4 +19,11 @@ describe("buildRendererCspPolicy", () => {
 
     expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
   });
+
+  it("allows GitHub PR bot images served from public Google Cloud Storage", () => {
+    const policy = buildRendererCspPolicy(false);
+
+    expect(policy).toContain("img-src");
+    expect(policy).toContain("https://storage.googleapis.com");
+  });
 });

@@ -470,6 +470,39 @@ alter table pull_requests add column head_sha text;
 
 alter table pull_requests add column creation_strategy text;
 
+create table if not exists github_pr_cache (
+      project_id text not null,
+      repo_owner text not null,
+      repo_name text not null,
+      github_pr_number integer not null,
+      item_json text not null,
+      state text not null,
+      head_branch text,
+      updated_at text not null,
+      synced_at text not null,
+      primary key(project_id, repo_owner, repo_name, github_pr_number),
+      foreign key(project_id) references projects(id)
+    );
+
+create index if not exists idx_github_pr_cache_project_state on github_pr_cache(project_id, state, updated_at);
+
+create index if not exists idx_github_pr_cache_project_repo on github_pr_cache(project_id, repo_owner, repo_name);
+
+create table if not exists pr_auto_link_ignores (
+      project_id text not null,
+      repo_owner text not null,
+      repo_name text not null,
+      github_pr_number integer not null,
+      lane_id text not null,
+      head_branch text,
+      created_at text not null,
+      primary key(project_id, repo_owner, repo_name, github_pr_number, lane_id),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    );
+
+create index if not exists idx_pr_auto_link_ignores_project_repo on pr_auto_link_ignores(project_id, repo_owner, repo_name);
+
 create table if not exists pull_request_ai_summaries (
       pr_id text not null,
       head_sha text not null,
@@ -2534,6 +2567,58 @@ create table if not exists review_run_artifacts (
     );
 
 create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at);
+
+create table if not exists review_reviewer_runs (
+      id text primary key,
+      run_id text not null,
+      reviewer_key text not null,
+      label text not null,
+      focus text not null,
+      status text not null,
+      chat_session_id text,
+      prompt_artifact_id text,
+      output_artifact_id text,
+      findings_artifact_id text,
+      candidate_count integer not null default 0,
+      kept_count integer not null default 0,
+      summary text,
+      error_message text,
+      started_at text,
+      ended_at text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    );
+
+create index if not exists idx_review_reviewer_runs_run on review_reviewer_runs(run_id, created_at);
+
+create index if not exists idx_review_reviewer_runs_run_key on review_reviewer_runs(run_id, reviewer_key);
+
+create table if not exists review_candidate_findings (
+      id text primary key,
+      run_id text not null,
+      reviewer_run_id text not null,
+      reviewer_key text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null default 0.5,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      evidence_score real not null default 0,
+      low_signal integer not null default 0,
+      score real not null default 0,
+      created_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade,
+      foreign key(reviewer_run_id) references review_reviewer_runs(id) on delete cascade
+    );
+
+create index if not exists idx_review_candidate_findings_run on review_candidate_findings(run_id);
+
+create index if not exists idx_review_candidate_findings_reviewer on review_candidate_findings(reviewer_run_id);
 
 alter table review_findings add column finding_class text;
 

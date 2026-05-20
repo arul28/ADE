@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   ReviewArtifactType,
   ReviewDiffContext,
@@ -11,6 +11,7 @@ import type {
   ReviewFindingAdjudication,
   ReviewFindingClass,
   ReviewFindingSuppressionMatch,
+  ReviewCandidateFinding,
   ReviewListSuppressionsArgs,
   ReviewPublication,
   ReviewPublicationDestination,
@@ -24,6 +25,8 @@ import type {
   ReviewRunConfig,
   ReviewRunDetail,
   ReviewRunStatus,
+  ReviewReviewerRun,
+  ReviewReviewerRunStatus,
   ReviewPassKey,
   ReviewSeverity,
   ReviewSeveritySummary,
@@ -141,6 +144,47 @@ type ReviewRunPublicationRow = {
   completed_at: string | null;
 };
 
+type ReviewReviewerRunRow = {
+  id: string;
+  run_id: string;
+  reviewer_key: string;
+  label: string;
+  focus: string;
+  status: string;
+  chat_session_id: string | null;
+  prompt_artifact_id: string | null;
+  output_artifact_id: string | null;
+  findings_artifact_id: string | null;
+  candidate_count: number;
+  kept_count: number;
+  summary: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ReviewCandidateFindingRow = {
+  id: string;
+  run_id: string;
+  reviewer_run_id: string;
+  reviewer_key: string;
+  title: string;
+  severity: string;
+  finding_class: string | null;
+  body: string;
+  confidence: number;
+  evidence_json: string | null;
+  file_path: string | null;
+  line: number | null;
+  anchor_state: string;
+  evidence_score: number;
+  low_signal: number;
+  score: number;
+  created_at: string;
+};
+
 const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4";
 
 function resolveBuiltinReviewModelId(): string {
@@ -170,11 +214,14 @@ const DEFAULT_BUDGETS: ReviewRunConfig["budgets"] = {
   maxFindingsPerPass: 6,
   maxPublishedFindings: 6,
 };
+const UNLIMITED_BUDGET_VALUE = Number.MAX_SAFE_INTEGER;
 
 const REVIEW_PASS_ORDER: ReviewPassKey[] = [
   "diff-risk",
   "cross-file-impact",
   "checks-and-tests",
+  "security-data",
+  "ui-regression",
 ];
 
 const SEVERITY_SCORE: Record<ReviewSeverity, number> = {
@@ -202,6 +249,7 @@ type PassDefinition = {
 type PassCandidateFinding = {
   id: string;
   runId: string;
+  reviewerRunId: string | null;
   passKey: ReviewPassKey;
   title: string;
   severity: ReviewSeverity;
@@ -218,6 +266,9 @@ type PassCandidateFinding = {
 };
 
 type ReviewContextArtifactIds = {
+  manifestArtifactId: string;
+  riskMapArtifactId: string;
+  diffBundleArtifactId: string | null;
   provenanceArtifactId: string;
   rulesArtifactId: string;
   validationArtifactId: string;
@@ -225,6 +276,8 @@ type ReviewContextArtifactIds = {
 
 type PassExecutionResult = {
   pass: PassDefinition;
+  reviewerRunId: string;
+  sessionId: string | null;
   summary: string | null;
   candidates: PassCandidateFinding[];
   promptArtifactId: string;
@@ -321,6 +374,17 @@ function mergeFindingClass(classes: Array<ReviewFindingClass | null | undefined>
 }
 
 function normalizeBudgetConfig(budgets?: Partial<ReviewRunConfig["budgets"]> | null): ReviewRunConfig["budgets"] {
+  if (budgets?.unlimited === true) {
+    return {
+      unlimited: true,
+      maxFiles: UNLIMITED_BUDGET_VALUE,
+      maxDiffChars: UNLIMITED_BUDGET_VALUE,
+      maxPromptChars: UNLIMITED_BUDGET_VALUE,
+      maxFindings: UNLIMITED_BUDGET_VALUE,
+      maxFindingsPerPass: UNLIMITED_BUDGET_VALUE,
+      maxPublishedFindings: UNLIMITED_BUDGET_VALUE,
+    };
+  }
   return {
     maxFiles: clampNumber(Number(budgets?.maxFiles ?? DEFAULT_BUDGETS.maxFiles), 1, 500),
     maxDiffChars: clampNumber(Number(budgets?.maxDiffChars ?? DEFAULT_BUDGETS.maxDiffChars), 4_000, 1_000_000),
@@ -445,6 +509,24 @@ const REVIEW_PASSES: PassDefinition[] = [
       "Use check/test context when present, but do not invent failures that were not supplied.",
     ],
   },
+  {
+    key: "security-data",
+    label: "Security and data",
+    focus: "security regressions, data loss, privacy-sensitive behavior, auth boundaries, persistence, secrets, and unsafe trust changes",
+    extraInstructions: [
+      "Prioritize concrete security, privacy, persistence, and data-integrity failures over generic hardening suggestions.",
+      "Cite the exact changed path or validation signal that makes the risk plausible.",
+    ],
+  },
+  {
+    key: "ui-regression",
+    label: "UI and regression",
+    focus: "user-visible regressions, broken UI state, stale hydration, disabled-looking actions, copy clarity, and cross-surface UX fallout",
+    extraInstructions: [
+      "Focus on user-visible behavior and state transitions caused by the diff.",
+      "Avoid aesthetic nits unless they make a workflow misleading, inaccessible, or functionally broken.",
+    ],
+  },
 ];
 
 function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>): string {
@@ -454,11 +536,71 @@ function buildChangedFilesSummary(changedFiles: Array<{ filePath: string }>): st
   return changedFilesSummary;
 }
 
+function classifyChangedFileRisk(filePath: string): string[] {
+  const risks: string[] = [];
+  if (/\b(preload|ipc|shared\/types|types)\b/i.test(filePath)) risks.push("contract");
+  if (/\b(kvDb|migration|sqlite|state|sync)\b/i.test(filePath)) risks.push("persistence");
+  if (/\b(prs?|review|github|publish|merge|branch)\b/i.test(filePath)) risks.push("workflow");
+  if (/\b(renderer|components|tsx$|css$)\b/i.test(filePath)) risks.push("ui");
+  if (/\b(auth|credential|secret|token|security|permission|sandbox)\b/i.test(filePath)) risks.push("security");
+  if (/\b(test|spec)\b/i.test(filePath)) risks.push("test");
+  return risks.length > 0 ? risks : ["direct-diff"];
+}
+
+function buildChangedFileManifestPayload(args: {
+  targetLabel: string;
+  compareTarget: ReviewResolvedCompareTarget | null;
+  changedFiles: MaterializedChangedFile[];
+  budgets: ReviewRunConfig["budgets"];
+}): Record<string, unknown> {
+  return {
+    targetLabel: args.targetLabel,
+    compareTarget: args.compareTarget,
+    fileCount: args.changedFiles.length,
+    budgetMode: args.budgets.unlimited === true ? "unlimited" : "bounded",
+    files: args.changedFiles.map((file) => ({
+      path: file.filePath,
+      changedLineCount: file.lineNumbers.length,
+      changedLineSample: file.lineNumbers.slice(0, 20),
+      riskTags: classifyChangedFileRisk(file.filePath),
+      excerpt: truncateText(file.excerpt, 1_500),
+    })),
+  };
+}
+
+function buildRiskMapPayload(changedFiles: MaterializedChangedFile[]): Record<string, unknown> {
+  const groups = new Map<string, string[]>();
+  for (const file of changedFiles) {
+    for (const risk of classifyChangedFileRisk(file.filePath)) {
+      const current = groups.get(risk) ?? [];
+      current.push(file.filePath);
+      groups.set(risk, current);
+    }
+  }
+  return {
+    groups: Array.from(groups.entries()).map(([risk, files]) => ({
+      risk,
+      files,
+      fileCount: files.length,
+    })),
+  };
+}
+
+function buildManifestPrompt(manifest: Record<string, unknown>, riskMap: Record<string, unknown>): string {
+  return JSON.stringify({
+    changedFileManifest: manifest,
+    riskMap,
+  }, null, 2);
+}
+
 function buildContextArtifactHints(args: {
   artifactIds: ReviewContextArtifactIds;
   includeValidation: boolean;
 }): string[] {
   const lines = [
+    `- changed_file_manifest artifact id: ${args.artifactIds.manifestArtifactId}`,
+    `- risk_map artifact id: ${args.artifactIds.riskMapArtifactId}`,
+    ...(args.artifactIds.diffBundleArtifactId ? [`- diff_bundle artifact id: ${args.artifactIds.diffBundleArtifactId}`] : []),
     `- provenance_brief artifact id: ${args.artifactIds.provenanceArtifactId}`,
     `- rule_overlays artifact id: ${args.artifactIds.rulesArtifactId}`,
   ];
@@ -471,7 +613,7 @@ function buildContextArtifactHints(args: {
 function buildPassPrompt(args: {
   run: ReviewRun;
   pass: PassDefinition;
-  diffText: string;
+  manifestPrompt: string;
   changedFiles: Array<{ filePath: string }>;
   context: ReviewContextPacket;
   contextArtifactIds: ReviewContextArtifactIds;
@@ -482,8 +624,8 @@ function buildPassPrompt(args: {
 
   return [
     "You are ADE's local code reviewer.",
-    "Review only the provided local diff bundle.",
-    `This pass is ${args.pass.label.toLowerCase()} and it focuses on ${args.pass.focus}.`,
+    "Review only the local target represented by the supplied changed-file manifest, risk map, and context artifacts.",
+    `This specialist is ${args.pass.label.toLowerCase()} and it focuses on ${args.pass.focus}.`,
     "Prioritize correctness, regressions, security, data loss, race conditions, risky migrations, and missing tests.",
     "Do not suggest style-only nits or speculative rewrites.",
     "Every finding must include concrete evidence from the diff bundle or supplied review context.",
@@ -497,10 +639,12 @@ function buildPassPrompt(args: {
     '- "filePath": changed file path when known, otherwise null',
     '- "line": line number when known, otherwise null',
     '- "evidence": array of objects with {"summary": string, "quote": string|null, "filePath": string|null, "line": number|null, "artifactId": string|null}',
-    `Return at most ${args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings} findings.`,
+    args.run.config.budgets.unlimited === true
+      ? "Return every real issue you can substantiate from the supplied evidence."
+      : `Return at most ${args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings} findings.`,
     "If there are no real issues, return an empty findings array and explain that in summary.",
     "",
-    `Pass key: ${args.pass.key}`,
+    `Reviewer key: ${args.pass.key}`,
     `Review target: ${args.run.targetLabel}`,
     `Selection mode: ${args.run.config.selectionMode}`,
     `Publish behavior: ${args.run.config.publishBehavior}`,
@@ -511,6 +655,9 @@ function buildPassPrompt(args: {
     "",
     "Changed files:",
     changedFilesSummary,
+    "",
+    "Changed-file manifest and risk map:",
+    args.manifestPrompt,
     "",
     "Context artifact ids you may cite in evidence when relevant:",
     ...buildContextArtifactHints({
@@ -527,8 +674,8 @@ function buildPassPrompt(args: {
     "Checks and validation context:",
     includeValidation ? args.context.validation.prompt : "- Full validation evidence is reserved for the checks-and-tests pass.",
     "",
-    "Diff bundle:",
-    truncateText(args.diffText, args.run.config.budgets.maxPromptChars),
+    "Exact diff access:",
+    "The full diff was saved as a run artifact. Use the changed-file manifest excerpts above for first-pass review and cite the diff_bundle artifact when the exact hunk is needed.",
   ].join("\n");
 }
 
@@ -556,6 +703,14 @@ function parseEvidence(value: unknown): ReviewEvidence[] {
       artifactId: typeof entry.artifactId === "string" ? entry.artifactId.trim() || null : null,
     }];
   });
+}
+
+function stableReviewId(prefix: string, parts: unknown[]): string {
+  const hash = createHash("sha256")
+    .update(JSON.stringify(parts))
+    .digest("hex")
+    .slice(0, 24);
+  return `${prefix}-${hash}`;
 }
 
 function computeAnchorState(args: {
@@ -723,12 +878,13 @@ function dedupeEvidenceEntries(evidence: ReviewEvidence[]): ReviewEvidence[] {
 
 function normalizeParsedFindings(args: {
   runId: string;
+  reviewerRunId: string;
   passKey: ReviewPassKey;
   parsed: Record<string, unknown> | null;
   changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
 }): { summary: string | null; findings: PassCandidateFinding[] } {
   const findingsRaw = Array.isArray(args.parsed?.findings) ? args.parsed?.findings : [];
-  const findings = findingsRaw.flatMap((entry) => {
+  const findings = findingsRaw.flatMap((entry, index) => {
     if (!isRecord(entry)) return [];
     const title = cleanLine(String(entry.title ?? ""));
     const body = cleanLine(String(entry.body ?? ""));
@@ -757,8 +913,9 @@ function normalizeParsedFindings(args: {
     const evidenceScore = scoreEvidence(evidence);
     const confidence = normalizeConfidence(entry.confidence);
     const finding: PassCandidateFinding = {
-      id: randomUUID(),
+      id: stableReviewId("candidate", [args.runId, args.passKey, index, title, filePath, line, body]),
       runId: args.runId,
+      reviewerRunId: args.reviewerRunId,
       passKey: args.passKey,
       title,
       severity: normalizeSeverity(entry.severity),
@@ -835,7 +992,7 @@ function combineConfidence(findings: PassCandidateFinding[]): number {
 }
 
 function groupPassCandidates(candidates: PassCandidateFinding[]): PassCandidateFinding[][] {
-  const remaining = [...candidates].sort((left, right) => right.score - left.score);
+  const remaining = [...candidates].sort(compareCandidatesStable);
   const groups: PassCandidateFinding[][] = [];
   while (remaining.length > 0) {
     const seed = remaining.shift();
@@ -854,6 +1011,22 @@ function groupPassCandidates(candidates: PassCandidateFinding[]): PassCandidateF
     groups.push(group);
   }
   return groups;
+}
+
+function compareCandidatesStable(left: PassCandidateFinding, right: PassCandidateFinding): number {
+  const scoreDelta = right.score - left.score;
+  if (scoreDelta !== 0) return scoreDelta;
+  const severityDelta = SEVERITY_SCORE[right.severity] - SEVERITY_SCORE[left.severity];
+  if (severityDelta !== 0) return severityDelta;
+  const passDelta = REVIEW_PASS_ORDER.indexOf(left.passKey) - REVIEW_PASS_ORDER.indexOf(right.passKey);
+  if (passDelta !== 0) return passDelta;
+  const pathDelta = String(left.filePath ?? "").localeCompare(String(right.filePath ?? ""));
+  if (pathDelta !== 0) return pathDelta;
+  const lineDelta = (left.line ?? Number.MAX_SAFE_INTEGER) - (right.line ?? Number.MAX_SAFE_INTEGER);
+  if (lineDelta !== 0) return lineDelta;
+  const titleDelta = left.title.localeCompare(right.title);
+  if (titleDelta !== 0) return titleDelta;
+  return left.id.localeCompare(right.id);
 }
 
 function getCandidatePathSet(group: PassCandidateFinding[]): string[] {
@@ -993,7 +1166,7 @@ function adjudicatePassFindings(args: {
     const passes = Array.from(new Set(group.map((candidate) => candidate.passKey))).sort(
       (left, right) => REVIEW_PASS_ORDER.indexOf(left) - REVIEW_PASS_ORDER.indexOf(right),
     );
-    const bestCandidate = [...group].sort((left, right) => right.score - left.score)[0];
+    const bestCandidate = [...group].sort(compareCandidatesStable)[0];
     if (!bestCandidate) continue;
     const candidatePaths = getCandidatePathSet(group);
     const relevantOverlays = args.context.matchedRuleOverlays.filter((overlay) =>
@@ -1098,7 +1271,14 @@ function adjudicatePassFindings(args: {
     };
 
     findings.push({
-      id: randomUUID(),
+      id: stableReviewId("finding", [
+        args.runId,
+        preferredAnchor.filePath,
+        preferredAnchor.line,
+        bestCandidate.title,
+        bestCandidate.body,
+        passes,
+      ]),
       runId: args.runId,
       title: bestCandidate.title,
       severity,
@@ -1119,7 +1299,17 @@ function adjudicatePassFindings(args: {
   }
 
   const keptFindings = findings
-    .sort((left, right) => (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0))
+    .sort((left, right) => {
+      const scoreDelta = (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0);
+      if (scoreDelta !== 0) return scoreDelta;
+      const severityDelta = SEVERITY_SCORE[right.severity] - SEVERITY_SCORE[left.severity];
+      if (severityDelta !== 0) return severityDelta;
+      const pathDelta = String(left.filePath ?? "").localeCompare(String(right.filePath ?? ""));
+      if (pathDelta !== 0) return pathDelta;
+      const lineDelta = (left.line ?? Number.MAX_SAFE_INTEGER) - (right.line ?? Number.MAX_SAFE_INTEGER);
+      if (lineDelta !== 0) return lineDelta;
+      return left.title.localeCompare(right.title);
+    })
     .slice(0, args.budgets.maxFindings);
   const keptIds = new Set(keptFindings.map((finding) => finding.id));
   for (const finding of findings) {
@@ -1273,6 +1463,51 @@ function mapPublicationRow(row: ReviewRunPublicationRow): ReviewPublication {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
+  };
+}
+
+function mapReviewerRunRow(row: ReviewReviewerRunRow): ReviewReviewerRun {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    reviewerKey: row.reviewer_key as ReviewPassKey,
+    label: row.label,
+    focus: row.focus,
+    status: (row.status as ReviewReviewerRunStatus) ?? "failed",
+    chatSessionId: row.chat_session_id,
+    promptArtifactId: row.prompt_artifact_id,
+    outputArtifactId: row.output_artifact_id,
+    findingsArtifactId: row.findings_artifact_id,
+    candidateCount: Number(row.candidate_count ?? 0),
+    keptCount: Number(row.kept_count ?? 0),
+    summary: row.summary,
+    errorMessage: row.error_message,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapCandidateFindingRow(row: ReviewCandidateFindingRow): ReviewCandidateFinding {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    reviewerRunId: row.reviewer_run_id,
+    reviewerKey: row.reviewer_key as ReviewPassKey,
+    title: row.title,
+    severity: normalizeSeverity(row.severity),
+    findingClass: normalizeFindingClass(row.finding_class),
+    body: row.body,
+    confidence: clampNumber(Number(row.confidence ?? 0.5), 0, 1),
+    evidence: safeJsonParse<ReviewEvidence[]>(row.evidence_json, []),
+    filePath: row.file_path,
+    line: typeof row.line === "number" ? row.line : null,
+    anchorState: (row.anchor_state as ReviewCandidateFinding["anchorState"]) ?? "missing",
+    evidenceScore: clampNumber(Number(row.evidence_score ?? 0), 0, 1),
+    lowSignal: Number(row.low_signal ?? 0) === 1,
+    score: Number(row.score ?? 0),
+    createdAt: row.created_at,
   };
 }
 
@@ -1462,6 +1697,101 @@ export function createReviewService({
     return record;
   }
 
+  function insertReviewerRun(runId: string, pass: PassDefinition): ReviewReviewerRun {
+    const now = nowIso();
+    const record: ReviewReviewerRun = {
+      id: randomUUID(),
+      runId,
+      reviewerKey: pass.key,
+      label: pass.label,
+      focus: pass.focus,
+      status: "queued",
+      chatSessionId: null,
+      promptArtifactId: null,
+      outputArtifactId: null,
+      findingsArtifactId: null,
+      candidateCount: 0,
+      keptCount: 0,
+      summary: null,
+      errorMessage: null,
+      startedAt: null,
+      endedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    db.run(
+      `insert into review_reviewer_runs (
+        id,
+        run_id,
+        reviewer_key,
+        label,
+        focus,
+        status,
+        chat_session_id,
+        prompt_artifact_id,
+        output_artifact_id,
+        findings_artifact_id,
+        candidate_count,
+        kept_count,
+        summary,
+        error_message,
+        started_at,
+        ended_at,
+        created_at,
+        updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.id,
+        record.runId,
+        record.reviewerKey,
+        record.label,
+        record.focus,
+        record.status,
+        record.chatSessionId,
+        record.promptArtifactId,
+        record.outputArtifactId,
+        record.findingsArtifactId,
+        record.candidateCount,
+        record.keptCount,
+        record.summary,
+        record.errorMessage,
+        record.startedAt,
+        record.endedAt,
+        record.createdAt,
+        record.updatedAt,
+      ],
+    );
+    return record;
+  }
+
+  function updateReviewerRun(
+    reviewerRunId: string,
+    patch: Partial<{
+      status: ReviewReviewerRunStatus;
+      chat_session_id: string | null;
+      prompt_artifact_id: string | null;
+      output_artifact_id: string | null;
+      findings_artifact_id: string | null;
+      candidate_count: number;
+      kept_count: number;
+      summary: string | null;
+      error_message: string | null;
+      started_at: string | null;
+      ended_at: string | null;
+      updated_at: string;
+    }>,
+  ): void {
+    const sets: string[] = [];
+    const params: Array<string | number | null> = [];
+    for (const [key, value] of Object.entries(patch)) {
+      sets.push(`${key} = ?`);
+      params.push(value ?? null);
+    }
+    if (sets.length === 0) return;
+    params.push(reviewerRunId);
+    db.run(`update review_reviewer_runs set ${sets.join(", ")} where id = ?`, params);
+  }
+
   function insertPublication(publication: ReviewPublication): void {
     db.run(
       `insert into review_run_publications (
@@ -1542,6 +1872,49 @@ export function createReviewService({
     );
   }
 
+  function insertCandidateFinding(reviewerRunId: string, candidate: PassCandidateFinding): void {
+    db.run(
+      `insert or replace into review_candidate_findings (
+        id,
+        run_id,
+        reviewer_run_id,
+        reviewer_key,
+        title,
+        severity,
+        finding_class,
+        body,
+        confidence,
+        evidence_json,
+        file_path,
+        line,
+        anchor_state,
+        evidence_score,
+        low_signal,
+        score,
+        created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        candidate.id,
+        candidate.runId,
+        reviewerRunId,
+        candidate.passKey,
+        candidate.title,
+        candidate.severity,
+        candidate.findingClass,
+        candidate.body,
+        candidate.confidence,
+        JSON.stringify(candidate.evidence),
+        candidate.filePath,
+        candidate.line,
+        candidate.anchorState,
+        candidate.evidenceScore,
+        candidate.lowSignal ? 1 : 0,
+        candidate.score,
+        nowIso(),
+      ],
+    );
+  }
+
   function updateFindingPublicationState(runId: string, findingId: string, publicationState: ReviewPublicationState): void {
     db.run(
       "update review_findings set publication_state = ? where id = ? and run_id = ?",
@@ -1580,6 +1953,7 @@ export function createReviewService({
       dirtyOnly: partial?.dirtyOnly ?? target.mode === "working_tree",
       modelId: partial?.modelId?.trim() || defaultReviewModelId,
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
+      codexFastMode: partial?.codexFastMode === true,
       budgets: normalizeBudgetConfig(partial?.budgets),
       publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
         ? "auto_publish"
@@ -1664,94 +2038,225 @@ export function createReviewService({
   async function executePass(args: {
     runId: string;
     run: ReviewRun;
-    sessionId: string;
     sessionTitle: string;
     descriptorId: string;
+    provider: string;
+    model: string;
     pass: PassDefinition;
-    diffText: string;
+    manifestPrompt: string;
     changedFiles: MaterializedChangedFile[];
     changedFilesByPath: Map<string, { excerpt: string; lineNumbers: Set<number> }>;
     context: ReviewContextPacket;
     contextArtifactIds: ReviewContextArtifactIds;
   }): Promise<PassExecutionResult> {
-    const prompt = buildPassPrompt({
-      run: args.run,
-      pass: args.pass,
-      diffText: args.diffText,
-      changedFiles: args.changedFiles,
-      context: args.context,
-      contextArtifactIds: args.contextArtifactIds,
+    const reviewerRun = insertReviewerRun(args.runId, args.pass);
+    const startedAt = nowIso();
+    updateReviewerRun(reviewerRun.id, {
+      status: "running",
+      started_at: startedAt,
+      updated_at: startedAt,
     });
-    const promptArtifact = insertArtifact(args.runId, {
-      artifactType: "pass_prompt",
-      title: `${args.pass.label} prompt`,
-      mimeType: "text/plain",
-      contentText: prompt,
-      metadata: {
-        passKey: args.pass.key,
+    emit({
+      type: "reviewer-updated",
+      runId: args.runId,
+      laneId: args.run.laneId,
+      reviewerRunId: reviewerRun.id,
+      reviewerKey: args.pass.key,
+      status: "running",
+    });
+
+    let sessionId: string | null = null;
+    let promptArtifactId: string | null = null;
+    let outputArtifactId: string | null = null;
+    let findingsArtifactId: string | null = null;
+
+    try {
+      const session = await agentChatService.createSession({
+        laneId: args.run.laneId,
+        provider: args.provider as never,
+        model: args.model,
         modelId: args.descriptorId,
         reasoningEffort: args.run.config.reasoningEffort,
-        matchedRuleIds: args.context.rules.metadata.matchedRuleIds ?? [],
-      },
-    });
-    const result = await agentChatService.runSessionTurn({
-      sessionId: args.sessionId,
-      text: prompt,
-      displayText: `${args.sessionTitle} · ${args.pass.label}`,
-      reasoningEffort: args.run.config.reasoningEffort,
-      timeoutMs: 15 * 60 * 1000,
-    });
-    const outputArtifact = insertArtifact(args.runId, {
-      artifactType: "pass_output",
-      title: `${args.pass.label} output`,
-      mimeType: "application/json",
-      contentText: result.outputText,
-      metadata: {
+        codexFastMode: args.run.config.codexFastMode === true,
+        permissionMode: "plan",
+        sessionProfile: "workflow",
+        surface: "automation",
+      });
+      sessionId = session.id;
+      sessionService.updateMeta({
+        sessionId,
+        title: `${args.sessionTitle} · ${args.pass.label}`,
+      });
+      updateReviewerRun(reviewerRun.id, {
+        chat_session_id: sessionId,
+        updated_at: nowIso(),
+      });
+      db.run(
+        "update review_runs set chat_session_id = coalesce(chat_session_id, ?), updated_at = ? where id = ? and project_id = ?",
+        [sessionId, nowIso(), args.runId, projectId],
+      );
+
+      const prompt = buildPassPrompt({
+        run: args.run,
+        pass: args.pass,
+        manifestPrompt: truncateText(args.manifestPrompt, args.run.config.budgets.maxPromptChars),
+        changedFiles: args.changedFiles,
+        context: args.context,
+        contextArtifactIds: args.contextArtifactIds,
+      });
+      const promptArtifact = insertArtifact(args.runId, {
+        artifactType: "pass_prompt",
+        title: `${args.pass.label} prompt`,
+        mimeType: "text/plain",
+        contentText: prompt,
+        metadata: {
+          passKey: args.pass.key,
+          modelId: args.descriptorId,
+          reasoningEffort: args.run.config.reasoningEffort,
+          matchedRuleIds: args.context.rules.metadata.matchedRuleIds ?? [],
+        },
+      });
+      promptArtifactId = promptArtifact.id;
+      updateReviewerRun(reviewerRun.id, {
+        prompt_artifact_id: promptArtifactId,
+        updated_at: nowIso(),
+      });
+      const result = await agentChatService.runSessionTurn({
+        sessionId,
+        text: prompt,
+        displayText: `${args.sessionTitle} · ${args.pass.label}`,
+        reasoningEffort: args.run.config.reasoningEffort,
+        timeoutMs: 15 * 60 * 1000,
+      });
+      const outputArtifact = insertArtifact(args.runId, {
+        artifactType: "pass_output",
+        title: `${args.pass.label} output`,
+        mimeType: "application/json",
+        contentText: result.outputText,
+        metadata: {
+          passKey: args.pass.key,
+          provider: result.provider,
+          model: result.model,
+          modelId: result.modelId ?? args.descriptorId,
+        },
+      });
+      outputArtifactId = outputArtifact.id;
+      updateReviewerRun(reviewerRun.id, {
+        output_artifact_id: outputArtifactId,
+        updated_at: nowIso(),
+      });
+      const parsed = extractJsonObject(result.outputText);
+      const normalized = normalizeParsedFindings({
+        runId: args.runId,
+        reviewerRunId: reviewerRun.id,
         passKey: args.pass.key,
-        provider: result.provider,
-        model: result.model,
-        modelId: result.modelId ?? args.descriptorId,
-      },
-    });
-    const parsed = extractJsonObject(result.outputText);
-    const normalized = normalizeParsedFindings({
-      runId: args.runId,
-      passKey: args.pass.key,
-      parsed,
-      changedFilesByPath: args.changedFilesByPath,
-    });
-    const candidates = [...normalized.findings]
-      .sort((left, right) => right.score - left.score)
-      .slice(0, args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings);
-    const findingsArtifact = insertArtifact(args.runId, {
-      artifactType: "pass_findings",
-      title: `${args.pass.label} findings`,
-      mimeType: "application/json",
-      contentText: JSON.stringify({
-        passKey: args.pass.key,
+        parsed,
+        changedFilesByPath: args.changedFilesByPath,
+      });
+      const candidates = [...normalized.findings]
+        .sort(compareCandidatesStable)
+        .slice(0, args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings);
+      for (const candidate of normalized.findings) {
+        insertCandidateFinding(reviewerRun.id, candidate);
+      }
+      const findingsArtifact = insertArtifact(args.runId, {
+        artifactType: "pass_findings",
+        title: `${args.pass.label} findings`,
+        mimeType: "application/json",
+        contentText: JSON.stringify({
+          passKey: args.pass.key,
+          summary: normalized.summary,
+          totalParsedCount: normalized.findings.length,
+          keptCount: candidates.length,
+          budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+          candidates,
+        }, null, 2),
+        metadata: {
+          passKey: args.pass.key,
+          summary: normalized.summary,
+          totalParsedCount: normalized.findings.length,
+          keptCount: candidates.length,
+          budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+        },
+      });
+      findingsArtifactId = findingsArtifact.id;
+      const endedAt = nowIso();
+      updateReviewerRun(reviewerRun.id, {
+        status: cancelledRuns.has(args.runId) ? "cancelled" : "completed",
+        findings_artifact_id: findingsArtifactId,
+        candidate_count: normalized.findings.length,
+        kept_count: candidates.length,
         summary: normalized.summary,
-        totalParsedCount: normalized.findings.length,
-        keptCount: candidates.length,
-        budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
+        ended_at: endedAt,
+        updated_at: endedAt,
+      });
+      emit({
+        type: "reviewer-updated",
+        runId: args.runId,
+        laneId: args.run.laneId,
+        reviewerRunId: reviewerRun.id,
+        reviewerKey: args.pass.key,
+        status: cancelledRuns.has(args.runId) ? "cancelled" : "completed",
+      });
+      return {
+        pass: args.pass,
+        reviewerRunId: reviewerRun.id,
+        sessionId,
+        summary: normalized.summary,
         candidates,
-      }, null, 2),
-      metadata: {
-        passKey: args.pass.key,
-        summary: normalized.summary,
-        totalParsedCount: normalized.findings.length,
-        keptCount: candidates.length,
+        promptArtifactId: promptArtifact.id,
+        outputArtifactId: outputArtifact.id,
+        findingsArtifactId: findingsArtifact.id,
         budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
-      },
-    });
-    return {
-      pass: args.pass,
-      summary: normalized.summary,
-      candidates,
-      promptArtifactId: promptArtifact.id,
-      outputArtifactId: outputArtifact.id,
-      findingsArtifactId: findingsArtifact.id,
-      budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
-    };
+      };
+    } catch (error) {
+      const endedAt = nowIso();
+      const outputArtifact = insertArtifact(args.runId, {
+        artifactType: "pass_output",
+        title: `${args.pass.label} error`,
+        mimeType: "application/json",
+        contentText: JSON.stringify({ error: getErrorMessage(error) }, null, 2),
+        metadata: {
+          passKey: args.pass.key,
+          modelId: args.descriptorId,
+          failed: true,
+        },
+      });
+      outputArtifactId = outputArtifact.id;
+      updateReviewerRun(reviewerRun.id, {
+        status: cancelledRuns.has(args.runId) ? "cancelled" : "failed",
+        prompt_artifact_id: promptArtifactId,
+        output_artifact_id: outputArtifactId,
+        findings_artifact_id: findingsArtifactId,
+        error_message: getErrorMessage(error),
+        ended_at: endedAt,
+        updated_at: endedAt,
+      });
+      logger.warn("review.reviewer_failed", {
+        runId: args.runId,
+        reviewerKey: args.pass.key,
+        error: getErrorMessage(error),
+      });
+      emit({
+        type: "reviewer-updated",
+        runId: args.runId,
+        laneId: args.run.laneId,
+        reviewerRunId: reviewerRun.id,
+        reviewerKey: args.pass.key,
+        status: cancelledRuns.has(args.runId) ? "cancelled" : "failed",
+      });
+      return {
+        pass: args.pass,
+        reviewerRunId: reviewerRun.id,
+        sessionId,
+        summary: null,
+        candidates: [],
+        promptArtifactId: promptArtifactId ?? "",
+        outputArtifactId,
+        findingsArtifactId: findingsArtifactId ?? "",
+        budgetTrimmedCount: 0,
+      };
+    }
   }
 
   async function executeRun(runId: string): Promise<void> {
@@ -1795,9 +2300,13 @@ export function createReviewService({
         updated_at: nowIso(),
       });
 
+      let diffBundleArtifactId: string | null = null;
       for (const artifact of materialized.artifacts) {
         if (disposed) return;
-        insertArtifact(runId, artifact);
+        const inserted = insertArtifact(runId, artifact);
+        if (inserted.artifactType === "diff_bundle") {
+          diffBundleArtifactId = inserted.id;
+        }
       }
 
       if (disposed) return;
@@ -1822,33 +2331,42 @@ export function createReviewService({
         throw new Error(`Unknown review model '${run.config.modelId}'.`);
       }
       const { provider, model } = resolveChatProviderForDescriptor(descriptor);
-      const session = await agentChatService.createSession({
-        laneId: run.laneId,
-        provider,
-        model,
-        modelId: descriptor.id,
-        reasoningEffort: run.config.reasoningEffort,
-        permissionMode: "plan",
-        sessionProfile: "workflow",
-        surface: "automation",
-      });
-      if (disposed) return;
       const sessionTitle = `Review: ${materialized.targetLabel}`;
-      sessionService.updateMeta({
-        sessionId: session.id,
-        title: sessionTitle,
-      });
-      updateRun(runId, {
-        chat_session_id: session.id,
-        updated_at: nowIso(),
-      });
       const effectiveRun: ReviewRun = {
         ...run,
         targetLabel: materialized.targetLabel,
         compareTarget: materialized.compareTarget,
       };
-      const diffText = truncateText(materialized.fullPatchText, effectiveRun.config.budgets.maxDiffChars);
       const changedFiles = materialized.changedFiles.slice(0, effectiveRun.config.budgets.maxFiles);
+      const manifestPayload = buildChangedFileManifestPayload({
+        targetLabel: materialized.targetLabel,
+        compareTarget: materialized.compareTarget,
+        changedFiles,
+        budgets: effectiveRun.config.budgets,
+      });
+      const riskMapPayload = buildRiskMapPayload(changedFiles);
+      const manifestArtifact = insertArtifact(runId, {
+        artifactType: "changed_file_manifest",
+        title: "Changed-file manifest",
+        mimeType: "application/json",
+        contentText: JSON.stringify(manifestPayload, null, 2),
+        metadata: {
+          fileCount: changedFiles.length,
+          totalFileCount: materialized.changedFiles.length,
+          budgetMode: effectiveRun.config.budgets.unlimited === true ? "unlimited" : "bounded",
+        },
+      });
+      const riskMapArtifact = insertArtifact(runId, {
+        artifactType: "risk_map",
+        title: "Review risk map",
+        mimeType: "application/json",
+        contentText: JSON.stringify(riskMapPayload, null, 2),
+        metadata: {
+          fileCount: changedFiles.length,
+          riskGroupCount: Array.isArray(riskMapPayload.groups) ? riskMapPayload.groups.length : 0,
+        },
+      });
+      const manifestPrompt = buildManifestPrompt(manifestPayload, riskMapPayload);
       const reviewContext = await contextBuilder.buildContext({
         run: effectiveRun,
         materialized: {
@@ -1878,16 +2396,20 @@ export function createReviewService({
         metadata: reviewContext.validation.metadata,
       });
       const contextArtifactIds: ReviewContextArtifactIds = {
+        manifestArtifactId: manifestArtifact.id,
+        riskMapArtifactId: riskMapArtifact.id,
+        diffBundleArtifactId,
         provenanceArtifactId: provenanceArtifact.id,
         rulesArtifactId: rulesArtifact.id,
         validationArtifactId: validationArtifact.id,
       };
       insertArtifact(runId, {
         artifactType: "prompt",
-        title: "Review harness plan",
+        title: "Review orchestration plan",
         mimeType: "application/json",
         contentText: JSON.stringify({
           targetLabel: materialized.targetLabel,
+          architecture: "parallel_specialist_reviewers",
           passKeys: REVIEW_PASSES.map((pass) => pass.key),
           budgets: effectiveRun.config.budgets,
           changedFiles: changedFiles.map((entry) => entry.filePath),
@@ -1910,45 +2432,48 @@ export function createReviewService({
         },
       });
 
-      const changedFilesByPath = new Map(changedFiles.map((entry) => [
+      const changedFilesByPath = new Map<string, { excerpt: string; lineNumbers: Set<number> }>(changedFiles.map((entry) => [
         entry.filePath,
         {
           excerpt: entry.excerpt,
           lineNumbers: new Set(entry.lineNumbers),
-          diffPositionsByLine: entry.diffPositionsByLine,
         },
       ]));
-      const passResults: PassExecutionResult[] = [];
-      for (const pass of REVIEW_PASSES) {
-        if (disposed) return;
-        if (cancelledRuns.has(runId)) {
-          cancelledRuns.delete(runId);
-          const endedAt = nowIso();
-          updateRun(runId, {
-            status: "cancelled",
-            summary: "Run cancelled during review passes.",
-            error_message: null,
-            ended_at: endedAt,
-            updated_at: endedAt,
-          });
-          emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
-          emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
-          return;
-        }
-        const passResult = await executePass({
+      const passResults = await Promise.all(REVIEW_PASSES.map((pass) => executePass({
           runId,
           run: effectiveRun,
-          sessionId: session.id,
           sessionTitle,
           descriptorId: descriptor.id,
+          provider,
+          model,
           pass,
-          diffText,
+          manifestPrompt,
           changedFiles,
           changedFilesByPath,
           context: reviewContext,
           contextArtifactIds,
+        })));
+      const firstSessionId = passResults.find((result) => result.sessionId)?.sessionId ?? null;
+      if (firstSessionId) {
+        updateRun(runId, {
+          chat_session_id: firstSessionId,
+          updated_at: nowIso(),
         });
-        passResults.push(passResult);
+      }
+      if (disposed) return;
+      if (cancelledRuns.has(runId)) {
+        cancelledRuns.delete(runId);
+        const endedAt = nowIso();
+        updateRun(runId, {
+          status: "cancelled",
+          summary: "Run cancelled during review passes.",
+          error_message: null,
+          ended_at: endedAt,
+          updated_at: endedAt,
+        });
+        emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
+        emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
+        return;
       }
 
       if (disposed) return;
@@ -2238,6 +2763,18 @@ export function createReviewService({
       "select * from review_run_artifacts where run_id = ? order by created_at asc",
       [args.runId],
     ).map(mapArtifactRow);
+    const reviewerRuns = db.all<ReviewReviewerRunRow>(
+      `select * from review_reviewer_runs
+       where run_id = ?
+       order by created_at asc, reviewer_key asc`,
+      [args.runId],
+    ).map(mapReviewerRunRow);
+    const candidateFindings = db.all<ReviewCandidateFindingRow>(
+      `select * from review_candidate_findings
+       where run_id = ?
+       order by score desc, created_at asc, title asc`,
+      [args.runId],
+    ).map(mapCandidateFindingRow);
     const publications = db.all<ReviewRunPublicationRow>(
       "select * from review_run_publications where run_id = ? order by created_at asc",
       [args.runId],
@@ -2249,6 +2786,8 @@ export function createReviewService({
       ...run,
       findings,
       artifacts,
+      reviewerRuns,
+      candidateFindings,
       publications,
       chatSession,
     };

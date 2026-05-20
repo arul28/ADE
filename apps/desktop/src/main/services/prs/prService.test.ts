@@ -143,6 +143,32 @@ function makeGitHubPull(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+function makeUnmappedBranchPull(overrides?: Partial<Record<string, unknown>>) {
+  return makeGitHubPull({
+    node_id: "PR_node_unmapped",
+    number: 404,
+    html_url: "https://github.com/test-owner/test-repo/pull/404",
+    title: "Unmapped branch PR",
+    base: {
+      ref: "main",
+      repo: {
+        owner: { login: REPO.owner },
+        name: REPO.name,
+      },
+    },
+    head: {
+      ref: "feature/unmapped",
+      sha: "head-sha-unmapped",
+      user: { login: REPO.owner },
+      repo: {
+        owner: { login: REPO.owner },
+        name: REPO.name,
+      },
+    },
+    ...overrides,
+  });
+}
+
 function makeGithubService(overrides?: Record<string, unknown>) {
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
@@ -159,6 +185,7 @@ function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
     getLaneBaseAndBranch: vi.fn(),
+    delete: vi.fn(async () => undefined),
   } as any;
 }
 
@@ -202,6 +229,10 @@ function buildService(opts: BuildServiceOpts = {}) {
     if (command === "fetch" || command === "push") {
       return { exitCode: 0, stdout: "", stderr: "" };
     }
+    if (command === "ls-remote") {
+      const branch = String(args[3] ?? "feature/unmapped");
+      return { exitCode: 0, stdout: `head-sha-unmapped\trefs/heads/${branch}\n`, stderr: "" };
+    }
     // Make runGit succeed for upstream check (returns exitCode 0 → push path)
     return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
   });
@@ -222,6 +253,96 @@ function buildService(opts: BuildServiceOpts = {}) {
   });
 
   return { service, db, githubService, laneService, logger };
+}
+
+function serviceWithPrBranchActions(service: ReturnType<typeof buildService>["service"]) {
+  return service as typeof service & {
+    preflightCreateLaneFromPrBranch: (args: { prUrlOrNumber: string; laneName?: string }) => Promise<any>;
+    createLaneFromPrBranch: (args: { prUrlOrNumber: string; laneName?: string }) => Promise<any>;
+  };
+}
+
+function preflightDisposition(preflight: any): string {
+  if (typeof preflight?.status === "string") return preflight.status;
+  if (typeof preflight?.state === "string") return preflight.state;
+  if (typeof preflight?.ok === "boolean") return preflight.ok ? "ready" : "blocked";
+  if (typeof preflight?.blocked === "boolean") return preflight.blocked ? "blocked" : "ready";
+  return "";
+}
+
+function preflightConflicts(preflight: any): unknown[] {
+  if (Array.isArray(preflight?.blockingConflicts)) return preflight.blockingConflicts;
+  if (Array.isArray(preflight?.conflicts)) return preflight.conflicts;
+  if (Array.isArray(preflight?.blockers)) return preflight.blockers;
+  if (preflight?.blockingConflict) return [preflight.blockingConflict];
+  return [];
+}
+
+function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRows: any[] = []) {
+  const rows = [...initialRows];
+
+  db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+    const text = String(sql);
+    if (!text.includes("from pull_requests")) return null;
+    if (text.includes("where id = ?")) {
+      return rows.find((row) => row.id === params[0] && row.project_id === params[1]) ?? null;
+    }
+    if (text.includes("lower(repo_owner)") && text.includes("github_pr_number")) {
+      const [projectIdParam, owner, name, prNumber] = params;
+      return rows.find((row) =>
+        row.project_id === projectIdParam
+        && String(row.repo_owner).toLowerCase() === String(owner).toLowerCase()
+        && String(row.repo_name).toLowerCase() === String(name).toLowerCase()
+        && Number(row.github_pr_number) === Number(prNumber)
+      ) ?? null;
+    }
+    if (text.includes("where lane_id = ?")) {
+      return rows.find((row) => row.lane_id === params[0] && row.project_id === params[1]) ?? null;
+    }
+    return null;
+  });
+
+  db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+    const text = String(sql);
+    if (!text.includes("from pull_requests")) return [];
+    if (text.includes("where lane_id = ?")) {
+      return rows.filter((row) => row.lane_id === params[0] && row.project_id === params[1]);
+    }
+    if (text.includes("where project_id = ?")) {
+      return rows.filter((row) => row.project_id === params[0]);
+    }
+    return rows;
+  });
+
+  db.run.mockImplementation((sql: string, params: unknown[] = []) => {
+    const text = String(sql);
+    if (!text.includes("insert into pull_requests(")) return undefined;
+    rows.push({
+      id: params[0],
+      project_id: params[1],
+      lane_id: params[2],
+      repo_owner: params[3],
+      repo_name: params[4],
+      github_pr_number: params[5],
+      github_url: params[6],
+      github_node_id: params[7],
+      title: params[8],
+      state: params[9],
+      base_branch: params[10],
+      head_branch: params[11],
+      checks_status: params[12],
+      review_status: params[13],
+      additions: params[14],
+      deletions: params[15],
+      last_synced_at: params[16],
+      created_at: params[17],
+      updated_at: params[18],
+      creation_strategy: params[19] ?? null,
+    });
+    return undefined;
+  });
+
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +494,115 @@ describe("prService.getForLane", () => {
 describe("prService.getGithubSnapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("serves local PR rows on a cold cache without waiting for live GitHub status", async () => {
+    let resolveStatus!: (value: unknown) => void;
+    const githubStatusRequest = new Promise<unknown>((resolve) => {
+      resolveStatus = resolve;
+    });
+    const githubService = makeGithubService({
+      getStatus: vi.fn(() => githubStatusRequest),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const db = makeMockDb();
+    const cachedRow = makePrRow({
+      github_pr_number: 321,
+      title: "Local cached PR",
+      last_synced_at: "2026-01-02T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+    });
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return [cachedRow];
+      return [];
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([makeFakeLane()]) });
+
+    const snapshot = await service.getGithubSnapshot();
+
+    expect(snapshot).toMatchObject({
+      repo: REPO,
+      viewerLogin: null,
+      repoPullRequests: [
+        expect.objectContaining({
+          githubPrNumber: 321,
+          title: "Local cached PR",
+          linkedPrId: "pr-row-1",
+          linkedLaneId: LANE_ID,
+          linkedLaneName: "my-feature",
+          adeKind: "single",
+        }),
+      ],
+      externalPullRequests: [],
+      syncedAt: "2026-01-02T00:00:00Z",
+    });
+    expect(githubService.getStatus).toHaveBeenCalledTimes(1);
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+
+    resolveStatus({
+      tokenStored: true,
+      repo: REPO,
+      userLogin: "octocat",
+    });
+    await flushMicrotasks();
+  });
+
+  it("keeps branch PR auto-link running in the background after a local snapshot response", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => ({
+        tokenStored: true,
+        repo: REPO,
+        userLogin: "octocat",
+      })),
+      apiRequest: vi.fn(async (args: { path: string; query?: Record<string, unknown> }) => {
+        if (args.path !== `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        }
+        if (args.query?.head === `${REPO.owner}:feature/missed`) {
+          return {
+            data: [
+              makeGitHubPull({
+                number: 654,
+                title: "Background linked PR",
+                head: {
+                  ref: "feature/missed",
+                  user: { login: REPO.owner },
+                  repo: { owner: { login: REPO.owner }, name: REPO.name },
+                },
+              }),
+            ],
+          };
+        }
+        return { data: [] };
+      }),
+    });
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) return [makePrRow({ title: "Already cached PR" })];
+      return [];
+    });
+    const laneService = makeLaneService([
+      makeFakeLane(),
+      makeFakeLane({ id: "lane-missed", branchRef: "refs/heads/feature/missed" }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const snapshot = await service.getGithubSnapshot();
+
+    expect(snapshot.repoPullRequests[0]?.title).toBe("Already cached PR");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+
+    await flushMicrotasks(30);
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ head: `${REPO.owner}:feature/missed` }),
+    }));
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.arrayContaining(["lane-missed", REPO.owner, REPO.name, 654, "Background linked PR", "open", "main", "feature/missed"]),
+    );
   });
 
   it("returns stale cached data immediately while revalidating in the background", async () => {
@@ -1346,6 +1576,268 @@ describe("prService merge contexts", () => {
     ]) {
       expect(count).toBeLessThanOrEqual(902);
     }
+  });
+});
+
+describe("prService.createLaneFromPrBranch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const prUrl = "https://github.com/test-owner/test-repo/pull/404";
+  const primaryLane = makeFakeLane({
+    id: "lane-primary",
+    name: "main",
+    laneType: "primary",
+    branchRef: "refs/heads/main",
+    baseRef: "refs/heads/main",
+    worktreePath: "/tmp/test-project",
+    parentLaneId: null,
+  });
+
+  function makeBranchPrGithubService(overrides?: Record<string, unknown>) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls/404`) {
+          return {
+            data: makeUnmappedBranchPull(),
+            response: { status: 200, headers: new Headers() },
+          };
+        }
+        return { data: [], response: { status: 200, headers: new Headers() } };
+      }),
+      ...overrides,
+    });
+  }
+
+  it("preflights an unmapped PR branch without creating a lane or PR row", async () => {
+    const githubService = makeBranchPrGithubService();
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      preflight: expect.objectContaining({
+        githubPrNumber: 404,
+        headBranch: "feature/unmapped",
+        baseBranch: "main",
+      }),
+      lane: null,
+    }));
+    expect(preflightDisposition(result.preflight)).toBe("ready");
+    expect(preflightConflicts(result.preflight)).toEqual([]);
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+    expect(db.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.anything(),
+    );
+  });
+
+  it("creates a lane from the PR branch, maps the PR to that lane, and returns lane/pr summaries", async () => {
+    const importedLane = makeFakeLane({
+      id: "lane-imported",
+      name: "Unmapped branch PR",
+      branchRef: "refs/heads/feature/unmapped",
+      baseRef: "refs/heads/main",
+      worktreePath: "/tmp/test-project/.ade/worktrees/feature-unmapped",
+      parentLaneId: null,
+    });
+    let branchImported = false;
+    const laneService = {
+      ...makeLaneService(),
+      list: vi.fn(async () => branchImported ? [primaryLane, importedLane] : [primaryLane]),
+      importBranch: vi.fn(async () => {
+        branchImported = true;
+        return importedLane;
+      }),
+    } as any;
+    const githubService = makeBranchPrGithubService();
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Unmapped branch PR",
+    });
+
+    expect(laneService.importBranch).toHaveBeenCalledWith(expect.objectContaining({
+      name: "Unmapped branch PR",
+      baseBranch: "main",
+    }));
+    expect(laneService.importBranch.mock.calls[0]?.[0]?.branchRef).toMatch(/feature\/unmapped$/);
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.arrayContaining(["lane-imported", REPO.owner, REPO.name, 404, "Unmapped branch PR", "open", "main", "feature/unmapped"]),
+    );
+    expect(result).toEqual(expect.objectContaining({
+      preflight: expect.objectContaining({
+        githubPrNumber: 404,
+        headBranch: "feature/unmapped",
+        baseBranch: "main",
+      }),
+      lane: expect.objectContaining({
+        id: "lane-imported",
+        branchRef: "refs/heads/feature/unmapped",
+      }),
+      pr: expect.objectContaining({
+        laneId: "lane-imported",
+        githubPrNumber: 404,
+        headBranch: "feature/unmapped",
+        baseBranch: "main",
+      }),
+    }));
+    expect(preflightDisposition(result.preflight)).toBe("ready");
+  });
+
+  it("blocks create when the remote branch moves after preflight", async () => {
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const githubService = makeBranchPrGithubService();
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+    let lsRemoteCalls = 0;
+    mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+      const command = Array.isArray(args) ? args[0] : null;
+      if (command === "ls-remote") {
+        lsRemoteCalls += 1;
+        const sha = lsRemoteCalls === 1 ? "head-sha-unmapped" : "moved-sha";
+        return { exitCode: 0, stdout: `${sha}\trefs/heads/feature/unmapped\n`, stderr: "" };
+      }
+      if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
+      if (command === "fetch" || command === "push") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+    });
+
+    await expect(serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Unmapped branch PR",
+    })).rejects.toThrow(/does not match the current PR head/i);
+
+    expect(lsRemoteCalls).toBe(2);
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the imported lane when PR linking fails", async () => {
+    const importedLane = makeFakeLane({
+      id: "lane-imported",
+      name: "Unmapped branch PR",
+      branchRef: "refs/heads/feature/unmapped",
+      baseRef: "refs/heads/main",
+      worktreePath: "/tmp/test-project/.ade/worktrees/feature-unmapped",
+      parentLaneId: null,
+    });
+    const existingLane = makeFakeLane({
+      id: "lane-raced",
+      name: "Raced lane",
+      branchRef: "refs/heads/feature/raced",
+    });
+    let branchImported = false;
+    const laneService = {
+      ...makeLaneService(),
+      list: vi.fn(async () => branchImported ? [primaryLane, importedLane, existingLane] : [primaryLane]),
+      importBranch: vi.fn(async () => {
+        branchImported = true;
+        rows.push(makePrRow({
+          id: "pr-raced",
+          lane_id: "lane-raced",
+          github_pr_number: 404,
+          head_branch: "feature/unmapped",
+        }));
+        return importedLane;
+      }),
+      delete: vi.fn(async () => undefined),
+    } as any;
+    const githubService = makeBranchPrGithubService();
+    const db = makeMockDb();
+    const rows = installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await expect(serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Unmapped branch PR",
+    })).rejects.toThrow(/already mapped to lane/i);
+
+    expect(laneService.importBranch).toHaveBeenCalled();
+    expect(laneService.delete).toHaveBeenCalledWith({
+      laneId: "lane-imported",
+      deleteBranch: false,
+      deleteRemoteBranch: false,
+      force: true,
+    });
+  });
+
+  it("blocks when the GitHub PR is already mapped to an ADE lane", async () => {
+    const existingPr = makePrRow({
+      id: "pr-existing",
+      lane_id: "lane-existing",
+      github_pr_number: 404,
+      head_branch: "feature/unmapped",
+    });
+    const existingLane = makeFakeLane({
+      id: "lane-existing",
+      name: "Existing lane",
+      branchRef: "refs/heads/feature/other",
+    });
+    const laneService = {
+      ...makeLaneService([primaryLane, existingLane]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [existingPr]);
+    const { service } = buildService({
+      db,
+      githubService: makeBranchPrGithubService(),
+      laneService,
+    });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+    });
+
+    expect(preflightDisposition(result.preflight)).toBe("blocked");
+    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/already|mapped|linked|existing/i);
+    expect(result.lane ?? null).toBeNull();
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+
+  it("blocks when another ADE lane already owns the PR head branch", async () => {
+    const branchOwner = makeFakeLane({
+      id: "lane-branch-owner",
+      name: "Branch owner",
+      branchRef: "refs/heads/feature/unmapped",
+    });
+    const laneService = {
+      ...makeLaneService([primaryLane, branchOwner]),
+      importBranch: vi.fn(),
+    } as any;
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({
+      db,
+      githubService: makeBranchPrGithubService(),
+      laneService,
+    });
+
+    const result = await serviceWithPrBranchActions(service).preflightCreateLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+    });
+
+    expect(preflightDisposition(result.preflight)).toBe("blocked");
+    expect(JSON.stringify(preflightConflicts(result.preflight))).toMatch(/branch owner|feature\/unmapped|owned|already/i);
+    expect(result.lane ?? null).toBeNull();
+    expect(laneService.importBranch).not.toHaveBeenCalled();
   });
 });
 

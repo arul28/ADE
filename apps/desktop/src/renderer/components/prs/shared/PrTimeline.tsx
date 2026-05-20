@@ -4,10 +4,10 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -34,7 +34,7 @@ import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReviewThreadCard } from "./PrReviewThreadCard";
-import { PrBotReviewCard, detectBotProvider } from "./PrBotReviewCard";
+import { PrBotReviewCard } from "./PrBotReviewCard";
 import { PrAiSummaryCard } from "./PrAiSummaryCard";
 
 /* ══════════════════ Types ══════════════════ */
@@ -47,8 +47,8 @@ export type PrTimelineFilters = {
 };
 
 export const DEFAULT_PR_TIMELINE_FILTERS: PrTimelineFilters = {
-  showResolved: false,
-  showOutdated: false,
+  showResolved: true,
+  showOutdated: true,
   onlyMine: false,
   onlyBots: false,
 };
@@ -78,38 +78,12 @@ export type PrTimelineRef = {
 
 /* ══════════════════ Filtering ══════════════════ */
 
-function eventAuthor(event: PrTimelineEvent): string | null {
-  return event.author;
-}
-
-function isBotEvent(event: PrTimelineEvent): boolean {
-  if (event.type === "review" && event.isBot) return true;
-  if (event.type === "issue_comment" && event.isBot) return true;
-  const author = eventAuthor(event);
-  if (!author) return false;
-  return detectBotProvider(author) !== null;
-}
-
 export function applyTimelineFilters(
   events: PrTimelineEvent[],
-  filters: PrTimelineFilters,
-  viewerLogin: string | null,
+  _filters: PrTimelineFilters,
+  _viewerLogin: string | null,
 ): PrTimelineEvent[] {
-  return events.filter((event) => {
-    if (event.type === "review_thread") {
-      if (!filters.showResolved && event.isResolved) return false;
-      if (!filters.showOutdated && event.isOutdated) return false;
-    }
-    if (filters.onlyMine) {
-      if (!viewerLogin) return false;
-      const author = eventAuthor(event);
-      if (!author || author.toLowerCase() !== viewerLogin.toLowerCase()) return false;
-    }
-    if (filters.onlyBots && !isBotEvent(event)) {
-      return false;
-    }
-    return true;
-  });
+  return events;
 }
 
 function collectUnresolvedThreadIds(events: PrTimelineEvent[]): string[] {
@@ -129,6 +103,22 @@ function useNearViewport(
   rowRef: React.MutableRefObject<HTMLDivElement | null>,
 ): boolean {
   const [visible, setVisible] = useState(false);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const root = parentRef.current;
+    if (!row) return;
+    if (!root) {
+      setVisible(true);
+      return;
+    }
+    const rowRect = row.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    const margin = 500;
+    if (rowRect.bottom >= rootRect.top - margin && rowRect.top <= rootRect.bottom + margin) {
+      setVisible(true);
+    }
+  }, [parentRef, rowRef]);
+
   useEffect(() => {
     const row = rowRef.current;
     const root = parentRef.current;
@@ -165,8 +155,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     repoOwner,
     repoName,
     viewerLogin,
-    filters,
-    onFiltersChange,
     summary,
     onRegenerateSummary,
     onDismissSummary,
@@ -175,16 +163,18 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
   ref,
 ) {
   const filtered = useMemo(
-    () => applyTimelineFilters(events, filters, viewerLogin),
-    [events, filters, viewerLogin],
+    () => events,
+    [events],
   );
 
   const unresolvedIds = useMemo(() => collectUnresolvedThreadIds(filtered), [filtered]);
 
   const parentRef = useRef<HTMLDivElement | null>(null);
+  const getItemKey = useCallback((index: number) => filtered[index]?.id ?? index, [filtered]);
   const virtualizer = useVirtualizer({
     count: filtered.length,
     getScrollElement: () => parentRef.current,
+    getItemKey,
     estimateSize: () => 120,
     overscan: 4,
   });
@@ -315,8 +305,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
       className="flex h-full w-full min-h-0 flex-col"
       style={{ background: COLORS.pageBg }}
     >
-      <FilterToolbar filters={filters} onChange={onFiltersChange} />
-
       {summary ? (
         <div
           className="shrink-0 px-3 pt-3"
@@ -341,7 +329,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             className="py-8 text-center text-[12px]"
             style={{ color: COLORS.textDim }}
           >
-            No events match the current filters.
+            No events yet.
           </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -373,111 +361,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
 });
 
 export default PrTimeline;
-
-/* ══════════════════ Filter toolbar ══════════════════ */
-
-const FILTER_BUTTONS: Array<{
-  key: "all" | "unresolved" | "mine" | "bots" | "outdated";
-  label: string;
-}> = [
-  { key: "all", label: "All" },
-  { key: "unresolved", label: "Unresolved" },
-  { key: "mine", label: "Mine" },
-  { key: "bots", label: "Bots only" },
-  { key: "outdated", label: "Show outdated" },
-];
-
-function isAllSelected(filters: PrTimelineFilters): boolean {
-  return (
-    filters.showResolved &&
-    filters.showOutdated &&
-    !filters.onlyMine &&
-    !filters.onlyBots
-  );
-}
-
-function FilterToolbar({
-  filters,
-  onChange,
-}: {
-  filters: PrTimelineFilters;
-  onChange: (next: PrTimelineFilters) => void;
-}) {
-  const isActive = useCallback(
-    (key: (typeof FILTER_BUTTONS)[number]["key"]): boolean => {
-      if (key === "all") return isAllSelected(filters);
-      if (key === "unresolved") return !filters.showResolved;
-      if (key === "mine") return filters.onlyMine;
-      if (key === "bots") return filters.onlyBots;
-      return filters.showOutdated;
-    },
-    [filters],
-  );
-
-  const toggle = useCallback(
-    (key: (typeof FILTER_BUTTONS)[number]["key"]) => {
-      if (key === "all") {
-        onChange({
-          showResolved: true,
-          showOutdated: true,
-          onlyMine: false,
-          onlyBots: false,
-        });
-        return;
-      }
-      if (key === "unresolved") {
-        onChange({ ...filters, showResolved: !filters.showResolved });
-        return;
-      }
-      if (key === "mine") {
-        onChange({ ...filters, onlyMine: !filters.onlyMine });
-        return;
-      }
-      if (key === "bots") {
-        onChange({ ...filters, onlyBots: !filters.onlyBots });
-        return;
-      }
-      onChange({ ...filters, showOutdated: !filters.showOutdated });
-    },
-    [filters, onChange],
-  );
-
-  return (
-    <div
-      className="flex shrink-0 items-center gap-1 px-3"
-      style={{ borderBottom: `1px solid ${COLORS.border}`, height: 38 }}
-      data-testid="pr-timeline-filter-toolbar"
-    >
-      {FILTER_BUTTONS.map((btn) => {
-        const active = isActive(btn.key);
-        const style: CSSProperties = active
-          ? {
-              background: COLORS.accentSubtle,
-              border: `1px solid ${COLORS.accentBorder}`,
-              color: COLORS.accent,
-            }
-          : {
-              background: "transparent",
-              border: `1px solid ${COLORS.border}`,
-              color: COLORS.textMuted,
-            };
-        return (
-          <button
-            key={btn.key}
-            type="button"
-            onClick={() => toggle(btn.key)}
-            className="h-6 px-2 text-[11px] font-medium transition-colors"
-            style={style}
-            aria-pressed={active}
-            data-filter-key={btn.key}
-          >
-            {btn.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ══════════════════ Timeline row ══════════════════ */
 
@@ -521,6 +404,15 @@ function TimelineRow(props: TimelineRowProps) {
     },
     [measure],
   );
+
+  useLayoutEffect(() => {
+    if (!isNear) return;
+    const node = rowRef.current;
+    if (!node) return;
+    measure(node);
+    const raf = window.requestAnimationFrame(() => measure(node));
+    return () => window.cancelAnimationFrame(raf);
+  }, [event.id, isNear, measure]);
 
   return (
     <div

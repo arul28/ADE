@@ -750,7 +750,7 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
-  it("hydrates checks and activity data from a cached snapshot", async () => {
+  it("hydrates checks and timeline data from a cached snapshot", async () => {
     const user = userEvent.setup();
     const listSnapshots = vi.fn().mockResolvedValue([{
       prId: "pr-80",
@@ -779,15 +779,59 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Cached snapshot check")).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await user.click(screen.getByRole("button", { name: /overview/i }));
     await waitFor(() => {
       expect(screen.getByText("Cached comment body")).toBeTruthy();
       expect(screen.getByText("Cached review body")).toBeTruthy();
     });
   });
 
+  it("does not start live detail work from a stale snapshot prefill request", async () => {
+    let resolveSnapshots!: (snapshots: PrSnapshotHydration[]) => void;
+    const listSnapshots = vi.fn().mockImplementation(() => new Promise<PrSnapshotHydration[]>((resolve) => {
+      resolveSnapshots = resolve;
+    }));
+    const getDetail = vi.fn().mockResolvedValue({
+      prId: "pr-80",
+      body: "Live detail should not load",
+      labels: [],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    });
+    const getFiles = vi.fn().mockResolvedValue([]);
+    const getCommits = vi.fn().mockResolvedValue([]);
+    const getActionRuns = vi.fn().mockResolvedValue([]);
+    const { unmount } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      getDetail,
+      getFiles,
+      getCommits,
+      getActionRuns,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    unmount();
+    await act(async () => {
+      resolveSnapshots([]);
+      await Promise.resolve();
+    });
+
+    expect(getDetail).not.toHaveBeenCalled();
+    expect(getFiles).not.toHaveBeenCalled();
+    expect(getCommits).not.toHaveBeenCalled();
+    expect(getActionRuns).not.toHaveBeenCalled();
+  });
+
   it("updates synthesized activity when selected PR detail inputs refresh", async () => {
-    const user = userEvent.setup();
     const { rerenderPane } = renderPane({
       checks: [makeCheck({ name: "Old CI", conclusion: "success" })],
       reviewThreads: [],
@@ -797,7 +841,6 @@ describe("PrDetailPane issue resolver CTA", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
     await waitFor(() => {
       expect(screen.getByText("Old CI: success")).toBeTruthy();
     });
@@ -819,7 +862,6 @@ describe("PrDetailPane issue resolver CTA", () => {
   it("synthesizes unique activity keys for duplicate review and check identities", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const user = userEvent.setup();
       renderPane({
         checks: [
           makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
@@ -831,8 +873,6 @@ describe("PrDetailPane issue resolver CTA", () => {
         ],
         reviewThreads: [],
       });
-
-      await user.click(screen.getByRole("button", { name: /activity/i }));
 
       await waitFor(() => {
         expect(screen.getAllByText("CodeRabbit: failure")).toHaveLength(2);
@@ -948,7 +988,7 @@ describe("PrDetailPane issue resolver CTA", () => {
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     expect(screen.queryByText("Cached snapshot check")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await user.click(screen.getByRole("button", { name: /overview/i }));
     expect(screen.queryByText("Cached comment body")).toBeNull();
     expect(screen.queryByText("Cached review body")).toBeNull();
   });
@@ -1821,7 +1861,6 @@ describe("PrDetailPane issue resolver CTA", () => {
   });
 
   it("renders review activity bodies as markdown instead of raw source text", async () => {
-    const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
@@ -1838,7 +1877,6 @@ describe("PrDetailPane issue resolver CTA", () => {
       ],
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
     expect(await screen.findByText("Actionable comments posted: 3")).toBeTruthy();
     expect(screen.queryByText(/\*\*Actionable comments posted: 3\*\*/)).toBeNull();
     expect(screen.getByText("Prompt for AI Agents")).toBeTruthy();

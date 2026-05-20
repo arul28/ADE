@@ -146,6 +146,9 @@ import type {
   GitSyncArgs,
   GitHubRepoRef,
   GitHubStatus,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
@@ -8276,6 +8279,26 @@ export function registerIpc({
     return result;
   });
 
+  const ensurePrMutationContext = (): AppContext => {
+    const ctx = getCtx();
+    if (!ctx.prService || !ctx.prPollingService) {
+      throw new Error("PR service is not available for this project window.");
+    }
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.prsPreflightCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> => {
+    const ctx = ensurePrMutationContext();
+    return await ctx.prService.preflightCreateLaneFromPrBranch(arg);
+  });
+
+  ipcMain.handle(IPC.prsCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult> => {
+    const ctx = ensurePrMutationContext();
+    const result = await ctx.prService.createLaneFromPrBranch(arg);
+    ctx.prPollingService.poke();
+    return result;
+  });
+
   const ensurePrPolling = () => {
     const ctx = getCtx();
     // PR services are only attached to fully-initialised project contexts. When
@@ -8287,6 +8310,26 @@ export function registerIpc({
     ctx.prPollingService.start();
     return ctx;
   };
+  const emptyPrMergeContext = (prId: string): PrMergeContext => ({
+    prId,
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: [],
+    targetLaneId: null,
+    integrationLaneId: null,
+    members: [],
+  });
+  const emptyPrDetail = (prId: string) => ({
+    prId,
+    body: null,
+    labels: [],
+    assignees: [],
+    requestedReviewers: [],
+    author: { login: "", avatarUrl: null },
+    isDraft: false,
+    milestone: null,
+    linkedIssues: [],
+  });
 
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = getCtx();
@@ -8425,13 +8468,26 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
+  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return null;
+    return ctx.prService.getConflictAnalysis(arg.prId);
+  });
 
-  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg.prId));
+  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return emptyPrMergeContext(arg.prId);
+    return ctx.prService.getMergeContext(arg.prId);
+  });
 
-  ipcMain.handle(IPC.prsGetMergeContexts, async (_event, arg: { prIds?: string[] }): Promise<Record<string, PrMergeContext>> =>
-    getCtx().prService.getMergeContexts(Array.isArray(arg?.prIds) ? arg.prIds : [])
-  );
+  ipcMain.handle(IPC.prsGetMergeContexts, async (_event, arg: { prIds?: string[] }): Promise<Record<string, PrMergeContext>> => {
+    const prIds = Array.isArray(arg?.prIds) ? arg.prIds : [];
+    const ctx = ensurePrPolling();
+    if (!ctx) {
+      return Object.fromEntries(prIds.map((prId) => [prId, emptyPrMergeContext(prId)]));
+    }
+    return ctx.prService.getMergeContexts(prIds);
+  });
 
   ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) => {
     const ctx = ensurePrPolling();
@@ -8441,9 +8497,11 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) =>
-    getCtx().prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined })
-  );
+  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
+  });
 
   ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> => {
     const ctx = ensurePrPolling();
@@ -8511,17 +8569,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
+    if (!ctx.queueLandingService) throw new Error("Queue automation is unavailable in this runtime.");
     return await ctx.queueLandingService.startQueue(arg);
   });
 
-  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
+  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.pauseQueue(arg.queueId) ?? null);
 
   ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    return ctx.queueLandingService.resumeQueue(arg);
+    return ctx.queueLandingService?.resumeQueue(arg) ?? null;
   });
 
-  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
+  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.cancelQueue(arg.queueId) ?? null);
 
   ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
     const ctx = getCtx();
@@ -8529,13 +8588,29 @@ export function registerIpc({
     ctx.prPollingService.poke();
   });
 
-  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
+  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => {
+    const ctx = ensurePrPolling();
+    if (!ctx) {
+      return {
+        prId: arg.prId,
+        laneId: "",
+        state: "open",
+        checksStatus: "none",
+        reviewStatus: "none",
+        conflictAnalysis: null,
+        rebaseNeeded: false,
+        behindBy: 0,
+        mergeContext: null,
+      };
+    }
+    return ctx.prService.getPrHealth(arg.prId);
+  });
 
   ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> =>
-    getCtx().queueLandingService.getQueueStateByGroup(arg.groupId)
+    getCtx().queueLandingService?.getQueueStateByGroup(arg.groupId) ?? null
   );
 
-  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService.listQueueStates(arg));
+  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService?.listQueueStates(arg) ?? []);
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     getCtx().prService.createIntegrationLaneForProposal(arg));
@@ -8887,11 +8962,31 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
-  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
-  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> => getCtx().prService.getCommits(args.prId));
-  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
-  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
+  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return emptyPrDetail(args.prId);
+    return ctx.prService.getDetail(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.getFiles(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> | PrCommit[] => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.getCommits(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.getActionRuns(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.getActivity(args.prId);
+  });
   ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
   ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => getCtx().prService.replyToReviewThread(args));
   ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => getCtx().prService.resolveReviewThread(args));
@@ -8906,9 +9001,13 @@ export function registerIpc({
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
 
   // PRs Tab redesign (Timeline + Rails)
-  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => getCtx().prService.getDeployments(args.prId));
-  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.getSummary(args.prId));
-  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.regenerateSummary(args.prId));
+  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return [];
+    return ctx.prService.getDeployments(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.getSummary(args.prId) ?? null);
+  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.regenerateSummary(args.prId) ?? null);
   ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
   ipcMain.handle(
     IPC.prsSetReviewThreadResolved,

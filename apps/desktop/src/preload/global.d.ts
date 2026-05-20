@@ -294,6 +294,9 @@ import type {
   GitSyncArgs,
   GitHubRepoRef,
   GitHubStatus,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
   CreateQueuePrsArgs,
   CreateQueuePrsResult,
@@ -1970,6 +1973,12 @@ declare global {
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
+        preflightCreateLaneFromPrBranch: (
+          args: CreateLaneFromPrBranchArgs,
+        ) => Promise<CreateLaneFromPrBranchPreflightResult>;
+        createLaneFromPrBranch: (
+          args: CreateLaneFromPrBranchArgs,
+        ) => Promise<CreateLaneFromPrBranchResult>;
         getForLane: (laneId: string) => Promise<PrSummary | null>;
         listAll: () => Promise<PrSummary[]>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;

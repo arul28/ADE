@@ -1380,7 +1380,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                 toast.event.kind === "changes_requested" ||
                                 toast.event.kind === "review_requested"
                               ) {
-                                detailTab = "activity";
+                                detailTab = "overview";
                               }
                               const search = buildPrsRouteSearch({
                                 activeTab: "normal",

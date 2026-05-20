@@ -112,6 +112,7 @@ type PrsState = {
   detailDeployments: PrDeployment[];
   detailAiSummary: PrAiSummary | null;
   detailSnapshot: PrSnapshotHydration | null;
+  detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   detailLiveDataPrId: string | null;
   detailBusy: boolean;
 
@@ -195,6 +196,7 @@ type PrsContextWarmCache = {
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
   detailAiSummary: PrAiSummary | null;
+  detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   rebaseNeeds: RebaseNeed[];
   autoRebaseStatuses: AutoRebaseLaneStatus[];
   queueStates: Record<string, QueueLandingState>;
@@ -458,6 +460,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const [detailDeployments, setDetailDeployments] = useState<PrDeployment[]>(() => warmCache?.detailDeployments ?? []);
   const [detailAiSummary, setDetailAiSummary] = useState<PrAiSummary | null>(() => warmCache?.detailAiSummary ?? null);
   const [detailSnapshot, setDetailSnapshot] = useState<PrSnapshotHydration | null>(null);
+  const [detailSnapshotsByPrId, setDetailSnapshotsByPrId] = useState<Record<string, PrSnapshotHydration>>(
+    () => warmCache?.detailSnapshotsByPrId ?? {},
+  );
   const [detailLiveDataPrId, setDetailLiveDataPrId] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
@@ -472,7 +477,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       || detailComments.length > 0
       || detailReviewThreads.length > 0
       || detailDeployments.length > 0
-      || detailAiSummary !== null;
+      || detailAiSummary !== null
+      || detailSnapshot !== null;
   }, [
     detailAiSummary,
     detailChecks.length,
@@ -480,6 +486,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailDeployments.length,
     detailReviewThreads.length,
     detailReviews.length,
+    detailSnapshot,
     detailStatus,
   ]);
 
@@ -683,6 +690,44 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const detailLoadedAtByPrIdRef = React.useRef<Record<string, number>>(
     warmCache?.selectedPrId ? { [warmCache.selectedPrId]: warmCache.cachedAt } : {},
   );
+  const detailSnapshotsByPrIdRef = React.useRef<Record<string, PrSnapshotHydration>>({});
+  React.useEffect(() => {
+    detailSnapshotsByPrIdRef.current = detailSnapshotsByPrId;
+  }, [detailSnapshotsByPrId]);
+
+  const mergeDetailSnapshots = useCallback((snapshots: PrSnapshotHydration[]) => {
+    const validSnapshots = snapshots.filter((snapshot) => snapshot?.prId);
+    if (validSnapshots.length === 0) return;
+    setDetailSnapshotsByPrId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      const now = Date.now();
+      for (const snapshot of validSnapshots) {
+        if (!jsonEqual(next[snapshot.prId], snapshot)) {
+          next[snapshot.prId] = snapshot;
+          changed = true;
+        }
+        detailSnapshotLoadedAtByPrIdRef.current[snapshot.prId] = now;
+      }
+      return changed ? next : prev;
+    });
+  }, []);
+
+  const prsSnapshotWarmKey = useMemo(() => prs.map((pr) => pr.id).sort().join("|"), [prs]);
+  React.useEffect(() => {
+    if (!active || prsSnapshotWarmKey.length === 0 || typeof window.ade.prs.listSnapshots !== "function") {
+      return undefined;
+    }
+    let cancelled = false;
+    void window.ade.prs.listSnapshots({}).then((snapshots) => {
+      if (cancelled) return;
+      const linkedPrIds = new Set(prsRef.current.map((pr) => pr.id));
+      mergeDetailSnapshots(snapshots.filter((snapshot) => linkedPrIds.has(snapshot.prId)));
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [active, mergeDetailSnapshots, prsSnapshotWarmKey]);
 
   const refreshMergeContexts = useCallback(async (prIds: string[]) => {
     const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
@@ -797,6 +842,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     const allowedPrIds = new Set(prList.map((pr) => pr.id));
     setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
     setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+    setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
     if (changedPrIds.length > 0) {
       void refreshMergeContexts(changedPrIds);
@@ -899,6 +945,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
   }, [active, refreshCore]);
 
+  useEffect(() => {
+    if (!active || !error) return;
+    const retryTimer = window.setTimeout(() => {
+      void refreshCore();
+    }, 1_500);
+    return () => {
+      window.clearTimeout(retryTimer);
+    };
+  }, [active, error, refreshCore]);
+
   // Silently refresh detail data for the given PR (no loading state).
   // Returns early if a fetch is already in progress or the PR is no longer selected.
   const rateLimitedUntilRef = React.useRef(0);
@@ -976,18 +1032,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
     detailFetchInProgress.current = true;
     try {
-      const [statusResult, checksResult, reviewsResult, commentsResult, threadsResult] = await Promise.allSettled([
+      const [statusResult, checksResult, reviewsResult, commentsResult] = await Promise.allSettled([
         window.ade.prs.getStatus(prId),
         window.ade.prs.getChecks(prId),
         window.ade.prs.getReviews(prId),
         window.ade.prs.getComments(prId),
-        typeof window.ade.prs.getReviewThreads === "function"
-          ? window.ade.prs.getReviewThreads(prId)
-          : Promise.resolve([] as PrReviewThread[]),
       ]);
       if (selectedPrIdRef.current !== prId) return;
 
-      for (const result of [statusResult, checksResult, reviewsResult, commentsResult, threadsResult]) {
+      for (const result of [statusResult, checksResult, reviewsResult, commentsResult]) {
         if (result.status === "rejected") {
           const msg = String(result.reason?.message ?? result.reason);
           if (msg.includes("rate limit") || msg.includes("API rate")) {
@@ -1003,7 +1056,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       if (checksResult.status === "fulfilled") setDetailChecks((prev) => (jsonEqual(prev, checksResult.value) ? prev : checksResult.value));
       if (reviewsResult.status === "fulfilled") setDetailReviews((prev) => (jsonEqual(prev, reviewsResult.value) ? prev : reviewsResult.value));
       if (commentsResult.status === "fulfilled") setDetailComments((prev) => (jsonEqual(prev, commentsResult.value) ? prev : commentsResult.value));
-      if (threadsResult.status === "fulfilled") setDetailReviewThreads((prev) => (jsonEqual(prev, threadsResult.value) ? prev : threadsResult.value));
       if ([statusResult, checksResult, reviewsResult, commentsResult].every((result) => result.status === "fulfilled")) {
         setDetailLiveDataPrId(prId);
       }
@@ -1075,6 +1127,27 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     let liveDetailApplied = false;
     let snapshotForRequest: PrSnapshotHydration | null = null;
     const prId = selectedPrId;
+    // A previous selection can leave long-running GitHub/detail calls pending.
+    // Its cleanup marks that closure cancelled, so the new selection should be
+    // allowed to start its own cache/live hydration immediately.
+    detailFetchInProgress.current = false;
+    const applySnapshotPrefill = (snapshot: PrSnapshotHydration) => {
+      snapshotForRequest = snapshot;
+      mergeDetailSnapshots([snapshot]);
+      detailSnapshotStatePrIdRef.current = prId;
+      detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
+      detailCacheHasDataRef.current = true;
+      setDetailSnapshot(snapshot);
+      setDetailStatus(snapshot.status);
+      setDetailChecks(snapshot.checks);
+      setDetailReviews(snapshot.reviews);
+      setDetailComments(snapshot.comments);
+      setDetailBusy(false);
+    };
+    const warmedSnapshotForRequest = detailSnapshotsByPrIdRef.current[prId] ?? null;
+    if (warmedSnapshotForRequest && detailSnapshotStatePrIdRef.current !== prId) {
+      applySnapshotPrefill(warmedSnapshotForRequest);
+    }
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshDetailCache =
       cachedDetailAgeMs >= 0
@@ -1100,34 +1173,126 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailDeployments([]);
       setDetailAiSummary(null);
     }
-    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill && typeof window.ade.prs.listSnapshots === "function") {
-      void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
-        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
-        const snapshot = snapshots[0];
-        // Clear the busy spinner once we know what the DB has — either we
-        // prefill with snapshot data, or we already have the PR summary on
-        // screen and the live fetch can finish in the background without
-        // blocking the visible UI.
-        if (!snapshot) {
-          setDetailBusy(false);
-          return;
+    const isPrRateLimitError = (error: unknown): boolean => {
+      const msg = String((error as { message?: unknown } | null)?.message ?? error);
+      return msg.includes("rate limit") || msg.includes("API rate");
+    };
+    const startProgressivePrimaryFetch = (options: { background?: boolean } = {}) => {
+      if (detailFetchInProgress.current) return;
+      if (!options.background) setDetailBusy(true);
+      detailFetchInProgress.current = true;
+
+      let primarySettledCount = 0;
+      let primaryFulfilledCount = 0;
+      let rateLimited = false;
+      const primaryRequestCount = 4;
+      const markPrimarySettled = (fulfilled: boolean) => {
+        primarySettledCount += 1;
+        if (fulfilled) primaryFulfilledCount += 1;
+        if (selectedPrIdRef.current === prId && primarySettledCount === 1) {
+          detailFetchInProgress.current = false;
         }
-        snapshotForRequest = snapshot;
-        detailSnapshotStatePrIdRef.current = prId;
-        detailSnapshotLoadedAtByPrIdRef.current[prId] = Date.now();
-        setDetailSnapshot(snapshot);
-        setDetailStatus(snapshot.status);
-        setDetailChecks(snapshot.checks);
-        setDetailReviews(snapshot.reviews);
-        setDetailComments(snapshot.comments);
-        setDetailBusy(false);
-      }).catch(() => {
-        if (!cancelled) setDetailBusy(false);
+        if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
+          detailFetchInProgress.current = false;
+          setDetailLiveDataPrId(primaryFulfilledCount === primaryRequestCount ? prId : null);
+        }
+      };
+      const loadPrimaryPiece = <T,>(
+        name: string,
+        promise: Promise<T>,
+        apply: (value: T) => void,
+      ) => {
+        let fulfilled = false;
+        promise
+          .then((value) => {
+            if (cancelled || selectedPrIdRef.current !== prId) return;
+            if (rateLimited) return;
+            fulfilled = true;
+            if (value != null && (!Array.isArray(value) || value.length > 0)) {
+              liveDetailApplied = true;
+            }
+            detailStatePrIdRef.current = prId;
+            detailLoadedAtByPrIdRef.current[prId] = Date.now();
+            apply(value);
+            setDetailBusy(false);
+          })
+          .catch((error: unknown) => {
+            if (cancelled || selectedPrIdRef.current !== prId) return;
+            if (isPrRateLimitError(error)) {
+              rateLimited = true;
+              rateLimitedUntilRef.current = Date.now() + 5 * 60_000;
+              console.warn("[PrsContext] GitHub rate limit hit - pausing detail polling for 5 min");
+              if (snapshotForRequest?.prId === prId) {
+                setDetailStatus(snapshotForRequest.status);
+                setDetailChecks(snapshotForRequest.checks);
+                setDetailReviews(snapshotForRequest.reviews);
+                setDetailComments(snapshotForRequest.comments);
+              }
+              setDetailLiveDataPrId(null);
+            } else {
+              console.warn(`[PrsContext] Failed to load PR ${name}:`, error);
+            }
+            setDetailBusy(false);
+          })
+          .finally(() => {
+            if (cancelled) return;
+            markPrimarySettled(fulfilled);
+          });
+      };
+
+      loadPrimaryPiece("status", window.ade.prs.getStatus(prId), (value) => {
+        setDetailStatus(value ?? null);
       });
-    }
+      loadPrimaryPiece("checks", window.ade.prs.getChecks(prId), (value) => {
+        setDetailChecks(value);
+      });
+      loadPrimaryPiece("reviews", window.ade.prs.getReviews(prId), (value) => {
+        setDetailReviews(value);
+      });
+      loadPrimaryPiece("comments", window.ade.prs.getComments(prId), (value) => {
+        setDetailComments(value);
+      });
+    };
     if (hasFreshDetailCache) {
       setDetailLiveDataPrId(prId);
       setDetailBusy(false);
+      const intervalId = window.setInterval(() => {
+        refreshDetailSilently(prId);
+      }, 60_000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+        rateLimitedUntilRef.current = 0;
+      };
+    }
+    if (hasFreshSnapshotPrefill) {
+      setDetailBusy(false);
+      startProgressivePrimaryFetch({ background: true });
+      const intervalId = window.setInterval(() => {
+        refreshDetailSilently(prId);
+      }, 60_000);
+      return () => {
+        cancelled = true;
+        window.clearInterval(intervalId);
+        rateLimitedUntilRef.current = 0;
+      };
+    }
+    if (!hasFreshDetailCache && !hasFreshSnapshotPrefill && typeof window.ade.prs.listSnapshots === "function") {
+      setDetailBusy(true);
+      void window.ade.prs.listSnapshots({ prId }).then((snapshots) => {
+        if (cancelled || selectedPrIdRef.current !== prId || liveDetailApplied) return;
+        const snapshot = snapshots[0];
+        if (snapshot) {
+          applySnapshotPrefill(snapshot);
+          startProgressivePrimaryFetch({ background: true });
+        } else {
+          startProgressivePrimaryFetch();
+        }
+      }).catch(() => {
+        if (!cancelled) {
+          startProgressivePrimaryFetch();
+        }
+      });
       const intervalId = window.setInterval(() => {
         refreshDetailSilently(prId);
       }, 60_000);
@@ -1232,11 +1397,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     (async () => {
       const api = window.ade?.prs;
       const steps: Array<[string, () => Promise<void>]> = [
-        ["getReviewThreads", async () => {
-          if (typeof api?.getReviewThreads !== "function") return;
-          const threads = await api.getReviewThreads(prId);
-          if (!cancelled && selectedPrIdRef.current === prId) setDetailReviewThreads(threads);
-        }],
         ["getDeployments", async () => {
           if (typeof api?.getDeployments !== "function") return;
           const deployments = await api.getDeployments(prId);
@@ -1324,6 +1484,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
         const allowedPrIds = new Set(next.map((pr) => pr.id));
         setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
+        setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
         // Clear selection if the active PR was removed (mirrors refresh() guard).
         const activePrIdForPrune = selectedPrIdRef.current;
@@ -1379,8 +1540,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   }, [active]);
 
   // Periodic rebase needs scan (cancelled flag guards against setState after unmount).
-  // The plain GitHub PR list does not render rebase workflow state, so avoid
-  // doing that git work until a workflow tab or selected PR detail can use it.
+  // The plain PR browser only needs workflow rebase state when a PR detail is selected.
   useEffect(() => {
     let cancelled = false;
     if (!active || (activeTab === "normal" && selectedPrId == null)) {
@@ -1447,6 +1607,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailReviewThreads,
       detailDeployments,
       detailAiSummary,
+      detailSnapshotsByPrId,
       rebaseNeeds,
       autoRebaseStatuses,
       queueStates,
@@ -1469,6 +1630,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailReviewThreads,
     detailReviews,
     detailStatus,
+    detailSnapshotsByPrId,
     inlineTerminal,
     lanes,
     mergeContextByPrId,
@@ -1503,6 +1665,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailDeployments,
       detailAiSummary,
       detailSnapshot,
+      detailSnapshotsByPrId,
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
@@ -1563,6 +1726,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailDeployments,
       detailAiSummary,
       detailSnapshot,
+      detailSnapshotsByPrId,
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,

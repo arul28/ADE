@@ -3153,6 +3153,14 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       "insert into pr_issue_inventory(id, pr_id, source, type, external_id, headline, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
       ["issue-child", "pr-child", "review", "comment", "1", "Fix it", now, now],
     );
+    db.run(
+      `
+        insert into pr_auto_link_ignores(
+          project_id, repo_owner, repo_name, github_pr_number, lane_id, head_branch, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [projectId, "acme", "demo", 1, "lane-child", "feature/child", now],
+    );
     db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-child", "lane-child", now, now]);
     db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-parent", "lane-child", now, now]);
 
@@ -3205,6 +3213,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pr_pipeline_settings", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pr_issue_inventory", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(count("pr_auto_link_ignores", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(db.get<{ active_lane_id: string | null }>("select active_lane_id from pr_convergence_state where pr_id = ?", ["pr-parent"])?.active_lane_id).toBeNull();
     expect(count("terminal_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("session_deltas", "lane_id = ?", ["lane-child"])).toBe(0);

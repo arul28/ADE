@@ -147,6 +147,49 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
     )
   `);
   raw.run(`
+    create table review_reviewer_runs(
+      id text primary key,
+      run_id text not null,
+      reviewer_key text not null,
+      label text not null,
+      focus text not null,
+      status text not null,
+      chat_session_id text,
+      prompt_artifact_id text,
+      output_artifact_id text,
+      findings_artifact_id text,
+      candidate_count integer not null default 0,
+      kept_count integer not null default 0,
+      summary text,
+      error_message text,
+      started_at text,
+      ended_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  raw.run(`
+    create table review_candidate_findings(
+      id text primary key,
+      run_id text not null,
+      reviewer_run_id text not null,
+      reviewer_key text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      evidence_score real not null,
+      low_signal integer not null default 0,
+      score real not null,
+      created_at text not null
+    )
+  `);
+  raw.run(`
     create table review_run_publications(
       id text primary key,
       run_id text not null,
@@ -488,14 +531,24 @@ function createHarness(args: {
   mockContextBuilder.buildContext.mockResolvedValue(makeContextPacket());
 
   const runSessionTurn = vi.fn(async () => {
-    const outputText = queuedOutputs.shift();
-    if (!outputText) throw new Error("No mock review output left.");
+    const outputText = queuedOutputs.shift() ?? makeOutput("No specialist findings.", []);
     return {
       sessionId: `session-review-${sessionCount}`,
       provider: "codex",
       model: "gpt-5.4",
       modelId: "openai/gpt-5.4",
       outputText,
+    };
+  });
+
+  const createSession = vi.fn(async () => {
+    sessionCount += 1;
+    return {
+      id: `session-review-${sessionCount}`,
+      laneId: "lane-review",
+      provider: "codex",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
     };
   });
 
@@ -524,16 +577,7 @@ function createHarness(args: {
       listRecentCommits: vi.fn(async () => []),
     } as any,
     agentChatService: {
-      createSession: vi.fn(async () => {
-        sessionCount += 1;
-        return {
-          id: `session-review-${sessionCount}`,
-          laneId: "lane-review",
-          provider: "codex",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
-        };
-      }),
+      createSession,
       getSessionSummary: vi.fn(async (sessionId: string) => ({
         sessionId,
         laneId: "lane-review",
@@ -597,6 +641,7 @@ function createHarness(args: {
   return {
     raw,
     service,
+    createSession,
     runSessionTurn,
     publishReviewPublication,
     start: (config?: Partial<ReviewRunConfig>) => service.startRun({
@@ -642,9 +687,13 @@ describe("reviewService", () => {
     expect(detail?.findings[0]?.sourcePass).toBe("adjudicated");
     expect(detail?.findings[0]?.originatingPasses).toEqual(["diff-risk", "cross-file-impact"]);
     expect(detail?.findings[0]?.adjudication?.mergedFindingIds).toHaveLength(2);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(3);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_output")).toHaveLength(3);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_findings")).toHaveLength(3);
+    expect(detail?.reviewerRuns).toHaveLength(5);
+    expect(detail?.candidateFindings).toHaveLength(2);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(5);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_output")).toHaveLength(5);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_findings")).toHaveLength(5);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "changed_file_manifest")).toBe(true);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "risk_map")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "adjudication_result")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "merged_findings")).toBe(true);
 
@@ -652,6 +701,64 @@ describe("reviewService", () => {
     expect(String(persistedFindings[0]?.source_pass)).toBe("adjudicated");
     expect(String(persistedFindings[0]?.originating_passes_json)).toContain("diff-risk");
     expect(String(persistedFindings[0]?.adjudication_json)).toContain("publicationEligible");
+  });
+
+  it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      config: { codexFastMode: true },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      codexFastMode: true,
+      permissionMode: "plan",
+      surface: "automation",
+    }));
+  });
+
+  it("preserves unlimited review budgets instead of clamping them", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      config: {
+        budgets: {
+          unlimited: true,
+          maxFiles: 1,
+          maxDiffChars: 4_000,
+          maxPromptChars: 4_000,
+          maxFindings: 1,
+          maxFindingsPerPass: 1,
+          maxPublishedFindings: 1,
+        },
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.config.budgets).toMatchObject({
+      unlimited: true,
+      maxFiles: Number.MAX_SAFE_INTEGER,
+      maxFindings: Number.MAX_SAFE_INTEGER,
+      maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+    });
   });
 
   it("persists provenance, rules, and validation artifacts and keeps renderer findings on the normal evidence path", async () => {
@@ -1062,9 +1169,13 @@ describe("reviewService", () => {
         makeOutput("First pass run.", [makeFinding()]),
         makeOutput("Cross-file overlap.", [makeFinding({ title: "Fallback path removed", confidence: 0.71 })]),
         makeOutput("Checks clear.", []),
+        makeOutput("First run security clear.", []),
+        makeOutput("First run UI clear.", []),
         makeOutput("Second run diff-risk.", [makeFinding()]),
         makeOutput("Second run cross-file.", [makeFinding({ title: "Fallback path removed", confidence: 0.71 })]),
         makeOutput("Second run checks.", []),
+        makeOutput("Second run security clear.", []),
+        makeOutput("Second run UI clear.", []),
       ],
       target: {
         mode: "commit_range",
@@ -1090,9 +1201,10 @@ describe("reviewService", () => {
       (runs) => runs.some((run) => run.id === rerun.id && run.status === "completed"),
     );
 
-    expect(harness.runSessionTurn).toHaveBeenCalledTimes(6);
+    expect(harness.runSessionTurn).toHaveBeenCalledTimes(10);
     const rerunDetail = await harness.service.getRunDetail({ runId: rerun.id });
-    expect(rerunDetail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(3);
+    expect(rerunDetail?.reviewerRuns).toHaveLength(5);
+    expect(rerunDetail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(5);
 
     const rerunRecord = (await harness.service.listRuns()).find((entry) => entry.id === rerun.id);
     expect(rerunRecord?.target).toEqual({

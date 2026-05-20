@@ -174,6 +174,146 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.reviewEvent, listener);
   });
 
+  it("routes review.startRun through a bound local runtime without dropping unlimited budgets", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const startArgs = {
+      target: { mode: "lane_diff", laneId: "lane-1" },
+      config: {
+        compareAgainst: { kind: "default_branch" },
+        selectionMode: "full_diff",
+        dirtyOnly: false,
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: "medium",
+        budgets: {
+          unlimited: true,
+          maxFiles: Number.MAX_SAFE_INTEGER,
+          maxDiffChars: Number.MAX_SAFE_INTEGER,
+          maxPromptChars: Number.MAX_SAFE_INTEGER,
+          maxFindings: Number.MAX_SAFE_INTEGER,
+          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
+          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+        },
+        publishBehavior: "local_only",
+      },
+    };
+    const run = {
+      id: "review-run-1",
+      projectId: "project-1",
+      laneId: "lane-1",
+      target: startArgs.target,
+      config: startArgs.config,
+      targetLabel: "Lane 1",
+      compareTarget: null,
+      status: "queued",
+      summary: null,
+      errorMessage: null,
+      findingCount: 0,
+      severitySummary: {},
+      chatSessionId: null,
+      createdAt: "2026-05-19T12:00:00.000Z",
+      startedAt: "2026-05-19T12:00:00.000Z",
+      endedAt: null,
+      updatedAt: "2026-05-19T12:00:00.000Z",
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string; args?: unknown } } | undefined)?.request;
+        expect(request?.domain).toBe("review");
+        expect(request?.action).toBe("startRun");
+        expect(request?.args).toEqual(startArgs);
+        return { result: run };
+      }
+      if (channel === IPC.reviewStartRun) {
+        throw new Error("runtime-bound review.startRun should not call desktop review IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.review.startRun(startArgs)).resolves.toEqual(run);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "review", action: "startRun", args: startArgs },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.reviewStartRun, expect.anything());
+  });
+
+  it("does not fall through to in-process review IPC when a bound local runtime cannot call review.startRun", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        throw new Error(`Action '${request?.domain}.${request?.action}' is not callable.`);
+      }
+      if (channel === IPC.reviewStartRun) {
+        throw new Error("runtime-bound review.startRun should not call desktop review IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const args = { target: { mode: "lane_diff", laneId: "lane-1" } };
+
+    await expect(bridge.review.startRun(args)).rejects.toThrow("not callable");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "review", action: "startRun", args },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.reviewStartRun, expect.anything());
+  });
+
   it("exposes macOS VM IPC methods and cleans up listeners", async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();
@@ -580,7 +720,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.agentChatModelCatalog, { mode: "cached" });
   });
 
-  it("uses in-process IPC for local PR tab reads instead of waiting on the runtime daemon", async () => {
+  it("routes local PR tab reads through the project runtime", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -634,11 +774,15 @@ describe("preload OAuth bridge", () => {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
       }
       if (channel === IPC.localRuntimeCallAction) {
-        throw new Error("PR tab reads should not call the local runtime daemon");
+        const request = (arg as { request?: { action?: string } } | undefined)?.request;
+        if (request?.action === "getDetail") return { result: detail };
+        if (request?.action === "listWithConflicts") return { result: prs };
+        if (request?.action === "getGithubSnapshot") return { result: snapshot };
+        throw new Error(`unexpected local PR action: ${request?.action}`);
       }
-      if (channel === IPC.prsGetDetail) return detail;
-      if (channel === IPC.prsListWithConflicts) return prs;
-      if (channel === IPC.prsGetGitHubSnapshot) return snapshot;
+      if (channel === IPC.prsGetDetail || channel === IPC.prsListWithConflicts || channel === IPC.prsGetGitHubSnapshot) {
+        throw new Error("local runtime PR reads should not call desktop PR IPC");
+      }
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
     const on = vi.fn();
@@ -665,13 +809,143 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.prs.listWithConflicts()).resolves.toEqual(prs);
     await expect(bridge.prs.getGitHubSnapshot()).resolves.toEqual(snapshot);
 
-    expect(invoke).toHaveBeenCalledWith(IPC.prsGetDetail, { prId: "pr-1" });
-    expect(invoke).toHaveBeenCalledWith(IPC.prsListWithConflicts, {});
-    expect(invoke).toHaveBeenCalledWith(IPC.prsGetGitHubSnapshot, {});
-    expect(invoke).not.toHaveBeenCalledWith(
-      IPC.localRuntimeCallAction,
-      expect.anything(),
-    );
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "pr", action: "getDetail", arg: "pr-1" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "pr", action: "listWithConflicts", args: {} },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "pr", action: "getGithubSnapshot", args: {} },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetDetail, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsListWithConflicts, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetGitHubSnapshot, expect.anything());
+  });
+
+  it("does not fall through to in-process PR branch import IPC when a bound local runtime action is missing", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        throw new Error(`Action '${request?.domain}.${request?.action}' is not callable.`);
+      }
+      if (channel === IPC.prsPreflightCreateLaneFromPrBranch || channel === IPC.prsCreateLaneFromPrBranch) {
+        throw new Error("runtime-bound PR branch import should not call desktop PR IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const args = { repoOwner: "owner", repoName: "repo", githubPrNumber: 12 };
+
+    await expect(bridge.prs.preflightCreateLaneFromPrBranch(args)).rejects.toThrow("not callable");
+    await expect(bridge.prs.createLaneFromPrBranch(args)).rejects.toThrow("not callable");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "pr", action: "preflightCreateLaneFromPrBranch", args },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: { domain: "pr", action: "createLaneFromPrBranch", args },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsPreflightCreateLaneFromPrBranch, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsCreateLaneFromPrBranch, expect.anything());
+  });
+
+  it("falls back to in-process PR branch import IPC when no runtime is bound", async () => {
+    const args = { repoOwner: "owner", repoName: "repo", githubPrNumber: 12 };
+    const preflightResult = {
+      preflight: {
+        repoOwner: "owner",
+        repoName: "repo",
+        githubPrNumber: 12,
+        githubUrl: "https://github.com/owner/repo/pull/12",
+        title: "Import branch",
+        headBranch: "feature/import",
+        headSha: "abc123",
+        headRepoOwner: "owner",
+        headRepoName: "repo",
+        remoteBranch: "origin/feature/import",
+        importBranchRef: "origin/feature/import",
+        targetLaneName: "Import branch",
+        baseBranch: "main",
+        canCreate: true,
+        status: "ready",
+        blockingConflict: null,
+        blockingConflicts: [],
+      },
+      lane: null,
+      pr: null,
+    };
+    const createResult = {
+      ...preflightResult,
+      lane: { id: "lane-created" },
+      pr: { id: "pr-created" },
+    };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding: null };
+      }
+      if (channel === IPC.prsPreflightCreateLaneFromPrBranch) return preflightResult;
+      if (channel === IPC.prsCreateLaneFromPrBranch) return createResult;
+      if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+        throw new Error("unbound project should not call runtime IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.prs.preflightCreateLaneFromPrBranch(args)).resolves.toEqual(preflightResult);
+    await expect(bridge.prs.createLaneFromPrBranch(args)).resolves.toEqual(createResult);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.prsPreflightCreateLaneFromPrBranch, args);
+    expect(invoke).toHaveBeenCalledWith(IPC.prsCreateLaneFromPrBranch, args);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
   });
 
   it("keeps remote runtime routing for PR tab reads when the project is remote", async () => {
@@ -1789,6 +2063,16 @@ describe("preload OAuth bridge", () => {
     await bridge.git.commit({ laneId: "lane-1", message: "checkpoint" });
     await bridge.git.push({ laneId: "lane-1" });
     await bridge.prs.createFromLane({ laneId: "lane-1", title: "Remote PR", body: "Proof" });
+    await bridge.prs.preflightCreateLaneFromPrBranch({
+      repoOwner: "owner",
+      repoName: "repo",
+      githubPrNumber: 12,
+    });
+    await bridge.prs.createLaneFromPrBranch({
+      repoOwner: "owner",
+      repoName: "repo",
+      githubPrNumber: 12,
+    });
 
     const actions = invoke.mock.calls
       .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
@@ -1800,12 +2084,16 @@ describe("preload OAuth bridge", () => {
       "git.commit",
       "git.push",
       "pr.createFromLane",
+      "pr.preflightCreateLaneFromPrBranch",
+      "pr.createLaneFromPrBranch",
     ]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesCreate, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCreate, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.gitCommit, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.gitPush, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsCreateFromLane, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsPreflightCreateLaneFromPrBranch, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsCreateLaneFromPrBranch, expect.anything());
   });
 
   it("routes bulk PR merge context hydration with positional runtime args", async () => {

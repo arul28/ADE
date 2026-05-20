@@ -4515,6 +4515,51 @@ describe("adeRpcServer", () => {
 
   });
 
+  it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {
+    const fixture = createRuntime();
+    const startArgs = {
+      target: { mode: "lane_diff", laneId: "lane-1" },
+      config: {
+        compareAgainst: { kind: "default_branch" },
+        selectionMode: "full_diff",
+        dirtyOnly: false,
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: "medium",
+        budgets: {
+          unlimited: true,
+          maxFiles: Number.MAX_SAFE_INTEGER,
+          maxDiffChars: Number.MAX_SAFE_INTEGER,
+          maxPromptChars: Number.MAX_SAFE_INTEGER,
+          maxFindings: Number.MAX_SAFE_INTEGER,
+          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
+          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+        },
+        publishBehavior: "local_only",
+      },
+    };
+    const startRun = vi.fn(async (args: typeof startArgs) => ({
+      id: "review-run-1",
+      laneId: args.target.laneId,
+      config: args.config,
+      status: "queued",
+    }));
+    (fixture.runtime as any).reviewService = { startRun };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "review",
+      action: "startRun",
+      args: startArgs,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(startRun).toHaveBeenCalledWith(startArgs);
+    expect(startRun.mock.calls[0][0].config.budgets).toEqual(startArgs.config.budgets);
+    expect(response.structuredContent.result.config.budgets).toEqual(startArgs.config.budgets);
+    expect(response.structuredContent.result.config.budgets.unlimited).toBe(true);
+  });
+
   it("binds service method context when invoking dynamic ADE actions", async () => {
     const fixture = createRuntime();
     const missionService = fixture.runtime.missionService as any;

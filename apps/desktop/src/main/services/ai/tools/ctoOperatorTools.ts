@@ -2622,19 +2622,19 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitStashPush = tool({
-    description: "Stash working changes in a lane.",
+    description: "Stash working changes for a lane branch.",
     inputSchema: z.object({ laneId: z.string().optional(), message: z.string().optional() }),
     execute: ({ laneId, message }) => gitGuard(() => deps.gitService!.stashPush({ laneId: resolveLaneId(laneId), ...(message?.trim() ? { message: message.trim() } : {}) })),
   });
 
   tools.gitStashPop = tool({
-    description: "Pop the latest stash in a lane.",
+    description: "Pop the latest stash saved for a lane branch.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(() => deps.gitService!.stashPop({ laneId: resolveLaneId(laneId) })),
   });
 
   tools.gitStashList = tool({
-    description: "List stashes in a lane.",
+    description: "List stashes saved for a lane branch.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(async () => {
       const stashes = await deps.gitService!.listStashes({ laneId: resolveLaneId(laneId) });

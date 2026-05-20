@@ -2528,7 +2528,7 @@ export function LaneGitActionsPane({
             >
               <div className="flex flex-wrap items-center gap-2" style={{ justifyContent: "space-between", rowGap: 6 }}>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span style={LABEL_STYLE}>STASHES</span>
+                  <span style={LABEL_STYLE}>BRANCH STASHES</span>
                   <span style={{ fontSize: 10, color: COLORS.textDim }}>
                     {stashes.length === 0 ? "None saved" : `${stashes.length} saved`}
                   </span>
@@ -2536,10 +2536,10 @@ export function LaneGitActionsPane({
                 <div className="flex flex-wrap items-center gap-2">
                   {stashes.length > 0 && (
                     <SmartTooltip content={{
-                      label: "Clear All Stashes",
-                      description: "Permanently delete every stash entry. You'll be asked to confirm by typing the count.",
-                      gitCommand: "git stash clear",
-                      effect: `Delete all ${stashes.length} stash${stashes.length === 1 ? "" : "es"}`,
+                      label: "Clear Branch Stashes",
+                      description: "Permanently delete this branch's visible stash entries. You'll be asked to confirm by typing the count.",
+                      gitCommand: "git stash drop <branch stash refs>",
+                      effect: `Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}`,
                       warning: "This cannot be undone",
                     }}>
                       <button
@@ -2550,8 +2550,8 @@ export function LaneGitActionsPane({
                           if (!laneId) return;
                           void runAction("stash clear", async () => {
                             const confirmation = await requestTextInput({
-                              title: "Clear all stashes?",
-                              message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"}. Type "${stashes.length}" to confirm.`,
+                              title: "Clear branch stashes?",
+                              message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"} saved for this branch. Type "${stashes.length}" to confirm.`,
                               placeholder: `Type ${stashes.length} to confirm`,
                               confirmLabel: "Delete all",
                               validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
@@ -2568,7 +2568,7 @@ export function LaneGitActionsPane({
                   )}
                   <SmartTooltip content={{
                     label: "Save Changes",
-                    description: "Save your current staged and unstaged changes to a stash without committing. You can restore them later.",
+                    description: "Save this branch's current staged and unstaged changes to a stash without committing. You can restore them later.",
                     gitCommand: hasUntrackedChanges ? "git stash push -u" : "git stash push",
                     effect: hasStaged || hasUnstaged
                       ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}${hasUntrackedChanges ? ", including untracked files" : ""}`
@@ -2598,7 +2598,7 @@ export function LaneGitActionsPane({
               </div>
               {stashes.length === 0 ? (
                 <div style={{ fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Save your in-progress changes without committing. You can restore them later.
+                  Save this branch's in-progress changes without committing. You can restore them later.
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

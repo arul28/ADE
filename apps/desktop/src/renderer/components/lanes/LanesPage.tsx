@@ -9,7 +9,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { useDockLayout } from "../ui/DockLayoutState";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
@@ -3129,15 +3129,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           const isPinned = pinnedLaneIds.has(lane.id);
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const laneSnapshot = laneSnapshotByLaneId.get(lane.id) ?? null;
-          const conflictStatus = laneSnapshot?.conflictStatus ?? null;
           const chips = conflictChipsByLane[lane.id] ?? [];
-          const laneRuntime = laneRuntimeById.get(lane.id) ?? {
-            bucket: "none",
-            runningCount: 0,
-            awaitingInputCount: 0,
-            endedCount: 0,
-            sessionCount: 0,
-          };
           const rebaseSuggestion = suppressTourDistractions ? null : laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const devicesOpen = lane.devicesOpen ?? [];
@@ -3232,32 +3224,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   </button>
                 ) : null}
               </span>
-              {/* Primary: house icon; Non-primary: conflict status dot */}
+              {/* Primary lane icon */}
               {isPrimary ? (
                 <House size={12} className="shrink-0" style={{ color: COLORS.accent }} />
-              ) : (
-                <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
-              )}
-              {/* Terminal attention state */}
-              {!isDeleting && (laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input") ? (
-                <span
-                  title={
-                    laneRuntime.bucket === "awaiting-input"
-                      ? `${laneRuntime.awaitingInputCount} session${laneRuntime.awaitingInputCount === 1 ? "" : "s"} awaiting input`
-                      : `${laneRuntime.runningCount} session${laneRuntime.runningCount === 1 ? "" : "s"} running`
-                  }
-                  className="shrink-0"
-                  style={{
-                    width: 8, height: 8, borderRadius: "50%",
-                    background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
-                  }}
-                />
-              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
-                <span
-                  title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
-                  className="shrink-0"
-                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-                />
               ) : null}
               {!isDeleting ? (
                 <span
