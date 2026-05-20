@@ -1093,7 +1093,7 @@ export function createGitOperationsService({
               stashOid: stashOid || null,
               error: message,
             });
-            throw new Error(`Stash was applied, but ADE could not remove ${stashRef}; the stash remains saved. ${message}`);
+            // Apply already succeeded; retrying pop would conflict with the applied changes.
           }
         }
       });
