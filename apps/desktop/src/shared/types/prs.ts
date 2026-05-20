@@ -287,6 +287,7 @@ export type CreateLaneFromPrBranchBlockCode =
   | "missing_head_branch"
   | "remote_branch_missing"
   | "remote_branch_mismatch"
+  | "local_branch_mismatch"
   | "fork_unavailable"
   | "branch_owned"
   | "default_branch"

@@ -198,6 +198,23 @@ describe("createCtoOperatorTools", () => {
     expect(toolKeys).toContain("listAutomationRuns");
   });
 
+  it("resolves the latest branch stash before popping when no stash ref is provided", async () => {
+    const gitService = {
+      listStashes: vi.fn().mockResolvedValue([
+        { ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
+      ]),
+      stashPop: vi.fn().mockResolvedValue({ operationId: "stash-pop" }),
+    };
+    const deps = buildDeps({ gitService: gitService as any });
+    const tools = createCtoOperatorTools(deps);
+
+    const result = await (tools.gitStashPop as any).execute({ laneId: "lane-1" });
+
+    expect(gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(gitService.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{3}" });
+    expect(result).toMatchObject({ success: true, operationId: "stash-pop" });
+  });
+
   // ── Chat tools ──────────────────────────────────────────────────
 
   describe("chat tools", () => {

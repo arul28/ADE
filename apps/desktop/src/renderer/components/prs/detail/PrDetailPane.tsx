@@ -894,7 +894,7 @@ export function PrDetailPane({
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      if (options.hydrateSnapshot) {
+      if (options.hydrateSnapshot && !options.forceLive) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
         const cachedSnapshot = contextSnapshot ?? (typeof window.ade.prs.listSnapshots === "function"
           ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]

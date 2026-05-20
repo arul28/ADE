@@ -1150,16 +1150,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setDetailBusy(false);
       clearSecondaryDetail();
     };
-    const warmedSnapshotForRequest = detailSnapshotsByPrIdRef.current[prId] ?? null;
-    if (warmedSnapshotForRequest && detailSnapshotStatePrIdRef.current !== prId) {
-      applySnapshotPrefill(warmedSnapshotForRequest);
-    }
     const cachedDetailAgeMs = Date.now() - (detailLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshDetailCache =
       cachedDetailAgeMs >= 0
       && cachedDetailAgeMs < PRS_DETAIL_CACHE_TTL_MS
       && detailStatePrIdRef.current === prId
       && detailCacheHasDataRef.current;
+    const warmedSnapshotForRequest = detailSnapshotsByPrIdRef.current[prId] ?? null;
+    if (warmedSnapshotForRequest && detailSnapshotStatePrIdRef.current !== prId && !hasFreshDetailCache) {
+      applySnapshotPrefill(warmedSnapshotForRequest);
+    }
     const cachedSnapshotAgeMs = Date.now() - (detailSnapshotLoadedAtByPrIdRef.current[prId] ?? 0);
     const hasFreshSnapshotPrefill =
       cachedSnapshotAgeMs >= 0
@@ -1238,7 +1238,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         }
         if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
           detailFetchInProgress.current = false;
-          setDetailLiveDataPrId(primaryFulfilledCount === primaryRequestCount ? prId : null);
+          setDetailLiveDataPrId(!rateLimited && primaryFulfilledCount > 0 ? prId : null);
         }
       };
       const loadPrimaryPiece = <T,>(
@@ -1258,6 +1258,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
             detailStatePrIdRef.current = prId;
             detailLoadedAtByPrIdRef.current[prId] = Date.now();
             apply(value);
+            setDetailLiveDataPrId(prId);
             setDetailBusy(false);
           })
           .catch((error: unknown) => {
@@ -1366,7 +1367,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       }
       if (selectedPrIdRef.current === prId && primarySettledCount === primaryRequestCount) {
         detailFetchInProgress.current = false;
-        setDetailLiveDataPrId(primaryFulfilledCount === primaryRequestCount ? prId : null);
+        setDetailLiveDataPrId(!rateLimited && primaryFulfilledCount > 0 ? prId : null);
       }
     };
     const isRateLimitError = (error: unknown): boolean => {
@@ -1390,6 +1391,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           detailStatePrIdRef.current = prId;
           detailLoadedAtByPrIdRef.current[prId] = Date.now();
           apply(value);
+          setDetailLiveDataPrId(prId);
           setDetailBusy(false);
         })
         .catch((error: unknown) => {

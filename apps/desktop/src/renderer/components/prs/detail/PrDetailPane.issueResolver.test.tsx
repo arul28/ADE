@@ -960,6 +960,76 @@ describe("PrDetailPane issue resolver CTA", () => {
     expect(screen.queryByText("stale-label")).toBeNull();
   });
 
+  it("keeps live rich detail while a force-live refresh is pending", async () => {
+    const freshDetail = {
+      prId: "pr-80",
+      body: "Fresh live body",
+      labels: [{ name: "fresh-label", color: "22c55e", description: null }],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const staleSnapshot: PrSnapshotHydration = {
+      prId: "pr-80",
+      detail: {
+        ...freshDetail,
+        body: "Stale cached body",
+        labels: [{ name: "stale-label", color: "ef4444", description: null }],
+      },
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    let resolveSecondDetail!: (value: typeof freshDetail) => void;
+    const secondDetail = new Promise<typeof freshDetail>((resolve) => {
+      resolveSecondDetail = resolve;
+    });
+    const getDetail = vi.fn()
+      .mockResolvedValueOnce(freshDetail)
+      .mockReturnValueOnce(secondDetail);
+    const { rerenderPane } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      getDetail,
+      snapshotHydration: null,
+      snapshotHydrationOwnedByContext: true,
+      prOverrides: {
+        checksStatus: "none",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh-label")).toBeTruthy();
+    });
+
+    const refreshedPr = {
+      checksStatus: "pending" as const,
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    rerenderPane(refreshedPr);
+
+    await waitFor(() => {
+      expect(getDetail).toHaveBeenCalledTimes(2);
+    });
+    rerenderPane(refreshedPr, { snapshotHydration: staleSnapshot });
+
+    expect(screen.getByText("fresh-label")).toBeTruthy();
+    expect(screen.queryByText("stale-label")).toBeNull();
+
+    await act(async () => {
+      resolveSecondDetail(freshDetail);
+      await secondDetail;
+    });
+  });
+
   it("prefers authoritative empty live detail over cached snapshot data", async () => {
     const user = userEvent.setup();
     const listSnapshots = vi.fn().mockResolvedValue([{

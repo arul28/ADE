@@ -2628,9 +2628,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitStashPop = tool({
-    description: "Pop the latest stash saved for a lane branch.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.stashPop({ laneId: resolveLaneId(laneId) })),
+    description: "Pop a stash saved for a lane branch. Defaults to the latest branch-matching stash.",
+    inputSchema: z.object({ laneId: z.string().optional(), stashRef: z.string().optional() }),
+    execute: ({ laneId, stashRef }) => gitGuard(async () => {
+      const resolvedLaneId = resolveLaneId(laneId);
+      const trimmedRef = stashRef?.trim();
+      const resolvedRef = trimmedRef || (await deps.gitService!.listStashes({ laneId: resolvedLaneId }))[0]?.ref;
+      if (!resolvedRef) throw new Error("No stashes are saved for this lane branch.");
+      return deps.gitService!.stashPop({ laneId: resolvedLaneId, stashRef: resolvedRef });
+    }),
   });
 
   tools.gitStashList = tool({

@@ -2041,6 +2041,25 @@ export function createPrService({
     return null;
   };
 
+  const resolveLocalBranchForPrHead = async (args: {
+    headBranch: string;
+    headSha: string | null;
+    githubPrNumber: number;
+  }): Promise<CreateLaneFromPrBranchBlock | null> => {
+    if (!args.headSha) return null;
+    const localBranch = await runGit(["rev-parse", "--verify", `refs/heads/${args.headBranch}`], {
+      cwd: projectRoot,
+      timeoutMs: 8_000,
+    });
+    if (localBranch.exitCode !== 0) return null;
+    const localSha = localBranch.stdout.trim();
+    if (!localSha || localSha === args.headSha) return null;
+    return createLaneFromPrBranchBlock(
+      "local_branch_mismatch",
+      `Local branch '${args.headBranch}' is at ${localSha}, but PR #${args.githubPrNumber} is at ${args.headSha}. Update or delete the local branch, then try again.`,
+    );
+  };
+
   const resolveConfiguredRemoteBranch = async (args: {
     headBranch: string;
     headSha: string | null;
@@ -2166,6 +2185,8 @@ export function createPrService({
     const sameRepoHead = rawPullHasSameRepoHead(pr, repo);
     const remoteBlock = await resolveConfiguredRemoteBranch({ headBranch, headSha, sameRepoHead });
     if (remoteBlock) return finish(remoteBlock);
+    const localBranchBlock = await resolveLocalBranchForPrHead({ headBranch, headSha, githubPrNumber });
+    if (localBranchBlock) return finish(localBranchBlock);
 
     const checkedOutPath = await findCheckedOutWorktreeForBranch(headBranch).catch(() => null);
     if (checkedOutPath && path.resolve(checkedOutPath) !== path.resolve(projectRoot)) {
@@ -2206,6 +2227,14 @@ export function createPrService({
     if (remoteBlock) {
       throw new Error(remoteBlock.message);
     }
+    const localBranchBlock = await resolveLocalBranchForPrHead({
+      headBranch: preflight.headBranch,
+      headSha: preflight.headSha,
+      githubPrNumber: preflight.githubPrNumber,
+    });
+    if (localBranchBlock) {
+      throw new Error(localBranchBlock.message);
+    }
 
     let lane: Awaited<ReturnType<typeof laneService.importBranch>> | null = null;
     try {
@@ -2214,6 +2243,18 @@ export function createPrService({
         name: preflight.targetLaneName,
         ...(preflight.baseBranch ? { baseBranch: preflight.baseBranch } : {}),
       });
+      if (preflight.headSha) {
+        const importedHead = await runGit(["rev-parse", "HEAD"], {
+          cwd: lane.worktreePath,
+          timeoutMs: 8_000,
+        });
+        const importedHeadSha = importedHead.exitCode === 0 ? importedHead.stdout.trim() : "";
+        if (importedHeadSha !== preflight.headSha) {
+          throw new Error(
+            `Imported lane '${lane.name}' is at ${importedHeadSha || "an unknown commit"}, but PR #${preflight.githubPrNumber} is at ${preflight.headSha}. Fetch the PR branch and try again.`,
+          );
+        }
+      }
       const pr = await linkToLane({
         laneId: lane.id,
         prUrlOrNumber: preflight.githubUrl,

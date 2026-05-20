@@ -640,6 +640,7 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("status").textContent).toBe("open");
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
       expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
     });
     expect(window.ade.prs.getComments).toHaveBeenCalledWith("pr-1");
   });
@@ -795,10 +796,20 @@ describe("PrsContext refresh", () => {
         mergeConflicts: false,
         behindBaseBy: 0,
       });
+      await liveStatus.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+    });
+
+    await act(async () => {
       liveChecks.resolve([]);
       liveReviews.resolve([]);
       liveComments.resolve([]);
-      await Promise.all([liveStatus.promise, liveChecks.promise, liveReviews.promise, liveComments.promise]);
+      await Promise.all([liveChecks.promise, liveReviews.promise, liveComments.promise]);
     });
 
     await waitFor(() => {

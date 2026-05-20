@@ -243,6 +243,12 @@ function buildService(opts: BuildServiceOpts = {}) {
       const branch = String(args[3] ?? "feature/unmapped");
       return { exitCode: 0, stdout: `head-sha-unmapped\trefs/heads/${branch}\n`, stderr: "" };
     }
+    if (command === "rev-parse" && args[1] === "--verify" && String(args[2] ?? "").startsWith("refs/heads/")) {
+      return { exitCode: 1, stdout: "", stderr: "" };
+    }
+    if (command === "rev-parse" && args[1] === "HEAD") {
+      return { exitCode: 0, stdout: "head-sha-unmapped\n", stderr: "" };
+    }
     // Make runGit succeed for upstream check (returns exitCode 0 → push path)
     return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
   });
@@ -1713,6 +1719,9 @@ describe("prService.createLaneFromPrBranch", () => {
         const sha = lsRemoteCalls === 1 ? "head-sha-unmapped" : "moved-sha";
         return { exitCode: 0, stdout: `${sha}\trefs/heads/feature/unmapped\n`, stderr: "" };
       }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
       if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
       if (command === "fetch" || command === "push") return { exitCode: 0, stdout: "", stderr: "" };
       return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
@@ -1725,6 +1734,95 @@ describe("prService.createLaneFromPrBranch", () => {
 
     expect(lsRemoteCalls).toBe(2);
     expect(laneService.importBranch).not.toHaveBeenCalled();
+  });
+
+  it("blocks before importing when a stale local branch would shadow the PR head", async () => {
+    const laneService = {
+      ...makeLaneService([primaryLane]),
+      importBranch: vi.fn(),
+      delete: vi.fn(async () => undefined),
+    } as any;
+    const githubService = makeBranchPrGithubService();
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+    mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+      const command = Array.isArray(args) ? args[0] : null;
+      if (command === "ls-remote") {
+        return { exitCode: 0, stdout: "head-sha-unmapped\trefs/heads/feature/unmapped\n", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify") {
+        return { exitCode: 0, stdout: "stale-sha\n", stderr: "" };
+      }
+      if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
+      if (command === "fetch" || command === "push") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+    });
+
+    await expect(serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Unmapped branch PR",
+    })).rejects.toThrow(/Local branch 'feature\/unmapped' is at stale-sha, but PR #404 is at head-sha-unmapped/i);
+
+    expect(laneService.importBranch).not.toHaveBeenCalled();
+    expect(laneService.delete).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the imported lane when the imported checkout is not at the PR head", async () => {
+    const importedLane = makeFakeLane({
+      id: "lane-imported",
+      name: "Unmapped branch PR",
+      branchRef: "refs/heads/feature/unmapped",
+      baseRef: "refs/heads/main",
+      worktreePath: "/tmp/test-project/.ade/worktrees/feature-unmapped",
+      parentLaneId: null,
+    });
+    let branchImported = false;
+    const laneService = {
+      ...makeLaneService(),
+      list: vi.fn(async () => branchImported ? [primaryLane, importedLane] : [primaryLane]),
+      importBranch: vi.fn(async () => {
+        branchImported = true;
+        return importedLane;
+      }),
+      delete: vi.fn(async () => undefined),
+    } as any;
+    const githubService = makeBranchPrGithubService();
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const { service } = buildService({ db, githubService, laneService });
+    mockGit.runGit.mockImplementation(async (args: unknown[]) => {
+      const command = Array.isArray(args) ? args[0] : null;
+      if (command === "ls-remote") {
+        return { exitCode: 0, stdout: "head-sha-unmapped\trefs/heads/feature/unmapped\n", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "--verify") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (command === "rev-parse" && Array.isArray(args) && args[1] === "HEAD") {
+        return { exitCode: 0, stdout: "stale-sha\n", stderr: "" };
+      }
+      if (command === "worktree") return { exitCode: 0, stdout: "", stderr: "" };
+      if (command === "fetch" || command === "push") return { exitCode: 0, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "origin/my-feature", stderr: "" };
+    });
+
+    await expect(serviceWithPrBranchActions(service).createLaneFromPrBranch({
+      prUrlOrNumber: prUrl,
+      laneName: "Unmapped branch PR",
+    })).rejects.toThrow(/is at stale-sha, but PR #404 is at head-sha-unmapped/i);
+
+    expect(laneService.importBranch).toHaveBeenCalled();
+    expect(laneService.delete).toHaveBeenCalledWith({
+      laneId: "lane-imported",
+      deleteBranch: false,
+      deleteRemoteBranch: false,
+      force: true,
+    });
+    expect(db.run).not.toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.anything(),
+    );
   });
 
   it("cleans up the imported lane when PR linking fails", async () => {
