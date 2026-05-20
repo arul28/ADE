@@ -639,7 +639,13 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             {actionSlot ? (
               <div
                 className="shrink-0 p-3"
-                style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}
+                data-testid="pr-detail-action-rail-slot"
+                style={{
+                  borderBottom: `1px solid ${COLORS.border}`,
+                  background: COLORS.pageBg,
+                  maxHeight: "min(40%, 340px)",
+                  overflowY: "auto",
+                }}
               >
                 {actionSlot}
               </div>

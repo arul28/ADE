@@ -2633,9 +2633,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: ({ laneId, stashRef }) => gitGuard(async () => {
       const resolvedLaneId = resolveLaneId(laneId);
       const trimmedRef = stashRef?.trim();
-      const resolvedRef = trimmedRef || (await deps.gitService!.listStashes({ laneId: resolvedLaneId }))[0]?.ref;
+      const stashes = await deps.gitService!.listStashes({ laneId: resolvedLaneId });
+      const selectedStash = trimmedRef
+        ? stashes.find((stash) => stash.ref === trimmedRef)
+        : stashes[0];
+      const resolvedRef = trimmedRef || selectedStash?.ref;
       if (!resolvedRef) throw new Error("No stashes are saved for this lane branch.");
-      return deps.gitService!.stashPop({ laneId: resolvedLaneId, stashRef: resolvedRef });
+      return deps.gitService!.stashPop({
+        laneId: resolvedLaneId,
+        stashRef: resolvedRef,
+        ...(selectedStash?.oid ? { stashOid: selectedStash.oid } : {}),
+      });
     }),
   });
 

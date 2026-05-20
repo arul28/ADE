@@ -1420,6 +1420,9 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
 
     expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
+    const actionSlot = screen.getByTestId("pr-detail-action-rail-slot");
+    expect(actionSlot.style.overflowY).toBe("auto");
+    expect(actionSlot.style.maxHeight).toBe("min(40%, 340px)");
     expect(screen.getByRole("button", { name: /ai review/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /submit review/i })).toBeTruthy();
 

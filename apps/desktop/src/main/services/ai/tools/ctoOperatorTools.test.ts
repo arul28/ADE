@@ -201,7 +201,7 @@ describe("createCtoOperatorTools", () => {
   it("resolves the latest branch stash before popping when no stash ref is provided", async () => {
     const gitService = {
       listStashes: vi.fn().mockResolvedValue([
-        { ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
+        { oid: "oid-3", ref: "stash@{3}", subject: "feature/lane: latest branch stash", createdAt: "2026-03-16T00:00:00.000Z" },
       ]),
       stashPop: vi.fn().mockResolvedValue({ operationId: "stash-pop" }),
     };
@@ -211,7 +211,7 @@ describe("createCtoOperatorTools", () => {
     const result = await (tools.gitStashPop as any).execute({ laneId: "lane-1" });
 
     expect(gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
-    expect(gitService.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{3}" });
+    expect(gitService.stashPop).toHaveBeenCalledWith({ laneId: "lane-1", stashRef: "stash@{3}", stashOid: "oid-3" });
     expect(result).toMatchObject({ success: true, operationId: "stash-pop" });
   });
 

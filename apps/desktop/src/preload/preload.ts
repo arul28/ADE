@@ -7248,7 +7248,7 @@ contextBridge.exposeInMainWorld("ade", {
         { args: args ?? {} },
         () => ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
       ),
-    getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis> =>
+    getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis | null> =>
       callProjectRuntimeActionOr(
         "pr",
         "getConflictAnalysis",

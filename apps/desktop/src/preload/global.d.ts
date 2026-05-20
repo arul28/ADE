@@ -2075,7 +2075,7 @@ declare global {
           includeCompleted?: boolean;
           limit?: number;
         }) => Promise<QueueLandingState[]>;
-        getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis>;
+        getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis | null>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         getMergeContexts: (
           prIds: string[],
