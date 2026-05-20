@@ -201,13 +201,52 @@ function buildPage({ httpOrigin, ptyWsUrl, mirrorInstanceId, hasFitAddon }) {
     const PTY_URL = ${JSON.stringify(ptyWsUrl)};
     const MIRROR_ID = ${JSON.stringify(mirrorInstanceId)};
     const status = document.getElementById("status");
+    const PTY_COL_SAFETY_MARGIN = 1;
+    const MAX_WEB_COLS = 240;
+    const DEBUG_DATASET = new URLSearchParams(location.search).has("debug");
     let inputRole = "primary";
     let lastSentDims = { cols: 0, rows: 0 };
     let ptyWs;
     let resizeTimer = null;
+    const mirrorDebug = {
+      messages: 0,
+      controlMessages: 0,
+      stringWrites: 0,
+      lastPtyLength: 0,
+      lastPtySample: "",
+      blobWrites: 0,
+      arrayBufferWrites: 0,
+      viewWrites: 0,
+      fallbackWrites: 0,
+      writeErrors: [],
+    };
+    if (DEBUG_DATASET) window.__adeTuiMirrorDebug = mirrorDebug;
 
     function setStatus(text) {
       status.textContent = text;
+    }
+
+    function updateDebugDataset() {
+      if (!DEBUG_DATASET) return;
+      status.dataset.messages = String(mirrorDebug.messages);
+      status.dataset.controlMessages = String(mirrorDebug.controlMessages);
+      status.dataset.stringWrites = String(mirrorDebug.stringWrites);
+      status.dataset.lastPtyLength = String(mirrorDebug.lastPtyLength);
+      status.dataset.lastPtySample = mirrorDebug.lastPtySample;
+      status.dataset.writeErrors = mirrorDebug.writeErrors.slice(-3).join(" | ");
+      try {
+        status.dataset.cursor = String(term.buffer.active.cursorX) + "," + String(term.buffer.active.cursorY);
+        status.dataset.viewport = String(term.buffer.active.viewportY) + "," + String(term.buffer.active.baseY) + "," + String(term.buffer.active.length);
+        status.dataset.bufferLine0 = term.buffer.active.getLine(0)?.translateToString(true).slice(0, 120) ?? "";
+        status.dataset.bufferLine1 = term.buffer.active.getLine(1)?.translateToString(true).slice(0, 120) ?? "";
+        if (DEBUG_DATASET) {
+          const screenLines = [];
+          for (let index = 0; index < term.rows; index += 1) {
+            screenLines.push(term.buffer.active.getLine(index)?.translateToString(true) ?? "");
+          }
+          status.dataset.screenText = screenLines.join("\\n").slice(0, 24000);
+        }
+      } catch (_) {}
     }
 
     function setRole(role) {
@@ -232,9 +271,18 @@ function buildPage({ httpOrigin, ptyWsUrl, mirrorInstanceId, hasFitAddon }) {
     term.focus();
     document.getElementById("terminal").addEventListener("pointerdown", () => term.focus());
 
+    function writeTerminal(data) {
+      term.write(data, () => {
+        try {
+          term.refresh(0, Math.max(0, term.rows - 1));
+        } catch (_) {}
+        updateDebugDataset();
+      });
+    }
+
     function measureGrid() {
       ${fitCall}
-      return { cols: term.cols, rows: term.rows };
+      return { cols: Math.max(2, Math.min(MAX_WEB_COLS, term.cols - PTY_COL_SAFETY_MARGIN)), rows: term.rows };
     }
 
     function pushPrimaryResize() {
@@ -261,27 +309,82 @@ function buildPage({ httpOrigin, ptyWsUrl, mirrorInstanceId, hasFitAddon }) {
       });
     });
     ptyWs.addEventListener("message", (ev) => {
+      mirrorDebug.messages += 1;
+      updateDebugDataset();
       if (typeof ev.data === "string") {
+        let handledControlMessage = false;
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "session" && msg.mirrorInstanceId === MIRROR_ID) {
             setRole(msg.role === "primary" ? "primary" : "viewer");
+            handledControlMessage = true;
           }
           if (msg.type === "sync_resize" && Number.isFinite(msg.cols) && Number.isFinite(msg.rows)) {
             const c = Math.floor(msg.cols);
             const r = Math.floor(msg.rows);
             lastSentDims = { cols: c, rows: r };
-            if (term.cols !== c || term.rows !== r) term.resize(c, r);
+            const displayCols = c + PTY_COL_SAFETY_MARGIN;
+            if (term.cols !== displayCols || term.rows !== r) term.resize(displayCols, r);
             setRole(inputRole);
+            handledControlMessage = true;
+          }
+          if (msg.type === "pty" && typeof msg.data === "string") {
+            mirrorDebug.stringWrites += 1;
+            mirrorDebug.lastPtyLength = msg.data.length;
+            mirrorDebug.lastPtySample = msg.data.slice(0, 60);
+            writeTerminal(msg.data);
+            updateDebugDataset();
+            handledControlMessage = true;
           }
         } catch (_) {}
+        if (handledControlMessage) {
+          mirrorDebug.controlMessages += 1;
+        } else {
+          mirrorDebug.stringWrites += 1;
+          writeTerminal(ev.data);
+          updateDebugDataset();
+        }
         return;
       }
-      term.write(new Uint8Array(ev.data));
+      if (ev.data && typeof ev.data.arrayBuffer === "function") {
+        ev.data.arrayBuffer()
+          .then((buffer) => {
+            mirrorDebug.blobWrites += 1;
+            if (typeof Uint8Array !== "undefined") writeTerminal(new Uint8Array(buffer));
+            else writeTerminal(buffer);
+            updateDebugDataset();
+          })
+          .catch((error) => {
+            mirrorDebug.writeErrors.push(String(error && error.message ? error.message : error));
+            updateDebugDataset();
+          });
+        return;
+      }
+      if (typeof ArrayBuffer !== "undefined" && ev.data instanceof ArrayBuffer) {
+        mirrorDebug.arrayBufferWrites += 1;
+        writeTerminal(new Uint8Array(ev.data));
+        updateDebugDataset();
+        return;
+      }
+      if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(ev.data)) {
+        mirrorDebug.viewWrites += 1;
+        writeTerminal(new Uint8Array(ev.data.buffer, ev.data.byteOffset, ev.data.byteLength));
+        updateDebugDataset();
+        return;
+      }
+      try {
+        mirrorDebug.fallbackWrites += 1;
+        writeTerminal(ev.data);
+        updateDebugDataset();
+      } catch (_) {
+        mirrorDebug.writeErrors.push("unknown payload");
+        updateDebugDataset();
+        // Unknown browser WebSocket payload shape; keep the mirror alive.
+      }
     });
     ptyWs.addEventListener("close", () => {
       setStatus("disconnected");
-      term.write("\\r\\n\\x1b[33m[pty disconnected]\\x1b[0m\\r\\n");
+      writeTerminal("\\r\\n\\x1b[33m[pty disconnected]\\x1b[0m\\r\\n");
     });
     ptyWs.addEventListener("error", () => {
       setStatus("WebSocket error");
@@ -305,6 +408,15 @@ function buildPage({ httpOrigin, ptyWsUrl, mirrorInstanceId, hasFitAddon }) {
     ro.observe(document.getElementById("terminal"));
     window.addEventListener("focus", () => {
       if (inputRole === "primary") term.focus();
+      try {
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch (_) {}
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      try {
+        term.refresh(0, Math.max(0, term.rows - 1));
+      } catch (_) {}
     });
   </script>
 </body>
@@ -384,6 +496,27 @@ async function main() {
   let primaryClient = null;
   let ptyCols = 120;
   let ptyRows = 36;
+  const ptyReplayLimitBytes = 2 * 1024 * 1024;
+  /** @type {string[]} */
+  const ptyReplayChunks = [];
+  let ptyReplayBytes = 0;
+
+  function rememberPtyOutput(text) {
+    if (!text.length) return;
+    ptyReplayChunks.push(text);
+    ptyReplayBytes += Buffer.byteLength(text);
+    while (ptyReplayBytes > ptyReplayLimitBytes && ptyReplayChunks.length > 1) {
+      const removed = ptyReplayChunks.shift();
+      ptyReplayBytes -= removed ? Buffer.byteLength(removed) : 0;
+    }
+  }
+
+  function replayPtyOutput(ws) {
+    for (const chunk of ptyReplayChunks) {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: "pty", data: chunk }));
+    }
+  }
 
   function broadcastSessionRoles() {
     const primaryJson = JSON.stringify({ type: "session", mirrorInstanceId, role: "primary" });
@@ -475,6 +608,7 @@ async function main() {
     primaryClient = ws;
     broadcastSessionRoles();
     ws.send(JSON.stringify({ type: "sync_resize", cols: ptyCols, rows: ptyRows }));
+    replayPtyOutput(ws);
 
     ws.on("message", (raw) => {
       try {
@@ -523,9 +657,11 @@ async function main() {
   });
 
   shell.onData((data) => {
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+    rememberPtyOutput(text);
+    const payload = JSON.stringify({ type: "pty", data: text });
     for (const client of ptyClients) {
-      if (client.readyState === WebSocket.OPEN) client.send(buf);
+      if (client.readyState === WebSocket.OPEN) client.send(payload);
     }
   });
   shell.onExit(({ exitCode, signal }) => {

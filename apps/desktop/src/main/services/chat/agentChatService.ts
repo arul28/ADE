@@ -551,6 +551,18 @@ type ClaudeRuntime = {
     finalSummary?: string;
     agentType?: string;
     agentId?: string;
+    /**
+     * Cached at spawn time so task_progress / task_notification handlers don't
+     * have to re-derive them from the message. Set for Claude SDK runs only.
+     */
+    taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+    workflowName?: string;
+    /**
+     * SDK marks ambient/housekeeping tasks (e.g. session-title generation) with
+     * skip_transcript=true. Stashed here so completion events can be suppressed
+     * symmetrically with the spawn.
+     */
+    skipTranscript?: boolean;
   }>;
   /**
    * Stash for Task-tool inputs captured at the assistant tool_use boundary,
@@ -2533,6 +2545,22 @@ function buildPlanningApprovalViolation(toolName: string): string {
 
 function isBackgroundTask(item: Record<string, unknown>): boolean {
   return !!(item.run_in_background || item.background);
+}
+
+const CLAUDE_TASK_TYPES = ["subagent", "background", "local_workflow", "cron", "other"] as const;
+type ClaudeTaskType = (typeof CLAUDE_TASK_TYPES)[number];
+const CLAUDE_TASK_TYPE_SET = new Set<ClaudeTaskType>(CLAUDE_TASK_TYPES);
+
+function normalizeClaudeTaskType(value: unknown): ClaudeTaskType | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return CLAUDE_TASK_TYPE_SET.has(trimmed as ClaudeTaskType) ? (trimmed as ClaudeTaskType) : undefined;
+}
+
+function normalizeClaudeWorkflowName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : undefined;
 }
 
 function taskParentToolUseId(item: Record<string, unknown>): string | null {
@@ -9762,18 +9790,23 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        // system:task_progress — running subagent summary/usage
+        // system:task_progress — running task summary/usage
         if (msg.type === "system" && (msg as any).subtype === "task_progress") {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
           const existing = runtime.activeSubagents.get(taskId);
+          // If the spawn was filtered as ambient/housekeeping, drop progress
+          // notifications too so the panel stays symmetrical.
+          if (existing?.skipTranscript) continue;
           const description = String(taskMsg.description ?? existing?.description ?? "");
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
           const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
+          const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
+          const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
           runtime.activeSubagents.set(taskId, {
             taskId,
             description,
@@ -9782,6 +9815,8 @@ export function createAgentChatService(args: {
             finalSummary: existing?.finalSummary,
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
+            ...(taskType ? { taskType } : {}),
+            ...(workflowName ? { workflowName } : {}),
           });
           emitChatEvent(managed, {
             type: "subagent_progress",
@@ -9797,14 +9832,34 @@ export function createAgentChatService(args: {
               durationMs: typeof taskMsg.usage.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
             } : undefined,
             lastToolName: typeof taskMsg.last_tool_name === "string" ? taskMsg.last_tool_name : undefined,
+            ...(taskType ? { taskType } : {}),
+            ...(workflowName ? { workflowName } : {}),
             turnId,
           });
           continue;
         }
 
-        // system:task_started — subagent spawn
+        // system:task_started — a task in the SDK started. task_type tells us
+        // what kind: "subagent" (Task tool), "background" (Bash run_in_background
+        // and similar), "local_workflow" (e.g. /spec), "cron" (scheduled), or
+        // "other". The SDK also marks ambient tasks (session-title generator,
+        // summary writer) with skip_transcript=true; those must not surface.
         if (msg.type === "system" && (msg as any).subtype === "task_started") {
           const taskMsg = msg as any;
+          if (taskMsg.skip_transcript === true) {
+            const skippedId = typeof taskMsg.task_id === "string" && taskMsg.task_id.trim().length
+              ? taskMsg.task_id.trim()
+              : null;
+            if (skippedId) {
+              runtime.activeSubagents.set(skippedId, {
+                taskId: skippedId,
+                description: typeof taskMsg.description === "string" ? taskMsg.description : "",
+                parentToolUseId: taskParentToolUseId(taskMsg as Record<string, unknown>),
+                skipTranscript: true,
+              });
+            }
+            continue;
+          }
           const taskId = String(taskMsg.task_id ?? randomUUID());
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>);
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
@@ -9817,7 +9872,16 @@ export function createAgentChatService(args: {
           const agentId = typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length
             ? taskMsg.agent_id.trim()
             : undefined;
-          const background = isBackgroundTask(taskMsg as Record<string, unknown>) || stashed?.isBackground === true;
+          const taskType = normalizeClaudeTaskType(taskMsg.task_type);
+          const workflowName = normalizeClaudeWorkflowName(taskMsg.workflow_name);
+          // The SDK sets task_type explicitly. When absent, fall back to the
+          // legacy hints (run_in_background field, Task-tool stash) so older
+          // SDK versions keep behaving as before.
+          const background = taskType === "background"
+            || taskType === "cron"
+            || taskType === "local_workflow"
+            || isBackgroundTask(taskMsg as Record<string, unknown>)
+            || stashed?.isBackground === true;
           runtime.activeSubagents.set(taskId, {
             taskId,
             description,
@@ -9825,6 +9889,8 @@ export function createAgentChatService(args: {
             background,
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
+            ...(taskType ? { taskType } : {}),
+            ...(workflowName ? { workflowName } : {}),
           });
           emitChatEvent(managed, {
             type: "subagent_started",
@@ -9834,23 +9900,32 @@ export function createAgentChatService(args: {
             parentToolUseId,
             description,
             background,
+            ...(taskType ? { taskType } : {}),
+            ...(workflowName ? { workflowName } : {}),
             turnId,
           });
           continue;
         }
 
-        // system:task_notification — subagent completed
+        // system:task_notification — task completed (subagent, background, or
+        // workflow). Suppress when the matching spawn was filtered as ambient.
         if (msg.type === "system" && (msg as any).subtype === "task_notification") {
           const taskMsg = msg as any;
           const taskId = String(taskMsg.task_id ?? "");
           if (!taskId) continue;
           const existing = runtime.activeSubagents.get(taskId);
+          if (existing?.skipTranscript) {
+            runtime.activeSubagents.delete(taskId);
+            continue;
+          }
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const summary = String(taskMsg.summary ?? existing?.finalSummary ?? "");
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
           const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
+          const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
+          const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
           runtime.activeSubagents.delete(taskId);
           if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
           emitChatEvent(managed, {
@@ -9867,6 +9942,8 @@ export function createAgentChatService(args: {
               toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
               durationMs: typeof taskMsg.usage.duration_ms === "number" ? taskMsg.usage.duration_ms : undefined,
             } : undefined,
+            ...(taskType ? { taskType } : {}),
+            ...(workflowName ? { workflowName } : {}),
             turnId,
           });
           continue;
@@ -20309,9 +20386,23 @@ export function createAgentChatService(args: {
     }
   };
 
+  const modelCatalogContainsRefreshProvider = (
+    catalog: AgentChatModelCatalog,
+    provider: AgentChatModelCatalogRefreshProvider,
+  ): boolean => {
+    return (catalog.groups ?? []).some((group) => {
+      const groupMatches = provider === "droid"
+        ? group.key === "droid"
+        : group.key === provider;
+      if (!groupMatches) return false;
+      return (group.providers ?? []).some((entry) => entry.modelCount > 0);
+    });
+  };
+
   const isModelCatalogRefreshStale = (refreshProvider?: AgentChatModelCatalogRefreshProvider): boolean => {
     if (!modelCatalogCache) return true;
     if (refreshProvider) {
+      if (refreshProvider === "cursor" && !modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider)) return true;
       const refreshedAt = modelCatalogProviderRefreshedAt.get(refreshProvider);
       return !refreshedAt || Date.now() - refreshedAt > modelCatalogRefreshTtlMs(refreshProvider);
     }
@@ -20326,6 +20417,15 @@ export function createAgentChatService(args: {
     ...catalog,
     stale,
   });
+
+  const shouldMarkModelCatalogProviderFresh = (
+    catalog: AgentChatModelCatalog,
+    refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
+  ): boolean => {
+    if (!refreshProvider) return true;
+    if (refreshProvider !== "cursor") return true;
+    return modelCatalogContainsRefreshProvider(catalog, refreshProvider);
+  };
 
   const discoverOpenCodeLocalModels = async (): Promise<DiscoveredLocalModelEntry[]> => {
     const auth = await detectAuth();
@@ -20746,7 +20846,7 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
-    if (mode !== "cached") {
+    if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider)) {
       markModelCatalogProviderFresh(refreshProvider, Date.now());
     }
     return catalog;

@@ -1,7 +1,7 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { RightPane } from "../components/RightPane";
+import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, RightPane } from "../components/RightPane";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
 function stripAnsi(text: string): string {
@@ -160,6 +160,34 @@ describe("RightPane chat info", () => {
     expect(frame).toMatch(/↑\s+\d+\s+earlier/);
     expect(frame).toContain("agent-07");
   });
+
+  it("separates foreground subagents from background tasks with section headers", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            snapshots: [
+              { id: "s1", name: "explore-code", kind: "subagent", status: "running", summary: "reading files" },
+              { id: "b1", name: "dev:desktop", kind: "subagent", status: "running", background: true, summary: "tailing logs" },
+              { id: "b2", name: "ade code web mirror", kind: "subagent", status: "completed", background: true, summary: "exited 0" },
+            ],
+          }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("subagents");
+    expect(frame).toContain("background");
+    expect(frame.indexOf("explore-code")).toBeLessThan(frame.indexOf("background"));
+    expect(frame.indexOf("background")).toBeLessThan(frame.indexOf("dev:desktop"));
+    // bg count shows up in the header
+    expect(frame).toMatch(/2\s+bg/);
+  });
 });
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -294,7 +322,7 @@ describe("RightPane lane-details", () => {
         content={{
           kind: "lane-details",
           ...baseLaneDetails,
-          selectedActionIndex: 0,
+          selectedActionIndex: LANE_DETAIL_ACTIONS.findIndex((action) => action.k === "a"),
         }}
         focused
         width={80}
@@ -303,10 +331,11 @@ describe("RightPane lane-details", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("ACTIONS");
-    expect(frame).toMatch(/\[a\]\s*stage all/);
+    // Selected row renders as: "▎ [a] {glyph} stage all" — allow the glyph between key and label.
+    expect(frame).toMatch(/\[a\]\s+\S+\s+stage all/);
     expect(frame).toContain("commit");
-    expect(frame).not.toMatch(/\[c\]\s*commit/);
-    expect(frame).not.toMatch(/\[p\]\s*push/);
+    expect(frame).not.toMatch(/\[c\][^\n]*commit/);
+    expect(frame).not.toMatch(/\[p\][^\n]*push/);
   });
 
   it("renders PR activity and chat counts", () => {
@@ -346,7 +375,7 @@ describe("RightPane lane-details", () => {
         content={{
           kind: "lane-details",
           ...baseLaneDetails,
-          selectedActionIndex: 5,
+          selectedActionIndex: LANE_DETAIL_PR_ACTION_INDEX,
           pr: {
             number: 311,
             state: "open",
@@ -387,5 +416,100 @@ describe("RightPane lane-details", () => {
     expect(frame).not.toContain("stage all");
     expect(frame).not.toContain("commit");
     expect(frame).not.toContain("push");
+  });
+});
+
+describe("RightPane setup panes", () => {
+  it("renders lane delete as a real preflight with scope, force, remote, and confirmation rows", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "Delete lane",
+          command: "lane-delete",
+          laneDelete: {
+            laneName: "scratch-delete-tui",
+            branchRef: "ade/scratch-delete-tui",
+            dirty: true,
+          },
+          fields: [
+            { name: "scope", label: "Scope", initialValue: "remote_branch" },
+            { name: "force", label: "Force delete", initialValue: "yes" },
+            { name: "remoteName", label: "Remote name", initialValue: "origin" },
+            { name: "confirm", label: "Type lane name", required: true, placeholder: "scratch-delete-tui" },
+          ],
+        }}
+        formValues={{
+          scope: "remote_branch",
+          force: "yes",
+          remoteName: "origin",
+          confirm: "scratch-delete-tui",
+        }}
+        activeFormField={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("DELETE LANE");
+    expect(frame).toContain("Destructive action");
+    expect(frame).toContain("scratch-delete-tui");
+    expect(frame).toContain("uncommitted changes detected");
+    expect(frame).toContain("[remote]");
+    expect(frame).toContain("also delete origin/ade/scratch-delete-tui");
+    expect(frame).toContain("Remote name");
+    expect(frame).toContain("origin");
+    expect(frame).toContain("[x] skip safety checks");
+    expect(frame).toContain("enter deletes this lane");
+  });
+
+  it("renders model setup rows and selected row detail", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "model-setup",
+          rows: [
+            { kind: "provider", label: "Provider", value: "Claude", detail: "Claude CLI", cyclable: true },
+            { kind: "model", label: "Model", value: "Sonnet", detail: "3 available", cyclable: true },
+            { kind: "reasoning", label: "Reasoning", value: "high", detail: "low, medium, high", cyclable: true },
+            { kind: "permission", label: "Permissions", value: "auto", detail: "default · auto", cyclable: true },
+          ],
+        }}
+        selectedIndex={2}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("MODEL");
+    expect(frame).toContain("Provider: Claude");
+    expect(frame).toContain("Model: Sonnet");
+    expect(frame).toContain("Reasoning: high");
+    expect(frame).toContain("low, medium, high");
+    expect(frame).toContain("Permissions: auto");
+    expect(frame).toContain("↑↓ rows · ←→ change · ↵ apply · esc close");
+  });
+});
+
+describe("RightPane details", () => {
+  it("keeps the title visible for long details bodies", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "details",
+          title: "Skills",
+          body: Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SKILLS");
+    expect(frame).toContain("line 1");
+    expect(frame).toContain("… 14 more lines");
   });
 });

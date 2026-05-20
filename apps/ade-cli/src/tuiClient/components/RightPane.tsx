@@ -20,6 +20,7 @@ import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desk
 
 const DEFAULT_PANE_WIDTH = 38;
 const LANE_FILE_PREVIEW_ROWS = 5;
+const DETAILS_BODY_MAX_LINES = 26;
 
 // ---------------------------------------------------------------------------
 // Actions for the lane-details pane (5 rows · wireframe)
@@ -30,12 +31,25 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   label: string;
   slashCommand: string;
   detail?: string;
+  glyph?: string;
+  intent?: "rescue-unstaged";
 }> = [
-  { k: "a", label: "stage all", slashCommand: "/stage all" },
-  { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message" },
-  { k: "p", label: "push", slashCommand: "/push" },
-  { k: "d", label: "diff", slashCommand: "/diff" },
-  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref" },
+  { k: "n", label: "new chat", slashCommand: "/new chat", glyph: "✦" },
+  { k: "o", label: "open / create PR", slashCommand: "/pr open", detail: "draft when missing", glyph: "↗" },
+  { k: "a", label: "stage all", slashCommand: "/stage all", glyph: "+" },
+  {
+    k: "u",
+    label: "move unstaged to new lane",
+    slashCommand: "/lane-rescue-unstaged",
+    intent: "rescue-unstaged" as const,
+    detail: "child lane from unstaged work",
+    glyph: "⇄",
+  },
+  { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message", glyph: "✓" },
+  { k: "p", label: "push", slashCommand: "/push", glyph: "↑" },
+  { k: "d", label: "diff", slashCommand: "/diff", glyph: "≡" },
+  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref", glyph: "⎇" },
+  { k: "x", label: "delete lane", slashCommand: "/lane delete", detail: "requires name", glyph: "✗" },
 ];
 
 export const LANE_DETAIL_PR_ACTION_INDEX = LANE_DETAIL_ACTIONS.length;
@@ -137,23 +151,74 @@ function SectionHead({ title, hint }: { title: string; hint?: string }) {
   );
 }
 
+// Tint a lane-detail action's glyph by its semantic kind.
+// Additive (new chat / stage / commit / push) → running-green.
+// Navigational (PR / diff / reparent) → violet.
+// Destructive (delete) → error-red. Rescue (move unstaged) → attention amber.
+function actionGlyphColor(label: string): string {
+  if (label === "new chat" || label === "stage all" || label === "commit" || label === "push") {
+    return theme.color.running;
+  }
+  if (label === "delete lane") return theme.color.error;
+  if (label === "move unstaged to new lane") return theme.color.attention;
+  // open/create PR, diff, reparent → navigational
+  return theme.color.violet;
+}
+
 function ActionRow({
   k,
   label,
   detail,
+  glyph,
   selected,
+  width,
 }: {
   k: string;
   label: string;
   detail?: string;
+  glyph?: string;
   selected?: boolean;
+  width: number;
 }) {
+  const glyphChar = glyph ?? " ";
+  const glyphColor = actionGlyphColor(label);
+  // Reserve at least a small budget so we never produce a negative width.
+  const safeWidth = Math.max(8, width);
   if (!selected) {
-    return <Text color={theme.color.t2}>  {label}</Text>;
+    // Non-selected: "  {glyph} {label}" — two leading spaces, glyph, space, label.
+    // Total prefix is 3 chars ("  " + glyph + " ").
+    const remaining = Math.max(1, safeWidth - 3);
+    const labelText = endTruncate(label, remaining);
+    return (
+      <Text wrap="truncate">
+        <Text>{"  "}</Text>
+        <Text color={glyphColor}>{glyphChar}</Text>
+        <Text color={theme.color.t2}>{` ${labelText}`}</Text>
+      </Text>
+    );
+  }
+  // Selected: "▎ [k] {glyph} {label}  {detail?}"
+  // Prefix string (rail + space + [k] + space): "▎ [k] "  → 6 chars (rail counted as 1 cell).
+  const prefix = `${theme.rail} [${k}] `;
+  // After prefix we render: glyph + space + label + (optional "  " + detail)
+  // Reserve width for prefix + glyph + space + label first.
+  const afterPrefix = Math.max(1, safeWidth - prefix.length);
+  // glyph+space costs 2 cells.
+  const labelBudget = Math.max(1, afterPrefix - 2);
+  const labelText = endTruncate(label, labelBudget);
+  const used = prefix.length + 2 + labelText.length;
+  let detailText = "";
+  if (detail) {
+    const detailRoom = Math.max(0, safeWidth - used - 2); // 2 = "  " gap
+    if (detailRoom > 1) {
+      detailText = `  ${endTruncate(detail, detailRoom)}`;
+    }
   }
   return (
-    <Text color={theme.color.violet} bold>
-      {theme.rail} [{k}] {label}{detail ? `  ${detail}` : ""}
+    <Text wrap="truncate" color={theme.color.violet} bold>
+      <Text>{prefix}</Text>
+      <Text color={glyphColor}>{glyphChar}</Text>
+      <Text>{` ${labelText}${detailText}`}</Text>
     </Text>
   );
 }
@@ -327,7 +392,9 @@ function LaneDetailsPane({
                 k={action.k}
                 label={action.label}
                 detail={action.detail}
+                glyph={action.glyph}
                 selected={idx === content.selectedActionIndex}
+                width={contentWidth}
               />
             ))}
           </Box>
@@ -529,6 +596,7 @@ function ChatInfoRoster({
   const runCount = snapshotRows.filter((row) => row.snapshot.status === "running").length;
   const doneCount = snapshotRows.filter((row) => row.snapshot.status === "completed").length;
   const failedCount = snapshotRows.filter((row) => row.snapshot.status === "failed").length;
+  const bgCount = snapshotRows.filter((row) => row.section === "background").length;
   // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
   const totalSelectable = snapshotRows.length + 1;
   const selected = Math.max(0, Math.min(selectedIndex, totalSelectable - 1));
@@ -536,7 +604,12 @@ function ChatInfoRoster({
   const showingMain = !info.inspectedSubagentId;
   const hint = snapshotRows.length === 0
     ? "0 live"
-    : `${runCount} live · ${doneCount} done${failedCount ? ` · ${failedCount} failed` : ""}`;
+    : [
+        `${runCount} live`,
+        `${doneCount} done`,
+        failedCount ? `${failedCount} failed` : null,
+        bgCount ? `${bgCount} bg` : null,
+      ].filter((value): value is string => value !== null).join(" · ");
 
   const ROSTER_CAPACITY = 5;
   const subagentSelectedIndex = mainSelected ? -1 : selected - 1;
@@ -567,13 +640,23 @@ function ChatInfoRoster({
           ) : null}
           {visibleSlice.map((row, sliceIndex) => {
             const rosterIndex = window.start + sliceIndex;
+            const previousSection = rosterIndex === 0
+              ? "main"
+              : snapshotRows[rosterIndex - 1]?.section;
+            const showSection = row.section !== previousSection;
             const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
             const kind = subagentAgentKind(row.snapshot.status);
-            const statusColor = theme.agentStatusColor(kind);
+            // Background rows get a cyan glyph tint so the eye can sort them out
+            // from foreground subagents at a glance. Falls back to the
+            // status-driven color for other rows.
+            const statusColor = row.section === "background"
+              ? theme.color.tool
+              : theme.agentStatusColor(kind);
             const inspected = info.inspectedSubagentId === row.snapshot.id;
             const detail = rosterRowDetail(row.snapshot);
             return (
               <Box key={row.key} flexDirection="column">
+                {showSection ? <RosterSectionHead section={row.section} /> : null}
                 <Box flexDirection="row">
                   <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
                   <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
@@ -598,6 +681,21 @@ function ChatInfoRoster({
       <Box marginTop={1}>
         <Text color={theme.color.t4} dimColor>↑↓ focus · ↵ swap · esc → main</Text>
       </Box>
+    </Box>
+  );
+}
+
+// Section heading for the roster — matches the 2-line allowance built into
+// `subagentPaneSelectableLineOffsets` (one blank-margin line + one title line)
+// so the mouse-click line-math stays accurate.
+function RosterSectionHead({ section }: { section: SubagentPaneRow["section"] }) {
+  let label = "subagents";
+  if (section === "background") label = "background";
+  else if (section === "teammates") label = "teammates";
+  const color = section === "background" ? theme.color.tool : theme.color.t4;
+  return (
+    <Box marginTop={1}>
+      <Text color={color} dimColor>{label}</Text>
     </Box>
   );
 }
@@ -638,6 +736,201 @@ function HelpPane() {
       <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
       <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>
       <Text color={theme.color.t3} dimColor>/ opens commands, @ opens references, tab inserts selected</Text>
+    </Box>
+  );
+}
+
+function detailsBodyLines(body: string): string[] {
+  const lines = body.split(/\r?\n/);
+  if (lines.length <= DETAILS_BODY_MAX_LINES) return lines;
+  const remaining = lines.length - DETAILS_BODY_MAX_LINES;
+  return [
+    ...lines.slice(0, DETAILS_BODY_MAX_LINES),
+    `… ${remaining} more line${remaining === 1 ? "" : "s"}`,
+  ];
+}
+
+function isDetailsSectionLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 36) return false;
+  if (/^[A-Z][A-Z0-9 /_.-]+$/.test(trimmed) && /[A-Z]/.test(trimmed)) return true;
+  return /^[A-Z][A-Za-z0-9 /_.-]+:$/.test(trimmed);
+}
+
+function detailsKeyValue(line: string): { key: string; value: string } | null {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^([^:]{2,22}):\s+(.+)$/);
+  if (!match) return null;
+  const key = match[1]?.trim() ?? "";
+  const value = match[2]?.trim() ?? "";
+  if (!key || !value || key.includes("{") || key.includes("[")) return null;
+  return { key, value };
+}
+
+function DetailsPane({ title, body, width }: { title: string; body: string; width: number }) {
+  const bodyWidth = Math.max(12, width - 4);
+  const lines = detailsBodyLines(body);
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <Text key={index}> </Text>;
+        if (isDetailsSectionLine(trimmed)) {
+          return (
+            <Box key={index} flexDirection="row" marginTop={index === 0 ? 0 : 1}>
+              <Text bold color={theme.color.violet}>{endTruncate(trimmed.replace(/:$/, ""), Math.max(8, bodyWidth - 2))}</Text>
+            </Box>
+          );
+        }
+        const kv = detailsKeyValue(trimmed);
+        if (kv) {
+          return (
+            <Box key={index} flexDirection="row">
+              <Text color={theme.color.t4}>{endTruncate(kv.key, 13).padEnd(13)} </Text>
+              <Text color={theme.color.t1} wrap="truncate-end">{endTruncate(kv.value, Math.max(8, bodyWidth - 14))}</Text>
+            </Box>
+          );
+        }
+        if (/^[-*•]\s+/.test(trimmed)) {
+          return (
+            <Text key={index} color={theme.color.t2} wrap="truncate-end">
+              <Text color={theme.color.violet}>• </Text>
+              {endTruncate(trimmed.replace(/^[-*•]\s+/, ""), Math.max(8, bodyWidth - 2))}
+            </Text>
+          );
+        }
+        if (/^\d+[.)]\s+/.test(trimmed)) {
+          const prefix = trimmed.match(/^\d+[.)]/)?.[0] ?? "1.";
+          return (
+            <Text key={index} color={theme.color.t2} wrap="truncate-end">
+              <Text color={theme.color.violet}>{prefix} </Text>
+              {endTruncate(trimmed.replace(/^\d+[.)]\s+/, ""), Math.max(8, bodyWidth - prefix.length - 1))}
+            </Text>
+          );
+        }
+        if (/^[{}[\],"]/.test(trimmed) || trimmed.includes('":')) {
+          return (
+            <Text key={index} color={theme.color.t4} dimColor wrap="truncate-end">
+              {endTruncate(trimmed, bodyWidth)}
+            </Text>
+          );
+        }
+        const tone = title.toLowerCase().includes("error") || /^error\b/i.test(trimmed)
+          ? theme.color.error
+          : theme.color.t2;
+        return (
+          <Text key={index} color={tone} wrap="truncate-end">
+            {endTruncate(trimmed, bodyWidth)}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+}
+
+type FormPaneContent = Extract<RightPaneContent, { kind: "form" }>;
+type LaneDeleteFormContent = FormPaneContent & { command: "lane-delete" };
+
+function LaneDeleteFormPane({
+  content,
+  formValues,
+  activeFormField,
+  width,
+}: {
+  content: LaneDeleteFormContent;
+  formValues: Record<string, string>;
+  activeFormField: number;
+  width: number;
+}) {
+  const inner = Math.max(12, width - 4);
+  const meta = content.laneDelete;
+  const scope = formValues.scope === "local_branch" || formValues.scope === "remote_branch"
+    ? formValues.scope
+    : "worktree";
+  const force = formValues.force === "yes";
+  const confirm = formValues.confirm ?? "";
+  const remoteName = formValues.remoteName?.trim() || "origin";
+  const confirmMatch = Boolean(meta?.laneName) && confirm === meta?.laneName;
+  const fields = content.fields;
+  let scopeHint = "remove worktree only; keep branches";
+  if (scope === "local_branch") scopeHint = "also delete the local branch";
+  else if (scope === "remote_branch") scopeHint = `also delete ${remoteName}/${meta?.branchRef ?? "branch"}`;
+  const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "scope";
+  const active = (name: string) => activeName === name;
+  const scopeOption = (value: string, label: string) => (
+    <Text color={scope === value ? theme.color.error : theme.color.t3} bold={scope === value}>
+      {scope === value ? `[${label}]` : ` ${label} `}
+    </Text>
+  );
+
+  return (
+    <Box flexDirection="column">
+      <Text color={theme.color.error} bold>Destructive action</Text>
+      <Text color={theme.color.t2} wrap="truncate-end">
+        {meta ? endTruncate(meta.laneName, inner) : "No active lane"}
+      </Text>
+      {meta?.branchRef ? (
+        <Text color={theme.color.t4} wrap="truncate-end">⎇ {tailTruncate(meta.branchRef, Math.max(8, inner - 2))}</Text>
+      ) : null}
+      {meta?.dirty ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.attention}>● uncommitted changes detected</Text>
+        </Box>
+      ) : null}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={active("scope") ? theme.color.violet : theme.color.t3} bold={active("scope")}>
+          {active("scope") ? theme.rail : " "} Scope
+        </Text>
+        <Text>
+          {"  "}
+          {scopeOption("worktree", "worktree")}
+          <Text> </Text>
+          {scopeOption("local_branch", "local")}
+          <Text> </Text>
+          {scopeOption("remote_branch", "remote")}
+        </Text>
+        <Text color={theme.color.t4} dimColor>
+          {"  "}{scopeHint}
+        </Text>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text
+          color={active("remoteName") ? theme.color.violet : scope === "remote_branch" ? theme.color.t3 : theme.color.t4}
+          bold={active("remoteName")}
+          dimColor={scope !== "remote_branch" && !active("remoteName")}
+        >
+          {active("remoteName") ? theme.rail : " "} Remote name
+        </Text>
+        <Text color={scope === "remote_branch" ? theme.color.t1 : theme.color.t4} dimColor={scope !== "remote_branch"}>
+          {"  "}{scope === "remote_branch" ? endTruncate(remoteName, inner - 2) : "used only for remote branch"}
+        </Text>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={active("force") ? theme.color.violet : theme.color.t3} bold={active("force")}>
+          {active("force") ? theme.rail : " "} Force delete
+        </Text>
+        <Text color={force ? theme.color.error : theme.color.t4}>
+          {"  "}{force ? "[x]" : "[ ]"} skip safety checks
+        </Text>
+      </Box>
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={active("confirm") ? theme.color.violet : theme.color.t3} bold={active("confirm")}>
+          {active("confirm") ? theme.rail : " "} Type lane name
+        </Text>
+        <Text color={confirmMatch ? theme.color.error : theme.color.t1} wrap="truncate-end">
+          {"  "}{endTruncate(confirm || "required before delete", inner - 2)}
+        </Text>
+      </Box>
+
+      <Box marginTop={1}>
+        <Text color={confirmMatch ? theme.color.error : theme.color.t4} dimColor={!confirmMatch}>
+          {confirmMatch ? "enter deletes this lane" : "↑↓ rows · ←→ scope · space force · esc cancel"}
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -769,7 +1062,7 @@ export function RightPane({
       ) : null}
 
       {content.kind === "details" ? (
-        <Text color={theme.color.t2}>{content.body}</Text>
+        <DetailsPane title={content.title} body={content.body} width={paneWidth} />
       ) : null}
 
       {content.kind === "diff" ? (
@@ -818,9 +1111,11 @@ export function RightPane({
         />
       ) : null}
 
-      {content.kind === "new-chat-setup" ? (
+      {content.kind === "new-chat-setup" || content.kind === "model-setup" ? (
         <Box flexDirection="column">
-          <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
+          {content.kind === "new-chat-setup" ? (
+            <Text color={theme.color.t4} dimColor>Lane: {content.laneLabel}</Text>
+          ) : null}
           <Box flexDirection="column" marginTop={1}>
             {content.rows.map((row, index) => {
               const selected = index === selectedIndex;
@@ -839,12 +1134,32 @@ export function RightPane({
               );
             })}
           </Box>
-          <Text color={theme.color.t4} dimColor>↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background</Text>
+          <Text color={theme.color.t4} dimColor>
+            {content.kind === "new-chat-setup"
+              ? "↑↓ rows · ←→ change · ↵ prompt · cmd+↵ background"
+              : "↑↓ rows · ←→ change · ↵ apply · esc close"}
+          </Text>
         </Box>
       ) : null}
 
-      {content.kind === "form" ? (
+      {content.kind === "form" && content.command === "lane-delete" ? (
+        <LaneDeleteFormPane
+          content={content as LaneDeleteFormContent}
+          formValues={formValues}
+          activeFormField={activeFormField}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command !== "lane-delete" ? (
         <Box flexDirection="column">
+          {content.description ? (
+            <Box marginBottom={1}>
+              <Text color={theme.color.t4} dimColor wrap="truncate-end">
+                {endTruncate(content.description, Math.max(8, paneWidth - 4))}
+              </Text>
+            </Box>
+          ) : null}
           {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
             const displayValue = endTruncate(

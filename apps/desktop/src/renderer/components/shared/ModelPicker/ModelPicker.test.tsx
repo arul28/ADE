@@ -129,7 +129,11 @@ vi.mock("./modelOrdering", () => ({
 }));
 
 import { ModelPicker } from "./ModelPicker";
-import { resetModelPickerRuntimeCatalogForTests } from "./runtimeCatalogCache";
+import {
+  rememberRuntimeCatalog,
+  resetModelPickerRuntimeCatalogForTests,
+  runtimeCatalogProviderIsFresh,
+} from "./runtimeCatalogCache";
 import { resetRuntimeCatalogDescriptorCacheForTests } from "./modelCatalog";
 
 const SONNET: ModelDescriptor = {
@@ -458,6 +462,69 @@ describe("ModelPicker", () => {
     );
     await user.click(screen.getByRole("button", { name: /Select model/i }));
     expect(document.querySelector('[data-model-picker-setup-banner="true"]')).toBeNull();
+  });
+
+  it("keeps empty Cursor discovery retryable when Cursor is connected", async () => {
+    const user = userEvent.setup();
+    providerAuthStatusInternal = { cursor: "ok" };
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        agentChat: {
+          modelCatalog,
+        },
+      },
+    });
+
+    renderPicker({ onOpenSignIn: vi.fn() });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    const cursorRail = document.querySelector(
+      '[data-rail-selection="provider:cursor"]',
+    ) as HTMLButtonElement;
+    await user.click(cursorRail);
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+    });
+    expect(await screen.findByText("No Cursor models found")).toBeTruthy();
+    expect(screen.queryByText("Connect Cursor")).toBeNull();
+
+    modelCatalog.mockClear();
+    await user.click(cursorRail);
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+    });
+  });
+
+  it("does not keep Cursor marked fresh after another refresh drops Cursor rows", () => {
+    rememberRuntimeCatalog({
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          modelCount: 1,
+          subsections: [],
+        }],
+      }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+    } as any, { mode: "force", refreshProvider: "cursor" });
+    expect(runtimeCatalogProviderIsFresh("cursor")).toBe(true);
+
+    rememberRuntimeCatalog({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:01.000Z",
+    }, { mode: "force", refreshProvider: "opencode" });
+
+    expect(runtimeCatalogProviderIsFresh("cursor")).toBe(false);
   });
 
   it("does not render inline reasoning chips inside model rows", async () => {

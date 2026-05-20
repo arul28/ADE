@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { forwardRef, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Copy, File, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
@@ -19,6 +19,48 @@ export type ChatAttachmentPendingImage = {
   name: string;
   previewUrl?: string | null;
 };
+
+export const CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR = "[data-chat-image-attachment-focus-target='true']";
+
+function focusAdjacentImageAttachment(currentTarget: HTMLElement, delta: -1 | 1): boolean {
+  const root = currentTarget.closest("[data-chat-attachment-tray='true']");
+  if (!(root instanceof HTMLElement)) return false;
+  const targets = Array.from(root.querySelectorAll<HTMLElement>(CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR));
+  const currentIndex = targets.findIndex((target) => target === currentTarget || target.contains(currentTarget));
+  if (currentIndex < 0) return false;
+  const next = targets[currentIndex + delta];
+  if (!next) return false;
+  next.focus({ preventScroll: true });
+  return true;
+}
+
+function handleImageAttachmentKeyDown(
+  event: KeyboardEvent<HTMLElement>,
+  args: {
+    onRemove?: () => void;
+    onFocusPrompt?: () => void;
+  },
+): void {
+  if (event.key === "ArrowDown") {
+    if (!args.onFocusPrompt) return;
+    event.preventDefault();
+    event.stopPropagation();
+    args.onFocusPrompt();
+    return;
+  }
+  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    if (!focusAdjacentImageAttachment(event.currentTarget, event.key === "ArrowLeft" ? -1 : 1)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  if (event.key !== "Backspace" && event.key !== "Delete") return;
+  if (!args.onRemove) return;
+  event.preventDefault();
+  event.stopPropagation();
+  args.onRemove();
+  args.onFocusPrompt?.();
+}
 
 function LinearIssueContextChip({
   attachment,
@@ -92,11 +134,13 @@ function ImageAttachmentPreview({
   toneClassName,
   initialPreviewUrl,
   onRemove,
+  onFocusPrompt,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
   initialPreviewUrl?: string | null;
   onRemove?: (path: string) => void;
+  onFocusPrompt?: () => void;
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(initialPreviewUrl ?? null);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -168,9 +212,14 @@ function ImageAttachmentPreview({
       >
         <button
           type="button"
-          className="block h-full w-full p-0"
+          className="block h-full w-full p-0 focus:outline-none focus:ring-1 focus:ring-white/30"
           title={`Open ${name}`}
           aria-label={`Open ${name}`}
+          data-chat-image-attachment-focus-target="true"
+          onKeyDown={(event) => handleImageAttachmentKeyDown(event, {
+            onRemove: onRemove ? () => onRemove(attachment.path) : undefined,
+            onFocusPrompt,
+          })}
           onClick={() => {
             if (dataUrl) setExpanded(true);
           }}
@@ -229,20 +278,28 @@ function PendingImageAttachmentPreview({
   attachment,
   toneClassName,
   onRemove,
+  onFocusPrompt,
 }: {
   attachment: ChatAttachmentPendingImage;
   toneClassName: string;
   onRemove?: (id: string) => void;
+  onFocusPrompt?: () => void;
 }) {
   return (
     <div
       className={cn(
-        "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors",
+        "group/image relative h-14 w-14 shrink-0 overflow-hidden rounded-md border p-0 text-left transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
       )}
       title={`Attaching ${attachment.name}`}
       aria-label={`Attaching ${attachment.name}`}
       role="status"
+      tabIndex={-1}
+      data-chat-image-attachment-focus-target="true"
+      onKeyDown={(event) => handleImageAttachmentKeyDown(event, {
+        onRemove: onRemove ? () => onRemove(attachment.id) : undefined,
+        onFocusPrompt,
+      })}
     >
       {attachment.previewUrl ? (
         <img
@@ -280,21 +337,29 @@ function ImageUrlAttachmentChip({
   label,
   toneClassName,
   onRemove,
+  onFocusPrompt,
 }: {
   path: string;
   url: string;
   label: string;
   toneClassName: string;
   onRemove?: (path: string) => void;
+  onFocusPrompt?: () => void;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
   return (
     <span
       className={cn(
-        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-colors",
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2 py-1 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
         toneClassName,
       )}
       title={url}
+      tabIndex={-1}
+      data-chat-image-attachment-focus-target="true"
+      onKeyDown={(event) => handleImageAttachmentKeyDown(event, {
+        onRemove: onRemove ? () => onRemove(path) : undefined,
+        onFocusPrompt,
+      })}
     >
       {imageFailed ? (
         <Globe size={12} weight="bold" />
@@ -425,17 +490,7 @@ function ImageLightbox({
   );
 }
 
-export function ChatAttachmentTray({
-  attachments,
-  contextAttachments = [],
-  pendingImageAttachments = [],
-  imagePreviewUrls = {},
-  mode,
-  onRemove,
-  onRemoveContext,
-  onRemovePendingImageAttachment,
-  className,
-}: {
+type ChatAttachmentTrayProps = {
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   pendingImageAttachments?: ChatAttachmentPendingImage[];
@@ -444,8 +499,22 @@ export function ChatAttachmentTray({
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
   onRemovePendingImageAttachment?: (id: string) => void;
+  onFocusPrompt?: () => void;
   className?: string;
-}) {
+};
+
+export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayProps>(function ChatAttachmentTray({
+  attachments,
+  contextAttachments = [],
+  pendingImageAttachments = [],
+  imagePreviewUrls = {},
+  mode,
+  onRemove,
+  onRemoveContext,
+  onRemovePendingImageAttachment,
+  onFocusPrompt,
+  className,
+}, ref) {
   if (!attachments.length && !contextAttachments.length && !pendingImageAttachments.length) return null;
 
   let chipTone: string;
@@ -465,7 +534,11 @@ export function ChatAttachmentTray({
   }
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-2 px-4 py-3", className)}>
+    <div
+      ref={ref}
+      className={cn("flex flex-wrap items-center gap-2 px-4 py-3", className)}
+      data-chat-attachment-tray="true"
+    >
       {contextAttachments.map((attachment) => (
         <LinearIssueContextChip
           key={chatContextAttachmentKey(attachment)}
@@ -479,6 +552,7 @@ export function ChatAttachmentTray({
           attachment={attachment}
           toneClassName={chipTone}
           onRemove={onRemovePendingImageAttachment}
+          onFocusPrompt={onFocusPrompt}
         />
       ))}
       {attachments.map((attachment) => {
@@ -499,6 +573,7 @@ export function ChatAttachmentTray({
               label={label}
               toneClassName={chipTone}
               onRemove={onRemove}
+              onFocusPrompt={onFocusPrompt}
             />
           );
         }
@@ -510,6 +585,7 @@ export function ChatAttachmentTray({
               toneClassName={chipTone}
               initialPreviewUrl={imagePreviewUrls[attachment.path]}
               onRemove={onRemove}
+              onFocusPrompt={onFocusPrompt}
             />
           );
         }
@@ -539,4 +615,4 @@ export function ChatAttachmentTray({
       })}
     </div>
   );
-}
+});

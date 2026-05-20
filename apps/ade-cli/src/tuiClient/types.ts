@@ -170,7 +170,13 @@ export type RightPaneContent =
   | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "pr-open" | "feedback";
+      command: "new-lane" | "rename" | "pr-open" | "feedback" | "lane-delete" | "new-lane-from-unstaged";
+      description?: string;
+      laneDelete?: {
+        laneName: string;
+        branchRef: string | null;
+        dirty: boolean;
+      };
       fields: Array<{
         name: string;
         label: string;

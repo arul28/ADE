@@ -763,6 +763,91 @@ describe("AgentChatPane companion drawers", () => {
 });
 
 describe("AgentChatPane submit recovery", () => {
+  it("hydrates a draft chat from the last launched config before first send", async () => {
+    const { create } = installAdeMocks({ sessions: [] });
+    window.localStorage.setItem("ade.chat.lastLaunchConfig.v1", JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: "xhigh",
+      codexFastMode: true,
+      executionMode: "focused",
+      updatedAt: "2026-05-20T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: ["openai/gpt-5.4"],
+    });
+
+    const modelLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
+    expect(screen.getByRole("button", { name: "Codex approval preset" }).textContent).toContain("Full access");
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch with the restored config." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: "xhigh",
+        codexFastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      }));
+    });
+  });
+
+  it("hydrates a draft chat from the newest session config when no launch snapshot exists yet", async () => {
+    const previous = buildSession("previous-session", {
+      status: "idle",
+      reasoningEffort: "high",
+      codexFastMode: true,
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+    });
+    const { create } = installAdeMocks({ sessions: [previous] });
+
+    renderParallelDraftPane({
+      availableModelIdsOverride: ["openai/gpt-5.4"],
+    });
+
+    expect((await screen.findByRole("button", { name: "Codex approval preset" })).textContent).toContain("Full access");
+    expect((screen.getByRole("button", { name: "Fast mode" })).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("Reasoning effort").textContent).toContain("HI");
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Use the newest session settings." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: "high",
+        codexFastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+      }));
+    });
+  });
+
   it("loads Claude slash commands for a draft chat before session creation", async () => {
     installAdeMocks({ sessions: [], includeClaudeModel: true });
     vi.mocked(window.ade.agentChat.slashCommands).mockImplementation(async (args) => {

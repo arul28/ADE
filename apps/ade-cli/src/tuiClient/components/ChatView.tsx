@@ -22,13 +22,20 @@ import {
 } from "../aggregate";
 import { theme } from "../theme";
 import { useBrailleSpin, useDotPulse, useSpinFrame } from "../spinTick";
-import { AdeWordmark } from "./AdeWordmark";
+import {
+  ADE_WORDMARK_COMPACT_WIDTH,
+  ADE_WORDMARK_FULL_WIDTH,
+  AdeWordmark,
+} from "./AdeWordmark";
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
 
-const HERO_TARGET_HALO_WIDTH = 56;
+// Hero halo target: when no chat content is visible, let the hero stretch to a
+// roomy reading width instead of staying narrow against an empty pane.
+const HERO_TARGET_HALO_WIDTH = 78;
 const HERO_MIN_HALO_WIDTH = 28;
-const HERO_WORDMARK_MIN_USABLE = 24;
+const HERO_WORDMARK_FULL_MIN_USABLE = ADE_WORDMARK_FULL_WIDTH + 2;
+const HERO_WORDMARK_COMPACT_MIN_USABLE = ADE_WORDMARK_COMPACT_WIDTH + 2;
 const DEFAULT_VIEW_WIDTH = 88;
 const BLANK_ROW_TEXT = " ";
 
@@ -265,7 +272,12 @@ export function BootHero({
   const cardWidth = haloWidth - 4;
   const usableWidth = Math.max(4, cardWidth - 8);
   const heroValueWidth = Math.max(4, usableWidth - 9);
-  const showWordmark = usableWidth >= HERO_WORDMARK_MIN_USABLE;
+  let wordmarkVariant: "full" | "compact" | "none" = "none";
+  if (usableWidth >= HERO_WORDMARK_FULL_MIN_USABLE) {
+    wordmarkVariant = "full";
+  } else if (usableWidth >= HERO_WORDMARK_COMPACT_MIN_USABLE) {
+    wordmarkVariant = "compact";
+  }
 
   return (
     <Box flexDirection="column" alignItems="center" paddingY={1}>
@@ -291,9 +303,9 @@ export function BootHero({
         >
           <Box flexDirection="column" paddingX={1}>
             <Box flexDirection="column" alignItems="center">
-              {showWordmark ? (
-                <AdeWordmark />
-              ) : (
+              {wordmarkVariant === "full" && <AdeWordmark />}
+              {wordmarkVariant === "compact" && <AdeWordmark compact />}
+              {wordmarkVariant === "none" && (
                 <Text color={theme.color.accent} bold>A · D · E</Text>
               )}
               <Box height={1} />

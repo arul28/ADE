@@ -25,9 +25,9 @@ All in `apps/desktop/src/main/services/orchestrator/`. Files in this directory a
 - `metaReasoner.ts` — higher-level reasoning helpers for coordinator decisions.
 - `metricsAndUsage.ts` — token and cost accounting; `estimateTokenCost`.
 - `recoveryService.ts` — tracked session state, recovery iteration policy (`DEFAULT_RECOVERY_LOOP_POLICY`).
-- `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, and `planner_plan_missing` intervention auto-resolution on successful re-planning.
+- `workerTracking.ts` — worker session tracking, per-attempt artifact extraction (`extractAndRegisterArtifacts`), planning-phase plan-artifact persistence gate, `planner_plan_missing` intervention auto-resolution on successful re-planning, and the `planner_natural_question` `manual_input` intervention path (with matching `pauseRun`) when the planner emits an `awaiting_user_input` step. The legacy `planner_required_question_missing` reason code and its companion `planningQuestionPolicy.ts` module were removed; phases no longer enforce a "required question before exit" gate.
 - `stepPolicyResolver.ts` — `ResolvedOrchestratorRuntimeConfig`, step-level policy merging, autopilot config, file-claim scope (`doFileClaimsOverlap`, `doesFileClaimMatchPath`), repo-relative path normalization.
-- `baseOrchestratorAdapter.ts` — `buildFullPrompt` (the worker prompt builder), shell escaping, inline decoding.
+- `baseOrchestratorAdapter.ts` — `buildFullPrompt` (the worker prompt builder), shell escaping, inline decoding. Worker runtime is now `tracked_session | in_process` only; the legacy `managed_chat` branch was retired with the worker-prompt simplification.
 - `providerOrchestratorAdapter.ts` — provider-specific launchers for Claude CLI, Codex CLI, and managed OpenCode-backed execution.
 - `promptInspector.ts` — coordinator / planning / worker prompt inspectors for the mission UI.
 - `runtimeInterventionsSteeringErrors.test.ts` — runtime intervention behavior tests.

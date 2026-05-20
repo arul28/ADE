@@ -94,7 +94,7 @@ function dispatchAction(action: ProviderEmptyStateAction, onOpenSignIn?: () => v
 export type ProviderEmptyStateProps =
   | {
       family: ProviderFamily;
-      mode?: "default";
+      mode?: "default" | "discovery-empty";
       onOpenSignIn?: () => void;
     }
   | {
@@ -129,6 +129,26 @@ function opencodeRequiredCopy(forProvider: "opencode" | "ollama" | "lmstudio"): 
       label: "OpenCode site",
       action: { kind: "open-external", url: "https://opencode.ai/" },
     },
+  };
+}
+
+function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
+  const label = PROVIDER_DISPLAY_LABELS[family] ?? family;
+  if (family === "cursor") {
+    return {
+      title: "No Cursor models found",
+      body: "Cursor is connected, but ADE did not receive any Cursor SDK models yet.",
+      primary: { label: "Open Settings", action: { kind: "open-settings" } },
+      secondary: {
+        label: "Get Cursor API key",
+        action: { kind: "open-external", url: "https://cursor.com/dashboard/integrations" },
+      },
+    };
+  }
+  return {
+    title: `No ${label} models found`,
+    body: `${label} is connected, but ADE did not receive any models yet.`,
+    primary: { label: "Open Settings", action: { kind: "open-settings" } },
   };
 }
 
@@ -175,7 +195,9 @@ export function ProviderEmptyState(props: ProviderEmptyStateProps) {
   const mode = props.mode ?? "default";
   const copy = mode === "opencode-required"
     ? opencodeRequiredCopy(family as "opencode" | "ollama" | "lmstudio")
-    : PROVIDER_COPY[family];
+    : mode === "discovery-empty"
+      ? discoveryEmptyCopy(family)
+      : PROVIDER_COPY[family];
   if (!copy) {
     return (
       <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-1 px-4 py-6 text-center">

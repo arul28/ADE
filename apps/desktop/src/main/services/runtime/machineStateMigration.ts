@@ -28,6 +28,7 @@ function buildMachineLayout(adeDir: string): MachineAdeLayout {
     secretsDir,
     sockDir,
     socketPath: path.join(sockDir, "ade.sock"),
+    desktopBridgeSocketPath: path.join(sockDir, "desktop-bridge.sock"),
     binDir: path.join(adeDir, "bin"),
     runtimeDir: path.join(adeDir, "runtime"),
   };

@@ -34,6 +34,7 @@ describe("ProjectRegistry", () => {
       secretsDir: path.join(homeDir, ".ade-runtime", "secrets"),
       sockDir: path.join(homeDir, ".ade-runtime", "sock"),
       socketPath: path.join(homeDir, ".ade-runtime", "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(homeDir, ".ade-runtime", "sock", "desktop-bridge.sock"),
       binDir: path.join(homeDir, ".ade-runtime", "bin"),
       runtimeDir: path.join(homeDir, ".ade-runtime", "runtime"),
     });
@@ -76,6 +77,7 @@ describe("ProjectRegistry", () => {
       secretsDir: path.join(registryDir, "secrets"),
       sockDir: path.join(registryDir, "sock"),
       socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
       binDir: path.join(registryDir, "bin"),
       runtimeDir: path.join(registryDir, "runtime"),
     });
@@ -99,6 +101,7 @@ describe("ProjectRegistry", () => {
       secretsDir: path.join(registryDir, "secrets"),
       sockDir: path.join(registryDir, "sock"),
       socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
       binDir: path.join(registryDir, "bin"),
       runtimeDir: path.join(registryDir, "runtime"),
     });

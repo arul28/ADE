@@ -330,6 +330,34 @@ describe("AgentChatComposer", () => {
     });
   });
 
+  it("moves from the prompt to image attachments and removes them from the keyboard", () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+      attachments: [{ path: "/tmp/pasted-image.png", type: "image" }],
+    });
+
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    const imageButton = screen.getByRole("button", { name: "Open pasted-image.png" });
+    expect(document.activeElement).toBe(imageButton);
+
+    fireEvent.keyDown(imageButton, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(textbox);
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    fireEvent.keyDown(imageButton, { key: "Delete" });
+
+    expect(props.onRemoveAttachment).toHaveBeenCalledWith("/tmp/pasted-image.png");
+    expect(document.activeElement).toBe(textbox);
+  });
+
   it("stop only interrupts the active turn", () => {
     const props = renderComposer();
 

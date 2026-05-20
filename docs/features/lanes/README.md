@@ -322,7 +322,10 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    half-deleted. Generic ADE action calls
    (`lane.delete` through `ade actions run` / TUI `/ade`) use the same
    teardown path, including lane-environment cleanup and port lease
-   release.
+   release. The ADE Code TUI also surfaces this through a dedicated
+   `/lane delete` slash command that opens a right-pane confirmation
+   form (lane name + branch ref + dirty flag, with a force toggle when
+   the lane is dirty) before issuing the action.
 
 ## Lane color
 
