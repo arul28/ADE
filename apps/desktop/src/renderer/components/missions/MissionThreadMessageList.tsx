@@ -543,8 +543,9 @@ export const MissionThreadMessageList = React.memo(function MissionThreadMessage
   }, [sessionId]);
 
   useEffect(() => {
+    if (!transcriptPollingEnabled) return;
     refreshSessionTranscript();
-  }, [refreshSessionTranscript]);
+  }, [refreshSessionTranscript, transcriptPollingEnabled]);
 
   useMissionPolling(refreshSessionTranscript, 4_000, Boolean(sessionId && transcriptPollingEnabled));
 

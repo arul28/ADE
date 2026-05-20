@@ -176,6 +176,7 @@ export function MissionArtifactsTab({
                     border: `1px solid ${groupMode === mode ? "color-mix(in srgb, var(--color-accent) 35%, transparent)" : COLORS.border}`,
                   })}
                   onClick={() => setGroupMode(mode)}
+                  aria-pressed={groupMode === mode}
                 >
                   {mode.toUpperCase()}
                 </button>

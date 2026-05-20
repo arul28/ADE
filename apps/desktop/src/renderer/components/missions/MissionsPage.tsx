@@ -315,7 +315,12 @@ function MissionsWorkspace({ active = true }: { active?: boolean } = {}) {
     if (appliedQueryMissionIdRef.current === missionParam) return;
     appliedQueryMissionIdRef.current = missionParam;
     pendingQueryMissionIdRef.current = missionParam;
-    void missionsStore.getState().selectMission(missionParam);
+    void missionsStore.getState().selectMission(missionParam).finally(() => {
+      const selectedMission = missionsStore.getState().selectedMission;
+      if (pendingQueryMissionIdRef.current === missionParam && selectedMission?.id !== missionParam) {
+        pendingQueryMissionIdRef.current = null;
+      }
+    });
   }, [active, missionsStore, searchParams]);
 
   useEffect(() => {

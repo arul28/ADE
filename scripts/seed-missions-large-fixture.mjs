@@ -17,9 +17,13 @@ const missionId =
 const runId =
   args.find((arg) => arg.startsWith("--run-id="))?.slice("--run-id=".length)
   ?? "perf-large-run-20260520";
-const stepCountTarget = Number(
-  args.find((arg) => arg.startsWith("--steps="))?.slice("--steps=".length) ?? 144,
-);
+const rawStepCountTarget = args.find((arg) => arg.startsWith("--steps="))?.slice("--steps=".length) ?? "144";
+const stepCountTarget = Number(rawStepCountTarget);
+
+if (!Number.isInteger(stepCountTarget) || stepCountTarget <= 0) {
+  console.error(`Invalid --steps value: ${rawStepCountTarget}`);
+  process.exit(2);
+}
 
 if (!existsSync(dbPath)) {
   console.error(`ADE DB not found: ${dbPath}`);

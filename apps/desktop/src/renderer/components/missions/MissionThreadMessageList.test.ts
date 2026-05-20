@@ -378,7 +378,7 @@ describe("MissionThreadMessageList usage", () => {
     );
   });
 
-  it("hydrates closed mission history threads from durable agent-chat history without polling", async () => {
+  it("does not fetch closed mission history when transcript polling is disabled", async () => {
     const readTranscriptTail = vi.fn(() => Promise.resolve(""));
     const historyEvent: AgentChatEventEnvelope = {
       sessionId: "session-closed",
@@ -415,20 +415,10 @@ describe("MissionThreadMessageList usage", () => {
     }));
 
     await waitFor(() => {
-      expect(agentListMock).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          events: expect.arrayContaining([
-            expect.objectContaining({
-              event: expect.objectContaining({ text: "Closed worker transcript from agent-chat history." }),
-            }),
-          ]),
-        }),
-        expect.anything(),
-      );
+      expect(useMissionPolling).toHaveBeenCalledWith(expect.any(Function), 4_000, false);
     });
-    expect(getEventHistory).toHaveBeenCalledWith({ sessionId: "session-closed", maxEvents: 20_000 });
+    expect(getEventHistory).not.toHaveBeenCalled();
     expect(readTranscriptTail).not.toHaveBeenCalled();
-    expect(useMissionPolling).toHaveBeenCalledWith(expect.any(Function), 4_000, false);
   });
 
   it("hides recovered mission-control transport blocks before rendering", () => {

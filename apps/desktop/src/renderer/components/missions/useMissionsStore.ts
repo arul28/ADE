@@ -286,6 +286,10 @@ function readNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function readOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function normalizeSmartBudgetConfig(value: unknown, fallback: SmartBudgetConfig = DEFAULT_SMART_BUDGET): SmartBudgetConfig {
   const source = isRecord(value) ? value : fallback;
   const fallbackProviderLimits = isRecord(fallback.providerLimits)
@@ -294,15 +298,19 @@ function normalizeSmartBudgetConfig(value: unknown, fallback: SmartBudgetConfig 
   const providerLimits = isRecord(source.providerLimits)
     ? source.providerLimits as SmartBudgetConfig["providerLimits"]
     : fallbackProviderLimits;
+  const fiveHourHardStopPercent = readOptionalNumber(source.fiveHourHardStopPercent);
+  const weeklyHardStopPercent = readOptionalNumber(source.weeklyHardStopPercent);
+  const apiKeyMaxSpendUsd = readOptionalNumber(source.apiKeyMaxSpendUsd);
+  const modelDowngradeThresholdPct = readOptionalNumber(source.modelDowngradeThresholdPct);
   return {
     enabled: typeof source.enabled === "boolean" ? source.enabled : fallback.enabled,
     fiveHourThresholdUsd: readNumber(source.fiveHourThresholdUsd, fallback.fiveHourThresholdUsd),
     weeklyThresholdUsd: readNumber(source.weeklyThresholdUsd, fallback.weeklyThresholdUsd),
     ...(providerLimits ? { providerLimits: { ...providerLimits } } : {}),
-    ...(typeof source.fiveHourHardStopPercent === "number" ? { fiveHourHardStopPercent: source.fiveHourHardStopPercent } : {}),
-    ...(typeof source.weeklyHardStopPercent === "number" ? { weeklyHardStopPercent: source.weeklyHardStopPercent } : {}),
-    ...(typeof source.apiKeyMaxSpendUsd === "number" ? { apiKeyMaxSpendUsd: source.apiKeyMaxSpendUsd } : {}),
-    ...(typeof source.modelDowngradeThresholdPct === "number" ? { modelDowngradeThresholdPct: source.modelDowngradeThresholdPct } : {}),
+    ...(fiveHourHardStopPercent !== undefined ? { fiveHourHardStopPercent } : {}),
+    ...(weeklyHardStopPercent !== undefined ? { weeklyHardStopPercent } : {}),
+    ...(apiKeyMaxSpendUsd !== undefined ? { apiKeyMaxSpendUsd } : {}),
+    ...(modelDowngradeThresholdPct !== undefined ? { modelDowngradeThresholdPct } : {}),
   };
 }
 
@@ -388,7 +396,7 @@ const createMissionsState: StateCreator<MissionsStore> = (set, get) => {
         const selectedSummary = nextId ? list.find((mission) => mission.id === nextId) ?? null : null;
         const selectedMission = selectedSummary && state.selectedMission?.id === selectedSummary.id
           ? { ...state.selectedMission, ...selectedSummary }
-          : state.selectedMission;
+          : null;
         if (selectedSummary && state.selectedMission?.id === selectedSummary.id) {
           const hydratedOpenInterventions = state.selectedMission.interventions.filter((entry) => entry.status === "open").length;
           const selectedSummaryChangedWithOpenInterventions =

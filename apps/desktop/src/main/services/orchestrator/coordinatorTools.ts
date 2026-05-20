@@ -2313,12 +2313,9 @@ export function createCoordinatorToolSet(deps: {
       if (!isPlanningQuestionIntervention(entry, { runId })) return false;
       const phase = typeof metadata?.phase === "string" ? metadata.phase.trim().toLowerCase() : "";
       const phaseKey = typeof metadata?.phaseKey === "string" ? metadata.phaseKey.trim().toLowerCase() : "";
-      return phase.length === 0
-        || phase === "planning"
-        || phase === normalizedPhase
-        || phaseKey.length === 0
-        || phaseKey === "planning"
-        || phaseKey === normalizedPhase;
+      const phaseMatches = phase.length === 0 || phase === "planning" || phase === normalizedPhase;
+      const phaseKeyMatches = phaseKey.length === 0 || phaseKey === "planning" || phaseKey === normalizedPhase;
+      return phaseMatches && phaseKeyMatches;
     });
   }
 
@@ -5591,8 +5588,8 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
         }
 
         if (
-          currentPhase?.phaseKey === "planning"
-          && targetPhase.phaseKey !== "planning"
+          currentPhase
+          && targetPhase.phaseKey !== currentPhase.phaseKey
           && phaseRequiresPlanningQuestionBeforeExit({
             phase: currentPhase,
             missionPrompt: getMissionPromptForPlanningPolicy(),

@@ -350,7 +350,7 @@ function createCoordinatorHarness(args: {
       if (query.includes("from missions") && query.includes("metadata_json") && args.missionMetadata) {
         return { metadata_json: JSON.stringify(args.missionMetadata) };
       }
-      if (query.includes("from missions") && query.includes("prompt") && args.missionPrompt) {
+      if (query.includes("from missions") && query.includes("prompt") && Object.hasOwn(args, "missionPrompt")) {
         return { prompt: args.missionPrompt };
       }
       if (query.includes("from orchestrator_runs") && args.runMetadataJson) {

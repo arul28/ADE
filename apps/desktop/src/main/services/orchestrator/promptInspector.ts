@@ -478,9 +478,13 @@ function buildCoordinatorPhasesSection(phases: PhaseCard[] | undefined): string 
         lines.push(`   Validation: ${phase.validationGate.tier.replace("-", " ")} ${phase.validationGate.required ? "(required)" : "(optional)"}`);
       }
       if (phase.askQuestions.enabled) {
+        const parsedMaxQuestions = Number(phase.askQuestions.maxQuestions);
+        const clampedMaxQuestions = Number.isFinite(parsedMaxQuestions)
+          ? Math.max(1, Math.min(10, Math.floor(parsedMaxQuestions)))
+          : 5;
         const limit = phase.askQuestions.maxQuestions == null
           ? "unlimited"
-          : `max ${Math.max(1, Math.min(10, Number(phase.askQuestions.maxQuestions) || 5))} questions`;
+          : `max ${clampedMaxQuestions} questions`;
         const requirement = phase.askQuestions.requiredBeforeExit === true
           ? "required before phase exit"
           : "when needed";

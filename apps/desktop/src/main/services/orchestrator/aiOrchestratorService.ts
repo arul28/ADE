@@ -464,16 +464,33 @@ function buildPhaseSyncTargetFromCard(card: PhaseSyncCard, sourceStepId: string 
 }
 
 function resolvePhaseCardsFromRunMetadata(runMetadata: Record<string, unknown>): PhaseCard[] {
+  const coercePhaseCards = (value: unknown): PhaseCard[] => {
+    if (!Array.isArray(value)) return [];
+    return value.filter((entry): entry is PhaseCard => {
+      const phase = asRecord(entry);
+      if (!phase) return false;
+      return typeof phase.id === "string"
+        && typeof phase.phaseKey === "string"
+        && typeof phase.name === "string"
+        && typeof phase.description === "string"
+        && typeof phase.instructions === "string"
+        && Number.isFinite(Number(phase.position))
+        && asRecord(phase.model) !== null
+        && asRecord(phase.orderingConstraints) !== null
+        && asRecord(phase.askQuestions) !== null
+        && asRecord(phase.validationGate) !== null;
+    });
+  };
   const phaseConfiguration = asRecord(runMetadata.phaseConfiguration);
   if (phaseConfiguration && Array.isArray(phaseConfiguration.selectedPhases)) {
-    return phaseConfiguration.selectedPhases as PhaseCard[];
+    return coercePhaseCards(phaseConfiguration.selectedPhases);
   }
   if (Array.isArray(runMetadata.phaseOverride)) {
-    return runMetadata.phaseOverride as PhaseCard[];
+    return coercePhaseCards(runMetadata.phaseOverride);
   }
   const phaseOverride = asRecord(runMetadata.phaseOverride);
   if (phaseOverride && Array.isArray(phaseOverride.selectedPhases)) {
-    return phaseOverride.selectedPhases as PhaseCard[];
+    return coercePhaseCards(phaseOverride.selectedPhases);
   }
   return [];
 }
@@ -8380,7 +8397,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       const currentPhaseKey = typeof phaseRuntime.currentPhaseKey === "string"
         ? phaseRuntime.currentPhaseKey.trim()
         : "";
-      if (sourcePhaseKey && currentPhaseKey && currentPhaseKey !== sourcePhaseKey) {
+      if (!sourcePhaseKey || !currentPhaseKey || currentPhaseKey !== sourcePhaseKey) {
         logger.debug("ai_orchestrator.phase_approval_stale", {
           missionId,
           runId: args.runId,
@@ -8440,17 +8457,15 @@ Check all worker statuses and continue managing the mission from here. Read work
             : 0,
         },
       };
-      metadata.phaseRuntime = phaseRuntime;
-
       db.run(
         `
           update orchestrator_runs
-          set metadata_json = ?,
+          set metadata_json = json_set(coalesce(nullif(metadata_json, ''), '{}'), '$.phaseRuntime', json(?)),
               updated_at = ?
           where id = ?
             and project_id = ?
         `,
-        [JSON.stringify(metadata), transitionedAt, args.runId, graph.run.projectId],
+        [JSON.stringify(phaseRuntime), transitionedAt, args.runId, graph.run.projectId],
       );
       orchestratorService.appendTimelineEvent({
         runId: args.runId,
@@ -8589,6 +8604,24 @@ Check all worker statuses and continue managing the mission from here. Read work
         const runId = typeof meta?.runId === "string" ? meta.runId.trim() : "";
         const stepId = typeof meta?.stepId === "string" ? meta.stepId.trim() : "";
         const attemptId = typeof meta?.attemptId === "string" ? meta.attemptId.trim() : "";
+        let appliedPhaseTransition = false;
+        if (
+          intervention.interventionType === "phase_approval"
+          && resolutionKind !== "cancel_run"
+          && resolutionKind !== "skip_question"
+        ) {
+          appliedPhaseTransition = runId.length > 0
+            ? applyPhaseApprovalTransition({
+                interventionId: intervention.id,
+                interventionType: intervention.interventionType,
+                interventionMetadata: meta,
+                runId,
+              })
+            : false;
+          if (!appliedPhaseTransition) {
+            continue;
+          }
+        }
         missionService.resolveIntervention({
           missionId,
           interventionId: intervention.id,
@@ -8606,12 +8639,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         resolvedInterventions.push(intervention.id);
         resolvedNonManualInterventionCount += 1;
         if (runId.length > 0) {
-          const appliedPhaseTransition = applyPhaseApprovalTransition({
-            interventionId: intervention.id,
-            interventionType: intervention.interventionType,
-            interventionMetadata: meta,
-            runId,
-          });
           recordRuntimeEvent({
             runId,
             stepId: stepId || null,
@@ -10252,7 +10279,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       && stateDoc?.finalization
       && stateDoc.finalization.status !== "finalization_failed"
       && stateDoc.finalization.blocked !== true
-      && unmetCloseoutRequirements.length === 0
       && (
         mission.status !== "completed"
         || stateDoc.finalization.contractSatisfied !== true

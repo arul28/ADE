@@ -42,14 +42,23 @@ function isPlanningQuestionIntervention(intervention: MissionIntervention): bool
   const metadata = isRecord(intervention.metadata) ? intervention.metadata : null;
   const source = normalizeInterventionMeta(metadata?.source);
   const reasonCode = normalizeInterventionMeta(metadata?.reasonCode);
+  if (
+    source !== "ask_user"
+    && source !== "request_user_input"
+    && reasonCode !== "planner_natural_question"
+    && reasonCode !== "planner_required_question_missing"
+    && reasonCode !== "planner_chat_question"
+  ) {
+    return false;
+  }
   const phase = normalizeInterventionMeta(metadata?.phase);
   const phaseKey = normalizeInterventionMeta(metadata?.phaseKey);
   const phaseName = normalizeInterventionMeta(metadata?.phaseName);
   const stepType = normalizeInterventionMeta(metadata?.stepType);
   const ownerKind = normalizeInterventionMeta(metadata?.questionOwnerKind);
-  return source === "ask_user"
-    || reasonCode === "planner_natural_question"
+  return reasonCode === "planner_natural_question"
     || reasonCode === "planner_required_question_missing"
+    || reasonCode === "planner_chat_question"
     || phase === "planning"
     || phaseKey === "planning"
     || phaseName === "planning"

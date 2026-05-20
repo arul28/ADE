@@ -2067,7 +2067,7 @@ export function createOrchestratorService({
         ...(matchingPhase?.askQuestions ?? {}),
         ...phaseAskQuestions,
         enabled: true,
-        requiredBeforeExit: false,
+        requiredBeforeExit: matchingPhase?.askQuestions?.requiredBeforeExit === true,
       },
     } as PhaseCard;
     const requiredBeforeExit = phaseRequiresPlanningQuestionBeforeExit({
@@ -2947,9 +2947,15 @@ export function createOrchestratorService({
 
   const extractResolvedPlannerChatQuestion = (
     events: AgentChatEventEnvelope[],
-  ): { itemId: string; question: string; requestedAt: string; answeredAt: string } | null => {
+  ): {
+    itemId: string;
+    question: string;
+    requestedAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
+  } | null => {
     const pendingQuestions = new Map<string, { question: string; requestedAt: string }>();
-    const acceptedItems = new Map<string, string>();
+    const resolvedItems = new Map<string, { resolvedAt: string; resolutionKind: "answer_provided" | "skip_question" }>();
 
     const readQuestion = (event: AgentChatEventEnvelope["event"]): string | null => {
       if (event.type !== "approval_request") return null;
@@ -2990,23 +2996,25 @@ export function createOrchestratorService({
         const requestedAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length > 0
           ? envelope.timestamp
           : nowIso();
-        if (acceptedItems.has(itemId)) {
-          return { itemId, question, requestedAt, answeredAt: acceptedItems.get(itemId)! };
+        const resolvedItem = resolvedItems.get(itemId);
+        if (resolvedItem) {
+          return { itemId, question, requestedAt, ...resolvedItem };
         }
         pendingQuestions.set(itemId, { question, requestedAt });
         continue;
       }
-      if (event.type !== "pending_input_resolved" || event.resolution !== "accepted") continue;
+      if (event.type !== "pending_input_resolved" || (event.resolution !== "accepted" && event.resolution !== "declined")) continue;
       const itemId = typeof event.itemId === "string" ? event.itemId.trim() : "";
       if (!itemId) continue;
-      const answeredAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length > 0
+      const resolvedAt = typeof envelope.timestamp === "string" && envelope.timestamp.trim().length > 0
         ? envelope.timestamp
         : nowIso();
+      const resolutionKind = event.resolution === "accepted" ? "answer_provided" : "skip_question";
       const pending = pendingQuestions.get(itemId);
       if (pending) {
-        return { itemId, question: pending.question, requestedAt: pending.requestedAt, answeredAt };
+        return { itemId, question: pending.question, requestedAt: pending.requestedAt, resolvedAt, resolutionKind };
       }
-      acceptedItems.set(itemId, answeredAt);
+      resolvedItems.set(itemId, { resolvedAt, resolutionKind });
     }
 
     return null;
@@ -3015,7 +3023,13 @@ export function createOrchestratorService({
   const readResolvedPlannerChatQuestion = (args: {
     sessionId: string | null;
     transcriptPath: string;
-  }): { itemId: string; question: string; requestedAt: string; answeredAt: string } | null => {
+  }): {
+    itemId: string;
+    question: string;
+    requestedAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
+  } | null => {
     const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
     if (!sessionId) return null;
     const events: AgentChatEventEnvelope[] = [];
@@ -3055,7 +3069,8 @@ export function createOrchestratorService({
     itemId: string;
     question: string;
     requestedAt: string;
-    answeredAt: string;
+    resolvedAt: string;
+    resolutionKind: "answer_provided" | "skip_question";
   }): string | null => {
     const missionId = args.missionId.trim();
     const itemId = args.itemId.trim();
@@ -3079,14 +3094,21 @@ export function createOrchestratorService({
             `
               update mission_interventions
               set status = 'resolved',
-                  resolution_kind = 'answer_provided',
-                  resolution_note = 'Answered in ADE chat.',
+                  resolution_kind = ?,
+                  resolution_note = ?,
                   resolved_at = ?,
                   updated_at = ?
               where id = ?
                 and project_id = ?
             `,
-            [args.answeredAt, args.answeredAt, row.id, projectId],
+            [
+              args.resolutionKind,
+              args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.",
+              args.resolvedAt,
+              args.resolvedAt,
+              row.id,
+              projectId,
+            ],
           );
         }
         return row.id;
@@ -3128,20 +3150,24 @@ export function createOrchestratorService({
           created_at,
           updated_at,
           resolved_at
-        ) values (?, ?, ?, 'manual_input', 'resolved', 'answer_provided', ?, ?, ?, 'Answered in ADE chat.', ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, 'manual_input', 'resolved', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         id,
         missionId,
         projectId,
+        args.resolutionKind,
         title,
         question,
-        "Planner question was answered in the ADE chat thread.",
+        args.resolutionKind === "skip_question"
+          ? "Planner question was skipped in the ADE chat thread."
+          : "Planner question was answered in the ADE chat thread.",
+        args.resolutionKind === "skip_question" ? "Skipped in ADE chat." : "Answered in ADE chat.",
         args.step.laneId ?? null,
         JSON.stringify(metadata),
         args.requestedAt,
-        args.answeredAt,
-        args.answeredAt,
+        args.resolvedAt,
+        args.resolvedAt,
       ],
     );
     return id;
@@ -9685,7 +9711,12 @@ export function createOrchestratorService({
 	        phase: phaseForQuestionRecovery,
 	        missionPrompt: missionPromptRow?.prompt ?? null,
 	      });
-	      const planningQuestionRows = planningQuestionRequiredBeforeExit
+	      const stepPhaseAskQuestions = asRecord(stepMetadata.phaseAskQuestions);
+	      const normalizedPlanningQuestionRequiredBeforeExit =
+	        typeof stepPhaseAskQuestions?.requiredBeforeExit === "boolean"
+	          ? stepPhaseAskQuestions.requiredBeforeExit
+	          : planningQuestionRequiredBeforeExit;
+	      const planningQuestionRows = normalizedPlanningQuestionRequiredBeforeExit
 	        ? db.all<{ status: string; intervention_type: string; metadata_json: string | null }>(
 	            `
 	              select status, intervention_type, metadata_json
@@ -9708,7 +9739,7 @@ export function createOrchestratorService({
 	      if (
 	        status === "succeeded"
 	        && planningStep
-	        && planningQuestionRequiredBeforeExit
+	        && normalizedPlanningQuestionRequiredBeforeExit
 	        && !hasResolvedRequiredPlanningQuestion
 	      ) {
 	        const resolvedChatQuestion = readResolvedPlannerChatQuestion({ sessionId, transcriptPath });
@@ -9724,7 +9755,8 @@ export function createOrchestratorService({
 	            itemId: resolvedChatQuestion.itemId,
 	            question: resolvedChatQuestion.question,
 	            requestedAt: resolvedChatQuestion.requestedAt,
-	            answeredAt: resolvedChatQuestion.answeredAt,
+	            resolvedAt: resolvedChatQuestion.resolvedAt,
+	            resolutionKind: resolvedChatQuestion.resolutionKind,
 	          });
 	          hasResolvedRequiredPlanningQuestion = true;
 	        }
@@ -9737,7 +9769,7 @@ export function createOrchestratorService({
 	        status === "succeeded"
 	        && planningStep
 	        && reportedPlanMarkdown.length > 0
-	        && planningQuestionRequiredBeforeExit
+	        && normalizedPlanningQuestionRequiredBeforeExit
 	        && !hasResolvedRequiredPlanningQuestion
 	          ? "What blocking requirements, acceptance criteria, scope decisions, or constraints should the planner account for before implementation starts?"
 	          : null;
