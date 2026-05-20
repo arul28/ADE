@@ -1686,6 +1686,186 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("resolves stash OIDs before CLI pop and drop actions", () => {
+    const pop = buildCliPlan([
+      "git",
+      "stash",
+      "pop",
+      "stash@{0}",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(pop.kind).toBe("execute");
+    if (pop.kind !== "execute") return;
+    expect(pop.steps[0]?.params).toEqual({
+      name: "list_stashes",
+      arguments: { laneId: "lane-1" },
+    });
+    const popParams = typeof pop.steps[1]?.params === "function"
+      ? pop.steps[1].params({ stashes: { stashes: [{ ref: "stash@{0}", oid: "oid-0" }] } })
+      : pop.steps[1]?.params;
+    expect(popParams).toEqual({
+      name: "stash_pop",
+      arguments: {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      },
+    });
+
+    const drop = buildCliPlan([
+      "git",
+      "stash",
+      "drop",
+      "stash@{1}",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(drop.kind).toBe("execute");
+    if (drop.kind !== "execute") return;
+    const dropParams = typeof drop.steps[1]?.params === "function"
+      ? drop.steps[1].params({ stashes: { stashes: [{ ref: "stash@{1}", oid: "oid-1" }] } })
+      : drop.steps[1]?.params;
+    expect(dropParams).toEqual({
+      name: "stash_drop",
+      arguments: {
+        laneId: "lane-1",
+        stashRef: "stash@{1}",
+        stashOid: "oid-1",
+      },
+    });
+  });
+
+  it("uses the latest lane stash when CLI pop omits a stash ref", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "pop",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const params = typeof plan.steps[1]?.params === "function"
+      ? plan.steps[1].params({ stashes: { stashes: [{ ref: "stash@{3}", oid: "oid-3" }] } })
+      : plan.steps[1]?.params;
+    expect(params).toEqual({
+      name: "stash_pop",
+      arguments: {
+        laneId: "lane-1",
+        stashRef: "stash@{3}",
+        stashOid: "oid-3",
+      },
+    });
+  });
+
+  it("resolves a stash ref from an explicit OID when CLI stash omits the ref", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "drop",
+      "--stash-oid",
+      "oid-3",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    const params = typeof plan.steps[1]?.params === "function"
+      ? plan.steps[1].params({
+        stashes: {
+          stashes: [
+            { ref: "stash@{0}", oid: "oid-0" },
+            { ref: "stash@{3}", oid: "oid-3" },
+          ],
+        },
+      })
+      : plan.steps[1]?.params;
+    expect(params).toEqual({
+      name: "stash_drop",
+      arguments: {
+        laneId: "lane-1",
+        stashRef: "stash@{3}",
+        stashOid: "oid-3",
+      },
+    });
+  });
+
+  it("keeps explicit stash OIDs on direct CLI stash calls", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "drop",
+      "stash@{0}",
+      "--oid",
+      "oid-0",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps).toHaveLength(1);
+    expect(plan.steps[0]?.params).toEqual({
+      name: "stash_drop",
+      arguments: {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      },
+    });
+  });
+
+  it("throws a clear CLI error when a stash ref cannot be resolved to an OID", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "pop",
+      "stash@{2}",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(() => {
+      if (typeof plan.steps[1]?.params !== "function") throw new Error("Expected resolver params.");
+      plan.steps[1].params({ stashes: { stashes: [{ ref: "stash@{0}", oid: "oid-0" }] } });
+    }).toThrow(/Stash stash@\{2\} is not saved for this lane/);
+  });
+
+  it("throws a clear CLI error when a stash OID cannot be resolved to a ref", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "drop",
+      "--stash-oid",
+      "oid-9",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(() => {
+      if (typeof plan.steps[1]?.params !== "function") throw new Error("Expected resolver params.");
+      plan.steps[1].params({ stashes: { stashes: [{ ref: "stash@{0}", oid: "oid-0" }] } });
+    }).toThrow(/Stash OID oid-9 is not saved for this lane/);
+  });
+
+  it("throws a clear CLI error when no default lane stash exists", () => {
+    const plan = buildCliPlan([
+      "git",
+      "stash",
+      "drop",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(() => {
+      if (typeof plan.steps[1]?.params !== "function") throw new Error("Expected resolver params.");
+      plan.steps[1].params({ stashes: { stashes: [] } });
+    }).toThrow(/No saved stashes were found for this lane/);
+  });
+
   it("preserves the public git push --set-upstream flag", () => {
     const plan = buildCliPlan([
       "git",

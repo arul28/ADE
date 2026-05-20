@@ -4,7 +4,7 @@ import React from "react";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AutoRebaseLaneStatus, PrConvergenceState, PrConvergenceStatePatch, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
+import type { AutoRebaseLaneStatus, PrAiSummary, PrConvergenceState, PrConvergenceStatePatch, PrDeployment, PrSnapshotHydration, PrSummary, PrWithConflicts, RebaseNeed } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
 const originalAde = globalThis.window.ade;
@@ -81,6 +81,8 @@ function DetailHarness() {
     detailChecks,
     detailReviews,
     detailComments,
+    detailDeployments,
+    detailAiSummary,
     detailLiveDataPrId,
     detailStatus,
     loading,
@@ -103,6 +105,21 @@ function DetailHarness() {
       <div data-testid="checks-count">{detailChecks.length}</div>
       <div data-testid="reviews-count">{detailReviews.length}</div>
       <div data-testid="comments-count">{detailComments.length}</div>
+      <div data-testid="deployments-count">{detailDeployments.length}</div>
+      <div data-testid="ai-summary">{detailAiSummary?.summary ?? ""}</div>
+    </div>
+  );
+}
+
+function ActiveToggleDetailHarness() {
+  const [active, setActive] = React.useState(true);
+  return (
+    <div>
+      <button type="button" onClick={() => setActive(false)}>deactivate</button>
+      <button type="button" onClick={() => setActive(true)}>activate</button>
+      <PrsProvider active={active}>
+        <DetailHarness />
+      </PrsProvider>
     </div>
   );
 }
@@ -187,6 +204,7 @@ describe("PrsContext refresh", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     globalThis.window.ade = originalAde;
     window.location.hash = "";
     window.history.replaceState(null, "", "/");
@@ -206,6 +224,71 @@ describe("PrsContext refresh", () => {
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+  });
+
+  it("bounds automatic retries after persistent refresh failures", async () => {
+    vi.useFakeTimers();
+    vi.mocked(window.ade.prs.listWithConflicts).mockRejectedValue(new Error("boom"));
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(4);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(12_000);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(4);
+  });
+
+  it("loads rebase diagnostics for a selected PR on the normal tab", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    Object.assign(window.ade.prs, {
+      getStatus: vi.fn(async (_prId: string) => null),
+      getChecks: vi.fn(async (_prId: string) => []),
+      getReviews: vi.fn(async (_prId: string) => []),
+      getComments: vi.fn(async (_prId: string) => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.rebase.scanNeeds).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+
+    await waitFor(() => {
+      expect(window.ade.rebase.scanNeeds).toHaveBeenCalled();
+      expect(window.ade.lanes.listAutoRebaseStatuses).toHaveBeenCalled();
+    });
   });
 
   it("refreshes rebase needs and auto-rebase statuses for workflow routes without waiting for events", async () => {
@@ -607,8 +690,62 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("status").textContent).toBe("open");
       expect(screen.getByTestId("checks-count").textContent).toBe("1");
       expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
     });
     expect(window.ade.prs.getComments).toHaveBeenCalledWith("pr-1");
+  });
+
+  it("does not mark partial selected PR detail as live or fresh", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1"), makeFakePr("pr-2")]);
+    const getStatus = vi.fn(async (prId: string) => ({
+      prId,
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0,
+    }));
+    const getChecks = vi.fn(async () => {
+      throw new Error("checks unavailable");
+    });
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async () => []),
+      getStatus,
+      getChecks,
+      getReviews: vi.fn(async () => []),
+      getComments: vi.fn(async () => []),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
+      expect(getChecks).toHaveBeenCalledWith("pr-1");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-2" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-2");
+      expect(getStatus).toHaveBeenCalledWith("pr-2");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(getStatus.mock.calls.filter(([prId]) => prId === "pr-1")).toHaveLength(2);
+    });
   });
 
   it("ignores stale primary detail settlements after reselecting the same PR", async () => {
@@ -690,19 +827,47 @@ describe("PrsContext refresh", () => {
     await resolveDetailSet("pr-2", 0, "closed");
   });
 
-  it("does not let cached snapshot hydration overwrite live detail data", async () => {
+  it("uses cached snapshot hydration before applying live detail", async () => {
     const user = userEvent.setup();
     vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
-    let resolveSnapshots!: (snapshots: PrSnapshotHydration[]) => void;
-    const snapshotsPromise = new Promise<PrSnapshotHydration[]>((resolve) => {
-      resolveSnapshots = resolve;
-    });
+    const liveStatus = createDeferred<any>();
+    const liveChecks = createDeferred<any[]>();
+    const liveReviews = createDeferred<any[]>();
+    const liveComments = createDeferred<any[]>();
+    const snapshot: PrSnapshotHydration = {
+      prId: "pr-1",
+      detail: null,
+      status: {
+        prId: "pr-1",
+        state: "closed",
+        checksStatus: "failing",
+        reviewStatus: "changes_requested",
+        isMergeable: false,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      },
+      checks: [
+        {
+          name: "cached-ci",
+          status: "completed",
+          conclusion: "failure",
+          detailsUrl: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      ],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-24T12:10:00.000Z",
+    };
     Object.assign(window.ade.prs, {
-      listSnapshots: vi.fn((_args: { prId: string }) => snapshotsPromise),
-      getStatus: vi.fn(async (_prId: string) => ({ state: "open" })),
-      getChecks: vi.fn(async (_prId: string) => []),
-      getReviews: vi.fn(async (_prId: string) => []),
-      getComments: vi.fn(async (_prId: string) => []),
+      listSnapshots: vi.fn(async (_args: { prId: string }) => [snapshot]),
+      getStatus: vi.fn(async (_prId: string) => liveStatus.promise),
+      getChecks: vi.fn(async (_prId: string) => liveChecks.promise),
+      getReviews: vi.fn(async (_prId: string) => liveReviews.promise),
+      getComments: vi.fn(async (_prId: string) => liveComments.promise),
     });
 
     render(
@@ -717,46 +882,190 @@ describe("PrsContext refresh", () => {
 
     await user.click(screen.getByRole("button", { name: "select pr-1" }));
     await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("closed");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+    });
+
+    expect(window.ade.prs.getStatus).toHaveBeenCalledWith("pr-1");
+
+    await act(async () => {
+      liveStatus.resolve({
+        prId: "pr-1",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      });
+      await liveStatus.promise;
+    });
+
+    await waitFor(() => {
       expect(screen.getByTestId("status").textContent).toBe("open");
-      expect(screen.getByTestId("checks-count").textContent).toBe("0");
+      expect(screen.getByTestId("checks-count").textContent).toBe("1");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
     });
 
     await act(async () => {
-      resolveSnapshots([
-        {
-          prId: "pr-1",
-          detail: null,
-          status: {
-            prId: "pr-1",
-            state: "closed",
-            checksStatus: "failing",
-            reviewStatus: "changes_requested",
-            isMergeable: false,
-            mergeConflicts: false,
-            behindBaseBy: 0,
-          },
-          checks: [
-            {
-              name: "stale-ci",
-              status: "completed",
-              conclusion: "failure",
-              detailsUrl: null,
-              startedAt: null,
-              completedAt: null,
-            },
-          ],
-          reviews: [],
-          comments: [],
-          files: [],
-          commits: [],
-          updatedAt: "2026-03-24T12:10:00.000Z",
-        },
-      ]);
-      await snapshotsPromise;
+      liveChecks.resolve([]);
+      liveReviews.resolve([]);
+      liveComments.resolve([]);
+      await Promise.all([liveChecks.promise, liveReviews.promise, liveComments.promise]);
     });
 
-    expect(screen.getByTestId("status").textContent).toBe("open");
-    expect(screen.getByTestId("checks-count").textContent).toBe("0");
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("open");
+      expect(screen.getByTestId("checks-count").textContent).toBe("0");
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+    });
+  });
+
+  it("hydrates deployments and AI summary after snapshot prefill while live detail is pending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    const liveStatus = createDeferred<any>();
+    const liveChecks = createDeferred<any[]>();
+    const liveReviews = createDeferred<any[]>();
+    const liveComments = createDeferred<any[]>();
+    const snapshot: PrSnapshotHydration = {
+      prId: "pr-1",
+      detail: null,
+      status: {
+        prId: "pr-1",
+        state: "closed",
+        checksStatus: "failing",
+        reviewStatus: "changes_requested",
+        isMergeable: false,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      },
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-24T12:10:00.000Z",
+    };
+    const deployment: PrDeployment = {
+      id: "deployment-1",
+      environment: "preview",
+      state: "success",
+      description: null,
+      environmentUrl: "https://preview.example.com",
+      logUrl: null,
+      sha: "abc123",
+      ref: "feature/open",
+      creator: "octocat",
+      createdAt: "2026-03-24T12:00:00.000Z",
+      updatedAt: "2026-03-24T12:05:00.000Z",
+    };
+    const aiSummary: PrAiSummary = {
+      prId: "pr-1",
+      summary: "Cached overview is available.",
+      riskAreas: [],
+      reviewerHotspots: [],
+      unresolvedConcerns: [],
+      generatedAt: "2026-03-24T12:06:00.000Z",
+      headSha: "abc123",
+    };
+    Object.assign(window.ade.prs, {
+      listSnapshots: vi.fn(async (args?: { prId?: string }) => (args?.prId === "pr-1" ? [snapshot] : [])),
+      getStatus: vi.fn(async (_prId: string) => liveStatus.promise),
+      getChecks: vi.fn(async (_prId: string) => liveChecks.promise),
+      getReviews: vi.fn(async (_prId: string) => liveReviews.promise),
+      getComments: vi.fn(async (_prId: string) => liveComments.promise),
+      getDeployments: vi.fn(async (_prId: string) => [deployment]),
+      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+    });
+
+    render(
+      <PrsProvider>
+        <DetailHarness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("status").textContent).toBe("closed");
+      expect(screen.getByTestId("detail-busy").textContent).toBe("idle");
+    });
+
+    await waitFor(() => {
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledWith("pr-1");
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledWith("pr-1");
+      expect(screen.getByTestId("deployments-count").textContent).toBe("1");
+      expect(screen.getByTestId("ai-summary").textContent).toBe("Cached overview is available.");
+    });
+    expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("");
+  });
+
+  it("refreshes secondary detail when a fresh primary detail cache is reused", async () => {
+    const user = userEvent.setup();
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    const deployment: PrDeployment = {
+      id: "deployment-1",
+      environment: "preview",
+      state: "success",
+      description: null,
+      environmentUrl: "https://preview.example.com",
+      logUrl: null,
+      sha: "abc123",
+      ref: "feature/open",
+      creator: "octocat",
+      createdAt: "2026-03-24T12:00:00.000Z",
+      updatedAt: "2026-03-24T12:05:00.000Z",
+    };
+    const aiSummary: PrAiSummary = {
+      prId: "pr-1",
+      summary: "Fresh summary is available.",
+      riskAreas: [],
+      reviewerHotspots: [],
+      unresolvedConcerns: [],
+      generatedAt: "2026-03-24T12:06:00.000Z",
+      headSha: "abc123",
+    };
+    Object.assign(window.ade.prs, {
+      getStatus: vi.fn(async (_prId: string) => ({
+        prId: "pr-1",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+      })),
+      getChecks: vi.fn(async (_prId: string) => []),
+      getReviews: vi.fn(async (_prId: string) => []),
+      getComments: vi.fn(async (_prId: string) => []),
+      getDeployments: vi.fn(async (_prId: string) => [deployment]),
+      getAiSummary: vi.fn(async (_prId: string) => aiSummary),
+    });
+
+    render(<ActiveToggleDetailHarness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    await user.click(screen.getByRole("button", { name: "select pr-1" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("live-detail-pr-id").textContent).toBe("pr-1");
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(1);
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(1);
+    });
+
+    await user.click(screen.getByRole("button", { name: "deactivate" }));
+    await user.click(screen.getByRole("button", { name: "activate" }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.getDeployments).toHaveBeenCalledTimes(2);
+      expect(window.ade.prs.getAiSummary).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("keeps cached selected PR detail visible when live GitHub detail is rate limited", async () => {

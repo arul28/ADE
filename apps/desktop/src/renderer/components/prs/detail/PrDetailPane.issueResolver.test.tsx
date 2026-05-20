@@ -308,10 +308,13 @@ function renderPane(args: {
   getDetail?: ReturnType<typeof vi.fn>;
   getFiles?: ReturnType<typeof vi.fn>;
   getCommits?: ReturnType<typeof vi.fn>;
+  getActivity?: ReturnType<typeof vi.fn>;
+  addComment?: ReturnType<typeof vi.fn>;
   getActionRuns?: ReturnType<typeof vi.fn>;
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
+  prsTimelineRailsEnabled?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -452,6 +455,16 @@ function renderPane(args: {
     setResolverModel: vi.fn(),
     setResolverReasoningLevel: vi.fn(),
     setResolverPermissionMode: vi.fn(),
+    prsTimelineRailsEnabled: args.prsTimelineRailsEnabled ?? false,
+    dismissedAiSummaries: {},
+    timelineFiltersByPrId: {},
+    detailAiSummary: null,
+    detailDeployments: [],
+    detailLiveDataPrId: null,
+    viewerLogin: "octocat",
+    setTimelineFilters: vi.fn(),
+    setAiSummaryDismissed: vi.fn(),
+    regeneratePrAiSummary: vi.fn(),
   });
   Object.assign(window, {
     ade: {
@@ -471,7 +484,8 @@ function renderPane(args: {
         getFiles: args.getFiles ?? vi.fn().mockResolvedValue([]),
         getCommits: args.getCommits,
         getActionRuns,
-        getActivity: vi.fn().mockResolvedValue(args.activity ?? []),
+        getActivity: args.getActivity ?? vi.fn().mockResolvedValue(args.activity ?? []),
+        addComment: args.addComment ?? vi.fn().mockResolvedValue(undefined),
         getReviewThreads,
         issueInventorySync,
         issueInventoryReset,
@@ -563,6 +577,8 @@ function renderPane(args: {
     aiResolutionStop,
     getReviewThreads,
     getActionRuns,
+    getActivity: window.ade.prs.getActivity,
+    addComment: window.ade.prs.addComment,
     issueInventorySync,
     issueInventoryReset,
     getChecks,
@@ -624,6 +640,7 @@ describe("PrDetailPane issue resolver CTA", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    window.history.replaceState(null, "", "/");
   });
 
   it.each(visibilityCases)("$name — Path to Merge tab is always visible", async ({ checks, reviewThreads, statusOverrides }) => {
@@ -750,7 +767,7 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
-  it("hydrates checks and activity data from a cached snapshot", async () => {
+  it("hydrates checks and timeline data from a cached snapshot", async () => {
     const user = userEvent.setup();
     const listSnapshots = vi.fn().mockResolvedValue([{
       prId: "pr-80",
@@ -779,15 +796,59 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(screen.getByText("Cached snapshot check")).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await user.click(screen.getByRole("button", { name: /overview/i }));
     await waitFor(() => {
       expect(screen.getByText("Cached comment body")).toBeTruthy();
       expect(screen.getByText("Cached review body")).toBeTruthy();
     });
   });
 
+  it("does not start live detail work from a stale snapshot prefill request", async () => {
+    let resolveSnapshots!: (snapshots: PrSnapshotHydration[]) => void;
+    const listSnapshots = vi.fn().mockImplementation(() => new Promise<PrSnapshotHydration[]>((resolve) => {
+      resolveSnapshots = resolve;
+    }));
+    const getDetail = vi.fn().mockResolvedValue({
+      prId: "pr-80",
+      body: "Live detail should not load",
+      labels: [],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    });
+    const getFiles = vi.fn().mockResolvedValue([]);
+    const getCommits = vi.fn().mockResolvedValue([]);
+    const getActionRuns = vi.fn().mockResolvedValue([]);
+    const { unmount } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      listSnapshots,
+      getDetail,
+      getFiles,
+      getCommits,
+      getActionRuns,
+    });
+
+    await waitFor(() => {
+      expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
+    });
+
+    unmount();
+    await act(async () => {
+      resolveSnapshots([]);
+      await Promise.resolve();
+    });
+
+    expect(getDetail).not.toHaveBeenCalled();
+    expect(getFiles).not.toHaveBeenCalled();
+    expect(getCommits).not.toHaveBeenCalled();
+    expect(getActionRuns).not.toHaveBeenCalled();
+  });
+
   it("updates synthesized activity when selected PR detail inputs refresh", async () => {
-    const user = userEvent.setup();
     const { rerenderPane } = renderPane({
       checks: [makeCheck({ name: "Old CI", conclusion: "success" })],
       reviewThreads: [],
@@ -797,7 +858,6 @@ describe("PrDetailPane issue resolver CTA", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
     await waitFor(() => {
       expect(screen.getByText("Old CI: success")).toBeTruthy();
     });
@@ -816,10 +876,41 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
+  it("refetches activity after posting a PR comment", async () => {
+    const user = userEvent.setup();
+    const addComment = vi.fn().mockResolvedValue(undefined);
+    const getActivity = vi.fn().mockResolvedValue([
+      {
+        id: "comment-new",
+        type: "comment",
+        author: "octocat",
+        avatarUrl: null,
+        body: "Freshly posted comment",
+        timestamp: "2026-03-23T12:05:00.000Z",
+        metadata: {},
+      } satisfies PrActivityEvent,
+    ]);
+    renderPane({
+      checks: [],
+      comments: [makeComment({ id: "comment-old", body: "Old cached comment" })],
+      reviewThreads: [],
+      getActivity,
+      addComment,
+    });
+
+    await user.type(screen.getByPlaceholderText(/leave a comment/i), "Freshly posted comment");
+    await user.click(screen.getByRole("button", { name: /^comment$/i }));
+
+    await waitFor(() => {
+      expect(addComment).toHaveBeenCalledWith({ prId: "pr-80", body: "Freshly posted comment" });
+      expect(getActivity).toHaveBeenCalled();
+      expect(screen.getByText("Freshly posted comment")).toBeTruthy();
+    });
+  });
+
   it("synthesizes unique activity keys for duplicate review and check identities", async () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
-      const user = userEvent.setup();
       renderPane({
         checks: [
           makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
@@ -831,8 +922,6 @@ describe("PrDetailPane issue resolver CTA", () => {
         ],
         reviewThreads: [],
       });
-
-      await user.click(screen.getByRole("button", { name: /activity/i }));
 
       await waitFor(() => {
         expect(screen.getAllByText("CodeRabbit: failure")).toHaveLength(2);
@@ -920,6 +1009,76 @@ describe("PrDetailPane issue resolver CTA", () => {
     expect(screen.queryByText("stale-label")).toBeNull();
   });
 
+  it("keeps live rich detail while a force-live refresh is pending", async () => {
+    const freshDetail = {
+      prId: "pr-80",
+      body: "Fresh live body",
+      labels: [{ name: "fresh-label", color: "22c55e", description: null }],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    };
+    const staleSnapshot: PrSnapshotHydration = {
+      prId: "pr-80",
+      detail: {
+        ...freshDetail,
+        body: "Stale cached body",
+        labels: [{ name: "stale-label", color: "ef4444", description: null }],
+      },
+      status: makeStatus({ checksStatus: "passing", reviewStatus: "approved" }),
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    let resolveSecondDetail!: (value: typeof freshDetail) => void;
+    const secondDetail = new Promise<typeof freshDetail>((resolve) => {
+      resolveSecondDetail = resolve;
+    });
+    const getDetail = vi.fn()
+      .mockResolvedValueOnce(freshDetail)
+      .mockReturnValueOnce(secondDetail);
+    const { rerenderPane } = renderPane({
+      checks: [],
+      reviewThreads: [],
+      getDetail,
+      snapshotHydration: null,
+      snapshotHydrationOwnedByContext: true,
+      prOverrides: {
+        checksStatus: "none",
+        updatedAt: "2026-03-23T12:00:00.000Z",
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh-label")).toBeTruthy();
+    });
+
+    const refreshedPr = {
+      checksStatus: "pending" as const,
+      updatedAt: "2026-03-23T12:01:00.000Z",
+    };
+    rerenderPane(refreshedPr);
+
+    await waitFor(() => {
+      expect(getDetail).toHaveBeenCalledTimes(2);
+    });
+    rerenderPane(refreshedPr, { snapshotHydration: staleSnapshot });
+
+    expect(screen.getByText("fresh-label")).toBeTruthy();
+    expect(screen.queryByText("stale-label")).toBeNull();
+
+    await act(async () => {
+      resolveSecondDetail(freshDetail);
+      await secondDetail;
+    });
+  });
+
   it("prefers authoritative empty live detail over cached snapshot data", async () => {
     const user = userEvent.setup();
     const listSnapshots = vi.fn().mockResolvedValue([{
@@ -948,7 +1107,7 @@ describe("PrDetailPane issue resolver CTA", () => {
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     expect(screen.queryByText("Cached snapshot check")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
+    await user.click(screen.getByRole("button", { name: /overview/i }));
     expect(screen.queryByText("Cached comment body")).toBeNull();
     expect(screen.queryByText("Cached review body")).toBeNull();
   });
@@ -1241,6 +1400,72 @@ describe("PrDetailPane issue resolver CTA", () => {
       expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "merge" });
       expect(onRefresh).toHaveBeenCalled();
     });
+  });
+
+  it("keeps ADE PR actions available in the default timeline overview", async () => {
+    const user = userEvent.setup();
+    const { land, onRefresh } = renderPane({
+      checks: [makeCheck({ conclusion: "success" })],
+      reviewThreads: [],
+      prsTimelineRailsEnabled: true,
+      statusOverrides: {
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+      },
+      prOverrides: {
+        checksStatus: "passing",
+        reviewStatus: "approved",
+      },
+    });
+
+    expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
+    const actionSlot = screen.getByTestId("pr-detail-action-rail-slot");
+    expect(actionSlot.style.overflowY).toBe("auto");
+    expect(actionSlot.style.maxHeight).toBe("min(40%, 340px)");
+    expect(screen.getByRole("button", { name: /ai review/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /submit review/i })).toBeTruthy();
+
+    const mergeButton = screen.getByRole("button", { name: /merge pull request/i });
+    expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
+    await user.click(mergeButton);
+
+    await waitFor(() => {
+      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash" });
+      expect(onRefresh).toHaveBeenCalled();
+    });
+  });
+
+  it("enables resolved and outdated review thread filters for legacy activity deep links", async () => {
+    window.history.replaceState(null, "", "/prs?tab=normal&prId=pr-80&detailTab=activity&threadId=thread-1");
+
+    renderPane({
+      checks: [makeCheck({ conclusion: "success" })],
+      reviewThreads: [
+        makeThread({
+          isResolved: true,
+          isOutdated: true,
+          comments: [
+            {
+              id: "comment-1",
+              author: "reviewer",
+              authorAvatarUrl: null,
+              body: "Resolved thread body",
+              url: null,
+              createdAt: null,
+              updatedAt: null,
+            },
+          ],
+        }),
+      ],
+      prsTimelineRailsEnabled: true,
+    });
+
+    expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
+    expect(document.querySelector('[data-filter-key="all"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector('[data-filter-key="unresolved"]')?.getAttribute("aria-pressed")).toBe("false");
+    expect(document.querySelector('[data-filter-key="outdated"]')?.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("launches the issue resolver chat and navigates to the work session", async () => {
@@ -1782,20 +2007,22 @@ describe("PrDetailPane issue resolver CTA", () => {
     });
   });
 
-  it("loads review threads when opening the resolver", async () => {
+  it("loads review threads before and when opening the resolver", async () => {
     const user = userEvent.setup();
     const { getReviewThreads } = renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
     });
 
-    expect(getReviewThreads).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(getReviewThreads).toHaveBeenCalledTimes(1);
+    });
 
     await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await user.click(await screen.findByRole("button", { name: /resolve issues with agent/i }));
 
     await waitFor(() => {
-      expect(getReviewThreads).toHaveBeenCalledTimes(1);
+      expect(getReviewThreads).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1821,7 +2048,6 @@ describe("PrDetailPane issue resolver CTA", () => {
   });
 
   it("renders review activity bodies as markdown instead of raw source text", async () => {
-    const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
@@ -1838,7 +2064,6 @@ describe("PrDetailPane issue resolver CTA", () => {
       ],
     });
 
-    await user.click(screen.getByRole("button", { name: /activity/i }));
     expect(await screen.findByText("Actionable comments posted: 3")).toBeTruthy();
     expect(screen.queryByText(/\*\*Actionable comments posted: 3\*\*/)).toBeNull();
     expect(screen.getByText("Prompt for AI Agents")).toBeTruthy();

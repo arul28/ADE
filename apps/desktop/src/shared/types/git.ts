@@ -49,6 +49,7 @@ export type GitStashPushArgs = {
 export type GitStashRefArgs = {
   laneId: string;
   stashRef: string;
+  stashOid?: string;
 };
 
 export type GitSyncArgs = {
@@ -130,6 +131,7 @@ export type GitGetFileHistoryArgs = {
 };
 
 export type GitStashSummary = {
+  oid: string;
   ref: string;
   subject: string;
   createdAt: string | null;

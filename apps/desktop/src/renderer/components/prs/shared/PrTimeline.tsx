@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -129,6 +130,22 @@ function useNearViewport(
   rowRef: React.MutableRefObject<HTMLDivElement | null>,
 ): boolean {
   const [visible, setVisible] = useState(false);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const root = parentRef.current;
+    if (!row) return;
+    if (!root) {
+      setVisible(true);
+      return;
+    }
+    const rowRect = row.getBoundingClientRect();
+    const rootRect = root.getBoundingClientRect();
+    const margin = 500;
+    if (rowRect.bottom >= rootRect.top - margin && rowRect.top <= rootRect.bottom + margin) {
+      setVisible(true);
+    }
+  }, [parentRef, rowRef]);
+
   useEffect(() => {
     const row = rowRef.current;
     const root = parentRef.current;
@@ -182,9 +199,11 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
   const unresolvedIds = useMemo(() => collectUnresolvedThreadIds(filtered), [filtered]);
 
   const parentRef = useRef<HTMLDivElement | null>(null);
+  const getItemKey = useCallback((index: number) => filtered[index]?.id ?? index, [filtered]);
   const virtualizer = useVirtualizer({
     count: filtered.length,
     getScrollElement: () => parentRef.current,
+    getItemKey,
     estimateSize: () => 120,
     overscan: 4,
   });
@@ -341,7 +360,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             className="py-8 text-center text-[12px]"
             style={{ color: COLORS.textDim }}
           >
-            No events match the current filters.
+            {events.length > 0 ? "No events match the current filters." : "No events yet."}
           </div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -521,6 +540,15 @@ function TimelineRow(props: TimelineRowProps) {
     },
     [measure],
   );
+
+  useLayoutEffect(() => {
+    if (!isNear) return;
+    const node = rowRef.current;
+    if (!node) return;
+    measure(node);
+    const raf = window.requestAnimationFrame(() => measure(node));
+    return () => window.cancelAnimationFrame(raf);
+  }, [event.id, isNear, measure]);
 
   return (
     <div

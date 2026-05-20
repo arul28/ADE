@@ -1955,11 +1955,14 @@ export function createLaneService({
     db.run("delete from pr_pipeline_settings where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from pr_issue_inventory where pr_id in (select id from pull_requests where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from pr_auto_link_ignores where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from review_finding_feedback where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from review_run_artifacts where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from review_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_candidate_findings where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
+    db.run("delete from review_reviewer_runs where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
     db.run("delete from review_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from file_directory_snapshots where workspace_id in (select id from files_workspaces where lane_id = ?)", [laneId]);

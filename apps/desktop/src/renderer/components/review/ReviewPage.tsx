@@ -10,7 +10,8 @@ import {
   Sparkle,
   ArrowClockwise,
   ArrowSquareOut,
-  FileText,
+  Checks,
+  CopySimple,
 } from "@phosphor-icons/react";
 import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type { LaneSummary } from "../../../shared/types";
@@ -20,7 +21,6 @@ import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
-import { AgentChatPane } from "../chat/AgentChatPane";
 import { ReviewLaunchModelControls } from "../shared/ReviewLaunchModelControls";
 import {
   cancelReviewRun,
@@ -34,9 +34,12 @@ import {
 } from "./reviewApi";
 import { ReviewFindingCard, type FindingActionRequest } from "./ReviewFindingCard";
 import { ReviewLearningsPanel } from "./ReviewLearningsPanel";
+import {
+  formatReviewFindingForClipboard,
+  formatReviewFindingsForClipboard,
+} from "./reviewFindingCopy";
 import type {
   ReviewArtifact,
-  ReviewEvidenceEntry,
   ReviewFinding,
   ReviewLaunchCommit,
   ReviewLaunchContext,
@@ -67,6 +70,8 @@ type LaunchDraft = {
   headCommit: string;
   modelId: string;
   reasoningEffort: string;
+  codexFastMode: boolean;
+  budgetMode: "bounded" | "unlimited";
   maxFiles: number;
   maxDiffChars: number;
   maxPromptChars: number;
@@ -106,32 +111,6 @@ function toReviewStatusTone(status: ReviewRunStatus): string {
   }
 }
 
-function toSeverityTone(severity: string): string {
-  const normalized = severity.toLowerCase();
-  if (normalized.includes("crit")) return "border-red-400/25 bg-red-400/[0.10] text-red-200";
-  if (normalized.includes("high")) return "border-orange-400/25 bg-orange-400/[0.10] text-orange-200";
-  if (normalized.includes("medium")) return "border-amber-400/25 bg-amber-400/[0.10] text-amber-200";
-  if (normalized.includes("low")) return "border-sky-400/25 bg-sky-400/[0.10] text-sky-200";
-  return "border-zinc-400/20 bg-zinc-400/[0.08] text-zinc-200";
-}
-
-function toFindingClassTone(value: string): string {
-  switch (value) {
-    case "intent_drift":
-      return "border-fuchsia-400/25 bg-fuchsia-400/[0.10] text-fuchsia-200";
-    case "incomplete_rollout":
-      return "border-cyan-400/25 bg-cyan-400/[0.10] text-cyan-200";
-    case "late_stage_regression":
-      return "border-rose-400/25 bg-rose-400/[0.10] text-rose-200";
-    default:
-      return "border-zinc-400/20 bg-zinc-400/[0.08] text-zinc-200";
-  }
-}
-
-function toFindingClassLabel(value: string): string {
-  return value.replaceAll("_", " ");
-}
-
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   const ts = Date.parse(value);
@@ -152,19 +131,6 @@ function formatRelativeTime(value: string | null | undefined): string {
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(ts).toLocaleDateString();
-}
-
-function formatConfidence(value: number | string): string {
-  if (typeof value === "number") {
-    if (value <= 1) return `${Math.round(value * 100)}%`;
-    return `${Math.round(value)}%`;
-  }
-  return value;
-}
-
-function normalizeEvidence(evidence: ReviewFinding["evidence"] | null | undefined): ReviewEvidenceEntry[] {
-  if (!evidence) return [];
-  return evidence.map((entry) => entry as ReviewEvidenceEntry);
 }
 
 function toTargetModeLabel(mode: ReviewTargetMode): string {
@@ -203,6 +169,10 @@ function toPassLabel(value: string): string {
       return "Cross-file impact";
     case "checks-and-tests":
       return "Checks and tests";
+    case "security-data":
+      return "Security and data";
+    case "ui-regression":
+      return "UI and regression";
     default:
       return value;
   }
@@ -241,6 +211,10 @@ function readArtifactMetaCount(artifact: ReviewArtifact, keys: string[]): number
   return null;
 }
 
+function formatBudgetValue(budgets: ReviewRunConfig["budgets"], value: number | undefined): string | number {
+  return budgets.unlimited ? "No limit" : value ?? "default";
+}
+
 function toContextArtifactLabel(artifactType: string): string {
   switch (artifactType) {
     case "provenance_brief":
@@ -249,13 +223,35 @@ function toContextArtifactLabel(artifactType: string): string {
       return "Rule overlays";
     case "validation_signals":
       return "Validation signals";
+    case "changed_file_manifest":
+      return "Changed-file manifest";
+    case "risk_map":
+      return "Risk map";
+    case "diff_bundle":
+      return "Diff bundle";
+    case "pass_prompt":
+      return "Reviewer prompt";
+    case "pass_output":
+      return "Reviewer output";
+    case "pass_findings":
+      return "Reviewer findings";
+    case "adjudication_result":
+      return "Adjudication result";
+    case "merged_findings":
+      return "Merged findings";
+    case "review_output":
+      return "Review output";
     default:
       return artifactType.replaceAll("_", " ");
   }
 }
 
 function isContextArtifactType(artifactType: string): boolean {
-  return artifactType === "provenance_brief" || artifactType === "rule_overlays" || artifactType === "validation_signals";
+  return artifactType === "provenance_brief"
+    || artifactType === "rule_overlays"
+    || artifactType === "validation_signals"
+    || artifactType === "changed_file_manifest"
+    || artifactType === "risk_map";
 }
 
 function normalizeTimestamp(...values: unknown[]): string | null {
@@ -300,12 +296,16 @@ function normalizeDetail(detail: ReviewRunDetail | Record<string, unknown>): Nor
   const nested = value.run && typeof value.run === "object" ? (value.run as Record<string, unknown>) : null;
   const findings = (value.findings ?? nested?.findings ?? []) as ReviewFinding[];
   const artifacts = (value.artifacts ?? nested?.artifacts ?? []) as ReviewArtifact[];
+  const reviewerRuns = (value.reviewerRuns ?? nested?.reviewerRuns ?? []) as NormalizedDetail["reviewerRuns"];
+  const candidateFindings = (value.candidateFindings ?? nested?.candidateFindings ?? []) as NormalizedDetail["candidateFindings"];
   const publications = (value.publications ?? nested?.publications ?? []) as NormalizedDetail["publications"];
   const chatSession = (value.chatSession ?? nested?.chatSession ?? null) as ReviewRunDetail["chatSession"];
   return {
     ...run,
     findings,
     artifacts,
+    reviewerRuns,
+    candidateFindings,
     publications,
     chatSession,
   };
@@ -314,6 +314,14 @@ function normalizeDetail(detail: ReviewRunDetail | Record<string, unknown>): Nor
 function laneDisplayName(lane: LaneSummary | null | undefined): string {
   if (!lane) return "Unknown lane";
   return lane.name?.trim().length ? lane.name : lane.id;
+}
+
+function branchDisplayName(ref: string | null | undefined): string | null {
+  const normalized = (ref ?? "")
+    .trim()
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "");
+  return normalized.length ? normalized : null;
 }
 
 function MetaCard({ label, value }: { label: string; value: React.ReactNode }) {
@@ -369,6 +377,94 @@ function formatTargetSummary(target: ReviewTarget, compareLabel?: string | null)
 
 function describeRunTarget(run: Pick<ReviewRun, "target" | "targetLabel" | "compareTarget">): string {
   return run.targetLabel?.trim() || formatTargetSummary(run.target, run.compareTarget?.label ?? null);
+}
+
+function formatSeveritySummary(summary: ReviewRun["severitySummary"] | null | undefined): string {
+  const ordered = ["critical", "high", "medium", "low", "info"] as const;
+  const parts = ordered.flatMap((severity) => {
+    const count = Number(summary?.[severity] ?? 0);
+    if (count <= 0) return [];
+    return `${count} ${severity}`;
+  });
+  return parts.length > 0 ? parts.join(", ") : "0 actionable";
+}
+
+function formatPublicationOutcome(detail: Pick<ReviewRunDetail, "config" | "publications"> | null | undefined): string {
+  if (!detail || detail.config.publishBehavior !== "auto_publish") return "No findings published.";
+  const publishedCount = detail.publications?.filter((publication) => publication.status === "published").length ?? 0;
+  if (publishedCount === 0) return "No findings published.";
+  return `${publishedCount} publication${publishedCount === 1 ? "" : "s"} completed.`;
+}
+
+function failedReviewers(detail: NormalizedDetail | null | undefined): NonNullable<NormalizedDetail["reviewerRuns"]> {
+  return detail?.reviewerRuns.filter((reviewer) => reviewer.status === "failed") ?? [];
+}
+
+function formatReviewerFailureLabels(reviewers: NonNullable<NormalizedDetail["reviewerRuns"]>): string {
+  return reviewers
+    .map((reviewer) => reviewer.label || reviewer.reviewerKey)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function formatReviewCompleteLine(run: NormalizedRun, detail: NormalizedDetail | null): string {
+  const findingCount = detail?.findings.length ?? run.findingCount ?? 0;
+  const countLabel = `${findingCount} ${findingCount === 1 ? "finding" : "findings"}`;
+  const severityLabel = formatSeveritySummary(run.severitySummary);
+  if (run.status === "completed") {
+    const failed = failedReviewers(detail);
+    if (failed.length > 0) {
+      const failedLabel = formatReviewerFailureLabels(failed);
+      return `Review partially complete: ${countLabel} from ${describeRunTarget(run)}. ${severityLabel}. ${failed.length} specialist reviewer${failed.length === 1 ? "" : "s"} failed${failedLabel ? `: ${failedLabel}` : ""}. ${formatPublicationOutcome(detail ?? null)}`;
+    }
+    return `Review complete: ${countLabel} from ${describeRunTarget(run)}. ${severityLabel}. ${formatPublicationOutcome(detail ?? null)}`;
+  }
+  if (run.status === "failed") {
+    return `Review failed: ${describeRunTarget(run)}. ${run.errorMessage ?? "No error details were recorded."}`;
+  }
+  if (run.status === "cancelled") {
+    return `Review cancelled: ${describeRunTarget(run)}. ${severityLabel}.`;
+  }
+  return `Review ${run.status}: ${describeRunTarget(run)}. Findings will appear as reviewers finish.`;
+}
+
+function formatReviewEvidenceLine(run: NormalizedRun, detail: NormalizedDetail | null): string | null {
+  if (run.status !== "completed") return null;
+  const failed = failedReviewers(detail);
+  if (failed.length > 0) {
+    const totalCount = detail?.reviewerRuns.length ?? 0;
+    const completedCount = detail?.reviewerRuns.filter((reviewer) => reviewer.status === "completed").length ?? 0;
+    const failedLabel = formatReviewerFailureLabels(failed);
+    return `Partial review: ${completedCount}/${totalCount} specialist reviewers completed${failedLabel ? `; failed: ${failedLabel}` : ""}. ADE adjudicated only completed reviewer outputs and kept the run local.`;
+  }
+  const summary = run.summary?.trim() ?? "";
+  const exposesProcessCopy = /\b(candidate|publication threshold|multi-pass review kept)\b/i.test(summary);
+  if (summary && !exposesProcessCopy) {
+    return summary;
+  }
+
+  const reviewerCount = detail?.reviewerRuns.length ?? 0;
+  if (reviewerCount > 0) {
+    const finishedCount = detail?.reviewerRuns.filter((reviewer) => reviewer.status === "completed").length ?? 0;
+    return `${finishedCount} specialist reviewer${finishedCount === 1 ? "" : "s"} completed. Evidence and saved artifacts are available below.`;
+  }
+
+  return "Evidence and saved artifacts are available below.";
+}
+
+function formatCompareTargetDescription(run: NormalizedRun): string {
+  if (run.target.mode === "working_tree") {
+    return "Comparing against the current HEAD commit in this lane.";
+  }
+  if (run.target.mode === "commit_range") {
+    return `Comparing selected commits ${run.target.baseCommit.slice(0, 7)}..${run.target.headCommit.slice(0, 7)}.`;
+  }
+  const label = run.compareTarget?.label ?? run.compareTarget?.branchRef ?? run.compareTarget?.ref ?? null;
+  if (label) {
+    const normalized = branchDisplayName(label) ?? label;
+    return `Comparing against local ${normalized}. Fetch or pull first when you want latest remote changes included.`;
+  }
+  return "Comparing against the local configured base. Fetch or pull first when you want latest remote changes included.";
 }
 
 function isLaunchDraftComplete(draft: LaunchDraft): boolean {
@@ -481,6 +577,25 @@ function buildTargetConfig(
   targetMode: ReviewTargetMode,
   draft: LaunchDraft,
 ): { target: ReviewTarget; config: ReviewRunConfig } {
+  const budgets: ReviewRunConfig["budgets"] = draft.budgetMode === "unlimited"
+    ? {
+        unlimited: true,
+        maxFiles: Number.MAX_SAFE_INTEGER,
+        maxDiffChars: Number.MAX_SAFE_INTEGER,
+        maxPromptChars: Number.MAX_SAFE_INTEGER,
+        maxFindings: Number.MAX_SAFE_INTEGER,
+        maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
+        maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+      }
+    : {
+        maxFiles: draft.maxFiles,
+        maxDiffChars: draft.maxDiffChars,
+        maxPromptChars: draft.maxPromptChars,
+        maxFindings: draft.maxFindings,
+        maxFindingsPerPass: draft.maxFindingsPerPass,
+        maxPublishedFindings: draft.maxPublishedFindings,
+      };
+
   if (targetMode === "lane_diff") {
     const compareAgainst: ReviewRunConfig["compareAgainst"] = draft.compareKind === "lane"
       ? { kind: "lane", laneId: draft.compareLaneId || draft.laneId }
@@ -493,14 +608,8 @@ function buildTargetConfig(
         dirtyOnly: false,
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
-        budgets: {
-          maxFiles: draft.maxFiles,
-          maxDiffChars: draft.maxDiffChars,
-          maxPromptChars: draft.maxPromptChars,
-          maxFindings: draft.maxFindings,
-          maxFindingsPerPass: draft.maxFindingsPerPass,
-          maxPublishedFindings: draft.maxPublishedFindings,
-        },
+        codexFastMode: draft.codexFastMode,
+        budgets,
         publishBehavior: "local_only",
       },
     };
@@ -515,14 +624,8 @@ function buildTargetConfig(
         dirtyOnly: false,
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
-        budgets: {
-          maxFiles: draft.maxFiles,
-          maxDiffChars: draft.maxDiffChars,
-          maxPromptChars: draft.maxPromptChars,
-          maxFindings: draft.maxFindings,
-          maxFindingsPerPass: draft.maxFindingsPerPass,
-          maxPublishedFindings: draft.maxPublishedFindings,
-        },
+        codexFastMode: draft.codexFastMode,
+        budgets,
         publishBehavior: "local_only",
       },
     };
@@ -536,14 +639,8 @@ function buildTargetConfig(
       dirtyOnly: true,
       modelId: draft.modelId.trim(),
       reasoningEffort: draft.reasoningEffort.trim() || null,
-      budgets: {
-        maxFiles: draft.maxFiles,
-        maxDiffChars: draft.maxDiffChars,
-        maxPromptChars: draft.maxPromptChars,
-        maxFindings: draft.maxFindings,
-        maxFindingsPerPass: draft.maxFindingsPerPass,
-        maxPublishedFindings: draft.maxPublishedFindings,
-      },
+      codexFastMode: draft.codexFastMode,
+      budgets,
       publishBehavior: "local_only",
     },
   };
@@ -555,6 +652,8 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const [, setSearchParams] = useSearchParams();
   const lanes = useAppStore((s) => s.lanes ?? []);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const focusSession = useAppStore((s) => s.focusSession);
+  const selectLane = useAppStore((s) => s.selectLane);
 
   const laneOptions = React.useMemo(() => lanes.filter((lane) => Boolean(lane?.id)), [lanes]);
   const laneById = React.useMemo(() => new Map(laneOptions.map((lane) => [lane.id, lane])), [laneOptions]);
@@ -569,6 +668,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const [error, setError] = React.useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = React.useState<string | null>(readReviewRunId(location.search));
   const [launching, setLaunching] = React.useState(false);
+  const [copyAllFindingsState, setCopyAllFindingsState] = React.useState<"idle" | "copied" | "error">("idle");
   const [launchDraft, setLaunchDraft] = React.useState<LaunchDraft>(() => ({
     laneId: defaultLaneId ?? "",
     targetMode: "lane_diff",
@@ -578,6 +678,8 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     headCommit: "",
     modelId: DEFAULT_REVIEW_LAUNCH_MODEL_ID,
     reasoningEffort: DEFAULT_REVIEW_REASONING_EFFORT,
+    codexFastMode: false,
+    budgetMode: "bounded",
     maxFiles: 25,
     maxDiffChars: 120_000,
     maxPromptChars: 60_000,
@@ -616,12 +718,22 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     () => selectedDetail?.artifacts?.filter((artifact) => isContextArtifactType(String(artifact.artifactType))) ?? [],
     [selectedDetail?.artifacts],
   );
+  const selectedReviewerTranscripts = React.useMemo(
+    () => selectedDetail?.reviewerRuns.filter((reviewer) => Boolean(reviewer.chatSessionId)) ?? [],
+    [selectedDetail?.reviewerRuns],
+  );
 
   React.useEffect(() => {
     if (!launchDraft.laneId && defaultLaneId) {
       setLaunchDraft((prev) => ({ ...prev, laneId: defaultLaneId }));
     }
   }, [defaultLaneId, launchDraft.laneId]);
+
+  React.useEffect(() => {
+    if (copyAllFindingsState === "idle") return undefined;
+    const timer = window.setTimeout(() => setCopyAllFindingsState("idle"), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copyAllFindingsState]);
 
   React.useEffect(() => {
     const nextRunId = readReviewRunId(location.search);
@@ -786,6 +898,16 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const selectedCompareLane = launchDraft.compareKind === "lane"
     ? laneById.get(launchDraft.compareLaneId) ?? null
     : null;
+  const selectedLaneBranchLabel = branchDisplayName(selectedLane?.branchRef) ?? laneDisplayName(selectedLane);
+  const selectedLaneBaseLabel = branchDisplayName(selectedLane?.baseRef) ?? defaultBranchLabel;
+  const selectedLaneIsPrimary = selectedLane?.laneType === "primary";
+  const selectedLaneDefaultCompareLabel = selectedLaneIsPrimary
+    ? `local origin/${selectedLaneBaseLabel}`
+    : `local ${selectedLaneBaseLabel}`;
+  const defaultCompareOptionLabel = selectedLaneIsPrimary
+    ? `Compare with origin/${selectedLaneBaseLabel}`
+    : `Compare with ${selectedLaneBaseLabel}`;
+  const defaultCompareChipLabel = `Comparing against ${selectedLaneDefaultCompareLabel}`;
   const selectedLaneCommits = React.useMemo(
     () => orderLaunchCommits(launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? []),
     [launchContext?.recentCommitsByLane, launchDraft.laneId],
@@ -843,8 +965,12 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
         };
       }
       return {
-        title: `${laneLabel} against ${defaultBranchLabel}`,
-        description: `Review the full lane diff by comparing ${laneLabel} against ${defaultBranchLabel}.`,
+        title: selectedLaneIsPrimary
+          ? `${laneLabel}: local ${selectedLaneBranchLabel} vs ${selectedLaneDefaultCompareLabel}`
+          : `${laneLabel}: branch changes vs ${selectedLaneDefaultCompareLabel}`,
+        description: selectedLaneIsPrimary
+          ? `Reviews local commits on ${selectedLaneBranchLabel} against ${selectedLaneDefaultCompareLabel}. Fetch or pull first when you want latest remote changes included.`
+          : `Reviews changes on ${selectedLaneBranchLabel} since it split from ${selectedLaneDefaultCompareLabel}. Pull or merge remote changes into ${selectedLaneBaseLabel} first when you want them included.`,
       };
     }
     if (launchDraft.targetMode === "commit_range") {
@@ -860,13 +986,16 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       description: "Review the staged, unstaged, and untracked changes currently in this lane. This compares the working tree to the checked-out HEAD commit, not to another lane.",
     };
   }, [
-    defaultBranchLabel,
     launchDraft.compareKind,
     launchDraft.targetMode,
     selectedBaseCommit,
     selectedCompareLane,
     selectedHeadCommit,
     selectedLane,
+    selectedLaneBaseLabel,
+    selectedLaneBranchLabel,
+    selectedLaneDefaultCompareLabel,
+    selectedLaneIsPrimary,
   ]);
   const activeRuns = runs.filter((run) => run.status === "running" || run.status === "queued").length;
   const totalFindings = runs.reduce((sum, run) => sum + (run.findingCount ?? 0), 0);
@@ -999,6 +1128,13 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     void (appBridge?.openPathInEditor?.({ rootPath: resolved.rootPath, target: resolved.target }) ?? Promise.resolve()).catch(() => {});
   }, [resolveFindingTarget]);
 
+  const handleOpenTranscriptInWork = React.useCallback((sessionId: string | null | undefined, laneId: string) => {
+    if (!sessionId) return;
+    selectLane(laneId);
+    focusSession(sessionId);
+    void navigate("/work");
+  }, [focusSession, navigate, selectLane]);
+
   const [showLearnings, setShowLearnings] = React.useState(false);
   const [severityFilter, setSeverityFilter] = React.useState<"all" | "critical" | "high" | "medium" | "low" | "info">("all");
   const [showSuppressed, setShowSuppressed] = React.useState(false);
@@ -1021,6 +1157,35 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       setFeedbackError(err instanceof Error ? err.message : String(err));
     }
   }, [loadDetail, selectedRunId]);
+
+  const copyTextToClipboard = React.useCallback(async (text: string) => {
+    if (window.ade?.app?.writeClipboardText) {
+      await window.ade.app.writeClipboardText(text);
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    throw new Error("Clipboard is not available.");
+  }, []);
+
+  const handleCopyFinding = React.useCallback(async (finding: ReviewFinding) => {
+    await copyTextToClipboard(formatReviewFindingForClipboard(finding));
+  }, [copyTextToClipboard]);
+
+  const handleCopyAllFindings = React.useCallback(async (findings: ReviewFinding[]) => {
+    try {
+      await copyTextToClipboard(formatReviewFindingsForClipboard({
+        findings,
+        targetLabel: selectedRun?.targetLabel ?? null,
+        summary: selectedRun?.summary ?? null,
+      }));
+      setCopyAllFindingsState("copied");
+    } catch {
+      setCopyAllFindingsState("error");
+    }
+  }, [copyTextToClipboard, selectedRun?.summary, selectedRun?.targetLabel]);
 
   const handleCancelRun = React.useCallback(async (run: NormalizedRun) => {
     if (run.status !== "running" && run.status !== "queued") return;
@@ -1096,7 +1261,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
               <Chip className="text-[9px]">{toTargetModeLabel(launchDraft.targetMode)}</Chip>
               {launchDraft.targetMode === "lane_diff" ? (
                 <Chip className="text-[9px]">
-                  {launchDraft.compareKind === "lane" ? "Lane to lane" : `Against ${defaultBranchLabel}`}
+                  {launchDraft.compareKind === "lane" ? "Lane to lane" : defaultCompareChipLabel}
                 </Chip>
               ) : null}
             </div>
@@ -1107,7 +1272,9 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           {launchDraft.targetMode === "lane_diff" ? (
             <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
               <div className="text-[11px] text-[#C5D2E6]">
-                Default compares this lane against the primary / default branch. Switch to another lane when you want a lane-to-lane review instead.
+                {selectedLaneIsPrimary
+                  ? `ADE compares your local primary branch to ${selectedLaneDefaultCompareLabel}. It uses refs already in this checkout, so fetch or pull first when you want latest remote changes included.`
+                  : `ADE compares this lane's branch to ${selectedLaneDefaultCompareLabel}. Pull remote changes into that local base first when you want them included.`}
               </div>
               <label className="grid gap-1.5">
                 <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Compare against</span>
@@ -1124,7 +1291,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         )}
                         onClick={() => updateDraft("compareKind", kind)}
                       >
-                        {kind === "default_branch" ? "Primary / default branch" : "Another lane"}
+                        {kind === "default_branch" ? defaultCompareOptionLabel : "Another lane"}
                       </button>
                     );
                   })}
@@ -1200,10 +1367,16 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             <ReviewLaunchModelControls
               modelId={launchDraft.modelId}
               reasoningEffort={launchDraft.reasoningEffort}
+              codexFastMode={launchDraft.codexFastMode}
               onModelChange={(value) => updateDraft("modelId", value)}
               onReasoningEffortChange={(value) => updateDraft("reasoningEffort", value)}
+              onCodexFastModeChange={(value) => updateDraft("codexFastMode", value)}
               disabled={launching}
             />
+            <Chip className="w-fit text-[9px]">Read-only</Chip>
+            <div className="text-[11px] text-[#94A3B8]">
+              Can inspect files and run read-only analysis. Cannot edit files.
+            </div>
           </div>
 
           <details className="rounded-xl border border-white/[0.06] bg-white/[0.03]">
@@ -1215,72 +1388,98 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     These limits keep runs bounded. Most reviews can keep the defaults.
                   </div>
                 </div>
-                <Chip className="text-[9px]">advanced</Chip>
+                <Chip className="text-[9px]">{launchDraft.budgetMode === "unlimited" ? "no limits" : "advanced"}</Chip>
               </div>
             </summary>
-            <div className="grid gap-2 px-3 pb-3 md:grid-cols-3 xl:grid-cols-6">
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Files</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={launchDraft.maxFiles}
-                  onChange={(e) => updateDraft("maxFiles", Number(e.target.value) || 1)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Diff chars</span>
-                <input
-                  type="number"
-                  min={1024}
-                  step={1024}
-                  value={launchDraft.maxDiffChars}
-                  onChange={(e) => updateDraft("maxDiffChars", Number(e.target.value) || 1024)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Prompt chars</span>
-                <input
-                  type="number"
-                  min={1024}
-                  step={1024}
-                  value={launchDraft.maxPromptChars}
-                  onChange={(e) => updateDraft("maxPromptChars", Number(e.target.value) || 1024)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Findings</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={launchDraft.maxFindings}
-                  onChange={(e) => updateDraft("maxFindings", Number(e.target.value) || 1)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Per pass</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={launchDraft.maxFindingsPerPass}
-                  onChange={(e) => updateDraft("maxFindingsPerPass", Number(e.target.value) || 1)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
-              <label className="grid gap-1.5">
-                <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Published</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={launchDraft.maxPublishedFindings}
-                  onChange={(e) => updateDraft("maxPublishedFindings", Number(e.target.value) || 1)}
-                  className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                />
-              </label>
+            <div className="grid gap-3 px-3 pb-3">
+              <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-black/15 p-1">
+                {(["bounded", "unlimited"] as const).map((mode) => {
+                  const active = launchDraft.budgetMode === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={cn(
+                        "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
+                        active ? "bg-[#A78BFA1A] text-[#F5FAFF] ring-1 ring-[#A78BFA33]" : "text-[#94A3B8] hover:text-[#F5FAFF]"
+                      )}
+                      onClick={() => updateDraft("budgetMode", mode)}
+                    >
+                      {mode === "bounded" ? "Use limits" : "No limits"}
+                    </button>
+                  );
+                })}
+              </div>
+              {launchDraft.budgetMode === "unlimited" ? (
+                <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3 text-[11px] text-[#C5D2E6]">
+                  No ADE budget limits will be applied to files, diff text, prompt text, findings, or publication count for this run.
+                </div>
+              ) : (
+                <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Files</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={launchDraft.maxFiles}
+                      onChange={(e) => updateDraft("maxFiles", Number(e.target.value) || 1)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Diff chars</span>
+                    <input
+                      type="number"
+                      min={1024}
+                      step={1024}
+                      value={launchDraft.maxDiffChars}
+                      onChange={(e) => updateDraft("maxDiffChars", Number(e.target.value) || 1024)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Prompt chars</span>
+                    <input
+                      type="number"
+                      min={1024}
+                      step={1024}
+                      value={launchDraft.maxPromptChars}
+                      onChange={(e) => updateDraft("maxPromptChars", Number(e.target.value) || 1024)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Findings</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={launchDraft.maxFindings}
+                      onChange={(e) => updateDraft("maxFindings", Number(e.target.value) || 1)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Per pass</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={launchDraft.maxFindingsPerPass}
+                      onChange={(e) => updateDraft("maxFindingsPerPass", Number(e.target.value) || 1)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Published</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={launchDraft.maxPublishedFindings}
+                      onChange={(e) => updateDraft("maxPublishedFindings", Number(e.target.value) || 1)}
+                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
+                    />
+                  </label>
+                </div>
+              )}
             </div>
           </details>
 
@@ -1367,15 +1566,18 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 <div className="flex flex-wrap items-center gap-2">
                   <Chip className={cn("text-[9px]", toReviewStatusTone(selectedRun.status))}>{selectedRun.status}</Chip>
                   <Chip className="text-[9px]">{toTargetModeLabel(selectedRun.target.mode)}</Chip>
-                  <Chip className="text-[9px]">{toSelectionModeLabel(selectedRun.config.selectionMode)}</Chip>
+                  <Chip className="text-[9px]">{selectedRun.config.publishBehavior === "auto_publish" ? "publishing enabled" : "local only"}</Chip>
                   <Chip className="text-[9px]">{selectedRun.config.modelId}</Chip>
                 </div>
                 <div className="mt-3 text-lg font-semibold text-[#F5FAFF]">
-                  {describeRunTarget(selectedRun)}
+                  {formatReviewCompleteLine(selectedRun, selectedDetail)}
                 </div>
                 <div className="mt-1 text-sm text-[#93A4B8]">
-                  {selectedRun.summary ?? "No summary has been recorded yet."}
+                  {formatCompareTargetDescription(selectedRun)}
                 </div>
+                {formatReviewEvidenceLine(selectedRun, selectedDetail) ? (
+                  <div className="mt-2 text-sm text-[#C5D2E6]">{formatReviewEvidenceLine(selectedRun, selectedDetail)}</div>
+                ) : null}
                 {selectedRun.errorMessage ? (
                   <div className="mt-2 text-sm text-red-200">{selectedRun.errorMessage}</div>
                 ) : null}
@@ -1394,8 +1596,8 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             <MetaCard label="Completed" value={formatTime(selectedRun.endedAt)} />
             <MetaCard label="Model" value={selectedRun.config.modelId} />
             <MetaCard label="Reasoning" value={selectedRun.config.reasoningEffort ?? "default"} />
-            <MetaCard label="Publish" value={selectedRun.config.publishBehavior} />
-            <MetaCard label="Chat session" value={selectedRun.chatSessionId ?? "none"} />
+            <MetaCard label="Fast mode" value={selectedRun.config.codexFastMode ? "on" : "off"} />
+            <MetaCard label="Publish" value={selectedRun.config.publishBehavior === "auto_publish" ? "Auto-publish enabled" : "Local only"} />
           </section>
 
           <SectionCard title="Launch setup" icon={GitBranch}>
@@ -1405,27 +1607,65 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
               <MetaCard label="Selection mode" value={toSelectionModeLabel(selectedRun.config.selectionMode)} />
               <MetaCard
                 label="Comparison"
-                value={
-                  selectedRun.compareTarget?.label
-                  ?? (selectedRun.target.mode === "working_tree"
-                    ? "Current HEAD in selected lane"
-                    : selectedRun.target.mode === "commit_range"
-                      ? "Earlier base commit to later head commit"
-                      : "Default branch")
-                }
+                value={formatCompareTargetDescription(selectedRun)}
               />
-              <MetaCard label="File budget" value={selectedRun.config.budgets.maxFiles} />
-              <MetaCard label="Diff budget" value={selectedRun.config.budgets.maxDiffChars} />
-              <MetaCard label="Prompt budget" value={selectedRun.config.budgets.maxPromptChars} />
-              <MetaCard label="Finding budget" value={selectedRun.config.budgets.maxFindings} />
-              <MetaCard label="Per-pass budget" value={selectedRun.config.budgets.maxFindingsPerPass ?? selectedRun.config.budgets.maxFindings} />
-              <MetaCard label="Publish budget" value={selectedRun.config.budgets.maxPublishedFindings ?? selectedRun.config.budgets.maxFindings} />
             </div>
+            <details className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.03]">
+              <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#94A3B8]">
+                Run limits
+              </summary>
+              <div className="grid gap-3 px-3 pb-3 md:grid-cols-2 xl:grid-cols-3">
+                <MetaCard label="File budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFiles)} />
+                <MetaCard label="Diff budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxDiffChars)} />
+                <MetaCard label="Prompt budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxPromptChars)} />
+                <MetaCard label="Finding budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFindings)} />
+                <MetaCard label="Per-pass budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFindingsPerPass ?? selectedRun.config.budgets.maxFindings)} />
+                <MetaCard label="Publish budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxPublishedFindings ?? selectedRun.config.budgets.maxFindings)} />
+              </div>
+            </details>
           </SectionCard>
 
           {selectedContextArtifacts.length > 0 ? (
-            <SectionCard title="Context used for this review" icon={Sparkle}>
-              <div className="space-y-3">
+            <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+              <summary className="cursor-pointer list-none px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-[#F5FAFF]">Review process</div>
+                    <div className="mt-1 text-xs text-[#94A3B8]">Specialist reviewers, context, and validation signals.</div>
+                  </div>
+                  <Chip className="text-[9px]">{selectedDetail?.reviewerRuns.length ?? 0} reviewers</Chip>
+                </div>
+              </summary>
+              <div className="grid gap-3 px-4 pb-4">
+                {selectedDetail?.reviewerRuns.length ? (
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                    {selectedDetail.reviewerRuns.map((reviewer) => (
+                      <article key={reviewer.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip className={cn("text-[9px]", toReviewStatusTone(reviewer.status as ReviewRunStatus))}>{reviewer.status}</Chip>
+                          <Chip className="text-[9px]">{toPassLabel(reviewer.reviewerKey)}</Chip>
+                        </div>
+                        <div className="mt-2 text-xs font-semibold text-[#F5FAFF]">{reviewer.label}</div>
+                        <div className="mt-1 text-[11px] text-[#94A3B8]">{reviewer.candidateCount} candidates, {reviewer.keptCount} used</div>
+                        {reviewer.summary ? <div className="mt-2 text-[11px] text-[#C5D2E6]">{reviewer.summary}</div> : null}
+                        {reviewer.chatSessionId ? (
+                          <Button
+                            className="mt-3"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleOpenTranscriptInWork(reviewer.chatSessionId, selectedRun.laneId)}
+                            aria-label={`Open ${reviewer.label} transcript in Work`}
+                          >
+                            <ArrowSquareOut size={12} />
+                            Open in Work
+                          </Button>
+                        ) : null}
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+                <SectionCard title="Context used for this review" icon={Sparkle}>
+                  <div className="space-y-3">
                 <div className="grid gap-3 md:grid-cols-3">
                   {selectedContextArtifacts.map((artifact) => {
                     const artifactType = String(artifact.artifactType);
@@ -1472,44 +1712,64 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                           <MetaCard label="Created" value={formatTime(artifact.createdAt)} />
                           <MetaCard label="Mime type" value={artifact.mimeType} />
                         </div>
-                        {artifact.contentText ? (
-                          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
-                            {artifact.contentText}
-                          </pre>
-                        ) : null}
-                        {artifact.metadata ? (
-                          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
-                            {JSON.stringify(artifact.metadata, null, 2)}
-                          </pre>
+                        {artifact.contentText || artifact.metadata ? (
+                          <details className="mt-3 rounded-lg border border-white/[0.06] bg-black/15">
+                            <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold text-[#C5D2E6]">
+                              Debug payload
+                            </summary>
+                            <div className="grid gap-2 px-3 pb-3">
+                              {artifact.contentText ? (
+                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                                  {artifact.contentText}
+                                </pre>
+                              ) : null}
+                              {artifact.metadata ? (
+                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
+                                  {JSON.stringify(artifact.metadata, null, 2)}
+                                </pre>
+                              ) : null}
+                            </div>
+                          </details>
                         ) : null}
                       </article>
                     );
                   })}
                 </div>
               </div>
-            </SectionCard>
+                </SectionCard>
+              </div>
+            </details>
           ) : null}
 
           {(selectedPassArtifacts.length > 0 || selectedAdjudicationArtifact || selectedMergedArtifact) ? (
-            <SectionCard title="Passes and adjudication" icon={Sparkle}>
-              <div className="space-y-3">
+            <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+              <summary className="cursor-pointer list-none px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-[#F5FAFF]">Reviewer outputs</div>
+                    <div className="mt-1 text-xs text-[#94A3B8]">Candidate counts, merge results, and filtered signals.</div>
+                  </div>
+                  <Chip className="text-[9px]">{selectedDetail?.candidateFindings.length ?? 0} candidates</Chip>
+                </div>
+              </summary>
+              <div className="space-y-3 px-4 pb-4">
                 {selectedPassArtifacts.length > 0 ? (
                   <div className="grid gap-3 md:grid-cols-3">
                     {selectedPassArtifacts.map((artifact) => (
                       <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">{toPassLabel(readArtifactMetaString(artifact, "passKey") ?? artifact.title)}</Chip>
-                          <Chip className="text-[9px]">{readArtifactMetaNumber(artifact, "keptCount") ?? 0} kept</Chip>
+                          <Chip className="text-[9px]">{readArtifactMetaNumber(artifact, "keptCount") ?? 0} used</Chip>
                           {(readArtifactMetaNumber(artifact, "budgetTrimmedCount") ?? 0) > 0 ? (
-                            <Chip className="text-[9px]">trimmed {readArtifactMetaNumber(artifact, "budgetTrimmedCount")}</Chip>
+                            <Chip className="text-[9px]">filtered {readArtifactMetaNumber(artifact, "budgetTrimmedCount")}</Chip>
                           ) : null}
                         </div>
                         <div className="mt-2 text-xs text-[#C5D2E6]">
                           {readArtifactMetaString(artifact, "summary") ?? "No summary recorded for this pass."}
                         </div>
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          <MetaCard label="Parsed" value={readArtifactMetaNumber(artifact, "totalParsedCount") ?? "—"} />
-                          <MetaCard label="Saved" value={readArtifactMetaNumber(artifact, "keptCount") ?? "—"} />
+                          <MetaCard label="Candidates" value={readArtifactMetaNumber(artifact, "totalParsedCount") ?? "—"} />
+                          <MetaCard label="Used" value={readArtifactMetaNumber(artifact, "keptCount") ?? "—"} />
                         </div>
                       </article>
                     ))}
@@ -1535,7 +1795,9 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">Final result</Chip>
                           <Chip className="text-[9px]">findings {readArtifactMetaNumber(selectedMergedArtifact, "findingCount") ?? 0}</Chip>
-                          <Chip className="text-[9px]">publishable {readArtifactMetaNumber(selectedMergedArtifact, "publicationEligibleCount") ?? 0}</Chip>
+                          <Chip className="text-[9px]">
+                            {selectedRun.config.publishBehavior === "auto_publish" ? "ready to post" : "strong evidence"} {readArtifactMetaNumber(selectedMergedArtifact, "publicationEligibleCount") ?? 0}
+                          </Chip>
                         </div>
                         <div className="mt-2 text-xs text-[#C5D2E6]">
                           {selectedRun.summary ?? "No merged summary recorded."}
@@ -1545,7 +1807,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                   </div>
                 ) : null}
               </div>
-            </SectionCard>
+            </details>
           ) : null}
 
           {selectedDetail?.publications?.length ? (
@@ -1585,6 +1847,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           <SectionCard title={`Findings (${selectedRun.findingCount})`} icon={MagnifyingGlass}>
             {(() => {
               const rawFindings = selectedDetail?.findings ?? [];
+              const detailUnavailable = selectedDetail == null;
               const suppressedCount = rawFindings.filter((f) => f.suppressionMatch != null).length;
               const severityMatches = severityFilter === "all"
                 ? rawFindings
@@ -1619,46 +1882,66 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     </div>
                   ) : null}
                   {rawFindings.length > 0 ? (
-                    <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px]">
-                      <span className="text-[#6E7F92] uppercase tracking-[0.14em]">Severity:</span>
-                      {(["all", "critical", "high", "medium", "low", "info"] as const).map((sev) => {
-                        const count = sev === "all" ? rawFindings.length : rawFindings.filter((f) => f.severity === sev).length;
-                        if (sev !== "all" && count === 0) return null;
-                        return (
-                          <button
-                            key={sev}
-                            type="button"
-                            onClick={() => setSeverityFilter(sev)}
-                            className={cn(
-                              "rounded-full border px-2 py-0.5 font-medium transition",
-                              severityFilter === sev
-                                ? "border-sky-400/40 bg-sky-400/[0.10] text-sky-100"
-                                : "border-white/[0.08] bg-white/[0.02] text-[#93A4B8] hover:border-white/[0.16]",
-                            )}
-                          >
-                            {sev} <span className="text-[#6E7F92]">{count}</span>
-                          </button>
-                        );
-                      })}
-                      {suppressedCount > 0 ? (
-                        <label className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-[#93A4B8]">
-                          <input
-                            type="checkbox"
-                            checked={showSuppressed}
-                            onChange={(e) => setShowSuppressed(e.target.checked)}
-                            className="h-3 w-3 accent-violet-400"
-                          />
-                          Show {suppressedCount} filtered
-                        </label>
-                      ) : null}
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                        <span className="text-[#6E7F92] uppercase tracking-[0.14em]">Severity:</span>
+                        {(["all", "critical", "high", "medium", "low", "info"] as const).map((sev) => {
+                          const count = sev === "all" ? rawFindings.length : rawFindings.filter((f) => f.severity === sev).length;
+                          if (sev !== "all" && count === 0) return null;
+                          return (
+                            <button
+                              key={sev}
+                              type="button"
+                              onClick={() => setSeverityFilter(sev)}
+                              className={cn(
+                                "rounded-full border px-2 py-0.5 font-medium transition",
+                                severityFilter === sev
+                                  ? "border-sky-400/40 bg-sky-400/[0.10] text-sky-100"
+                                  : "border-white/[0.08] bg-white/[0.02] text-[#93A4B8] hover:border-white/[0.16]",
+                              )}
+                            >
+                              {sev} <span className="text-[#6E7F92]">{count}</span>
+                            </button>
+                          );
+                        })}
+                        {suppressedCount > 0 ? (
+                          <label className="inline-flex items-center gap-1.5 text-[10px] text-[#93A4B8]">
+                            <input
+                              type="checkbox"
+                              checked={showSuppressed}
+                              onChange={(e) => setShowSuppressed(e.target.checked)}
+                              className="h-3 w-3 accent-violet-400"
+                            />
+                            Show {suppressedCount} filtered
+                          </label>
+                        ) : null}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleCopyAllFindings(rawFindings)}
+                        title="Copy all findings from this run as one message."
+                      >
+                        {copyAllFindingsState === "copied" ? <Checks size={12} /> : <CopySimple size={12} />}
+                        {copyAllFindingsState === "copied" ? "Copied" : copyAllFindingsState === "error" ? "Copy failed" : "Copy all findings"}
+                      </Button>
                     </div>
                   ) : null}
                   <div className="space-y-2">
-                    {visible.length > 0 ? visible.map((finding, index) => (
+                    {detailUnavailable && loadingDetail ? (
+                      <div className="rounded-xl border border-sky-400/20 bg-sky-400/[0.06] p-3 text-xs text-sky-100">
+                        Loading findings and evidence for this run...
+                      </div>
+                    ) : detailUnavailable && selectedRun.findingCount > 0 ? (
+                      <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-3 text-xs text-amber-100">
+                        Findings are still loading or unavailable. Refresh this run before treating the review as empty.
+                      </div>
+                    ) : visible.length > 0 ? visible.map((finding, index) => (
                       <ReviewFindingCard
                         key={finding.id ?? `${finding.title}-${index}`}
                         finding={finding}
                         onRequestAction={handleFindingAction}
+                        onCopyFinding={handleCopyFinding}
                         onOpenInFiles={finding.filePath ? handleOpenFindingInFiles : undefined}
                         onOpenInEditor={finding.filePath ? handleOpenFindingInEditor : undefined}
                       />
@@ -1691,12 +1974,21 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             })()}
           </SectionCard>
 
-          <SectionCard title="Artifacts" icon={FileText}>
-            <div className="space-y-2">
+          <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+            <summary className="cursor-pointer list-none px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[#F5FAFF]">Artifacts</div>
+                  <div className="mt-1 text-xs text-[#94A3B8]">Raw diff, prompts, payloads, and provenance for audit.</div>
+                </div>
+                <Chip className="text-[9px]">{selectedDetail?.artifacts?.length ?? 0} saved</Chip>
+              </div>
+            </summary>
+            <div className="space-y-2 px-4 pb-4">
               {selectedDetail?.artifacts?.length ? selectedDetail.artifacts.map((artifact) => (
                 <div key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Chip className="text-[9px]">{artifact.artifactType}</Chip>
+                    <Chip className="text-[9px]">{toContextArtifactLabel(String(artifact.artifactType))}</Chip>
                     <div className="text-sm font-semibold text-[#F5FAFF]">{artifact.title}</div>
                     <span className="text-[11px] text-[#94A3B8]">{artifact.mimeType}</span>
                   </div>
@@ -1713,27 +2005,51 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 </div>
               )}
             </div>
-          </SectionCard>
+          </details>
 
-          <SectionCard title="Transcript" icon={Sparkle}>
+          <SectionCard title="Review agent transcript" icon={Sparkle}>
             {selectedDetail?.chatSession ? (
-              <div className="h-[620px] overflow-hidden rounded-2xl border border-white/[0.08] bg-[#07101A]">
-                <AgentChatPane
-                  laneId={selectedDetail.chatSession.laneId}
-                  laneLabel={selectedRunLane?.name ?? selectedRun.laneId}
-                  initialSessionSummary={selectedDetail.chatSession}
-                  lockSessionId={selectedDetail.chatSession.sessionId}
-                  hideSessionTabs
-                  modelSelectionLocked
-                  permissionModeLocked
-                  presentation={{
-                    mode: "resolver",
-                    profile: "standard",
-                    title: selectedDetail.chatSession.title ?? "Review transcript",
-                    assistantLabel: "Review",
-                    messagePlaceholder: "This transcript is locked to the saved review session.",
-                  }}
-                />
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                <div>
+                  <div className="text-sm font-semibold text-[#F5FAFF]">Review agent transcript available</div>
+                  <div className="mt-1 text-xs text-[#94A3B8]">
+                    Open the saved read-only session in Work when you need the full turn-by-turn trace.
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleOpenTranscriptInWork(selectedDetail.chatSession?.sessionId, selectedDetail.chatSession?.laneId ?? selectedRun.laneId)}
+                >
+                  <ArrowSquareOut size={12} />
+                  Open in Work
+                </Button>
+              </div>
+            ) : selectedReviewerTranscripts.length > 0 ? (
+              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-[#F5FAFF]">Specialist reviewer transcripts available</div>
+                    <div className="mt-1 text-xs text-[#94A3B8]">
+                      Open the saved read-only sessions in Work when you need the full turn-by-turn trace.
+                    </div>
+                  </div>
+                  <Chip className="text-[9px]">{selectedReviewerTranscripts.length} linked</Chip>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selectedReviewerTranscripts.map((reviewer) => (
+                    <Button
+                      key={reviewer.id}
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleOpenTranscriptInWork(reviewer.chatSessionId, selectedRun.laneId)}
+                      aria-label={`Open ${reviewer.label} transcript in Work`}
+                    >
+                      <ArrowSquareOut size={12} />
+                      {reviewer.label}
+                    </Button>
+                  ))}
+                </div>
               </div>
             ) : (
               <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">

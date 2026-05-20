@@ -10,7 +10,8 @@ export type ReviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 export type ReviewAnchorState = "anchored" | "file_only" | "missing";
 export type ReviewPublicationState = "local_only" | "published";
 export type ReviewSourcePass = "single_pass" | "adjudicated";
-export type ReviewPassKey = "diff-risk" | "cross-file-impact" | "checks-and-tests";
+export type ReviewPassKey = "diff-risk" | "cross-file-impact" | "checks-and-tests" | "security-data" | "ui-regression";
+export type ReviewReviewerRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ReviewFindingClass = "intent_drift" | "incomplete_rollout" | "late_stage_regression";
 export type ReviewSelectionMode = "full_diff" | "selected_commits" | "dirty_only";
 export type ReviewPublishBehavior = "local_only" | "auto_publish";
@@ -22,6 +23,8 @@ export type ReviewArtifactType =
   | "pass_findings"
   | "adjudication_result"
   | "merged_findings"
+  | "changed_file_manifest"
+  | "risk_map"
   | "provenance_brief"
   | "rule_overlays"
   | "validation_signals"
@@ -137,6 +140,7 @@ export type ReviewResolvedCompareTarget = {
 };
 
 export type ReviewRunBudgetConfig = {
+  unlimited?: boolean;
   maxFiles: number;
   maxDiffChars: number;
   maxPromptChars: number;
@@ -151,6 +155,7 @@ export type ReviewRunConfig = {
   dirtyOnly: boolean;
   modelId: string;
   reasoningEffort: string | null;
+  codexFastMode?: boolean;
   budgets: ReviewRunBudgetConfig;
   publishBehavior: ReviewPublishBehavior;
 };
@@ -281,6 +286,47 @@ export type ReviewRunArtifact = {
   createdAt: string;
 };
 
+export type ReviewReviewerRun = {
+  id: string;
+  runId: string;
+  reviewerKey: ReviewPassKey;
+  label: string;
+  focus: string;
+  status: ReviewReviewerRunStatus;
+  chatSessionId: string | null;
+  promptArtifactId: string | null;
+  outputArtifactId: string | null;
+  findingsArtifactId: string | null;
+  candidateCount: number;
+  keptCount: number;
+  summary: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReviewCandidateFinding = {
+  id: string;
+  runId: string;
+  reviewerRunId: string;
+  reviewerKey: ReviewPassKey;
+  title: string;
+  severity: ReviewSeverity;
+  findingClass: ReviewFindingClass | null;
+  body: string;
+  confidence: number;
+  evidence: ReviewEvidence[];
+  filePath: string | null;
+  line: number | null;
+  anchorState: ReviewAnchorState;
+  evidenceScore: number;
+  lowSignal: boolean;
+  score: number;
+  createdAt: string;
+};
+
 export type ReviewLaunchLane = {
   id: string;
   name: string;
@@ -309,6 +355,8 @@ export type ReviewLaunchContext = {
 export type ReviewRunDetail = ReviewRun & {
   findings: ReviewFinding[];
   artifacts: ReviewRunArtifact[];
+  reviewerRuns: ReviewReviewerRun[];
+  candidateFindings: ReviewCandidateFinding[];
   publications: ReviewPublication[];
   chatSession: AgentChatSessionSummary | null;
 };
@@ -341,6 +389,14 @@ export type ReviewEventPayload =
       runId: string;
       laneId: string;
       status: ReviewRunStatus;
+    }
+  | {
+      type: "reviewer-updated";
+      runId: string;
+      laneId: string;
+      reviewerRunId: string;
+      reviewerKey: ReviewPassKey;
+      status: ReviewReviewerRunStatus;
     }
   | {
       type: "feedback-updated";

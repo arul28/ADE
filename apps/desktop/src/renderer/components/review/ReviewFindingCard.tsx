@@ -5,6 +5,8 @@ import {
   CaretDown,
   CaretRight,
   CheckCircle,
+  Checks,
+  CopySimple,
   FileText,
   MagnifyingGlass,
   Prohibit,
@@ -26,6 +28,12 @@ import type {
   ReviewFindingSuppressionMatch,
   ReviewSuppressionScope,
 } from "./reviewTypes";
+import {
+  REVIEW_PASS_LABELS,
+  reviewEvidenceKindLabel,
+  reviewFindingClassLabel,
+  reviewPublicationLabel,
+} from "./reviewFindingLabels";
 
 export type FindingActionRequest = {
   finding: ReviewFinding;
@@ -39,21 +47,10 @@ export type FindingActionRequest = {
 type ReviewFindingCardProps = {
   finding: ReviewFinding;
   onRequestAction: (request: FindingActionRequest) => Promise<void> | void;
+  onCopyFinding?: (finding: ReviewFinding) => Promise<void> | void;
   onOpenInFiles?: (finding: ReviewFinding) => void;
   onOpenInEditor?: (finding: ReviewFinding) => void;
   disabled?: boolean;
-};
-
-const FINDING_CLASS_DESCRIPTION: Record<ReviewFindingClass, string> = {
-  intent_drift: "Implementation may diverge from the stated goal or prompt for this lane.",
-  incomplete_rollout: "Only part of a cross-surface change landed — check paired files.",
-  late_stage_regression: "A risky change appeared after a failed validation or late fix cycle.",
-};
-
-const PASS_LABEL: Record<string, string> = {
-  "diff-risk": "Diff risk",
-  "cross-file-impact": "Cross-file",
-  "checks-and-tests": "Tests + CI",
 };
 
 function toSeverityTone(severity: string): string {
@@ -72,17 +69,35 @@ function toFindingClassTone(value: ReviewFindingClass | null | undefined): strin
   return "border-zinc-400/25 bg-zinc-400/[0.10] text-zinc-200";
 }
 
-function toFindingClassLabel(value: ReviewFindingClass | null | undefined): string {
-  if (!value) return "general";
-  return value.replaceAll("_", " ");
-}
-
 function formatConfidence(value: number | string): string {
   if (typeof value === "number") {
     if (value <= 1) return `${Math.round(value * 100)}%`;
     return `${Math.round(value)}%`;
   }
   return value;
+}
+
+function formatPathLabel(filePath: string | null | undefined, line?: number | null, segments = 3): string | null {
+  if (!filePath) return null;
+  const path = filePath.split("/").filter(Boolean).slice(-segments).join("/");
+  return `${path}${line ? `:${line}` : ""}`;
+}
+
+function evidenceCountLabel(count: number): string {
+  return `${count} evidence item${count === 1 ? "" : "s"}`;
+}
+
+function pickPrimaryEvidence(evidence: ReviewEvidence[]): ReviewEvidence | null {
+  return evidence.find((entry) => entry.kind !== "tool_signal" && (entry.summary || entry.quote || entry.filePath))
+    ?? evidence.find((entry) => entry.summary || entry.quote || entry.filePath)
+    ?? null;
+}
+
+function toEvidenceTone(kind: ReviewEvidence["kind"]): string {
+  if (kind === "tool_signal") return "border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-100";
+  if (kind === "diff_hunk") return "border-amber-400/25 bg-amber-400/[0.08] text-amber-100";
+  if (kind === "file_snapshot") return "border-cyan-400/25 bg-cyan-400/[0.08] text-cyan-100";
+  return "border-white/[0.08] bg-white/[0.04] text-[#D8E3F2]";
 }
 
 function describeSuppression(match: ReviewFindingSuppressionMatch | null | undefined): string | null {
@@ -433,23 +448,49 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
 export function ReviewFindingCard({
   finding,
   onRequestAction,
+  onCopyFinding,
   onOpenInFiles,
   onOpenInEditor,
   disabled,
 }: ReviewFindingCardProps) {
   const [expanded, setExpanded] = React.useState(false);
   const [modalKind, setModalKind] = React.useState<Exclude<ReviewFeedbackKind, "acknowledge"> | null>(null);
+  const [copyState, setCopyState] = React.useState<"idle" | "copied" | "error">("idle");
+
+  React.useEffect(() => {
+    if (copyState === "idle") return undefined;
+    const timer = window.setTimeout(() => setCopyState("idle"), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
 
   const feedback = finding.feedback ?? null;
   const feedbackBadge = describeFeedback(feedback);
   const suppression = finding.suppressionMatch ?? null;
   const isSuppressed = suppression != null;
   const findingClass = finding.findingClass ?? null;
-  const nonToolEvidence = (finding.evidence ?? []).filter((entry) => entry.kind !== "tool_signal");
-  const toolSignalCount = (finding.evidence ?? []).filter((entry) => entry.kind === "tool_signal").length;
+  const findingClassLabel = reviewFindingClassLabel(findingClass);
+  const evidence = finding.evidence ?? [];
+  const nonToolEvidence = evidence.filter((entry) => entry.kind !== "tool_signal");
+  const toolSignalCount = evidence.filter((entry) => entry.kind === "tool_signal").length;
+  const primaryEvidence = pickPrimaryEvidence(evidence);
+  const fileLabel = formatPathLabel(finding.filePath ?? primaryEvidence?.filePath, finding.line ?? primaryEvidence?.line);
+  const publicationLabel = reviewPublicationLabel({
+    publicationState: finding.publicationState,
+    adjudication: finding.adjudication ?? null,
+  });
 
   const handleAcknowledge = async () => {
     await onRequestAction({ finding, kind: "acknowledge" });
+  };
+
+  const handleCopyFinding = async () => {
+    if (!onCopyFinding) return;
+    try {
+      await onCopyFinding(finding);
+      setCopyState("copied");
+    } catch {
+      setCopyState("error");
+    }
   };
 
   const handleModalSubmit = async (args: {
@@ -488,36 +529,71 @@ export function ReviewFindingCard({
               : "border-white/[0.08] bg-white/[0.04] hover:border-white/[0.14]",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <Chip className={cn("text-[9px]", toSeverityTone(finding.severity))}>{finding.severity}</Chip>
-            {findingClass ? (
-              <span
-                title={FINDING_CLASS_DESCRIPTION[findingClass]}
-                className={cn("rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em] cursor-help", toFindingClassTone(findingClass))}
-              >
-                {toFindingClassLabel(findingClass)}
-              </span>
-            ) : null}
-            {feedbackBadge ? (
-              <Chip className={cn("text-[9px]", feedbackBadge.tone)}>{feedbackBadge.label}</Chip>
-            ) : null}
-            {isSuppressed ? (
-              <Chip className="text-[9px] border-violet-400/30 bg-violet-400/[0.10] text-violet-200">filtered</Chip>
-            ) : null}
-          </div>
-          <div className="mt-1.5 text-sm font-semibold leading-snug text-[#F5FAFF]">{finding.title}</div>
-          <div className="mt-1 text-xs leading-relaxed text-[#93A4B8]">{finding.body}</div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1 text-[10px] text-[#94A3B8]">
-          <span>conf {formatConfidence(finding.confidence)}</span>
-          {finding.filePath ? (
-            <span className="max-w-[200px] truncate font-mono text-[10px]" title={finding.filePath}>
-              {finding.filePath.split("/").slice(-2).join("/")}{finding.line ? `:${finding.line}` : ""}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full border px-2.5 py-1 font-mono text-[9px] font-bold uppercase tracking-[1px]",
+              toSeverityTone(finding.severity),
+            )}
+          >
+            {finding.severity}
+          </span>
+          {findingClassLabel ? (
+            <span
+              title={findingClassLabel.tooltip}
+              className={cn("cursor-help rounded-full border px-1.5 py-0.5 text-[9px] uppercase tracking-[0.08em]", toFindingClassTone(findingClass))}
+            >
+              {findingClassLabel.label}
             </span>
           ) : null}
+          {feedbackBadge ? (
+            <Chip className={cn("text-[9px]", feedbackBadge.tone)}>{feedbackBadge.label}</Chip>
+          ) : null}
+          {isSuppressed ? (
+            <Chip className="text-[9px] border-violet-400/30 bg-violet-400/[0.10] text-violet-200">filtered</Chip>
+          ) : null}
         </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold leading-snug text-[#F5FAFF]">{finding.title}</div>
+            {fileLabel ? (
+              <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-[#8FA1B8]">
+                <FileText size={12} className="shrink-0 text-[#6E7F92]" />
+                <span className="min-w-0 truncate font-mono" title={finding.filePath ?? primaryEvidence?.filePath ?? undefined}>
+                  {fileLabel}
+                </span>
+              </div>
+            ) : null}
+          </div>
+          <div className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">
+            {evidenceCountLabel(evidence.length)}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/[0.06] bg-black/15 px-2.5 py-2">
+          <div className="text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">Action</div>
+          <div className="mt-1 text-xs leading-relaxed text-[#C5D2E6]">{finding.body}</div>
+        </div>
+
+        {primaryEvidence ? (
+          <div className={cn("rounded-lg border px-2.5 py-2", toEvidenceTone(primaryEvidence.kind))}>
+            <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.12em]">
+              <span>Evidence</span>
+              <span className="rounded-full border border-current px-1.5 py-0.5">{reviewEvidenceKindLabel(primaryEvidence.kind)}</span>
+              {toolSignalCount > 0 ? <span>tool-backed {toolSignalCount}</span> : null}
+            </div>
+            {primaryEvidence.summary ? (
+              <div className="mt-1 text-xs leading-relaxed">{primaryEvidence.summary}</div>
+            ) : null}
+            {primaryEvidence.quote ? (
+              <pre className="mt-1 max-h-14 overflow-hidden whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                {primaryEvidence.quote}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {isSuppressed ? (
@@ -527,19 +603,6 @@ export function ReviewFindingCard({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {finding.originatingPasses?.map((pass) => (
-          <Chip key={`${finding.id}-${pass}`} className="text-[9px]">{PASS_LABEL[pass] ?? pass}</Chip>
-        ))}
-        {toolSignalCount > 0 ? (
-          <Chip className="text-[9px] border-emerald-400/25 bg-emerald-400/[0.08] text-emerald-200">
-            <ShieldCheck size={10} /> tool-backed · {toolSignalCount}
-          </Chip>
-        ) : null}
-        {finding.adjudication ? (
-          <Chip className="text-[9px]">
-            {finding.adjudication.publicationEligible ? "publication eligible" : "local only"}
-          </Chip>
-        ) : null}
         <button
           type="button"
           onClick={() => setExpanded((prev) => !prev)}
@@ -552,6 +615,23 @@ export function ReviewFindingCard({
 
       {expanded ? (
         <div className="mt-3 space-y-3 border-t border-white/[0.06] pt-3">
+          <div>
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">
+              <ShieldCheck size={10} /> review handling
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {finding.originatingPasses?.map((pass) => (
+                <Chip key={`${finding.id}-${pass}`} className="text-[9px]">
+                  {REVIEW_PASS_LABELS[pass] ?? pass}
+                </Chip>
+              ))}
+              <Chip className="text-[9px]" title={publicationLabel.tooltip}>
+                {publicationLabel.label}
+              </Chip>
+              <Chip className="text-[9px]">confidence {formatConfidence(finding.confidence)}</Chip>
+            </div>
+          </div>
+
           {finding.diffContext ? (
             <div>
               <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">
@@ -566,7 +646,7 @@ export function ReviewFindingCard({
               <div className="mb-1.5 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">
                 <ShieldCheck size={10} /> tool-backed evidence
               </div>
-              <ToolSignalBlock evidence={finding.evidence ?? []} />
+              <ToolSignalBlock evidence={evidence} />
             </div>
           ) : null}
 
@@ -579,7 +659,7 @@ export function ReviewFindingCard({
                 {nonToolEvidence.map((entry, idx) => (
                   <div key={`${finding.id}-${idx}`} className="rounded-lg border border-white/[0.06] bg-black/20 p-2">
                     <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#8FA1B8]">
-                      <span className="font-mono uppercase tracking-[0.08em]">{entry.kind}</span>
+                      <span className="font-mono uppercase tracking-[0.08em]">{reviewEvidenceKindLabel(entry.kind)}</span>
                       {entry.summary ? <span className="text-[#CBD5E1]">{entry.summary}</span> : null}
                       {entry.filePath ? (
                         <span className="font-mono text-[10px]">{entry.filePath}{entry.line ? `:${entry.line}` : ""}</span>
@@ -598,7 +678,7 @@ export function ReviewFindingCard({
 
           {finding.adjudication?.rationale ? (
             <div className="rounded-lg border border-white/[0.06] bg-black/20 p-2 text-[11px] leading-relaxed text-[#B7C4D7]">
-              <span className="text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">Adjudication — </span>
+              <span className="text-[10px] uppercase tracking-[0.12em] text-[#6E7F92]">Review note - </span>
               {finding.adjudication.rationale}
             </div>
           ) : null}
@@ -607,19 +687,30 @@ export function ReviewFindingCard({
 
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
         {finding.filePath && onOpenInFiles ? (
-          <Button size="sm" variant="ghost" onClick={() => onOpenInFiles(finding)}>
+          <Button size="sm" variant="outline" onClick={() => onOpenInFiles(finding)}>
             <FileText size={12} /> Open in files
           </Button>
         ) : null}
         {finding.filePath && onOpenInEditor ? (
-          <Button size="sm" variant="ghost" onClick={() => onOpenInEditor(finding)}>
+          <Button size="sm" variant="outline" onClick={() => onOpenInEditor(finding)}>
             <ArrowSquareOut size={12} /> Open editor
+          </Button>
+        ) : null}
+        {onCopyFinding ? (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void handleCopyFinding()}
+            title="Copy this finding as a shareable message."
+          >
+            {copyState === "copied" ? <Checks size={12} /> : <CopySimple size={12} />}
+            {copyState === "copied" ? "Copied" : copyState === "error" ? "Copy failed" : "Copy finding"}
           </Button>
         ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"
-            variant="ghost"
+            variant="primary"
             onClick={handleAcknowledge}
             disabled={disabled || feedback?.kind === "acknowledge"}
             title="Mark this finding as useful. Strengthens future findings like it."
@@ -628,7 +719,7 @@ export function ReviewFindingCard({
           </Button>
           <Button
             size="sm"
-            variant="ghost"
+            variant="danger"
             onClick={() => setModalKind("dismiss")}
             disabled={disabled}
             title="Dismiss with a reason."
@@ -637,7 +728,7 @@ export function ReviewFindingCard({
           </Button>
           <Button
             size="sm"
-            variant="ghost"
+            variant="outline"
             onClick={() => setModalKind("snooze")}
             disabled={disabled}
             title="Hide this class of finding for a while."
@@ -646,7 +737,7 @@ export function ReviewFindingCard({
           </Button>
           <Button
             size="sm"
-            variant="ghost"
+            variant="outline"
             onClick={() => setModalKind("suppress")}
             disabled={disabled}
             title="Teach the engine to skip similar findings in the future."

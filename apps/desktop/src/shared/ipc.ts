@@ -508,6 +508,8 @@ export const IPC = {
   githubPublishCurrentProject: "ade.github.publishCurrentProject",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
+  prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
+  prsCreateLaneFromPrBranch: "ade.prs.createLaneFromPrBranch",
   prsGetForLane: "ade.prs.getForLane",
   prsListAll: "ade.prs.listAll",
   prsListOpenForRepo: "ade.prs.listOpenForRepo",

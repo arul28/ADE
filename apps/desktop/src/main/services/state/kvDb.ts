@@ -146,6 +146,11 @@ function rawHasTable(db: DatabaseSyncType, tableName: string): boolean {
   return Boolean(getRow(db, "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1", [tableName]));
 }
 
+function rawHasColumn(db: DatabaseSyncType, tableName: string, columnName: string): boolean {
+  return allRows<{ name: string }>(db, `pragma table_info('${tableName.replace(/'/g, "''")}')`)
+    .some((column) => column.name === columnName);
+}
+
 function isReadonlyDatabaseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /readonly database|SQLITE_READONLY/i.test(message);
@@ -419,6 +424,13 @@ function writeMigrationBackupIfNeeded(dbPath: string): void {
   }
 }
 
+const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
+  "lane_detail_snapshots",
+  "lane_list_snapshots",
+  "pr_auto_link_ignores",
+  "pull_request_ai_summaries",
+]);
+
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
     db,
@@ -433,6 +445,7 @@ function listEligibleCrrTables(db: DatabaseSyncType): string[] {
         and name not like 'unified_memories_fts%'`
   );
   return tables
+    .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
     .filter((table) => !table.sql?.toLowerCase().startsWith("create virtual table"))
     .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
     .map((table) => table.name);
@@ -495,6 +508,68 @@ function listCrrTriggers(db: DatabaseSyncType, tableName: string): string[] {
         and name like ?`,
     [tableName, `${tableName}__crsql_%trig`],
   ).map((row) => row.name);
+}
+
+function dropCrrTriggers(db: DatabaseSyncType, tableName: string, logger?: Logger): number {
+  const triggers = listCrrTriggers(db, tableName);
+  for (const triggerName of triggers) {
+    try {
+      runStatement(db, `drop trigger if exists ${quoteIdentifier(triggerName)}`);
+    } catch (error) {
+      logger?.warn("db.crr_trigger_drop_failed", {
+        tableName,
+        triggerName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return triggers.length;
+}
+
+function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
+  for (const tableName of LOCAL_ONLY_CRR_EXCLUDED_TABLES) {
+    const clockTableName = `${tableName}__crsql_clock`;
+    const pksTableName = `${tableName}__crsql_pks`;
+    const hasClockTable = rawHasTable(db, clockTableName);
+    const hasPksTable = rawHasTable(db, pksTableName);
+    const triggerCount = listCrrTriggers(db, tableName).length;
+    const hasMasterRows = rawHasTable(db, "crsql_master")
+      && rawHasColumn(db, "crsql_master", "tbl_name")
+      && Boolean(getRow(db, "select 1 as present from crsql_master where tbl_name = ? limit 1", [tableName]));
+    const hasChangesRows = rawHasTable(db, "crsql_changes")
+      && rawHasColumn(db, "crsql_changes", "table")
+      && Boolean(getRow(db, "select 1 as present from crsql_changes where [table] = ? limit 1", [tableName]));
+
+    if (!hasClockTable && !hasPksTable && triggerCount === 0 && !hasMasterRows && !hasChangesRows) {
+      continue;
+    }
+
+    let deletedMetadataCount = 0;
+    if (hasMasterRows) {
+      deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
+    }
+    if (hasChangesRows) {
+      deletedMetadataCount += runStatement(db, "delete from crsql_changes where [table] = ?", [tableName]).changes;
+    }
+
+    try {
+      getRow(db, "select crsql_as_table(?) as ok", [tableName]);
+    } catch {
+      // Older or partial CRR metadata may not be registered enough for
+      // crsql_as_table; explicit shadow-table cleanup below is still safe.
+    }
+    const droppedTriggerCount = dropCrrTriggers(db, tableName, logger);
+    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(pksTableName)}`);
+
+    logger?.info("db.crr_excluded_metadata_removed", {
+      tableName,
+      hadClockTable: hasClockTable,
+      hadPksTable: hasPksTable,
+      droppedTriggerCount,
+      deletedMetadataCount,
+    });
+  }
 }
 
 function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
@@ -588,6 +663,8 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
 }
 
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
+  removeExcludedCrrMetadata(db, logger);
+
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
   for (const tableName of listEligibleCrrTables(db)) {
     if (rawHasTable(db, `${tableName}__crsql_clock`)) {
@@ -1403,6 +1480,24 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table pull_requests add column last_polled_at text"); } catch {}
   try { db.run("alter table pull_requests add column head_sha text"); } catch {}
   try { db.run("alter table pull_requests add column creation_strategy text"); } catch {}
+
+  db.run("drop table if exists github_pr_cache");
+
+  db.run(`
+    create table if not exists pr_auto_link_ignores (
+      project_id text not null,
+      repo_owner text not null,
+      repo_name text not null,
+      github_pr_number integer not null,
+      lane_id text not null,
+      head_branch text,
+      created_at text not null,
+      primary key(project_id, repo_owner, repo_name, github_pr_number, lane_id),
+      foreign key(project_id) references projects(id),
+      foreign key(lane_id) references lanes(id)
+    )
+  `);
+  db.run("create index if not exists idx_pr_auto_link_ignores_project_repo on pr_auto_link_ignores(project_id, repo_owner, repo_name)");
 
   // Phase 21: AI PR summary cache (keyed by PR + headSha so pushes invalidate).
   db.run(`
@@ -3542,6 +3637,58 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_review_run_artifacts_run on review_run_artifacts(run_id, created_at)");
+
+  db.run(`
+    create table if not exists review_reviewer_runs (
+      id text primary key,
+      run_id text not null,
+      reviewer_key text not null,
+      label text not null,
+      focus text not null,
+      status text not null,
+      chat_session_id text,
+      prompt_artifact_id text,
+      output_artifact_id text,
+      findings_artifact_id text,
+      candidate_count integer not null default 0,
+      kept_count integer not null default 0,
+      summary text,
+      error_message text,
+      started_at text,
+      ended_at text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_reviewer_runs_run on review_reviewer_runs(run_id, created_at)");
+  db.run("create index if not exists idx_review_reviewer_runs_run_key on review_reviewer_runs(run_id, reviewer_key)");
+
+  db.run(`
+    create table if not exists review_candidate_findings (
+      id text primary key,
+      run_id text not null,
+      reviewer_run_id text not null,
+      reviewer_key text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null default 0.5,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      evidence_score real not null default 0,
+      low_signal integer not null default 0,
+      score real not null default 0,
+      created_at text not null,
+      foreign key(run_id) references review_runs(id) on delete cascade,
+      foreign key(reviewer_run_id) references review_reviewer_runs(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_review_candidate_findings_run on review_candidate_findings(run_id)");
+  db.run("create index if not exists idx_review_candidate_findings_reviewer on review_candidate_findings(reviewer_run_id)");
   try { db.run("alter table review_findings add column finding_class text"); } catch {}
   try { db.run("alter table review_findings add column originating_passes_json text"); } catch {}
   try { db.run("alter table review_findings add column adjudication_json text"); } catch {}
@@ -3830,6 +3977,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     const migrateDb = makeMigrateDb();
     repairUnifiedMemoryFtsSchemaForRuntime(migrateDb);
     migrate(migrateDb);
+    removeExcludedCrrMetadata(db, logger);
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);
@@ -3852,6 +4000,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
+      removeExcludedCrrMetadata(db, logger);
     }
 
     let retrofittedForeignKeySchema = false;
@@ -3871,6 +4020,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const remigrateDb = makeMigrateDb();
       repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
+      removeExcludedCrrMetadata(db, logger);
     }
 
     if (crsqliteLoaded) {

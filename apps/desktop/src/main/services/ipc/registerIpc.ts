@@ -146,6 +146,9 @@ import type {
   GitSyncArgs,
   GitHubRepoRef,
   GitHubStatus,
+  CreateLaneFromPrBranchArgs,
+  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
@@ -8276,15 +8279,35 @@ export function registerIpc({
     return result;
   });
 
+  const ensurePrMutationContext = (): AppContext => {
+    const ctx = getCtx();
+    if (!ctx.prService || !ctx.prPollingService) {
+      throw new Error("PR service is not available for this project window.");
+    }
+    return ctx;
+  };
+
+  ipcMain.handle(IPC.prsPreflightCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchPreflightResult> => {
+    const ctx = ensurePrMutationContext();
+    return await ctx.prService.preflightCreateLaneFromPrBranch(arg);
+  });
+
+  ipcMain.handle(IPC.prsCreateLaneFromPrBranch, async (_event, arg: CreateLaneFromPrBranchArgs): Promise<CreateLaneFromPrBranchResult> => {
+    const ctx = ensurePrMutationContext();
+    const result = await ctx.prService.createLaneFromPrBranch(arg);
+    ctx.prPollingService.poke();
+    return result;
+  });
+
   const ensurePrPolling = () => {
     const ctx = getCtx();
-    // PR services are only attached to fully-initialised project contexts. When
-    // the renderer fires PR queries for an unscoped window (e.g. a brand-new
-    // File > New Window before a project is chosen) or during a transition,
-    // ctx is dormant and these services are null. Return null so callers can
-    // hand back empty results instead of throwing into IPC.
     if (!ctx.prPollingService || !ctx.prService) return null;
     ctx.prPollingService.start();
+    return ctx;
+  };
+  const ensurePrReadContext = (): AppContext => {
+    const ctx = ensurePrPolling();
+    if (!ctx) throw new Error("PR service is not available for this project window.");
     return ctx;
   };
 
@@ -8295,26 +8318,22 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     return ctx.prService.listAll();
   });
 
   ipcMain.handle(IPC.prsListOpenForRepo, async (): Promise<BranchPullRequest[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     return await ctx.prService.listOpenPullRequests();
   });
 
   ipcMain.handle(IPC.prsRefresh, async (_event, arg: { prId?: string; prIds?: string[] } = {}): Promise<PrSummary[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     return await ctx.prService.refresh(arg);
   });
 
   ipcMain.handle(IPC.prsGetStatus, async (_event, arg: { prId: string }): Promise<PrStatus | null> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return null;
+    const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getStatus(arg.prId);
     } catch (err) {
@@ -8325,8 +8344,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetChecks, async (_event, arg: { prId: string }): Promise<PrCheck[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getChecks(arg.prId);
     } catch (err) {
@@ -8336,8 +8354,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetComments, async (_event, arg: { prId: string }): Promise<PrComment[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getComments(arg.prId);
     } catch (err) {
@@ -8347,8 +8364,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetReviews, async (_event, arg: { prId: string }): Promise<PrReview[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getReviews(arg.prId);
     } catch (err) {
@@ -8358,8 +8374,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.prsGetReviewThreads, async (_event, arg: { prId: string }): Promise<PrReviewThread[]> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     try {
       return await ctx.prService.getReviewThreads(arg.prId);
     } catch (err) {
@@ -8425,37 +8440,35 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => getCtx().prService.getConflictAnalysis(arg.prId));
+  ipcMain.handle(IPC.prsGetConflictAnalysis, async (_event, arg: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getConflictAnalysis(arg.prId);
+  });
 
-  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => getCtx().prService.getMergeContext(arg.prId));
+  ipcMain.handle(IPC.prsGetMergeContext, async (_event, arg: { prId: string }): Promise<PrMergeContext> => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getMergeContext(arg.prId);
+  });
 
-  ipcMain.handle(IPC.prsGetMergeContexts, async (_event, arg: { prIds?: string[] }): Promise<Record<string, PrMergeContext>> =>
-    getCtx().prService.getMergeContexts(Array.isArray(arg?.prIds) ? arg.prIds : [])
-  );
+  ipcMain.handle(IPC.prsGetMergeContexts, async (_event, arg: { prIds?: string[] }): Promise<Record<string, PrMergeContext>> => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getMergeContexts(Array.isArray(arg?.prIds) ? arg.prIds : []);
+  });
 
   ipcMain.handle(IPC.prsListWithConflicts, async (_event, arg?: { includeConflictAnalysis?: boolean }) => {
-    const ctx = ensurePrPolling();
-    if (!ctx) return [];
+    const ctx = ensurePrReadContext();
     return ctx.prService.listWithConflicts({
       includeConflictAnalysis: arg?.includeConflictAnalysis === true,
     });
   });
 
-  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) =>
-    getCtx().prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined })
-  );
+  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
+  });
 
   ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> => {
-    const ctx = ensurePrPolling();
-    if (!ctx) {
-      return {
-        repo: null,
-        viewerLogin: null,
-        repoPullRequests: [],
-        externalPullRequests: [],
-        syncedAt: new Date(0).toISOString(),
-      };
-    }
+    const ctx = ensurePrReadContext();
     return await ctx.prService.getGithubSnapshot({
       force: arg?.force === true,
       includeExternalClosed: arg?.includeExternalClosed === true,
@@ -8511,17 +8524,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
+    if (!ctx.queueLandingService) throw new Error("Queue automation is unavailable in this runtime.");
     return await ctx.queueLandingService.startQueue(arg);
   });
 
-  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService.pauseQueue(arg.queueId));
+  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.pauseQueue(arg.queueId) ?? null);
 
   ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
     const ctx = getCtx();
-    return ctx.queueLandingService.resumeQueue(arg);
+    return ctx.queueLandingService?.resumeQueue(arg) ?? null;
   });
 
-  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService.cancelQueue(arg.queueId));
+  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.cancelQueue(arg.queueId) ?? null);
 
   ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
     const ctx = getCtx();
@@ -8529,13 +8543,16 @@ export function registerIpc({
     ctx.prPollingService.poke();
   });
 
-  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => getCtx().prService.getPrHealth(arg.prId));
+  ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getPrHealth(arg.prId);
+  });
 
   ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> =>
-    getCtx().queueLandingService.getQueueStateByGroup(arg.groupId)
+    getCtx().queueLandingService?.getQueueStateByGroup(arg.groupId) ?? null
   );
 
-  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService.listQueueStates(arg));
+  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService?.listQueueStates(arg) ?? []);
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     getCtx().prService.createIntegrationLaneForProposal(arg));
@@ -8887,11 +8904,26 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => getCtx().prService.getDetail(args.prId));
-  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => getCtx().prService.getFiles(args.prId));
-  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> => getCtx().prService.getCommits(args.prId));
-  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => getCtx().prService.getActionRuns(args.prId));
-  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => getCtx().prService.getActivity(args.prId));
+  ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getDetail(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetFiles, (_e, args: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getFiles(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetCommits, (_e, args: { prId: string }): Promise<PrCommit[]> | PrCommit[] => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getCommits(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetActionRuns, (_e, args: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getActionRuns(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetActivity, (_e, args: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getActivity(args.prId);
+  });
   ipcMain.handle(IPC.prsAddComment, (_e, args) => getCtx().prService.addComment(args));
   ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => getCtx().prService.replyToReviewThread(args));
   ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => getCtx().prService.resolveReviewThread(args));
@@ -8906,9 +8938,16 @@ export function registerIpc({
   ipcMain.handle(IPC.prsAiReviewSummary, (_e, args) => getCtx().prService.aiReviewSummary(args));
 
   // PRs Tab redesign (Timeline + Rails)
-  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => getCtx().prService.getDeployments(args.prId));
-  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.getSummary(args.prId));
-  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService.regenerateSummary(args.prId));
+  ipcMain.handle(IPC.prsGetDeployments, (_e, args: { prId: string }) => {
+    const ctx = ensurePrReadContext();
+    return ctx.prService.getDeployments(args.prId);
+  });
+  ipcMain.handle(IPC.prsGetAiSummary, (_e, args: { prId: string }) => getCtx().prSummaryService?.getSummary(args.prId) ?? null);
+  ipcMain.handle(IPC.prsRegenerateAiSummary, (_e, args: { prId: string }) => {
+    const service = getCtx().prSummaryService;
+    if (!service) throw new Error("PR summary service is unavailable for this project window.");
+    return service.regenerateSummary(args.prId);
+  });
   ipcMain.handle(IPC.prsPostReviewComment, (_e, args: PostPrReviewCommentArgs) => getCtx().prService.postReviewComment(args));
   ipcMain.handle(
     IPC.prsSetReviewThreadResolved,

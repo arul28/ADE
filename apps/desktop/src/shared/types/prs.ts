@@ -11,7 +11,7 @@ import type {
 } from "./conflicts";
 import type { AgentChatPermissionMode } from "./chat";
 import type { GitHubRepoRef } from "./git";
-import type { RebaseTargetCommit } from "./lanes";
+import type { LaneSummary, RebaseTargetCommit } from "./lanes";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
@@ -271,6 +271,66 @@ export type CreatePrFromLaneArgs = {
 export type LinkPrToLaneArgs = {
   laneId: string;
   prUrlOrNumber: string;
+};
+
+export type CreateLaneFromPrBranchArgs = {
+  repoOwner?: string;
+  repoName?: string;
+  githubPrNumber?: number;
+  prNumber?: number;
+  prUrlOrNumber?: string;
+  laneName?: string;
+};
+
+export type CreateLaneFromPrBranchBlockCode =
+  | "already_mapped"
+  | "missing_head_branch"
+  | "remote_branch_missing"
+  | "remote_branch_mismatch"
+  | "local_branch_mismatch"
+  | "fork_unavailable"
+  | "branch_owned"
+  | "default_branch"
+  | "worktree_collision";
+
+export type CreateLaneFromPrBranchBlock = {
+  code: CreateLaneFromPrBranchBlockCode;
+  message: string;
+  laneId?: string | null;
+  laneName?: string | null;
+  worktreePath?: string | null;
+};
+
+export type CreateLaneFromPrBranchPreflight = {
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+  githubUrl: string;
+  title: string;
+  headBranch: string | null;
+  headSha: string | null;
+  headRepoOwner: string | null;
+  headRepoName: string | null;
+  remoteBranch: string | null;
+  importBranchRef: string | null;
+  targetLaneName: string;
+  baseBranch: string | null;
+  canCreate: boolean;
+  status: "ready" | "blocked";
+  blockingConflict: CreateLaneFromPrBranchBlock | null;
+  blockingConflicts: CreateLaneFromPrBranchBlock[];
+};
+
+export type CreateLaneFromPrBranchPreflightResult = {
+  preflight: CreateLaneFromPrBranchPreflight;
+  lane: null;
+  pr: null;
+};
+
+export type CreateLaneFromPrBranchResult = {
+  preflight: CreateLaneFromPrBranchPreflight;
+  lane: LaneSummary;
+  pr: PrSummary;
 };
 
 export type DraftPrDescriptionArgs = {

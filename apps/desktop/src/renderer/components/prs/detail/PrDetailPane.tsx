@@ -5,7 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import {
   GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
-  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code, ClockCounterClockwise,
+  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code,
   PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
   CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Stack as Layers,
 } from "@phosphor-icons/react";
@@ -19,6 +19,8 @@ import type {
   PrConvergenceState,
   PrConvergenceStatePatch,
   PrSnapshotHydration,
+  PrChecksStatus,
+  PrReviewStatus,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
@@ -42,9 +44,14 @@ import { modifierKeyLabel } from "../../../lib/platform";
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
 const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
+const DETAIL_BACKGROUND_ACTIVITY_DELAY_MS = 250;
 
 function isDetailTab(value: unknown): value is DetailTab {
-  return value === "overview" || value === "convergence" || value === "files" || value === "checks" || value === "activity";
+  return value === "overview" || value === "convergence" || value === "files" || value === "checks";
+}
+
+function normalizeDetailTab(tab: DetailTab | "activity" | null | undefined): DetailTab {
+  return tab === "activity" || tab == null ? "overview" : tab;
 }
 
 function isPrsRouteRuntime(): boolean {
@@ -62,7 +69,7 @@ function readStoredDetailTab(prId: string): DetailTab | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const value = parsed?.[prId];
-    return isDetailTab(value) ? value : null;
+    return isDetailTab(value) ? normalizeDetailTab(value) : null;
   } catch {
     return null;
   }
@@ -276,7 +283,7 @@ function CheckIcon({ check }: { check: PrCheck }) {
   return <Circle size={16} weight="regular" style={{ color: COLORS.textMuted }} />;
 }
 
-// ---- Shared activity event helpers (used by OverviewTab and ActivityTab) ----
+// ---- Shared activity event helpers for the overview thread ----
 function activityEventColor(ev: PrActivityEvent): string {
   if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
   if (ev.type === "review") return COLORS.accent;
@@ -427,7 +434,9 @@ type ChecksSummary = {
   checksRunning: boolean;
 };
 
-function summarizeChecks(checks: PrCheck[]): ChecksSummary {
+type CheckSummaryItem = Pick<PrCheck, "status" | "conclusion">;
+
+function summarizeChecks(checks: CheckSummaryItem[]): ChecksSummary {
   const passing = checks.filter((check) => check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped").length;
   const failing = checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length;
   const pending = checks.filter((check) => check.status !== "completed" && !check.conclusion).length;
@@ -509,6 +518,8 @@ type PrDetailPaneProps = {
   onOpenQueueView?: (groupId: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
+  onUnmap?: () => void;
+  unmapBusy?: boolean;
 };
 
 export function PrDetailPane({
@@ -531,6 +542,8 @@ export function PrDetailPane({
   onOpenQueueView,
   initialDetailTab,
   onDetailTabChange,
+  onUnmap,
+  unmapBusy = false,
 }: PrDetailPaneProps) {
   const {
     convergenceStatesByPrId,
@@ -550,21 +563,23 @@ export function PrDetailPane({
     detailAiSummary,
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
+    detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
   } = usePrs();
+  const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const [activeTab, setActiveTabState] = React.useState<DetailTab>(
-    () => initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview",
+    () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
-  const [detail, setDetail] = React.useState<PrDetail | null>(null);
-  const [files, setFiles] = React.useState<PrFile[]>([]);
-  const [commits, setCommits] = React.useState<PrCommit[]>([]);
-  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(null);
-  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>([]);
-  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>([]);
-  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>([]);
+  const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? null);
+  const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? []);
+  const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? []);
+  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? null);
+  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? []);
+  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? []);
+  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? []);
   const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
   const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
   const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
@@ -586,22 +601,18 @@ export function PrDetailPane({
   }, [onDetailTabChange, pr.id]);
 
   React.useEffect(() => {
-    const next = initialDetailTab ?? readStoredDetailTab(pr.id) ?? "overview";
+    const next = normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id));
     setActiveTabState(next);
-    setSnapshotStatus(null);
-    setSnapshotChecks([]);
-    setSnapshotReviews([]);
-    setSnapshotComments([]);
     if (initialDetailTab) {
-      writeStoredDetailTab(pr.id, initialDetailTab);
+      writeStoredDetailTab(pr.id, normalizeDetailTab(initialDetailTab));
     }
   }, [initialDetailTab, pr.id]);
 
   React.useEffect(() => {
     const onTourTab = (event: Event) => {
-      const tab = (event as CustomEvent<DetailTab>).detail;
+      const tab = (event as CustomEvent<DetailTab | "activity">).detail;
       if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
-        setActiveTab(tab);
+        setActiveTab(normalizeDetailTab(tab));
       }
     };
     window.addEventListener("ade:tour-pr-detail-tab", onTourTab);
@@ -611,26 +622,42 @@ export function PrDetailPane({
   const deepLinkState = React.useMemo(() => {
     try {
       const parsed = parsePrsRouteState({ search: window.location.search, hash: window.location.hash });
-      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha };
+      const searchParams = new URLSearchParams(window.location.search.startsWith("?") ? window.location.search.slice(1) : window.location.search);
+      const hashQuery = window.location.hash.includes("?") ? window.location.hash.slice(window.location.hash.indexOf("?") + 1) : "";
+      const hashParams = new URLSearchParams(hashQuery);
+      const legacyActivityTab = searchParams.get("detailTab") === "activity" || hashParams.get("detailTab") === "activity";
+      return { eventId: parsed.eventId, threadId: parsed.threadId, commitSha: parsed.commitSha, legacyActivityTab };
     } catch {
-      return { eventId: null, threadId: null, commitSha: null };
+      return { eventId: null, threadId: null, commitSha: null, legacyActivityTab: false };
     }
   }, [pr.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const timelineDeepLinkNeedsAllThreads = Boolean(deepLinkState.eventId || deepLinkState.threadId || deepLinkState.legacyActivityTab);
   const timelineFilters: PrTimelineFilters = React.useMemo(
-    () => timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS,
-    [timelineFiltersByPrId, pr.id],
+    () => {
+      const filters = timelineFiltersByPrId?.[pr.id] ?? DEFAULT_PR_TIMELINE_FILTERS;
+      return timelineDeepLinkNeedsAllThreads
+        ? { ...filters, showResolved: true, showOutdated: true }
+        : filters;
+    },
+    [timelineFiltersByPrId, pr.id, timelineDeepLinkNeedsAllThreads],
   );
   const handleTimelineFiltersChange = React.useCallback(
     (next: PrTimelineFilters) => setTimelineFilters?.(pr.id, next),
     [pr.id, setTimelineFilters],
   );
   const reviewThreadsForTimeline = React.useMemo(
-    () => ((ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
-    [ctxReviewThreads, reviewThreads],
+    () => (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0 ? ctxReviewThreads! : reviewThreads),
+    [ctxDetailPrId, ctxReviewThreads, pr.id, reviewThreads],
   );
   React.useEffect(() => {
-    if (ctxReviewThreads) setReviewThreads(ctxReviewThreads);
-  }, [ctxReviewThreads, pr.id]);
+    if (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0) {
+      setReviewThreads(ctxReviewThreads);
+    }
+  }, [ctxDetailPrId, ctxReviewThreads, pr.id]);
+  const deploymentsForTimeline = React.useMemo(
+    () => (ctxDetailPrId === pr.id ? detailDeployments : []),
+    [ctxDetailPrId, detailDeployments, pr.id],
+  );
   const aiSummaryDismissedForPr = Boolean(dismissedAiSummaries?.[pr.id]);
   const handleDismissAiSummary = React.useCallback(() => {
     setAiSummaryDismissed?.(pr.id, true);
@@ -638,6 +665,10 @@ export function PrDetailPane({
   const handleRegenerateAiSummary = React.useCallback(() => {
     void regeneratePrAiSummary?.(pr.id);
   }, [pr.id, regeneratePrAiSummary]);
+  const timelineAiSummary = React.useMemo(
+    () => (detailAiSummary?.prId === pr.id ? detailAiSummary : null),
+    [detailAiSummary, pr.id],
+  );
 
   // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
   // Only attach listeners when the flag is on AND the overview tab is active.
@@ -842,6 +873,9 @@ export function PrDetailPane({
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
   const inventoryLoadSeqRef = React.useRef(0);
   const snapshotHydrationRef = React.useRef<PrSnapshotHydration | null>(snapshotHydration);
+  const snapshotPrefillPendingRef = React.useRef(false);
+  const visibleActivityCountRef = React.useRef(0);
+  const activityFetchKeyRef = React.useRef<string | null>(null);
   const liveDetailLoadedForPrRef = React.useRef<string | null>(null);
   const liveFilesLoadedForPrRef = React.useRef<string | null>(null);
   const liveCommitsLoadedForPrRef = React.useRef<string | null>(null);
@@ -869,15 +903,16 @@ export function PrDetailPane({
     }
   }, [applySnapshotHydration, pr.id, snapshotHydration]);
 
-  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean } = {}) => {
+  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
-      if (options.hydrateSnapshot) {
+      if (options.hydrateSnapshot && !options.forceLive) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
-        const cachedSnapshot = contextSnapshot ?? (!snapshotHydrationOwnedByContext && typeof window.ade.prs.listSnapshots === "function"
+        const cachedSnapshot = contextSnapshot ?? (typeof window.ade.prs.listSnapshots === "function"
           ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]
           : null);
-        if (cachedSnapshot && requestId === detailLoadSeqRef.current) {
+        if (requestId !== detailLoadSeqRef.current) return;
+        if (cachedSnapshot) {
           applySnapshotHydration(cachedSnapshot);
         }
       }
@@ -911,8 +946,12 @@ export function PrDetailPane({
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise]);
     } catch {
       // silently fail - basic data still available from context
+    } finally {
+      if (requestId === detailLoadSeqRef.current) {
+        snapshotPrefillPendingRef.current = false;
+      }
     }
-  }, [applySnapshotHydration, pr.id, snapshotHydrationOwnedByContext]);
+  }, [applySnapshotHydration, pr.id]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -954,17 +993,24 @@ export function PrDetailPane({
     setShowReviewerEditor(false);
     setShowReviewModal(false);
     setActivity([]);
+    activityFetchKeyRef.current = null;
     liveDetailLoadedForPrRef.current = null;
     liveFilesLoadedForPrRef.current = null;
     liveCommitsLoadedForPrRef.current = null;
-    setDetail(null);
-    setFiles([]);
-    setCommits([]);
+    const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
+    if (contextSnapshot) {
+      applySnapshotHydration(contextSnapshot);
+    } else {
+      setDetail(null);
+      setFiles([]);
+      setCommits([]);
+      setSnapshotStatus(null);
+      setSnapshotChecks([]);
+      setSnapshotReviews([]);
+      setSnapshotComments([]);
+    }
     setActionRuns([]);
-    setSnapshotStatus(null);
-    setSnapshotChecks([]);
-    setSnapshotReviews([]);
-    setSnapshotComments([]);
+    setReviewThreads([]);
 
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
@@ -981,13 +1027,15 @@ export function PrDetailPane({
         }
       });
 
+    snapshotPrefillPendingRef.current = true;
     void loadDetail({ hydrateSnapshot: true });
+    void refreshReviewThreads();
     return () => {
       detailLoadSeqRef.current += 1;
       inventoryLoadSeqRef.current += 1;
       convergenceLoadSeqRef.current += 1;
     };
-  }, [applyConvergenceRuntime, loadConvergenceState, loadDetail, pr.id]);
+  }, [applyConvergenceRuntime, applySnapshotHydration, loadConvergenceState, loadDetail, pr.id, refreshReviewThreads]);
 
   React.useEffect(() => {
     const key = [
@@ -1003,7 +1051,7 @@ export function PrDetailPane({
     }
     if (prev === key) return;
     detailStatusRefreshKeyRef.current = key;
-    void loadDetail();
+    void loadDetail({ forceLive: true });
     void refreshReviewThreads();
   }, [loadDetail, pr.checksStatus, pr.id, pr.reviewStatus, pr.updatedAt, refreshReviewThreads]);
 
@@ -1014,25 +1062,39 @@ export function PrDetailPane({
   const visibleActivity = activity.length > 0 ? activity : derivedActivity;
 
   React.useEffect(() => {
-    const shouldLoadImmediately = activeTab === "activity" || Boolean(deepLinkState.eventId);
+    visibleActivityCountRef.current = visibleActivity.length;
+  }, [visibleActivity.length]);
+
+  React.useEffect(() => {
+    const shouldLoadImmediately = activeTab === "overview" || Boolean(deepLinkState.eventId);
     if (!shouldLoadImmediately) return undefined;
+    const key = `${pr.id}|${activeTab}|${deepLinkState.eventId ?? ""}`;
+    if (activityFetchKeyRef.current === key) return undefined;
+    activityFetchKeyRef.current = key;
     let cancelled = false;
-    window.ade.prs.getActivity(pr.id).then((events) => {
-      if (!cancelled) setActivity(events);
-    }).catch(() => {});
+    const hasLocalActivity = visibleActivityCountRef.current > 0;
+    const delay = !deepLinkState.eventId && (hasLocalActivity || snapshotPrefillPendingRef.current)
+      ? DETAIL_BACKGROUND_ACTIVITY_DELAY_MS
+      : 0;
+    const timeoutId = window.setTimeout(() => {
+      window.ade.prs.getActivity(pr.id).then((events) => {
+        if (!cancelled) setActivity(events);
+      }).catch(() => {});
+    }, delay);
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
     };
   }, [activeTab, deepLinkState.eventId, pr.id]);
 
   // Poll checks + actionRuns + reviewThreads every 60s so the
   // Path to Merge readiness panel stays fresh without requiring a manual refresh.
   // Full activity fetches include comments/reviews/checks again, so only do that
-  // while the Activity tab is actually visible.
+  // while the Overview thread is actually visible.
   React.useEffect(() => {
     let cancelled = false;
     const id = window.setInterval(() => {
-      const activityPromise = activeTab === "activity"
+      const activityPromise = activeTab === "overview"
         ? window.ade.prs.getActivity(pr.id)
         : Promise.resolve(null);
       Promise.allSettled([
@@ -1090,8 +1152,16 @@ export function PrDetailPane({
     return runAction(async () => {
       await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
       setCommentDraft("");
-      await onRefresh();
-      await loadDetail();
+      activityFetchKeyRef.current = null;
+      setActivity([]);
+      const activityPromise = window.ade.prs.getActivity(pr.id)
+        .then((events) => setActivity(events))
+        .catch(() => undefined);
+      await Promise.all([
+        onRefresh(),
+        loadDetail({ forceLive: true }),
+        activityPromise,
+      ]);
     });
   };
 
@@ -1108,20 +1178,20 @@ export function PrDetailPane({
     await window.ade.prs.updateBody({ prId: pr.id, body: bodyDraft });
     setEditingBody(false);
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels });
     setShowLabelEditor(false);
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleRequestReviewers = (reviewers: string[]) => runAction(async () => {
     await window.ade.prs.requestReviewers({ prId: pr.id, reviewers });
     setShowReviewerEditor(false);
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleSubmitReview = () => runAction(async () => {
@@ -1144,7 +1214,7 @@ export function PrDetailPane({
   const handleRerunChecks = () => runAction(async () => {
     await window.ade.prs.rerunChecks({ prId: pr.id });
     await onRefresh();
-    await loadDetail();
+    await loadDetail({ forceLive: true });
   });
 
   const handleAiSummary = async () => {
@@ -1288,7 +1358,7 @@ export function PrDetailPane({
   }, [checks, pr.id, pr.state]);
 
   const refreshDetailSurface = React.useCallback(async (options: { includeInventory?: boolean } = {}) => {
-    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail(), refreshReviewThreads()];
+    const tasks: Array<Promise<unknown>> = [onRefresh({ prId: pr.id }), loadDetail({ forceLive: true }), refreshReviewThreads()];
     if (options.includeInventory && pr.state !== "merged" && pr.state !== "closed") {
       tasks.push(syncInventory());
     }
@@ -2255,14 +2325,27 @@ export function PrDetailPane({
   const localBehindCount = laneForPr?.status?.behind ?? 0;
 
   const sc = getPrStateBadge(pr.state);
-  const cc = getPrChecksBadge(pr.checksStatus);
-  const rc = getPrReviewsBadge(pr.reviewStatus);
+  const resolvedChecksStatus = React.useMemo<PrChecksStatus>(() => {
+    if (status?.checksStatus) return status.checksStatus;
+    if (checks.length === 0) return pr.checksStatus;
+    if (checks.some((check) => check.status === "queued" || check.status === "in_progress")) return "pending";
+    if (checks.some((check) => check.conclusion === "failure" || check.conclusion === "cancelled")) return "failing";
+    if (checks.some((check) => check.status === "completed")) return "passing";
+    return pr.checksStatus;
+  }, [checks, pr.checksStatus, status?.checksStatus]);
+  const resolvedReviewStatus = React.useMemo<PrReviewStatus>(() => {
+    if (status?.reviewStatus) return status.reviewStatus;
+    if (reviews.some((review) => review.state === "changes_requested")) return "changes_requested";
+    if (reviews.some((review) => review.state === "approved")) return "approved";
+    return pr.reviewStatus;
+  }, [pr.reviewStatus, reviews, status?.reviewStatus]);
+  const cc = getPrChecksBadge(resolvedChecksStatus);
+  const rc = getPrReviewsBadge(resolvedReviewStatus);
   const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
     overview: COLORS.accent,
     convergence: COLORS.accent,
     files: COLORS.info,
     checks: COLORS.success,
-    activity: COLORS.warning,
   };
 
   const isTerminalPr = pr.state === "merged" || pr.state === "closed";
@@ -2289,11 +2372,12 @@ export function PrDetailPane({
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
-    { id: "activity", label: "Activity", icon: ClockCounterClockwise, count: visibleActivity.length },
   ];
 
+  const overviewRailsActive = activeTab === "overview" && prsTimelineRailsEnabled;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: COLORS.pageBg }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.pageBg }}>
       {/* ===== HEADER ===== */}
       <div style={{ padding: "18px 20px 0", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.04) 0%, transparent 100%)` }}>
         {/* Title row */}
@@ -2401,6 +2485,22 @@ export function PrDetailPane({
             <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
               <ArrowsClockwise size={14} weight="bold" />
             </button>
+            {onUnmap ? (
+              <button
+                type="button"
+                disabled={unmapBusy}
+                onClick={() => void onUnmap()}
+                style={outlineButton({
+                  height: 30,
+                  padding: "0 10px",
+                  color: COLORS.warning,
+                  borderColor: "color-mix(in srgb, var(--color-warning) 38%, transparent)",
+                  opacity: unmapBusy ? 0.55 : 1,
+                })}
+              >
+                {unmapBusy ? "Unmapping..." : "Unmap"}
+              </button>
+            ) : null}
             {queueContext && onOpenQueueView ? (
               <button
                 type="button"
@@ -2449,7 +2549,7 @@ export function PrDetailPane({
       )}
 
       {/* ===== TAB CONTENT ===== */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
         {activeTab === "overview" && prsTimelineRailsEnabled && (
           <TimelineRailsOverview
             ref={timelineRailsRef}
@@ -2463,15 +2563,53 @@ export function PrDetailPane({
             commits={commits}
             files={files}
             reviewThreads={reviewThreadsForTimeline}
-            deployments={detailDeployments}
+            deployments={deploymentsForTimeline}
             viewerLogin={viewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}
-            aiSummary={detailAiSummary}
+            aiSummary={timelineAiSummary}
             aiSummaryDismissed={aiSummaryDismissedForPr}
             onDismissAiSummary={handleDismissAiSummary}
             onRegenerateAiSummary={handleRegenerateAiSummary}
+            commentDraft={commentDraft}
+            setCommentDraft={setCommentDraft}
+            actionBusy={actionBusy}
+            onAddComment={handleAddComment}
             deepLink={deepLinkState}
+            actionSlot={(
+              <PrOverviewActionPanel
+                pr={pr}
+                detail={detail}
+                status={status}
+                checks={checks}
+                actionRuns={actionRuns}
+                reviews={reviews}
+                actionBusy={actionBusy}
+                aiSummaryBusy={aiSummaryBusy}
+                mergeMethod={mergeMethod}
+                showLabelEditor={showLabelEditor}
+                setShowLabelEditor={setShowLabelEditor}
+                labelInput={labelInput}
+                setLabelInput={setLabelInput}
+                showReviewerEditor={showReviewerEditor}
+                setShowReviewerEditor={setShowReviewerEditor}
+                reviewerInput={reviewerInput}
+                setReviewerInput={setReviewerInput}
+                showReviewModal={showReviewModal}
+                setShowReviewModal={setShowReviewModal}
+                reviewBody={reviewBody}
+                setReviewBody={setReviewBody}
+                reviewEvent={reviewEvent}
+                setReviewEvent={setReviewEvent}
+                onMerge={handleMerge}
+                onAiSummary={handleAiSummary}
+                onSetLabels={handleSetLabels}
+                onRequestReviewers={handleRequestReviewers}
+                onSubmitReview={handleSubmitReview}
+                onClose={handleClosePr}
+                onReopen={handleReopenPr}
+              />
+            )}
           />
         )}
         {activeTab === "overview" && !prsTimelineRailsEnabled && (
@@ -2604,13 +2742,6 @@ export function PrDetailPane({
             onOpenIssueResolver={handleOpenIssueResolver}
           />
           </div>
-        )}
-        {activeTab === "activity" && (
-          <ActivityTab
-            activity={visibleActivity} comments={comments} reviews={reviews}
-            commentDraft={commentDraft} setCommentDraft={setCommentDraft}
-            actionBusy={actionBusy} onAddComment={handleAddComment}
-          />
         )}
       </div>
 
@@ -2867,6 +2998,353 @@ type OverviewTabProps = {
   activity: PrActivityEvent[];
   lanes: LaneSummary[];
 };
+
+type PrReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+
+type PrOverviewActionPanelProps = {
+  pr: PrWithConflicts;
+  detail: PrDetail | null;
+  status: PrStatus | null;
+  checks: PrCheck[];
+  actionRuns: PrActionRun[];
+  reviews: PrReview[];
+  actionBusy: boolean;
+  aiSummaryBusy: boolean;
+  mergeMethod: MergeMethod;
+  showLabelEditor: boolean;
+  setShowLabelEditor: (value: boolean) => void;
+  labelInput: string;
+  setLabelInput: (value: string) => void;
+  showReviewerEditor: boolean;
+  setShowReviewerEditor: (value: boolean) => void;
+  reviewerInput: string;
+  setReviewerInput: (value: string) => void;
+  showReviewModal: boolean;
+  setShowReviewModal: (value: boolean) => void;
+  reviewBody: string;
+  setReviewBody: (value: string) => void;
+  reviewEvent: PrReviewEvent;
+  setReviewEvent: (value: PrReviewEvent) => void;
+  onMerge: (method: MergeMethod) => void;
+  onAiSummary: () => void;
+  onSetLabels: (labels: string[]) => void;
+  onRequestReviewers: (reviewers: string[]) => void;
+  onSubmitReview: () => void;
+  onClose: () => void;
+  onReopen: () => void;
+};
+
+function PrOverviewActionPanel(props: PrOverviewActionPanelProps) {
+  const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(props.mergeMethod);
+  const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
+  const allChecks = React.useMemo(() => buildUnifiedChecks(props.checks, props.actionRuns), [props.checks, props.actionRuns]);
+  const checksSummary = summarizeChecks(allChecks);
+  const { someChecksFailing, checksRunning } = checksSummary;
+  const reviewStatus = props.pr.reviewStatus;
+  const canMerge = Boolean(props.status?.isMergeable) && !props.status?.mergeConflicts && props.pr.state === "open";
+  const canAttemptBlockedMerge = Boolean(props.status) && !props.status?.isMergeable && !props.status?.mergeConflicts && props.pr.state === "open";
+  const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
+  const mergeActionEnabled = canMerge || isBypassMerge;
+  const hasCheckWarnings = someChecksFailing || checksRunning;
+  const hasReviewWarnings = reviewStatus === "changes_requested" || reviewStatus === "requested";
+  const hasMergeWarnings = canMerge && (hasCheckWarnings || hasReviewWarnings);
+  const mergeActionLabel = props.actionBusy
+    ? (isBypassMerge ? "Attempting merge..." : "Merging...")
+    : hasMergeWarnings
+      ? (someChecksFailing ? "Merge (checks failing)" : checksRunning ? "Merge (checks pending)" : "Merge (review pending)")
+      : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
+  const mergeAccentColor = canMerge
+    ? (hasMergeWarnings ? COLORS.warning : COLORS.success)
+    : isBypassMerge ? COLORS.warning : null;
+  const mergeActionBackground = mergeAccentColor
+    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge && !hasMergeWarnings ? "#16a34a" : "#d97706"} 100%)`
+    : COLORS.recessedBg;
+
+  React.useEffect(() => {
+    setLocalMergeMethod(props.mergeMethod);
+  }, [props.mergeMethod]);
+
+  React.useEffect(() => {
+    if (!canAttemptBlockedMerge) setAllowBlockedMerge(false);
+  }, [canAttemptBlockedMerge]);
+
+  const requestReviewers = () => {
+    const reviewers = props.reviewerInput.split(",").map((value) => value.trim()).filter(Boolean);
+    if (reviewers.length) props.onRequestReviewers(reviewers);
+  };
+  const setLabels = () => {
+    const labels = props.labelInput.split(",").map((value) => value.trim()).filter(Boolean);
+    if (labels.length) props.onSetLabels(labels);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ ...cardStyle({ padding: 12 }), display: "flex", flexDirection: "column", gap: 8 }}>
+        <span style={{ ...LABEL_STYLE, fontSize: 11, color: COLORS.textSecondary }}>PR actions</span>
+        <button
+          type="button"
+          onClick={props.onAiSummary}
+          disabled={props.aiSummaryBusy}
+          style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)", width: "100%", justifyContent: "center" })}
+        >
+          <Sparkle size={13} weight="fill" />
+          {props.aiSummaryBusy ? "Analyzing..." : "AI Review"}
+        </button>
+        <button
+          type="button"
+          onClick={() => props.setShowReviewModal(true)}
+          style={outlineButton({ height: 30, padding: "0 10px", width: "100%", justifyContent: "center" })}
+        >
+          <Check size={13} weight="bold" /> Submit Review
+        </button>
+
+        {(props.pr.state === "open" || props.pr.state === "draft") ? (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, background: COLORS.recessedBg, borderRadius: 8, padding: 3, border: `1px solid ${COLORS.border}` }}>
+              {(["squash", "merge", "rebase"] as const).map((method) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => setLocalMergeMethod(method)}
+                  style={{
+                    flex: 1,
+                    height: 28,
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontFamily: SANS_FONT,
+                    fontSize: 11,
+                    fontWeight: localMergeMethod === method ? 600 : 400,
+                    color: localMergeMethod === method ? COLORS.textPrimary : COLORS.textMuted,
+                    background: localMergeMethod === method ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
+                  }}
+                >
+                  {method === "squash" ? "Squash" : method === "merge" ? "Merge" : "Rebase"}
+                </button>
+              ))}
+            </div>
+            {canAttemptBlockedMerge ? (
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45, color: COLORS.textMuted }}>
+                <input
+                  type="checkbox"
+                  checked={allowBlockedMerge}
+                  disabled={props.actionBusy}
+                  onChange={(event) => setAllowBlockedMerge(event.target.checked)}
+                  style={{ marginTop: 2, accentColor: COLORS.warning }}
+                />
+                Attempt merge anyway if GitHub allows bypass rules
+              </label>
+            ) : null}
+            <button
+              type="button"
+              disabled={props.actionBusy || !mergeActionEnabled}
+              onClick={() => props.onMerge(localMergeMethod)}
+              style={{
+                ...primaryButton({
+                  background: mergeActionBackground,
+                  borderColor: mergeAccentColor ?? COLORS.border,
+                  opacity: props.actionBusy || !mergeActionEnabled ? 0.5 : 1,
+                  height: 34,
+                  padding: "0 12px",
+                  width: "100%",
+                  justifyContent: "center",
+                }),
+                color: mergeActionEnabled ? "#fff" : COLORS.textMuted,
+              }}
+            >
+              <GitMerge size={14} weight="bold" />
+              {mergeActionLabel}
+            </button>
+            {props.pr.state === "open" ? (
+              <button
+                type="button"
+                disabled={props.actionBusy}
+                onClick={props.onClose}
+                style={dangerButton({ height: 30, opacity: props.actionBusy ? 0.4 : 1, padding: "0 10px", width: "100%", justifyContent: "center" })}
+              >
+                <XCircle size={13} /> Close
+              </button>
+            ) : null}
+          </>
+        ) : props.pr.state === "closed" ? (
+          <button type="button" disabled={props.actionBusy} onClick={props.onReopen} style={outlineButton({ color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)", height: 30, width: "100%", justifyContent: "center" })}>
+            <ArrowsClockwise size={13} /> Reopen PR
+          </button>
+        ) : null}
+      </div>
+
+      <div style={cardStyle({ padding: 12 })}>
+        <SidebarSection title="Reviewers" onEdit={() => props.setShowReviewerEditor(!props.showReviewerEditor)}>
+          {props.detail?.requestedReviewers?.length ? (
+            props.detail.requestedReviewers.map((reviewer) => (
+              <div key={reviewer.login} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+                <Avatar user={reviewer} size={22} />
+                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, fontWeight: 500 }}>{reviewer.login}</span>
+              </div>
+            ))
+          ) : (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
+          )}
+          {props.showReviewerEditor ? (
+            <div style={{ marginTop: 8 }}>
+              <input
+                value={props.reviewerInput}
+                onChange={(event) => props.setReviewerInput(event.target.value)}
+                placeholder="username1, username2"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") requestReviewers();
+                }}
+                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
+              />
+            </div>
+          ) : null}
+        </SidebarSection>
+      </div>
+
+      <div style={cardStyle({ padding: 12 })}>
+        <SidebarSection title="Labels" onEdit={() => props.setShowLabelEditor(!props.showLabelEditor)}>
+          {props.detail?.labels?.length ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {props.detail.labels.map((label) => (
+                <span key={label.name} style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  padding: "3px 10px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  fontFamily: SANS_FONT,
+                  color: `#${label.color}`,
+                  background: `#${label.color}18`,
+                  border: `1px solid #${label.color}35`,
+                  borderRadius: 12,
+                }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: `#${label.color}`, marginRight: 6, flexShrink: 0 }} />
+                  {label.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
+          )}
+          {props.showLabelEditor ? (
+            <div style={{ marginTop: 8 }}>
+              <input
+                value={props.labelInput}
+                onChange={(event) => props.setLabelInput(event.target.value)}
+                placeholder="bug, enhancement"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") setLabels();
+                }}
+                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
+              />
+            </div>
+          ) : null}
+        </SidebarSection>
+      </div>
+
+      <PrReviewSubmitModal
+        open={props.showReviewModal}
+        actionBusy={props.actionBusy}
+        reviewBody={props.reviewBody}
+        setReviewBody={props.setReviewBody}
+        reviewEvent={props.reviewEvent}
+        setReviewEvent={props.setReviewEvent}
+        onCancel={() => props.setShowReviewModal(false)}
+        onSubmit={props.onSubmitReview}
+      />
+    </div>
+  );
+}
+
+function PrReviewSubmitModal({
+  open,
+  actionBusy,
+  reviewBody,
+  setReviewBody,
+  reviewEvent,
+  setReviewEvent,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  actionBusy: boolean;
+  reviewBody: string;
+  setReviewBody: (value: string) => void;
+  reviewEvent: PrReviewEvent;
+  setReviewEvent: (value: PrReviewEvent) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  if (!open) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+      <div style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 24, width: 500, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <span style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600, color: COLORS.textPrimary }}>Submit Review</span>
+          <button type="button" onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted, padding: 4 }}><X size={16} /></button>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+          {(["APPROVE", "REQUEST_CHANGES", "COMMENT"] as const).map((event) => {
+            const isSelected = reviewEvent === event;
+            const eventColor = event === "APPROVE" ? COLORS.success : event === "REQUEST_CHANGES" ? COLORS.warning : COLORS.info;
+            return (
+              <button key={event} type="button" onClick={() => setReviewEvent(event)} style={{
+                ...outlineButton(),
+                flex: 1,
+                height: 36,
+                background: isSelected ? `${eventColor}18` : "transparent",
+                borderColor: isSelected ? `${eventColor}60` : COLORS.border,
+                color: isSelected ? eventColor : COLORS.textSecondary,
+                boxShadow: isSelected ? `0 0 12px ${eventColor}15` : "none",
+              }}>
+                {event === "APPROVE" && <CheckCircle size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "REQUEST_CHANGES" && <Warning size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "COMMENT" && <ChatText size={14} weight={isSelected ? "fill" : "regular"} />}
+                {event === "APPROVE" ? "Approve" : event === "REQUEST_CHANGES" ? "Request Changes" : "Comment"}
+              </button>
+            );
+          })}
+        </div>
+        <textarea
+          value={reviewBody}
+          onChange={(event) => setReviewBody(event.target.value)}
+          placeholder="Leave a review comment (optional for approve)..."
+          style={{
+            width: "100%",
+            minHeight: 120,
+            resize: "vertical",
+            padding: 14,
+            fontFamily: SANS_FONT,
+            fontSize: 13,
+            color: COLORS.textPrimary,
+            background: COLORS.recessedBg,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            outline: "none",
+          }}
+        />
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 8 }}>
+          <button type="button" onClick={onCancel} style={outlineButton({ height: 36 })}>Cancel</button>
+          <button type="button" onClick={onSubmit} disabled={actionBusy} style={{
+            ...primaryButton({
+              background: reviewEvent === "APPROVE" ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)` : reviewEvent === "REQUEST_CHANGES" ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)` : `linear-gradient(135deg, ${COLORS.accent} 0%, #7c3aed 100%)`,
+              height: 36,
+              boxShadow:
+                reviewEvent === "APPROVE"
+                  ? "0 2px 12px color-mix(in srgb, var(--color-success) 19%, transparent)"
+                  : reviewEvent === "REQUEST_CHANGES"
+                    ? "0 2px 12px color-mix(in srgb, var(--color-warning) 19%, transparent)"
+                    : "0 2px 12px color-mix(in srgb, var(--color-accent) 19%, transparent)",
+            }),
+            color: "#fff",
+          }}>
+            {actionBusy ? "Submitting..." : `Submit ${reviewEvent === "APPROVE" ? "Approval" : reviewEvent === "REQUEST_CHANGES" ? "Changes Request" : "Comment"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function OverviewTab(props: OverviewTabProps) {
   const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
@@ -3126,10 +3604,9 @@ function OverviewTab(props: OverviewTabProps) {
             Activity ({activity.length > 0 ? activity.length : comments.length})
           </span>
           {(() => {
-            // Use full activity timeline if available, else fall back to comments.
-            // Filter out ci_run events — they're shown in the CI/Checks tab.
+            // Use the full activity timeline if available, else fall back to comments.
             const timeline = activity.length > 0
-              ? [...activity].filter((ev) => ev.type !== "ci_run").sort((a, b) => {
+              ? [...activity].sort((a, b) => {
                   const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
                   const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
                   return ta - tb;
@@ -4079,140 +4556,6 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-// ================================================================
-// ACTIVITY TAB
-// ================================================================
-
-function ActivityTab({ activity, comments, reviews, commentDraft, setCommentDraft, actionBusy, onAddComment }: {
-  activity: PrActivityEvent[];
-  comments: PrComment[];
-  reviews: PrReview[];
-  commentDraft: string;
-  setCommentDraft: (v: string) => void;
-  actionBusy: boolean;
-  onAddComment: () => void;
-}) {
-  // Merge comments and reviews into a timeline if activity is empty
-  const timeline = React.useMemo(() => {
-    if (activity.length > 0) return activity;
-    const events: PrActivityEvent[] = [];
-    for (const c of comments) {
-      events.push({
-        id: c.id, type: "comment", author: c.author, avatarUrl: c.authorAvatarUrl || null,
-        body: c.body, timestamp: c.createdAt ?? "", metadata: { path: c.path, line: c.line },
-      });
-    }
-    for (let ri = 0; ri < reviews.length; ri++) {
-      const r = reviews[ri];
-      events.push({
-        id: `review-${r.reviewer}-${r.submittedAt}-${ri}`, type: "review", author: r.reviewer, avatarUrl: r.reviewerAvatarUrl || null,
-        body: r.body, timestamp: r.submittedAt ?? "", metadata: { state: r.state },
-      });
-    }
-    return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [activity, comments, reviews]);
-
-  return (
-    <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Comment input at top */}
-      <div style={cardStyle()}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <textarea
-            value={commentDraft}
-            onChange={(e) => setCommentDraft(e.target.value)}
-            placeholder={`Write a comment... (${modifierKeyLabel}+Enter to submit)`}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void onAddComment(); }}
-            style={{
-              flex: 1, minHeight: 60, resize: "vertical", padding: 12,
-              fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary,
-              background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
-            }}
-          />
-        </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-          <button type="button" onClick={() => void onAddComment()} disabled={actionBusy || !commentDraft.trim()} style={primaryButton({ height: 30, opacity: actionBusy || !commentDraft.trim() ? 0.4 : 1 })}>
-            <ChatText size={13} /> Comment
-          </button>
-        </div>
-      </div>
-
-      {/* Timeline */}
-      <div style={cardStyle()}>
-        <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 16, display: "block" }}>Timeline ({timeline.length})</span>
-        {timeline.length === 0 ? (
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No activity yet</div>
-        ) : (
-          <div style={{ position: "relative", paddingLeft: 32 }}>
-            {/* Vertical timeline line with gradient */}
-            <div style={{
-              position: "absolute", left: 11, top: 4, bottom: 4, width: 2,
-              background: `linear-gradient(180deg, color-mix(in srgb, var(--color-accent) 40%, transparent) 0%, ${COLORS.border} 50%, color-mix(in srgb, var(--color-muted-fg) 20%, transparent) 100%)`,
-              borderRadius: 1,
-            }} />
-            {timeline.map((event, idx) => {
-              const evColor = activityEventColor(event);
-              return (
-                <div key={event.id} style={{ position: "relative", paddingBottom: idx < timeline.length - 1 ? 20 : 0 }}>
-                  {/* Icon dot */}
-                  <div style={{
-                    position: "absolute", left: -26, top: 2, width: 24, height: 24,
-                    borderRadius: "50%",
-                    background: `${evColor}18`,
-                    border: `2px solid ${evColor}40`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: `0 0 8px ${evColor}20`,
-                  }}>
-                    <ActivityEventIcon event={event} withGlow />
-                  </div>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{event.author}</span>
-                      <span style={inlineBadge(evColor)}>
-                        {activityEventLabel(event)}
-                      </span>
-                      {event.type === "review" && typeof event.metadata?.state === "string" ? (
-                        <span style={inlineBadge(event.metadata.state === "approved" ? COLORS.success : event.metadata.state === "changes_requested" ? COLORS.warning : COLORS.textSecondary)}>
-                          {String(event.metadata.state).replace(/_/g, " ")}
-                        </span>
-                      ) : null}
-                      {event.type === "comment" && typeof event.metadata?.path === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.path)}{typeof event.metadata?.line === "number" ? `:${event.metadata.line}` : ""}
-                        </span>
-                      ) : null}
-                      {event.type === "deployment" && typeof event.metadata?.environment === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.environment)}
-                        </span>
-                      ) : null}
-                      {event.type === "commit" && typeof event.metadata?.shortSha === "string" ? (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {String(event.metadata.shortSha)}
-                        </span>
-                      ) : null}
-                      {event.type === "force_push" && (
-                        <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                          {typeof event.metadata?.beforeSha === "string" ? `${String(event.metadata.beforeSha).slice(0, 7)} → ${String(event.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
-                        </span>
-                      )}
-                      <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: "#8B7355" }}>{formatTimeAgo(event.timestamp)}</span>
-                    </div>
-                    {event.body && (
-                      <div style={{ padding: "4px 0 4px 0" }}>
-                        <MarkdownBody markdown={event.body} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

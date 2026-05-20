@@ -130,6 +130,7 @@ function PRsPageInner() {
   const consumedCreateRouteKeyRef = React.useRef<string | null>(null);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
+  const lastRouteLocationKeyRef = React.useRef<string | null>(null);
   const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
     try {
       return parsePrsRouteState({ search: window.location.search, hash: window.location.hash }).detailTab;
@@ -186,6 +187,9 @@ function PRsPageInner() {
   React.useEffect(() => {
     const syncFromLocation = () => {
       try {
+        const locationKey = `${location.pathname}${location.search}${window.location.hash}`;
+        const locationChanged = lastRouteLocationKeyRef.current !== locationKey;
+        lastRouteLocationKeyRef.current = locationKey;
         const routeState = parsePrsRouteState({
           search: location.search,
           hash: window.location.hash,
@@ -203,11 +207,16 @@ function PRsPageInner() {
         setActiveTab(resolved.activeTab);
 
         if (!resolved.isWorkflowRoute) {
+          const hasExplicitPrSelection = Boolean(routeState.prId) || routeState.prNumber != null;
           const prNumberMatch = routeState.prNumber == null
             ? null
             : prs.find((pr) => pr.githubPrNumber === routeState.prNumber)?.id ?? null;
-          setSelectedPrId(routeState.prId ?? prNumberMatch);
-          setSelectedDetailTab(routeState.detailTab);
+          if (hasExplicitPrSelection || locationChanged) {
+            setSelectedPrId(routeState.prId ?? prNumberMatch);
+          }
+          if (hasExplicitPrSelection || locationChanged || routeState.detailTab) {
+            setSelectedDetailTab(routeState.detailTab);
+          }
         }
         if (resolved.effectiveWorkflow === "queue") {
           setSelectedQueueGroupId(routeState.queueGroupId ?? null);

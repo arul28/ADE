@@ -293,7 +293,7 @@ function createRuntime() {
       listBranches: vi.fn(async () => [{ name: "main", current: true, ahead: 0, behind: 0, hasUpstream: true, upstream: "origin/main" }]),
       checkoutBranch: vi.fn(async () => ({ success: true })),
       stashPush: vi.fn(async () => ({ success: true })),
-      listStashes: vi.fn(async () => [{ ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
+      listStashes: vi.fn(async () => [{ oid: "oid-0", ref: "stash@{0}", createdAt: "2026-04-06T00:00:00.000Z", subject: "test stash" }]),
       stashApply: vi.fn(async () => ({ success: true })),
       stashPop: vi.fn(async () => ({ success: true })),
       stashDrop: vi.fn(async () => ({ success: true })),
@@ -4515,6 +4515,51 @@ describe("adeRpcServer", () => {
 
   });
 
+  it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {
+    const fixture = createRuntime();
+    const startArgs = {
+      target: { mode: "lane_diff", laneId: "lane-1" },
+      config: {
+        compareAgainst: { kind: "default_branch" },
+        selectionMode: "full_diff",
+        dirtyOnly: false,
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: "medium",
+        budgets: {
+          unlimited: true,
+          maxFiles: Number.MAX_SAFE_INTEGER,
+          maxDiffChars: Number.MAX_SAFE_INTEGER,
+          maxPromptChars: Number.MAX_SAFE_INTEGER,
+          maxFindings: Number.MAX_SAFE_INTEGER,
+          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
+          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+        },
+        publishBehavior: "local_only",
+      },
+    };
+    const startRun = vi.fn(async (args: typeof startArgs) => ({
+      id: "review-run-1",
+      laneId: args.target.laneId,
+      config: args.config,
+      status: "queued",
+    }));
+    (fixture.runtime as any).reviewService = { startRun };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "review",
+      action: "startRun",
+      args: startArgs,
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(startRun).toHaveBeenCalledWith(startArgs);
+    expect(startRun.mock.calls[0][0].config.budgets).toEqual(startArgs.config.budgets);
+    expect(response.structuredContent.result.config.budgets).toEqual(startArgs.config.budgets);
+    expect(response.structuredContent.result.config.budgets.unlimited).toBe(true);
+  });
+
   it("binds service method context when invoking dynamic ADE actions", async () => {
     const fixture = createRuntime();
     const missionService = fixture.runtime.missionService as any;
@@ -4687,6 +4732,37 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.listStashes).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(response.structuredContent.count).toBe(1);
+  });
+
+  it("passes stash oid through destructive stash tools", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const pop = await callTool(handler, "stash_pop", {
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+    const drop = await callTool(handler, "stash_drop", {
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+
+    expect(pop?.isError).toBeUndefined();
+    expect(drop?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.stashPop).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
+    expect(fixture.runtime.gitService.stashDrop).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      stashRef: "stash@{0}",
+      stashOid: "oid-0",
+    });
   });
 
   it("returns resources for lane status/conflicts", async () => {

@@ -2806,20 +2806,55 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("git.stashApply requires laneId and stashRef", async () => {
+    it("git.stashApply passes an optional stashOid", async () => {
       await service.execute(makePayload("git.stashApply", {
         laneId: "lane-1",
         stashRef: "stash@{0}",
+        stashOid: "oid-0",
       }));
       expect(gitService.stashApply).toHaveBeenCalledWith({
         laneId: "lane-1",
         stashRef: "stash@{0}",
+        stashOid: "oid-0",
       });
     });
 
     it("git.stashApply throws when stashRef is missing", async () => {
       await expect(service.execute(makePayload("git.stashApply", { laneId: "lane-1" })))
         .rejects.toThrow("git.stashApply requires stashRef.");
+    });
+
+    it("git.stashPop and git.stashDrop require stashOid", async () => {
+      await expect(service.execute(makePayload("git.stashPop", {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+      }))).rejects.toThrow("git.stashPop requires stashOid.");
+      await expect(service.execute(makePayload("git.stashDrop", {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+      }))).rejects.toThrow("git.stashDrop requires stashOid.");
+
+      await service.execute(makePayload("git.stashPop", {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      }));
+      await service.execute(makePayload("git.stashDrop", {
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      }));
+
+      expect(gitService.stashPop).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      });
+      expect(gitService.stashDrop).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        stashRef: "stash@{0}",
+        stashOid: "oid-0",
+      });
     });
   });
 

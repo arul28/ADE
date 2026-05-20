@@ -912,7 +912,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
     $ ade git branches --lane <lane> --text         List branches with last-commit metadata
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
-    $ ade git stash push|list|apply|pop             Use ADE lane stash actions
+    $ ade git stash push|list|apply|pop|drop        Use ADE lane stash actions
+                                                    pop/drop resolve the saved stash OID before changing it
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
@@ -2703,6 +2704,32 @@ function buildLanePlan(args: string[]): CliPlan {
   };
 }
 
+function resolveStashSelectionForCli(listResult: unknown, stashRef: string | null, stashOid: string | null): {
+  stashRef: string;
+  stashOid: string;
+} {
+  const stashes = firstArray(listResult, ["stashes"]);
+  const match = stashRef
+    ? stashes.find((stash) => asString(stash.ref) === stashRef)
+    : stashOid
+      ? stashes.find((stash) => asString(stash.oid) === stashOid)
+      : stashes[0];
+  const selectedRef = asString(match?.ref);
+  const selectedOid = asString(match?.oid);
+  if (selectedRef && selectedOid) return { stashRef: selectedRef, stashOid: selectedOid };
+  if (!stashRef && !stashOid) {
+    throw new CliUsageError("No saved stashes were found for this lane.");
+  }
+  if (stashOid) {
+    throw new CliUsageError(
+      `Stash OID ${stashOid} is not saved for this lane. Run ade git stash list --lane <lane>.`,
+    );
+  }
+  throw new CliUsageError(
+    `Stash ${stashRef} is not saved for this lane. Run ade git stash list --lane <lane>.`,
+  );
+}
+
 function buildGitPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "actions") {
@@ -2966,14 +2993,10 @@ function buildGitPlan(args: string[]): CliPlan {
   }
   if (sub === "stash") {
     const action = firstPositional(args) ?? "list";
-    const stashRef =
-      readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
+    const stashOid = readValue(args, ["--oid", "--stash-oid"]);
+    const stashRef = readValue(args, ["--ref", "--stash-ref"]) ?? firstPositional(args);
     const message = readValue(args, ["--message", "-m"]);
-    const common = withLane({
-      ...(stashRef ? { stashRef } : {}),
-      includeUntracked: !readFlag(args, ["--tracked-only"]),
-      ...(message ? { message } : {}),
-    });
+    const includeUntracked = !readFlag(args, ["--tracked-only"]);
     const toolNameByAction: Record<string, string> = {
       push: "stash_push",
       save: "stash_push",
@@ -2986,6 +3009,45 @@ function buildGitPlan(args: string[]): CliPlan {
     };
     const toolName = toolNameByAction[action];
     if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'.`);
+    const stashRefTool =
+      toolName === "stash_apply" || toolName === "stash_pop" || toolName === "stash_drop";
+    const common = withLane({
+      ...(stashRef && stashRefTool ? { stashRef } : {}),
+      ...(stashOid && stashRefTool ? { stashOid } : {}),
+      ...(toolName === "stash_push"
+        ? { includeUntracked, ...(message ? { message } : {}) }
+        : {}),
+    });
+    const needsStashSelection = stashRefTool && (
+      !stashRef || ((toolName === "stash_pop" || toolName === "stash_drop") && !stashOid)
+    );
+    if (needsStashSelection) {
+      const listArgs: JsonObject = {};
+      if (typeof common.laneId === "string") listArgs.laneId = common.laneId;
+      return {
+        kind: "execute",
+        label: `git stash ${action}`,
+        steps: [
+          actionCallStep("stashes", "list_stashes", listArgs),
+          {
+            key: "result",
+            method: "ade/actions/call",
+            params: (values) => {
+              const selection = resolveStashSelectionForCli(values.stashes, stashRef, stashOid);
+              return {
+                name: toolName,
+                arguments: {
+                  ...common,
+                  stashRef: selection.stashRef,
+                  stashOid: selection.stashOid,
+                },
+              };
+            },
+            unwrapToolResult: true,
+          },
+        ],
+      };
+    }
     return {
       kind: "execute",
       label: `git stash ${action}`,
@@ -8451,6 +8513,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--owner-id",
   "--owner-kind",
   "--output",
+  "--oid",
   "--params-json",
   "--parent",
   "--parent-lane",
@@ -8506,6 +8569,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--start-point",
   "--start-x",
   "--start-y",
+  "--stash-oid",
   "--stash-ref",
   "--step",
   "--step-id",

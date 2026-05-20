@@ -2737,6 +2737,8 @@ final class DatabaseService {
   private static let localOnlyCacheTables: Set<String> = [
     "lane_detail_snapshots",
     "lane_list_snapshots",
+    "pr_auto_link_ignores",
+    "pull_request_ai_summaries",
   ]
 
   /// Tables the phone replaces from explicit hydration commands after connect.

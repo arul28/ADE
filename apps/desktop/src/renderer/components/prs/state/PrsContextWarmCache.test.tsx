@@ -150,6 +150,7 @@ it("does not let snapshot prefill overwrite a warm detail cache", async () => {
     await Promise.resolve();
   });
 
-  expect(staleSnapshots).not.toHaveBeenCalled();
+  expect(staleSnapshots).toHaveBeenCalledTimes(1);
+  expect(staleSnapshots).toHaveBeenCalledWith({});
   expect(screen.getByTestId("status").textContent).toBe("open");
 });

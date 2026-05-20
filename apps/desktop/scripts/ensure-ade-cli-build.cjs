@@ -21,6 +21,11 @@ const sourceEntries = [
   path.join(cliRoot, "package-lock.json"),
   path.join(cliRoot, "tsconfig.json"),
   path.join(cliRoot, "tsup.config.ts"),
+  path.join(desktopRoot, "src", "main"),
+  path.join(desktopRoot, "src", "shared"),
+  path.join(desktopRoot, "package.json"),
+  path.join(desktopRoot, "package-lock.json"),
+  path.join(desktopRoot, "tsconfig.json"),
 ];
 
 function newestMtimeMs(entryPath) {

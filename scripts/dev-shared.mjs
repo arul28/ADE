@@ -86,20 +86,30 @@ function oldestMtimeMs(paths) {
 
 export function isRuntimeCliBuildFresh() {
   const packageRoot = path.join(repoRoot, "apps", "ade-cli");
+  const desktopRoot = path.join(repoRoot, "apps", "desktop");
   const distMtime = oldestMtimeMs([
     cliPath(),
+    path.join(packageRoot, "dist", "bootstrap.cjs"),
+    path.join(packageRoot, "dist", "adeRpcServer.cjs"),
     path.join(packageRoot, "dist", "tuiClient", "cli.mjs"),
   ]);
   if (distMtime <= 0) return false;
   const sourceMtime = Math.max(
     newestMtimeMs(path.join(packageRoot, "src")),
     newestMtimeMs(path.join(packageRoot, "scripts")),
+    newestMtimeMs(path.join(desktopRoot, "src", "main")),
+    newestMtimeMs(path.join(desktopRoot, "src", "shared")),
     ...[
       "package.json",
       "package-lock.json",
       "tsconfig.json",
       "tsup.config.ts",
     ].map((file) => newestMtimeMs(path.join(packageRoot, file))),
+    ...[
+      "package.json",
+      "package-lock.json",
+      "tsconfig.json",
+    ].map((file) => newestMtimeMs(path.join(desktopRoot, file))),
   );
   return distMtime >= sourceMtime;
 }

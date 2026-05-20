@@ -110,6 +110,7 @@ import { ConflictPanel as GraphConflictPanel } from "./graphDialogs/ConflictPane
 import { RiskEdge } from "./graphEdges/RiskEdge";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { PrDetailPane } from "../prs/detail/PrDetailPane";
+import { PrsProvider } from "../prs/state/PrsContext";
 import { buildGraphPrOverlay } from "./graphPrData";
 import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/shared/prVisuals";
 
@@ -118,12 +119,45 @@ const edgeTypes = { custom: RiskEdge };
 const MERGE_SUCCESS_ANIMATION_MS = 1200;
 const GRAPH_ACTIVITY_SESSION_LIMIT = 150;
 const GRAPH_ACTIVITY_OPERATION_LIMIT = 150;
+const GRAPH_TOPOLOGY_CACHE_TTL_MS = 30_000;
+const GRAPH_PR_CACHE_TTL_MS = 5 * 60_000;
+
+const graphTopologyRefreshedAtByProject = new Map<string, number>();
+const graphPrCacheByProject = new Map<string, { prs: PrWithConflicts[]; cachedAt: number }>();
+
+function isGraphTopologyCacheFresh(projectRoot: string | null): boolean {
+  if (!projectRoot) return false;
+  const refreshedAt = graphTopologyRefreshedAtByProject.get(projectRoot) ?? 0;
+  return refreshedAt > 0 && Date.now() - refreshedAt < GRAPH_TOPOLOGY_CACHE_TTL_MS;
+}
+
+function markGraphTopologyCacheFresh(projectRoot: string | null): void {
+  if (!projectRoot) return;
+  graphTopologyRefreshedAtByProject.set(projectRoot, Date.now());
+}
+
+function readGraphPrCache(projectRoot: string | null): PrWithConflicts[] {
+  if (!projectRoot) return [];
+  const cached = graphPrCacheByProject.get(projectRoot);
+  if (!cached) return [];
+  if (Date.now() - cached.cachedAt > GRAPH_PR_CACHE_TTL_MS) {
+    graphPrCacheByProject.delete(projectRoot);
+    return [];
+  }
+  return cached.prs;
+}
+
+function writeGraphPrCache(projectRoot: string | null, prs: PrWithConflicts[]): void {
+  if (!projectRoot) return;
+  graphPrCacheByProject.set(projectRoot, { prs, cachedAt: Date.now() });
+}
 
 function GraphInner({ active = true }: { active?: boolean }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
+  const projectRoot = project?.rootPath ?? null;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
@@ -138,7 +172,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     [refreshLanes]
   );
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
-  const [prs, setPrs] = React.useState<PrWithConflicts[]>([]);
+  const [prs, setPrs] = React.useState<PrWithConflicts[]>(() => readGraphPrCache(projectRoot));
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [autoRebaseByLaneId, setAutoRebaseByLaneId] = React.useState<Record<string, AutoRebaseLaneStatus | null>>({});
   const syncRefreshInFlightRef = React.useRef(false);
@@ -155,10 +189,16 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const nodesRef = React.useRef<Array<Node<GraphNodeData>>>([]);
   const handledFocusLaneRef = React.useRef<string | null>(null);
   const handledFocusProposalRef = React.useRef<string | null>(null);
+  const projectRootRef = React.useRef(projectRoot);
 
   React.useEffect(() => {
     lanesRef.current = lanes;
   }, [lanes]);
+
+  React.useEffect(() => {
+    projectRootRef.current = projectRoot;
+    setPrs(readGraphPrCache(projectRoot));
+  }, [projectRoot]);
 
   const reportGraphIssue = React.useCallback((message: string, error?: unknown) => {
     if (error) console.warn(`[Graph] ${message}`, error);
@@ -175,7 +215,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
   }, []);
 
   const refreshPrs = React.useCallback(async () => {
-    const next = await window.ade.prs.listWithConflicts();
+    const requestProjectRoot = projectRootRef.current;
+    const next = await window.ade.prs.listWithConflicts({ includeConflictAnalysis: false });
+    if (requestProjectRoot !== projectRootRef.current) return;
+    writeGraphPrCache(requestProjectRoot, next);
     setPrs(next);
   }, []);
 
@@ -269,7 +312,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   }, [nodes]);
   const [batch, setBatch] = React.useState<BatchAssessmentResult | null>(null);
   const [batchProgress, setBatchProgress] = React.useState<BatchProgress | null>(null);
-  const [loadingTopology, setLoadingTopology] = React.useState(true);
+  const [loadingTopology, setLoadingTopology] = React.useState(() => lanes.length === 0);
   const [loadingRisk, setLoadingRisk] = React.useState(true);
   const [errorBanner, setErrorBanner] = React.useState<string | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{ laneId: string; x: number; y: number } | null>(null);
@@ -772,26 +815,36 @@ function GraphInner({ active = true }: { active?: boolean }) {
   React.useEffect(() => {
     if (!active) return;
     if (!project?.rootPath) return;
+    const rootPath = project.rootPath;
     let cancelled = false;
     let riskTimer: number | null = null;
     let activityTimer: number | null = null;
     let syncTimer: number | null = null;
     let autoRebaseTimer: number | null = null;
-    setLoadingTopology(true);
+    const hasCachedTopology = lanesRef.current.length > 0;
+    setLoadingTopology(!hasCachedTopology);
     setLoadedGraphPreferences(false);
     setSessionState(createSessionState());
     setViewMode("all");
     setSelectedLaneIds([]);
     setShowFiltersPanel(false);
+    setPrs(readGraphPrCache(rootPath));
 
-    void refreshGraphLanes()
-      .catch((err) => {
-        console.warn("[Graph] refreshLanes failed:", err);
-        reportGraphIssue("The graph could not load the latest lanes.", err);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingTopology(false);
-      });
+    if (hasCachedTopology && isGraphTopologyCacheFresh(rootPath)) {
+      setLoadingTopology(false);
+    } else {
+      void refreshGraphLanes()
+        .then(() => {
+          markGraphTopologyCacheFresh(rootPath);
+        })
+        .catch((err) => {
+          console.warn("[Graph] refreshLanes failed:", err);
+          if (!hasCachedTopology) reportGraphIssue("The graph could not load the latest lanes.", err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingTopology(false);
+        });
+    }
 
     riskTimer = window.setTimeout(() => {
       if (cancelled || document.visibilityState !== "visible") return;
@@ -1571,6 +1624,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       };
     }));
   }, [
+    active,
     baseGraph,
     connectedToHoveredNode,
     focusLaneId,
@@ -2023,7 +2077,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
       await refreshPrs();
       return;
     }
-    const refreshedPrs = await window.ade.prs.listWithConflicts();
+    const refreshedPrs = await window.ade.prs.listWithConflicts({ includeConflictAnalysis: false });
+    writeGraphPrCache(projectRootRef.current, refreshedPrs);
     setPrs(refreshedPrs);
     const refreshed = refreshedPrs.find((entry) => entry.id === prDialog.existingPr?.id) ?? null;
     if (!refreshed) {
@@ -3898,7 +3953,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
                           baseBranch: prDialog.baseBranch
                         })
                         .then(async (created) => {
-                          const refreshed = await window.ade.prs.listWithConflicts();
+                          const refreshed = await window.ade.prs.listWithConflicts({ includeConflictAnalysis: false });
+                          writeGraphPrCache(projectRootRef.current, refreshed);
                           setPrs(refreshed);
                           const createdPr = refreshed.find((entry) => entry.id === created.id) ?? null;
                           const [status, checks, reviews, comments] = await Promise.all([
@@ -3968,19 +4024,21 @@ function GraphInner({ active = true }: { active?: boolean }) {
                   </div>
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl">
-                  <PrDetailPane
-                    pr={prDialog.existingPr}
-                    status={prDialog.status}
-                    checks={prDialog.checks}
-                    reviews={prDialog.reviews}
-                    comments={prDialog.comments}
-                    detailBusy={prDialog.loadingDetails}
-                    lanes={lanes}
-                    mergeMethod={prDialog.mergeMethod}
-                    onRefresh={refreshPrDialogDetail}
-                    onNavigate={(path) => navigate(path)}
-                    onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
-                  />
+                  <PrsProvider active={false}>
+                    <PrDetailPane
+                      pr={prDialog.existingPr}
+                      status={prDialog.status}
+                      checks={prDialog.checks}
+                      reviews={prDialog.reviews}
+                      comments={prDialog.comments}
+                      detailBusy={prDialog.loadingDetails}
+                      lanes={lanes}
+                      mergeMethod={prDialog.mergeMethod}
+                      onRefresh={refreshPrDialogDetail}
+                      onNavigate={(path) => navigate(path)}
+                      onShowInGraph={(laneId) => navigate(`/graph?focusLane=${encodeURIComponent(laneId)}`)}
+                    />
+                  </PrsProvider>
                 </div>
               </div>
             ) : null}

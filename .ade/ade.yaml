@@ -1,11 +1,12 @@
 version: 1
 processes:
-  - id: xsi8oj88
-    name: dogfood onboardinign fixes
+  - id: gq3sy4rj
+    name: npm run dev:desktop
     command:
-      - ./scripts/dogfood.sh
-      - onboarding-fixes
-    cwd: apps/desktop
+      - npm
+      - run
+      - dev:desktop
+    cwd: .
     gracefulShutdownMs: 7000
     readiness:
       type: none

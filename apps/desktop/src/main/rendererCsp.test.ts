@@ -19,4 +19,11 @@ describe("buildRendererCspPolicy", () => {
 
     expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
   });
+
+  it("does not allow arbitrary public Google Cloud Storage image beacons", () => {
+    const policy = buildRendererCspPolicy(false);
+
+    expect(policy).toContain("img-src");
+    expect(policy).not.toContain("https://storage.googleapis.com");
+  });
 });

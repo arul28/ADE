@@ -3153,8 +3153,41 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       "insert into pr_issue_inventory(id, pr_id, source, type, external_id, headline, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
       ["issue-child", "pr-child", "review", "comment", "1", "Fix it", now, now],
     );
+    db.run(
+      `
+        insert into pr_auto_link_ignores(
+          project_id, repo_owner, repo_name, github_pr_number, lane_id, head_branch, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [projectId, "acme", "demo", 1, "lane-child", "feature/child", now],
+    );
     db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-child", "lane-child", now, now]);
     db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-parent", "lane-child", now, now]);
+    db.run(
+      `
+        insert into review_runs(
+          id, project_id, lane_id, target_json, config_json, target_label,
+          status, created_at, started_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["review-run-child", projectId, "lane-child", "{}", "{}", "Lane review", "completed", now, now, now],
+    );
+    db.run(
+      `
+        insert into review_reviewer_runs(
+          id, run_id, reviewer_key, label, focus, status, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["reviewer-run-child", "review-run-child", "diff-risk", "Diff risk", "Diff risk", "completed", now, now],
+    );
+    db.run(
+      `
+        insert into review_candidate_findings(
+          id, run_id, reviewer_run_id, reviewer_key, title, severity, body, anchor_state, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["candidate-child", "review-run-child", "reviewer-run-child", "diff-risk", "Candidate", "medium", "Body", "anchored", now],
+    );
 
     db.run(
       `
@@ -3205,7 +3238,11 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pr_pipeline_settings", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pr_issue_inventory", "pr_id = ?", ["pr-child"])).toBe(0);
+    expect(count("pr_auto_link_ignores", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(db.get<{ active_lane_id: string | null }>("select active_lane_id from pr_convergence_state where pr_id = ?", ["pr-parent"])?.active_lane_id).toBeNull();
+    expect(count("review_runs", "id = ?", ["review-run-child"])).toBe(0);
+    expect(count("review_reviewer_runs", "id = ?", ["reviewer-run-child"])).toBe(0);
+    expect(count("review_candidate_findings", "id = ?", ["candidate-child"])).toBe(0);
     expect(count("terminal_sessions", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("session_deltas", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("checkpoints", "lane_id = ?", ["lane-child"])).toBe(0);

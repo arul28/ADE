@@ -9,7 +9,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { useDockLayout } from "../ui/DockLayoutState";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, conflictDotColor } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, conflictDotColor, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
@@ -3232,7 +3232,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   </button>
                 ) : null}
               </span>
-              {/* Primary: house icon; Non-primary: conflict status dot */}
+              {/* Primary: house icon; non-primary: conflict status dot */}
               {isPrimary ? (
                 <House size={12} className="shrink-0" style={{ color: COLORS.accent }} />
               ) : (

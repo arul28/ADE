@@ -2,10 +2,10 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
+import type { CreateLaneFromPrBranchPreflightResult, GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
 
 const mockUsePrs = vi.fn();
 
@@ -17,13 +17,16 @@ vi.mock("../detail/PrDetailPane", () => ({
   PrDetailPane: ({
     pr,
     queueContext,
+    onUnmap,
   }: {
     pr: { id: string };
     queueContext?: { groupId: string } | null;
+    onUnmap?: () => void;
   }) => (
     <div data-testid="pr-detail-pane">
       {pr.id}
       {queueContext ? <span data-testid="queue-context">{queueContext.groupId}</span> : null}
+      {onUnmap ? <button type="button" onClick={onUnmap}>Unmap from lane</button> : null}
     </div>
   ),
 }));
@@ -56,6 +59,32 @@ function makeGitHubPr(overrides: Partial<GitHubPrSnapshot["repoPullRequests"][nu
     labels: [],
     isBot: false,
     commentCount: 0,
+    ...overrides,
+  };
+}
+
+function makeLaneSummary(overrides: Partial<LaneSummary> = {}): LaneSummary {
+  return {
+    id: "lane-open",
+    name: "lane-open",
+    description: null,
+    laneType: "worktree",
+    baseRef: "main",
+    branchRef: "refs/heads/feature/open",
+    worktreePath: "/tmp/lane-open",
+    attachedRootPath: null,
+    parentLaneId: null,
+    childCount: 0,
+    stackDepth: 0,
+    parentStatus: null,
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    folder: null,
+    createdAt: "2026-03-13T10:00:00.000Z",
+    archivedAt: null,
     ...overrides,
   };
 }
@@ -97,6 +126,53 @@ const snapshot: GitHubPrSnapshot = {
   externalPullRequests: [],
 };
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function makePreflightResult(args: {
+  githubPrNumber: number;
+  title: string;
+  headBranch: string;
+  remoteBranch: string;
+}): CreateLaneFromPrBranchPreflightResult {
+  return {
+    preflight: {
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: args.githubPrNumber,
+      githubUrl: `https://github.com/ade-dev/ade/pull/${args.githubPrNumber}`,
+      title: args.title,
+      headBranch: args.headBranch,
+      headRepoOwner: "ade-dev",
+      headRepoName: "ade",
+      headSha: "head-sha",
+      remoteBranch: args.remoteBranch,
+      importBranchRef: args.remoteBranch,
+      targetLaneName: args.title,
+      baseBranch: "main",
+      canCreate: true,
+      status: "ready",
+      blockingConflict: null,
+      blockingConflicts: [],
+    },
+    lane: null,
+    pr: null,
+  };
+}
+
 describe("GitHubTab", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
@@ -122,6 +198,51 @@ describe("GitHubTab", () => {
         prs: {
           getGitHubSnapshot: vi.fn().mockResolvedValue(snapshot),
           linkToLane: vi.fn(),
+          preflightCreateLaneFromPrBranch: vi.fn().mockResolvedValue({
+            preflight: {
+              repoOwner: "ade-dev",
+              repoName: "ade",
+              githubPrNumber: 200,
+              githubUrl: "https://github.com/ade-dev/ade/pull/200",
+              title: "Unlinked PR",
+              headBranch: "feature/open",
+              headRepoOwner: "ade-dev",
+              headRepoName: "ade",
+              remoteBranch: "origin/feature/open",
+              importBranchRef: "origin/feature/open",
+              targetLaneName: "Unlinked PR",
+              baseBranch: "main",
+              canCreate: true,
+              status: "ready",
+              blockingConflict: null,
+              blockingConflicts: [],
+            },
+            lane: null,
+            pr: null,
+          }),
+          createLaneFromPrBranch: vi.fn().mockResolvedValue({
+            preflight: {
+              repoOwner: "ade-dev",
+              repoName: "ade",
+              githubPrNumber: 200,
+              githubUrl: "https://github.com/ade-dev/ade/pull/200",
+              title: "Unlinked PR",
+              headBranch: "feature/open",
+              headRepoOwner: "ade-dev",
+              headRepoName: "ade",
+              remoteBranch: "origin/feature/open",
+              importBranchRef: "origin/feature/open",
+              targetLaneName: "Unlinked PR",
+              baseBranch: "main",
+              canCreate: true,
+              status: "ready",
+              blockingConflict: null,
+              blockingConflicts: [],
+            },
+            lane: { id: "lane-created", name: "Unlinked PR" },
+            pr: { id: "pr-created", laneId: "lane-created" },
+          }),
+          delete: vi.fn().mockResolvedValue(undefined),
         },
         github: {
           getStatus: vi.fn().mockResolvedValue({
@@ -138,6 +259,9 @@ describe("GitHubTab", () => {
         app: {
           openExternal: vi.fn(),
         },
+        lanes: {
+          list: vi.fn().mockResolvedValue([]),
+        },
       },
     });
   });
@@ -151,22 +275,25 @@ describe("GitHubTab", () => {
     selectedPrId: string | null;
     onSelectPr: ReturnType<typeof vi.fn>;
     onOpenQueueView: ReturnType<typeof vi.fn>;
+    onRefreshAll: ReturnType<typeof vi.fn>;
+    lanes: LaneSummary[];
   }> = {}) {
     const onSelectPr = overrides.onSelectPr ?? vi.fn();
     const onOpenQueueView = overrides.onOpenQueueView ?? vi.fn();
+    const onRefreshAll = overrides.onRefreshAll ?? vi.fn().mockResolvedValue(undefined);
     render(
       <MemoryRouter>
         <GitHubTab
-          lanes={[] satisfies LaneSummary[]}
+          lanes={overrides.lanes ?? []}
           mergeMethod={"squash" satisfies MergeMethod}
           selectedPrId={overrides.selectedPrId ?? null}
           onSelectPr={onSelectPr}
-          onRefreshAll={vi.fn().mockResolvedValue(undefined)}
+          onRefreshAll={onRefreshAll}
           onOpenQueueView={onOpenQueueView}
         />
       </MemoryRouter>,
     );
-    return { onSelectPr, onOpenQueueView };
+    return { onSelectPr, onOpenQueueView, onRefreshAll };
   }
 
   it("does not auto-jump to a different PR when switching filters", async () => {
@@ -257,6 +384,42 @@ describe("GitHubTab", () => {
     expect(screen.queryByText("Other project PR")).toBeNull();
   });
 
+  it("filters GitHub rows by ADE linkage scope", async () => {
+    const user = userEvent.setup();
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-unmapped",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unmapped PR",
+          headBranch: "feature/unmapped",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          updatedAt: "2026-03-13T11:50:00.000Z",
+        }),
+      ],
+    });
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(screen.getByText("Unmapped PR")).toBeTruthy();
+    });
+
+    await user.click(screen.getByRole("button", { name: /ADE/i }));
+    expect(screen.queryByText("Unmapped PR")).toBeNull();
+    expect(screen.getByText("Open PR")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /External/i }));
+    expect(screen.getByText("Unmapped PR")).toBeTruthy();
+    expect(screen.queryByText("Open PR")).toBeNull();
+  });
+
   it("passes queue context into the normal PR detail pane", async () => {
     renderTab({ selectedPrId: "pr-queue" });
 
@@ -265,7 +428,29 @@ describe("GitHubTab", () => {
     });
   });
 
-  it("uses the GitHub read-only detail when a linked PR has no local project id yet", async () => {
+  it("requires confirmation before unmapping a GitHub PR from its lane", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      renderTab();
+
+      await waitFor(() => {
+        expect(screen.getByText("Open PR")).toBeTruthy();
+      });
+      await user.click(screen.getByRole("button", { name: /#101 Open PR/i }));
+      await waitFor(() => {
+        expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+      });
+      await user.click(screen.getByRole("button", { name: /unmap from lane/i }));
+
+      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Unmap PR #101"));
+      expect(window.ade.prs.delete).not.toHaveBeenCalled();
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("renders a cached ADE detail shell while a linked PR hydrates", async () => {
     mockUsePrs.mockReturnValue({
       prs: [],
       mergeContextByPrId: {},
@@ -278,12 +463,16 @@ describe("GitHubTab", () => {
       setViewerLogin: vi.fn(),
     });
 
-    renderTab({ selectedPrId: "pr-open" });
+    const onRefreshAll = vi.fn().mockResolvedValue(undefined);
+    renderTab({ selectedPrId: "pr-open", onRefreshAll });
 
     await waitFor(() => {
       expect(screen.getByText("Open PR")).not.toBeNull();
     });
-    expect(screen.queryByTestId("pr-detail-pane")).toBeNull();
+    expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
+    await waitFor(() => {
+      expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-open" });
+    });
   });
 
   it("shows a running CI indicator for PR cards with pending checks", async () => {
@@ -598,7 +787,7 @@ describe("GitHubTab", () => {
     });
   });
 
-  it("filters by ADE scope showing only linked PRs", async () => {
+  it("shows linked and unmapped PRs together under the status tabs", async () => {
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,
       repoPullRequests: [
@@ -616,22 +805,18 @@ describe("GitHubTab", () => {
       ],
     };
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
-    const user = userEvent.setup();
     renderTab();
 
     await waitFor(() => {
+      expect(screen.getByText("Open PR")).not.toBeNull();
       expect(screen.getByText("Unlinked PR")).not.toBeNull();
     });
 
-    await user.click(screen.getByRole("button", { name: /^ADE/i }));
-
-    await waitFor(() => {
-      expect(screen.queryByText("Unlinked PR")).toBeNull();
-      expect(screen.getByText("Open PR")).not.toBeNull();
-    });
+    expect(screen.getByRole("button", { name: /^ADE/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^External/i })).toBeTruthy();
   });
 
-  it("filters by External scope showing only unlinked PRs", async () => {
+  it("marks unlinked PRs as unmapped", async () => {
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,
       repoPullRequests: [
@@ -649,18 +834,307 @@ describe("GitHubTab", () => {
       ],
     };
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
-    const user = userEvent.setup();
     renderTab();
 
     await waitFor(() => {
-      expect(screen.getByText("Open PR")).not.toBeNull();
+      expect(screen.getByText("Unlinked PR")).not.toBeNull();
+    });
+    expect(screen.getAllByText("unmapped").length).toBeGreaterThan(0);
+  });
+
+  it("opens a preflight dialog for an unmapped PR branch", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+
+    expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: 200,
+    });
+    expect(await screen.findByRole("dialog", { name: /create lane from pr branch/i })).toBeTruthy();
+    expect(screen.getByText(/#200 Unlinked PR/)).toBeTruthy();
+    expect(screen.getByText("origin/feature/open")).toBeTruthy();
+    expect(screen.getAllByText("Unlinked PR").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("main").length).toBeGreaterThan(0);
+  });
+
+  it("ignores stale create-lane preflight results from a previous PR", async () => {
+    const user = userEvent.setup();
+    const firstPreflight = createDeferred<CreateLaneFromPrBranchPreflightResult>();
+    const secondPreflight = createDeferred<CreateLaneFromPrBranchPreflightResult>();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked-first",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "First PR",
+          headBranch: "feature/first",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:10:00.000Z",
+        }),
+        makeGitHubPr({
+          id: "repo-unlinked-second",
+          githubPrNumber: 201,
+          githubUrl: "https://github.com/ade-dev/ade/pull/201",
+          title: "Second PR",
+          headBranch: "feature/second",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.preflightCreateLaneFromPrBranch as ReturnType<typeof vi.fn>)
+      .mockImplementation((args: { githubPrNumber: number }) =>
+        args.githubPrNumber === 200 ? firstPreflight.promise : secondPreflight.promise);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: 200,
+    });
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    await user.click(await screen.findByText("Second PR"));
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      githubPrNumber: 201,
     });
 
-    await user.click(screen.getByRole("button", { name: /^External/i }));
+    await act(async () => {
+      firstPreflight.resolve(makePreflightResult({
+        githubPrNumber: 200,
+        title: "First PR",
+        headBranch: "feature/first",
+        remoteBranch: "origin/feature/first",
+      }));
+      await firstPreflight.promise;
+    });
+    expect(screen.queryByText(/#200 First PR/)).toBeNull();
+    expect(screen.getByText(/checking branch ownership/i)).toBeTruthy();
+
+    await act(async () => {
+      secondPreflight.resolve(makePreflightResult({
+        githubPrNumber: 201,
+        title: "Second PR",
+        headBranch: "feature/second",
+        remoteBranch: "origin/feature/second",
+      }));
+      await secondPreflight.promise;
+    });
+
+    expect(await screen.findByText(/#201 Second PR/)).toBeTruthy();
+    expect(screen.queryByText(/#200 First PR/)).toBeNull();
+    expect(screen.getByText("origin/feature/second")).toBeTruthy();
+  });
+
+  it("shows blocking preflight conflicts before creating a lane", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.preflightCreateLaneFromPrBranch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      preflight: {
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        githubPrNumber: 200,
+        githubUrl: "https://github.com/ade-dev/ade/pull/200",
+        title: "Unlinked PR",
+        headBranch: "feature/open",
+        headRepoOwner: "ade-dev",
+        headRepoName: "ade",
+        remoteBranch: "origin/feature/open",
+        importBranchRef: "origin/feature/open",
+        targetLaneName: "Unlinked PR",
+        baseBranch: "main",
+        canCreate: false,
+        status: "blocked",
+        blockingConflict: {
+          code: "branch_owned",
+          message: "Branch 'feature/open' is already owned by lane 'Existing lane'.",
+          laneId: "lane-existing",
+          laneName: "Existing lane",
+        },
+        blockingConflicts: [],
+      },
+      lane: null,
+      pr: null,
+    });
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+
+    expect(await screen.findByText(/already owned by lane 'Existing lane'/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
+    expect(window.ade.prs.createLaneFromPrBranch).not.toHaveBeenCalled();
+  });
+
+  it("does not let an archived branch match hide the create-lane action", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.preflightCreateLaneFromPrBranch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      preflight: {
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        githubPrNumber: 200,
+        githubUrl: "https://github.com/ade-dev/ade/pull/200",
+        title: "Unlinked PR",
+        headBranch: "feature/open",
+        headRepoOwner: "ade-dev",
+        headRepoName: "ade",
+        remoteBranch: "origin/feature/open",
+        importBranchRef: "origin/feature/open",
+        targetLaneName: "Unlinked PR",
+        baseBranch: "main",
+        canCreate: false,
+        status: "blocked",
+        blockingConflict: {
+          code: "branch_owned",
+          message: "Branch 'feature/open' is already owned by archived lane 'Archived lane'.",
+          laneId: "lane-archived",
+          laneName: "Archived lane",
+        },
+        blockingConflicts: [],
+      },
+      lane: null,
+      pr: null,
+    });
+
+    renderTab({
+      lanes: [
+        makeLaneSummary({
+          id: "lane-archived",
+          name: "Archived lane",
+          branchRef: "refs/heads/feature/open",
+          archivedAt: "2026-03-12T12:00:00.000Z",
+        }),
+      ],
+    });
+
+    expect(await screen.findByRole("button", { name: /create lane from pr branch/i })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Archived lane" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /create lane from pr branch/i }));
+
+    expect(await screen.findByText(/already owned by archived lane 'Archived lane'/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
+  });
+
+  it("creates a lane from an unmapped PR branch, refreshes lanes, and selects the mapped PR", async () => {
+    const user = userEvent.setup();
+    const onSelectPr = vi.fn();
+    const onRefreshAll = vi.fn().mockResolvedValue(undefined);
+    const forcedSnapshot = createDeferred<GitHubPrSnapshot>();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unlinked PR",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+      externalPullRequests: [],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(snapshotWithUnlinked)
+      .mockReturnValueOnce(forcedSnapshot.promise);
+    renderTab({ onSelectPr, onRefreshAll });
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {
-      expect(screen.queryByText("Open PR")).toBeNull();
-      expect(screen.getByText("Unlinked PR")).not.toBeNull();
+      expect(window.ade.prs.createLaneFromPrBranch).toHaveBeenCalledWith({
+        repoOwner: "ade-dev",
+        repoName: "ade",
+        githubPrNumber: 200,
+      });
+    });
+    await waitFor(() => {
+      expect(onSelectPr).toHaveBeenCalledWith("pr-created");
+    });
+    expect(screen.getByRole("button", { name: /^ADE\s+1$/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^External\s+0$/i })).toBeTruthy();
+    expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-created" });
+    expect(window.ade.lanes.list).toHaveBeenCalledWith({
+      includeArchived: false,
+      includeStatus: false,
+    });
+    expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
+    await act(async () => {
+      forcedSnapshot.resolve(snapshotWithUnlinked);
+      await forcedSnapshot.promise;
     });
   });
 
@@ -732,12 +1206,24 @@ describe("GitHubTab", () => {
     });
   });
 
-  it("sorts PRs by createdAt descending", async () => {
+  it("sorts PRs by updatedAt descending", async () => {
     const snapshotOrdered: GitHubPrSnapshot = {
       ...snapshot,
       repoPullRequests: [
-        makeGitHubPr({ id: "pr-old", githubPrNumber: 50, title: "Old PR", createdAt: "2026-03-13T08:00:00.000Z" }),
-        makeGitHubPr({ id: "pr-new", githubPrNumber: 150, title: "New PR", createdAt: "2026-03-13T12:00:00.000Z" }),
+        makeGitHubPr({
+          id: "pr-old",
+          githubPrNumber: 50,
+          title: "Old PR",
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:10:00.000Z",
+        }),
+        makeGitHubPr({
+          id: "pr-new",
+          githubPrNumber: 150,
+          title: "New PR",
+          createdAt: "2026-03-13T08:00:00.000Z",
+          updatedAt: "2026-03-13T12:30:00.000Z",
+        }),
       ],
     };
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotOrdered);

@@ -147,6 +147,49 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
     )
   `);
   raw.run(`
+    create table review_reviewer_runs(
+      id text primary key,
+      run_id text not null,
+      reviewer_key text not null,
+      label text not null,
+      focus text not null,
+      status text not null,
+      chat_session_id text,
+      prompt_artifact_id text,
+      output_artifact_id text,
+      findings_artifact_id text,
+      candidate_count integer not null default 0,
+      kept_count integer not null default 0,
+      summary text,
+      error_message text,
+      started_at text,
+      ended_at text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  raw.run(`
+    create table review_candidate_findings(
+      id text primary key,
+      run_id text not null,
+      reviewer_run_id text not null,
+      reviewer_key text not null,
+      title text not null,
+      severity text not null,
+      finding_class text,
+      body text not null,
+      confidence real not null,
+      evidence_json text,
+      file_path text,
+      line integer,
+      anchor_state text not null,
+      evidence_score real not null,
+      low_signal integer not null default 0,
+      score real not null,
+      created_at text not null
+    )
+  `);
+  raw.run(`
     create table review_run_publications(
       id text primary key,
       run_id text not null,
@@ -182,6 +225,16 @@ async function waitFor<T>(fn: () => T | Promise<T>, predicate: (value: T) => boo
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error("Timed out waiting for review service state");
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function makeConfig(overrides: Partial<ReviewRunConfig> = {}): ReviewRunConfig {
@@ -274,6 +327,16 @@ function makeFinding(overrides: Partial<Record<string, unknown>> = {}): Record<s
 
 function makeOutput(summary: string, findings: Array<Record<string, unknown>>): string {
   return JSON.stringify({ summary, findings });
+}
+
+function makeTurnResult(summary: string, findings: Array<Record<string, unknown>>) {
+  return {
+    sessionId: "session-review",
+    provider: "codex",
+    model: "gpt-5.4",
+    modelId: "openai/gpt-5.4",
+    outputText: makeOutput(summary, findings),
+  };
 }
 
 function makeContextPacket(overrides: Partial<Record<string, any>> = {}) {
@@ -466,9 +529,15 @@ function buildPublicationResult(args: {
 }
 
 function createHarness(args: {
-  outputs: string[];
+  outputs: Array<string | ((prompt: string) => string)>;
   targetLabel?: string;
   publicationTarget?: ReviewPublicationDestination | null;
+  materializedTarget?: Partial<{
+    targetLabel: string;
+    publicationTarget: ReviewPublicationDestination | null;
+    fullPatchText: string;
+    changedFiles: ReturnType<typeof makeChangedFile>[];
+  }>;
   config?: Partial<ReviewRunConfig>;
   target?: { mode: "lane_diff" | "pr" | "commit_range" | "working_tree"; laneId: string; prId?: string; baseCommit?: string; headCommit?: string };
 }) {
@@ -484,12 +553,15 @@ function createHarness(args: {
   mockMaterializer.materialize.mockResolvedValue(makeMaterializedTarget({
     targetLabel: args.targetLabel,
     publicationTarget: args.publicationTarget ?? null,
+    ...(args.materializedTarget ?? {}),
   }));
   mockContextBuilder.buildContext.mockResolvedValue(makeContextPacket());
 
-  const runSessionTurn = vi.fn(async () => {
-    const outputText = queuedOutputs.shift();
-    if (!outputText) throw new Error("No mock review output left.");
+  const runSessionTurn = vi.fn(async (turnArgs?: { text?: string }) => {
+    const nextOutput = queuedOutputs.shift();
+    const outputText = typeof nextOutput === "function"
+      ? nextOutput(turnArgs?.text ?? "")
+      : (nextOutput ?? makeOutput("No specialist findings.", []));
     return {
       sessionId: `session-review-${sessionCount}`,
       provider: "codex",
@@ -498,6 +570,18 @@ function createHarness(args: {
       outputText,
     };
   });
+
+  const createSession = vi.fn(async () => {
+    sessionCount += 1;
+    return {
+      id: `session-review-${sessionCount}`,
+      laneId: "lane-review",
+      provider: "codex",
+      model: "gpt-5.4",
+      modelId: "openai/gpt-5.4",
+    };
+  });
+  const interrupt = vi.fn(async () => undefined);
 
   const service = createReviewService({
     db: db as any,
@@ -524,16 +608,7 @@ function createHarness(args: {
       listRecentCommits: vi.fn(async () => []),
     } as any,
     agentChatService: {
-      createSession: vi.fn(async () => {
-        sessionCount += 1;
-        return {
-          id: `session-review-${sessionCount}`,
-          laneId: "lane-review",
-          provider: "codex",
-          model: "gpt-5.4",
-          modelId: "openai/gpt-5.4",
-        };
-      }),
+      createSession,
       getSessionSummary: vi.fn(async (sessionId: string) => ({
         sessionId,
         laneId: "lane-review",
@@ -549,6 +624,7 @@ function createHarness(args: {
         lastOutputPreview: "Review output",
         summary: "Saved review transcript",
       })),
+      interrupt,
       runSessionTurn,
     } as any,
     sessionService: {
@@ -597,6 +673,8 @@ function createHarness(args: {
   return {
     raw,
     service,
+    createSession,
+    interrupt,
     runSessionTurn,
     publishReviewPublication,
     start: (config?: Partial<ReviewRunConfig>) => service.startRun({
@@ -642,16 +720,355 @@ describe("reviewService", () => {
     expect(detail?.findings[0]?.sourcePass).toBe("adjudicated");
     expect(detail?.findings[0]?.originatingPasses).toEqual(["diff-risk", "cross-file-impact"]);
     expect(detail?.findings[0]?.adjudication?.mergedFindingIds).toHaveLength(2);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(3);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_output")).toHaveLength(3);
-    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_findings")).toHaveLength(3);
+    expect(detail?.reviewerRuns).toHaveLength(5);
+    expect(detail?.candidateFindings).toHaveLength(2);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(5);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_output")).toHaveLength(5);
+    expect(detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_findings")).toHaveLength(5);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "changed_file_manifest")).toBe(true);
+    expect(detail?.artifacts.some((artifact) => artifact.artifactType === "risk_map")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "adjudication_result")).toBe(true);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "merged_findings")).toBe(true);
+    const firstPrompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt");
+    expect(firstPrompt?.contentText).toContain("Diff and file inspection");
+    expect(firstPrompt?.contentText).toContain("Full diff artifact:");
+    expect(firstPrompt?.contentText).toContain("git diff -- <path>");
+    expect(firstPrompt?.contentText).not.toContain("diff --git a/src/review.ts b/src/review.ts");
 
     const persistedFindings = mapExecRows(harness.raw.exec("select source_pass, originating_passes_json, adjudication_json from review_findings"));
     expect(String(persistedFindings[0]?.source_pass)).toBe("adjudicated");
     expect(String(persistedFindings[0]?.originating_passes_json)).toContain("diff-risk");
     expect(String(persistedFindings[0]?.adjudication_json)).toContain("publicationEligible");
+  });
+
+  it("classifies tsx and css changed paths as UI risk", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No diff-risk issues.", []),
+        makeOutput("No cross-file issues.", []),
+        makeOutput("No checks issues.", []),
+        makeOutput("No security issues.", []),
+        makeOutput("No UI issues.", []),
+      ],
+      materializedTarget: {
+        fullPatchText: [
+          "diff --git a/src/views/ReviewPage.tsx b/src/views/ReviewPage.tsx",
+          "diff --git a/src/styles/review.css b/src/styles/review.css",
+        ].join("\n"),
+        changedFiles: [
+          makeChangedFile({ filePath: "src/views/ReviewPage.tsx" }),
+          makeChangedFile({ filePath: "src/styles/review.css" }),
+        ],
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const riskMap = JSON.parse(detail?.artifacts.find((artifact) => artifact.artifactType === "risk_map")?.contentText ?? "{}") as {
+      groups?: Array<{ risk: string; files: string[] }>;
+    };
+
+    expect(riskMap.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        risk: "ui",
+        files: expect.arrayContaining(["src/views/ReviewPage.tsx", "src/styles/review.css"]),
+      }),
+    ]));
+  });
+
+  it("completes with partial coverage when one specialist reviewer fails", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Cross-file clear.", []),
+        makeOutput("Checks clear.", []),
+        makeOutput("Security clear.", []),
+        makeOutput("UI clear.", []),
+      ],
+    });
+    harness.runSessionTurn.mockRejectedValueOnce(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.errorMessage).toContain("Partial review");
+    expect(saved?.summary).toContain("Partial review");
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.reviewerRuns.some((reviewer) => reviewer.status === "failed")).toBe(true);
+    expect(detail?.findings).toEqual([]);
+    expect(detail?.artifacts.some((artifact) => artifact.title === "Reviewer failure summary")).toBe(true);
+  });
+
+  it("keeps partial PR reviews local even when auto-publish is enabled", async () => {
+    const destination: ReviewPublicationDestination = {
+      kind: "github_pr_review",
+      prId: "pr-80",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      prNumber: 80,
+      githubUrl: "https://github.com/ade-dev/ade/pull/80",
+    };
+    const harness = createHarness({
+      publicationTarget: destination,
+      targetLabel: "PR #80 feature/pr-80 -> main",
+      target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      config: { publishBehavior: "auto_publish" },
+      outputs: [
+        makeOutput("Cross-file found one issue.", [makeFinding()]),
+        makeOutput("Checks clear.", []),
+        makeOutput("Security clear.", []),
+        makeOutput("UI clear.", []),
+      ],
+    });
+    harness.runSessionTurn.mockRejectedValueOnce(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.publishReviewPublication).not.toHaveBeenCalled();
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.errorMessage).toContain("Partial review");
+    expect(detail?.summary).toContain("Partial review");
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.publicationState).toBe("local_only");
+    expect(detail?.publications).toEqual([]);
+    expect(detail?.artifacts.some((artifact) => artifact.title === "Publication skipped for partial review")).toBe(true);
+  });
+
+  it("fails the review run when all specialist reviewers fail", async () => {
+    const harness = createHarness({ outputs: [] });
+    harness.runSessionTurn.mockRejectedValue(new Error("model unavailable"));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "failed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.errorMessage).toContain("specialist reviewer");
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.reviewerRuns.every((reviewer) => reviewer.status === "failed")).toBe(true);
+    expect(detail?.findings).toEqual([]);
+  });
+
+  it("interrupts active specialist reviewer sessions when cancelling a run", async () => {
+    const harness = createHarness({ outputs: [] });
+    const pendingTurns: Array<(value: ReturnType<typeof makeTurnResult>) => void> = [];
+    harness.runSessionTurn.mockImplementation((): Promise<ReturnType<typeof makeTurnResult>> => new Promise((resolve) => {
+      pendingTurns.push(resolve as (value: ReturnType<typeof makeTurnResult>) => void);
+    }));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.createSession.mock.calls.length,
+      (count) => count === 5,
+    );
+
+    const cancelled = await harness.service.cancelRun({ runId: run.id });
+    expect(cancelled?.status).toBe("cancelled");
+    expect(harness.interrupt).toHaveBeenCalledTimes(5);
+    const interruptCalls = harness.interrupt.mock.calls as unknown as Array<[{ sessionId: string }]>;
+    expect(interruptCalls.map((call) => call[0].sessionId)).toEqual([
+      "session-review-1",
+      "session-review-2",
+      "session-review-3",
+      "session-review-4",
+      "session-review-5",
+    ]);
+
+    for (const resolve of pendingTurns) {
+      resolve(makeTurnResult("No findings after cancel.", []));
+    }
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "cancelled"),
+    );
+  });
+
+  it("does not dispatch specialist prompts after cancellation during context materialization", async () => {
+    const harness = createHarness({ outputs: [] });
+    const context = deferred<ReturnType<typeof makeContextPacket>>();
+    mockContextBuilder.buildContext.mockReturnValueOnce(context.promise);
+
+    const run = await harness.start();
+    await waitFor(
+      () => mockContextBuilder.buildContext.mock.calls.length,
+      (count) => count === 1,
+    );
+
+    await harness.service.cancelRun({ runId: run.id });
+    context.resolve(makeContextPacket());
+
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "cancelled"),
+    );
+    expect(harness.createSession).not.toHaveBeenCalled();
+    expect(harness.runSessionTurn).not.toHaveBeenCalled();
+  });
+
+  it("enforces the final prompt budget without embedding the full diff bundle", async () => {
+    const longDiff = [
+      "diff --git a/src/review.ts b/src/review.ts",
+      "@@ -1,2 +1,200 @@",
+      " context",
+      ...Array.from({ length: 1_000 }, (_, index) => `+exact changed line ${index}: ${"x".repeat(60)}`),
+    ].join("\n");
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+        makeOutput("No security findings.", []),
+        makeOutput("No UI findings.", []),
+      ],
+      config: {
+        budgets: {
+          maxFiles: 60,
+          maxDiffChars: 100_000,
+          maxPromptChars: 4_000,
+          maxFindings: 12,
+          maxFindingsPerPass: 6,
+          maxPublishedFindings: 6,
+        },
+      },
+    });
+    mockMaterializer.materialize.mockResolvedValueOnce(makeMaterializedTarget({
+      fullPatchText: longDiff,
+      changedFiles: [makeChangedFile({ excerpt: longDiff.slice(0, 4_000) })],
+    }));
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const passPrompts = detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt") ?? [];
+    expect(passPrompts).toHaveLength(5);
+    for (const prompt of passPrompts) {
+      expect(prompt.contentText ?? "").toHaveLength(4_000);
+      expect(prompt.contentText ?? "").toContain("...(truncated)...");
+      expect(prompt.contentText ?? "").not.toContain("exact changed line 999");
+    }
+  });
+
+  it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      config: { codexFastMode: true },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      codexFastMode: true,
+      permissionMode: "plan",
+      surface: "automation",
+    }));
+  });
+
+  it("preserves unlimited review budgets instead of clamping them", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      config: {
+        budgets: {
+          unlimited: true,
+          maxFiles: 1,
+          maxDiffChars: 4_000,
+          maxPromptChars: 4_000,
+          maxFindings: 1,
+          maxFindingsPerPass: 1,
+          maxPublishedFindings: 1,
+        },
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
+    expect(saved?.config.budgets).toMatchObject({
+      unlimited: true,
+      maxFiles: Number.MAX_SAFE_INTEGER,
+      maxFindings: Number.MAX_SAFE_INTEGER,
+      maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+    });
+  });
+
+  it("caps the prompt manifest even when review budgets are unlimited", async () => {
+    const changedFiles = Array.from({ length: 120 }, (_, index) => makeChangedFile({
+      filePath: `src/file-${index}.ts`,
+      excerpt: `@@ -1 +1 @@\n+file ${index} ${"x".repeat(200)}`,
+      lineNumbers: [index + 1],
+      diffPositionsByLine: { [index + 1]: 1 },
+    }));
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+        makeOutput("No security findings.", []),
+        makeOutput("No UI findings.", []),
+      ],
+      materializedTarget: {
+        changedFiles,
+      },
+      config: {
+        budgets: {
+          unlimited: true,
+          maxFiles: 1,
+          maxDiffChars: 4_000,
+          maxPromptChars: 4_000,
+          maxFindings: 1,
+          maxFindingsPerPass: 1,
+          maxPublishedFindings: 1,
+        },
+      },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    const prompt = detail?.artifacts.find((artifact) => artifact.artifactType === "pass_prompt")?.contentText ?? "";
+    expect(prompt).toContain("src/file-99.ts");
+    expect(prompt).not.toContain("src/file-100.ts");
+    expect(prompt).toContain('"omittedFileCount": 20');
+
+    const manifest = detail?.artifacts.find((artifact) => artifact.artifactType === "changed_file_manifest")?.contentText ?? "";
+    expect(manifest).toContain("src/file-119.ts");
   });
 
   it("persists provenance, rules, and validation artifacts and keeps renderer findings on the normal evidence path", async () => {
@@ -855,6 +1272,93 @@ describe("reviewService", () => {
     expect(adjudicationArtifact?.contentText).toContain("rule_policy");
   });
 
+  it("keeps inspected file snapshot evidence for strict cross-boundary findings", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Bridge mismatch.", [
+          makeFinding({
+            title: "Bridge rollout incomplete",
+            findingClass: "incomplete_rollout",
+            evidence: [
+              {
+                kind: "diff_hunk",
+                summary: "The preload diff changes the exposed method name.",
+                filePath: "src/review.ts",
+                line: 2,
+                quote: "+exposeReviewV2()",
+              },
+              {
+                kind: "file_snapshot",
+                summary: "The renderer still calls the old preload method.",
+                filePath: "src/renderer.ts",
+                line: 88,
+                quote: "window.ade.review.startRun()",
+              },
+            ],
+          }),
+        ]),
+        makeOutput("No extra cross-file issues.", []),
+        makeOutput("No checks issues.", []),
+      ],
+    });
+    mockContextBuilder.buildContext.mockResolvedValueOnce(makeContextPacket({
+      matchedRuleOverlays: [
+        {
+          id: "preload-bridge",
+          label: "Preload bridge",
+          description: "Strict bridge rule",
+          pathPatterns: ["src/review.ts"],
+          rolloutExpectations: ["Keep bridge and consumer updates aligned."],
+          companionFamilies: [
+            { id: "preload", label: "preload", pathPatterns: ["src/review.ts"] },
+            { id: "renderer", label: "renderer", pathPatterns: ["src/renderer.ts"] },
+          ],
+          promptGuidance: { "cross-file-impact": ["Check both sides of the bridge."] },
+          adjudicationPolicy: { evidenceMode: "cross_boundary" },
+          matchedPaths: ["src/review.ts"],
+          coveredFamilies: [{ id: "preload", label: "preload" }],
+          missingFamilies: [{ id: "renderer", label: "renderer" }],
+        },
+      ],
+      rules: {
+        summary: "1 rule overlay matched",
+        prompt: "- Preload bridge: missing companion coverage: renderer",
+        payload: {
+          changedPaths: ["src/review.ts"],
+          overlays: [{
+            id: "preload-bridge",
+            label: "Preload bridge",
+            description: "Strict bridge rule",
+            matchedPaths: ["src/review.ts"],
+            rolloutExpectations: ["Keep bridge and consumer updates aligned."],
+            coveredFamilies: [{ id: "preload", label: "preload" }],
+            missingFamilies: [{ id: "renderer", label: "renderer" }],
+            adjudicationPolicy: { evidenceMode: "cross_boundary" },
+          }],
+        },
+        metadata: {
+          summary: "1 rule overlay matched",
+          matchedRuleCount: 1,
+          ruleCount: 1,
+          pathCount: 1,
+          matchedRuleIds: ["preload-bridge"],
+        },
+      },
+    }));
+
+    const run = await harness.start();
+    await waitFor(() => harness.service.listRuns(), (runs) => runs[0]?.status === "completed");
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "diff_hunk", filePath: "src/review.ts", line: 2 }),
+        expect.objectContaining({ kind: "file_snapshot", filePath: "src/renderer.ts", line: 88 }),
+      ]),
+    );
+  });
+
   it("cites validation and provenance artifacts when late-stage signals back the finding", async () => {
     const harness = createHarness({
       outputs: [
@@ -930,6 +1434,51 @@ describe("reviewService", () => {
     expect(artifactKinds.size).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps checks findings backed by validation artifacts without file anchors", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No diff-risk issues.", []),
+        makeOutput("No cross-file issues.", []),
+        (prompt) => {
+          const validationArtifactId = prompt.match(/validation_signals artifact id: ([^\n]+)/)?.[1]?.trim();
+          if (!validationArtifactId) throw new Error("Expected checks prompt to include validation artifact id.");
+          return makeOutput("Validation artifact-backed failure.", [
+            makeFinding({
+              title: "Unit validation failed after the review changes",
+              severity: "medium",
+              body: "The validation artifact reports a failing unit check for this review run.",
+              confidence: 0.82,
+              filePath: null,
+              line: null,
+              evidence: [{
+                kind: "artifact",
+                summary: "The validation_signals artifact contains the failing unit check.",
+                filePath: null,
+                line: null,
+                quote: null,
+                artifactId: validationArtifactId,
+              }],
+            }),
+          ]);
+        },
+      ],
+    });
+
+    const run = await harness.start();
+    await waitFor(() => harness.service.listRuns(), (runs) => runs[0]?.status === "completed");
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.sourcePass).toBe("adjudicated");
+    expect(detail?.findings[0]?.originatingPasses).toEqual(["checks-and-tests"]);
+    expect(detail?.findings[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "artifact", artifactId: expect.any(String) }),
+      ]),
+    );
+    expect(detail?.summary).not.toContain("filtered out during adjudication");
+  });
+
   it("uses late-stage regression when overlapping passes disagree on ADE-native class", async () => {
     const harness = createHarness({
       outputs: [
@@ -992,6 +1541,42 @@ describe("reviewService", () => {
     expect(adjudicationArtifact?.contentText).toContain("low_evidence");
   });
 
+  it("filters reviewer evidence that cannot be anchored to the reviewed diff", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("Unanchored finding.", [
+          makeFinding({
+            title: "External file risk",
+            severity: "high",
+            body: "This cites a file and line that are not in the reviewed diff.",
+            confidence: 0.93,
+            filePath: "src/unrelated.ts",
+            line: 999,
+            evidence: [{
+              summary: "The reviewer cited a line outside the materialized patch.",
+              filePath: "src/unrelated.ts",
+              line: 999,
+              quote: "+outsideReviewedDiff()",
+            }],
+          }),
+        ]),
+      ],
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs[0]?.status === "completed",
+    );
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.candidateFindings).toHaveLength(1);
+    expect(detail?.candidateFindings[0]?.evidence).toEqual([]);
+    expect(detail?.findings).toEqual([]);
+    const adjudicationArtifact = detail?.artifacts.find((artifact) => artifact.artifactType === "adjudication_result");
+    expect(adjudicationArtifact?.contentText).toContain("low_evidence");
+  });
+
   it("applies run and publication budgets and only publishes adjudicated findings", async () => {
     const destination: ReviewPublicationDestination = {
       kind: "github_pr_review",
@@ -1005,6 +1590,21 @@ describe("reviewService", () => {
       publicationTarget: destination,
       targetLabel: "PR #80 feature/pr-80 -> main",
       target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+      materializedTarget: {
+        changedFiles: [
+          makeChangedFile({
+            excerpt: "@@ -1,2 +1,5 @@\n context\n+return null;\n+missing fallback\n+missing test coverage\n",
+            lineNumbers: [2, 3, 200],
+            diffPositionsByLine: { 2: 1, 3: 2, 200: 3 },
+          }),
+          makeChangedFile({
+            filePath: "src/worker.ts",
+            excerpt: "@@ -7,2 +7,4 @@\n context\n+dispatchWithoutInvariant()\n",
+            lineNumbers: [10],
+            diffPositionsByLine: { 10: 4 },
+          }),
+        ],
+      },
       config: {
         publishBehavior: "auto_publish",
         budgets: {
@@ -1062,9 +1662,13 @@ describe("reviewService", () => {
         makeOutput("First pass run.", [makeFinding()]),
         makeOutput("Cross-file overlap.", [makeFinding({ title: "Fallback path removed", confidence: 0.71 })]),
         makeOutput("Checks clear.", []),
+        makeOutput("First run security clear.", []),
+        makeOutput("First run UI clear.", []),
         makeOutput("Second run diff-risk.", [makeFinding()]),
         makeOutput("Second run cross-file.", [makeFinding({ title: "Fallback path removed", confidence: 0.71 })]),
         makeOutput("Second run checks.", []),
+        makeOutput("Second run security clear.", []),
+        makeOutput("Second run UI clear.", []),
       ],
       target: {
         mode: "commit_range",
@@ -1090,9 +1694,10 @@ describe("reviewService", () => {
       (runs) => runs.some((run) => run.id === rerun.id && run.status === "completed"),
     );
 
-    expect(harness.runSessionTurn).toHaveBeenCalledTimes(6);
+    expect(harness.runSessionTurn).toHaveBeenCalledTimes(10);
     const rerunDetail = await harness.service.getRunDetail({ runId: rerun.id });
-    expect(rerunDetail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(3);
+    expect(rerunDetail?.reviewerRuns).toHaveLength(5);
+    expect(rerunDetail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt")).toHaveLength(5);
 
     const rerunRecord = (await harness.service.listRuns()).find((entry) => entry.id === rerun.id);
     expect(rerunRecord?.target).toEqual({
