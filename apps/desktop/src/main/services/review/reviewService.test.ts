@@ -529,7 +529,7 @@ function buildPublicationResult(args: {
 }
 
 function createHarness(args: {
-  outputs: string[];
+  outputs: Array<string | ((prompt: string) => string)>;
   targetLabel?: string;
   publicationTarget?: ReviewPublicationDestination | null;
   materializedTarget?: Partial<{
@@ -557,8 +557,11 @@ function createHarness(args: {
   }));
   mockContextBuilder.buildContext.mockResolvedValue(makeContextPacket());
 
-  const runSessionTurn = vi.fn(async () => {
-    const outputText = queuedOutputs.shift() ?? makeOutput("No specialist findings.", []);
+  const runSessionTurn = vi.fn(async (turnArgs?: { text?: string }) => {
+    const nextOutput = queuedOutputs.shift();
+    const outputText = typeof nextOutput === "function"
+      ? nextOutput(turnArgs?.text ?? "")
+      : (nextOutput ?? makeOutput("No specialist findings.", []));
     return {
       sessionId: `session-review-${sessionCount}`,
       provider: "codex",
@@ -1342,6 +1345,51 @@ describe("reviewService", () => {
     expect(detail?.findings[0]?.evidence.some((entry) => entry.artifactId && entry.artifactId.length > 0)).toBe(true);
     const artifactKinds = new Set(detail?.findings[0]?.evidence.map((entry) => entry.artifactId).filter(Boolean));
     expect(artifactKinds.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps checks findings backed by validation artifacts without file anchors", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No diff-risk issues.", []),
+        makeOutput("No cross-file issues.", []),
+        (prompt) => {
+          const validationArtifactId = prompt.match(/validation_signals artifact id: ([^\n]+)/)?.[1]?.trim();
+          if (!validationArtifactId) throw new Error("Expected checks prompt to include validation artifact id.");
+          return makeOutput("Validation artifact-backed failure.", [
+            makeFinding({
+              title: "Unit validation failed after the review changes",
+              severity: "medium",
+              body: "The validation artifact reports a failing unit check for this review run.",
+              confidence: 0.82,
+              filePath: null,
+              line: null,
+              evidence: [{
+                kind: "artifact",
+                summary: "The validation_signals artifact contains the failing unit check.",
+                filePath: null,
+                line: null,
+                quote: null,
+                artifactId: validationArtifactId,
+              }],
+            }),
+          ]);
+        },
+      ],
+    });
+
+    const run = await harness.start();
+    await waitFor(() => harness.service.listRuns(), (runs) => runs[0]?.status === "completed");
+
+    const detail = await harness.service.getRunDetail({ runId: run.id });
+    expect(detail?.findings).toHaveLength(1);
+    expect(detail?.findings[0]?.sourcePass).toBe("adjudicated");
+    expect(detail?.findings[0]?.originatingPasses).toEqual(["checks-and-tests"]);
+    expect(detail?.findings[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "artifact", artifactId: expect.any(String) }),
+      ]),
+    );
+    expect(detail?.summary).not.toContain("filtered out during adjudication");
   });
 
   it("uses late-stage regression when overlapping passes disagree on ADE-native class", async () => {

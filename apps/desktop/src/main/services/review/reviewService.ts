@@ -1144,6 +1144,18 @@ function hasArtifactEvidence(evidence: ReviewEvidence[], artifactIds: string[]):
   return evidence.some((entry) => entry.kind === "artifact" && entry.artifactId && allowed.has(entry.artifactId));
 }
 
+function hasChecksValidationArtifactEvidence(args: {
+  group: PassCandidateFinding[];
+  context: ReviewContextPacket;
+  artifactIds: ReviewContextArtifactIds;
+}): boolean {
+  if (args.context.validation.payload.signals.length === 0) return false;
+  return args.group.some((candidate) =>
+    candidate.passKey === "checks-and-tests"
+    && hasArtifactEvidence(candidate.evidence, [args.artifactIds.validationArtifactId]),
+  );
+}
+
 function buildContextArtifactEvidence(args: {
   group: PassCandidateFinding[];
   context: ReviewContextPacket;
@@ -1299,7 +1311,13 @@ function adjudicatePassFindings(args: {
       passCount: passes.length,
     });
 
-    if (!hasConcreteEvidence(mergedEvidence)) {
+    const hasConcreteAdjudicationEvidence = hasConcreteEvidence(mergedEvidence)
+      || hasChecksValidationArtifactEvidence({
+        group,
+        context: args.context,
+        artifactIds: args.artifactIds,
+      });
+    if (!hasConcreteAdjudicationEvidence) {
       rejected.push({
         candidateIds: group.map((candidate) => candidate.id),
         passKeys: passes,
