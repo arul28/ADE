@@ -1,7 +1,7 @@
 export type BufferedEvent = {
   id: number;
   timestamp: string;
-  category: "orchestrator" | "dag_mutation" | "runtime" | "mission";
+  category: "orchestrator" | "dag_mutation" | "runtime" | "mission" | "pty";
   payload: Record<string, unknown>;
 };
 

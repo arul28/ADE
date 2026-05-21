@@ -7,6 +7,9 @@ struct ADEApp: App {
   @StateObject private var syncService = SyncService()
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
+  /// Pending cross-machine deep link awaiting a "Send to Mac" confirmation.
+  /// Driven by `.adeSendToMacRequested` notifications from `DeepLinkRouter`.
+  @State private var sendToMacTarget: SendToMacTarget?
 
   var body: some Scene {
     WindowGroup {
@@ -31,6 +34,28 @@ struct ADEApp: App {
         .onOpenURL { url in
           DeepLinkRouter.shared.handle(url)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .adeSendToMacRequested)) { note in
+          // Parse the URL out of the payload posted by `DeepLinkRouter`. We
+          // accept either a `URL` or a `String` so callers don't have to
+          // serialise the same value twice.
+          let url: URL?
+          if let direct = note.userInfo?["url"] as? URL {
+            url = direct
+          } else if let string = note.userInfo?["url"] as? String {
+            url = URL(string: string)
+          } else {
+            url = nil
+          }
+          guard let resolved = url else { return }
+          sendToMacTarget = SendToMacTarget(url: resolved)
+        }
+        .sheet(item: $sendToMacTarget) { target in
+          SendToMacCard(target: target) {
+            sendToMacTarget = nil
+          }
+          .environmentObject(syncService)
+        }
     }
   }
 }
+

@@ -119,6 +119,13 @@ export function summarizeInlineText(value: string, maxChars = 120): string {
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
 
+function isLowValueHookNotice(event: Extract<AgentChatEvent, { type: "system_notice" }>): boolean {
+  if (event.noticeKind !== "hook") return false;
+  const message = event.message.trim();
+  return /^hook:\s+.+\s+started$/i.test(message)
+    || message.toLowerCase() === "trimmed large tool output before sending it back to claude.";
+}
+
 const LOCALHOST_URL_PATTERN =
   /https?:\/\/(?<host>localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::(?<port>\d{1,5}))?(?<suffix>[^\s<>"']*)?/giu;
 
@@ -590,8 +597,13 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
-  if (event.type === "system_notice" && event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
-    return;
+  if (event.type === "system_notice") {
+    if (event.noticeKind === "info" && event.message.trim().toLowerCase() === "session ready") {
+      return;
+    }
+    if (isLowValueHookNotice(event)) {
+      return;
+    }
   }
 
   if (event.type === "delegation_state") {

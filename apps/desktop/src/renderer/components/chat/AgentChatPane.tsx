@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, ArrowBendUpRight, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -99,6 +99,7 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
+import { QuickRunMenu } from "../run/QuickRunMenu";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
@@ -152,6 +153,11 @@ const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
+
+const chatToolbarActionBase =
+  "relative inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors";
+const chatToolbarActionIdle =
+  "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
 const AUTO_CREATE_LANE_OPTION = {
@@ -6219,7 +6225,7 @@ export function AgentChatPane({
 
         {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-4">
           {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
@@ -6233,10 +6239,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   iosSimulatorOpen
                     ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setIosSimulatorOpen((current) => {
@@ -6253,6 +6259,7 @@ export function AgentChatPane({
                 aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
                 aria-pressed={iosSimulatorOpen}
               >
+                <span>Simulator</span>
                 <DeviceMobile size={13} weight={iosSimulatorOpen ? "fill" : "regular"} />
                 {iosElementContextItems.length ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-cyan-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -6275,10 +6282,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   appControlOpen
                     ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setAppControlOpen((current) => {
@@ -6294,6 +6301,7 @@ export function AgentChatPane({
                 aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
                 aria-pressed={appControlOpen}
               >
+                <span>Desktop</span>
                 <Desktop size={13} weight={appControlOpen ? "fill" : "regular"} />
                 {appControlContextItems.length ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -6302,6 +6310,15 @@ export function AgentChatPane({
                 ) : null}
               </button>
             </SmartTooltip>
+          ) : null}
+          {showWorkspaceChrome && laneId ? (
+            <QuickRunMenu
+              laneId={laneId}
+              compact
+              label="Run"
+              align="end"
+              triggerStyle={{ height: 28, padding: "0 10px" }}
+            />
           ) : null}
           {showWorkspaceChrome && laneId ? (
             <SmartTooltip
@@ -6316,10 +6333,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   proofDrawerOpen
                     ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setProofDrawerOpen((current) => {
@@ -6337,6 +6354,7 @@ export function AgentChatPane({
                 aria-label={proofDrawerOpen ? "Close proof drawer" : "Open proof drawer"}
                 aria-pressed={proofDrawerOpen}
               >
+                <span>Proof</span>
                 <Cube size={13} weight={proofDrawerOpen ? "fill" : "regular"} />
                 {proofArtifactCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -6357,10 +6375,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   subagentPaneOpen
                     ? "border-amber-300/22 bg-amber-500/10 text-amber-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setSubagentPaneOpen((current) => {
@@ -6378,6 +6396,7 @@ export function AgentChatPane({
                 aria-label={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
                 aria-pressed={subagentPaneOpen}
               >
+                <span>Agents</span>
                 <TreeStructure size={13} weight={subagentPaneOpen ? "fill" : "regular"} />
                 <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                   {selectedSubagentSnapshots.length}
@@ -6447,7 +6466,10 @@ export function AgentChatPane({
             <div ref={handoffRef} className="relative">
               <button
                 type="button"
-                className="inline-flex items-center rounded-lg border border-violet-400/[0.12] bg-violet-500/[0.04] px-2.5 py-1 font-sans text-[10px] font-medium text-violet-200/60 transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40"
+                className={cn(
+                  chatToolbarActionBase,
+                  "border-violet-400/[0.12] bg-violet-500/[0.04] text-violet-200/60 hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40",
+                )}
                 onClick={() => {
                   setError(null);
                   setHandoffOpen((current) => !current);
@@ -6455,7 +6477,8 @@ export function AgentChatPane({
                 disabled={handoffBlocked}
                 title={handoffButtonTitle}
               >
-                Handoff
+                <span>Handoff</span>
+                <ArrowBendUpRight size={13} weight="regular" />
               </button>
               {handoffOpen ? (
                 <div data-chat-handoff-menu="true" className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">

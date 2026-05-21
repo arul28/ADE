@@ -1016,6 +1016,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       "/work": "tab-tint-work",
       "/graph": "tab-tint-graph",
       "/prs": "tab-tint-prs",
+      "/review": "tab-tint-review",
       "/history": "tab-tint-history",
       "/automations": "tab-tint-automations",
       "/missions": "tab-tint-missions",

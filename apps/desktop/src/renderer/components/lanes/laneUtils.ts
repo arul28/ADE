@@ -1,6 +1,4 @@
 import type {
-  ConflictChip,
-  ConflictStatus,
   LaneSummary
 } from "../../../shared/types";
 import type { PaneSplit } from "../ui/PaneTilingLayout";
@@ -118,20 +116,6 @@ export function laneMatchesFilter(lane: LaneSummary, isPinned: boolean, query: s
   if (isMissionLaneHiddenByDefault(lane) && !includesMissionLanes) return false;
   if (tokens.length === 0) return true;
   return tokens.every((token) => matchesLaneFilterToken(lane, isPinned, token));
-}
-
-/* ---- Conflict helpers ---- */
-
-export function conflictDotClass(status: ConflictStatus["status"] | undefined): string {
-  if (status === "conflict-active") return "bg-red-600";
-  if (status === "conflict-predicted") return "bg-orange-500";
-  if (status === "behind-base") return "bg-amber-500";
-  if (status === "merge-ready") return "bg-emerald-500";
-  return "bg-muted-fg";
-}
-
-export function chipLabel(kind: ConflictChip["kind"]): string {
-  return kind === "high-risk" ? "high risk" : "new overlap";
 }
 
 /* ---- Default tiling layouts ---- */

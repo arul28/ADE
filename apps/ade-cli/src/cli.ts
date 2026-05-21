@@ -12,6 +12,10 @@ import {
   CursorCloudUsageError,
   runCursorCloud,
 } from "./cursorCloud";
+import {
+  CliDeeplinkUsageError,
+  runDeeplinkCommand,
+} from "./commands/deeplinks";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   findAdeManagedWorktreeRoot,
@@ -131,7 +135,8 @@ type CliPlan =
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "init"; targetPath: string | null }
-  | { kind: "cursor-cloud"; rest: string[] };
+  | { kind: "cursor-cloud"; rest: string[] }
+  | { kind: "deeplink"; rest: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -359,6 +364,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade.app deeplink via the OS
+    $ ade link lane | branch | pr | linear-issue    Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -789,6 +797,40 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --app-name <name>       macOS app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
 `,
+  open: `${ADE_BANNER}
+  ADE Open
+
+  Hand an "ade://" or "https://ade.app/open?..." deeplink to the OS so the
+  installed ADE desktop receives it (single-instance lock focuses the existing
+  window). Also accepts the Linear coding-tool hand-off form.
+
+    $ ade open ade://lane/<lane-uuid>
+    $ ade open ade://repo/<owner>/<repo>/branch/<branch>?pr=42
+    $ ade open ade://pr/<owner>/<repo>/<number>
+    $ ade open ade://linear-issue/ADE-123?branch=arul/ade-123-fix
+    $ ade open https://ade.app/open?type=lane&id=<lane-uuid>
+    $ ade open --linear-issue ADE-123 --branch arul/ade-123-fix
+
+  Flags:
+    --linear-issue <id>     Linear issue identifier; routes to the matching lane.
+    --branch <branch>       Linear-generated branch hint passed alongside --linear-issue.
+`,
+  link: `${ADE_BANNER}
+  ADE Link
+
+  Build a shareable deeplink URL for a lane, branch, PR, or Linear issue.
+  The URL is printed and (unless --no-clipboard) copied to the clipboard.
+
+    $ ade link lane <lane-uuid>
+    $ ade link branch <owner/repo> <branch> [--pr <number>]
+    $ ade link pr <owner/repo> <number>
+    $ ade link linear-issue <ADE-123> [--branch <branch>]
+    $ ade link <url>                                Round-trip parse + re-emit a deeplink
+
+  Flags:
+    --ade           Emit the custom "ade://" form. Defaults to the https mirror.
+    --no-clipboard  Print the URL but do not copy it to the system clipboard.
+`,
   runtime: `${ADE_BANNER}
   ADE Runtime
 
@@ -868,6 +910,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Keys:
     ctrl-o        Open or focus lanes and chats
     ctrl-p        Open or focus details
+    ctrl-g        Split chat: add another chat tile
+    ctrl-w        Split chat: close focused tile
+    tab           Split chat: cycle focused tile
     shift-tab     Cycle pane focus
     esc           Return or cancel the active pane
     ?             Help when it is the first prompt character
@@ -1360,6 +1405,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade linear sync queue --text                  List sync queue items
     $ ade linear sync resolve --queue-item <id> --action approve
     $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
+    $ ade linear install                            Register ADE as the "Open in coding tool" target
+    $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
 `,
   flow: `${ADE_BANNER}
   Flow policy
@@ -8990,6 +9037,22 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "desktop") {
     return { kind: "desktop", rest: args };
   }
+  if (primary === "open" || primary === "link") {
+    // Deeplink-related subcommands. We need the verb back so the inner
+    // dispatcher can branch on it; reconstruct rest accordingly.
+    return { kind: "deeplink", rest: [primary, ...args] };
+  }
+  if (primary === "linear") {
+    // `ade linear install` is the deeplink installer; every other `ade linear`
+    // subcommand (workflows, sync, quick-view, route, picker-data, ...) belongs
+    // to buildLinearPlan below. Only route to the deeplink handler when the
+    // first positional looks like "install". Use a non-mutating peek so
+    // buildLinearPlan still sees the original args.
+    const linearSubPeek = args.find((arg) => arg !== "--" && !arg.startsWith("-"));
+    if (linearSubPeek === "install") {
+      return { kind: "deeplink", rest: [primary, ...args] };
+    }
+  }
   if (primary === "runtime") {
     return { kind: "runtime", rest: args };
   }
@@ -13417,6 +13480,17 @@ async function runCli(
         output: formatOutput(result, parsed.options, undefined),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
+    }
+    if (plan.kind === "deeplink") {
+      try {
+        const result = runDeeplinkCommand(plan.rest);
+        return { output: result.output, exitCode: result.exitCode };
+      } catch (error) {
+        if (error instanceof CliDeeplinkUsageError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);

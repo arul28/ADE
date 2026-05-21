@@ -473,7 +473,7 @@ export function LinearIssueBrowser({
             >
               <span>All issues</span>
               <span className="text-[10px] text-muted-fg/50">
-                {quickView?.organization?.createdIssueCount?.toLocaleString() ?? ""}
+                {issues.length > 0 ? `${issues.length}${pageInfo.hasNextPage ? "+" : ""}` : ""}
               </span>
             </button>
           </div>

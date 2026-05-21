@@ -114,16 +114,15 @@ export function CodexOpenInCliButton({ sessionId, onUseAdeTerminal }: CodexOpenI
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-sans text-[10px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50",
+          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50",
           open
             ? "border-violet-400/20 bg-violet-500/[0.08] text-violet-200/80"
             : "border-white/[0.08] bg-white/[0.03] text-fg/45 hover:border-white/[0.12] hover:text-fg/65",
         )}
         title="Open this Codex thread in the Codex CLI"
       >
-        <Terminal size={12} weight={open ? "fill" : "regular"} />
-        <span>Open in Codex CLI</span>
-        <ArrowSquareOut size={9} weight="bold" className="opacity-60" />
+        <span>Codex</span>
+        <Terminal size={13} weight={open ? "fill" : "regular"} />
       </button>
 
       {open ? (

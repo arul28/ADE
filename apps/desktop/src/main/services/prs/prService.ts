@@ -149,6 +149,7 @@ import {
   buildLinearPrTitle,
   ensureLinearPrReference,
 } from "../../../shared/linearMagicWords";
+import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -3460,15 +3461,21 @@ export function createPrService({
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
     }
-    const prBody = lane.linearIssue
-      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true, { preserveExisting: false })
-      : args.body;
-
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
     }
 
     const repo = await githubService.getRepoOrThrow();
+    const linearAdjustedBody = lane.linearIssue
+      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true, { preserveExisting: false })
+      : args.body;
+    // Append the branded "Open in ADE" footer (branch link only at this point;
+    // we'll PATCH the PR body with the PR-number-aware variant once we know it).
+    const prBody = ensureAdeDeeplinkFooter(linearAdjustedBody, {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      branch: headBranch,
+    });
     const createdAt = nowIso();
     let created: { data: any; response: Response | null };
     try {
@@ -3503,33 +3510,39 @@ export function createPrService({
       if (existingPr) {
         logger.info("prs.create_existing_mapped", { headBranch, baseBranch, prNumber: Number(existingPr?.number) || null });
         // When we adopt an already-existing PR, ensure its body carries the
-        // Linear `Refs`/`Fixes` reference so close-on-merge / linkage works
-        // even though we couldn't inject it via the initial POST /pulls call.
-        if (lane.linearIssue) {
-          const existingPrNumber = Number(existingPr?.number);
-          if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
-            const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
-            const closeOnMerge = args.closeLinearIssueOnMerge === true;
-            const patchedBody = ensureLinearPrReference(
-              existingBody,
-              lane.linearIssue,
-              closeOnMerge,
-              closeOnMerge ? { preserveExisting: false } : undefined,
-            );
-            if (patchedBody !== existingBody) {
-              try {
-                await githubService.apiRequest({
-                  method: "PATCH",
-                  path: `/repos/${repo.owner}/${repo.name}/pulls/${existingPrNumber}`,
-                  body: { body: patchedBody },
-                });
-                existingPr.body = patchedBody;
-              } catch (patchError) {
-                logger.warn("prs.adopt_linear_body_patch_failed", {
-                  prNumber: existingPrNumber,
-                  error: patchError instanceof Error ? patchError.message : String(patchError),
-                });
-              }
+        // Linear `Refs`/`Fixes` reference (so close-on-merge / linkage works)
+        // and the branded "Open in ADE" deeplink footer.
+        const existingPrNumber = Number(existingPr?.number);
+        if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
+          const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
+          const closeOnMerge = args.closeLinearIssueOnMerge === true;
+          let patchedBody = lane.linearIssue
+            ? ensureLinearPrReference(
+                existingBody,
+                lane.linearIssue,
+                closeOnMerge,
+                closeOnMerge ? { preserveExisting: false } : undefined,
+              )
+            : existingBody;
+          patchedBody = ensureAdeDeeplinkFooter(patchedBody, {
+            repoOwner: repo.owner,
+            repoName: repo.name,
+            branch: headBranch,
+            prNumber: existingPrNumber,
+          });
+          if (patchedBody !== existingBody) {
+            try {
+              await githubService.apiRequest({
+                method: "PATCH",
+                path: `/repos/${repo.owner}/${repo.name}/pulls/${existingPrNumber}`,
+                body: { body: patchedBody },
+              });
+              existingPr.body = patchedBody;
+            } catch (patchError) {
+              logger.warn("prs.adopt_body_patch_failed", {
+                prNumber: existingPrNumber,
+                error: patchError instanceof Error ? patchError.message : String(patchError),
+              });
             }
           }
         }
@@ -3545,6 +3558,32 @@ export function createPrService({
     const prNumber = Number(pr?.number);
     if (!Number.isFinite(prNumber) || prNumber <= 0) {
       throw new Error("GitHub returned an invalid PR number.");
+    }
+
+    // Now that we know the PR number, re-render the deeplink footer so the PR
+    // link is present. The footer is idempotent: if the rendered output is
+    // unchanged (rare — happens when prBody was rebuilt elsewhere), we skip.
+    const currentBody = typeof pr?.body === "string" ? pr.body : prBody;
+    const enrichedBody = ensureAdeDeeplinkFooter(currentBody, {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      branch: headBranch,
+      prNumber,
+    });
+    if (enrichedBody !== currentBody) {
+      try {
+        await githubService.apiRequest({
+          method: "PATCH",
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+          body: { body: enrichedBody },
+        });
+        if (pr) pr.body = enrichedBody;
+      } catch (patchError) {
+        logger.warn("prs.deeplink_footer_patch_failed", {
+          prNumber,
+          error: patchError instanceof Error ? patchError.message : String(patchError),
+        });
+      }
     }
 
     if (args.labels?.length) {

@@ -36,10 +36,18 @@ apps/ios/
 │   │   │                            # strip is hidden and individual screens
 │   │   │                            # can hide the custom bar via
 │   │   │                            # `adeRootTabBarHidden()`
-│   │   ├── DeepLinkRouter.swift     # ade://session/<id> + ade://pr/<n> URL handler
-│   │   │                            # plus notification userInfo dispatch
-│   │   │                            # (sessionId / prId / prNumber → prId via
-│   │   │                            #  WorkspaceSnapshot lookup)
+│   │   ├── DeepLinkRouter.swift     # ade:// URL handler. ade://session/<id>,
+│   │   │                            # ade://pr/<n>, and ade://pr/<owner>/<repo>/<num>
+│   │   │                            # flip tabs via .adeDeepLinkRequested.
+│   │   │                            # ade://lane/<uuid> and
+│   │   │                            # ade://repo/<owner>/<repo>/branch/<branch>
+│   │   │                            # are local-only desktop concepts — they
+│   │   │                            # post .adeSendToMacRequested instead so the
+│   │   │                            # SendToMacCard sheet can bounce the URL to
+│   │   │                            # a paired host via the deeplinks.open sync
+│   │   │                            # command. Also dispatches notification
+│   │   │                            # userInfo (sessionId / prId / prNumber → prId
+│   │   │                            # via WorkspaceSnapshot lookup).
 │   │   └── NotificationCategories.swift # UNNotificationCategory / UNNotificationAction set
 │   ├── Models/
 │   │   ├── RemoteModels.swift       # Codable structs mirroring shared types

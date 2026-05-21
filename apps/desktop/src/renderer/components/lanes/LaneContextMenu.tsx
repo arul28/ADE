@@ -4,6 +4,21 @@ import { revealLabel } from "../../lib/platform";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
+import { buildDeeplink } from "../../../shared/deeplinks";
+
+function branchNameFromRef(ref: string | null | undefined): string {
+  if (!ref) return "";
+  return ref.replace(/^refs\/heads\//, "");
+}
+
+async function fetchRepoForCopy(): Promise<{ owner: string; name: string } | null> {
+  try {
+    const status = await window.ade.github.getRemoteStatus();
+    return status.repo ?? null;
+  } catch {
+    return null;
+  }
+}
 
 const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -154,6 +169,66 @@ export function LaneContextMenu({
               }}
             >
               Copy Path
+            </HoverButton>
+          ) : null}
+        </>
+      ) : null}
+
+      {ctxLane ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <HoverButton
+            style={menuItemStyle}
+            onClick={() => {
+              onClose();
+              const url = buildDeeplink(
+                { kind: "lane", laneId: laneContextMenu.laneId },
+                { form: "ade" },
+              );
+              window.ade.app.writeClipboardText(url).catch(() => {});
+            }}
+          >
+            Copy ADE Lane Link
+          </HoverButton>
+          {branchNameFromRef(ctxLane.branchRef) ? (
+            <HoverButton
+              style={menuItemStyle}
+              onClick={() => {
+                onClose();
+                const branch = branchNameFromRef(ctxLane.branchRef);
+                void fetchRepoForCopy().then((repo) => {
+                  if (!repo) {
+                    // No GitHub origin — fall back to lane link as the best we can offer.
+                    const fallback = buildDeeplink(
+                      { kind: "lane", laneId: laneContextMenu.laneId },
+                      { form: "ade" },
+                    );
+                    return window.ade.app.writeClipboardText(fallback).catch(() => {});
+                  }
+                  const url = buildDeeplink({
+                    kind: "branch",
+                    repoOwner: repo.owner,
+                    repoName: repo.name,
+                    branch,
+                  });
+                  return window.ade.app.writeClipboardText(url).catch(() => {});
+                });
+              }}
+            >
+              Copy Branch Link (Cross-Machine)
+            </HoverButton>
+          ) : null}
+          {ctxLane.linearIssue?.url ? (
+            <HoverButton
+              style={menuItemStyle}
+              onClick={() => {
+                const linearUrl = ctxLane.linearIssue?.url;
+                onClose();
+                if (!linearUrl) return;
+                window.ade.app.writeClipboardText(linearUrl).catch(() => {});
+              }}
+            >
+              Copy Linear Issue Link
             </HoverButton>
           ) : null}
         </>

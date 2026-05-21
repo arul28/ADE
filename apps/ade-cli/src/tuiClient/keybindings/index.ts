@@ -37,6 +37,7 @@ const SUPPORTED_ACTION_VALUES = [
   "app:help",
   "app:clear",
   "app:quit",
+  "app:copyAdeDeeplink",
   "history:search",
   "history:previous",
   "history:next",

@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { theme } from "../theme";
 import type { AdeCodeProvider } from "../types";
+import { gridMiniMapText } from "./GridMiniMap";
 
 const TOKEN_BAR_CELLS = 10;
 
@@ -94,6 +95,8 @@ export function FooterControls({
   planMode,
   terminalControlAvailable,
   terminalControlActive,
+  multiViewActive,
+  multiViewMap,
 }: {
   provider?: AdeCodeProvider | null;
   providerLocked?: boolean;
@@ -111,6 +114,8 @@ export function FooterControls({
   planMode?: boolean;
   terminalControlAvailable?: boolean;
   terminalControlActive?: boolean;
+  multiViewActive?: boolean;
+  multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
 }) {
   const brand = provider ? theme.provider(provider) : null;
   const rowFocused = inlineRowFocused === true;
@@ -215,6 +220,15 @@ export function FooterControls({
             ) : null}
           </>
         ) : null}
+        {multiViewMap ? (
+          <>
+            <Text color={theme.color.t4}>{"  "}</Text>
+            <Text color={theme.color.t3}>{gridMiniMapText(multiViewMap.count, multiViewMap.focusedIndex)}</Text>
+            {multiViewMap.notice ? (
+              <Text color={theme.color.warning}>{`  ${multiViewMap.notice}`}</Text>
+            ) : null}
+          </>
+        ) : null}
       </Text>
       <Text wrap="truncate-start">
         {terminalControlActive ? (
@@ -248,7 +262,21 @@ export function FooterControls({
             <Text dimColor>{"  "}</Text>
             <Hint keyLabel="^p" action="pane" />
             <Text dimColor>{"  "}</Text>
-            <Hint keyLabel="^a" action="chat info" />
+            {!showSubagents ? (
+              <>
+                <Hint keyLabel="^a" action="chat info" />
+                <Text dimColor>{"  "}</Text>
+              </>
+            ) : null}
+            <Hint keyLabel="^g" action={multiViewActive ? "add chat" : "split"} />
+            {multiViewActive ? (
+              <>
+                <Text dimColor>{"  "}</Text>
+                <Hint keyLabel="tab" action="tile" />
+                <Text dimColor>{"  "}</Text>
+                <Hint keyLabel="^w" action="close tile" />
+              </>
+            ) : null}
             <Text dimColor>{"  "}</Text>
             <Hint keyLabel="/" action="cmds" />
             <Text dimColor>{"  "}</Text>

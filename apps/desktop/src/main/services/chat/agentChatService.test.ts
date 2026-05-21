@@ -3967,7 +3967,7 @@ describe("createAgentChatService", () => {
         event.event.type === "system_notice"
         && event.event.noticeKind === "hook"
         && event.event.message.includes("Trimmed large tool output"),
-      )).toBe(true);
+      )).toBe(false);
     });
 
     it("emits failed tool results from PostToolUseFailure hooks", async () => {

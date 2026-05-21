@@ -653,7 +653,7 @@ describe("local runtime connection pool", () => {
         {
           id: 12,
           timestamp: "2026-05-10T12:00:00.000Z",
-          category: "runtime",
+          category: "pty",
           payload: { type: "pty_data", event: { ptyId: "pty-1", data: "hello" } },
         },
         { id: "bad", timestamp: "nope", category: "runtime", payload: {} },
@@ -685,7 +685,7 @@ describe("local runtime connection pool", () => {
     const result = await pool.streamEventsForRoot(rootPath, {
       cursor: 7.5,
       limit: 2,
-      category: "runtime",
+      category: "pty",
     });
 
     expect(call).toHaveBeenCalledWith(
@@ -696,7 +696,7 @@ describe("local runtime connection pool", () => {
         arguments: {
           cursor: 7,
           limit: 2,
-          category: "runtime",
+          category: "pty",
         },
       },
       { timeoutMs: 2_000 },
@@ -706,7 +706,7 @@ describe("local runtime connection pool", () => {
         {
           id: 12,
           timestamp: "2026-05-10T12:00:00.000Z",
-          category: "runtime",
+          category: "pty",
           payload: { type: "pty_data", event: { ptyId: "pty-1", data: "hello" } },
         },
       ],

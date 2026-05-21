@@ -368,6 +368,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
         });
         invalidateSessionListCache();
+        // Patch the local sessions list with the freshly-resumed snapshot so
+        // the Work view flips from ClosedCliSessionSurface to the live
+        // TerminalView immediately. Without this the user sees the frozen
+        // pre-resume snapshot until the next refresh round-trip completes —
+        // and the PTY data events stream to a TerminalView that hasn't been
+        // mounted yet.
+        if (result.session) {
+          work.upsertSessionSnapshot(result.session);
+        }
         try {
           await work.refresh({ showLoading: false, force: true });
         } catch {

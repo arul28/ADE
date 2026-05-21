@@ -9,18 +9,11 @@ export const laneWorkPaneHighlightsTour: Tour = {
   steps: [
     {
       id: "h.lwp.what",
-      target: "",
+      target: '[data-tour="work.viewArea"]',
       title: "Lane work pane",
       body: "Work inside a lane — chats, CLI tools, and shells all run in that lane's worktree, nothing else.",
       docUrl: docs.chatOverview,
-    },
-    {
-      id: "h.lwp.entry",
-      target: '[data-tour="work.entryOptions"]',
-      title: "Three ways in",
-      body: "New Chat talks to a worker. CLI Tool wraps commands in AI. New Shell drops you into a terminal.",
-      docUrl: docs.terminals,
-      placement: "bottom",
+      placement: "top",
     },
     {
       id: "h.lwp.next",

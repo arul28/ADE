@@ -730,6 +730,8 @@ function HelpPane() {
       <Text color={theme.color.t3} dimColor>in the row: ← → moves between cells, ↓ cycles values</Text>
       <Text color={theme.color.t3} dimColor>/model opens the model picker · /info opens chat info</Text>
       <Text color={theme.color.t3} dimColor>ctrl-o opens or focuses lanes and chats</Text>
+      <Text color={theme.color.t3} dimColor>ctrl-g starts split chat add-mode; enter adds, esc cancels</Text>
+      <Text color={theme.color.t3} dimColor>in split chat: tab focuses tiles, ctrl-w closes the focused tile</Text>
       <Text color={theme.color.t3} dimColor>ctrl-p opens or focuses info · ctrl-a toggles chat info</Text>
       <Text color={theme.color.t3} dimColor>shift-tab cycles pane focus · esc closes the active side pane</Text>
       <Text color={theme.color.t3} dimColor>ctrl-c interrupts a running chat; press again to quit</Text>

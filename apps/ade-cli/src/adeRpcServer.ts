@@ -1521,7 +1521,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission"] }
+        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission", "pty"] }
       }
     }
   },
@@ -3088,6 +3088,125 @@ function requireLaneIdForTool(
     );
   }
   return laneId;
+}
+
+function isTerminalSessionSummaryLike(value: unknown): value is TerminalSessionSummary {
+  if (!isRecord(value)) return false;
+  return Boolean(asOptionalTrimmedString(value.id) && asOptionalTrimmedString(value.laneId));
+}
+
+function ptyAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+}
+
+function listPtySessionsForAuthorization(runtime: AdeRuntime): TerminalSessionSummary[] {
+  try {
+    const rows = runtime.ptyService.list({});
+    return Array.isArray(rows) ? rows.filter(isTerminalSessionSummaryLike) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getPtySessionForAuthorization(runtime: AdeRuntime, sessionId: string | null): TerminalSessionSummary | null {
+  if (!sessionId) return null;
+  try {
+    const session = runtime.sessionService.get(sessionId);
+    return isTerminalSessionSummaryLike(session) ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+function findPtySessionByPtyId(runtime: AdeRuntime, ptyId: string | null): TerminalSessionSummary | null {
+  if (!ptyId) return null;
+  return listPtySessionsForAuthorization(runtime).find((session) => session.ptyId === ptyId) ?? null;
+}
+
+function authorizedPtyLaneIds(runtime: AdeRuntime, session: SessionState): Set<string> {
+  const laneIds = new Set<string>();
+  const chatLaneId = resolveChatSessionLaneId(runtime, session);
+  if (chatLaneId) laneIds.add(chatLaneId);
+  const runLaneId = resolveRunContextLaneId(runtime, resolveCallerContext(session));
+  if (runLaneId) laneIds.add(runLaneId);
+  return laneIds;
+}
+
+function isPtySessionAuthorized(runtime: AdeRuntime, session: SessionState, target: TerminalSessionSummary): boolean {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return true;
+  const targetSessionId = asOptionalTrimmedString(target.id);
+  const targetLaneId = asOptionalTrimmedString(target.laneId);
+  const targetChatSessionId = asOptionalTrimmedString(target.chatSessionId);
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (
+    callerChatSessionId
+    && (callerChatSessionId === targetSessionId || callerChatSessionId === targetChatSessionId)
+  ) {
+    return true;
+  }
+  return Boolean(targetLaneId && authorizedPtyLaneIds(runtime, session).has(targetLaneId));
+}
+
+function ensurePtyCreateAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): void {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
+  const laneId = asOptionalTrimmedString(ptyArgs.laneId);
+  const requestedChatSessionId = asOptionalTrimmedString(ptyArgs.chatSessionId);
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  if (!laneId || !authorizedPtyLaneIds(runtime, session).has(laneId)) {
+    ptyAccessDenied(method);
+  }
+}
+
+function ensurePtyTargetAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): void {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
+  const ptyId = asOptionalTrimmedString(ptyArgs.ptyId);
+  const sessionId = asOptionalTrimmedString(ptyArgs.sessionId);
+  const target = findPtySessionByPtyId(runtime, ptyId) ?? getPtySessionForAuthorization(runtime, sessionId);
+  if (!target || !isPtySessionAuthorized(runtime, session, target)) {
+    ptyAccessDenied(method);
+  }
+}
+
+function listAuthorizedPtySessions(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): TerminalSessionSummary[] {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) {
+    return runtime.ptyService.list(ptyArgs as Parameters<typeof runtime.ptyService.list>[0]);
+  }
+
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  const requestedLaneId = extractLaneId(ptyArgs);
+  if (requestedLaneId && !laneIds.has(requestedLaneId)) {
+    ptyAccessDenied(method);
+  }
+  if (!callerChatSessionId && !laneIds.size) {
+    ptyAccessDenied(method);
+  }
+
+  const scopedArgs = { ...ptyArgs };
+  if (!requestedLaneId && laneIds.size === 1) {
+    scopedArgs.laneId = [...laneIds][0];
+  }
+  return runtime.ptyService
+    .list(scopedArgs as Parameters<typeof runtime.ptyService.list>[0])
+    .filter((target) => isPtySessionAuthorized(runtime, session, target));
 }
 
 async function runCtoOperatorBridgeTool(
@@ -7601,6 +7720,16 @@ async function readResource(runtime: AdeRuntime, uri: string): Promise<Record<st
   throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported resource URI: ${uri}`);
 }
 
+const APP_NAVIGATE_SUPPORTED_KINDS = new Set([
+  "work",
+  "chat",
+  "lane",
+  "pr",
+  "route",
+  "branch",
+  "linear-issue",
+]);
+
 export function createAdeRpcRequestHandler(args: {
   runtime: AdeRuntime;
   serverVersion: string;
@@ -7823,6 +7952,64 @@ export function createAdeRpcRequestHandler(args: {
       }
     }
 
+    if (method.startsWith("pty.")) {
+      const ptyArgs = safeObject(params.args ?? params.arg ?? params);
+      const ptyAction = method.slice("pty.".length);
+      if (!isAllowedAdeAction("pty", ptyAction)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      if (!callerHasRoleAtLeast(session.identity.role, "agent")) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      if (isCtoOnlyAdeAction("pty", ptyAction) && !callerHasRoleAtLeast(session.identity.role, "cto")) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      const runPtyAction = async (runner: () => Promise<unknown> | unknown): Promise<unknown> =>
+        auditActionCall(method, ptyArgs, async () => runner());
+      if (method === "pty.create") {
+        ensurePtyCreateAuthorized(runtime, session, method, ptyArgs);
+        return await runPtyAction(async () => {
+          const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
+          return {
+            ...result,
+            session: runtime.sessionService.get(result.sessionId),
+          };
+        });
+      }
+      if (method === "pty.sendToSession") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+        return await runPtyAction(() =>
+          runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]));
+      }
+      if (method === "pty.write") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+        return await runPtyAction(() => {
+          runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
+          return null;
+        });
+      }
+      if (method === "pty.resize") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+        return await runPtyAction(() => {
+          runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
+          return null;
+        });
+      }
+      if (method === "pty.dispose") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+        return await runPtyAction(() => {
+          runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
+          return null;
+        });
+      }
+      if (method === "pty.list") {
+        return await runPtyAction(() => ({
+          sessions: listAuthorizedPtySessions(runtime, session, method, ptyArgs),
+        }));
+      }
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+    }
+
     if (method.startsWith("modelPicker.")) {
       const store = getSharedModelPickerStore();
       if (method === "modelPicker.getFavorites") {
@@ -7891,7 +8078,7 @@ export function createAdeRpcRequestHandler(args: {
       if (!kind) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate requires target.kind.");
       }
-      if (kind !== "work" && kind !== "chat" && kind !== "lane" && kind !== "pr" && kind !== "route") {
+      if (!APP_NAVIGATE_SUPPORTED_KINDS.has(kind)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported app navigation target kind: ${kind}.`);
       }
       if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
@@ -7899,6 +8086,23 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (kind === "route" && !asOptionalTrimmedString(target.route)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
+      }
+      if (
+        kind === "branch"
+        && (!asOptionalTrimmedString(target.repoOwner)
+          || !asOptionalTrimmedString(target.repoName)
+          || !asOptionalTrimmedString(target.branch))
+      ) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "app/navigate target 'branch' requires repoOwner, repoName, and branch.",
+        );
+      }
+      if (kind === "linear-issue" && !asOptionalTrimmedString(target.issueIdentifier)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "app/navigate target 'linear-issue' requires issueIdentifier.",
+        );
       }
       const normalizedTarget: Record<string, unknown> = { kind };
       const sessionId = asOptionalTrimmedString(target.sessionId);
@@ -7909,6 +8113,21 @@ export function createAdeRpcRequestHandler(args: {
         const prId = asOptionalTrimmedString(target.prId);
         if (prId) normalizedTarget.prId = prId;
         if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+        const repoOwner = asOptionalTrimmedString(target.repoOwner);
+        const repoName = asOptionalTrimmedString(target.repoName);
+        if (repoOwner) normalizedTarget.repoOwner = repoOwner;
+        if (repoName) normalizedTarget.repoName = repoName;
+      }
+      if (kind === "branch") {
+        normalizedTarget.repoOwner = asOptionalTrimmedString(target.repoOwner);
+        normalizedTarget.repoName = asOptionalTrimmedString(target.repoName);
+        normalizedTarget.branch = asOptionalTrimmedString(target.branch);
+        if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+      }
+      if (kind === "linear-issue") {
+        normalizedTarget.issueIdentifier = asOptionalTrimmedString(target.issueIdentifier);
+        const branch = asOptionalTrimmedString(target.branch);
+        if (branch) normalizedTarget.branch = branch;
       }
       if (kind === "route") {
         normalizedTarget.route = asOptionalTrimmedString(target.route);

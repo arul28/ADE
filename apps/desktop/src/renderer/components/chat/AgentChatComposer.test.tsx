@@ -237,7 +237,9 @@ describe("AgentChatComposer", () => {
       }],
     });
 
-    fireEvent.click(screen.getByLabelText("Open command picker"));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "/", selectionStart: 1 },
+    });
     const statusCommand = await screen.findByText("/status");
     const menu = statusCommand.closest(".ade-chat-drawer-glass");
     const composerShell = container.querySelector("[data-chat-composer-mode]");
@@ -628,9 +630,7 @@ describe("AgentChatComposer", () => {
     expect(textbox.disabled).toBe(true);
     expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
     expect(screen.queryByLabelText("Send steer message")).toBeNull();
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Open command picker") as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.keyDown(textbox, { key: "Enter" });
 
@@ -772,7 +772,6 @@ describe("AgentChatComposer", () => {
   it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -784,7 +783,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["anthropic/claude-sonnet-4-6"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -796,7 +794,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["cursor/auto"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -808,7 +805,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["opencode/openai/gpt-5.4"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 

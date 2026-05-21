@@ -28,6 +28,8 @@ type SessionRow = {
   laneId: string;
   laneName: string;
   ptyId: string | null;
+  ownerPid: number | null;
+  ownerProcessStartedAt: string | null;
   tracked: number;
   pinned: number;
   manuallyNamed: number;
@@ -65,6 +67,8 @@ const SESSION_COLUMNS = `
   s.lane_id as laneId,
   l.name as laneName,
   s.pty_id as ptyId,
+  s.owner_pid as ownerPid,
+  s.owner_process_started_at as ownerProcessStartedAt,
   s.tracked as tracked,
   s.pinned as pinned,
   s.manually_named as manuallyNamed,
@@ -201,6 +205,17 @@ function serializeClaudeTags(tags: string[]): string | null {
   return normalized.length ? JSON.stringify(normalized) : null;
 }
 
+function normalizeOwnerPid(ownerPid: unknown): number | null {
+  if (typeof ownerPid !== "number" || !Number.isFinite(ownerPid)) return null;
+  const normalized = Math.trunc(ownerPid);
+  return normalized > 0 ? normalized : null;
+}
+
+function normalizeOwnerProcessStartedAt(startedAt: unknown): string | null {
+  const normalized = typeof startedAt === "string" ? startedAt.trim() : "";
+  return normalized.length ? normalized : null;
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -287,6 +302,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
       archivedAt: row.archivedAt ?? null,
       chatSessionId: row.chatSessionId ?? null,
+      ownerPid: normalizeOwnerPid(row.ownerPid),
+      ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
     };
   };
 
@@ -484,10 +501,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       endedAt,
       status,
       excludeToolTypes,
+      liveOwnerPids,
+      liveOwnerIdentities,
     }: {
       endedAt?: string;
       status?: TerminalSessionStatus;
       excludeToolTypes?: string[];
+      liveOwnerPids?: Set<number>;
+      liveOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
     } = {}): number {
       const normalizedExcludedToolTypes = Array.isArray(excludeToolTypes)
         ? excludeToolTypes
@@ -497,13 +518,39 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const exclusionSql = normalizedExcludedToolTypes.length
         ? ` and (tool_type is null or tool_type not in (${normalizedExcludedToolTypes.map(() => "?").join(", ")}))`
         : "";
-      const whereSql = `status = 'running'${exclusionSql}`;
-      const row = db.get<{ count: number }>(
-        `select count(1) as count from terminal_sessions where ${whereSql}`,
-        normalizedExcludedToolTypes,
+      const ownerParams = liveOwnerPids
+        ? Array.from(liveOwnerPids)
+            .map((pid) => normalizeOwnerPid(pid))
+            .filter((pid): pid is number => pid != null)
+        : [];
+      const ownerIdentities = liveOwnerIdentities
+        ? liveOwnerIdentities
+            .map((identity) => ({
+              pid: normalizeOwnerPid(identity?.pid),
+              startedAt: normalizeOwnerProcessStartedAt(identity?.startedAt),
+            }))
+            .filter((identity): identity is { pid: number; startedAt: string } => (
+              identity.pid != null && identity.startedAt != null
+            ))
+        : [];
+      const ownerIdentityParams = ownerIdentities.flatMap((identity) => [
+        identity.pid,
+        identity.startedAt,
+      ]);
+      const ownerGuardSql = liveOwnerPids === undefined
+        ? " and owner_pid is null"
+        : ownerIdentities.length
+          ? ` and (owner_pid is null or owner_process_started_at is null or not (${ownerIdentities.map(() => "(owner_pid = ? and owner_process_started_at = ?)").join(" or ")}))`
+          : ownerParams.length
+            ? ` and (owner_pid is null or owner_pid not in (${ownerParams.map(() => "?").join(", ")}))`
+          : "";
+      const whereSql = `status = 'running'${exclusionSql}${ownerGuardSql}`;
+      const params = [...normalizedExcludedToolTypes, ...(ownerIdentities.length ? ownerIdentityParams : ownerParams)];
+      const rows = db.all<{ id: string }>(
+        `select id from terminal_sessions where ${whereSql}`,
+        params,
       );
-      const count = Number(row?.count ?? 0);
-      if (!Number.isFinite(count) || count <= 0) return 0;
+      if (!rows.length) return 0;
 
       const finalEndedAt = endedAt ?? new Date().toISOString();
       const finalStatus = status ?? "disposed";
@@ -513,10 +560,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
           finalEndedAt,
           null,
           finalStatus,
-          ...normalizedExcludedToolTypes,
+          ...params,
         ],
       );
-      return count;
+      for (const row of rows) {
+        if (typeof row.id === "string" && row.id.trim().length) {
+          emitChanged({ sessionId: row.id, reason: "meta-updated" });
+        }
+      }
+      return rows.length;
     },
 
     get(sessionId: string): TerminalSessionDetail | null {
@@ -643,6 +695,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeCommand,
       resumeMetadata,
       chatSessionId,
+      ownerPid,
+      ownerProcessStartedAt,
     }: {
       sessionId: string;
       laneId: string;
@@ -655,6 +709,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeCommand?: string | null;
       resumeMetadata?: TerminalResumeMetadata | null;
       chatSessionId?: string | null;
+      ownerPid?: number | null;
+      ownerProcessStartedAt?: string | null;
     }): void {
       const normalizedToolType = normalizeToolType(toolType);
       const normalizedMetadata = normalizeResumeMetadata(resumeMetadata);
@@ -664,12 +720,14 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const normalizedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
         ? chatSessionId.trim()
         : null;
+      const normalizedOwnerPid = normalizeOwnerPid(ownerPid);
+      const normalizedOwnerProcessStartedAt = normalizeOwnerProcessStartedAt(ownerProcessStartedAt);
       db.run(
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json, chat_session_id
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json, chat_session_id, owner_pid, owner_process_started_at
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?, ?, ?, ?)
         `,
         [
           sessionId,
@@ -683,6 +741,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
           normalizedResumeCommand ?? null,
           serializeResumeMetadata(normalizedMetadata),
           normalizedChatSessionId,
+          normalizedOwnerPid,
+          normalizedOwnerProcessStartedAt,
         ]
       );
       emitChanged({ sessionId, reason: "created" });
@@ -700,6 +760,8 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     reopen(sessionId: string): void {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return;
       db.run(
         `
           update terminal_sessions
@@ -708,13 +770,23 @@ export function createSessionService({ db }: { db: AdeDb }) {
               exit_code = null
           where id = ?
         `,
-        [sessionId]
+        [trimmed]
       );
+      // Without this, the renderer never learns the session went from
+      // stopped/ended back to running, so the Work tab keeps showing the
+      // frozen ClosedCliSessionSurface even though the PTY is live and
+      // streaming output that the TUI receives.
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     },
 
-    reattach(args: { sessionId: string; ptyId: string | null; startedAt: string }): TerminalSessionSummary | null {
+    reattach(args: { sessionId: string; ptyId: string | null; startedAt: string; ownerPid?: number | null; ownerProcessStartedAt?: string | null }): TerminalSessionSummary | null {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       if (!sessionId) return null;
+      const ownerPid = normalizeOwnerPid(args.ownerPid);
+      const ownerProcessStartedAt = normalizeOwnerProcessStartedAt(args.ownerProcessStartedAt);
+      const ownerSql = args.ownerPid !== undefined || args.ownerProcessStartedAt !== undefined
+        ? ",\n              owner_pid = ?,\n              owner_process_started_at = ?"
+        : "";
       db.run(
         `
           update terminal_sessions
@@ -724,12 +796,28 @@ export function createSessionService({ db }: { db: AdeDb }) {
               ended_at = null,
               exit_code = null,
               summary = null,
-              head_sha_end = null
+              head_sha_end = null${ownerSql}
           where id = ?
         `,
-        [args.ptyId, args.startedAt, sessionId],
+        args.ownerPid !== undefined || args.ownerProcessStartedAt !== undefined
+          ? [args.ptyId, args.startedAt, ownerPid, ownerProcessStartedAt, sessionId]
+          : [args.ptyId, args.startedAt, sessionId],
       );
+      // Resuming a stopped CLI session lands here (ptyService.create →
+      // reattach). The renderer needs to know so it can swap the closed
+      // snapshot surface for the live TerminalView pointed at the new ptyId.
+      emitChanged({ sessionId, reason: "meta-updated" });
       return this.get(sessionId);
+    },
+
+    setOwnerPid(sessionId: string, ownerPid: number | null, ownerProcessStartedAt?: string | null): void {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return;
+      db.run(
+        "update terminal_sessions set owner_pid = ?, owner_process_started_at = ? where id = ?",
+        [normalizeOwnerPid(ownerPid), normalizeOwnerProcessStartedAt(ownerProcessStartedAt), trimmed],
+      );
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     },
 
     setHeadShaStart(sessionId: string, sha: string): void {

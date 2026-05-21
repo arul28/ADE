@@ -131,14 +131,14 @@ describe("createEventBuffer", () => {
 
   it("preserves event category and payload through push and drain", () => {
     const buffer = createEventBuffer();
-    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "mission"];
+    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "mission", "pty"];
 
     for (const category of categories) {
       buffer.push({ timestamp: "t", category, payload: { kind: category } });
     }
 
     const result = buffer.drain(0);
-    expect(result.events).toHaveLength(4);
+    expect(result.events).toHaveLength(5);
     for (let i = 0; i < categories.length; i++) {
       expect(result.events[i]!.category).toBe(categories[i]);
       expect(result.events[i]!.payload).toEqual({ kind: categories[i] });

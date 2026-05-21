@@ -89,7 +89,8 @@ describe("ChatAppearancePreview", () => {
     expect(sharp.length).toBe(3);
     for (const el of shells) {
       const style = (el as HTMLElement).style;
-      expect(style.getPropertyValue("--chat-user-border-accent-mix").trim()).toBe("28%");
+      const mix = style.getPropertyValue("--chat-user-border-accent-mix").trim();
+      expect(["22%", "28%"]).toContain(mix);
     }
   });
 

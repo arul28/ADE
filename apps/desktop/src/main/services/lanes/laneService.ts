@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
@@ -1863,10 +1864,12 @@ export function createLaneService({
     const runtimePlacement = normalizeRuntimePlacement(args.runtimePlacement);
     const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
-    await runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
-      cwd: projectRoot,
-      timeoutMs: 60_000
-    });
+    await runGitWorktreeMutation(() =>
+      runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
+        cwd: projectRoot,
+        timeoutMs: 60_000
+      })
+    );
     linkExistingDependencyInstalls(worktreePath);
 
     db.run(
@@ -2008,6 +2011,20 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  let gitWorktreeMutationQueue: Promise<void> = Promise.resolve();
+  const gitWorktreeMutationOwner = new AsyncLocalStorage<boolean>();
+
+  const runGitWorktreeMutation = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (gitWorktreeMutationOwner.getStore()) {
+      return work();
+    }
+    const run = gitWorktreeMutationQueue.then(() => gitWorktreeMutationOwner.run(true, work));
+    gitWorktreeMutationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
 
   const pruneDeleteProgressHistory = (now = Date.now()): void => {
     for (const [laneId, progress] of deleteProgressByLaneId.entries()) {
@@ -2395,10 +2412,12 @@ export function createLaneService({
         if (!row) return;
 
         if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {
-          await runGitOrThrow(["worktree", "remove", "--force", row.worktree_path], {
-            cwd: projectRoot,
-            timeoutMs: 60_000,
-          });
+          await runGitWorktreeMutation(() =>
+            runGitOrThrow(["worktree", "remove", "--force", row.worktree_path], {
+              cwd: projectRoot,
+              timeoutMs: 60_000,
+            })
+          );
         }
 
         if (row.branch_ref) {
@@ -2551,10 +2570,12 @@ export function createLaneService({
         }
 
         // Attaching an existing branch: do NOT create a new branch, just add a worktree checkout.
-        await runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
-          cwd: projectRoot,
-          timeoutMs: 60_000
-        });
+        await runGitWorktreeMutation(() =>
+          runGitOrThrow(["worktree", "add", worktreePath, branchRef], {
+            cwd: projectRoot,
+            timeoutMs: 60_000
+          })
+        );
         worktreeAdded = true;
         linkExistingDependencyInstalls(worktreePath);
 
@@ -2657,19 +2678,23 @@ export function createLaneService({
         const cleanupErrors: string[] = [];
         if (worktreeAdded) {
           try {
-            await runGitOrThrow(["worktree", "remove", "--force", worktreePath], {
-              cwd: projectRoot,
-              timeoutMs: 60_000,
-            });
+            await runGitWorktreeMutation(() =>
+              runGitOrThrow(["worktree", "remove", "--force", worktreePath], {
+                cwd: projectRoot,
+                timeoutMs: 60_000,
+              })
+            );
           } catch (cleanupError) {
             try {
               fs.rmSync(worktreePath, { recursive: true, force: true });
               // Directory removed but git metadata may be orphaned; prune to clean up
               try {
-                await runGitOrThrow(["worktree", "prune"], {
-                  cwd: projectRoot,
-                  timeoutMs: 60_000,
-                });
+                await runGitWorktreeMutation(() =>
+                  runGitOrThrow(["worktree", "prune"], {
+                    cwd: projectRoot,
+                    timeoutMs: 60_000,
+                  })
+                );
               } catch (pruneError) {
                 cleanupErrors.push(`worktree prune failed: ${pruneError instanceof Error ? pruneError.message : String(pruneError)}`);
               }
@@ -3691,6 +3716,11 @@ export function createLaneService({
         .map(cloneLaneDeleteProgress);
     },
 
+    hasRunningDelete(): boolean {
+      pruneDeleteProgressHistory();
+      return Array.from(deleteProgressByLaneId.values()).some((progress) => progress.overallStatus === "running");
+    },
+
     async delete(
       args: DeleteLaneArgs,
       runtimeOpts?: { teardownEnv?: () => Promise<void> }
@@ -3796,6 +3826,7 @@ export function createLaneService({
 
       broadcastDeleteEvent(progress);
 
+      await runGitWorktreeMutation(async () => {
       try {
         if (hasWorktree) {
           await runStep("git_status", async () => {
@@ -3865,41 +3896,43 @@ export function createLaneService({
 
         if (hasWorktree) {
           await runStep("git_worktree_remove", async () => {
-            const removeArgs = ["worktree", "remove"];
-            if (force) removeArgs.push("--force");
-            removeArgs.push(row.worktree_path);
-            const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
-              try {
-                await removeWorktreeDirectoryWithRecovery(row.worktree_path);
-              } catch (rmError) {
-                throw new Error(
-                  `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
-                    rmError instanceof Error ? rmError.message : String(rmError)
-                  }`
-                );
+            return runGitWorktreeMutation(async () => {
+              const removeArgs = ["worktree", "remove"];
+              if (force) removeArgs.push("--force");
+              removeArgs.push(row.worktree_path);
+              const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
+                try {
+                  await removeWorktreeDirectoryWithRecovery(row.worktree_path);
+                } catch (rmError) {
+                  throw new Error(
+                    `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
+                      rmError instanceof Error ? rmError.message : String(rmError)
+                    }`
+                  );
+                }
+                await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
+                return { detail };
+              };
+              // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
+              // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
+              // state that blocks future deletes.
+              const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
+              if (removeRes.exitCode === 0) {
+                if (fs.existsSync(row.worktree_path)) {
+                  return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
+                }
+                return { detail: row.worktree_path };
               }
-              await runGitOrThrow(["worktree", "prune"], { cwd: projectRoot, timeoutMs: 30_000 });
-              return { detail };
-            };
-            // 60s — large worktrees (e.g. with node_modules) can take longer than 15s
-            // to walk; a timeout here mid-remove leaves the worktree in a half-deleted
-            // state that blocks future deletes.
-            const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
-            if (removeRes.exitCode === 0) {
-              if (fs.existsSync(row.worktree_path)) {
-                return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
-              }
-              return { detail: row.worktree_path };
-            }
-            // Recovery path: a previous failed delete (or this one's first attempt)
-            // can leave the worktree dir present without its `.git` pointer file, or
-            // the dir gone with stale metadata still registered. Either way: rm the
-            // dir if any, then prune git's metadata.
-            const original = (removeRes.stderr || removeRes.stdout || "").trim();
-            return removeResidualDirectory(
-              `${row.worktree_path} (recovered from stale state)`,
-              `git worktree remove failed (${original})`
-            );
+              // Recovery path: a previous failed delete (or this one's first attempt)
+              // can leave the worktree dir present without its `.git` pointer file, or
+              // the dir gone with stale metadata still registered. Either way: rm the
+              // dir if any, then prune git's metadata.
+              const original = (removeRes.stderr || removeRes.stdout || "").trim();
+              return removeResidualDirectory(
+                `${row.worktree_path} (recovered from stale state)`,
+                `git worktree remove failed (${original})`
+              );
+            });
           });
         }
 
@@ -3983,6 +4016,7 @@ export function createLaneService({
         finalize("failed");
         throw error;
       }
+      });
     },
 
     cancelDelete(laneId: string): { cancelled: boolean; reason?: string } {
@@ -4487,10 +4521,12 @@ export function createLaneService({
           throw new Error(`Destination path is already in use by lane '${existingTarget.name}'.`);
         }
 
-        await runGitOrThrow(["worktree", "move", currentPath, targetPath], {
-          cwd: projectRoot,
-          timeoutMs: 120_000
-        });
+        await runGitWorktreeMutation(() =>
+          runGitOrThrow(["worktree", "move", currentPath, targetPath], {
+            cwd: projectRoot,
+            timeoutMs: 120_000
+          })
+        );
       }
 
       db.run(

@@ -31,7 +31,6 @@ export type {
   ReviewResolvedCompareTarget,
   ReviewRun,
   ReviewRunArtifact,
-  ReviewRunBudgetConfig,
   ReviewRunConfig,
   ReviewRunDetail,
   ReviewRunStatus,

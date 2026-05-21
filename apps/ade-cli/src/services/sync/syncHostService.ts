@@ -321,6 +321,12 @@ type SyncHostServiceArgs = {
   laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService>;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService>;
+  /**
+   * Optional handler for the `deeplinks.open` sync command (iOS Send-to-Mac).
+   * Desktop main.ts passes a wrapper that parses the URL + dispatches via the
+   * renderer's navigation service.
+   */
+  dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
   bootstrapTokenPath?: string;
@@ -684,6 +690,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     laneTemplateService: args.laneTemplateService,
     rebaseSuggestionService: args.rebaseSuggestionService,
     autoRebaseService: args.autoRebaseService,
+    dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     logger: args.logger,
   });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));

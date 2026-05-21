@@ -206,15 +206,6 @@ function resolveBuiltinReviewModelId(): string {
 
 const DEFAULT_REVIEW_MODEL_ID = resolveBuiltinReviewModelId();
 
-const DEFAULT_BUDGETS: ReviewRunConfig["budgets"] = {
-  maxFiles: 60,
-  maxDiffChars: 180_000,
-  maxPromptChars: 220_000,
-  maxFindings: 12,
-  maxFindingsPerPass: 6,
-  maxPublishedFindings: 6,
-};
-const UNLIMITED_BUDGET_VALUE = Number.MAX_SAFE_INTEGER;
 const MANIFEST_PROMPT_FILE_LIMIT = 100;
 
 const REVIEW_PASS_ORDER: ReviewPassKey[] = [
@@ -291,14 +282,13 @@ type PassExecutionResult = {
   promptArtifactId: string;
   outputArtifactId: string;
   findingsArtifactId: string;
-  budgetTrimmedCount: number;
 };
 
 type AdjudicationRejectedFinding = {
   candidateIds: string[];
   passKeys: ReviewPassKey[];
   title: string;
-  reason: "low_evidence" | "low_signal" | "duplicate" | "budget" | "rule_policy";
+  reason: "low_evidence" | "low_signal" | "duplicate" | "rule_policy";
   detail: string;
   score: number;
 };
@@ -381,36 +371,6 @@ function mergeFindingClass(classes: Array<ReviewFindingClass | null | undefined>
     }
   }
   return null;
-}
-
-function normalizeBudgetConfig(budgets?: Partial<ReviewRunConfig["budgets"]> | null): ReviewRunConfig["budgets"] {
-  if (budgets?.unlimited === true) {
-    return {
-      unlimited: true,
-      maxFiles: UNLIMITED_BUDGET_VALUE,
-      maxDiffChars: UNLIMITED_BUDGET_VALUE,
-      maxPromptChars: UNLIMITED_BUDGET_VALUE,
-      maxFindings: UNLIMITED_BUDGET_VALUE,
-      maxFindingsPerPass: UNLIMITED_BUDGET_VALUE,
-      maxPublishedFindings: UNLIMITED_BUDGET_VALUE,
-    };
-  }
-  return {
-    maxFiles: clampNumber(Number(budgets?.maxFiles ?? DEFAULT_BUDGETS.maxFiles), 1, 500),
-    maxDiffChars: clampNumber(Number(budgets?.maxDiffChars ?? DEFAULT_BUDGETS.maxDiffChars), 4_000, 1_000_000),
-    maxPromptChars: clampNumber(Number(budgets?.maxPromptChars ?? DEFAULT_BUDGETS.maxPromptChars), 4_000, 1_000_000),
-    maxFindings: clampNumber(Number(budgets?.maxFindings ?? DEFAULT_BUDGETS.maxFindings), 1, 50),
-    maxFindingsPerPass: clampNumber(
-      Number(budgets?.maxFindingsPerPass ?? DEFAULT_BUDGETS.maxFindingsPerPass ?? DEFAULT_BUDGETS.maxFindings),
-      1,
-      50,
-    ),
-    maxPublishedFindings: clampNumber(
-      Number(budgets?.maxPublishedFindings ?? DEFAULT_BUDGETS.maxPublishedFindings ?? DEFAULT_BUDGETS.maxFindings),
-      1,
-      50,
-    ),
-  };
 }
 
 function extractJsonObject(raw: string): Record<string, unknown> | null {
@@ -566,13 +526,11 @@ function buildChangedFileManifestPayload(args: {
   targetLabel: string;
   compareTarget: ReviewResolvedCompareTarget | null;
   changedFiles: MaterializedChangedFile[];
-  budgets: ReviewRunConfig["budgets"];
 }): Record<string, unknown> {
   return {
     targetLabel: args.targetLabel,
     compareTarget: args.compareTarget,
     fileCount: args.changedFiles.length,
-    budgetMode: args.budgets.unlimited === true ? "unlimited" : "bounded",
     files: args.changedFiles.map((file) => ({
       path: file.filePath,
       changedLineCount: file.lineNumbers.length,
@@ -694,9 +652,7 @@ function buildPassPrompt(args: {
     '- "line": line number when known, otherwise null',
     '- "evidence": array of objects with {"kind": "diff_hunk"|"file_snapshot"|"artifact"|"quote", "summary": string, "quote": string|null, "filePath": string|null, "line": number|null, "artifactId": string|null}',
     '- Use "diff_hunk" for changed lines and "file_snapshot" for exact lines you inspected outside the changed hunks.',
-    args.run.config.budgets.unlimited === true
-      ? "Return every real issue you can substantiate from the supplied evidence."
-      : `Return at most ${args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings} findings.`,
+    "Return every real issue you can substantiate from the supplied evidence.",
     "If there are no real issues, return an empty findings array and explain that in summary.",
     "",
     `Reviewer key: ${args.pass.key}`,
@@ -1263,7 +1219,6 @@ function evaluateRuleEvidencePolicy(args: {
 function adjudicatePassFindings(args: {
   runId: string;
   passResults: PassExecutionResult[];
-  budgets: ReviewRunConfig["budgets"];
   context: ReviewContextPacket;
   artifactIds: ReviewContextArtifactIds;
 }): AdjudicationOutcome {
@@ -1425,20 +1380,7 @@ function adjudicatePassFindings(args: {
       const lineDelta = (left.line ?? Number.MAX_SAFE_INTEGER) - (right.line ?? Number.MAX_SAFE_INTEGER);
       if (lineDelta !== 0) return lineDelta;
       return left.title.localeCompare(right.title);
-    })
-    .slice(0, args.budgets.maxFindings);
-  const keptIds = new Set(keptFindings.map((finding) => finding.id));
-  for (const finding of findings) {
-    if (keptIds.has(finding.id)) continue;
-    rejected.push({
-      candidateIds: finding.adjudication?.mergedFindingIds ?? [],
-      passKeys: finding.originatingPasses ?? [],
-      title: finding.title,
-      reason: "budget",
-      detail: "The finding cleared adjudication but was trimmed by the run-level budget.",
-      score: finding.adjudication?.score ?? 0,
     });
-  }
 
   const publicationEligibleCount = keptFindings.filter((finding) => finding.adjudication?.publicationEligible).length;
   return {
@@ -1478,7 +1420,6 @@ function mapRunRow(row: ReviewRunRow): ReviewRun {
     dirtyOnly: false,
     modelId: DEFAULT_REVIEW_MODEL_ID,
     reasoningEffort: null,
-    budgets: DEFAULT_BUDGETS,
     publishBehavior: "local_only",
   });
   return {
@@ -1489,10 +1430,7 @@ function mapRunRow(row: ReviewRunRow): ReviewRun {
       mode: "working_tree",
       laneId: row.lane_id,
     }),
-    config: {
-      ...config,
-      budgets: normalizeBudgetConfig(config.budgets),
-    },
+    config,
     targetLabel: row.target_label,
     compareTarget: safeJsonParse<ReviewResolvedCompareTarget | null>(row.compare_target_json, null),
     status: (row.status as ReviewRunStatus) ?? "failed",
@@ -2071,7 +2009,6 @@ export function createReviewService({
       modelId: partial?.modelId?.trim() || defaultReviewModelId,
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
       codexFastMode: partial?.codexFastMode === true,
-      budgets: normalizeBudgetConfig(partial?.budgets),
       publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
         ? "auto_publish"
         : "local_only",
@@ -2093,8 +2030,7 @@ export function createReviewService({
 
     const publishableFindings = [...args.findings]
       .filter((finding) => finding.sourcePass === "adjudicated" && finding.adjudication?.publicationEligible)
-      .sort((left, right) => (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0))
-      .slice(0, args.config.budgets.maxPublishedFindings ?? args.config.budgets.maxFindings);
+      .sort((left, right) => (right.adjudication?.score ?? 0) - (left.adjudication?.score ?? 0));
 
     insertArtifact(args.runId, {
       artifactType: "publication_request",
@@ -2194,7 +2130,6 @@ export function createReviewService({
         promptArtifactId: "",
         outputArtifactId: "",
         findingsArtifactId: "",
-        budgetTrimmedCount: 0,
       };
     }
     const startedAt = nowIso();
@@ -2258,14 +2193,14 @@ export function createReviewService({
         throw new Error("Review run cancelled before reviewer prompt dispatch.");
       }
 
-      const prompt = truncateText(buildPassPrompt({
+      const prompt = buildPassPrompt({
         run: args.run,
         pass: args.pass,
-        manifestPrompt: truncateText(args.manifestPrompt, args.run.config.budgets.maxPromptChars),
+        manifestPrompt: args.manifestPrompt,
         changedFiles: args.changedFiles,
         context: args.context,
         contextArtifactIds: args.contextArtifactIds,
-      }), args.run.config.budgets.maxPromptChars);
+      });
       const promptArtifact = insertArtifact(args.runId, {
         artifactType: "pass_prompt",
         title: `${args.pass.label} prompt`,
@@ -2316,8 +2251,7 @@ export function createReviewService({
         changedFilesByPath: args.changedFilesByPath,
       });
       const candidates = [...normalized.findings]
-        .sort(compareCandidatesStable)
-        .slice(0, args.run.config.budgets.maxFindingsPerPass ?? args.run.config.budgets.maxFindings);
+        .sort(compareCandidatesStable);
       for (const candidate of normalized.findings) {
         insertCandidateFinding(reviewerRun.id, candidate);
       }
@@ -2330,7 +2264,6 @@ export function createReviewService({
           summary: normalized.summary,
           totalParsedCount: normalized.findings.length,
           keptCount: candidates.length,
-          budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
           candidates,
         }, null, 2),
         metadata: {
@@ -2338,7 +2271,6 @@ export function createReviewService({
           summary: normalized.summary,
           totalParsedCount: normalized.findings.length,
           keptCount: candidates.length,
-          budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
         },
       });
       findingsArtifactId = findingsArtifact.id;
@@ -2372,7 +2304,6 @@ export function createReviewService({
         promptArtifactId: promptArtifact.id,
         outputArtifactId: outputArtifact.id,
         findingsArtifactId: findingsArtifact.id,
-        budgetTrimmedCount: Math.max(0, normalized.findings.length - candidates.length),
       };
     } catch (error) {
       const status: ReviewReviewerRunStatus = cancelledRuns.has(args.runId) ? "cancelled" : "failed";
@@ -2422,7 +2353,6 @@ export function createReviewService({
         promptArtifactId: promptArtifactId ?? "",
         outputArtifactId,
         findingsArtifactId: findingsArtifactId ?? "",
-        budgetTrimmedCount: 0,
       };
     } finally {
       if (sessionId) {
@@ -2511,13 +2441,12 @@ export function createReviewService({
         targetLabel: materialized.targetLabel,
         compareTarget: materialized.compareTarget,
       };
-      const changedFiles = materialized.changedFiles.slice(0, effectiveRun.config.budgets.maxFiles);
+      const changedFiles = materialized.changedFiles;
       const promptChangedFiles = changedFiles.slice(0, MANIFEST_PROMPT_FILE_LIMIT);
       const manifestPayload = buildChangedFileManifestPayload({
         targetLabel: materialized.targetLabel,
         compareTarget: materialized.compareTarget,
         changedFiles,
-        budgets: effectiveRun.config.budgets,
       });
       const riskMapPayload = buildRiskMapPayload(changedFiles);
       const promptManifestPayload = {
@@ -2525,7 +2454,6 @@ export function createReviewService({
           targetLabel: materialized.targetLabel,
           compareTarget: materialized.compareTarget,
           changedFiles: promptChangedFiles,
-          budgets: effectiveRun.config.budgets,
         }),
         totalFileCount: changedFiles.length,
         omittedFileCount: Math.max(0, changedFiles.length - promptChangedFiles.length),
@@ -2540,7 +2468,6 @@ export function createReviewService({
         metadata: {
           fileCount: changedFiles.length,
           totalFileCount: materialized.changedFiles.length,
-          budgetMode: effectiveRun.config.budgets.unlimited === true ? "unlimited" : "bounded",
         },
       });
       const riskMapArtifact = insertArtifact(runId, {
@@ -2598,7 +2525,6 @@ export function createReviewService({
           targetLabel: materialized.targetLabel,
           architecture: "parallel_specialist_reviewers",
           passKeys: REVIEW_PASSES.map((pass) => pass.key),
-          budgets: effectiveRun.config.budgets,
           changedFiles: changedFiles.map((entry) => entry.filePath),
           context: {
             provenanceSummary: reviewContext.provenance.summary,
@@ -2719,7 +2645,6 @@ export function createReviewService({
       const adjudication = adjudicatePassFindings({
         runId,
         passResults: completedPassResults,
-        budgets: effectiveRun.config.budgets,
         context: reviewContext,
         artifactIds: contextArtifactIds,
       });
@@ -2745,7 +2670,6 @@ export function createReviewService({
             summary: result.summary,
             errorMessage: result.errorMessage,
             keptCount: result.candidates.length,
-            budgetTrimmedCount: result.budgetTrimmedCount,
             findingsArtifactId: result.findingsArtifactId,
           })),
         }, null, 2),

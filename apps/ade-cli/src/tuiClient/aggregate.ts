@@ -6,6 +6,7 @@ import type {
 import type { LocalNotice } from "./types";
 import {
   chatEventLineId,
+  parseAssistantMarkdown,
   renderChatLines,
   type RenderedChatLine,
 } from "./format";
@@ -64,6 +65,41 @@ export type AggregatedBlock =
 
 function turnIdOf(event: AgentChatEvent): string | null {
   return (event as { turnId?: string }).turnId ?? null;
+}
+
+type AssistantTextEvent = Extract<AgentChatEvent, { type: "text" }>;
+
+function textIdentity(event: AssistantTextEvent): string | null {
+  const messageId = event.messageId?.trim();
+  return messageId?.length ? messageId : null;
+}
+
+function turnAndItemMatch(
+  a: { turnId?: string; itemId?: string },
+  b: { turnId?: string; itemId?: string },
+): boolean {
+  const aTurnId = a.turnId ?? null;
+  const bTurnId = b.turnId ?? null;
+  if (!aTurnId || !bTurnId || aTurnId !== bTurnId) return false;
+  const aItemId = a.itemId ?? null;
+  const bItemId = b.itemId ?? null;
+  return !aItemId || !bItemId || aItemId === bItemId;
+}
+
+function shouldMergeAssistantTextEvents(previous: AssistantTextEvent, next: AssistantTextEvent): boolean {
+  const previousIdentity = textIdentity(previous);
+  const nextIdentity = textIdentity(next);
+
+  if (previousIdentity || nextIdentity) {
+    if (previousIdentity && nextIdentity) {
+      return previousIdentity === nextIdentity;
+    }
+    return turnAndItemMatch(previous, next);
+  }
+
+  if (turnAndItemMatch(previous, next)) return true;
+
+  return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
 }
 
 function safeMs(value: string): number {
@@ -296,15 +332,28 @@ function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
   return "info";
 }
 
+// Activity events that mirror the real tool/command/file events the transcript
+// already renders. Suppress them in the TUI so the same fragment doesn't appear
+// twice (once as Runtime, once as Tool calls). Matches desktop suppression.
+const suppressedRuntimeActivities = new Set([
+  "thinking",
+  "working",
+  "tool_calling",
+  "searching",
+  "reading",
+  "running_command",
+  "editing_file",
+  "web_searching",
+]);
+
 function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
   if (event.type === "activity") {
     const activity = event.activity;
-    const detail = compactActivityDetail(event.detail);
-    if (activity === "thinking" || activity === "working") return null;
+    if (suppressedRuntimeActivities.has(activity)) return null;
     return {
       id,
       label: activity.replace(/_/g, " "),
-      detail,
+      detail: compactActivityDetail(event.detail),
       status: "running",
     };
   }
@@ -474,6 +523,7 @@ export function aggregateChatBlocks(args: {
     blocks.push({ kind, id, line } as AggregatedBlock);
   };
   const workItemStartedAt = new Map<string, number>();
+  const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
 
   for (const entry of timeline) {
     if (entry.kind === "notice") {
@@ -514,7 +564,31 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "text") {
-      passthrough(id, "assistant-text");
+      if (event.text.length === 0) continue;
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "assistant-text") {
+        const previousTextEvent = assistantTextEventsByBlockId.get(previous.id);
+        if (previousTextEvent && shouldMergeAssistantTextEvents(previousTextEvent, event)) {
+          const mergedText = `${previous.line.body}${event.text}`;
+          previous.line = {
+            ...previous.line,
+            body: mergedText,
+            blocks: parseAssistantMarkdown(mergedText),
+          };
+          assistantTextEventsByBlockId.set(previous.id, {
+            ...previousTextEvent,
+            text: mergedText,
+            turnId: previousTextEvent.turnId ?? event.turnId,
+            itemId: previousTextEvent.itemId ?? event.itemId,
+            messageId: previousTextEvent.messageId ?? event.messageId,
+          });
+          continue;
+        }
+      }
+      const line = linesById.get(id);
+      if (!line) continue;
+      blocks.push({ kind: "assistant-text", id, line });
+      assistantTextEventsByBlockId.set(id, event);
       continue;
     }
     if (event.type === "reasoning") {

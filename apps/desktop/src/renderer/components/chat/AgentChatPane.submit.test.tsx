@@ -914,7 +914,8 @@ describe("AgentChatPane submit recovery", () => {
       });
     });
 
-    fireEvent.click(await screen.findByLabelText("Open command picker"));
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "/", selectionStart: 1 } });
 
     expect(await screen.findByText("/agents")).toBeTruthy();
   });

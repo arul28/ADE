@@ -44,7 +44,7 @@ export function ChatComposerShell({
         {pickerLayer}
         {children}
       </div>
-      {footer ? <div className="relative min-w-0 max-w-full border-t border-[color:var(--chat-panel-border)]">{footer}</div> : null}
+      {footer ? <div className="relative min-w-0 max-w-full">{footer}</div> : null}
     </div>
   );
 }

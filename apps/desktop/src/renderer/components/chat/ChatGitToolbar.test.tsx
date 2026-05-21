@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
@@ -107,7 +107,9 @@ describe("ChatGitToolbar", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /UI audit lane/i }));
 
-    expect(screen.getByTestId("location").textContent).toBe("/lanes/lane-1");
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/lanes?laneId=lane-1&focus=single",
+    );
   });
 
   it("opens the PR creation handoff when the current lane has no linked PR", async () => {
@@ -118,22 +120,5 @@ describe("ChatGitToolbar", () => {
     expect(screen.getByTestId("location").textContent).toBe(
       "/prs?tab=normal&create=1&sourceLaneId=lane-1&target=primary",
     );
-  });
-
-  it("opens the Run menu from the chat Git toolbar without starting commands", async () => {
-    renderToolbar();
-
-    const runButton = await screen.findByRole("button", { name: /Run/i });
-    fireEvent.pointerDown(runButton, { button: 0, ctrlKey: false, pointerId: 1 });
-    fireEvent.pointerUp(runButton, { button: 0, ctrlKey: false, pointerId: 1 });
-
-    expect(await screen.findByText("Lane runtime")).toBeTruthy();
-    expect(screen.getByText("Open Run tab")).toBeTruthy();
-    expect(screen.getByText("Open shell in Work")).toBeTruthy();
-    await waitFor(() => {
-      expect(window.ade.projectConfig.get).toHaveBeenCalled();
-    });
-    expect(window.ade.processes.startAll).not.toHaveBeenCalled();
-    expect(window.ade.processes.stopAll).not.toHaveBeenCalled();
   });
 });

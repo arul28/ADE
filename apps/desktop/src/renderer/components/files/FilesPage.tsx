@@ -2275,7 +2275,6 @@ export function FilesPage({
           </select>
           {embedded ? null : (
             <>
-              <HelpChip termId="worktree" side="bottom" />
               <SmartTooltip
                 content={
                   activeWorkspace?.laneId

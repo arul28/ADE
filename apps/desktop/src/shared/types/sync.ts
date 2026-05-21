@@ -715,7 +715,8 @@ export type SyncRemoteCommandAction =
   | "modelPicker.setFavorites"
   | "modelPicker.toggleFavorite"
   | "modelPicker.getRecents"
-  | "modelPicker.pushRecent";
+  | "modelPicker.pushRecent"
+  | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;

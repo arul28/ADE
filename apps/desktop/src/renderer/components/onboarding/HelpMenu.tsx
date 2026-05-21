@@ -127,7 +127,7 @@ export function HelpMenu() {
         aria-expanded={open}
         title="Help · tours, glossary, and preferences"
         className={cn(
-          "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+          "ade-shell-control inline-flex h-[24px] w-[24px] items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150"
         )}
         onClick={() => (open ? close() : openAt())}
@@ -136,7 +136,7 @@ export function HelpMenu() {
           color: open ? "var(--color-accent)" : undefined,
         } as React.CSSProperties}
       >
-        <Question size={12} weight={open ? "fill" : "regular"} />
+        <Question size={16} weight={open ? "fill" : "regular"} />
       </button>
 
       {open && position
