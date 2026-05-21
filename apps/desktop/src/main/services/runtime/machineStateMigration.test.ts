@@ -19,6 +19,7 @@ function makeLayout(root: string): MachineAdeLayout {
     secretsDir: path.join(root, "secrets"),
     sockDir: path.join(root, "sock"),
     socketPath: path.join(root, "sock", "ade.sock"),
+    desktopBridgeSocketPath: path.join(root, "sock", "desktop-bridge.sock"),
     binDir: path.join(root, "bin"),
     runtimeDir: path.join(root, "runtime"),
   };

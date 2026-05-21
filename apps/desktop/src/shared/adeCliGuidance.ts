@@ -3,7 +3,7 @@ import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } fro
 export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
   return [
   "## ADE CLI",
-  "ADE is a local-first desktop development environment for lanes, chats, terminal sessions, missions, PR workflows, memory, proof/artifacts, App Control, iOS Simulator/Preview Lab state, lane-tied macOS VMs, config, and managed processes.",
+  "ADE is a local-first desktop development environment for lanes, chats, terminal sessions, missions, PR workflows, memory, proof/artifacts, App Control, iOS Simulator/Preview Lab state, the VM tab, config, and managed processes.",
   "`ade` is the default control plane for ADE-managed sessions. Use normal shell commands for immediate repo inspection/edit/test work; use ADE CLI when you need ADE state, drawer/session state, proof registration, missions, PR metadata, memory, or managed app/simulator/browser/VM control.",
   "",
   "### Skills",

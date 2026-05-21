@@ -25,6 +25,8 @@ export type ChatSubagentSnapshot = {
   finalSummary?: string | null;
   lastToolName?: string;
   background?: boolean;
+  taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+  workflowName?: string;
   usage?: {
     totalTokens?: number;
     toolUses?: number;
@@ -148,6 +150,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         finalSummary: existing?.finalSummary ?? null,
         lastToolName: existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
+        taskType: event.taskType ?? existing?.taskType,
+        workflowName: event.workflowName ?? existing?.workflowName,
         usage: existing?.usage,
       });
       continue;
@@ -169,6 +173,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         finalSummary: existing?.finalSummary ?? null,
         lastToolName: event.lastToolName ?? existing?.lastToolName,
         background: existing?.background ?? false,
+        taskType: event.taskType ?? existing?.taskType,
+        workflowName: event.workflowName ?? existing?.workflowName,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
       continue;
@@ -190,6 +196,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         finalSummary: event.finalSummary?.trim() || event.summary?.trim() || existing?.finalSummary || null,
         lastToolName: existing?.lastToolName,
         background: existing?.background ?? false,
+        taskType: event.taskType ?? existing?.taskType,
+        workflowName: event.workflowName ?? existing?.workflowName,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
     }

@@ -2628,7 +2628,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitStashPop = tool({
-    description: "Pop a stash saved for a lane branch. Defaults to the latest branch-matching stash.",
+    description: "Pop a stash saved for a lane branch. Defaults to the latest branch-matching stash; call gitStashList to inspect refs.",
     inputSchema: z.object({ laneId: z.string().optional(), stashRef: z.string().optional() }),
     execute: ({ laneId, stashRef }) => gitGuard(async () => {
       const resolvedLaneId = resolveLaneId(laneId);

@@ -430,6 +430,8 @@ export type AgentChatEvent =
       parentToolUseId?: string | null;
       description: string;
       background?: boolean;
+      taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+      workflowName?: string;
       turnId?: string;
     }
   | {
@@ -446,6 +448,8 @@ export type AgentChatEvent =
         durationMs?: number;
       };
       lastToolName?: string;
+      taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+      workflowName?: string;
       turnId?: string;
     }
   | {
@@ -462,6 +466,8 @@ export type AgentChatEvent =
         toolUses?: number;
         durationMs?: number;
       };
+      taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+      workflowName?: string;
       turnId?: string;
     }
   | {

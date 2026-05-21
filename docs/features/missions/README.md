@@ -33,6 +33,7 @@ Caveats that follow from "runtime owns missions":
 - `orchestrator/executionPolicy.ts` — default `MissionExecutionPolicy`, merge rules (mission > project > fallback), completion evaluation, run/step validation.
 - `orchestrator/adaptiveRuntime.ts` — `classifyTaskComplexity` (trivial/simple/moderate/complex), parallelism scaling, model downgrade.
 - `orchestrator/workerDeliveryService.ts` — message delivery pipeline between coordinator and worker chats; retry, idempotency, in-flight leases.
+- `orchestrator/workerTracking.ts` — post-attempt artifact extraction and the planning-question intervention path. Only `planner_natural_question` opens a `manual_input` intervention now; the planning-question "required before exit" enforcement has been retired (see [Planning question handling](#planning-question-handling)).
 - `orchestrator/delegationContracts.ts` — contracts between coordinator and workers (scope, allowed tools, handoff shape).
 - `orchestrator/runtimeEventRouter.ts` — routes events from worker sessions and CLI output into the coordinator.
 - `orchestrator/metaReasoner.ts` — higher-level reasoning for coordinator choices.
@@ -111,6 +112,22 @@ When a mission reaches terminal status (`completed`, `failed`, `cancelled`), `tr
 - **Review wait timeout** — Human review steps time out after 48 hours with reason `review_timeout`.
 - **Turn-level timeout** — Individual agent turns are capped at 5 minutes via the abort infrastructure.
 - **Autopilot timeout** — Autopilot polls every 15 seconds (single configurable constant, up from 5s).
+
+### Planning question handling
+
+A planner can pause the run by emitting an `awaiting_user_input` step with
+`source === "planner_natural_question"` and a non-empty `question`.
+`workerTracking.extractAndRegisterArtifacts` translates that into a single
+`manual_input` intervention (`reasonCode: "planner_natural_question"`) and a
+matching `pauseRun` so the coordinator stops until the user answers. There is
+no longer a separate `planner_required_question_missing` reason code or a
+phase-level "questions required before exit" gate — the legacy
+`planningQuestionPolicy.ts` module was removed, and the worker prompt no longer
+mentions an ADE-blocking-question prerequisite. If a phase wants the planner to
+ask clarifying questions, that intent is conveyed by the planner itself
+through the `ask_user` tool (or `awaiting_user_input` with the natural-question
+source); the orchestrator never refuses to exit planning just because no
+question was asked.
 
 ### Mission step bidirectional sync
 

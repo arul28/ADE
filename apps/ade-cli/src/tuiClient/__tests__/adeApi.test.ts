@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, steerChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -310,6 +310,52 @@ describe("createChatSession", () => {
       codexSandbox: "read-only",
       codexConfigSource: "flags",
     }));
+  });
+});
+
+describe("startClaudeTerminalSession", () => {
+  it("passes Claude model reasoning and permission controls to start_cli_session", async () => {
+    const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      tool: async (name: string, args?: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return {
+          sessionId: "term-1",
+          terminalId: "term-1",
+          session: null,
+        };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await startClaudeTerminalSession({
+      connection,
+      laneId: "lane-1",
+      title: "Claude smoke",
+      model: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "low",
+      permissionMode: "auto",
+      initialInput: "Hello",
+      cols: 100,
+      rows: 28,
+    });
+
+    expect(calls).toEqual([
+      {
+        name: "start_cli_session",
+        args: expect.objectContaining({
+          laneId: "lane-1",
+          provider: "claude",
+          title: "Claude smoke",
+          model: "anthropic/claude-sonnet-4-6",
+          reasoningEffort: "low",
+          permissionMode: "auto",
+          initialInput: "Hello",
+          cols: 100,
+          rows: 28,
+          tracked: true,
+        }),
+      },
+    ]);
   });
 });
 

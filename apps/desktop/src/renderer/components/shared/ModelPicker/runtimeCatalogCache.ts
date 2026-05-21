@@ -43,6 +43,14 @@ function catalogContainsRefreshProvider(
   });
 }
 
+function shouldMarkRefreshProviderFresh(
+  catalog: AgentChatModelCatalog,
+  provider: AgentChatModelCatalogRefreshProvider,
+): boolean {
+  if (provider !== "cursor") return true;
+  return catalogContainsRefreshProvider(catalog, provider);
+}
+
 function markRuntimeCatalogProviderFresh(
   provider: AgentChatModelCatalogRefreshProvider,
   refreshedAt = Date.now(),
@@ -52,6 +60,9 @@ function markRuntimeCatalogProviderFresh(
 
 export function runtimeCatalogProviderIsFresh(provider: AgentChatModelCatalogRefreshProvider): boolean {
   const refreshedAt = sharedRuntimeCatalogProviderRefreshedAt.get(provider);
+  if (provider === "cursor" && (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider))) {
+    return false;
+  }
   return Boolean(refreshedAt && Date.now() - refreshedAt <= runtimeCatalogRefreshTtlMs(provider));
 }
 
@@ -72,7 +83,11 @@ export function rememberRuntimeCatalog(
   }
 
   sharedRuntimeCatalog = catalog;
-  if (args.refreshProvider && (args.mode === "force" || catalog.stale !== true)) {
+  if (
+    args.refreshProvider
+    && (args.mode === "force" || catalog.stale !== true)
+    && shouldMarkRefreshProviderFresh(catalog, args.refreshProvider)
+  ) {
     markRuntimeCatalogProviderFresh(args.refreshProvider);
     return catalog;
   }

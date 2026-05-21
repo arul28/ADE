@@ -5,7 +5,6 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
-  Cube,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -18,7 +17,6 @@ import type {
   IosElementContextItem,
   IosSimulatorSession,
   LaneSummary,
-  MacosVmContextItem,
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
@@ -28,7 +26,6 @@ import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
   formatIosElementContextForPrompt,
-  formatMacosVmContextForPrompt,
   normalizeBuiltInBrowserContextItem,
 } from "../../lib/visualContextFormatting";
 import {
@@ -41,7 +38,6 @@ import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
 import { FilesPage } from "../files/FilesPage";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
-import { MacosVmPanel } from "./MacosVmPanel";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 
@@ -55,7 +51,6 @@ const WORK_SIDEBAR_TABS: Array<{
   { id: "ios", label: "iOS Sim", Icon: DeviceMobile },
   { id: "app-control", label: "App Control", Icon: Desktop },
   { id: "browser", label: "Browser", Icon: Globe },
-  { id: "macos-vm", label: "Mac VM", Icon: Cube },
 ];
 
 export type WorkSidebarContextTarget =
@@ -360,15 +355,6 @@ export function WorkSidebar({
       (value) => formatAppControlContextForPrompt([value]),
     );
   }, [insertContext]);
-  const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
-    insertContext(
-      "ade:agent-chat:add-macos-vm-context",
-      "item",
-      item,
-      "macos-vm",
-      (value) => formatMacosVmContextForPrompt([value]),
-    );
-  }, [insertContext]);
   const addBuiltInBrowserContext = useCallback((item: unknown) => {
     insertContext(
       "ade:agent-chat:add-builtin-browser-context",
@@ -468,21 +454,6 @@ export function WorkSidebar({
       return <FilesPage preferredLaneId={laneId} embedded />;
     }
 
-    if (tab === "macos-vm") {
-      return (
-        <div className="flex h-full min-h-0 flex-col">
-          {contextDisabledReason ? <WarningBanner message={contextDisabledReason} /> : null}
-          <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
-            <MacosVmPanel
-              laneId={laneId}
-              laneRoot={laneRoot}
-              onAddContext={canInsertContext ? addMacosVmContext : undefined}
-            />
-          </div>
-        </div>
-      );
-    }
-
     const panel = tab === "ios" ? (
       <ChatIosSimulatorPanel
         sessionId={panelSessionId}
@@ -515,7 +486,6 @@ export function WorkSidebar({
     addAttachment,
     addBuiltInBrowserContext,
     addIosContext,
-    addMacosVmContext,
     panelSessionId,
     canInsertContext,
     contextDisabledReason,

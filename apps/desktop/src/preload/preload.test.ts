@@ -345,6 +345,7 @@ describe("preload OAuth bridge", () => {
     await bridge.macosVm.delete({ laneId: "lane-1", force: true });
     await bridge.macosVm.getAgentGuide({ laneId: "lane-1" });
     await bridge.macosVm.focusWindow({ laneId: "lane-1" });
+    await bridge.macosVm.getDisplaySession({ laneId: "lane-1" });
     await bridge.macosVm.captureScreenshot({ laneId: "lane-1" });
     await bridge.macosVm.selectPoint({ laneId: "lane-1", x: 40, y: 60, includeScreenshot: true });
     await bridge.macosVm.click({ laneId: "lane-1", x: 40, y: 60 });
@@ -357,6 +358,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmDelete, { laneId: "lane-1", force: true });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmGetAgentGuide, { laneId: "lane-1" });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmFocusWindow, { laneId: "lane-1" });
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmGetDisplaySession, { laneId: "lane-1" });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmCaptureScreenshot, { laneId: "lane-1" });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmSelectPoint, { laneId: "lane-1", x: 40, y: 60, includeScreenshot: true });
     expect(invoke).toHaveBeenCalledWith(IPC.macosVmClick, { laneId: "lane-1", x: 40, y: 60 });
@@ -373,6 +375,105 @@ describe("preload OAuth bridge", () => {
 
     unsubscribe();
     expect(removeListener).toHaveBeenCalledWith(IPC.macosVmEvent, listener);
+  });
+
+  it("routes local macOS VM deletion through direct IPC when a local project runtime is bound", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const result = { deleted: true, previous: null };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.macosVmDelete) {
+        return result;
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.macosVm.delete({ vmName: "ade-vm", force: true })).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).toHaveBeenCalledWith(IPC.macosVmDelete, { vmName: "ade-vm", force: true });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+  });
+
+  it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const result = { id: "lane-vm", name: "VM lane", runtimePlacement: "macos-vm" };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        return {
+          domain: "lane",
+          action: "create",
+          result,
+          statusHints: {},
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.lanes.create({ name: "VM lane", runtimePlacement: "macos-vm" })).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      request: {
+        domain: "lane",
+        action: "create",
+        args: { name: "VM lane", runtimePlacement: "macos-vm" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesCreate, expect.anything());
   });
 
   it("clears the AI status bridge cache after API key verification", async () => {

@@ -264,6 +264,10 @@ ade --socket app-control launch --command "npm run dev" --text
 ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket macos-vm status --lane lane-id --text
 ade --socket macos-vm start --lane lane-id --create --no-display --text
+ade --socket macos-vm storage --text
+ade --socket macos-vm get-credentials --vm-name vm-name --text
+ade --socket macos-vm display-session --lane lane-id --text
+ade --socket macos-vm detach --lane lane-id --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text

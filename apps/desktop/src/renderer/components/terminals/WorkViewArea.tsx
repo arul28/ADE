@@ -1128,25 +1128,52 @@ function WorkPaneEmbeddedChromeLeading({ chrome }: { chrome: FloatingPaneEmbedde
   );
 }
 
-function AdeToolsPaneGlyph({ open }: { open: boolean }) {
+/**
+ * Glyph for the workspace-level "Tools" pane: a sidebar panel docked to the
+ * right with a stack of mixed content lines inside, plus an active-state
+ * indicator bar. Communicates "a side panel that holds many tools" at
+ * a glance — distinct from the chat-header Workbench chip (per-chat tools).
+ */
+function ToolsPaneGlyph({ open }: { open: boolean }) {
   return (
-    <span className="relative block h-4 w-[18px]" aria-hidden="true">
+    <span className="relative block h-[14px] w-[16px]" aria-hidden="true">
+      {/* Outer frame */}
       <span
         className={cn(
-          "absolute left-0 top-0.5 h-3.5 w-[17px] rounded-[5px] border transition-colors",
+          "absolute inset-0 rounded-[3px] border transition-colors",
           open
-            ? "border-sky-300/45 bg-sky-300/[0.09]"
-            : "border-white/20 bg-white/[0.035]",
+            ? "border-sky-300/55 bg-sky-300/10"
+            : "border-current/45 bg-transparent",
+        )}
+      />
+      {/* Active "docked panel" column on the right */}
+      <span
+        className={cn(
+          "absolute right-[1.5px] top-[1.5px] bottom-[1.5px] w-[4px] rounded-[2px] transition-colors",
+          open
+            ? "bg-sky-200/85 shadow-[0_0_8px_rgba(125,211,252,0.35)]"
+            : "bg-current/55",
+        )}
+      />
+      {/* Stacked content rows on the left */}
+      <span
+        className={cn(
+          "absolute left-[2.5px] top-[3px] h-[1.5px] w-[6px] rounded-full transition-colors",
+          open ? "bg-sky-100/80" : "bg-current/70",
         )}
       />
       <span
         className={cn(
-          "absolute right-[2px] top-[3px] h-2.5 w-[5px] rounded-[3px] transition-colors",
-          open ? "bg-sky-200/85 shadow-[0_0_10px_rgba(125,211,252,0.28)]" : "bg-muted-fg/55",
+          "absolute left-[2.5px] top-[6.5px] h-[1.5px] w-[4.5px] rounded-full transition-colors",
+          open ? "bg-sky-100/55" : "bg-current/45",
         )}
       />
-      <span className={cn("absolute left-[3px] top-[5px] h-[2px] w-[7px] rounded-full", open ? "bg-sky-100/80" : "bg-current/65")} />
-      <span className={cn("absolute left-[3px] top-[9px] h-[2px] w-[5px] rounded-full", open ? "bg-sky-100/45" : "bg-current/35")} />
+      <span
+        className={cn(
+          "absolute left-[2.5px] top-[10px] h-[1.5px] w-[5.5px] rounded-full transition-colors",
+          open ? "bg-sky-100/55" : "bg-current/45",
+        )}
+      />
     </span>
   );
 }
@@ -1162,23 +1189,24 @@ function WorkSidebarToggle({
   return (
     <SmartTooltip
       content={{
-        label: open ? "Hide ADE tools pane" : "Open ADE tools pane",
-        description: "Keep Git, Files, iOS Simulator, App Control, Browser, and macOS VM context beside this Work session.",
+        label: open ? "Hide Tools pane" : "Open Tools pane",
+        description: "Workspace-level tools alongside this session — Git, Files, iOS Simulator, App Control, and Browser.",
       }}
     >
       <button
         type="button"
         className={cn(
-          "ade-shell-control inline-flex h-7 w-9 shrink-0 items-center justify-center rounded-full border border-white/[0.08]",
-          "bg-white/[0.035] text-muted-fg/75 transition-colors hover:bg-white/[0.07] hover:text-fg/90",
-          open && "ade-work-tab-active",
+          "ade-shell-control inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] px-2.5",
+          "bg-white/[0.035] font-sans text-[11px] font-medium text-muted-fg/75 transition-colors hover:bg-white/[0.07] hover:text-fg/90",
+          open && "ade-work-tab-active bg-sky-300/[0.08] text-sky-100/90 border-sky-300/30",
         )}
         data-variant="ghost"
         onClick={onToggle}
-        aria-label={open ? "Hide ADE tools pane" : "Open ADE tools pane"}
+        aria-label={open ? "Hide Tools pane" : "Open Tools pane"}
         aria-pressed={open}
       >
-        <AdeToolsPaneGlyph open={open} />
+        <ToolsPaneGlyph open={open} />
+        <span className="leading-none">Tools</span>
       </button>
     </SmartTooltip>
   );

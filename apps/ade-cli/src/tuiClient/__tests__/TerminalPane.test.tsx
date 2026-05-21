@@ -188,4 +188,156 @@ describe("TerminalPane", () => {
     expect(frame).not.toContain("\u001b7");
     expect(frame).not.toContain("\u001b8");
   });
+
+  it("filters Claude spinner residue from closed transcript previews", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([], {
+          transcript: "✻\n✶8\n✳ Cogitated for a bit\n10s · ↓ 2.2k tokens)\nfinal answer\n",
+          status: "completed",
+          runtimeState: "exited",
+        })}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={6}
+        hiddenBottomRows={2}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("final answer");
+    expect(frame).not.toContain("✻");
+    expect(frame).not.toContain("✶8");
+    expect(frame).not.toContain("Cogitated");
+    expect(frame).not.toContain("2.2k tokens");
+  });
+
+  it("filters numeric Claude spinner residue bursts from closed transcript previews", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([], {
+          transcript: "final answer\n8\n1\n3\n4\n40\nfollow-up detail\n",
+          status: "completed",
+          runtimeState: "exited",
+        })}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={8}
+        hiddenBottomRows={2}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("final answer");
+    expect(frame).toContain("follow-up detail");
+    expect(frame).not.toContain("\n8");
+    expect(frame).not.toContain("\n40");
+  });
+
+  it("filters Claude input box chrome from closed transcript previews", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([], {
+          transcript: [
+            "╭────────────────────────╮",
+            "│ > summarize this lane  │",
+            "╰────────────────────────╯",
+            "final answer",
+            "╭────────────────────────╮",
+            "│                        │",
+            "╰────────────────────────╯",
+            "esc to interrupt",
+          ].join("\n"),
+          status: "completed",
+          runtimeState: "exited",
+        })}
+        liveChunks={[]}
+        attached={false}
+        width={80}
+        height={8}
+        hiddenBottomRows={2}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("final answer");
+    expect(frame).not.toContain("╭");
+    expect(frame).not.toContain("summarize this lane");
+    expect(frame).not.toContain("esc to interrupt");
+  });
+
+  it("filters Claude startup chrome and spinner fragments from closed transcripts", async () => {
+    const result = render(
+      <TerminalPane
+        title="Scratch Claude pane audit"
+        preview={preview([], {
+          transcript: [
+            "say ok then stop",
+            "╭───Claude Code v2.1.145────────────────────────╮",
+            "││What's new│",
+            "│Welcome back Arul!│Added `claude agents --json` to list live Claude sessions",
+            "│ ▐▛███▜▌│Statusline JSON input now includes GitHub repo and PR information",
+            "│Sonnet 4.6 with low effort · Claude Max · ││",
+            "│~/Projects/ADE/.ade/worktrees/scratch-tui-claude-audit││",
+            "○ low · /effort",
+            "❯ sayokthenstop",
+            "❯ say ok then stop",
+            "·Orbiting…",
+            "❯",
+            "✻O",
+            "r",
+            "✽b",
+            "Orit",
+            "bi",
+            "in",
+            "✻tig…",
+            "n",
+            "✶g",
+            "…",
+            "ing",
+            "⏺ok",
+            "✻Churned for 1s",
+            "? for shortcuts · ← for agents",
+            "1 MCP server failed · /mcp",
+            "1 claude.ai connector needs auth",
+            "Claude in Chrome enabled · /chrome",
+            "Resume this session with:",
+            "claude --resume 5ae8dfcf-13be-45d7-b672-026fe90f9dea",
+          ].join("\n"),
+          status: "completed",
+          runtimeState: "exited",
+          resumeCommand: "claude --resume 5ae8dfcf-13be-45d7-b672-026fe90f9dea",
+        })}
+        liveChunks={[]}
+        attached={false}
+        width={120}
+        height={8}
+        hiddenBottomRows={2}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("say ok then stop");
+    expect(frame).toContain("ok");
+    expect(frame).not.toContain("Claude Code v");
+    expect(frame).not.toContain("What's new");
+    expect(frame).not.toContain("Welcome back");
+    expect(frame).not.toContain("Statusline JSON");
+    expect(frame).not.toContain("Claude Max");
+    expect(frame).not.toContain("sayokthenstop");
+    expect(frame).not.toContain("Orbiting");
+    expect(frame).not.toContain("Orit");
+    expect(frame).not.toContain("Churned");
+    expect(frame).not.toContain("MCP server failed");
+    expect(frame).not.toContain("Resume this session");
+  });
 });

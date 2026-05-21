@@ -3297,6 +3297,48 @@ button:active, [role="button"]:active {
   animation: ade-text-shimmer 2.4s ease-in-out infinite;
 }
 
+/* Mac VM: transient-state progress stripe (creating/installing/starting/stopping) */
+@keyframes ade-vm-progress-sweep {
+  0% {
+    background-position: -120% 0;
+  }
+  100% {
+    background-position: 220% 0;
+  }
+}
+.ade-vm-progress-stripe {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-accent, #A78BFA) 50%, transparent) 35%,
+    color-mix(in srgb, var(--color-accent, #A78BFA) 90%, transparent) 50%,
+    color-mix(in srgb, var(--color-accent, #A78BFA) 50%, transparent) 65%,
+    transparent 100%
+  );
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: ade-vm-progress-sweep 1.6s linear infinite;
+  pointer-events: none;
+}
+
+/* Mac VM: gentle pulse for the header status pill while in a transient state */
+@keyframes ade-vm-pill-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent, #A78BFA) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-accent, #A78BFA) 0%, transparent);
+  }
+}
+.ade-vm-pill-pulse {
+  animation: ade-vm-pill-pulse 1.6s ease-out infinite;
+}
+
 @keyframes pull-btn-flash {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -3381,4 +3423,17 @@ button:active, [role="button"]:active {
 
 .ade-fade-in {
   animation: ade-fade-slide-up 0.3s ease-out both;
+}
+
+.mac-vm-display-host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.mac-vm-display-host > div,
+.mac-vm-display-host canvas {
+  max-width: 100%;
+  max-height: 100%;
 }

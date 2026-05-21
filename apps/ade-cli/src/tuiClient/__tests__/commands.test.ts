@@ -40,6 +40,17 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /effort to the ADE Code right pane", () => {
+    const parsed = parseCommand("/effort");
+    expect(parsed?.spec?.name).toBe("/effort");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/eff")).toContainEqual(expect.objectContaining({
+      name: "/effort",
+      source: "ade",
+      description: "Open the reasoning-effort picker",
+    }));
+  });
+
   it("routes /feedback to the ADE Code right pane", () => {
     const parsed = parseCommand("/feedback");
     expect(parsed?.spec?.name).toBe("/feedback");
@@ -296,15 +307,17 @@ describe("commands", () => {
     expect(parsed?.spec).toBeNull();
   });
 
-  it("surfaces /info in the palette and not /subagents, /effort, or /plan", () => {
+  it("surfaces active ADE Code panes in the palette and not removed aliases", () => {
     const infoRows = paletteCommands("info");
     expect(infoRows.some((row) => row.name === "/info")).toBe(true);
+
+    const effortRows = paletteCommands("effort");
+    expect(effortRows.some((row) => row.name === "/effort" && row.source === "ade")).toBe(true);
 
     const subagentRows = paletteCommands("subagents");
     expect(subagentRows.some((row) => row.name === "/subagents")).toBe(false);
 
     const allRows = paletteCommands("");
-    expect(allRows.some((row) => row.name === "/effort" && row.source === "ade")).toBe(false);
     expect(allRows.some((row) => row.name === "/plan" && row.source === "ade")).toBe(false);
   });
 });
@@ -314,6 +327,14 @@ describe("linear command routing", () => {
     expect(parseLinearArgs("run cancel run-1 --reason \"not ready\" --launch false")).toEqual({
       positionals: ["run", "cancel", "run-1"],
       options: { reason: "not ready", launch: false },
+    });
+  });
+
+  it("shows usage for bare /linear instead of running a default tool", () => {
+    expect(buildLinearToolRequest("")).toEqual({
+      kind: "usage",
+      title: "Linear",
+      body: "Usage: /linear <workflows|run|route|sync|ingress> ...",
     });
   });
 

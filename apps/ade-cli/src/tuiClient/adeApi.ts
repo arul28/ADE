@@ -187,6 +187,7 @@ export async function startClaudeTerminalSession(args: {
   laneId: string;
   title?: string | null;
   model?: string | null;
+  reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode | null;
   initialInput?: string | null;
   cols: number;
@@ -199,6 +200,7 @@ export async function startClaudeTerminalSession(args: {
     provider: "claude",
     title: args.title ?? undefined,
     model: args.model ?? undefined,
+    reasoningEffort: args.reasoningEffort ?? undefined,
     permissionMode: args.permissionMode ?? "default",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,

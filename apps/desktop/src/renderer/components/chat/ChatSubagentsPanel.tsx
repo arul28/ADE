@@ -4,6 +4,7 @@ import {
   Circle,
   CircleHalf,
   CircleNotch,
+  MinusCircle,
   StopCircle,
   TreeStructure,
   X,
@@ -40,38 +41,51 @@ function runtimeText(snapshot: ChatSubagentSnapshot): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
-/* ── Glyphs (12 px monoline, single visual family) ──
+/* ── Glyphs (14 px monoline, single visual family) ──
  *
- * One stroke weight, one diameter, one baseline. Color shifts only on
- * completion; everything else stays in the fg ramp so the panel reads as a
- * single calm surface.
+ * One stroke weight, one diameter, one baseline. Status drives color; category
+ * (subagent vs background) drives a slight tint on running rows so the eye can
+ * separate them without leaning on text alone. Stopped uses MinusCircle so it
+ * does NOT collide with the "never started" empty circle reading.
  */
 
-const GLYPH_SIZE = 12;
+const GLYPH_SIZE = 14;
 
-function StatusGlyph({ status }: { status: ChatSubagentSnapshot["status"] }) {
+type GlyphCategory = "subagent" | "background";
+
+function StatusGlyph({
+  status,
+  category = "subagent",
+}: {
+  status: ChatSubagentSnapshot["status"];
+  category?: GlyphCategory;
+}) {
   if (status === "running") {
+    const tint = category === "background"
+      ? "text-cyan-300/85"
+      : "text-[color:var(--color-accent,#A78BFA)]";
     return (
       <CircleNotch
         aria-hidden
         size={GLYPH_SIZE}
         weight="bold"
-        className="text-[color:var(--color-accent,#A78BFA)] motion-safe:animate-spin [animation-duration:2.4s]"
+        className={cn(tint, "motion-safe:animate-spin [animation-duration:2.4s]")}
       />
     );
   }
   if (status === "completed") {
-    return <Check aria-hidden size={GLYPH_SIZE} weight="bold" className="text-emerald-300/85" />;
+    return <Check aria-hidden size={GLYPH_SIZE} weight="bold" className="text-emerald-300/90" />;
   }
   if (status === "failed") {
-    return <X aria-hidden size={GLYPH_SIZE} weight="bold" className="text-rose-300/80" />;
+    return <X aria-hidden size={GLYPH_SIZE} weight="bold" className="text-rose-300/85" />;
   }
-  return <Circle aria-hidden size={GLYPH_SIZE} weight="regular" className="text-fg/30" />;
+  // stopped — visibly distinct from "pending/never started"
+  return <MinusCircle aria-hidden size={GLYPH_SIZE} weight="regular" className="text-amber-300/55" />;
 }
 
 function PlanGlyph({ status }: { status: ChatInfoPlanStep["status"] }) {
   if (status === "completed") {
-    return <Check aria-hidden size={GLYPH_SIZE} weight="bold" className="text-emerald-300/85" />;
+    return <Check aria-hidden size={GLYPH_SIZE} weight="bold" className="text-emerald-300/90" />;
   }
   if (status === "in_progress") {
     return (
@@ -84,27 +98,42 @@ function PlanGlyph({ status }: { status: ChatInfoPlanStep["status"] }) {
     );
   }
   if (status === "failed") {
-    return <X aria-hidden size={GLYPH_SIZE} weight="bold" className="text-rose-300/80" />;
+    return <X aria-hidden size={GLYPH_SIZE} weight="bold" className="text-rose-300/85" />;
   }
-  return <Circle aria-hidden size={GLYPH_SIZE} weight="regular" className="text-fg/25" />;
+  return <Circle aria-hidden size={GLYPH_SIZE} weight="regular" className="text-fg/30" />;
 }
 
 /* ── Section header — sentence case, paper-section feel ── */
 
+type SectionTone = "subagent" | "background" | "workflow" | "neutral";
+
+const SECTION_DOT_CLASS: Record<SectionTone, string> = {
+  subagent: "bg-[color:var(--color-accent,#A78BFA)]/70",
+  background: "bg-cyan-300/65",
+  workflow: "bg-amber-300/65",
+  neutral: "bg-fg/30",
+};
+
 function SectionHeader({
   label,
   hint,
+  tone = "neutral",
 }: {
   label: string;
   hint?: string;
+  tone?: SectionTone;
 }) {
   return (
     <div className="flex items-baseline justify-between px-4 pb-2 pt-3.5">
-      <span className="font-sans text-[11.5px] font-medium tracking-[0.005em] text-fg/55">
+      <span className="flex items-center gap-2 font-sans text-[11.5px] font-medium tracking-[0.005em] text-fg/65">
+        <span
+          aria-hidden
+          className={cn("inline-block h-1 w-1 rounded-full", SECTION_DOT_CLASS[tone])}
+        />
         {label}
       </span>
       {hint ? (
-        <span className="font-sans text-[11px] tabular-nums text-fg/35">
+        <span className="font-sans text-[11px] tabular-nums text-fg/40">
           {hint}
         </span>
       ) : null}
@@ -149,17 +178,26 @@ function meaningfulName(snapshot: ChatSubagentSnapshot): string {
 function SubagentRow({
   snapshot,
   selected,
+  category,
   onClick,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
+  category: GlyphCategory;
   onClick: () => void;
 }) {
   const runtime = runtimeText(snapshot);
   const name = meaningfulName(snapshot);
   const isRunning = snapshot.status === "running";
-  const isMuted = snapshot.status === "completed" || snapshot.status === "stopped";
+  const isCompleted = snapshot.status === "completed";
+  const isStopped = snapshot.status === "stopped";
   const isFailed = snapshot.status === "failed";
+  const runningLabelTint = category === "background"
+    ? "text-cyan-100/95"
+    : "text-[color:var(--color-accent-bright,#C4B5FD)]";
+  const runningRailColor = category === "background"
+    ? "bg-cyan-300/55"
+    : "bg-[color:var(--color-accent,#A78BFA)]/55";
 
   return (
     <button
@@ -171,32 +209,43 @@ function SubagentRow({
         "group relative flex w-full items-center gap-3 px-4 py-1.5 text-left",
         "transition-colors duration-150",
         "hover:bg-white/[0.025]",
-        "data-[selected=true]:bg-white/[0.035]",
+        "data-[selected=true]:bg-white/[0.04]",
+        // Running rows get a soft left rail by default — helps the eye pick out
+        // active work without leaning on the spinner alone. Selected rows
+        // upgrade to the saturated rail.
+        isRunning && !selected
+          && cn("before:absolute before:left-0 before:top-1/2 before:h-3 before:w-px before:-translate-y-1/2", runningRailColor),
         selected
-          && "before:absolute before:left-0 before:top-1/2 before:h-3 before:w-px before:-translate-y-1/2 before:bg-[color:var(--color-accent,#A78BFA)]/55",
+          && "before:absolute before:left-0 before:top-1/2 before:h-3 before:w-px before:-translate-y-1/2 before:bg-[color:var(--color-accent,#A78BFA)]/85",
       )}
     >
-      <span className="flex h-3 w-3 shrink-0 items-center justify-center">
-        <StatusGlyph status={snapshot.status} />
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        <StatusGlyph status={snapshot.status} category={category} />
       </span>
       <span
         className={cn(
           "min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5",
-          isRunning && "text-[color:var(--color-accent-bright,#C4B5FD)]",
-          isFailed && "text-rose-200/85",
-          isMuted && "text-fg/45",
-          !isRunning && !isFailed && !isMuted && "text-fg/70",
+          isRunning && runningLabelTint,
+          isFailed && "text-rose-200/90",
+          isCompleted && "text-fg/55",
+          isStopped && "text-fg/45",
+          !isRunning && !isFailed && !isCompleted && !isStopped && "text-fg/75",
         )}
       >
         {name}
-        {snapshot.background ? (
-          <span className="ml-1.5 font-sans text-[10.5px] tracking-[0.01em] text-fg/30">
-            bg
+        {isStopped ? (
+          <span className="ml-1.5 font-sans text-[10.5px] tracking-[0.01em] text-amber-300/55">
+            halted
+          </span>
+        ) : null}
+        {snapshot.workflowName ? (
+          <span className="ml-1.5 font-sans text-[10.5px] tracking-[0.01em] text-amber-300/65">
+            {snapshot.workflowName}
           </span>
         ) : null}
       </span>
       {runtime ? (
-        <span className="shrink-0 truncate font-sans text-[10.5px] tabular-nums text-fg/30 group-hover:text-fg/45">
+        <span className="shrink-0 truncate font-sans text-[10.5px] tabular-nums text-fg/40 group-hover:text-fg/55">
           {runtime}
         </span>
       ) : null}
@@ -300,6 +349,7 @@ export function ChatSubagentsPanel({
           <SectionHeader
             label="Progress"
             hint={`${planComplete}/${planTotal} · ${planPercent}%`}
+            tone="subagent"
           />
           <ProgressBar percent={planPercent} />
           <ul className="px-4 pt-2">
@@ -312,13 +362,13 @@ export function ChatSubagentsPanel({
                   key={`${index}-${step.text}`}
                   className={cn(
                     "flex items-start gap-2.5 py-[3px] text-[12.5px] leading-5",
-                    isCompleted && "text-fg/40",
+                    isCompleted && "text-fg/45",
                     isInProgress && "text-[color:var(--color-accent-bright,#C4B5FD)]",
-                    !isCompleted && !isInProgress && !isFailed && "text-fg/55",
-                    isFailed && "text-rose-200/85",
+                    !isCompleted && !isInProgress && !isFailed && "text-fg/65",
+                    isFailed && "text-rose-200/90",
                   )}
                 >
-                  <span className="mt-[3px] flex h-3 w-3 shrink-0 items-center justify-center">
+                  <span className="mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                     <PlanGlyph status={step.status} />
                   </span>
                   <span className="min-w-0 flex-1 break-words">{step.text}</span>
@@ -339,6 +389,7 @@ export function ChatSubagentsPanel({
         <SectionHeader
           label="Subagents"
           hint={foreground.length ? `${foreground.length}` : undefined}
+          tone="subagent"
         />
         {foreground.length ? (
           <div className="pb-1">
@@ -347,12 +398,13 @@ export function ChatSubagentsPanel({
                 key={snap.taskId}
                 snapshot={snap}
                 selected={selectedTaskId === snap.taskId}
+                category="subagent"
                 onClick={() => handleSelect(snap)}
               />
             ))}
           </div>
         ) : (
-          <p className="px-4 pb-2 text-[11.5px] text-fg/30">
+          <p className="px-4 pb-2 text-[11.5px] text-fg/40">
             None active.
           </p>
         )}
@@ -361,13 +413,14 @@ export function ChatSubagentsPanel({
       {/* ── Background tasks ─────────────────────────────────────── */}
       {background.length ? (
         <section className="border-t border-white/[0.04] pb-2">
-          <SectionHeader label="Background tasks" hint={`${background.length}`} />
+          <SectionHeader label="Background" hint={`${background.length}`} tone="background" />
           <div className="pb-1">
             {background.map((snap) => (
               <SubagentRow
                 key={snap.taskId}
                 snapshot={snap}
                 selected={selectedTaskId === snap.taskId}
+                category="background"
                 onClick={() => handleSelect(snap)}
               />
             ))}
@@ -405,15 +458,20 @@ export function ChatSubagentsPanel({
 
   if (variant === "pane") {
     return (
-      <div className={cn("flex h-full min-h-0 flex-col font-sans", className)}>
+      <div className={cn(
+        // Subtle elevation so the panel reads as a real surface against the
+        // black background instead of dissolving into it.
+        "flex h-full min-h-0 flex-col font-sans bg-white/[0.012]",
+        className,
+      )}>
         {/* Single-line header: "Work" + dimmed summary clause + close.
             The TreeStructure icon moved into the toggle button where it
             actually means something. */}
         <div className="flex shrink-0 items-baseline gap-3 px-4 pb-2.5 pt-3.5">
-          <span className="text-[12.5px] font-medium tracking-[0.005em] text-fg/80">
+          <span className="text-[12.5px] font-medium tracking-[0.005em] text-fg/85">
             Work
           </span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-fg/35">
+          <span className="min-w-0 flex-1 truncate text-[11px] text-fg/45">
             {headerSummary}
           </span>
           {onClose ? (

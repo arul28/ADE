@@ -89,4 +89,37 @@ describe("WorkStartSurface", () => {
       });
     });
   });
+
+  it("does not render any VM banner or block for a macos-vm lane", async () => {
+    render(
+      <WorkStartSurface
+        draftKind="chat"
+        draftLaneId="lane-vm"
+        lanes={[{ id: "lane-vm", name: "VM lane", runtimePlacement: "macos-vm" } as any]}
+        onOpenChatSession={vi.fn()}
+        onLaunchPtySession={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
+    expect(screen.queryByTestId("work-vm-banner")).toBeNull();
+    expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
+    expect(screen.queryByText("Open VM tab")).toBeNull();
+  });
+
+  it("does not render the VM banner for a local lane", async () => {
+    render(
+      <WorkStartSurface
+        draftKind="chat"
+        draftLaneId="lane-local"
+        lanes={[{ id: "lane-local", name: "Local", runtimePlacement: "local" } as any]}
+        onOpenChatSession={vi.fn()}
+        onLaunchPtySession={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
+    expect(screen.queryByTestId("work-vm-banner")).toBeNull();
+    expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
+  });
 });

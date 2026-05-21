@@ -13,6 +13,7 @@ type DrawerDensity = "full" | "mini";
 type DrawerMode = "lanes" | "chats";
 
 const DRAWER_WIDTH_FULL = 32;
+const DRAWER_WIDTH_MAX = 48;
 const DRAWER_WIDTH_MINI = 22;
 
 export type DrawerPrSummary = {
@@ -23,8 +24,11 @@ export type DrawerPrSummary = {
 };
 
 export function visibleDrawerLaneCount(panelHeight: number, laneCount: number): number {
-  // Full drawer uses compact lane cards; leave room for a chat group + hints.
-  const lanesMaxRows = Math.max(2, Math.floor((panelHeight - 5) / 4));
+  // Each lane card is 4 rows (2 content + 2 border) plus a 1-row margin between
+  // adjacent cards. Header + footer hints + new-lane row eat about 6 rows of
+  // outer chrome. Use 5 rows per card so the count stays inside the visible
+  // panel even when the selected card also expands its chat block.
+  const lanesMaxRows = Math.max(2, Math.floor((panelHeight - 6) / 5));
   return Math.min(laneCount, 12, lanesMaxRows);
 }
 
@@ -123,6 +127,7 @@ export function Drawer({
   diffByLaneId = {},
   loading = false,
   unavailableLaneIds = new Set<string>(),
+  width: requestedWidth,
 }: {
   lanes: LaneSummary[];
   sessions: AgentChatSessionSummary[];
@@ -139,6 +144,7 @@ export function Drawer({
   diffByLaneId?: Record<string, DiffLineStats>;
   loading?: boolean;
   unavailableLaneIds?: ReadonlySet<string>;
+  width?: number;
 }) {
   const { stdout } = useStdout();
   const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
@@ -153,7 +159,9 @@ export function Drawer({
     ? sessions.filter((s) => s.laneId === browsingLane.id).slice(0, visibleDrawerChatCount(sessions.length))
     : [];
 
-  const width = density === "mini" ? DRAWER_WIDTH_MINI : DRAWER_WIDTH_FULL;
+  const width = density === "mini"
+    ? DRAWER_WIDTH_MINI
+    : Math.max(DRAWER_WIDTH_FULL, Math.min(DRAWER_WIDTH_MAX, Math.floor(requestedWidth ?? DRAWER_WIDTH_FULL)));
   const borderColor = focused ? theme.color.violet : theme.color.border;
 
   if (density === "mini") {
@@ -186,7 +194,7 @@ export function Drawer({
         </Text>
       </Box>
 
-      <Box flexDirection="column" paddingX={0} flexGrow={1} flexShrink={1}>
+      <Box flexDirection="column" paddingX={1} flexGrow={1} flexShrink={1}>
         {loading && laneRows.length === 0 ? (
           <Box paddingX={1}>
             <Text dimColor>Loading lanes…</Text>
@@ -203,13 +211,23 @@ export function Drawer({
           const showChatBlock = mode === "chats"
             ? isBrowsing && browsingLane?.id === lane.id
             : isSelected;
+          const cardBorder = cardBorderColor(status, isSelected);
+          // width - 2 (outer drawer border) - 2 (lane container paddingX) - 2 (card border) - 2 (card paddingX)
+          const cardInnerWidth = width - 8;
           return (
-            <React.Fragment key={lane.id}>
+            <Box
+              key={lane.id}
+              borderStyle="round"
+              borderColor={cardBorder}
+              paddingX={1}
+              flexDirection="column"
+              marginTop={index > 0 ? 1 : 0}
+            >
               <LaneCard
                 lane={lane}
                 status={status}
                 prefix={meta.prefix}
-                width={width - 2 /* borders */}
+                width={cardInnerWidth}
                 selected={isSelected}
                 active={lane.id === activeLaneId}
                 provider={sessionProviderFor(lane, sessions)}
@@ -222,35 +240,52 @@ export function Drawer({
                   sessions={laneChatSessions}
                   activeSessionId={activeSessionId}
                   selectedChatIndex={selectedChatIndex}
-                  width={width - 2}
+                  width={cardInnerWidth}
                   worktreeAvailable={worktreeAvailable}
                   interactive={mode === "chats"}
                 />
               ) : null}
-            </React.Fragment>
+            </Box>
           );
         })}
       </Box>
 
-      <Box paddingX={1} flexShrink={0}>
-        <Text color={theme.color.t4} wrap="truncate">
-          {!focused ? (
-            "\n"
-          ) : mode === "chats" ? (
-            <>
-              <Text color={theme.color.violet}>↑↓</Text>{" "}
-              {browsingLane && unavailableLaneIds.has(browsingLane.id) ? "lane unavailable" : "open chat"}
-              {"\n"}
-              <Text color={theme.color.violet}>↑</Text> lane card · <Text color={theme.color.violet}>↓</Text> next lane
-            </>
-          ) : (
-            <>
-              <Text color={theme.color.violet}>↑↓</Text> lanes · chats preview
-              {"\n"}
-              <Text color={theme.color.violet}>↓</Text> enter chats · <Text color={theme.color.violet}>↵</Text> details
-            </>
-          )}
-        </Text>
+      <Box flexDirection="column" paddingX={1} flexShrink={0}>
+        {!focused ? (
+          <>
+            <Text> </Text>
+            <Text> </Text>
+          </>
+        ) : mode === "chats" ? (
+          <>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={theme.color.violet}>↑↓</Text>
+              {" "}
+              {browsingLane && unavailableLaneIds.has(browsingLane.id) ? "lane unavailable" : "select chat"}
+            </Text>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={theme.color.violet}>↵</Text>
+              {" open · "}
+              <Text color={theme.color.violet}>esc</Text>
+              {" lanes · "}
+              <Text color={theme.color.violet}>tab</Text>
+              {" section"}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={theme.color.violet}>↑↓</Text>
+              {" lanes"}
+            </Text>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={theme.color.violet}>↵</Text>
+              {" enter chats · "}
+              <Text color={theme.color.violet}>tab</Text>
+              {" section"}
+            </Text>
+          </>
+        )}
       </Box>
       <Box paddingX={1} flexShrink={0}>
         <Text
@@ -265,9 +300,27 @@ export function Drawer({
 }
 
 /**
- * Full two-line lane row:
- *   line 1: rail/prefix · name · [chip]
- *   line 2: exec · branch · detail · age
+ * Pick the rounded-card border color from lane status + selection. Idle gets a
+ * dim border so the card still reads as a distinct surface without shouting.
+ */
+function cardBorderColor(status: LaneStatusKind, selected: boolean): string {
+  if (selected) return theme.color.violet;
+  switch (status) {
+    case "primary": return theme.color.violet;
+    case "running": return theme.color.running;
+    case "attention": return theme.color.attention;
+    case "failed": return theme.color.error;
+    default: return theme.color.border;
+  }
+}
+
+/**
+ * Full two-line lane row rendered inside a per-lane card:
+ *   line 1: [tree-prefix] name [chip if active state] [PR pill if any]
+ *   line 2: [indent] exec branch · detail · age
+ *
+ * The card's border color already conveys the lane status, so we drop the rail
+ * glyph and the redundant "idle" / "PRIMARY" chips.
  */
 function LaneCard({
   lane,
@@ -292,25 +345,28 @@ function LaneCard({
   diffStats: DiffLineStats | null;
   worktreeAvailable: boolean;
 }) {
-  const railColor = theme.laneStatusColor(status);
   const nameColor = selected || active || status === "primary" ? theme.color.violet : theme.color.t1;
   const detail = laneDetailSuffix(lane, diffStats, worktreeAvailable);
   const exec = theme.provider(provider);
   const age = formatLaneAge(lane);
-  const contentWidth = Math.max(10, width - 4);
+  const contentWidth = Math.max(10, width);
 
-  const chipText = ((): string => {
+  // Hide the chip for idle (default) and primary (the lane is literally named
+  // "Primary" — chip would just repeat it). Surface every other transient
+  // state in plain text.
+  const chipText = ((): string | null => {
     switch (status) {
-      case "primary": return "PRIMARY";
+      case "primary":
+      case "idle":
+        return null;
       case "running": return "run";
       case "attention": return "wait";
       case "failed": return worktreeAvailable ? "fail" : "miss";
-      default: return "idle";
+      default: return null;
     }
   })();
   const chipColor = ((): string => {
     switch (status) {
-      case "primary": return theme.color.violet;
       case "running": return theme.color.running;
       case "attention": return theme.color.attention;
       case "failed": return theme.color.error;
@@ -318,49 +374,68 @@ function LaneCard({
     }
   })();
 
-  // Indicator column (rail or stack prefix). Width: prefix may be 0..N chars.
-  const indicator = prefix ? prefix : `${theme.rail} `;
-  const indicatorWidth = indicator.length;
-  const chipWidth = chipText.length;
+  const indicatorWidth = prefix.length;
+  const chipWidth = chipText ? chipText.length : 0;
   const prPillText = pr?.state === "open" ? formatPrPillText(pr) : null;
   const prPillWidth = prPillText?.length ?? 0;
-  const canShowPrPill = Boolean(prPillText) && contentWidth >= 24 && contentWidth - indicatorWidth - chipWidth - prPillWidth - 3 >= 4;
-  const nameMax = Math.max(3, contentWidth - indicatorWidth - chipWidth - (canShowPrPill ? prPillWidth + 1 : 0) - 1);
+  const chipReservation = chipWidth ? chipWidth + 1 : 0;
+  const canShowPrPill = Boolean(prPillText)
+    && contentWidth >= 22
+    && contentWidth - indicatorWidth - chipReservation - prPillWidth - 1 >= 4;
+  // VM lanes live on the Mac VM, not the host worktree path. Surface a small
+  // badge so users in the TUI know `/commit`, `/push`, etc. operate against
+  // the VM-attached lane (not a normal local worktree).
+  const isVmLane = lane.runtimePlacement === "macos-vm";
+  const VM_BADGE_WIDTH = 2;
+  const rightReservationWithoutVm = chipReservation + (canShowPrPill ? prPillWidth + 1 : 0);
+  const canShowVmBadge = isVmLane
+    && contentWidth - indicatorWidth - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
+  const reservedRight = rightReservationWithoutVm + (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0);
+  const nameMax = Math.max(3, contentWidth - indicatorWidth - reservedRight);
   const name = truncate(lane.name, nameMax);
 
   const line2Indent = " ".repeat(Math.min(indicatorWidth, 4));
   const branch = lane.branchRef ?? "";
-  const detailText = detail.diff
-    ? `+${detail.diff.add} −${detail.diff.del}`
-    : detail.hint ?? "";
+  // Diff is rendered on its own third line under selected cards; never inline
+  // on line 2. Hints (missing worktree, dirty, rebase, checkpoint Xd) still
+  // appear between branch and age on line 2.
+  const inlineHint = detail.hint ?? "";
   const canShowAge = Boolean(age) && contentWidth >= 22;
   const metaWidth = contentWidth - line2Indent.length - 2 - (canShowAge ? age.length + 3 : 0);
-  const detailMax = detailText ? Math.min(detailText.length, Math.max(0, metaWidth - 7)) : 0;
-  const branchMax = Math.max(3, metaWidth - (detailMax ? detailMax + 3 : 0));
+  const hintMax = inlineHint ? Math.min(inlineHint.length, Math.max(0, metaWidth - 7)) : 0;
+  const branchMax = Math.max(3, metaWidth - (hintMax ? hintMax + 3 : 0));
   const truncBranch = truncate(branch, branchMax);
-  const truncDetail = detailText ? truncate(detailText, detailMax) : "";
+  const truncHint = inlineHint ? truncate(inlineHint, hintMax) : "";
+  // Diff renders only when the card is selected — otherwise the line list stays
+  // calm. Selected cards get an extra row under the branch with +adds/−dels.
+  const showDiffLine = selected && detail.diff !== null;
 
   return (
-    <Box flexDirection="column" borderStyle="single" borderColor={selected ? theme.color.violet : theme.color.border} paddingX={1}>
+    <Box flexDirection="column">
       <Box>
         <Text>
-          {prefix ? (
-            <Text color={theme.color.t4}>{prefix}</Text>
-          ) : (
-            <Text color={railColor} bold>
-              {theme.rail}
-              {" "}
-            </Text>
-          )}
+          {prefix ? <Text color={theme.color.t4}>{prefix}</Text> : null}
           <Text color={nameColor} bold={selected || status === "primary"}>
             {pad(name, nameMax)}
           </Text>
-          <Text> </Text>
-          <Text color={chipColor}>{chipText}</Text>
+          {chipText ? (
+            <>
+              <Text> </Text>
+              <Text color={chipColor}>{chipText}</Text>
+            </>
+          ) : null}
           {canShowPrPill && pr ? (
             <>
               <Text> </Text>
               <PrPill pr={pr} />
+            </>
+          ) : null}
+          {canShowVmBadge ? (
+            <>
+              <Text> </Text>
+              <Text color={theme.color.info} bold>
+                VM
+              </Text>
             </>
           ) : null}
         </Text>
@@ -374,18 +449,10 @@ function LaneCard({
             <Text color={theme.color.t5}>· </Text>
           )}
           <Text color={theme.color.t3}>{truncBranch}</Text>
-          {truncDetail ? (
+          {truncHint ? (
             <>
               <Text color={theme.color.t5}> · </Text>
-              {detail.diff && truncDetail === detailText ? (
-                <Text>
-                  <Text color={theme.color.running}>+{detail.diff.add}</Text>
-                  <Text> </Text>
-                  <Text color={theme.color.error}>−{detail.diff.del}</Text>
-                </Text>
-              ) : (
-                <Text color={theme.color.t3}>{truncDetail}</Text>
-              )}
+              <Text color={theme.color.t3}>{truncHint}</Text>
             </>
           ) : null}
           {canShowAge && age ? (
@@ -396,6 +463,16 @@ function LaneCard({
           ) : null}
         </Text>
       </Box>
+      {showDiffLine && detail.diff ? (
+        <Box>
+          <Text>
+            <Text>{line2Indent}</Text>
+            <Text color={theme.color.running}>+{detail.diff.add}</Text>
+            <Text> </Text>
+            <Text color={theme.color.error}>−{detail.diff.del}</Text>
+          </Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -418,10 +495,7 @@ function PrPill({ pr }: { pr: DrawerPrSummary }) {
   );
 }
 
-/**
- * Chat block rendered beneath the browsing lane row, with a violet left border
- * matching DFChat from the wireframe.
- */
+/** Chat block rendered beneath the browsing lane row as a compact subsection. */
 function ChatBlock({
   sessions,
   activeSessionId,
@@ -439,13 +513,11 @@ function ChatBlock({
 }) {
   if (!worktreeAvailable) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" marginTop={1}>
         <Box>
-          <Text color={theme.color.violet}>│ </Text>
           <Text color={theme.color.t4}>CHATS · unavailable</Text>
         </Box>
         <Box>
-          <Text color={theme.color.violet}>│ </Text>
           <Text color={theme.color.error}>worktree missing</Text>
         </Box>
       </Box>
@@ -453,17 +525,15 @@ function ChatBlock({
   }
   if (sessions.length === 0 && selectedChatIndex !== 0) {
     return (
-      <Box paddingLeft={2}>
-        <Text color={theme.color.violet}>│ </Text>
+      <Box marginTop={1}>
         <Text dimColor>No chats in lane.</Text>
       </Box>
     );
   }
   const max = Math.max(8, width - 4);
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginTop={1}>
       <Box>
-        <Text color={theme.color.violet}>│ </Text>
         <Text color={theme.color.t4}>CHATS · {sessions.length}</Text>
       </Box>
       {sessions.map((session, index) => {
@@ -473,17 +543,16 @@ function ChatBlock({
         const exec = theme.provider(provider);
         const when = formatSessionAge(session);
         const label = truncate(formatSessionLabel(session), max - 6);
-        let titleColor: string = theme.color.t2;
-        if (running) {
-          titleColor = theme.color.violet;
-        } else if (selected) {
-          titleColor = theme.color.t1;
-        }
+        // White by default. Violet on selection (the only highlight state in a
+        // TUI). The running spinner + activeSession dot already convey activity
+        // — no need to also recolor the title, and bold is avoided because some
+        // xterm builds render bold characters slightly wider, which makes the
+        // selected row look outdented next to its neighbours.
+        const titleColor: string = selected ? theme.color.violet : theme.color.t1;
         return (
-          <Box key={session.sessionId}>
-            <Text color={theme.color.violet}>│ </Text>
+          <Box key={session.sessionId} marginTop={index > 0 ? 1 : 0}>
             <Text color={exec.color}>{exec.glyph} </Text>
-            <Text color={titleColor} bold={running || selected}>
+            <Text color={titleColor}>
               {label}
             </Text>
             <Text> </Text>
@@ -496,7 +565,6 @@ function ChatBlock({
         );
       })}
       <Box>
-        <Text color={theme.color.violet}>│ </Text>
         <Text color={interactive && selectedChatIndex === sessions.length ? theme.color.violet : theme.color.t4}>
           + new chat
         </Text>
@@ -564,7 +632,9 @@ function MiniDrawer({
         const meta = rowMeta[index] ?? { depth: 0, prefix: "", isLast: false };
         const selected = index === selectedLaneIndex;
         const detail = formatLaneAge(lane);
-        const nameMax = Math.max(4, inner - 3 - detail.length - meta.prefix.length);
+        const isVmLane = lane.runtimePlacement === "macos-vm";
+        const vmSuffixWidth = isVmLane ? 3 : 0;
+        const nameMax = Math.max(4, inner - 3 - detail.length - meta.prefix.length - vmSuffixWidth);
         return (
           <Box key={lane.id} paddingX={1}>
             <Text color={theme.laneStatusColor(status)} bold>
@@ -577,6 +647,11 @@ function MiniDrawer({
             >
               {pad(truncate(lane.name, nameMax), nameMax)}
             </Text>
+            {isVmLane ? (
+              <Text color={theme.color.info} bold>
+                {" "}VM
+              </Text>
+            ) : null}
             <Text color={theme.color.t4}> {detail}</Text>
           </Box>
         );

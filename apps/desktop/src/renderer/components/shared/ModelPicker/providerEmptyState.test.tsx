@@ -42,6 +42,13 @@ describe("ProviderEmptyState", () => {
     expect(openExternalCalls).toContain("https://cursor.com/dashboard/integrations");
   });
 
+  it("renders connected-but-empty Cursor discovery copy", () => {
+    render(<ProviderEmptyState family="cursor" mode="discovery-empty" />);
+    expect(screen.getByText("No Cursor models found")).toBeTruthy();
+    expect(screen.getByText(/Cursor is connected/i)).toBeTruthy();
+    expect(screen.queryByText("Connect Cursor")).toBeNull();
+  });
+
   it("renders Droid (factory) copy", () => {
     render(<ProviderEmptyState family="factory" />);
     expect(screen.getByText(/Install Droid CLI/i)).toBeTruthy();
