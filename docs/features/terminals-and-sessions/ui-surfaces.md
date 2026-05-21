@@ -554,7 +554,22 @@ up to `renameError` in `TerminalsPage`.
 A single hook that owns a lot of state:
 
 - session lists, deduped via `listSessionsCached()` with project-root +
-  lane + status keying
+  lane + status keying. When the IPC refresh returns a persisted row
+  that already has a pending optimistic session for the same id, the
+  hook calls `mergePendingOptimisticSession(persisted, optimistic)` to
+  keep the optimistic `ptyId` on the row until the persisted view
+  reflects it. The helper only merges when the persisted row is still
+  `running`, the optimistic session carries a non-empty `ptyId`, and
+  the persisted `ptyId` does not already match — that case returns the
+  persisted row untouched and drops the pending entry. When merged,
+  the row keeps the persisted fields but inherits the optimistic
+  `ptyId` (plus `toolType` / `runtimeState` as gap-fillers when the
+  persisted row hasn't backfilled them yet), and `keepPending: true`
+  leaves the pending entry in place so the next refresh can re-merge
+  if the persisted row still hasn't caught up. This closes a race
+  where the persisted row landed before its `ptyId` was written and
+  would otherwise clobber the optimistic attachment, leaving the new
+  `TerminalView` unable to subscribe to live PTY data
 - per-project work view state (open items, active/selected, view mode,
   draft kind, filters, organization, collapsed IDs, focus-hidden flag)
 - lane-scoped work view state keyed as `projectRoot::laneId`
@@ -585,8 +600,9 @@ can subscribe to live PTY data before fast TUIs like Codex or Claude
 paint their first frame. Waiting on the refresh round-trip first used
 to lose the initial paint and leave the terminal blank. The
 `launchPtySession({ laneId, profile, command?, args?, startupCommand?,
-env?, title?, tracked? })` helper (and its lane-scoped twin in
-`useLaneWorkSessions`) builds a default launch payload with
+startupDelayMs?, env?, title?, tracked? })` helper (and its
+lane-scoped twin in `useLaneWorkSessions`) builds a default launch
+payload with
 `buildTrackedCliLaunchCommand` when the caller didn't override
 `command`/`args`/`env`, so every entry point — chat composer launch
 button, TopBar work controls, lane Work pane — produces the same
@@ -598,7 +614,14 @@ maps in `apps/desktop/src/shared/cliLaunch.ts`.
 The runtime strips leading `ENV=value` assignments before sniffing the
 provider, so continuation commands the OpenCode preamble emits
 (`OPENCODE_CONFIG_CONTENT=… opencode --session …`) round-trip
-correctly.
+correctly. `startupDelayMs` is forwarded into the `ade.pty.create`
+payload only when the caller passes it (so non-Work callers don't
+inherit a non-zero default); the Work CLI launch path in
+`AgentChatPane` passes `WORK_CLI_STARTUP_DELAY_MS = 180` and
+intentionally omits `command` / `args` so every Work CLI launch
+goes through the shell + `startupCommand` path (see
+[pty-and-processes.md](./pty-and-processes.md#create-flow-createargs)
+for how the PTY service consumes the delay).
 
 `useLaneWorkSessions` (same file) wraps the same state but scopes to a
 single lane for the Lanes tab.

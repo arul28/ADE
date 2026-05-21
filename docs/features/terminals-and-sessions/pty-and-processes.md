@@ -202,7 +202,18 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 10. If the spawn ended up in a shell (no direct launch, or direct
     launch fell back), type `args.startupCommand` into the PTY so the
     shell executes the CLI. Direct launches that succeeded skip this —
-    they already received argv. Returns `{ ptyId, sessionId, pid }`.
+    they already received argv. The write can be deferred by
+    `args.startupDelayMs` (clamped 0–1000 ms via
+    `normalizeStartupCommandDelayMs`; non-numeric / negative / `NaN`
+    inputs collapse to `0`). When the delay is positive the write is
+    scheduled with `setTimeout(...).unref()` so the timer never blocks
+    process exit, and the scheduled callback bails out if the PTY was
+    disposed in the meantime. This is what the renderer Work CLI
+    launch path uses (`WORK_CLI_STARTUP_DELAY_MS = 180` in
+    `AgentChatPane`) to give the spawned shell a beat to finish
+    drawing its initial prompt before the CLI invocation is typed in,
+    avoiding a half-rendered command in the user's scrollback. Returns
+    `{ ptyId, sessionId, pid }`.
 
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
