@@ -1284,7 +1284,7 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
     return "ADE Cursor chat uses @cursor/sdk, which requires a Cursor API key. Open Settings > AI Providers, use ADE's encrypted key store, or set CURSOR_API_KEY before launching ADE.";
   }
   if (provider === "droid") {
-    return "ADE Droid chat runs Factory Droid over ACP. Set FACTORY_API_KEY before launching ADE, or run `droid` and use its interactive `/login`.";
+    return "ADE Droid chat uses the Factory Droid SDK. Set FACTORY_API_KEY before launching ADE, or run `droid` and use its interactive `/login`.";
   }
   return "No terminal login command is known for this provider.";
 }

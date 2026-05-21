@@ -47,7 +47,6 @@ import { createJobEngine } from "./services/jobs/jobEngine";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService } from "./services/chat/agentChatService";
-import { shutdownAcpCliConnections } from "./services/chat/acpCliPool";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
@@ -5437,11 +5436,6 @@ app.whenReady().then(async () => {
     }
 
     shutdownOpenCodeServersBestEffort();
-    try {
-      shutdownAcpCliConnections();
-    } catch {
-      // ignore
-    }
   };
 
   const finalizeAppExit = (exitCode: number): void => {

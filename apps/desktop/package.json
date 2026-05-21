@@ -49,7 +49,6 @@
     "version:release": "node ./scripts/set-release-version.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.22.1",
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
     "@cursor/sdk": "^1.0.9",
     "@factory/droid-sdk": "^0.2.0",

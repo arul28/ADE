@@ -253,10 +253,6 @@ import {
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
-import type {
-  PermissionOption,
-  RequestPermissionResponse,
-} from "@agentclientprotocol/sdk";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
   acquireCursorSdkConnection,
@@ -320,7 +316,7 @@ import {
   type CursorSdkRuntime,
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
-import { mapStopReasonToTerminalEvents } from "./acpEventMapper";
+import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
@@ -385,8 +381,6 @@ type PersistedChatState = {
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
   threadId?: string;
-  /** Legacy ACP session id for Droid resume across app restarts (best-effort). */
-  acpSessionId?: string;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
   sdkSessionId?: string;
@@ -708,17 +702,10 @@ type OpenCodeRuntime = {
 };
 
 type CursorPermissionWaiter =
-  | {
-      sdkHook?: false;
-      options: PermissionOption[];
-      resolve: (value: RequestPermissionResponse) => void;
-    }
-  | {
-      sdkHook: true;
-      toolName: string;
-      options: PermissionOption[];
-      resolve: (value: CursorSdkHookDecision) => void;
-    };
+  {
+    toolName: string;
+    resolve: (value: CursorSdkHookDecision) => void;
+  };
 
 type CursorCloudActiveRun = {
   agentId: string;
@@ -781,11 +768,7 @@ type DroidRuntime = {
 type ChatRuntime = CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime;
 
 function cancelCursorPermissionWaiter(waiter: CursorPermissionWaiter, reason: string): void {
-  if (waiter.sdkHook) {
-    waiter.resolve(denyCursorHook(reason));
-    return;
-  }
-  waiter.resolve({ outcome: { outcome: "cancelled" } });
+  waiter.resolve(denyCursorHook(reason));
 }
 
 type DroidPermissionWaiter = {
@@ -1649,7 +1632,7 @@ type PreparedSendMessage = {
   onDispatched?: () => void;
   turnId?: string;
   optimisticCursorTurnStart?: boolean;
-  optimisticAcpTurnStart?: boolean;
+  optimisticDroidTurnStart?: boolean;
   optimisticCodexTurnStart?: boolean;
   runtime?: AgentChatRuntime;
   cloudOverrides?: AgentChatCloudOverrides;
@@ -2376,7 +2359,7 @@ function readErrorDetail(value: unknown): string | null {
   return null;
 }
 
-function classifyAcpHostError(
+function classifyProviderHostError(
   error: unknown,
   providerLabel: string,
   modelDisplayName: string,
@@ -7326,9 +7309,7 @@ export function createAgentChatService(args: {
         : claudePointer?.sessionId;
       const droidSdkSessionId = provider === "droid" && typeof record.droidSdkSessionId === "string" && record.droidSdkSessionId.trim().length
         ? record.droidSdkSessionId.trim()
-        : provider === "droid" && typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
-          ? record.acpSessionId.trim()
-          : undefined;
+        : undefined;
       const forkFromSdkSessionId = typeof record.forkFromSdkSessionId === "string" && record.forkFromSdkSessionId.trim().length
         ? record.forkFromSdkSessionId.trim()
         : undefined;
@@ -7422,9 +7403,6 @@ export function createAgentChatService(args: {
         ...(completion ? { completion } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
-          : {}),
-        ...(typeof record.acpSessionId === "string" && record.acpSessionId.trim().length
-          ? { acpSessionId: record.acpSessionId.trim() }
           : {}),
         ...(droidSdkSessionId ? { droidSdkSessionId } : {}),
         ...(sdkSessionId ? { sdkSessionId } : {}),
@@ -15984,33 +15962,6 @@ export function createAgentChatService(args: {
   const normalizeCursorSdkToolName = (name: string): string =>
     name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
 
-  const mapChatDecisionToCursorPermission = (
-    decision: AgentChatApprovalDecision | undefined,
-    options: PermissionOption[],
-    answers?: Record<string, string | string[]>,
-  ): RequestPermissionResponse => {
-    // If the caller provided an explicit optionId (e.g. from a structured
-    // selection), resolve it directly instead of the coarse decision mapping.
-    if (answers) {
-      const explicit = Object.values(answers).flat()[0];
-      const match = explicit ? options.find((o) => o.optionId === explicit) : undefined;
-      if (match) return { outcome: { outcome: "selected", optionId: match.optionId } };
-    }
-    const pick = (kind: PermissionOption["kind"]) => options.find((o) => o.kind === kind)?.optionId;
-    if (decision === "cancel") return { outcome: { outcome: "cancelled" } };
-    if (decision === "accept_for_session") {
-      const id = pick("allow_always") ?? pick("allow_once");
-      if (id) return { outcome: { outcome: "selected", optionId: id } };
-    } else if (decision === "accept") {
-      const id = pick("allow_once") ?? pick("allow_always");
-      if (id) return { outcome: { outcome: "selected", optionId: id } };
-    } else if (decision === "decline") {
-      const id = pick("reject_once") ?? pick("reject_always");
-      if (id) return { outcome: { outcome: "selected", optionId: id } };
-    }
-    return { outcome: { outcome: "cancelled" } };
-  };
-
   const mapChatDecisionToCursorSdkHook = (
     decision: AgentChatApprovalDecision | undefined,
   ): CursorSdkHookDecision => {
@@ -16941,16 +16892,9 @@ export function createAgentChatService(args: {
       }
 
       const itemId = req.id || randomUUID();
-      const options = [
-        { kind: "allow_once", optionId: "allow_once" },
-        { kind: "allow_always", optionId: "allow_always" },
-        { kind: "reject_once", optionId: "reject_once" },
-      ] as PermissionOption[];
       return new Promise<CursorSdkHookDecision>((outerResolve) => {
         runtime.permissionWaiters.set(itemId, {
-          sdkHook: true,
           toolName: req.toolName,
-          options,
           resolve: (decision) => {
             runtime.permissionWaiters.delete(itemId);
             outerResolve(decision);
@@ -18372,7 +18316,7 @@ export function createAgentChatService(args: {
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
       const descriptor = resolveSessionModelDescriptor(managed.session);
-      const classified = classifyAcpHostError(
+      const classified = classifyProviderHostError(
         error,
         "Factory Droid",
         descriptor?.displayName ?? managed.session.model ?? "Droid",
@@ -18460,7 +18404,7 @@ export function createAgentChatService(args: {
       onDispatched,
       turnId,
       optimisticCursorTurnStart,
-      optimisticAcpTurnStart,
+      optimisticDroidTurnStart,
       optimisticCodexTurnStart,
     } = prepared;
 
@@ -18560,7 +18504,7 @@ export function createAgentChatService(args: {
         resolvedAttachments,
         laneDirectiveKey,
         turnId,
-        optimisticDroidTurnStart: optimisticAcpTurnStart,
+        optimisticDroidTurnStart,
         onDispatched,
       });
       return;
@@ -18750,7 +18694,7 @@ export function createAgentChatService(args: {
       if (prepared.managed.session.provider === "cursor") {
         prepared.optimisticCursorTurnStart = true;
       } else {
-        prepared.optimisticAcpTurnStart = true;
+        prepared.optimisticDroidTurnStart = true;
       }
       emitChatEvent(prepared.managed, {
         type: "user_message",
@@ -20196,19 +20140,10 @@ export function createAgentChatService(args: {
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
-      if (pending.sdkHook) {
-        if (resolvedDecision === "accept_for_session") {
-          cursorRuntime.sdkApprovedTools.add(normalizeCursorSdkToolName(pending.toolName));
-        }
-        pending.resolve(mapChatDecisionToCursorSdkHook(resolvedDecision));
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision,
-          turnId: cursorRuntime.activeTurnId ?? null,
-        });
-        return;
+      if (resolvedDecision === "accept_for_session") {
+        cursorRuntime.sdkApprovedTools.add(normalizeCursorSdkToolName(pending.toolName));
       }
-      pending.resolve(mapChatDecisionToCursorPermission(resolvedDecision, pending.options, answers));
+      pending.resolve(mapChatDecisionToCursorSdkHook(resolvedDecision));
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,

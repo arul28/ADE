@@ -281,7 +281,7 @@ describe("modelRegistry", () => {
     expect(descriptor?.providerModelId).toBe("custom:gpt-5.4(xhigh)");
   });
 
-  it("formats Droid custom thinking models with the ACP display label", () => {
+  it("formats Droid custom thinking models with the expected display label", () => {
     const descriptor = getModelById("droid/custom:claude-sonnet-4-6-thinking-32000");
     expect(descriptor).toBeTruthy();
     expect(descriptor?.displayName).toBe("Claude Sonnet 4.6 (High)");
