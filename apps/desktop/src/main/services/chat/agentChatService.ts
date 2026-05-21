@@ -326,6 +326,7 @@ import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { TurnMemoryPolicyState } from "../ai/tools/memoryTools";
+import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
 const CLAUDE_AGENT_SDK_API = "v1_query";
@@ -4274,6 +4275,7 @@ export function createAgentChatService(args: {
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
+  processRegistry?: ProcessRegistryService | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
@@ -4314,6 +4316,7 @@ export function createAgentChatService(args: {
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
+    processRegistry,
     projectConfigService,
     aiIntegrationService,
     logger,
@@ -9644,12 +9647,10 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && ((msg as any).subtype === "hook_started" || (msg as any).subtype === "hook_progress" || (msg as any).subtype === "hook_response")) {
           const hookMsg = msg as any;
           if (hookMsg.subtype === "hook_started") {
-            emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "hook",
-              message: `Hook: ${hookMsg.hook_name ?? hookMsg.hook_event ?? "hook"} started`,
-              turnId,
-            });
+            // Claude SDK hook start messages are high-frequency lifecycle noise.
+            // Keep failures below, but do not persist successful hook bookkeeping
+            // into the user-visible transcript.
+            continue;
           } else if (hookMsg.subtype === "hook_response") {
             const outcome = hookMsg.outcome ?? (hookMsg.exit_code === 0 ? "passed" : "failed");
             if (outcome !== "passed" && outcome !== "success") {
@@ -14188,22 +14189,6 @@ export function createAgentChatService(args: {
               originalBytes: trimmed.originalBytes,
               trimmedBytes: trimmed.trimmedBytes,
             });
-            emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "hook",
-              message: "Trimmed large tool output before sending it back to Claude.",
-              detail: {
-                title: "Large tool output trimmed",
-                summary: input.hook_event_name === "PostToolUse"
-                  ? `${input.tool_name} output exceeded ${CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES} bytes.`
-                  : `Output exceeded ${CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES} bytes.`,
-                metrics: [
-                  { label: "Original", value: `${trimmed.originalBytes} bytes` },
-                  { label: "Sent", value: `${trimmed.trimmedBytes} bytes`, tone: "success" },
-                ],
-              },
-              turnId: runtime.activeTurnId ?? undefined,
-            });
             return {
               continue: true,
               hookSpecificOutput: {
@@ -15424,7 +15409,8 @@ export function createAgentChatService(args: {
       startedAt,
       transcriptPath,
       toolType: toolTypeFromProvider(effectiveProvider),
-      resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId)
+      resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
+      ...(processRegistry ? { ownerPid: processRegistry.pid } : {}),
     });
     if (normalizedTitle.length > 0) {
       sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
@@ -19486,6 +19472,16 @@ export function createAgentChatService(args: {
   };
 
   const resumeSession = async ({ sessionId }: { sessionId: string }): Promise<AgentChatSession> => {
+    const row = sessionService.get(sessionId);
+    if (
+      processRegistry
+      && row?.ownerPid != null
+      && row.ownerPid !== processRegistry.pid
+      && processRegistry.isPidLive(row.ownerPid)
+    ) {
+      throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
+    }
+
     let managed = ensureManagedSession(sessionId);
 
     // Identity-pinned sessions (CTO + worker agents) must always run on the
@@ -19626,6 +19622,9 @@ export function createAgentChatService(args: {
     managed.ctoSessionStartedAt = managed.session.identityKey === "cto" ? nowIso() : null;
 
     persistChatState(managed);
+    if (processRegistry) {
+      sessionService.setOwnerPid(sessionId, processRegistry.pid);
+    }
     return managed.session;
   };
 

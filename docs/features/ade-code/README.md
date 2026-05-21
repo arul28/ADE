@@ -23,7 +23,9 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `scripts/tui-web.mjs` | Dev browser mirror for `ade code`: ensures the dev runtime, spawns one PTY, serves xterm.js + WebSocket bridge (`npm run dev:code:web`). |
 | `apps/ade-cli/src/cli.ts` | Resolves the built or source TUI entry and forwards the parsed launch context to `runAdeCodeCli`. |
 | `apps/ade-cli/src/tuiClient/cli.tsx` | TUI entry: argv parsing, project discovery, connection bootstrap, Ink mount. Built to `apps/ade-cli/dist/tuiClient/cli.mjs`. |
-| `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. |
+| `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. Owns the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. |
+| `apps/ade-cli/src/tuiClient/deeplinkRow.ts` | Pure helper used by the `Ctrl+Y` keybinding. Maps the focused lane or PR row (including parsing a GitHub PR URL when the right pane only carries the URL) onto a `DeeplinkTarget` and returns the built `ade://` URL. Tested in `tuiClient/__tests__/deeplinkKeybind.test.ts`. |
+| `apps/ade-cli/src/commands/deeplinks.ts` | `ade open`, `ade link`, and `ade linear install` subcommands. Shares the parser + builder with the desktop main process so URLs round-trip across both surfaces. See [features/deeplinks/README.md](../deeplinks/README.md). |
 | `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
 | `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation, provider readiness, API-key status, OpenCode diagnostics, project slash-command discovery, lane diff stats (`listLaneDiffStats`), per-lane PR summaries (`listPrsByLane`), the Claude steer family (`steerChatMessage`, `cancelSteerMessage`, `editSteerMessage`, `dispatchSteerMessage`), the provider-grouped model catalog (`getModelCatalog(args?: AgentChatModelCatalogArgs)` → `AgentChatModelCatalog`), and the cross-surface model-picker favorites / recents (`getModelPickerFavorites`, `toggleModelPickerFavorite`, `getModelPickerRecents`, `pushModelPickerRecent`) backed by the top-level `modelPicker.*` JSON-RPC methods on `adeRpcServer`. |
@@ -241,9 +243,21 @@ After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli
 - `/login` delegates only to provider CLIs that can authenticate in the current terminal: Claude (`claude auth login`), Codex (`codex login`), and OpenCode (`opencode auth login`). Cursor chat is `@cursor/sdk` and needs `CURSOR_API_KEY` or desktop Settings > AI Providers. Droid chat runs Factory Droid over ACP and needs `FACTORY_API_KEY` or Factory's interactive `droid` login.
 - The middle composer shows the selected provider, model, reasoning, and permission mode under the prompt so draft changes on the right are visible before the chat starts.
 
+## Deeplinks (`ade open` / `ade link` / `ade linear install`)
+
+`ade code` exposes the ADE deeplink contract at three points:
+
+- **`Ctrl+Y`** over a highlighted lane or PR row in the drawer / right pane copies the canonical `ade://` URL to the system clipboard via `buildDeeplinkForRow` (`deeplinkRow.ts`). A toast confirms the copy or explains why the focused row can't be linked (e.g. no PR is attached to a chat preview).
+- **`ade open <url>`** invokes the OS opener on a validated `ade://` or `https://ade.app/open?...` URL, which routes back to the running desktop process (or starts it cold). The `--linear-issue <id> --branch <branch>` variant is what Linear's "Open issue in coding tool" entry passes; the desktop resolves the actual lane/repo from the active project.
+- **`ade link …`** builds and clipboard-copies a deeplink for a lane / branch / PR / Linear issue. `--ade` emits the custom scheme, the default is the HTTPS form. `ade link <url>` round-trips a parsed URL into the chosen form.
+- **`ade linear install`** writes `~/.linear/coding-tools.json` so Linear's "Open issue in coding tool" dropdown can launch `ade open --linear-issue ... --branch ...` directly.
+
+See [features/deeplinks/README.md](../deeplinks/README.md) for the full URL grammar, parser semantics, and the desktop / iOS / web sides of the protocol.
+
 ## Related docs
 
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime daemon, install paths, service manager, full CLI surface.
 - [Chat feature](../chat/README.md) — in-app Work chat architecture (service + renderer); same agent chat backend.
 - [Remote runtime](../remote-runtime/README.md) — how the same runtime daemon is reached over SSH.
+- [Deeplinks](../deeplinks/README.md) — `ade://` and `https://ade.app/open` URL grammar shared across desktop, ADE Code, iOS, and the marketing site.
 - [System overview](../../ARCHITECTURE.md) — CLI / terminal client placement in the system diagram.

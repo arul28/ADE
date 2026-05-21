@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
+  encodeTerminalPromptSubmitConfirm,
   encodeTerminalPromptSubmit,
   footerControlsForAvailability,
   isPromptLineBackspace,
@@ -508,5 +510,10 @@ describe("encodeTerminalPromptSubmit", () => {
 
   it("uses bracketed paste for multiline prompts", () => {
     expect(encodeTerminalPromptSubmit("one\r\ntwo")).toBe("\x1b[200~one\ntwo\x1b[201~\r");
+  });
+
+  it("uses a delayed confirm enter for live Claude terminal submissions", () => {
+    expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
+    expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
   });
 });

@@ -462,6 +462,191 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("persists ownerPid on create and returns it from get", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-owned",
+      laneId: "lane-1",
+      ptyId: "pty-owned",
+      tracked: true,
+      title: "Claude Code",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-owned.log",
+      toolType: "claude",
+      ownerPid: 12_345,
+    });
+
+    expect(service.get("session-owned")).toEqual(expect.objectContaining({
+      id: "session-owned",
+      ownerPid: 12_345,
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("reconciles only running sessions without a live owner pid", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const events: string[] = [];
+    service.onChanged((event) => events.push(`${event.reason}:${event.sessionId}`));
+
+    service.create({
+      sessionId: "session-live-owner",
+      laneId: "lane-1",
+      ptyId: "pty-live-owner",
+      tracked: true,
+      title: "Claude Code",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-live-owner.log",
+      toolType: "claude",
+      ownerPid: 12_345,
+    });
+    service.create({
+      sessionId: "session-dead-owner",
+      laneId: "lane-1",
+      ptyId: "pty-dead-owner",
+      tracked: true,
+      title: "Codex CLI",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: "/tmp/session-dead-owner.log",
+      toolType: "codex",
+      ownerPid: 99_999,
+    });
+    service.create({
+      sessionId: "session-legacy-owner",
+      laneId: "lane-1",
+      ptyId: "pty-legacy-owner",
+      tracked: true,
+      title: "Legacy CLI",
+      startedAt: "2026-03-17T00:12:00.000Z",
+      transcriptPath: "/tmp/session-legacy-owner.log",
+      toolType: "claude",
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "disposed",
+      liveOwnerPids: new Set([12_345]),
+    });
+
+    expect(reconciled).toBe(2);
+    expect(service.get("session-live-owner")).toEqual(expect.objectContaining({
+      id: "session-live-owner",
+      status: "running",
+      ptyId: "pty-live-owner",
+      ownerPid: 12_345,
+    }));
+    expect(service.get("session-dead-owner")).toEqual(expect.objectContaining({
+      id: "session-dead-owner",
+      status: "disposed",
+      ptyId: null,
+      ownerPid: 99_999,
+      endedAt: "2026-03-17T00:20:00.000Z",
+    }));
+    expect(service.get("session-legacy-owner")).toEqual(expect.objectContaining({
+      id: "session-legacy-owner",
+      status: "disposed",
+      ptyId: null,
+    }));
+    expect(events).toEqual(expect.arrayContaining([
+      "meta-updated:session-dead-owner",
+      "meta-updated:session-legacy-owner",
+    ]));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("omitted live owner set only reconciles legacy ownerless sessions", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-owned-unknown",
+      laneId: "lane-1",
+      ptyId: "pty-owned-unknown",
+      tracked: true,
+      title: "Owned",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-owned-unknown.log",
+      toolType: "claude",
+      ownerPid: 12_345,
+    });
+    service.create({
+      sessionId: "session-legacy-unknown",
+      laneId: "lane-1",
+      ptyId: "pty-legacy-unknown",
+      tracked: true,
+      title: "Legacy",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: "/tmp/session-legacy-unknown.log",
+      toolType: "claude",
+    });
+
+    expect(service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "disposed",
+    })).toBe(1);
+
+    expect(service.get("session-owned-unknown")).toEqual(expect.objectContaining({
+      status: "running",
+      ownerPid: 12_345,
+    }));
+    expect(service.get("session-legacy-unknown")).toEqual(expect.objectContaining({
+      status: "disposed",
+      ptyId: null,
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("updates ownerPid on reattach", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-reattach-owner",
+      laneId: "lane-1",
+      ptyId: "pty-old",
+      tracked: true,
+      title: "Claude Code",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-reattach-owner.log",
+      toolType: "claude",
+      ownerPid: 12_345,
+    });
+
+    const reattached = service.reattach({
+      sessionId: "session-reattach-owner",
+      ptyId: "pty-new",
+      startedAt: "2026-03-17T00:30:00.000Z",
+      ownerPid: 22_222,
+    });
+
+    expect(reattached).toEqual(expect.objectContaining({
+      id: "session-reattach-owner",
+      ptyId: "pty-new",
+      ownerPid: 22_222,
+      status: "running",
+      endedAt: null,
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("mirrors Claude SDK session pointers by lane and owning chat", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

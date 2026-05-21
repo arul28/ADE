@@ -440,7 +440,8 @@ function isRemoteRuntimeEventCategory(
     value === "orchestrator" ||
     value === "dag_mutation" ||
     value === "runtime" ||
-    value === "mission"
+    value === "mission" ||
+    value === "pty"
   );
 }
 

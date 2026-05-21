@@ -1192,6 +1192,28 @@ function migrate(db: MigrationDb) {
   try { db.run("alter table terminal_sessions add column archived_at text"); } catch {}
   try { db.run("alter table terminal_sessions add column chat_session_id text"); } catch {}
   try { db.run("create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id)"); } catch {}
+  // owner_pid identifies the ADE OS process that owns this row's runtime
+  // (the one with the live PTY or SDK session). Cross-process dispose /
+  // reconcile must check it before sweeping or every concurrent surface
+  // would happily mark each other's live sessions dead. Nullable because
+  // pre-migration rows pre-date ownership tracking.
+  try { db.run("alter table terminal_sessions add column owner_pid integer"); } catch {}
+  try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
+
+  // Process liveness registry. Every ADE process (desktop main, TUI runtime,
+  // ade-serve daemon) writes its pid here on boot and refreshes last_seen
+  // on a timer. Reconcile / dispose paths use this to tell "row whose owner
+  // crashed" from "row a sibling process is actively managing."
+  db.run(`
+    create table if not exists runtime_processes (
+      pid integer primary key,
+      role text not null,
+      project_root text,
+      started_at text not null,
+      last_seen text not null
+    )
+  `);
+  db.run("create index if not exists idx_runtime_processes_last_seen on runtime_processes(last_seen)");
 
   db.run(`
     create table if not exists claude_sessions (

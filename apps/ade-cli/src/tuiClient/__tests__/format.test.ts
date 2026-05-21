@@ -608,6 +608,12 @@ describe("renderChatLines", () => {
           sessionId: "s1",
           timestamp: "2026-01-01T12:00:02.000Z",
           sequence: 3,
+          event: { type: "system_notice", noticeKind: "hook", message: "Trimmed large tool output before sending it back to Claude." } as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 4,
           event: { type: "system_notice", noticeKind: "auth", message: "Failed to authenticate. API Error: 401 Invalid authentication credentials" } as never,
         },
       ],

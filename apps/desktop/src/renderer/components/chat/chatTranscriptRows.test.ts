@@ -980,7 +980,7 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("filters out 'session ready' system notices", () => {
+  it("filters out low-value system notices", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
@@ -989,6 +989,24 @@ describe("chatTranscriptRows edge cases", () => {
           type: "system_notice",
           noticeKind: "info",
           message: "Session ready",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook: SessionStart:startup started",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Trimmed large tool output before sending it back to Claude.",
         },
       },
     ]);

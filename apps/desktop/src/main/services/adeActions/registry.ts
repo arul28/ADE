@@ -771,7 +771,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stopGroup",
     "stopStack",
   ],
-  pty: ["create", "dispose", "resize", "sendToSession", "write"],
+  pty: ["create", "dispose", "list", "resize", "sendToSession", "write"],
   terminal: ["list", "read", "preview", "write", "resize", "signal", "activeForChat", "reattachChatCli"],
   layout: ["get", "set"],
   tiling_tree: ["get", "set"],

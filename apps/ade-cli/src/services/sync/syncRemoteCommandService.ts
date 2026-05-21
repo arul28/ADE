@@ -209,6 +209,15 @@ type SyncRemoteCommandServiceArgs = {
    * compiling — handlers reject with a clear error when missing.
    */
   getModelPickerStore?: () => ModelPickerStore | null;
+  /**
+   * Optional handler for the `deeplinks.open` sync command. iOS uses this to
+   * bounce a cross-machine `ade://...` URL to the paired desktop ("Send to
+   * your Mac"). Desktop main.ts wires this up to parseDeeplink +
+   * appNavigationService; in the ade-cli/runtime context (no desktop windows
+   * present) the handler is intentionally unset and the command returns a
+   * clear "not available" error.
+   */
+  dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   logger: Logger;
 };
 
@@ -2536,6 +2545,25 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       prs,
       snapshots: args.prService.listSnapshots(),
     };
+  });
+  // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a
+  // lane / repo-branch / cross-repo PR deeplink, so it forwards the URL to
+  // the paired desktop via this command. Desktop main.ts wires up
+  // `dispatchDeeplinkUrl` to parse the URL and route through the renderer's
+  // navigation service. In the ade-cli runtime (no desktop windows) the
+  // handler returns a clear "not available" so the iOS caller can fall back.
+  register("deeplinks.open", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const url = asTrimmedString(payload.url);
+    if (!url) {
+      throw new Error("deeplinks.open requires a url.");
+    }
+    if (!args.dispatchDeeplinkUrl) {
+      return {
+        ok: false,
+        message: "Desktop navigation is unavailable in this runtime.",
+      };
+    }
+    return await args.dispatchDeeplinkUrl(url);
   });
   register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
   register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));

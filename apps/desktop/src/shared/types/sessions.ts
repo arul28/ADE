@@ -64,6 +64,7 @@ export type TerminalSessionSummary = {
   laneId: string;
   laneName: string;
   ptyId: string | null;
+  ownerPid?: number | null;
   tracked: boolean;
   pinned: boolean;
   manuallyNamed?: boolean;

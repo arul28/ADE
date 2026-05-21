@@ -6,6 +6,10 @@ import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
+import {
+  handleDeeplinkUrl,
+  registerAdeProtocolHandler,
+} from "./services/deeplinks/protocolHandler";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -29,6 +33,7 @@ import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnos
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
+import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
@@ -809,6 +814,31 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: false, supportFetchAPI: true, stream: true },
   },
 ]);
+
+// Register the user-facing `ade://` deeplink scheme + single-instance lock so a
+// second `open ade://...` invocation reuses the running window. Dispatch to the
+// focused window's renderer via the existing IPC.appNavigate channel.
+registerAdeProtocolHandler({
+  dispatch: (request) => {
+    const focusable =
+      BrowserWindow.getFocusedWindow() ??
+      BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
+      null;
+    if (!focusable) return;
+    if (focusable.isMinimized()) focusable.restore();
+    focusable.show();
+    focusable.focus();
+    focusable.webContents.send(IPC.appNavigate, request);
+  },
+  log: (event, fields) => {
+    // Avoid throwing if console is gone; structured logger may not be ready yet.
+    try {
+      console.log(`[main] ${event}`, fields);
+    } catch {
+      // ignore
+    }
+  },
+});
 
 let pendingProjectOpenFiles: string[] = [];
 let handleProjectOpenFile: ((filePath: string) => void) | null = null;
@@ -1854,13 +1884,29 @@ app.whenReady().then(async () => {
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
-        void publishLinearLaneCard({
-          issueTracker: tracker,
-          lane,
-          issue,
-          projectRoot,
-          linkedAt,
-        }).catch((error) => {
+        // Resolve repo lazily so cards posted to Linear carry the cross-machine
+        // ADE deeplink (https://ade.app/open?type=branch&...). If the project
+        // has no GitHub remote, fall back to the legacy hash-anchor URL.
+        const resolveRepo = async (): Promise<{ owner: string; name: string } | null> => {
+          try {
+            return await githubService.getRepoOrThrow();
+          } catch {
+            return null;
+          }
+        };
+        void resolveRepo().then((repo) =>
+          publishLinearLaneCard({
+            issueTracker: tracker,
+            lane,
+            issue,
+            projectRoot,
+            linkedAt,
+            repoOwner: repo?.owner ?? null,
+            repoName: repo?.name ?? null,
+            postInitialComment: true,
+            log: (event, fields) => logger.warn(event, fields),
+          }),
+        ).catch((error) => {
           logger.warn("linear.lane_card_publish_failed", {
             laneId: lane.id,
             issueId: issue.id,
@@ -1894,8 +1940,16 @@ app.whenReady().then(async () => {
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
     });
+    const processRegistry = createProcessRegistryService({
+      db,
+      logger,
+      role: "desktop-main",
+      projectRoot,
+    });
+    processRegistry.start();
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
+      liveOwnerPids: processRegistry.listLivePids(),
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -2417,6 +2471,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
       sessionService,
+      processRegistry,
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
@@ -2825,6 +2880,7 @@ app.whenReady().then(async () => {
       episodicSummaryService,
       laneService,
       sessionService,
+      processRegistry,
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
@@ -3448,6 +3504,33 @@ app.whenReady().then(async () => {
           type: "sync-status",
           snapshot,
         });
+      },
+      // iOS "Send to your Mac" handler. Parses the inbound `ade://...` URL
+      // and routes it through the same protocol dispatcher main.ts wires up
+      // for direct OS clicks, so the renderer's existing AppNavigationBridge
+      // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
+      dispatchDeeplinkUrl: async (rawUrl) => {
+        try {
+          const focusable =
+            BrowserWindow.getFocusedWindow() ??
+            BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
+            null;
+          if (!focusable) {
+            return { ok: false, message: "No ADE window is available." };
+          }
+          handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
+            if (focusable.isMinimized()) focusable.restore();
+            focusable.show();
+            focusable.focus();
+            focusable.webContents.send(IPC.appNavigate, request);
+          });
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
       },
     });
     syncServiceRef = syncService;
@@ -4276,6 +4359,7 @@ app.whenReady().then(async () => {
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,
+      processRegistry,
       ptyService,
       diffService,
       fileService,
@@ -4693,6 +4777,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.apnsService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.processRegistry?.stop();
     } catch {
       // ignore
     }

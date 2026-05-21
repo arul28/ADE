@@ -52,19 +52,24 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
   const title = asString(node.title);
   if (!id || !identifier || !title) return null;
 
+  // Linear allows issues without a project (they live in a team only), so
+  // `project` is optional during normalization — falling through to empty
+  // strings keeps the existing display fallbacks (`projectName || projectSlug
+  // || teamKey`) intact. `team` and `state` remain required since every
+  // Linear issue has them.
   const project = isRecord(node.project) ? node.project : null;
   const team = isRecord(node.team) ? node.team : null;
   const state = isRecord(node.state) ? node.state : null;
-  if (!project || !team || !state) return null;
+  if (!team || !state) return null;
 
-  const projectId = asString(project.id);
-  const projectSlug = asString(project.slug) ?? asString(project.slugId);
+  const projectId = project ? (asString(project.id) ?? "") : "";
+  const projectSlug = project ? (asString(project.slug) ?? asString(project.slugId) ?? "") : "";
   const teamId = asString(team.id);
   const teamKey = asString(team.key);
   const stateId = asString(state.id);
   const stateName = asString(state.name);
   const stateType = asString(state.type);
-  if (!projectId || !projectSlug || !teamId || !teamKey || !stateId || !stateName || !stateType) return null;
+  if (!teamId || !teamKey || !stateId || !stateName || !stateType) return null;
 
   const labelsNodes = isRecord(node.labels) ? asArray(node.labels.nodes) : [];
   const labels = labelsNodes
@@ -100,7 +105,7 @@ function toNormalizedIssue(node: Record<string, unknown>): NormalizedLinearIssue
     url: asString(node.url),
     projectId,
     projectSlug,
-    projectName: asString(project.name),
+    projectName: project ? asString(project.name) : null,
     teamId,
     teamKey,
     teamName: asString(team.name),

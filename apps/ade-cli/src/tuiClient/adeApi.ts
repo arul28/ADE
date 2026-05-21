@@ -85,8 +85,6 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
 const RESUMABLE_TERMINAL_TOOL_TYPES = new Set([
   "claude",
   "claude-orchestrated",
-  "codex",
-  "codex-orchestrated",
 ]);
 
 export async function listTerminalSessions(
@@ -101,8 +99,7 @@ export async function listTerminalSessions(
     const toolType = session.toolType ?? "";
     if (CHAT_BACKED_TERMINAL_TOOL_TYPES.has(toolType)) return false;
     return RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)
-      || session.resumeMetadata?.provider === "claude"
-      || session.resumeMetadata?.provider === "codex";
+      || session.resumeMetadata?.provider === "claude";
   });
 }
 

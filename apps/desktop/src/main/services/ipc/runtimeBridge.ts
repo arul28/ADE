@@ -692,7 +692,7 @@ export function registerRuntimeBridge({
               {
                 cursor: arg?.request?.cursor,
                 limit: arg?.request?.limit,
-                category: "runtime",
+                category: arg?.request?.category,
               },
               onEvent,
               onEnded,
@@ -739,7 +739,7 @@ export function registerRuntimeBridge({
             {
               cursor: arg?.request?.cursor,
               limit: arg?.request?.limit,
-              category: "runtime",
+              category: arg?.request?.category,
             },
             onEvent,
             onEnded,

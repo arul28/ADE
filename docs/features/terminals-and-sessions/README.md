@@ -43,12 +43,31 @@ desktop fallback IPC path.
   terminal control, and `readTranscriptTail({ sessionId, ... })`, which
   merges the on-disk transcript tail with the live PTY output tail so
   Work/TUI terminal hydration can replay output that is still buffered
-  in the transcript write stream. ~1,500 lines. Branch rewrite.
+  in the transcript write stream. PTY create stamps the new
+  `terminal_sessions` row's `owner_pid` with the
+  `processRegistryService` pid so cross-process reconcile/dispose paths
+  can tell live siblings from crashed owners. ~1,500 lines. Branch
+  rewrite.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
-  layer for `terminal_sessions` rows. CRUD, continuation metadata normalization,
-  `reattach`, `reconcileStaleRunningSessions`. ~580 lines. Branch rewrite.
+  layer for `terminal_sessions` rows. CRUD, continuation metadata
+  normalization, `reattach`, `reconcileStaleRunningSessions`. Reconcile and
+  ownership-aware queries gate row sweeps on the live-pid set returned by
+  `processRegistryService.listLivePids()`: a `running` row whose `owner_pid`
+  is still in the set belongs to a live sibling and must be left alone, only
+  unowned or owner-crashed rows get marked `disposed`. ~580 lines. Branch
+  rewrite.
+- `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
+  process heartbeat registrar against the `runtime_processes` table. Every
+  ADE process (desktop main, TUI runtime, `ade serve` daemon) inserts a row
+  on boot keyed by `pid`, refreshes `last_seen` on a 5 s heartbeat, and
+  reports liveness through `isPidLive(candidatePid)` /
+  `listLivePids()`. The default liveness window is 3× the heartbeat
+  interval so a single missed tick doesn't false-positive a sibling as
+  dead. PTY create stamps the new row's `owner_pid` with the registry's
+  `pid`, and reconcile / dispose paths consult the registry before
+  sweeping. See [ARCHITECTURE.md §3.4](../../ARCHITECTURE.md#34-cross-process-ownership).
 - `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
   session persistence tests.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
@@ -495,12 +514,16 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    lane association, and transcript history intact.
 
 7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
-   orphaned `running` rows as `disposed`. The service still accepts an
-   `excludeToolTypes` option, but `main.ts` no longer passes chat tool
-   types: chat runtimes always warm up afresh on app start, so leaving
-   stale `running` chat rows behind only causes UI confusion. Ended
-   chat sessions stay in the table and are resumable through the SDK
-   (or removable via `ade.agentChat.delete`).
+   orphaned `running` rows as `disposed`. Ownership is gated through
+   `processRegistryService.listLivePids()`: a row whose `owner_pid` is
+   still in the live set belongs to a sibling process (another desktop
+   window, the `ade serve` daemon, an attached `ade code` TUI) and is
+   left alone, only owner-crashed or unowned rows get swept. The service
+   still accepts an `excludeToolTypes` option, but `main.ts` no longer
+   passes chat tool types: chat runtimes always warm up afresh on app
+   start, so leaving stale `running` chat rows behind only causes UI
+   confusion. Ended chat sessions stay in the table and are resumable
+   through the SDK (or removable via `ade.agentChat.delete`).
 
 8. **Delete** — `sessionService.deleteSession(sessionId)` removes a
    row outright and emits `terminalSessionChanged` with
@@ -630,6 +653,13 @@ Processes (managed):
   `transcriptBytesWritten` is not persisted.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
+- Reconcile and dispose paths gate on `processRegistryService.listLivePids()`.
+  Adding a new sweep path that operates on `terminal_sessions` without
+  consulting the registry will happily mark another process's live
+  sessions dead — always run the candidate row set through the registry
+  before disposing. The same heartbeat backs PTY cleanup: `owner_pid`
+  stamping happens inside `ptyService.create`, so any new lifecycle
+  surface that bypasses that helper needs to write `owner_pid` itself.
 - `PaneTilingLayout` mounts every leaf pane in the Work grid; each
   `SessionSurface` still passes `terminalVisible={true}` for grid tiles
   because the tiling layout keeps them on screen. Do not unmount a grid

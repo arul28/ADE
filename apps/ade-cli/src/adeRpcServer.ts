@@ -1521,7 +1521,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission"] }
+        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission", "pty"] }
       }
     }
   },
@@ -7823,6 +7823,38 @@ export function createAdeRpcRequestHandler(args: {
       }
     }
 
+    if (method.startsWith("pty.")) {
+      const ptyArgs = safeObject(params.args ?? params.arg ?? params);
+      if (method === "pty.create") {
+        const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
+        return {
+          ...result,
+          session: runtime.sessionService.get(result.sessionId),
+        };
+      }
+      if (method === "pty.sendToSession") {
+        return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+      }
+      if (method === "pty.write") {
+        runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
+        return null;
+      }
+      if (method === "pty.resize") {
+        runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
+        return null;
+      }
+      if (method === "pty.dispose") {
+        runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
+        return null;
+      }
+      if (method === "pty.list") {
+        return {
+          sessions: runtime.ptyService.list(ptyArgs as Parameters<typeof runtime.ptyService.list>[0]),
+        };
+      }
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+    }
+
     if (method.startsWith("modelPicker.")) {
       const store = getSharedModelPickerStore();
       if (method === "modelPicker.getFavorites") {
@@ -7891,7 +7923,15 @@ export function createAdeRpcRequestHandler(args: {
       if (!kind) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate requires target.kind.");
       }
-      if (kind !== "work" && kind !== "chat" && kind !== "lane" && kind !== "pr" && kind !== "route") {
+      if (
+        kind !== "work" &&
+        kind !== "chat" &&
+        kind !== "lane" &&
+        kind !== "pr" &&
+        kind !== "route" &&
+        kind !== "branch" &&
+        kind !== "linear-issue"
+      ) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported app navigation target kind: ${kind}.`);
       }
       if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
@@ -7899,6 +7939,24 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (kind === "route" && !asOptionalTrimmedString(target.route)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
+      }
+      if (kind === "branch") {
+        if (
+          !asOptionalTrimmedString(target.repoOwner) ||
+          !asOptionalTrimmedString(target.repoName) ||
+          !asOptionalTrimmedString(target.branch)
+        ) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "app/navigate target 'branch' requires repoOwner, repoName, and branch.",
+          );
+        }
+      }
+      if (kind === "linear-issue" && !asOptionalTrimmedString(target.issueIdentifier)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "app/navigate target 'linear-issue' requires issueIdentifier.",
+        );
       }
       const normalizedTarget: Record<string, unknown> = { kind };
       const sessionId = asOptionalTrimmedString(target.sessionId);
@@ -7909,6 +7967,21 @@ export function createAdeRpcRequestHandler(args: {
         const prId = asOptionalTrimmedString(target.prId);
         if (prId) normalizedTarget.prId = prId;
         if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+        const repoOwner = asOptionalTrimmedString(target.repoOwner);
+        const repoName = asOptionalTrimmedString(target.repoName);
+        if (repoOwner) normalizedTarget.repoOwner = repoOwner;
+        if (repoName) normalizedTarget.repoName = repoName;
+      }
+      if (kind === "branch") {
+        normalizedTarget.repoOwner = asOptionalTrimmedString(target.repoOwner);
+        normalizedTarget.repoName = asOptionalTrimmedString(target.repoName);
+        normalizedTarget.branch = asOptionalTrimmedString(target.branch);
+        if (typeof target.prNumber === "number") normalizedTarget.prNumber = target.prNumber;
+      }
+      if (kind === "linear-issue") {
+        normalizedTarget.issueIdentifier = asOptionalTrimmedString(target.issueIdentifier);
+        const branch = asOptionalTrimmedString(target.branch);
+        if (branch) normalizedTarget.branch = branch;
       }
       if (kind === "route") {
         normalizedTarget.route = asOptionalTrimmedString(target.route);

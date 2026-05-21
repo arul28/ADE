@@ -355,13 +355,37 @@ describe("ChatView", () => {
     expect(frame).not.toContain("[done]");
   });
 
+  it("keeps tool activity status out of the visible transcript", () => {
+    const turnId = "tool-status-turn";
+    const frame = renderChatTranscriptPlainText({
+      events: [
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "activity", activity: "tool_calling", detail: "Processing tool input", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "tool_call", tool: "Grep", args: {}, itemId: "tool-1", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3, event: { type: "activity", activity: "reading", detail: "Read", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:03.000Z", sequence: 4, event: { type: "tool_call", tool: "Read", args: {}, itemId: "tool-2", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:04.000Z", sequence: 5, event: { type: "text", text: "Let me look at the sendMessage flow more carefully and what ", itemId: "msg-1", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:05.000Z", sequence: 6, event: { type: "activity", activity: "searching", detail: "Grep", turnId } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:06.000Z", sequence: 7, event: { type: "text", text: "events are emitted when a session is resumed.", itemId: "msg-1", turnId } },
+      ],
+      notices: [],
+      activeSession: session,
+      width: 120,
+    });
+
+    expect(frame).not.toContain("Runtime");
+    expect(frame.match(/Tool calls/g)).toHaveLength(1);
+    expect(frame).toContain("Tool calls (2)");
+    expect(frame).toContain("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
+  });
+
   it("keeps startup/auth notices out of the transcript header spam path", () => {
     const result = render(
       <ChatView
         events={[
           { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "system_notice", noticeKind: "info", message: "Session ready" } as never },
           { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "system_notice", noticeKind: "hook", message: "Hook: SessionStart:startup started" } as never },
-          { sessionId: "s1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3, event: { type: "system_notice", noticeKind: "auth", message: "Failed to authenticate. API Error: 401 Invalid authentication credentials" } as never },
+          { sessionId: "s1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3, event: { type: "system_notice", noticeKind: "hook", message: "Trimmed large tool output before sending it back to Claude." } as never },
+          { sessionId: "s1", timestamp: "2026-01-01T12:00:03.000Z", sequence: 4, event: { type: "system_notice", noticeKind: "auth", message: "Failed to authenticate. API Error: 401 Invalid authentication credentials" } as never },
         ]}
         notices={[
           { id: "notice-1", timestamp: "2026-01-01T12:00:03.000Z", tone: "info", text: "Starting `claude auth login` in this terminal." },
@@ -380,6 +404,7 @@ describe("ChatView", () => {
     expect(frame).toContain("Claude auth completed. Refreshing provider status.");
     expect(frame).not.toContain("Session ready");
     expect(frame).not.toContain("Hook: SessionStart");
+    expect(frame).not.toContain("Trimmed large tool output");
     expect(frame).not.toContain("Claude ·");
     expect(frame).not.toContain("ADE Code ·");
     expect(frame).not.toContain("12:00");

@@ -12,6 +12,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
+import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { runGit } from "../git/git";
@@ -641,6 +642,7 @@ export function createPtyService({
   transcriptsDir,
   laneService,
   sessionService,
+  processRegistry,
   aiIntegrationService,
   projectConfigService,
   getLaneRuntimeEnv,
@@ -656,6 +658,7 @@ export function createPtyService({
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
+  processRegistry?: ProcessRegistryService | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   getLaneRuntimeEnv?: (laneId: string) => Promise<Record<string, string>> | Record<string, string>;
@@ -694,6 +697,7 @@ export function createPtyService({
   let ptyDataCharCount = 0;
   let ptyDataMaxBatchChars = 0;
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
+  const ownerPid = processRegistry?.pid ?? null;
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
@@ -2437,6 +2441,7 @@ export function createPtyService({
             sessionId: existingSession.id,
             ptyId: attachedPtyId,
             startedAt: new Date(attachedEntry.createdAt).toISOString(),
+            ...(ownerPid != null ? { ownerPid } : {}),
           });
           setRuntimeState(existingSession.id, "running");
         }
@@ -2494,6 +2499,7 @@ export function createPtyService({
           resumeCommand: initialResumeCommand,
           resumeMetadata: initialResumeMetadata,
           chatSessionId,
+          ...(ownerPid != null ? { ownerPid } : {}),
         });
         setRuntimeState(sessionId, "running");
 
@@ -2651,7 +2657,12 @@ export function createPtyService({
       }
 
       if (existingSession) {
-        sessionService.reattach({ sessionId, ptyId, startedAt });
+        sessionService.reattach({
+          sessionId,
+          ptyId,
+          startedAt,
+          ...(ownerPid != null ? { ownerPid } : {}),
+        });
         setRuntimeState(sessionId, "running");
         Promise.resolve()
           .then(async () => {
@@ -3447,6 +3458,10 @@ export function createPtyService({
       return computeRuntimeState(sessionId, fallbackStatus);
     },
 
+    list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {
+      return service.enrichSessions(sessionService.list(args));
+    },
+
     async readTranscriptTail(args: {
       sessionId: string;
       maxBytes: number;
@@ -3500,6 +3515,20 @@ export function createPtyService({
         if (!sessionId) return;
         const session = sessionService.get(sessionId);
         if (!session) return;
+        if (
+          ownerPid != null
+          && session.ownerPid != null
+          && session.ownerPid !== ownerPid
+          && processRegistry?.isPidLive(session.ownerPid)
+        ) {
+          logger.warn("pty.dispose_skipped_owned_by_peer", {
+            ptyId,
+            sessionId,
+            ownerPid: session.ownerPid,
+            currentPid: ownerPid,
+          });
+          return;
+        }
         // The renderer can outlive the pty map (for example after app restart). Allow closing by session id
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();

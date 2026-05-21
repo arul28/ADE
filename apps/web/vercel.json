@@ -10,6 +10,10 @@
       "destination": "https://ade-ac1c6011.mintlify.dev/docs/:match*"
     },
     {
+      "source": "/open",
+      "destination": "/api/open"
+    },
+    {
       "source": "/((?!.*\\.).*)",
       "destination": "/index.html"
     }

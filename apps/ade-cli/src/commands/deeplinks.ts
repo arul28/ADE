@@ -1,0 +1,416 @@
+// ---------------------------------------------------------------------------
+// CLI subcommands for ADE deeplinks: `ade open`, `ade link`, `ade linear`.
+//
+// The three commands cover the inbound (open), outbound (link), and Linear-
+// integration (linear install) surfaces described in the deeplinks plan.
+// ---------------------------------------------------------------------------
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+import {
+  buildDeeplink,
+  parseDeeplink,
+  type DeeplinkTarget,
+} from "../../../desktop/src/shared/deeplinks";
+import { copyToClipboard } from "../lib/clipboard";
+
+export class CliDeeplinkUsageError extends Error {}
+
+export type DeeplinkCliResult = {
+  output: string;
+  exitCode: number;
+};
+
+const HELP_OPEN = [
+  "Usage:",
+  "  ade open <url>",
+  "  ade open --linear-issue <id> --branch <branch>",
+  "",
+  "  Opens an `ade://` or `https://ade.app/open?...` URL via the OS, which",
+  "  routes it back to the running ADE desktop app (or launches it cold).",
+  "",
+  "  The --linear-issue / --branch form is what Linear's 'Open in coding",
+  "  tool' menu passes us (Linear doesn't surface the GitHub repo, so the",
+  "  desktop renderer resolves it from the active project).",
+].join("\n");
+
+const HELP_LINK = [
+  "Usage:",
+  "  ade link lane <lane-uuid>",
+  "  ade link branch <owner/repo> <branch> [--pr <number>]",
+  "  ade link pr <owner/repo> <number>",
+  "  ade link linear-issue <ADE-123> [--branch <branch>]",
+  "  ade link <url>            # round-trip — parse + re-print canonical form",
+  "",
+  "Options:",
+  "  --ade           Emit the custom `ade://` form (default: https)",
+  "  --no-clipboard  Print the URL but don't copy to clipboard",
+].join("\n");
+
+const HELP_LINEAR = [
+  "Usage: ade linear install",
+  "",
+  "  Writes ~/.linear/coding-tools.json so Linear's 'Open issue in coding",
+  "  tool' dropdown can launch ADE. Backs up any existing file alongside.",
+].join("\n");
+
+export function runDeeplinkCommand(rest: string[]): DeeplinkCliResult {
+  if (rest.length === 0) {
+    return { output: `${HELP_OPEN}\n${HELP_LINK}\n${HELP_LINEAR}\n`, exitCode: 0 };
+  }
+  const [verb, ...verbArgs] = rest;
+  switch (verb) {
+    case "open":
+      return runOpenCommand(verbArgs);
+    case "link":
+      return runLinkCommand(verbArgs);
+    case "linear":
+      return runLinearCommand(verbArgs);
+    default:
+      throw new CliDeeplinkUsageError(
+        `Unknown deeplink subcommand: ${verb}. Try 'ade open <url>', 'ade link ...', or 'ade linear install'.`,
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ade open <url>
+// ---------------------------------------------------------------------------
+
+export function runOpenCommand(args: string[]): DeeplinkCliResult {
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+    return { output: `${HELP_OPEN}\n`, exitCode: 0 };
+  }
+
+  // Flag form: --linear-issue <id> --branch <branch> (Linear coding-tool entry)
+  const flags = extractFlags(args, {
+    booleans: [],
+    valued: ["linear-issue", "branch"],
+  });
+  const linearIssue = flags.valued.get("linear-issue");
+  const branch = flags.valued.get("branch");
+  if (linearIssue || branch) {
+    // Build an https://ade.app/open URL with the hints Linear gave us. The
+    // landing page (and the renderer-side handler) interpret the linear-issue
+    // hint by looking up the lane/project that owns it.
+    const params = new URLSearchParams();
+    params.set("type", "linear-issue");
+    if (linearIssue) params.set("issue", linearIssue);
+    if (branch) params.set("branch", branch);
+    const url = `https://ade.app/open?${params.toString()}`;
+    const result = openUrlViaOs(url);
+    if (result.failed) {
+      return {
+        output: `Could not invoke OS opener for ${url}: ${result.message}\n`,
+        exitCode: 1,
+      };
+    }
+    return { output: `Opened ${url}\n`, exitCode: 0 };
+  }
+
+  // URL form.
+  const url = flags.positional[0];
+  if (!url) {
+    throw new CliDeeplinkUsageError("ade open <url>  (or --linear-issue / --branch)");
+  }
+  const parsed = parseDeeplink(url);
+  if (!parsed.ok) {
+    // Allow unknown_type URLs (like the linear-issue form above) to still pass
+    // through to the OS opener — the landing page / desktop can decide what
+    // to do.
+    if (parsed.error.kind === "unknown_type" && /^https?:\/\/ade\.app\/open\b/i.test(url)) {
+      const result = openUrlViaOs(url);
+      if (result.failed) {
+        return {
+          output: `Could not invoke OS opener for ${url}: ${result.message}\n`,
+          exitCode: 1,
+        };
+      }
+      return { output: `Opened ${url}\n`, exitCode: 0 };
+    }
+    throw new CliDeeplinkUsageError(
+      `Invalid deeplink: ${(parsed.error as { kind: string; reason?: string }).reason ?? parsed.error.kind}`,
+    );
+  }
+  const result = openUrlViaOs(url);
+  if (result.failed) {
+    return {
+      output: `Could not invoke OS opener for ${url}: ${result.message}\n`,
+      exitCode: 1,
+    };
+  }
+  return { output: `Opened ${url}\n`, exitCode: 0 };
+}
+
+function openUrlViaOs(url: string): { failed: boolean; message: string } {
+  const platform = process.platform;
+  let cmd: string;
+  let args: string[];
+  if (platform === "darwin") {
+    cmd = "open";
+    args = [url];
+  } else if (platform === "win32") {
+    cmd = "cmd";
+    args = ["/c", "start", "", url];
+  } else {
+    cmd = "xdg-open";
+    args = [url];
+  }
+  try {
+    const r = spawnSync(cmd, args, { stdio: "ignore" });
+    if (r.error) return { failed: true, message: r.error.message };
+    if (typeof r.status === "number" && r.status !== 0) {
+      return { failed: true, message: `${cmd} exited with ${r.status}` };
+    }
+    return { failed: false, message: "" };
+  } catch (err) {
+    return {
+      failed: true,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ade link <type> ...
+// ---------------------------------------------------------------------------
+
+export function runLinkCommand(args: string[]): DeeplinkCliResult {
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+    return { output: `${HELP_LINK}\n`, exitCode: 0 };
+  }
+  const flags = extractFlags(args, {
+    booleans: ["ade", "no-clipboard"],
+    valued: ["pr", "branch"],
+  });
+  const positional = flags.positional;
+  const useAdeForm = flags.booleans.has("ade");
+  const skipClipboard = flags.booleans.has("no-clipboard");
+
+  // `ade link <url>` — accept a deeplink and re-emit it in the chosen form.
+  if (positional.length === 1) {
+    const parsed = parseDeeplink(positional[0]);
+    if (parsed.ok) {
+      const out = buildDeeplink(parsed.target, { form: useAdeForm ? "ade" : "https" });
+      return finishLink(out, skipClipboard);
+    }
+  }
+
+  const verb = positional[0];
+  if (verb === "lane") {
+    const laneId = positional[1];
+    if (!laneId) {
+      throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
+    }
+    const target: DeeplinkTarget = { kind: "lane", laneId };
+    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
+    return finishLink(url, skipClipboard);
+  }
+  if (verb === "branch") {
+    const repo = positional[1];
+    const branch = positional[2];
+    if (!repo || !branch) {
+      throw new CliDeeplinkUsageError(
+        "ade link branch <owner/repo> <branch> [--pr <number>]",
+      );
+    }
+    const [repoOwner, repoName] = repo.split("/");
+    if (!repoOwner || !repoName) {
+      throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
+    }
+    const prNumberRaw = flags.valued.get("pr");
+    const prNumber = prNumberRaw ? Number(prNumberRaw) : undefined;
+    if (prNumberRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
+      throw new CliDeeplinkUsageError("--pr must be a positive integer");
+    }
+    const target: DeeplinkTarget = prNumber != null
+      ? { kind: "branch", repoOwner, repoName, branch, prNumber }
+      : { kind: "branch", repoOwner, repoName, branch };
+    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
+    return finishLink(url, skipClipboard);
+  }
+  if (verb === "pr") {
+    const repo = positional[1];
+    const numberRaw = positional[2];
+    if (!repo || !numberRaw) {
+      throw new CliDeeplinkUsageError("ade link pr <owner/repo> <number>");
+    }
+    const [repoOwner, repoName] = repo.split("/");
+    if (!repoOwner || !repoName) {
+      throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
+    }
+    const prNumber = Number(numberRaw);
+    if (!Number.isInteger(prNumber) || prNumber < 1) {
+      throw new CliDeeplinkUsageError("PR number must be a positive integer");
+    }
+    const target: DeeplinkTarget = { kind: "pr", repoOwner, repoName, prNumber };
+    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
+    return finishLink(url, skipClipboard);
+  }
+  if (verb === "linear-issue") {
+    const issueIdentifier = positional[1];
+    if (!issueIdentifier) {
+      throw new CliDeeplinkUsageError("ade link linear-issue <ADE-123> [--branch <branch>]");
+    }
+    const branchHint = flags.valued.get("branch");
+    const target: DeeplinkTarget = branchHint
+      ? { kind: "linear-issue", issueIdentifier, branch: branchHint }
+      : { kind: "linear-issue", issueIdentifier };
+    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
+    return finishLink(url, skipClipboard);
+  }
+
+  throw new CliDeeplinkUsageError(HELP_LINK);
+}
+
+function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
+  let clipboardNote = "";
+  if (!skipClipboard) {
+    if (copyToClipboard(url)) {
+      clipboardNote = "\n(copied to clipboard)";
+    }
+  }
+  return { output: `${url}${clipboardNote}\n`, exitCode: 0 };
+}
+
+// ---------------------------------------------------------------------------
+// ade linear install
+// ---------------------------------------------------------------------------
+
+export function runLinearCommand(args: string[]): DeeplinkCliResult {
+  const verb = args[0];
+  if (!verb || verb === "--help" || verb === "-h") {
+    return { output: `${HELP_LINEAR}\n`, exitCode: 0 };
+  }
+  if (verb === "install") {
+    return runLinearInstall(args.slice(1));
+  }
+  throw new CliDeeplinkUsageError(`Unknown linear subcommand: ${verb}`);
+}
+
+export function runLinearInstall(args: string[], opts: { home?: string; argv0?: string } = {}): DeeplinkCliResult {
+  const home = opts.home ?? os.homedir();
+  const cfgDir = path.join(home, ".linear");
+  const cfgPath = path.join(cfgDir, "coding-tools.json");
+  const bin = opts.argv0 ?? resolveAdeBinaryPath();
+  const dryRun = args.includes("--dry-run");
+
+  // Linear's coding-tool placeholder set only includes the Linear issue
+  // identifier, branch name, project name, prompt, and PR-comment id. It does
+  // NOT include the GitHub repo owner/name — tools are expected to resolve
+  // that locally from the issue identifier + active workspace.
+  //
+  // For v1 we hand the CLI just the branch name and Linear issue identifier;
+  // the receiving `ade open` invocation builds an `ade://` URL based on the
+  // active desktop project's GitHub remote (resolved via RPC) and opens the
+  // inbound-deeplink flow from there. If the desktop can't resolve the repo,
+  // it falls back to opening ADE on the lanes page so the user can pick.
+  const desiredEntry = {
+    openIssue: {
+      path: bin,
+      args: [
+        "open",
+        "--linear-issue",
+        "{{issue.identifier}}",
+        "--branch",
+        "{{issue.branchName}}",
+      ],
+      env: ["LINEAR_PROMPT", "LINEAR_ISSUE_IDENTIFIER", "LINEAR_ISSUE_BRANCH_NAME"],
+    },
+  };
+
+  let existing: Record<string, unknown> | null = null;
+  if (fs.existsSync(cfgPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      existing = null;
+    }
+  }
+
+  const merged = existing ? { ...existing, ...desiredEntry } : desiredEntry;
+  const serialized = JSON.stringify(merged, null, 2) + "\n";
+
+  if (dryRun) {
+    return {
+      output: `Would write ${cfgPath}\n\n${serialized}`,
+      exitCode: 0,
+    };
+  }
+
+  fs.mkdirSync(cfgDir, { recursive: true });
+
+  if (existing) {
+    const backupPath = `${cfgPath}.bak-${new Date()
+      .toISOString()
+      .replace(/[:.]/g, "")
+      .slice(0, 15)}`;
+    fs.copyFileSync(cfgPath, backupPath);
+    fs.writeFileSync(cfgPath, serialized);
+    return {
+      output: `Wrote ${cfgPath} (backup at ${backupPath})\n`,
+      exitCode: 0,
+    };
+  }
+  fs.writeFileSync(cfgPath, serialized);
+  return { output: `Wrote ${cfgPath}\n`, exitCode: 0 };
+}
+
+function resolveAdeBinaryPath(): string {
+  // When invoked via the bundled binary, argv[0] is the absolute path. When
+  // run via node, argv[0] is node — fall back to a `which`-like resolution.
+  const argv0 = process.argv[0] ?? "";
+  if (argv0 && /\b(ade|node)\b/.test(argv0)) {
+    if (/\bade\b/.test(argv0)) return argv0;
+  }
+  // Last-resort: hope `ade` is on PATH.
+  return "ade";
+}
+
+// ---------------------------------------------------------------------------
+// Argument helpers
+// ---------------------------------------------------------------------------
+
+type FlagSpec = {
+  booleans: string[];
+  valued: string[];
+};
+
+type FlagResult = {
+  booleans: Set<string>;
+  valued: Map<string, string>;
+  positional: string[];
+};
+
+function extractFlags(args: string[], spec: FlagSpec): FlagResult {
+  const booleans = new Set<string>();
+  const valued = new Map<string, string>();
+  const positional: string[] = [];
+  const booleanSet = new Set(spec.booleans);
+  const valuedSet = new Set(spec.valued);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      const name = arg.slice(2);
+      if (booleanSet.has(name)) {
+        booleans.add(name);
+        continue;
+      }
+      if (valuedSet.has(name)) {
+        const next = args[i + 1];
+        if (next == null || next.startsWith("--")) {
+          throw new CliDeeplinkUsageError(`--${name} requires a value`);
+        }
+        valued.set(name, next);
+        i += 1;
+        continue;
+      }
+      throw new CliDeeplinkUsageError(`Unknown flag: ${arg}`);
+    }
+    positional.push(arg);
+  }
+  return { booleans, valued, positional };
+}

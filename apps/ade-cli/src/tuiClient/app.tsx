@@ -105,7 +105,7 @@ import {
 } from "./components/ChatView";
 import { TerminalPane, clampTerminalPaneCols } from "./components/TerminalPane";
 import { Header } from "./components/Header";
-import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, RightPane } from "./components/RightPane";
+import { computeLaneChatCounts, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor } from "./components/ModelPicker/modelPickerLayout";
 import { SlashPalette, SLASH_PALETTE_ROWS } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
@@ -132,6 +132,8 @@ import {
 } from "./feedback";
 import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
+import { buildDeeplinkForRow, type DeeplinkRow } from "./deeplinkRow";
+import { copyToClipboard } from "../lib/clipboard";
 import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
@@ -1510,6 +1512,8 @@ const MIN_CENTER_PANE_WIDTH = 24;
 const MIN_RIGHT_PANE_WIDTH = 30;
 const RIGHT_PANE_MAX_WIDTH = 42;
 const CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS = 3;
+export const CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS = 1200;
+const CLAUDE_TERMINAL_SUBMIT_REFRESH_DELAY_MS = 150;
 
 function finiteFloor(value: number, fallback: number): number {
   return Number.isFinite(value) ? Math.floor(value) : fallback;
@@ -1531,6 +1535,10 @@ export function encodeTerminalPromptSubmit(value: string): string {
   const normalized = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   if (normalized.includes("\n")) return `\x1b[200~${normalized}\x1b[201~\r`;
   return `${normalized}\r`;
+}
+
+export function encodeTerminalPromptSubmitConfirm(): string {
+  return "\r";
 }
 
 export function isTerminalControlToggle(input: string, key: { ctrl?: boolean }): boolean {
@@ -1567,29 +1575,6 @@ function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): s
   if (!attachmentPaths.length) return text;
   const attachmentBlock = ["Attached files:", ...attachmentPaths.map((filePath) => `- ${filePath}`)].join("\n");
   return text ? `${text}\n\n${attachmentBlock}` : attachmentBlock;
-}
-
-function terminalPromptNeedle(value: string): string | null {
-  const lines = value
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const last = lines[lines.length - 1] ?? "";
-  return last.length ? last.slice(0, 96) : null;
-}
-
-function terminalHiddenRowsContainPrompt(preview: ChatTerminalPreviewResult | null, value: string): boolean {
-  const needle = terminalPromptNeedle(value);
-  const rows = preview?.snapshot?.visibleRows ?? [];
-  if (!needle || !rows.length) return false;
-  const hiddenText = rows
-    .slice(-CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS)
-    .map((row) => row.text)
-    .join("\n")
-    .trim();
-  return hiddenText.includes(needle);
 }
 
 function signalTerminalWithCliSync(args: {
@@ -4150,7 +4135,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!connection) return;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
-    void connection.subscribeRuntimeEvents({ category: "runtime", cursor: 0, limit: 50, replay: false }, (event) => {
+    void connection.subscribeRuntimeEvents({ category: "pty", cursor: 0, limit: 50, replay: false }, (event) => {
       const payload = event.payload as { type?: unknown; event?: unknown };
       const terminalEvent = payload.event as { sessionId?: unknown; data?: unknown } | undefined;
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;
@@ -4434,13 +4419,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
       if (terminal.status === "running") {
         await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmit(text));
-        await delay(250);
-        let preview = await refreshTerminalPreview(conn, terminal.terminalId);
-        if (terminalHiddenRowsContainPrompt(preview, text)) {
-          await writeTerminal(conn, terminal.terminalId, "\r");
-          await delay(150);
-          preview = await refreshTerminalPreview(conn, terminal.terminalId);
-        }
+        // Claude Code occasionally leaves a programmatic `text + Enter` sitting
+        // in its prompt editor. New/resumed launches already send a delayed
+        // confirm Enter; do the same for live embedded sessions so submitting
+        // from ADE behaves like manually focusing Claude with Ctrl+T and
+        // pressing Enter.
+        await delay(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS);
+        await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmitConfirm());
+        await delay(CLAUDE_TERMINAL_SUBMIT_REFRESH_DELAY_MS);
+        await refreshTerminalPreview(conn, terminal.terminalId);
         return true;
       }
       const created = await sendToTerminalSession({
@@ -5199,7 +5186,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({
           kind: "details",
           title: "ADE action",
-          body: "Usage: /ade <domain.action|status|diff|model|effort|help> [json-object|json-array|json-scalar]",
+          body: "Usage: /ade <domain.action|status|diff|model|help> [json-object|json-array|json-scalar]",
         });
         return;
       }
@@ -6177,6 +6164,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return true;
   }, [addNotice, focusChat, project.workspaceRoot]);
 
+  // Resolve the deeplink target for the row/pane currently focused in the
+  // lanes-picker or PR-picker contexts. Returns `null` when the focus is on
+  // something the deeplink scheme does not cover (chat preview, slash-prompt
+  // pane, etc.) — keep this conservative so we never copy a misleading URL.
+  const resolveFocusedDeeplinkRow = useCallback((): DeeplinkRow | null => {
+    const pane = activePaneRef.current;
+
+    // PR-picker context: the lane-details right pane is showing and the focus
+    // ring is on its PR row. We prefer this over the lane row when both are
+    // available so Ctrl+Y on a highlighted PR copies the PR deeplink.
+    if (
+      pane === "details"
+      && rightPane.kind === "lane-details"
+      && rightPane.pr
+      && rightPane.selectedActionIndex === LANE_DETAIL_PR_ACTION_INDEX
+    ) {
+      const prNumber = rightPane.pr.number;
+      const url = rightPane.pr.url;
+      return { kind: "pr", pr: { url, prNumber } };
+    }
+
+    // Lanes-picker context: the drawer is open on lanes (or chats — fall back
+    // to the lane that owns the focused chat) and a row is highlighted.
+    if (pane === "drawer" && drawerOpen) {
+      const lane = highlightedDrawerLane ?? drawerLane ?? activeLane;
+      if (lane) return { kind: "lane", lane: { id: lane.id } };
+    }
+
+    // Lane-details pane with focus on a non-PR action row: still useful to
+    // copy the lane deeplink so the user can hand it off to a teammate.
+    if (pane === "details" && rightPane.kind === "lane-details") {
+      return { kind: "lane", lane: { id: rightPane.lane.id } };
+    }
+    return null;
+  }, [activeLane, drawerLane, drawerOpen, highlightedDrawerLane, rightPane]);
+
   const runKeybindingAction = useCallback((action: TuiKeybindingAction): boolean => {
     const reportUnavailable = (label = action): true => {
       addNotice(`${label} is recognized, but there is no active ADE Code control for it right now.`, "info");
@@ -6473,11 +6496,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       copyChatSelection();
       return true;
     }
+    if (action === "app:copyAdeDeeplink") {
+      const row = resolveFocusedDeeplinkRow();
+      if (!row) {
+        addNotice("No lane or PR row is focused to copy a deeplink for.", "info");
+        return true;
+      }
+      const url = buildDeeplinkForRow(row);
+      if (!url) {
+        addNotice("Cannot build an ADE deeplink for the focused row.", "error");
+        return true;
+      }
+      if (copyToClipboard(url)) {
+        addNotice("ADE deeplink copied", "success");
+      } else {
+        addNotice(`ADE deeplink: ${url}`, "info");
+      }
+      return true;
+    }
     if (action.startsWith("selection:")) {
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openHistorySearch, openModelRow, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
@@ -6814,6 +6855,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (key.ctrl && input === "a") {
       toggleSubagentsPane();
       return;
+    }
+
+    // Ctrl+Y: copy the canonical ade:// deeplink for the focused lane or PR.
+    // Scoped to the lanes drawer ("Tabs") and the lane-details/select pane
+    // ("Select") so it doesn't shadow other contexts. Users can additionally
+    // bind this to any chord via "app:copyAdeDeeplink" in keybindings.json.
+    if (
+      key.ctrl
+      && input === "y"
+      && (keybindingContext === "Tabs" || keybindingContext === "Select")
+    ) {
+      if (runKeybindingAction("app:copyAdeDeeplink")) return;
     }
 
     if (footerActive) {

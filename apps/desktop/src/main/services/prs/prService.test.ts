@@ -2456,7 +2456,16 @@ describe("prService.createFromLane", () => {
         method: "POST",
         body: expect.objectContaining({
           title: "My PR",
-          body: "Refs ADE-123\n\ndescription",
+          // Body starts with the Linear ref + description, then the auto-appended
+          // "Open in ADE" deeplink footer block (idempotent marker).
+          body: expect.stringMatching(/^Refs ADE-123\n\ndescription/),
+        }),
+      }),
+    );
+    expect(ghService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          body: expect.stringContaining("<!-- ade:link v=1"),
         }),
       }),
     );

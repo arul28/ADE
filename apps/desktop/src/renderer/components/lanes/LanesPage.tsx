@@ -3154,6 +3154,33 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               role="button"
               tabIndex={isDeleting ? -1 : 0}
               aria-disabled={isDeleting}
+              // Drag the lane row out of ADE to drop an "Open in ADE" rich link
+              // into chat apps (Slack/Mail/Messages). Receivers see a properly
+              // titled URL rather than a raw string.
+              // Note: the dragged URL is the lane-UUID form. Cross-machine
+              // branch+repo links require an async lookup against the GitHub
+              // remote; we use the right-click "Copy Branch Link" menu item
+              // for that path. Lane links still resolve correctly on the
+              // sender's own other devices.
+              draggable={!isDeleting}
+              onDragStart={(event) => {
+                if (isDeleting) return;
+                const url = `ade://lane/${encodeURIComponent(lane.id)}`;
+                const escapeHtml = (value: string): string =>
+                  value
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;");
+                const title = escapeHtml(lane.name ?? "ADE lane");
+                event.dataTransfer.effectAllowed = "copyLink";
+                event.dataTransfer.setData("text/uri-list", url);
+                event.dataTransfer.setData("text/plain", url);
+                event.dataTransfer.setData(
+                  "text/html",
+                  `<a href="${url}">${title}</a>`,
+                );
+              }}
               className={`group flex items-center gap-2 shrink-0${pulsingLaneId === lane.id ? " ade-lane-row-pulse" : ""}`}
               style={{
                 position: "relative",
