@@ -90,18 +90,18 @@ final class DeepLinkRouter {
       return false
     }
 
-    let query = adeQueryValues(from: components)
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
     switch query["type"]?.lowercased() {
     case "lane":
       guard query["id"]?.isEmpty == false else { return true }
       postSendToMac(url: url)
     case "branch":
-      guard splitRepo(query["repo"]) != nil,
+      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
             query["branch"]?.isEmpty == false else { return true }
       postSendToMac(url: url)
     case "pr":
-      guard splitRepo(query["repo"]) != nil,
-            positiveInteger(query["number"]) != nil else { return true }
+      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
+            ADEDeepLinkURLParsing.positiveInteger(query["number"]) != nil else { return true }
       postSendToMac(url: url)
     case "linear-issue":
       guard query["issue"]?.isEmpty == false else { return true }
@@ -183,35 +183,6 @@ final class DeepLinkRouter {
     }
     return trimmed
   }
-}
-
-private func splitRepo(_ value: String?) -> (owner: String, repo: String)? {
-  guard let value else { return nil }
-  let pieces = value.split(separator: "/", maxSplits: 1).map(String.init)
-  guard pieces.count == 2,
-        !pieces[0].isEmpty,
-        !pieces[1].isEmpty else {
-    return nil
-  }
-  return (pieces[0], pieces[1])
-}
-
-private func positiveInteger(_ value: String?) -> Int? {
-  guard let value,
-        let number = Int(value),
-        number > 0 else {
-    return nil
-  }
-  return number
-}
-
-private func adeQueryValues(from components: URLComponents) -> [String: String] {
-  var query: [String: String] = [:]
-  for item in components.queryItems ?? [] {
-    guard let value = item.value else { continue }
-    query[item.name.lowercased()] = value
-  }
-  return query
 }
 
 extension Notification.Name {

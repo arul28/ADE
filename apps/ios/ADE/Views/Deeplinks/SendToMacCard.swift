@@ -90,21 +90,21 @@ struct SendToMacTarget: Equatable, Identifiable {
           components.path == "/open" else {
       return nil
     }
-    let query = adeQueryValues(from: components)
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
     switch query["type"]?.lowercased() {
     case "lane":
       guard let id = query["id"], !id.isEmpty else { return .other }
       return .lane(id: id)
     case "branch":
-      guard let repo = splitRepo(query["repo"]),
+      guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]),
             let branch = query["branch"],
             !branch.isEmpty else {
         return .other
       }
       return .repoBranch(owner: repo.owner, repo: repo.repo, branch: branch)
     case "pr":
-      guard let repo = splitRepo(query["repo"]),
-            let number = positiveInteger(query["number"]) else {
+      guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]),
+            let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else {
         return .other
       }
       return .pr(owner: repo.owner, repo: repo.repo, number: number)
@@ -372,33 +372,4 @@ struct SendToMacCard: View {
     try? await Task.sleep(nanoseconds: 600_000_000)
     onDismiss()
   }
-}
-
-private func splitRepo(_ value: String?) -> (owner: String, repo: String)? {
-  guard let value else { return nil }
-  let pieces = value.split(separator: "/", maxSplits: 1).map(String.init)
-  guard pieces.count == 2,
-        !pieces[0].isEmpty,
-        !pieces[1].isEmpty else {
-    return nil
-  }
-  return (pieces[0], pieces[1])
-}
-
-private func positiveInteger(_ value: String?) -> Int? {
-  guard let value,
-        let number = Int(value),
-        number > 0 else {
-    return nil
-  }
-  return number
-}
-
-private func adeQueryValues(from components: URLComponents) -> [String: String] {
-  var query: [String: String] = [:]
-  for item in components.queryItems ?? [] {
-    guard let value = item.value else { continue }
-    query[item.name.lowercased()] = value
-  }
-  return query
 }
