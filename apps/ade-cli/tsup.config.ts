@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const external = [
-  "@agentclientprotocol/sdk",
   "@anthropic-ai/claude-agent-sdk",
   "@cursor/sdk",
   "@wize-logic/nodejs-rfb",

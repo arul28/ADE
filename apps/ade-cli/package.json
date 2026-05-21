@@ -24,7 +24,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.20.0",
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
     "@cursor/sdk": "^1.0.9",
     "@linear/sdk": "^84.0.0",
