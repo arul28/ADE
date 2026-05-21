@@ -3629,7 +3629,8 @@ export function registerIpc({
     clipboard.writeText(text);
   });
 
-  ipcMain.handle(IPC.appReadClipboardText, async (): Promise<string> => {
+  ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.appReadClipboardText);
     return clipboard.readText() ?? "";
   });
 

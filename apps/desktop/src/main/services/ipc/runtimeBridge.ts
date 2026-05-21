@@ -79,6 +79,7 @@ const REMOTE_RUNTIME_SYNC_METHODS = new Set([
 
 type RuntimeEventWindowSubscription = {
   bindingKey: string;
+  requestKey: string;
   cleanup: (() => void) | null;
 };
 
@@ -263,16 +264,17 @@ export function registerRuntimeBridge({
   const ensureRuntimeEventSubscription = (
     sender: WebContents,
     bindingKey: string,
+    requestKey: string,
     subscribe: RuntimeEventSubscribe,
   ): void => {
     const existing = runtimeEventSubscriptions.get(sender.id);
-    if (existing?.bindingKey === bindingKey) return;
+    if (existing?.requestKey === requestKey) return;
     cleanupRuntimeEventSubscription(sender.id);
     watchRuntimeEventSender(sender);
-    runtimeEventSubscriptions.set(sender.id, { bindingKey, cleanup: null });
+    runtimeEventSubscriptions.set(sender.id, { bindingKey, requestKey, cleanup: null });
     const onEnded = () => {
       const current = runtimeEventSubscriptions.get(sender.id);
-      if (current?.bindingKey === bindingKey) {
+      if (current?.requestKey === requestKey) {
         runtimeEventSubscriptions.delete(sender.id);
       }
     };
@@ -284,7 +286,7 @@ export function registerRuntimeBridge({
         const current = runtimeEventSubscriptions.get(sender.id);
         if (
           !current ||
-          current.bindingKey !== bindingKey ||
+          current.requestKey !== requestKey ||
           sender.isDestroyed()
         ) {
           cleanup();
@@ -294,7 +296,7 @@ export function registerRuntimeBridge({
       })
       .catch((error) => {
         const current = runtimeEventSubscriptions.get(sender.id);
-        if (current?.bindingKey === bindingKey && !current.cleanup) {
+        if (current?.requestKey === requestKey && !current.cleanup) {
           runtimeEventSubscriptions.delete(sender.id);
         }
         console.warn("Runtime event subscription failed", error);
@@ -686,6 +688,7 @@ export function registerRuntimeBridge({
         ensureRuntimeEventSubscription(
           event.sender,
           binding.key,
+          `${binding.key}:${arg?.request?.category ?? "*"}`,
           (onEvent, onEnded) =>
             localRuntimeConnectionPool.subscribeEventsForRoot(
               rootPath,
@@ -732,6 +735,7 @@ export function registerRuntimeBridge({
       ensureRuntimeEventSubscription(
         event.sender,
         `remote:${target.id}:${projectId}`,
+        `remote:${target.id}:${projectId}:${arg?.request?.category ?? "*"}`,
         (onEvent, onEnded) =>
           remoteConnectionPool.subscribeEventsForTarget(
             target,

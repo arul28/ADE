@@ -2557,13 +2557,22 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     if (!url) {
       throw new Error("deeplinks.open requires a url.");
     }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error("deeplinks.open requires a valid URL.");
+    }
+    if (parsed.protocol !== "ade:") {
+      throw new Error("deeplinks.open only supports ade:// URLs.");
+    }
     if (!args.dispatchDeeplinkUrl) {
       return {
         ok: false,
         message: "Desktop navigation is unavailable in this runtime.",
       };
     }
-    return await args.dispatchDeeplinkUrl(url);
+    return await args.dispatchDeeplinkUrl(parsed.toString());
   });
   register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
   register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));

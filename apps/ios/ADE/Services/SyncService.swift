@@ -7538,9 +7538,12 @@ extension SyncService {
       // Desktop `deeplinks.open` expects a `url` arg — the same `ade://...`
       // string the user tapped on iOS. We pass it through verbatim so the
       // host can reuse its own router.
-      if let url = payload["url"] as? String, !url.isEmpty {
-        args["url"] = url
+      guard let url = (payload["url"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !url.isEmpty else {
+        return
       }
+      args["url"] = url
     }
 
     // For now we send via the opaque command envelope — the desktop's

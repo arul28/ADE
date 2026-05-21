@@ -18,10 +18,11 @@ export type DeeplinkDispatcher = (
 ) => Promise<void> | void;
 
 const ADE_OPEN_HTTPS_RE = /^https?:\/\/ade\.app\/open\b/i;
+const ADE_SCHEME_RE = new RegExp(`^${ADE_DEEPLINK_SCHEME}://`, "i");
 
 function isAdeDeeplinkArg(arg: unknown): arg is string {
   if (typeof arg !== "string") return false;
-  return arg.startsWith(`${ADE_DEEPLINK_SCHEME}://`) || ADE_OPEN_HTTPS_RE.test(arg);
+  return ADE_SCHEME_RE.test(arg) || ADE_OPEN_HTTPS_RE.test(arg);
 }
 
 /**
@@ -89,15 +90,24 @@ export function registerAdeProtocolHandler(options: {
     log("deeplink.scheme_skipped", { scheme: ADE_DEEPLINK_SCHEME });
   }
 
+  const coldStartDeeplinkArgs = process.argv.slice(1).filter(isAdeDeeplinkArg);
+
   // Single-instance lock: a second invocation routes through `second-instance`
-  // instead of starting a fresh Electron process. We rely on whoever wires
-  // this up to have already called `app.whenReady()` semantics correctly;
-  // requesting the lock is idempotent.
+  // instead of starting a fresh Electron process. Non-claiming channels can
+  // still open as regular app instances when they were not launched to handle
+  // a deeplink.
   const acquired = app.requestSingleInstanceLock();
   if (!acquired) {
-    log("deeplink.single_instance.lock_lost", {});
-    app.quit();
-    return;
+    const shouldForwardToLockHolder = claimAsDefault || coldStartDeeplinkArgs.length > 0;
+    log("deeplink.single_instance.lock_lost", {
+      claimAsDefault,
+      deeplinkArgCount: coldStartDeeplinkArgs.length,
+      shouldForwardToLockHolder,
+    });
+    if (shouldForwardToLockHolder) {
+      app.quit();
+      return;
+    }
   }
 
   // Buffer URLs received before whenReady so they aren't dropped.
@@ -137,8 +147,8 @@ export function registerAdeProtocolHandler(options: {
   });
 
   // Pick up any URL embedded in this process's own argv (Windows cold-start).
-  for (const arg of process.argv.slice(1)) {
-    if (isAdeDeeplinkArg(arg)) pendingUrls.push(arg);
+  for (const arg of coldStartDeeplinkArgs) {
+    pendingUrls.push(arg);
   }
 
   // Flush buffer once the app is ready. Use `whenReady()` rather than

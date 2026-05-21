@@ -117,6 +117,11 @@ describe("processRegistryService", () => {
 
     expect(service.listLivePids()).toEqual(new Set([12_345, 99_999]));
     expect(service.isPidLive(99_999)).toBe(true);
+    expect(service.listLiveProcessIdentities()).toEqual(expect.arrayContaining([
+      { pid: 99_999, startedAt: "2026-03-17T00:00:10.000Z" },
+    ]));
+    expect(service.isProcessIdentityLive(99_999, "2026-03-17T00:00:10.000Z")).toBe(true);
+    expect(service.isProcessIdentityLive(99_999, "2026-03-17T00:00:09.000Z")).toBe(false);
     db.close();
   });
 

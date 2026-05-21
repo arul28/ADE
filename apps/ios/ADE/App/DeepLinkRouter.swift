@@ -38,9 +38,10 @@ final class DeepLinkRouter {
       //   `ade://pr/<owner>/<repo>/<number>`   (desktop cross-machine form)
       // Anything else is ignored so a malformed link can't crash navigation.
       if pathComponents.count >= 3 {
-        let raw = pathComponents[2]
-        guard !raw.isEmpty else { return }
-        post(kind: "pr", identifier: raw)
+        guard !pathComponents[0].isEmpty,
+              !pathComponents[1].isEmpty,
+              !pathComponents[2].isEmpty else { return }
+        postSendToMac(url: url)
         return
       }
       guard let raw = pathComponents.first, !raw.isEmpty else { return }

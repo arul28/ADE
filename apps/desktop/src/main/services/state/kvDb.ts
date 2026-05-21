@@ -1179,6 +1179,7 @@ function migrate(db: MigrationDb) {
       resume_metadata_json text,
       archived_at text,
       chat_session_id text,
+      owner_process_started_at text,
       foreign key(lane_id) references lanes(id)
     )
   `);
@@ -1201,6 +1202,8 @@ function migrate(db: MigrationDb) {
   // pre-migration rows pre-date ownership tracking.
   try { db.run("alter table terminal_sessions add column owner_pid integer"); } catch {}
   try { db.run("create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid)"); } catch {}
+  try { db.run("alter table terminal_sessions add column owner_process_started_at text"); } catch {}
+  try { db.run("create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at)"); } catch {}
 
   // Process liveness registry. Every ADE process (desktop main, TUI runtime,
   // ade-serve daemon) writes its pid here on boot and refreshes last_seen

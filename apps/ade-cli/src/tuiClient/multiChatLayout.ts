@@ -49,9 +49,10 @@ const PATTERNS: Record<1 | 2 | 3 | 4 | 5 | 6, ReadonlyArray<TilePattern>> = {
 };
 
 export function asTileCount(value: number): 1 | 2 | 3 | 4 | 5 | 6 {
-  if (value <= 1) return 1;
-  if (value >= 6) return 6;
-  return value as 1 | 2 | 3 | 4 | 5 | 6;
+  const normalized = Math.floor(Number.isFinite(value) ? value : 1);
+  if (normalized <= 1) return 1;
+  if (normalized >= 6) return 6;
+  return normalized as 1 | 2 | 3 | 4 | 5 | 6;
 }
 
 export function computeTileRects(n: 1 | 2 | 3 | 4 | 5 | 6, width: number, height: number): TileRect[] {

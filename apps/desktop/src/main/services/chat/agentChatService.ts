@@ -15489,6 +15489,7 @@ export function createAgentChatService(args: {
       toolType: toolTypeFromProvider(effectiveProvider),
       resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
       ownerPid: processRegistry?.pid ?? null,
+      ownerProcessStartedAt: processRegistry?.startedAt ?? null,
     });
     if (normalizedTitle.length > 0) {
       sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
@@ -19555,7 +19556,7 @@ export function createAgentChatService(args: {
       processRegistry
       && row?.ownerPid != null
       && row.ownerPid !== processRegistry.pid
-      && processRegistry.isPidLive(row.ownerPid)
+      && processRegistry.isProcessIdentityLive(row.ownerPid, row.ownerProcessStartedAt)
     ) {
       throw new Error("Chat session is owned by another ADE process; cannot resume from here.");
     }
@@ -19701,7 +19702,7 @@ export function createAgentChatService(args: {
 
     persistChatState(managed);
     if (processRegistry) {
-      sessionService.setOwnerPid(sessionId, processRegistry.pid);
+      sessionService.setOwnerPid(sessionId, processRegistry.pid, processRegistry.startedAt);
     }
     return managed.session;
   };

@@ -7835,32 +7835,53 @@ export function createAdeRpcRequestHandler(args: {
 
     if (method.startsWith("pty.")) {
       const ptyArgs = safeObject(params.args ?? params.arg ?? params);
+      const ptyAction = method.slice("pty.".length);
+      if (!isAllowedAdeAction("pty", ptyAction)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      if (!callerHasRoleAtLeast(session.identity.role, "agent")) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      if (isCtoOnlyAdeAction("pty", ptyAction) && !callerHasRoleAtLeast(session.identity.role, "cto")) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+      }
+      const runPtyAction = async (runner: () => Promise<unknown> | unknown): Promise<unknown> =>
+        auditActionCall(method, ptyArgs, async () => runner());
       if (method === "pty.create") {
-        const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
-        return {
-          ...result,
-          session: runtime.sessionService.get(result.sessionId),
-        };
+        return await runPtyAction(async () => {
+          const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
+          return {
+            ...result,
+            session: runtime.sessionService.get(result.sessionId),
+          };
+        });
       }
       if (method === "pty.sendToSession") {
-        return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+        return await runPtyAction(() =>
+          runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]));
       }
       if (method === "pty.write") {
-        runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
-        return null;
+        return await runPtyAction(() => {
+          runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
+          return null;
+        });
       }
       if (method === "pty.resize") {
-        runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
-        return null;
+        return await runPtyAction(() => {
+          runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
+          return null;
+        });
       }
       if (method === "pty.dispose") {
-        runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
-        return null;
+        return await runPtyAction(() => {
+          runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
+          return null;
+        });
       }
       if (method === "pty.list") {
-        return {
+        return await runPtyAction(() => ({
           sessions: runtime.ptyService.list(ptyArgs as Parameters<typeof runtime.ptyService.list>[0]),
-        };
+        }));
       }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
     }

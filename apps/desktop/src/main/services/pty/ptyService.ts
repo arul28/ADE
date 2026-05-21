@@ -698,6 +698,7 @@ export function createPtyService({
   let ptyDataMaxBatchChars = 0;
   const terminalSnapshotDir = path.join(projectRoot, ".ade", "cache", "terminal-snapshots");
   const ownerPid = processRegistry?.pid ?? null;
+  const ownerProcessStartedAt = processRegistry?.startedAt ?? null;
 
   const getSessionIntelligence = () => {
     const ai = projectConfigService?.get().effective.ai;
@@ -2442,6 +2443,7 @@ export function createPtyService({
             ptyId: attachedPtyId,
             startedAt: new Date(attachedEntry.createdAt).toISOString(),
             ...(ownerPid != null ? { ownerPid } : {}),
+            ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
           });
           setRuntimeState(existingSession.id, "running");
         }
@@ -2500,6 +2502,7 @@ export function createPtyService({
           resumeMetadata: initialResumeMetadata,
           chatSessionId,
           ownerPid,
+          ownerProcessStartedAt,
         });
         setRuntimeState(sessionId, "running");
 
@@ -2662,6 +2665,7 @@ export function createPtyService({
           ptyId,
           startedAt,
           ...(ownerPid != null ? { ownerPid } : {}),
+          ...(ownerProcessStartedAt != null ? { ownerProcessStartedAt } : {}),
         });
         setRuntimeState(sessionId, "running");
         Promise.resolve()
@@ -3519,7 +3523,7 @@ export function createPtyService({
           ownerPid != null
           && session.ownerPid != null
           && session.ownerPid !== ownerPid
-          && processRegistry?.isPidLive(session.ownerPid)
+          && processRegistry?.isProcessIdentityLive(session.ownerPid, session.ownerProcessStartedAt)
         ) {
           logger.warn("pty.dispose_skipped_owned_by_peer", {
             ptyId,

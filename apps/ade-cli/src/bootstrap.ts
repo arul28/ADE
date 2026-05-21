@@ -460,10 +460,13 @@ export async function createAdeRuntime(args: {
     projectRoot,
   });
   processRegistry.start();
+  let runtimeCreated = false;
+  try {
   sessionService.reconcileStaleRunningSessions({
     status: "disposed",
     excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
     liveOwnerPids: processRegistry.listLivePids(),
+    liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
   });
   const sessionDeltaService = createSessionDeltaService({
     db,
@@ -1268,5 +1271,15 @@ export async function createAdeRuntime(args: {
   };
   automationService.bindAdeActionRegistry(adeActionLookup);
 
+  runtimeCreated = true;
   return runtime;
+  } finally {
+    if (!runtimeCreated) {
+      try {
+        processRegistry.stop();
+      } catch {
+        // Preserve the original startup failure.
+      }
+    }
+  }
 }

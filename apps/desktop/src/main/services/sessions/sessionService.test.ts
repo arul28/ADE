@@ -564,6 +564,61 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("requires owner process identity to preserve peer-owned running sessions", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-live-identity",
+      laneId: "lane-1",
+      ptyId: "pty-live-identity",
+      tracked: true,
+      title: "Live owner",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-live-identity.log",
+      toolType: "claude",
+      ownerPid: 12_345,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    });
+    service.create({
+      sessionId: "session-reused-pid",
+      laneId: "lane-1",
+      ptyId: "pty-reused-pid",
+      tracked: true,
+      title: "Reused PID",
+      startedAt: "2026-03-17T00:11:00.000Z",
+      transcriptPath: "/tmp/session-reused-pid.log",
+      toolType: "codex",
+      ownerPid: 12_345,
+      ownerProcessStartedAt: "2026-03-16T23:59:00.000Z",
+    });
+
+    const reconciled = service.reconcileStaleRunningSessions({
+      endedAt: "2026-03-17T00:20:00.000Z",
+      status: "disposed",
+      liveOwnerPids: new Set([12_345]),
+      liveOwnerIdentities: [{ pid: 12_345, startedAt: "2026-03-17T00:00:00.000Z" }],
+    });
+
+    expect(reconciled).toBe(1);
+    expect(service.get("session-live-identity")).toEqual(expect.objectContaining({
+      status: "running",
+      ownerPid: 12_345,
+      ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+    }));
+    expect(service.get("session-reused-pid")).toEqual(expect.objectContaining({
+      status: "disposed",
+      ptyId: null,
+      ownerPid: 12_345,
+      ownerProcessStartedAt: "2026-03-16T23:59:00.000Z",
+    }));
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("omitted live owner set only reconciles legacy ownerless sessions", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

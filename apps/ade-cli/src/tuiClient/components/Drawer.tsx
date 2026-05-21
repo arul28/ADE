@@ -175,6 +175,8 @@ export function Drawer({
       <MiniDrawer
         width={width}
         borderColor={borderColor}
+        addMode={addMode}
+        emphasisColor={emphasisColor}
         lanes={laneRows}
         sessions={laneSessions}
         activeLaneId={activeLaneId}
@@ -601,6 +603,8 @@ function ActiveChatSpin() {
 function MiniDrawer({
   width,
   borderColor,
+  addMode,
+  emphasisColor,
   lanes,
   sessions,
   activeLaneId,
@@ -617,6 +621,8 @@ function MiniDrawer({
 }: {
   width: number;
   borderColor: string;
+  addMode: boolean;
+  emphasisColor: string;
   lanes: LaneSummary[];
   sessions: AgentChatSessionSummary[];
   activeLaneId: string | null;
@@ -637,8 +643,8 @@ function MiniDrawer({
   return (
     <Box width={width} flexDirection="column" borderStyle="single" borderColor={borderColor}>
       <Box paddingX={1}>
-        <Text bold color={theme.color.violet}>
-          LANES · {loading && lanes.length === 0 ? "…" : lanes.length}
+        <Text bold color={addMode ? emphasisColor : theme.color.violet}>
+          {addMode ? "PICK CHAT" : `LANES · ${loading && lanes.length === 0 ? "…" : lanes.length}`}
         </Text>
       </Box>
       {loading && lanes.length === 0 ? (
@@ -720,7 +726,13 @@ function MiniDrawer({
       ) : null}
       <Box paddingX={1} flexShrink={0}>
         <Text color={theme.color.t4} wrap="truncate">
-          {!focused ? "\n" : mode === "chats" ? "↑↓ chats · Esc lanes" : "↑↓ lanes · ↵ open"}
+          {!focused
+            ? "\n"
+            : addMode
+              ? "↑↓ pick chat · ↵ add · esc cancel"
+              : mode === "chats"
+                ? "↑↓ chats · Esc lanes"
+                : "↑↓ lanes · ↵ open"}
         </Text>
       </Box>
       <Box paddingX={1} flexShrink={0}>

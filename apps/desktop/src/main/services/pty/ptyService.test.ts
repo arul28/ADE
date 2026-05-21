@@ -250,7 +250,9 @@ function createHarness(overrides: {
   } | null;
   processRegistry?: {
     pid: number;
+    startedAt?: string | null;
     isPidLive: ReturnType<typeof vi.fn>;
+    isProcessIdentityLive?: ReturnType<typeof vi.fn>;
   } | null;
 } = {}) {
   const mockPty = createMockPty();
@@ -2370,7 +2372,11 @@ describe("ptyService", () => {
     it("skips orphan dispose when a live peer owns the session", async () => {
       const processRegistry = {
         pid: 12_345,
+        startedAt: "2026-03-17T00:00:00.000Z",
         isPidLive: vi.fn((pid: number) => pid === 99_999),
+        isProcessIdentityLive: vi.fn((pid: number, startedAt: string | null) => (
+          pid === 99_999 && startedAt === "2026-03-17T00:01:00.000Z"
+        )),
       };
       const { service, sessionService, broadcastExit, logger } = createHarness({ processRegistry });
       sessionService.get.mockReturnValue({
@@ -2379,6 +2385,7 @@ describe("ptyService", () => {
         laneId: "lane-1",
         tracked: true,
         ownerPid: 99_999,
+        ownerProcessStartedAt: "2026-03-17T00:01:00.000Z",
         lastOutputPreview: "still running elsewhere",
       });
 
@@ -2386,7 +2393,7 @@ describe("ptyService", () => {
 
       expect(sessionService.end).not.toHaveBeenCalled();
       expect(broadcastExit).not.toHaveBeenCalled();
-      expect(processRegistry.isPidLive).toHaveBeenCalledWith(99_999);
+      expect(processRegistry.isProcessIdentityLive).toHaveBeenCalledWith(99_999, "2026-03-17T00:01:00.000Z");
       expect(logger.warn).toHaveBeenCalledWith(
         "pty.dispose_skipped_owned_by_peer",
         expect.objectContaining({
@@ -2400,7 +2407,9 @@ describe("ptyService", () => {
     it("orphan dispose still ends sessions owned by us or dead peers", async () => {
       const processRegistry = {
         pid: 12_345,
+        startedAt: "2026-03-17T00:00:00.000Z",
         isPidLive: vi.fn(() => false),
+        isProcessIdentityLive: vi.fn(() => false),
       };
       const { service, sessionService } = createHarness({ processRegistry });
       sessionService.get.mockReturnValueOnce({
@@ -2433,7 +2442,12 @@ describe("ptyService", () => {
 
     it("writes owner_pid when creating a tracked PTY session", async () => {
       const { service, sessionService } = createHarness({
-        processRegistry: { pid: 12_345, isPidLive: vi.fn() },
+        processRegistry: {
+          pid: 12_345,
+          startedAt: "2026-03-17T00:00:00.000Z",
+          isPidLive: vi.fn(),
+          isProcessIdentityLive: vi.fn(),
+        },
       });
 
       await service.create({
@@ -2447,6 +2461,7 @@ describe("ptyService", () => {
 
       expect(sessionService.create).toHaveBeenCalledWith(expect.objectContaining({
         ownerPid: 12_345,
+        ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
       }));
     });
 

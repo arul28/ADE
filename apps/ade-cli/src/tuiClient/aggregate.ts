@@ -335,7 +335,7 @@ function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
 // Activity events that mirror the real tool/command/file events the transcript
 // already renders. Suppress them in the TUI so the same fragment doesn't appear
 // twice (once as Runtime, once as Tool calls). Matches desktop suppression.
-const SUPPRESSED_RUNTIME_ACTIVITIES = new Set([
+const suppressedRuntimeActivities = new Set([
   "thinking",
   "working",
   "tool_calling",
@@ -349,7 +349,7 @@ const SUPPRESSED_RUNTIME_ACTIVITIES = new Set([
 function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
   if (event.type === "activity") {
     const activity = event.activity;
-    if (SUPPRESSED_RUNTIME_ACTIVITIES.has(activity)) return null;
+    if (suppressedRuntimeActivities.has(activity)) return null;
     return {
       id,
       label: activity.replace(/_/g, " "),
@@ -564,7 +564,7 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "text") {
-      if (!event.text.trim().length) continue;
+      if (event.text.length === 0) continue;
       const previous = blocks[blocks.length - 1];
       if (previous?.kind === "assistant-text") {
         const previousTextEvent = assistantTextEventsByBlockId.get(previous.id);

@@ -93,6 +93,9 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
   const linearIssue = flags.valued.get("linear-issue");
   const branch = flags.valued.get("branch");
   if (linearIssue || branch) {
+    if (!linearIssue) {
+      throw new CliDeeplinkUsageError("--linear-issue is required when using --branch");
+    }
     // Build an https://ade.app/open URL with the hints Linear gave us. The
     // landing page (and the renderer-side handler) interpret the linear-issue
     // hint by looking up the lane/project that owns it.
@@ -147,8 +150,9 @@ function openUrlViaOs(url: string): { failed: boolean; message: string } {
     args = [url];
   }
   try {
-    const r = spawnSync(cmd, args, { stdio: "ignore" });
+    const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
     if (r.error) return { failed: true, message: r.error.message };
+    if (r.signal) return { failed: true, message: `${cmd} exited with signal ${r.signal}` };
     if (typeof r.status === "number" && r.status !== 0) {
       return { failed: true, message: `${cmd} exited with ${r.status}` };
     }
@@ -233,7 +237,11 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
 }
 
 function parseRepoSlug(repo: string): { repoOwner: string; repoName: string } {
-  const [repoOwner, repoName] = repo.split("/");
+  const parts = repo.split("/");
+  if (parts.length !== 2) {
+    throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
+  }
+  const [repoOwner, repoName] = parts;
   if (!repoOwner || !repoName) {
     throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
   }

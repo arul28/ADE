@@ -14,6 +14,11 @@ export type RuntimeProcessRow = {
   lastSeen: string;
 };
 
+export type RuntimeProcessIdentity = {
+  pid: number;
+  startedAt: string;
+};
+
 export type ProcessRegistryServiceOptions = {
   db: AdeDb;
   logger: Logger;
@@ -52,6 +57,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
+  let ownStartedAt: string | null = nowIso();
 
   const writeOwnRow = (startedAtIso: string | null): void => {
     const lastSeen = nowIso();
@@ -76,11 +82,16 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
     pid,
     role,
 
+    get startedAt(): string | null {
+      return ownStartedAt;
+    },
+
     start(): void {
       if (started) return;
       started = true;
+      ownStartedAt = ownStartedAt ?? nowIso();
       try {
-        writeOwnRow(nowIso());
+        writeOwnRow(ownStartedAt);
         this.pruneStale();
       } catch (error) {
         logger.warn("process_registry.start_failed", {
@@ -132,6 +143,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
           error: error instanceof Error ? error.message : String(error),
         });
       }
+      ownStartedAt = null;
     },
 
     /**
@@ -140,22 +152,33 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
      * `terminal_sessions.owner_pid` is still owned by a live sibling.
      */
     listLivePids(): Set<number> {
+      return new Set(this.listLiveProcessIdentities().map((identity) => identity.pid));
+    },
+
+    listLiveProcessIdentities(): RuntimeProcessIdentity[] {
       const cutoffIso = new Date(Date.now() - livenessWindowMs).toISOString();
-      const rows = db.all<{ pid: number }>(
-        "select pid from runtime_processes where last_seen >= ?",
+      const rows = db.all<{ pid: number; started_at: string }>(
+        "select pid, started_at from runtime_processes where last_seen >= ?",
         [cutoffIso],
       );
-      const live = new Set<number>();
+      const live = new Map<number, RuntimeProcessIdentity>();
       for (const row of rows) {
-        if (typeof row.pid === "number" && Number.isFinite(row.pid)) {
-          live.add(row.pid);
+        if (
+          typeof row.pid === "number"
+          && Number.isFinite(row.pid)
+          && typeof row.started_at === "string"
+          && row.started_at.trim().length > 0
+        ) {
+          live.set(row.pid, { pid: row.pid, startedAt: row.started_at });
         }
       }
       // Always include our own pid even if the heartbeat row hasn't been
       // written yet (e.g. start() not called, or first tick hasn't fired) —
       // we are demonstrably alive right now.
-      live.add(pid);
-      return live;
+      if (ownStartedAt) {
+        live.set(pid, { pid, startedAt: ownStartedAt });
+      }
+      return Array.from(live.values());
     },
 
     /** Quick "is this peer still heartbeating" check. */
@@ -166,6 +189,20 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       const row = db.get<{ pid: number }>(
         "select pid from runtime_processes where pid = ? and last_seen >= ? limit 1",
         [candidatePid, cutoffIso],
+      );
+      return row != null;
+    },
+
+    /** Quick "is this exact peer process incarnation still heartbeating" check. */
+    isProcessIdentityLive(candidatePid: number | null | undefined, candidateStartedAt: string | null | undefined): boolean {
+      if (candidatePid == null || !Number.isFinite(candidatePid)) return false;
+      const startedAt = typeof candidateStartedAt === "string" ? candidateStartedAt.trim() : "";
+      if (!startedAt) return false;
+      if (candidatePid === pid && ownStartedAt === startedAt) return true;
+      const cutoffIso = new Date(Date.now() - livenessWindowMs).toISOString();
+      const row = db.get<{ pid: number }>(
+        "select pid from runtime_processes where pid = ? and started_at = ? and last_seen >= ? limit 1",
+        [candidatePid, startedAt, cutoffIso],
       );
       return row != null;
     },

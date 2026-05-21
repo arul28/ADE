@@ -101,11 +101,12 @@ export function hasAdeDeeplinkFooter(body: string | null | undefined): boolean {
 }
 
 function formatMarker(opts: AdeDeeplinkFooterOptions): string {
+  const enc = (value: string) => encodeURIComponent(value);
   const parts = [
     "v=1",
     `type=${opts.prNumber ? "pr" : "branch"}`,
-    `repo=${opts.repoOwner}/${opts.repoName}`,
-    `branch=${opts.branch}`,
+    `repo=${enc(opts.repoOwner)}/${enc(opts.repoName)}`,
+    `branch=${enc(opts.branch)}`,
   ];
   if (opts.prNumber) parts.push(`num=${opts.prNumber}`);
   return `<!-- ade:link ${parts.join(" ")} -->`;

@@ -38,9 +38,13 @@ struct SendToMacTarget: Equatable, Identifiable {
       if parts.count >= 4,
          parts[2].lowercased() == "branch",
          !parts[0].isEmpty,
-         !parts[1].isEmpty,
-         !parts[3].isEmpty {
-        self.kind = .repoBranch(owner: parts[0], repo: parts[1], branch: parts[3])
+         !parts[1].isEmpty {
+        let branch = parts.dropFirst(3).joined(separator: "/")
+        if branch.isEmpty {
+          self.kind = .other
+        } else {
+          self.kind = .repoBranch(owner: parts[0], repo: parts[1], branch: branch)
+        }
       } else {
         self.kind = .other
       }
@@ -298,6 +302,7 @@ struct SendToMacCard: View {
     return "Send to Mac"
   }
 
+  @MainActor
   private func sendToMac() async {
     guard let sync = SyncService.shared else {
       // Without a SyncService singleton there's nothing to dispatch to;

@@ -11,11 +11,12 @@ type OpenTarget =
   | { kind: "lane"; laneId: string }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
+  | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
   | { kind: "unknown" };
 
 function parseQuery(search: string): OpenTarget {
   const params = new URLSearchParams(search);
-  const type = params.get("type");
+  const type = (params.get("type") ?? "").toLowerCase();
   if (type === "lane") {
     const laneId = params.get("id") ?? "";
     if (laneId) return { kind: "lane", laneId };
@@ -35,6 +36,15 @@ function parseQuery(search: string): OpenTarget {
     const number = Number(params.get("number") ?? "");
     if (repo && Number.isInteger(number) && number > 0) {
       return { kind: "pr", repo, number };
+    }
+  }
+  if (type === "linear-issue") {
+    const issueIdentifier = params.get("issue") ?? "";
+    const branch = params.get("branch") ?? "";
+    if (issueIdentifier) {
+      return branch
+        ? { kind: "linear-issue", issueIdentifier, branch }
+        : { kind: "linear-issue", issueIdentifier };
     }
   }
   return { kind: "unknown" };
@@ -59,6 +69,10 @@ function buildAdeUrl(target: OpenTarget): string | null {
       if (!owner || !name) return null;
       return `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${target.number}`;
     }
+    case "linear-issue": {
+      const base = `ade://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
+      return target.branch ? `${base}?branch=${encodeURIComponent(target.branch)}` : base;
+    }
     case "unknown":
       return null;
   }
@@ -80,6 +94,11 @@ function describeTarget(target: OpenTarget): { title: string; summary: string } 
       return {
         title: `Open ${target.repo}#${target.number} in ADE`,
         summary: `Pull request #${target.number}`,
+      };
+    case "linear-issue":
+      return {
+        title: `Open ${target.issueIdentifier} in ADE`,
+        summary: target.branch ? `Branch ${target.branch}` : "Linear issue",
       };
     case "unknown":
       return {

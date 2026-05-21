@@ -77,6 +77,8 @@ import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import type {
   OpenProjectBinding,
+  AppNavigationRequest,
+  LaneDeleteProgress,
   LaneSummary,
   PortLease,
   PrEventPayload,
@@ -832,22 +834,23 @@ const deeplinkClaimAsDefault =
   process.env.ADE_REGISTER_DEEPLINK_HANDLER === "1" ||
   (app.isPackaged && deeplinkChannel === null);
 
+const pendingAppNavigationRequests: AppNavigationRequest[] = [];
+let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
+
+const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
+  if (!dispatchAppNavigationRequest) {
+    pendingAppNavigationRequests.push(request);
+    return;
+  }
+  dispatchAppNavigationRequest(request);
+};
+
 // Register the user-facing `ade://` deeplink scheme + single-instance lock so a
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
-  dispatch: (request) => {
-    const focusable =
-      BrowserWindow.getFocusedWindow() ??
-      BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
-      null;
-    if (!focusable) return;
-    if (focusable.isMinimized()) focusable.restore();
-    focusable.show();
-    focusable.focus();
-    focusable.webContents.send(IPC.appNavigate, request);
-  },
+  dispatch: dispatchOrQueueAppNavigationRequest,
   log: (event, fields) => {
     // Avoid throwing if console is gone; structured logger may not be ready yet.
     try {
@@ -2024,6 +2027,7 @@ app.whenReady().then(async () => {
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
       liveOwnerPids: processRegistry.listLivePids(),
+      liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -3651,19 +3655,7 @@ app.whenReady().then(async () => {
       // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
       dispatchDeeplinkUrl: async (rawUrl) => {
         try {
-          const focusable =
-            BrowserWindow.getFocusedWindow() ??
-            BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
-            null;
-          if (!focusable) {
-            return { ok: false, message: "No ADE window is available." };
-          }
-          handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
-            if (focusable.isMinimized()) focusable.restore();
-            focusable.show();
-            focusable.focus();
-            focusable.webContents.send(IPC.appNavigate, request);
-          });
+          handleDeeplinkUrl(rawUrl, "sync:ios", dispatchOrQueueAppNavigationRequest);
           return { ok: true };
         } catch (error) {
           return {
@@ -5498,6 +5490,7 @@ app.whenReady().then(async () => {
   let shutdownRequested = false;
   let shutdownFinalized = false;
   let quitWarningAcknowledged = false;
+  let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
 
   const shutdownOpenCodeServersBestEffort = (): void => {
@@ -5695,7 +5688,22 @@ app.whenReady().then(async () => {
     return true;
   };
 
-  const getRunningLaneDeleteLabels = (): string[] => {
+  const isRunningLaneDeleteProgress = (value: unknown): value is LaneDeleteProgress => {
+    return Boolean(
+      value
+        && typeof value === "object"
+        && !Array.isArray(value)
+        && (value as { overallStatus?: unknown }).overallStatus === "running",
+    );
+  };
+
+  const labelForProjectRoot = (root: string): string => {
+    const normalizedRoot = normalizeProjectRoot(root);
+    const ctx = projectContexts.get(normalizedRoot);
+    return ctx?.project?.displayName || path.basename(normalizedRoot) || normalizedRoot;
+  };
+
+  const getInProcessRunningLaneDeleteLabels = (): string[] => {
     const labels: string[] = [];
     for (const ctx of projectContexts.values()) {
       try {
@@ -5709,11 +5717,47 @@ app.whenReady().then(async () => {
         labels.push(ctx.project?.displayName ?? ctx.project?.rootPath ?? "Unknown project");
       }
     }
+    return labels;
+  };
+
+  const getRuntimeBackedRunningLaneDeleteLabels = async (): Promise<string[]> => {
+    if (shouldUseInProcessProjectRuntime()) return [];
+    const roots = new Set<string>([
+      ...rootsBoundToWindows(),
+      ...projectContexts.keys(),
+    ]);
+    const labels: string[] = [];
+    await Promise.all(Array.from(roots).map(async (root) => {
+      try {
+        const response = await localRuntimePool.callActionForRoot(root, {
+          domain: "lane",
+          action: "listDeleteProgress",
+        });
+        const progress = Array.isArray(response.result) ? response.result : [];
+        if (progress.some(isRunningLaneDeleteProgress)) {
+          labels.push(labelForProjectRoot(root));
+        }
+      } catch (error) {
+        localRuntimeLogger.warn("lane_delete.runtime_quit_probe_failed", {
+          projectRoot: root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        labels.push(labelForProjectRoot(root));
+      }
+    }));
+    return labels;
+  };
+
+  const getRunningLaneDeleteLabels = async (): Promise<string[]> => {
+    const labels = [
+      ...getInProcessRunningLaneDeleteLabels(),
+      ...await getRuntimeBackedRunningLaneDeleteLabels(),
+    ];
     return Array.from(new Set(labels));
   };
 
-  const confirmNoRunningLaneDeleteForQuit = (ownerWindow?: BrowserWindow | null): boolean => {
-    const runningDeletes = getRunningLaneDeleteLabels();
+  const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
+    const runningDeletes = await getRunningLaneDeleteLabels();
     if (runningDeletes.length === 0) return true;
     const detail =
       runningDeletes.length === 1
@@ -5758,6 +5802,23 @@ app.whenReady().then(async () => {
       rememberQuitAcknowledgement: false,
     });
 
+  const requestQuitAfterWarnings = (
+    ownerWindow: BrowserWindow | null | undefined,
+    reason: "before_quit" | "window_close",
+  ): void => {
+    if (shutdownRequested || quitConfirmationInFlight) return;
+    quitConfirmationInFlight = true;
+    void (async () => {
+      try {
+        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
+        if (!confirmQuitWarning(ownerWindow)) return;
+        requestAppShutdown({ reason, exitCode: 0 });
+      } finally {
+        quitConfirmationInFlight = false;
+      }
+    })();
+  };
+
   const closeWindowWithoutPrompt = (win: BrowserWindow): void => {
     closeWindowWithoutQuitPrompt.add(win.id);
     win.close();
@@ -5778,9 +5839,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
-    if (!confirmNoRunningLaneDeleteForQuit(win)) return;
-    if (!confirmQuitWarning(win)) return;
-    requestAppShutdown({ reason: "window_close", exitCode: 0 });
+    requestQuitAfterWarnings(win, "window_close");
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
@@ -5942,6 +6001,31 @@ app.whenReady().then(async () => {
     }
     return getWindowSession(win.id);
   };
+
+  dispatchAppNavigationRequest = (request) => {
+    void (async () => {
+      let targetWindow =
+        BrowserWindow.getFocusedWindow() ??
+        BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
+        null;
+      if (!targetWindow) {
+        const opened = await openAdeWindow();
+        targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+      }
+      if (!targetWindow || targetWindow.isDestroyed()) return;
+      if (targetWindow.isMinimized()) targetWindow.restore();
+      targetWindow.show();
+      targetWindow.focus();
+      targetWindow.webContents.send(IPC.appNavigate, request);
+    })().catch((error: unknown) => {
+      getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  for (const request of pendingAppNavigationRequests.splice(0)) {
+    dispatchAppNavigationRequest(request);
+  }
 
   const openProjectFileRequest = async (filePath: string): Promise<void> => {
     const projectRoot = normalizeProjectPath(filePath);
@@ -6129,9 +6213,7 @@ app.whenReady().then(async () => {
     if (shutdownFinalized) return;
     event.preventDefault();
     if (shutdownRequested) return;
-    if (!confirmNoRunningLaneDeleteForQuit()) return;
-    if (!confirmQuitWarning()) return;
-    requestAppShutdown({ reason: "before_quit", exitCode: 0 });
+    requestQuitAfterWarnings(null, "before_quit");
   });
 });
 

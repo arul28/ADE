@@ -11,7 +11,7 @@ import {
   validateClaudeKeybindingsConfig,
 } from "../keybindings";
 
-const LANE_UUID = "550e8400-e29b-41d4-a716-446655440000";
+const laneUuid = "550e8400-e29b-41d4-a716-446655440000";
 
 describe("copy ADE deeplink keybinding", () => {
   it("registers as a known TUI action and dispatches under Tabs context", () => {
@@ -51,8 +51,8 @@ describe("copy ADE deeplink keybinding", () => {
   });
 
   it("builds the ade:// deeplink for a lane row", () => {
-    const row: DeeplinkRow = { kind: "lane", lane: { id: LANE_UUID } };
-    expect(buildDeeplinkForRow(row)).toBe(`ade://lane/${LANE_UUID}`);
+    const row: DeeplinkRow = { kind: "lane", lane: { id: laneUuid } };
+    expect(buildDeeplinkForRow(row)).toBe(`ade://lane/${laneUuid}`);
   });
 
   it("builds the ade:// deeplink for a PR row from explicit fields", () => {
@@ -179,11 +179,11 @@ describe("end-to-end: keybinding action invokes clipboard with the right URL", (
   it("copies the canonical lane URL when a lane row is focused", () => {
     const recorded = { url: null as string | null };
     const result = runCopyAdeDeeplinkAction(
-      { kind: "lane", lane: { id: LANE_UUID } },
+      { kind: "lane", lane: { id: laneUuid } },
       recorded,
     );
     expect(result).toBe("copied");
-    expect(recorded.url).toBe(`ade://lane/${LANE_UUID}`);
+    expect(recorded.url).toBe(`ade://lane/${laneUuid}`);
   });
 
   it("copies the canonical PR URL when a PR row is focused", () => {

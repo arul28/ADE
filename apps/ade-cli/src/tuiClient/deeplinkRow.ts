@@ -56,6 +56,9 @@ export function parseGitHubPrUrl(url: string): { repoOwner: string; repoName: st
  * when the row doesn't have enough data (e.g. a PR row with a malformed
  * URL and no explicit owner/repo). */
 export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
+  const isValidPrNumber = (value: number): boolean =>
+    Number.isInteger(value) && value > 0;
+
   if (row.kind === "lane") {
     if (!row.lane.id) return null;
     const target: DeeplinkTarget = { kind: "lane", laneId: row.lane.id };
@@ -63,7 +66,7 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
   }
   const pr = row.pr;
   if ("repoOwner" in pr) {
-    if (!pr.repoOwner || !pr.repoName || !pr.prNumber) return null;
+    if (!pr.repoOwner || !pr.repoName || !isValidPrNumber(pr.prNumber)) return null;
     return buildDeeplink(
       { kind: "pr", repoOwner: pr.repoOwner, repoName: pr.repoName, prNumber: pr.prNumber },
       { form: "ade" },
@@ -71,8 +74,10 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
   }
   const parsed = parseGitHubPrUrl(pr.url);
   if (!parsed) return null;
+  const prNumber = pr.prNumber ?? parsed.prNumber;
+  if (!isValidPrNumber(prNumber)) return null;
   return buildDeeplink(
-    { kind: "pr", repoOwner: parsed.repoOwner, repoName: parsed.repoName, prNumber: pr.prNumber ?? parsed.prNumber },
+    { kind: "pr", repoOwner: parsed.repoOwner, repoName: parsed.repoName, prNumber },
     { form: "ade" },
   );
 }

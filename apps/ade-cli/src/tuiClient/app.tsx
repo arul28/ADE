@@ -2537,7 +2537,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     return out;
   }, [lanes]);
   useEffect(() => {
-    if (!activeSessionId || multiViewRef.current) return;
+    if (!activeSessionId) return;
     setEventsBySessionId((prev) => {
       if (prev[activeSessionId] === events) return prev;
       return { ...prev, [activeSessionId]: events };
@@ -7671,11 +7671,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
-    if (pane === "chat" && isCtrlInput(input, key, "g")) {
-      startAddMode();
-      return;
-    }
-
     if (pane === "chat" && multiViewRef.current && isCtrlInput(input, key, "w")) {
       removeMultiViewTile(multiViewRef.current.focusedIndex);
       return;
@@ -7975,6 +7970,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         focusChat();
         addNotice("Loaded prompt from external editor.", "success");
       }
+      return;
+    }
+
+    if (pane === "chat" && isCtrlInput(input, key, "g")) {
+      startAddMode();
       return;
     }
 
@@ -9087,8 +9087,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           }
         }
       } else if (rightPane.kind === "lane-details") {
+        const laneActionTop = rightBodyTop + 16;
         LANE_DETAIL_ACTIONS.forEach((_, index) => {
-          const y = 18 + index;
+          const y = laneActionTop + index;
           addTarget({
             id: `right:lane-action:${index}`,
             rect: { x: rightStartColumn, y, w: rightPaneWidth, h: 1 },
@@ -9116,7 +9117,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         if (rightPane.pr) {
           addTarget({
             id: "right:lane-pr",
-            rect: { x: rightStartColumn, y: 18 + LANE_DETAIL_ACTIONS.length + 1, w: rightPaneWidth, h: 3 },
+            rect: { x: rightStartColumn, y: laneActionTop + LANE_DETAIL_ACTIONS.length + 1, w: rightPaneWidth, h: 3 },
             onClick: () => {
               setRightPane((prev) => prev.kind === "lane-details" ? { ...prev, selectedActionIndex: LANE_DETAIL_PR_ACTION_INDEX } : prev);
               setPrompt("/pr open");
@@ -9143,7 +9144,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         });
       } else if (rightPane.kind === "form") {
         rightPane.fields.forEach((field, index) => {
-          const y = rightPane.command === "lane-delete" ? [9, 13, 16, 19][index] ?? (rightBodyTop + 3 + index) : rightBodyTop + 3 + index;
+          const y = rightPane.command === "lane-delete" ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index)) : rightBodyTop + 3 + index;
           addTarget({
             id: `right:form:${field.name}`,
             rect: { x: rightStartColumn, y, w: rightPaneWidth, h: rightPane.command === "lane-delete" ? 2 : 1 },

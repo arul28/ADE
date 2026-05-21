@@ -11,8 +11,9 @@ function mapFor(count: number, focusedIndex: number): string {
 }
 
 export function gridMiniMapText(count: number, focusedIndex: number): string {
-  if (count <= 1) return "▣";
-  return mapFor(count, Math.max(0, Math.min(focusedIndex, count - 1)));
+  const visibleCount = Math.max(1, Math.min(6, Math.floor(Number.isFinite(count) ? count : 1)));
+  if (visibleCount <= 1) return "▣";
+  return mapFor(visibleCount, Math.max(0, Math.min(focusedIndex, visibleCount - 1)));
 }
 
 export function GridMiniMap({

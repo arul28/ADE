@@ -2,6 +2,7 @@ import React from "react";
 import { Link as LinkIcon, X } from "@phosphor-icons/react";
 
 import {
+  buildDeeplink,
   describeTarget,
   looksLikeAdeDeeplink,
   parseDeeplink,
@@ -55,7 +56,9 @@ export function ClipboardDeeplinkBanner(): React.ReactElement | null {
   const onOpen = () => {
     const opener = window.ade?.app?.openExternal;
     if (typeof opener === "function") {
-      void opener(candidate.url).catch(() => {});
+      const parsed = parseDeeplink(candidate.url);
+      const url = parsed.ok ? buildDeeplink(parsed.target, { form: "ade" }) : candidate.url;
+      void opener(url).catch(() => {});
     }
     dismissedRef.current.add(candidate.url);
     setCandidate(null);

@@ -154,9 +154,9 @@ const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
-const CHAT_TOOLBAR_ACTION_BASE =
+const chatToolbarActionBase =
   "relative inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors";
-const CHAT_TOOLBAR_ACTION_IDLE =
+const chatToolbarActionIdle =
   "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
@@ -6239,10 +6239,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  CHAT_TOOLBAR_ACTION_BASE,
+                  chatToolbarActionBase,
                   iosSimulatorOpen
                     ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
-                    : CHAT_TOOLBAR_ACTION_IDLE,
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setIosSimulatorOpen((current) => {
@@ -6282,10 +6282,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  CHAT_TOOLBAR_ACTION_BASE,
+                  chatToolbarActionBase,
                   appControlOpen
                     ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
-                    : CHAT_TOOLBAR_ACTION_IDLE,
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setAppControlOpen((current) => {
@@ -6333,10 +6333,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  CHAT_TOOLBAR_ACTION_BASE,
+                  chatToolbarActionBase,
                   proofDrawerOpen
                     ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-100/80"
-                    : CHAT_TOOLBAR_ACTION_IDLE,
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setProofDrawerOpen((current) => {
@@ -6375,10 +6375,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  CHAT_TOOLBAR_ACTION_BASE,
+                  chatToolbarActionBase,
                   subagentPaneOpen
                     ? "border-amber-300/22 bg-amber-500/10 text-amber-100/80"
-                    : CHAT_TOOLBAR_ACTION_IDLE,
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setSubagentPaneOpen((current) => {
@@ -6467,7 +6467,7 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  CHAT_TOOLBAR_ACTION_BASE,
+                  chatToolbarActionBase,
                   "border-violet-400/[0.12] bg-violet-500/[0.04] text-violet-200/60 hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40",
                 )}
                 onClick={() => {
