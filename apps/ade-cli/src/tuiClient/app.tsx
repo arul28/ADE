@@ -2538,6 +2538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   }, [lanes]);
   useEffect(() => {
     if (!activeSessionId) return;
+    if (loadedSessionIdRef.current !== activeSessionId) return;
     setEventsBySessionId((prev) => {
       if (prev[activeSessionId] === events) return prev;
       return { ...prev, [activeSessionId]: events };
@@ -7958,18 +7959,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
 
     if (pane === "chat" && textInputActive && isCtrlInput(input, key, "v")) {
       attachClipboardImage();
-      return;
-    }
-
-    if (pane === "chat" && textInputActive && isCtrlInput(input, key, "g")) {
-      const edited = editPromptInExternalEditor(prompt);
-      if (edited == null) {
-        addNotice("External editor exited without updating the prompt.", "error");
-      } else {
-        handlePromptChange(edited);
-        focusChat();
-        addNotice("Loaded prompt from external editor.", "success");
-      }
       return;
     }
 

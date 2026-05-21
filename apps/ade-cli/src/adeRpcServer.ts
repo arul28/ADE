@@ -3090,6 +3090,125 @@ function requireLaneIdForTool(
   return laneId;
 }
 
+function isTerminalSessionSummaryLike(value: unknown): value is TerminalSessionSummary {
+  if (!isRecord(value)) return false;
+  return Boolean(asOptionalTrimmedString(value.id) && asOptionalTrimmedString(value.laneId));
+}
+
+function ptyAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
+}
+
+function listPtySessionsForAuthorization(runtime: AdeRuntime): TerminalSessionSummary[] {
+  try {
+    const rows = runtime.ptyService.list({});
+    return Array.isArray(rows) ? rows.filter(isTerminalSessionSummaryLike) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getPtySessionForAuthorization(runtime: AdeRuntime, sessionId: string | null): TerminalSessionSummary | null {
+  if (!sessionId) return null;
+  try {
+    const session = runtime.sessionService.get(sessionId);
+    return isTerminalSessionSummaryLike(session) ? session : null;
+  } catch {
+    return null;
+  }
+}
+
+function findPtySessionByPtyId(runtime: AdeRuntime, ptyId: string | null): TerminalSessionSummary | null {
+  if (!ptyId) return null;
+  return listPtySessionsForAuthorization(runtime).find((session) => session.ptyId === ptyId) ?? null;
+}
+
+function authorizedPtyLaneIds(runtime: AdeRuntime, session: SessionState): Set<string> {
+  const laneIds = new Set<string>();
+  const chatLaneId = resolveChatSessionLaneId(runtime, session);
+  if (chatLaneId) laneIds.add(chatLaneId);
+  const runLaneId = resolveRunContextLaneId(runtime, resolveCallerContext(session));
+  if (runLaneId) laneIds.add(runLaneId);
+  return laneIds;
+}
+
+function isPtySessionAuthorized(runtime: AdeRuntime, session: SessionState, target: TerminalSessionSummary): boolean {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return true;
+  const targetSessionId = asOptionalTrimmedString(target.id);
+  const targetLaneId = asOptionalTrimmedString(target.laneId);
+  const targetChatSessionId = asOptionalTrimmedString(target.chatSessionId);
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (
+    callerChatSessionId
+    && (callerChatSessionId === targetSessionId || callerChatSessionId === targetChatSessionId)
+  ) {
+    return true;
+  }
+  return Boolean(targetLaneId && authorizedPtyLaneIds(runtime, session).has(targetLaneId));
+}
+
+function ensurePtyCreateAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): void {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
+  const laneId = asOptionalTrimmedString(ptyArgs.laneId);
+  const requestedChatSessionId = asOptionalTrimmedString(ptyArgs.chatSessionId);
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  if (!laneId || !authorizedPtyLaneIds(runtime, session).has(laneId)) {
+    ptyAccessDenied(method);
+  }
+}
+
+function ensurePtyTargetAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): void {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) return;
+  const ptyId = asOptionalTrimmedString(ptyArgs.ptyId);
+  const sessionId = asOptionalTrimmedString(ptyArgs.sessionId);
+  const target = findPtySessionByPtyId(runtime, ptyId) ?? getPtySessionForAuthorization(runtime, sessionId);
+  if (!target || !isPtySessionAuthorized(runtime, session, target)) {
+    ptyAccessDenied(method);
+  }
+}
+
+function listAuthorizedPtySessions(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  ptyArgs: Record<string, unknown>,
+): TerminalSessionSummary[] {
+  if (callerHasRoleAtLeast(session.identity.role, "cto")) {
+    return runtime.ptyService.list(ptyArgs as Parameters<typeof runtime.ptyService.list>[0]);
+  }
+
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  const requestedLaneId = extractLaneId(ptyArgs);
+  if (requestedLaneId && !laneIds.has(requestedLaneId)) {
+    ptyAccessDenied(method);
+  }
+  if (!callerChatSessionId && !laneIds.size) {
+    ptyAccessDenied(method);
+  }
+
+  const scopedArgs = { ...ptyArgs };
+  if (!requestedLaneId && laneIds.size === 1) {
+    scopedArgs.laneId = [...laneIds][0];
+  }
+  return runtime.ptyService
+    .list(scopedArgs as Parameters<typeof runtime.ptyService.list>[0])
+    .filter((target) => isPtySessionAuthorized(runtime, session, target));
+}
+
 async function runCtoOperatorBridgeTool(
   runtime: AdeRuntime,
   session: SessionState,
@@ -7848,6 +7967,7 @@ export function createAdeRpcRequestHandler(args: {
       const runPtyAction = async (runner: () => Promise<unknown> | unknown): Promise<unknown> =>
         auditActionCall(method, ptyArgs, async () => runner());
       if (method === "pty.create") {
+        ensurePtyCreateAuthorized(runtime, session, method, ptyArgs);
         return await runPtyAction(async () => {
           const result = await runtime.ptyService.create(ptyArgs as Parameters<typeof runtime.ptyService.create>[0]);
           return {
@@ -7857,22 +7977,26 @@ export function createAdeRpcRequestHandler(args: {
         });
       }
       if (method === "pty.sendToSession") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
         return await runPtyAction(() =>
           runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]));
       }
       if (method === "pty.write") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
         return await runPtyAction(() => {
           runtime.ptyService.write(ptyArgs as Parameters<typeof runtime.ptyService.write>[0]);
           return null;
         });
       }
       if (method === "pty.resize") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
         return await runPtyAction(() => {
           runtime.ptyService.resize(ptyArgs as Parameters<typeof runtime.ptyService.resize>[0]);
           return null;
         });
       }
       if (method === "pty.dispose") {
+        ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
         return await runPtyAction(() => {
           runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
           return null;
@@ -7880,7 +8004,7 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (method === "pty.list") {
         return await runPtyAction(() => ({
-          sessions: runtime.ptyService.list(ptyArgs as Parameters<typeof runtime.ptyService.list>[0]),
+          sessions: listAuthorizedPtySessions(runtime, session, method, ptyArgs),
         }));
       }
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);

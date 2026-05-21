@@ -6002,6 +6002,13 @@ app.whenReady().then(async () => {
     return getWindowSession(win.id);
   };
 
+  let initialWindowNavigationReady = false;
+  const drainPendingAppNavigationRequests = (): void => {
+    for (const request of pendingAppNavigationRequests.splice(0)) {
+      dispatchAppNavigationRequest?.(request);
+    }
+  };
+
   dispatchAppNavigationRequest = (request) => {
     void (async () => {
       let targetWindow =
@@ -6009,6 +6016,10 @@ app.whenReady().then(async () => {
         BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
         null;
       if (!targetWindow) {
+        if (!initialWindowNavigationReady) {
+          pendingAppNavigationRequests.push(request);
+          return;
+        }
         const opened = await openAdeWindow();
         targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
       }
@@ -6023,9 +6034,6 @@ app.whenReady().then(async () => {
       });
     });
   };
-  for (const request of pendingAppNavigationRequests.splice(0)) {
-    dispatchAppNavigationRequest(request);
-  }
 
   const openProjectFileRequest = async (filePath: string): Promise<void> => {
     const projectRoot = normalizeProjectPath(filePath);
@@ -6189,6 +6197,8 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);
+  initialWindowNavigationReady = true;
+  drainPendingAppNavigationRequests();
   if (shouldShowRuntimeMigrationNotice && process.env.NODE_ENV !== "test") {
     void dialog.showMessageBox(initialWindow, {
       type: "info",

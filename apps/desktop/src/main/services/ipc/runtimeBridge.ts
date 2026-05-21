@@ -245,10 +245,16 @@ export function registerRuntimeBridge({
   const sendRuntimeEvent = (
     sender: WebContents,
     bindingKey: string,
+    requestKey: string,
     event: RemoteRuntimeBufferedEvent,
   ): void => {
     const existing = runtimeEventSubscriptions.get(sender.id);
-    if (!existing || existing.bindingKey !== bindingKey || sender.isDestroyed())
+    if (
+      !existing ||
+      existing.bindingKey !== bindingKey ||
+      existing.requestKey !== requestKey ||
+      sender.isDestroyed()
+    )
       return;
     const payload: RemoteRuntimeEventNotificationPayload = {
       bindingKey,
@@ -274,12 +280,12 @@ export function registerRuntimeBridge({
     runtimeEventSubscriptions.set(sender.id, { bindingKey, requestKey, cleanup: null });
     const onEnded = () => {
       const current = runtimeEventSubscriptions.get(sender.id);
-      if (current?.requestKey === requestKey) {
+      if (current?.requestKey === requestKey && current.bindingKey === bindingKey) {
         runtimeEventSubscriptions.delete(sender.id);
       }
     };
     void subscribe(
-      (event) => sendRuntimeEvent(sender, bindingKey, event),
+      (event) => sendRuntimeEvent(sender, bindingKey, requestKey, event),
       onEnded,
     )
       .then((cleanup) => {
@@ -287,6 +293,7 @@ export function registerRuntimeBridge({
         if (
           !current ||
           current.requestKey !== requestKey ||
+          current.bindingKey !== bindingKey ||
           sender.isDestroyed()
         ) {
           cleanup();
@@ -296,7 +303,7 @@ export function registerRuntimeBridge({
       })
       .catch((error) => {
         const current = runtimeEventSubscriptions.get(sender.id);
-        if (current?.requestKey === requestKey && !current.cleanup) {
+        if (current?.requestKey === requestKey && current.bindingKey === bindingKey && !current.cleanup) {
           runtimeEventSubscriptions.delete(sender.id);
         }
         console.warn("Runtime event subscription failed", error);

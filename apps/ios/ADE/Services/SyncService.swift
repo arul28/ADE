@@ -7540,7 +7540,15 @@ extension SyncService {
       // host can reuse its own router.
       guard let url = (payload["url"] as? String)?
         .trimmingCharacters(in: .whitespacesAndNewlines),
-        !url.isEmpty else {
+        !url.isEmpty,
+        let components = URLComponents(string: url),
+        let scheme = components.scheme?.lowercased(),
+        scheme == "ade" ||
+          (
+            scheme == "https" &&
+            components.host?.lowercased() == "ade.app" &&
+            components.path.hasPrefix("/open")
+          ) else {
         return
       }
       args["url"] = url
