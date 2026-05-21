@@ -503,7 +503,7 @@ describe("RemoteConnectionPool", () => {
           event: {
             id: 12,
             timestamp: "2026-05-10T12:00:00.000Z",
-            category: "runtime",
+            category: "pty",
             payload: { type: "pty_data" },
           },
         });
@@ -542,7 +542,7 @@ describe("RemoteConnectionPool", () => {
       {
         cursor: 5,
         limit: 10,
-        category: "runtime",
+        category: "pty",
       },
       onEvent,
     );
@@ -551,13 +551,13 @@ describe("RemoteConnectionPool", () => {
       projectId: "project-1",
       cursor: 5,
       limit: 10,
-      category: "runtime",
+      category: "pty",
     });
     expect(onEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledWith({
       id: 12,
       timestamp: "2026-05-10T12:00:00.000Z",
-      category: "runtime",
+      category: "pty",
       payload: { type: "pty_data" },
     });
 

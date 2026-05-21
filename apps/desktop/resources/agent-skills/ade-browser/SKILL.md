@@ -9,6 +9,16 @@ description: Use this skill when using ADE's built-in browser pane, shared brows
 
 The ADE browser is global, not lane-scoped. Use socket mode so CLI calls and the Work sidebar share the same tabs.
 
+## How `ade browser` reaches the desktop
+
+The CLI does not own the browser pane. `BuiltInBrowserService` lives in Electron main because it owns a `WebContentsView`, so the runtime daemon (`ade serve`, which runs under `ELECTRON_RUN_AS_NODE=1` with no Electron APIs) can't host it directly.
+
+Calls travel: CLI → runtime daemon (`~/.ade/sock/ade.sock`) → desktop bridge socket (`<adeHome>/sock/desktop-bridge.sock`) → real `BuiltInBrowserService` in Electron main → response back. The runtime registers a lazy JSON-RPC proxy whose allowlisted methods (`getStatus`, `showPanel`, `setBounds`, `navigate`, `createTab`, `switchTab`, `closeTab`, `reload`, `goBack`, `goForward`, `stop`, `startInspect`, `stopInspect`, `captureScreenshot`, `selectPoint`, `selectCurrent`, `clearSelection`) forward over the bridge.
+
+Requirement: ADE Desktop must be running with a project open. Without it, calls fail with `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` — that's the headless case, not a bug. Other runtime domains keep working.
+
+Override the bridge socket path with `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches.
+
 ## Common commands
 
 ```bash

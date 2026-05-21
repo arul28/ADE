@@ -22,13 +22,20 @@ import {
 } from "../aggregate";
 import { theme } from "../theme";
 import { useBrailleSpin, useDotPulse, useSpinFrame } from "../spinTick";
-import { AdeWordmark } from "./AdeWordmark";
+import {
+  ADE_WORDMARK_COMPACT_WIDTH,
+  ADE_WORDMARK_FULL_WIDTH,
+  AdeWordmark,
+} from "./AdeWordmark";
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
 
-const HERO_TARGET_HALO_WIDTH = 56;
+// Hero halo target: when no chat content is visible, let the hero stretch to a
+// roomy reading width instead of staying narrow against an empty pane.
+const HERO_TARGET_HALO_WIDTH = 78;
 const HERO_MIN_HALO_WIDTH = 28;
-const HERO_WORDMARK_MIN_USABLE = 24;
+const HERO_WORDMARK_FULL_MIN_USABLE = ADE_WORDMARK_FULL_WIDTH + 2;
+const HERO_WORDMARK_COMPACT_MIN_USABLE = ADE_WORDMARK_COMPACT_WIDTH + 2;
 const DEFAULT_VIEW_WIDTH = 88;
 const BLANK_ROW_TEXT = " ";
 
@@ -265,7 +272,12 @@ export function BootHero({
   const cardWidth = haloWidth - 4;
   const usableWidth = Math.max(4, cardWidth - 8);
   const heroValueWidth = Math.max(4, usableWidth - 9);
-  const showWordmark = usableWidth >= HERO_WORDMARK_MIN_USABLE;
+  let wordmarkVariant: "full" | "compact" | "none" = "none";
+  if (usableWidth >= HERO_WORDMARK_FULL_MIN_USABLE) {
+    wordmarkVariant = "full";
+  } else if (usableWidth >= HERO_WORDMARK_COMPACT_MIN_USABLE) {
+    wordmarkVariant = "compact";
+  }
 
   return (
     <Box flexDirection="column" alignItems="center" paddingY={1}>
@@ -291,9 +303,9 @@ export function BootHero({
         >
           <Box flexDirection="column" paddingX={1}>
             <Box flexDirection="column" alignItems="center">
-              {showWordmark ? (
-                <AdeWordmark />
-              ) : (
+              {wordmarkVariant === "full" && <AdeWordmark />}
+              {wordmarkVariant === "compact" && <AdeWordmark compact />}
+              {wordmarkVariant === "none" && (
                 <Text color={theme.color.accent} bold>A · D · E</Text>
               )}
               <Box height={1} />
@@ -1505,6 +1517,10 @@ export function ChatView({
   unseenMessageCount = 0,
   selection = null,
   width = DEFAULT_VIEW_WIDTH,
+  focused = false,
+  hovered = false,
+  removeHovered = false,
+  onRemove,
 }: {
   events: AgentChatEventEnvelope[];
   notices: LocalNotice[];
@@ -1523,6 +1539,10 @@ export function ChatView({
   unseenMessageCount?: number;
   selection?: ChatTextSelection | null;
   width?: number;
+  focused?: boolean;
+  hovered?: boolean;
+  removeHovered?: boolean;
+  onRemove?: () => void;
 }) {
   // Memoize the heavy aggregation pass — it walks the entire transcript and
   // shouldn't re-run on every spinner tick. Events identity changes only when
@@ -1531,6 +1551,8 @@ export function ChatView({
     () => aggregateChatBlocks({ events, notices, activeSession, expandedLineIds }),
     [events, notices, activeSession, expandedLineIds],
   );
+  const tileMode = focused || Boolean(onRemove);
+  const bodyRows = tileMode ? Math.max(1, (maxRows ?? 4) - 4) : maxRows;
   const brailleFrame = useBrailleSpin();
   const spinFrame = useSpinFrame();
   const dotPulse = useDotPulse();
@@ -1541,7 +1563,7 @@ export function ChatView({
   const rows = useMemo(
     () => visibleRowsForBlocks({
       blocks,
-      maxRows,
+      maxRows: bodyRows,
       scrollOffsetRows,
       unseenMessageCount,
       width,
@@ -1551,10 +1573,18 @@ export function ChatView({
       spinFrame,
       dotPulse,
     }),
-    [blocks, brailleFrame, dotPulse, interrupted, maxRows, scrollOffsetRows, spinFrame, streaming, unseenMessageCount, width],
+    [blocks, bodyRows, brailleFrame, dotPulse, interrupted, scrollOffsetRows, spinFrame, streaming, unseenMessageCount, width],
   );
-  if (!blocks.length && !streaming && !interrupted) {
-    return (
+  const isEmpty = !blocks.length && !streaming && !interrupted;
+  let content: React.ReactNode;
+  if (isEmpty && tileMode) {
+    content = (
+      <Box flexDirection="column" paddingX={1} height={bodyRows}>
+        <Text color={theme.color.t4} dimColor>No transcript yet.</Text>
+      </Box>
+    );
+  } else if (isEmpty) {
+    content = (
       <BootHero
         projectName={projectName}
         laneName={laneName}
@@ -1565,12 +1595,53 @@ export function ChatView({
         width={width}
       />
     );
+  } else {
+    content = (
+      <Box flexDirection="column" paddingX={1} height={bodyRows}>
+        {rows.map((row, index) => (
+          <ChatRow key={`${row.id}:${index}`} row={row} selection={selection} />
+        ))}
+      </Box>
+    );
   }
+
+  if (!tileMode) return content;
+
+  const innerWidth = Math.max(8, width - 4);
+  const title = activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? activeSession?.sessionId ?? "chat";
+  const streamingDot = streaming ? " ●" : "";
+  const removeSlot = onRemove ? " ×" : "";
+  const available = Math.max(4, innerWidth - streamingDot.length - removeSlot.length - 3);
+  const lanePart = truncateEnd(laneName || "(lane removed)", Math.max(3, Math.floor(available * 0.4)));
+  const titlePart = truncateEnd(title, Math.max(3, available - textWidth(lanePart) - 3));
+  const header = truncateEnd(`${lanePart} / ${titlePart}${streamingDot}`, Math.max(4, innerWidth - removeSlot.length));
+  let tileBorderColor: string;
+  if (focused) tileBorderColor = "cyan";
+  else if (hovered) tileBorderColor = theme.color.borderFocused;
+  else tileBorderColor = theme.color.border;
+  let headerColor: string;
+  if (focused) headerColor = "cyan";
+  else if (activeSession?.status === "ended") headerColor = theme.color.t4;
+  else headerColor = theme.color.t2;
   return (
-    <Box flexDirection="column" paddingX={1} height={maxRows}>
-      {rows.map((row, index) => (
-        <ChatRow key={`${row.id}:${index}`} row={row} selection={selection} />
-      ))}
+    <Box
+      flexDirection="column"
+      borderStyle={focused ? "double" : "round"}
+      borderColor={tileBorderColor}
+      height={maxRows}
+      width={width}
+    >
+      <Box paddingX={1} justifyContent="space-between" flexShrink={0}>
+        <Text color={headerColor} wrap="truncate-end">
+          {header}
+        </Text>
+        {onRemove ? (
+          <Text color={removeHovered ? theme.color.error : theme.color.t4} inverse={removeHovered}>
+            ×
+          </Text>
+        ) : null}
+      </Box>
+      {content}
     </Box>
   );
 }

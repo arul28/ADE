@@ -11,6 +11,9 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
+import { InboundDeeplinkModal } from "./InboundDeeplinkModal";
+import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
+import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
@@ -594,6 +597,22 @@ function ShellLayout() {
 
 function AppNavigationBridge() {
   const navigate = useNavigate();
+  const lanes = useAppStore((s) => s.lanes);
+  const [inboundBranch, setInboundBranch] = React.useState<{
+    repoOwner: string;
+    repoName: string;
+    branch: string;
+    prNumber?: number | null;
+  } | null>(null);
+
+  // Capture lanes in a ref so the navigation callback always sees the latest
+  // list without re-subscribing every time the lanes array updates (which
+  // happens often — status polls, etc.).
+  const lanesRef = React.useRef(lanes);
+  React.useEffect(() => {
+    lanesRef.current = lanes;
+  }, [lanes]);
+
   React.useEffect(() => {
     const onNavigate = window.ade?.app?.onNavigate;
     if (!onNavigate) return;
@@ -618,7 +637,39 @@ function AppNavigationBridge() {
         if (target.prId) params.set("prId", target.prId);
         if (target.prNumber != null) params.set("pr", String(target.prNumber));
         if (target.laneId) params.set("laneId", target.laneId);
+        // Forward repo identity so the PRs tab can detect cross-project
+        // deeplinks (and offer to switch projects) instead of silently
+        // showing an empty filter.
+        if (target.repoOwner) params.set("repoOwner", target.repoOwner);
+        if (target.repoName) params.set("repoName", target.repoName);
         navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
+        return;
+      }
+      if (target.kind === "branch") {
+        setInboundBranch({
+          repoOwner: target.repoOwner,
+          repoName: target.repoName,
+          branch: target.branch,
+          prNumber: target.prNumber ?? null,
+        });
+        return;
+      }
+      if (target.kind === "linear-issue") {
+        // Look up a lane whose linkedIssue matches this identifier. If found,
+        // navigate. If not, fall back: route to /lanes with the issue + branch
+        // hints so the lanes page can pre-filter and offer "create lane" CTA.
+        const matchingLane = lanesRef.current.find(
+          (lane) => lane.linearIssue?.identifier === target.issueIdentifier,
+        );
+        if (matchingLane) {
+          const params = new URLSearchParams({ laneId: matchingLane.id });
+          navigate(`/lanes?${params.toString()}`);
+          return;
+        }
+        const params = new URLSearchParams();
+        params.set("linearIssue", target.issueIdentifier);
+        if (target.branch) params.set("branch", target.branch);
+        navigate(`/lanes?${params.toString()}`);
         return;
       }
       if (target.kind === "route") {
@@ -626,7 +677,19 @@ function AppNavigationBridge() {
       }
     });
   }, [navigate]);
-  return null;
+
+  if (!inboundBranch) return null;
+  return (
+    <InboundDeeplinkModal
+      target={inboundBranch}
+      lanes={lanes}
+      onClose={() => setInboundBranch(null)}
+      onLaneOpened={(laneId) => {
+        const params = new URLSearchParams({ laneId });
+        navigate(`/lanes?${params.toString()}`);
+      }}
+    />
+  );
 }
 
 function BrowserHashRouteBridge() {
@@ -697,6 +760,8 @@ export function App() {
       <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
         <OnboardingBootstrap />
         <AppNavigationBridge />
+        <CrossRepoPrBanner />
+        <ClipboardDeeplinkBanner />
         {usesBrowserRouter ? <BrowserHashRouteBridge /> : null}
         <Routes>
           <Route path="/startup" element={<Navigate to="/work" replace />} />

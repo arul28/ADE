@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { Cube, Desktop, DeviceMobile, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { Cube, Desktop, DeviceMobile, ArrowBendUpRight, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   PARALLEL_CHAT_MAX_ATTACHMENTS,
@@ -73,6 +73,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
@@ -98,6 +99,7 @@ import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
+import { QuickRunMenu } from "../run/QuickRunMenu";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
@@ -147,9 +149,15 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
 
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
+const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
+
+const chatToolbarActionBase =
+  "relative inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[10px] font-medium transition-colors";
+const chatToolbarActionIdle =
+  "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
 
 const AUTO_CREATE_LANE_OPTION_ID = "__ade_auto_create_lane__";
 const AUTO_CREATE_LANE_OPTION = {
@@ -477,12 +485,37 @@ type NativeControlState = {
   cursorConfigValues: Record<string, AgentChatCursorConfigValue>;
 };
 
+type LastLaunchConfig = {
+  version: 1;
+  modelId: string;
+  reasoningEffort: string | null;
+  codexFastMode: boolean;
+  executionMode: AgentChatExecutionMode;
+  controls: NativeControlState;
+  updatedAt: string;
+};
+
 type ParallelModelRowState = NativeControlState & {
   modelId: string;
   reasoningEffort: string | null;
   codexFastMode: boolean;
   executionMode: AgentChatExecutionMode;
 };
+
+function launchConfigStorageKey(scope: {
+  projectRoot: string | null | undefined;
+  laneId: string | null | undefined;
+  surfaceProfile: ChatSurfaceProfile;
+  workDraftKind: "chat" | "cli";
+}): string {
+  return [
+    LAST_LAUNCH_CONFIG_KEY_PREFIX,
+    scope.projectRoot?.trim() || "project",
+    scope.laneId?.trim() || "no-lane",
+    scope.surfaceProfile,
+    scope.workDraftKind,
+  ].map(encodeURIComponent).join(":");
+}
 
 function defaultNativeControls(profile: ChatSurfaceProfile): NativeControlState {
   if (profile === "persistent_identity") {
@@ -1073,6 +1106,236 @@ function resolveRegistryModelId(value: string | null | undefined): string | null
   return match?.id ?? null;
 }
 
+const INTERACTION_MODES: readonly AgentChatInteractionMode[] = ["default", "plan"];
+const CLAUDE_PERMISSION_MODES: readonly AgentChatClaudePermissionMode[] = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"];
+const CODEX_APPROVAL_POLICIES: readonly AgentChatCodexApprovalPolicy[] = ["untrusted", "on-request", "on-failure", "never"];
+const CODEX_SANDBOXES: readonly AgentChatCodexSandbox[] = ["read-only", "workspace-write", "danger-full-access"];
+const CODEX_CONFIG_SOURCES: readonly AgentChatCodexConfigSource[] = ["flags", "config-toml"];
+const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto"];
+const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
+const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function pickStringEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  return typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
+}
+
+function legacyPermissionModeToClaudePermissionMode(
+  mode: AgentChatPermissionMode | undefined,
+): AgentChatClaudePermissionMode | undefined {
+  if (mode === "full-auto") return "bypassPermissions";
+  if (mode === "edit") return "acceptEdits";
+  if (mode === "auto") return "auto";
+  if (mode === "plan") return "plan";
+  if (mode === "default") return "default";
+  return undefined;
+}
+
+function codexControlsFromPermissionMode(
+  mode: AgentChatPermissionMode | undefined,
+  fallbacks: NativeControlState,
+): Pick<NativeControlState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource"> {
+  if (mode === "config-toml") {
+    return {
+      codexApprovalPolicy: fallbacks.codexApprovalPolicy,
+      codexSandbox: fallbacks.codexSandbox,
+      codexConfigSource: "config-toml",
+    };
+  }
+  if (mode === "full-auto") {
+    return {
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+    };
+  }
+  if (mode === "plan") {
+    return {
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    };
+  }
+  if (mode === "edit") {
+    return {
+      codexApprovalPolicy: "untrusted",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    };
+  }
+  return {
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+  };
+}
+
+function cursorConfigValuesFromSnapshot(
+  snapshot: AgentChatSessionSummary["cursorModeSnapshot"] | AgentChatSession["cursorModeSnapshot"] | undefined,
+): Record<string, AgentChatCursorConfigValue> {
+  return Object.fromEntries(
+    (snapshot?.configOptions ?? [])
+      .filter((option) => option.id !== snapshot?.modeConfigId)
+      .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
+  );
+}
+
+function normalizeCursorConfigValues(value: unknown): Record<string, AgentChatCursorConfigValue> {
+  if (!isRecord(value)) return {};
+  return { ...value } as Record<string, AgentChatCursorConfigValue>;
+}
+
+type LaunchConfigSessionSource = Pick<
+  AgentChatSessionSummary,
+  | "model"
+  | "modelId"
+  | "reasoningEffort"
+  | "codexFastMode"
+  | "executionMode"
+  | "permissionMode"
+  | "interactionMode"
+  | "claudePermissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+  | "opencodePermissionMode"
+  | "droidPermissionMode"
+  | "cursorModeSnapshot"
+  | "cursorModeId"
+  | "cursorConfigValues"
+>;
+
+function nativeControlsFromLaunchSource(
+  source: Partial<LaunchConfigSessionSource>,
+  defaults: NativeControlState,
+): NativeControlState {
+  const codexFallbacks = codexControlsFromPermissionMode(source.permissionMode, defaults);
+  const cursorSnapshotValues = cursorConfigValuesFromSnapshot(source.cursorModeSnapshot);
+  return {
+    interactionMode: pickStringEnum(
+      source.interactionMode,
+      INTERACTION_MODES,
+      source.permissionMode === "plan" ? "plan" : defaults.interactionMode,
+    ),
+    claudePermissionMode: pickStringEnum(
+      source.claudePermissionMode,
+      CLAUDE_PERMISSION_MODES,
+      legacyPermissionModeToClaudePermissionMode(source.permissionMode) ?? defaults.claudePermissionMode,
+    ),
+    codexApprovalPolicy: pickStringEnum(
+      source.codexApprovalPolicy,
+      CODEX_APPROVAL_POLICIES,
+      codexFallbacks.codexApprovalPolicy,
+    ),
+    codexSandbox: pickStringEnum(
+      source.codexSandbox,
+      CODEX_SANDBOXES,
+      codexFallbacks.codexSandbox,
+    ),
+    codexConfigSource: pickStringEnum(
+      source.codexConfigSource,
+      CODEX_CONFIG_SOURCES,
+      codexFallbacks.codexConfigSource,
+    ),
+    opencodePermissionMode: pickStringEnum(
+      source.opencodePermissionMode,
+      OPENCODE_PERMISSION_MODES,
+      OPENCODE_PERMISSION_MODES.includes(source.permissionMode as AgentChatOpenCodePermissionMode)
+        ? source.permissionMode as AgentChatOpenCodePermissionMode
+        : defaults.opencodePermissionMode,
+    ),
+    droidPermissionMode: pickStringEnum(
+      source.droidPermissionMode,
+      DROID_PERMISSION_MODES,
+      legacyPermissionModeToDroidPermissionMode(source.permissionMode) ?? defaults.droidPermissionMode,
+    ),
+    cursorModeId: typeof source.cursorModeId === "string"
+      ? source.cursorModeId
+      : source.cursorModeSnapshot?.currentModeId ?? defaults.cursorModeId,
+    cursorConfigValues: {
+      ...defaults.cursorConfigValues,
+      ...cursorSnapshotValues,
+      ...normalizeCursorConfigValues(source.cursorConfigValues),
+    },
+  };
+}
+
+function buildLastLaunchConfig(
+  source: Partial<LaunchConfigSessionSource>,
+  defaults: NativeControlState,
+  updatedAt = new Date().toISOString(),
+): LastLaunchConfig | null {
+  const modelId = source.modelId ?? resolveRegistryModelId(source.model);
+  if (!modelId) return null;
+  const desc = getModelById(modelId);
+  return {
+    version: 1,
+    modelId,
+    reasoningEffort: source.reasoningEffort ?? null,
+    codexFastMode: modelSupportsFastMode(desc) && source.codexFastMode === true,
+    executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
+    controls: nativeControlsFromLaunchSource(source, defaults),
+    updatedAt,
+  };
+}
+
+function normalizeStoredLaunchConfig(
+  value: unknown,
+  defaults: NativeControlState,
+): LastLaunchConfig | null {
+  if (!isRecord(value)) return null;
+  const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
+  if (!modelId) return null;
+  const desc = getModelById(modelId);
+  const controls = nativeControlsFromLaunchSource(
+    isRecord(value.controls) ? value.controls : {},
+    defaults,
+  );
+  return {
+    version: 1,
+    modelId,
+    reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
+      ? value.reasoningEffort.trim()
+      : null,
+    codexFastMode: modelSupportsFastMode(desc) && value.codexFastMode === true,
+    executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
+    controls,
+    updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
+      ? value.updatedAt.trim()
+      : new Date(0).toISOString(),
+  };
+}
+
+function readLastLaunchConfig(storageKey: string, defaults: NativeControlState): LastLaunchConfig | null {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (raw) {
+      const parsed = normalizeStoredLaunchConfig(JSON.parse(raw), defaults);
+      if (parsed) return parsed;
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
+}
+
+function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(config));
+    window.localStorage.setItem(LAST_MODEL_ID_KEY, config.modelId);
+  } catch {
+    // ignore
+  }
+}
+
 function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "droid", value: string | null | undefined): string | null {
   const normalized = (value ?? "").trim().toLowerCase();
   if (!normalized.length) return null;
@@ -1530,6 +1793,12 @@ export function AgentChatPane({
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
+  const lastLaunchConfigStorageKey = useMemo(() => launchConfigStorageKey({
+    projectRoot,
+    laneId,
+    surfaceProfile,
+    workDraftKind,
+  }), [laneId, projectRoot, surfaceProfile, workDraftKind]);
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -1785,6 +2054,7 @@ export function AgentChatPane({
   const handoffRef = useRef<HTMLDivElement | null>(null);
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
+  const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
@@ -2591,8 +2861,34 @@ export function AgentChatPane({
     [parallelConfiguringRow],
   );
 
+  const applyLaunchConfigToComposer = useCallback((config: LastLaunchConfig) => {
+    const desc = resolveModelDescriptorWithRuntimeCatalog(config.modelId) ?? getModelById(config.modelId);
+    const tiers = desc?.reasoningTiers ?? [];
+    setModelId(config.modelId);
+    setReasoningEffort(selectReasoningEffort({
+      tiers,
+      preferred: config.reasoningEffort,
+    }));
+    setCodexFastMode(modelSupportsFastMode(desc) && config.codexFastMode);
+    setExecutionMode(config.executionMode);
+    setInteractionMode(config.controls.interactionMode);
+    setClaudePermissionMode(config.controls.claudePermissionMode);
+    setCodexApprovalPolicy(config.controls.codexApprovalPolicy);
+    setCodexSandbox(config.controls.codexSandbox);
+    setCodexConfigSource(config.controls.codexConfigSource);
+    setOpenCodePermissionMode(config.controls.opencodePermissionMode);
+    setDroidPermissionMode(config.controls.droidPermissionMode);
+    setCursorModeId(config.controls.cursorModeId);
+    setCursorConfigValues({ ...config.controls.cursorConfigValues });
+  }, []);
+
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
+      const lastLaunchConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+      if (lastLaunchConfig) {
+        applyLaunchConfigToComposer(lastLaunchConfig);
+        return;
+      }
       setInteractionMode(initialNativeControls.interactionMode);
       setClaudePermissionMode(initialNativeControls.claudePermissionMode);
       setCodexApprovalPolicy(initialNativeControls.codexApprovalPolicy);
@@ -2631,7 +2927,7 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [initialNativeControls]);
+  }, [applyLaunchConfigToComposer, initialNativeControls, lastLaunchConfigStorageKey]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -2663,6 +2959,10 @@ export function AgentChatPane({
       policy: modelSwitchPolicy,
     });
   }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
+  const modelPickerProviderAuthStatus = useMemo(
+    () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
+    [aiStatus],
+  );
   const cursorCloudModelIds = useMemo(
     () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
     [effectiveAvailableModelIds],
@@ -3289,6 +3589,39 @@ export function AgentChatPane({
     selectedSession?.cursorModeSnapshot?.currentModeId,
     selectedSession?.cursorModeSnapshot?.configOptions,
     syncComposerToSession,
+  ]);
+
+  useEffect(() => {
+    if (selectedSessionId || lockSessionId) return;
+    const draftKey = `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftKind}`;
+    const latestSessionConfig = sessions[0]
+      ? buildLastLaunchConfig(sessions[0], initialNativeControls)
+      : null;
+    const sessionHydrationKey = `${draftKey}:session`;
+    if (latestSessionConfig) {
+      if (draftLaunchConfigHydratedRef.current === sessionHydrationKey) return;
+      applyLaunchConfigToComposer(latestSessionConfig);
+      draftLaunchConfigHydratedRef.current = sessionHydrationKey;
+      return;
+    }
+
+    const storageHydrationKey = `${draftKey}:storage`;
+    if (draftLaunchConfigHydratedRef.current === storageHydrationKey) return;
+    const storedConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+    if (!storedConfig) return;
+    applyLaunchConfigToComposer(storedConfig);
+    draftLaunchConfigHydratedRef.current = storageHydrationKey;
+  }, [
+    applyLaunchConfigToComposer,
+    initialNativeControls,
+    laneId,
+    lastLaunchConfigStorageKey,
+    lockSessionId,
+    projectRoot,
+    selectedSessionId,
+    sessions,
+    surfaceProfile,
+    workDraftKind,
   ]);
 
   useEffect(() => {
@@ -4246,13 +4579,18 @@ export function AgentChatPane({
   }, [initialNativeControls.opencodePermissionMode]);
   const notifySessionCreated = useCallback((session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => {
     if (!onSessionCreated) return;
-    void Promise.resolve()
-      .then(() => (
-        options === undefined
-          ? onSessionCreated(session)
-          : onSessionCreated(session, options)
-      ))
-      .catch((err) => { console.error("notifySessionCreated failed:", err); });
+    // Call synchronously so the parent's lane/session focus state setters land
+    // in the same React commit as the submit handler's optimistic-message setters.
+    // Deferring through a microtask races with batching and leaves the new chat
+    // launched-but-not-visible until the user manually navigates.
+    try {
+      const result = options === undefined ? onSessionCreated(session) : onSessionCreated(session, options);
+      if (result && typeof (result as Promise<void>).catch === "function") {
+        (result as Promise<void>).catch((err) => { console.error("notifySessionCreated failed:", err); });
+      }
+    } catch (err) {
+      console.error("notifySessionCreated failed:", err);
+    }
   }, [onSessionCreated]);
   const draftLaunchTargetIsAutoCreate = draftLaunchTargetId === AUTO_CREATE_LANE_OPTION_ID;
   const launchShellForDraftLane = useCallback(async () => {
@@ -4280,12 +4618,15 @@ export function AgentChatPane({
       const harnessPermissionMode = provider === "opencode"
         ? recommendedOpenCodePermissionModeForModel(permissionDesc)
         : null;
+      const launchControls = harnessPermissionMode
+        ? {
+            ...currentNativeControls,
+            opencodePermissionMode: harnessPermissionMode,
+          }
+        : currentNativeControls;
       const nativeControlPayload = harnessPermissionMode
         ? {
-            ...summarizeNativeControls(provider, {
-              ...currentNativeControls,
-              opencodePermissionMode: harnessPermissionMode,
-            }),
+            ...summarizeNativeControls(provider, launchControls),
             ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
           }
         : buildNativeControlPayload(provider);
@@ -4299,6 +4640,24 @@ export function AgentChatPane({
         ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
         ...nativeControlPayload,
       });
+      const launchConfig = buildLastLaunchConfig({
+        model: created.model,
+        modelId: created.modelId ?? modelId,
+        reasoningEffort,
+        codexFastMode: modelSupportsFastMode(desc) && codexFastMode,
+        executionMode,
+        permissionMode: nativeControlPayload.permissionMode,
+        interactionMode: launchControls.interactionMode,
+        claudePermissionMode: launchControls.claudePermissionMode,
+        codexApprovalPolicy: launchControls.codexApprovalPolicy,
+        codexSandbox: launchControls.codexSandbox,
+        codexConfigSource: launchControls.codexConfigSource,
+        opencodePermissionMode: launchControls.opencodePermissionMode,
+        droidPermissionMode: launchControls.droidPermissionMode,
+        cursorModeId: launchControls.cursorModeId,
+        cursorConfigValues: launchControls.cursorConfigValues,
+      }, initialNativeControls);
+      if (launchConfig) writeLastLaunchConfig(lastLaunchConfigStorageKey, launchConfig);
       loadedHistoryRef.current.delete(created.id);
       optimisticSessionIdsRef.current.add(created.id);
       knownSessionIdsRef.current.add(created.id);
@@ -4331,7 +4690,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -5341,6 +5700,7 @@ export function AgentChatPane({
     initialSessionId,
     forceDraft,
     embeddedWorkLayout,
+    lastLaunchConfigStorageKey,
     projectRoot,
     activeLaneWorktreePath,
     navigate,
@@ -5865,7 +6225,7 @@ export function AgentChatPane({
 
         {showWorkspaceChrome && laneId ? <ChatGitToolbar laneId={laneId} /> : null}
 
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="ml-auto flex shrink-0 items-center gap-4">
           {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
@@ -5879,10 +6239,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   iosSimulatorOpen
                     ? "border-cyan-300/22 bg-cyan-500/10 text-cyan-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setIosSimulatorOpen((current) => {
@@ -5899,6 +6259,7 @@ export function AgentChatPane({
                 aria-label={iosSimulatorOpen ? "Close iOS simulator drawer" : "Open iOS simulator drawer"}
                 aria-pressed={iosSimulatorOpen}
               >
+                <span>Simulator</span>
                 <DeviceMobile size={13} weight={iosSimulatorOpen ? "fill" : "regular"} />
                 {iosElementContextItems.length ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-cyan-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -5921,10 +6282,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   appControlOpen
                     ? "border-sky-300/22 bg-sky-500/10 text-sky-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setAppControlOpen((current) => {
@@ -5940,6 +6301,7 @@ export function AgentChatPane({
                 aria-label={appControlOpen ? "Close App Control drawer" : "Open App Control drawer"}
                 aria-pressed={appControlOpen}
               >
+                <span>Desktop</span>
                 <Desktop size={13} weight={appControlOpen ? "fill" : "regular"} />
                 {appControlContextItems.length ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -5948,6 +6310,15 @@ export function AgentChatPane({
                 ) : null}
               </button>
             </SmartTooltip>
+          ) : null}
+          {showWorkspaceChrome && laneId ? (
+            <QuickRunMenu
+              laneId={laneId}
+              compact
+              label="Run"
+              align="end"
+              triggerStyle={{ height: 28, padding: "0 10px" }}
+            />
           ) : null}
           {showWorkspaceChrome && laneId ? (
             <SmartTooltip
@@ -5962,10 +6333,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   proofDrawerOpen
                     ? "border-emerald-400/22 bg-emerald-500/10 text-emerald-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setProofDrawerOpen((current) => {
@@ -5983,6 +6354,7 @@ export function AgentChatPane({
                 aria-label={proofDrawerOpen ? "Close proof drawer" : "Open proof drawer"}
                 aria-pressed={proofDrawerOpen}
               >
+                <span>Proof</span>
                 <Cube size={13} weight={proofDrawerOpen ? "fill" : "regular"} />
                 {proofArtifactCount > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
@@ -6003,10 +6375,10 @@ export function AgentChatPane({
               <button
                 type="button"
                 className={cn(
-                  "relative inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
+                  chatToolbarActionBase,
                   subagentPaneOpen
                     ? "border-amber-300/22 bg-amber-500/10 text-amber-100/80"
-                    : "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65",
+                    : chatToolbarActionIdle,
                 )}
                 onClick={() => {
                   setSubagentPaneOpen((current) => {
@@ -6024,6 +6396,7 @@ export function AgentChatPane({
                 aria-label={subagentPaneOpen ? "Close subagents panel" : "Open subagents panel"}
                 aria-pressed={subagentPaneOpen}
               >
+                <span>Agents</span>
                 <TreeStructure size={13} weight={subagentPaneOpen ? "fill" : "regular"} />
                 <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                   {selectedSubagentSnapshots.length}
@@ -6093,7 +6466,10 @@ export function AgentChatPane({
             <div ref={handoffRef} className="relative">
               <button
                 type="button"
-                className="inline-flex items-center rounded-lg border border-violet-400/[0.12] bg-violet-500/[0.04] px-2.5 py-1 font-sans text-[10px] font-medium text-violet-200/60 transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40"
+                className={cn(
+                  chatToolbarActionBase,
+                  "border-violet-400/[0.12] bg-violet-500/[0.04] text-violet-200/60 hover:border-violet-400/20 hover:bg-violet-500/[0.08] hover:text-violet-200/80 disabled:cursor-not-allowed disabled:opacity-40",
+                )}
                 onClick={() => {
                   setError(null);
                   setHandoffOpen((current) => !current);
@@ -6101,7 +6477,8 @@ export function AgentChatPane({
                 disabled={handoffBlocked}
                 title={handoffButtonTitle}
               >
-                Handoff
+                <span>Handoff</span>
+                <ArrowBendUpRight size={13} weight="regular" />
               </button>
               {handoffOpen ? (
                 <div data-chat-handoff-menu="true" className="absolute right-0 top-full z-[100] mt-2 w-[min(26rem,calc(100vw-2rem))] rounded-[14px] border border-violet-400/[0.10] bg-[#13101a] p-4 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.55)]">
@@ -6433,6 +6810,7 @@ export function AgentChatPane({
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
+            providerAuthStatus={modelPickerProviderAuthStatus}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
             codexTokenUsage={selectedCodexTokenUsage}

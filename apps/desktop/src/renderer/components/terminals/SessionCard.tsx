@@ -1,19 +1,17 @@
 import React from "react";
-import { GitBranch, Info, WarningCircle } from "@phosphor-icons/react";
+import { Info, WarningCircle } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import {
   getStaleRunningCliSessionAgeHours,
   primarySessionLabel,
   preferredSessionLabel,
-  shortToolTypeLabel,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
-import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -59,7 +57,6 @@ export const SessionCard = React.memo(function SessionCard({
   const delta = useSessionDelta(session.id, true);
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText);
-  const laneMarker = lane?.icon ? iconGlyph(lane.icon) : <GitBranch size={11} weight="regular" />;
   const staleAgeHours = getStaleRunningCliSessionAgeHours(session);
   const isHighlighted = isSelected || isMultiSelected;
   const highlightedBorder = isHighlighted
@@ -80,6 +77,9 @@ export const SessionCard = React.memo(function SessionCard({
     idleSinceAt: session.chatIdleSinceAt,
     awaitingInput: session.runtimeState === "waiting-input",
   });
+  const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
+  const hasFooterMeta =
+    showClaudeCacheTimer || hasDeltaChips || (session.exitCode != null && session.exitCode !== 0);
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -111,26 +111,17 @@ export const SessionCard = React.memo(function SessionCard({
         <div className={cn("flex items-stretch", compact ? "gap-2 px-2 py-1" : "gap-2.5 px-2.5 py-2")}>
           {/* Logo — vertically centered against full card height */}
           <div className="flex shrink-0 self-stretch items-center justify-center">
-            <ToolLogo toolType={session.toolType} size={compact ? 16 : 22} />
+            <ToolLogo toolType={session.toolType} size={compact ? 18 : 26} />
           </div>
 
           {/* Content — 3 rows */}
           <div className="min-w-0 flex-1">
-            {/* Row 1: Status dot + Title + Relative time */}
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span
-                title={dot.label}
-                className={cn(
-                  "shrink-0 rounded-full",
-                  compact ? "h-1.5 w-1.5" : "h-2 w-2",
-                  dot.cls,
-                  dot.spinning && "animate-spin",
-                )}
-              />
+            {/* Row 1: Title + status dot + relative time */}
+            <div className="flex items-center gap-2 min-w-0">
               <span
                 className={cn(
                   "min-w-0 flex-1 truncate font-semibold text-fg/90",
-                  compact ? "text-[10px]" : "text-[11px]",
+                  compact ? "text-[11px]" : "text-[13px]",
                 )}
               >
                 {primaryText}
@@ -144,6 +135,15 @@ export const SessionCard = React.memo(function SessionCard({
                   <WarningCircle size={11} weight="fill" />
                 </span>
               ) : null}
+              <span
+                title={dot.label}
+                className={cn(
+                  "shrink-0 rounded-full",
+                  compact ? "h-2.5 w-2.5" : "h-3 w-3",
+                  dot.cls,
+                  dot.spinning && "animate-spin",
+                )}
+              />
               <span className={cn("shrink-0 text-muted-fg/45 tabular-nums", compact ? "text-[9px]" : "text-[10px]")}>
                 {relativeTimeCompact(session.endedAt ?? session.startedAt)}
               </span>
@@ -158,64 +158,49 @@ export const SessionCard = React.memo(function SessionCard({
               </div>
             ) : null}
 
-            {/* Row 3: Tool type + Lane + Cache badge + Delta chips + Exit code */}
-            <div className={cn("flex items-center gap-1.5 min-w-0", compact ? "mt-px" : "mt-0.5")}>
-              <span className={cn("shrink-0 text-muted-fg/55", compact ? "text-[9px]" : "text-[10px]")}>
-                {shortToolTypeLabel(session.toolType)}
-              </span>
-              <span className="text-muted-fg/25">&middot;</span>
-              <span
-                className="inline-flex shrink-0 items-center justify-center"
-                style={{ color: laneAccent ?? undefined }}
-              >
-                {laneMarker}
-              </span>
-              <span
-                className={cn("min-w-0 flex-1 truncate text-muted-fg/50", compact ? "text-[9px]" : "text-[10px]")}
-                style={laneAccent ? { color: laneAccent, opacity: 0.85 } : undefined}
-              >
-                {lane?.name ?? session.laneName}
-              </span>
+            {/* Row 3: Cache badge + Delta chips + Exit code */}
+            {hasFooterMeta ? (
+              <div className={cn("flex items-center gap-1.5 min-w-0", compact ? "mt-px" : "mt-0.5")}>
+                {showClaudeCacheTimer ? (
+                  <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
+                ) : null}
 
-              {showClaudeCacheTimer ? (
-                <ClaudeCacheTtlBadge idleSinceAt={session.chatIdleSinceAt} />
-              ) : null}
+                {hasDeltaChips && delta ? (
+                  <>
+                    {delta.insertions > 0 ? (
+                      <span
+                        className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
+                        style={DELTA_CHIP_STYLE}
+                      >
+                        +{delta.insertions}
+                      </span>
+                    ) : null}
+                    {delta.deletions > 0 ? (
+                      <span
+                        className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
+                        style={DELTA_CHIP_STYLE}
+                      >
+                        -{delta.deletions}
+                      </span>
+                    ) : null}
+                  </>
+                ) : null}
 
-              {delta ? (
-                <>
-                  {delta.insertions > 0 ? (
-                    <span
-                      className="border border-emerald-500/30 bg-emerald-500/15 px-1 py-0.5 text-emerald-300 leading-none shrink-0"
-                      style={DELTA_CHIP_STYLE}
-                    >
-                      +{delta.insertions}
-                    </span>
-                  ) : null}
-                  {delta.deletions > 0 ? (
-                    <span
-                      className="border border-red-500/30 bg-red-500/15 px-1 py-0.5 text-red-300 leading-none shrink-0"
-                      style={DELTA_CHIP_STYLE}
-                    >
-                      -{delta.deletions}
-                    </span>
-                  ) : null}
-                </>
-              ) : null}
-
-              {session.exitCode != null && session.exitCode !== 0 ? (
-                <span
-                  className={cn(
-                    "px-1 py-0.5 leading-none shrink-0 border",
-                    stoppedBySignal
-                      ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
-                      : "border-red-500/30 bg-red-500/15 text-red-300",
-                  )}
-                  style={DELTA_CHIP_STYLE}
-                >
-                  {stoppedBySignal ? "STOPPED" : `EXIT ${session.exitCode}`}
-                </span>
-              ) : null}
-            </div>
+                {session.exitCode != null && session.exitCode !== 0 ? (
+                  <span
+                    className={cn(
+                      "px-1 py-0.5 leading-none shrink-0 border",
+                      stoppedBySignal
+                        ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
+                        : "border-red-500/30 bg-red-500/15 text-red-300",
+                    )}
+                    style={DELTA_CHIP_STYLE}
+                  >
+                    {stoppedBySignal ? "STOPPED" : `EXIT ${session.exitCode}`}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </button>

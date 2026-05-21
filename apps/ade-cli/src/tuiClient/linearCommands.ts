@@ -86,8 +86,12 @@ function tool(title: string, toolName: string, args: Record<string, unknown> = {
 
 export function buildLinearToolRequest(input: string): LinearToolRequest {
   const parsed = parseLinearArgs(input);
-  const [group = "workflows", modeArg, ...rest] = parsed.positionals;
+  const [group, modeArg, ...rest] = parsed.positionals;
   const options = parsed.options;
+
+  if (!group) {
+    return usage("Linear", "Usage: /linear <workflows|run|route|sync|ingress> ...");
+  }
 
   if (group === "workflows") {
     return tool("Linear workflows", "listLinearWorkflows");

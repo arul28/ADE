@@ -338,7 +338,10 @@ function createRuntime() {
         void data;
         return true;
       }),
+      write: vi.fn(),
+      resize: vi.fn(),
       readTranscriptTail: vi.fn(async () => ""),
+      list: vi.fn(() => []),
       enrichSessions: vi.fn((sessions: unknown[]) => sessions),
     },
     testService: {
@@ -1209,6 +1212,198 @@ function createFakePathExecutable(dir: string, name: string): string {
 }
 
 describe("adeRpcServer", () => {
+  it("exposes direct PTY RPC methods with enriched create/list responses", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      status: "running",
+      ownerPid: 12_345,
+      chatSessionId: null,
+    };
+    runtime.sessionService.get.mockReturnValue(session);
+    runtime.ptyService.list.mockReturnValue([session]);
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const created = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "pty.create",
+      params: { args: { laneId: "lane-1", title: "Claude", cols: 120, rows: 40 } },
+    });
+    expect(created).toEqual({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      session,
+    });
+    expect(runtime.ptyService.create).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      title: "Claude",
+      cols: 120,
+      rows: 40,
+    });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: "session-1", text: "continue" } },
+    })).resolves.toMatchObject({ sessionId: "session-1", reusedExistingRuntime: true });
+    expect(runtime.ptyService.sendToSession).toHaveBeenCalledWith({ sessionId: "session-1", text: "continue" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "pty.write",
+      params: { args: { ptyId: "pty-1", data: "x" } },
+    })).resolves.toBeNull();
+    expect(runtime.ptyService.write).toHaveBeenCalledWith({ ptyId: "pty-1", data: "x" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "pty.resize",
+      params: { args: { ptyId: "pty-1", cols: 100, rows: 30 } },
+    })).resolves.toBeNull();
+    expect(runtime.ptyService.resize).toHaveBeenCalledWith({ ptyId: "pty-1", cols: 100, rows: 30 });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "pty.dispose",
+      params: { args: { ptyId: "pty-1", sessionId: "session-1" } },
+    })).resolves.toBeNull();
+    expect(runtime.ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "session-1" });
+
+    const listed = await handler({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "pty.list",
+      params: { args: { laneId: "lane-1", limit: 20 } },
+    });
+    expect(listed).toEqual({ sessions: [session] });
+    expect(runtime.ptyService.list).toHaveBeenCalledWith({ laneId: "lane-1", limit: 20 });
+  });
+
+  it("hides direct PTY RPC methods from external sessions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "external" });
+
+    const blocked = [
+      {
+        method: "pty.create",
+        params: { args: { laneId: "lane-1", title: "Claude", cols: 120, rows: 40 } },
+        spy: runtime.ptyService.create,
+      },
+      {
+        method: "pty.sendToSession",
+        params: { args: { sessionId: "session-1", text: "continue" } },
+        spy: runtime.ptyService.sendToSession,
+      },
+      { method: "pty.write", params: { args: { ptyId: "pty-1", data: "x" } }, spy: runtime.ptyService.write },
+      { method: "pty.resize", params: { args: { ptyId: "pty-1", cols: 100, rows: 30 } }, spy: runtime.ptyService.resize },
+      { method: "pty.dispose", params: { args: { ptyId: "pty-1", sessionId: "session-1" } }, spy: runtime.ptyService.dispose },
+      { method: "pty.list", params: { args: { laneId: "lane-1", limit: 20 } }, spy: runtime.ptyService.list },
+    ] as const;
+
+    for (const [index, rpc] of blocked.entries()) {
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 2 + index,
+        method: rpc.method,
+        params: rpc.params,
+      })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+      expect(rpc.spy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("scopes direct PTY RPC methods to the caller terminal context", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    const owned = {
+      id: "owned-session",
+      laneId: "lane-1",
+      ptyId: "pty-owned",
+      status: "running",
+      ownerPid: 12_345,
+      chatSessionId: null,
+    };
+    const peer = {
+      id: "peer-session",
+      laneId: "lane-2",
+      ptyId: "pty-peer",
+      status: "running",
+      ownerPid: 54_321,
+      chatSessionId: null,
+    };
+    runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === owned.id) return owned;
+      if (sessionId === peer.id) return peer;
+      return null;
+    });
+    runtime.ptyService.list.mockImplementation((args: { laneId?: string } = {}) =>
+      [owned, peer].filter((session) => !args.laneId || session.laneId === args.laneId));
+    await initialize(handler, { role: "agent", chatSessionId: owned.id });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "pty.list",
+      params: { args: {} },
+    })).resolves.toEqual({ sessions: [owned] });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "pty.list",
+      params: { args: { laneId: peer.laneId } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "pty.create",
+      params: { args: { laneId: peer.laneId, title: "Peer", cols: 120, rows: 40 } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: peer.id, text: "continue" } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "pty.write",
+      params: { args: { ptyId: peer.ptyId, data: "x" } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "pty.resize",
+      params: { args: { ptyId: peer.ptyId, cols: 100, rows: 30 } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "pty.dispose",
+      params: { args: { ptyId: peer.ptyId, sessionId: owned.id } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    expect(runtime.ptyService.create).not.toHaveBeenCalled();
+    expect(runtime.ptyService.sendToSession).not.toHaveBeenCalled();
+    expect(runtime.ptyService.write).not.toHaveBeenCalled();
+    expect(runtime.ptyService.resize).not.toHaveBeenCalled();
+    expect(runtime.ptyService.dispose).not.toHaveBeenCalled();
+  });
+
   it("routes app/navigate through the runtime navigation service", async () => {
     const { runtime } = createRuntime();
     const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
@@ -5777,6 +5972,32 @@ describe("adeRpcServer", () => {
     // Should only return orchestrator events (2 out of 3)
     expect(response.structuredContent.events).toHaveLength(2);
     expect(response.structuredContent.events.every((e: any) => e.category === "orchestrator")).toBe(true);
+  });
+
+  it("stream_events supports the PTY category", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
+      events: [
+        { id: cursor + 1, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
+        { id: cursor + 2, timestamp: new Date().toISOString(), category: "pty", payload: { type: "pty_data", event: { sessionId: "session-1", data: "hi" } } },
+        { id: cursor + 3, timestamp: new Date().toISOString(), category: "pty", payload: { type: "pty_exit", event: { sessionId: "session-1", exitCode: 0 } } },
+      ],
+      nextCursor: cursor + 3,
+      hasMore: false,
+    }));
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "external" });
+    const response = await callTool(handler, "stream_events", {
+      cursor: 0,
+      limit: 100,
+      category: "pty",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(response.structuredContent.events).toHaveLength(2);
+    expect(response.structuredContent.events.every((event: any) => event.category === "pty")).toBe(true);
+    expect(response.structuredContent.nextCursor).toBe(3);
   });
 
   it("stream_events returns runtime validation contract events when requested", async () => {

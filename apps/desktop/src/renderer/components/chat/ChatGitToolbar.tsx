@@ -16,7 +16,6 @@ import {
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
-import { QuickRunMenu } from "../run/QuickRunMenu";
 import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
 import {
   beginLaneGitActionRuntime,
@@ -24,7 +23,7 @@ import {
   scheduleLaneGitActionRuntimeClear,
   useLaneGitActionRuntimeState,
 } from "../lanes/LaneGitActionsPane";
-import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import { getLaneAccent } from "../lanes/laneColorPalette";
 import { useAppStore } from "../../state/appStore";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 
@@ -105,6 +104,24 @@ function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; r
   return { passed, failed, running, total: checks.length };
 }
 
+function LaneLogoMark({ color, size = 16 }: { color: string; size?: number }) {
+  return (
+    <span
+      aria-hidden
+      className="inline-flex shrink-0 items-center justify-center rounded-[5px]"
+      style={{
+        width: size,
+        height: size,
+        background: `color-mix(in srgb, ${color} 30%, transparent)`,
+        border: `1px solid color-mix(in srgb, ${color} 48%, transparent)`,
+        color,
+      }}
+    >
+      <GitBranch size={10} weight="bold" />
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -114,8 +131,17 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
-  const laneColor = useAppStore((s) => s.lanes.find((l) => l.id === laneId)?.color ?? null);
-  const laneName = useAppStore((s) => s.lanes.find((l) => l.id === laneId)?.name ?? null);
+  const lane = useAppStore((s) => s.lanes.find((l) => l.id === laneId) ?? null);
+  const laneName = lane?.name ?? null;
+  const laneAccent = getLaneAccent(lane, 0);
+
+  const openLaneInLanesTab = useCallback(() => {
+    const params = new URLSearchParams({
+      laneId,
+      focus: "single",
+    });
+    navigate(`/lanes?${params.toString()}`);
+  }, [laneId, navigate]);
 
   const [dirtyCount, setDirtyCount] = useState(0);
   const [diffStats, setDiffStats] = useState<{ adds: number; dels: number; files: number } | null>(null);
@@ -500,21 +526,16 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     <div className="flex items-center gap-1.5">
       {/* Lane name (navigates to lane detail) */}
       {laneId ? (
-        <>
-          <button
-            type="button"
-            onClick={() => navigate(`/lanes/${laneId}`)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 py-1 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
-          >
-            {laneColor ? (
-              <LaneAccentDot lane={{ color: laneColor }} size={7} className="shrink-0" />
-            ) : (
-              <GitBranch size={10} weight="bold" className="shrink-0 text-violet-400/50" />
-            )}
-            <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
-          </button>
-          <QuickRunMenu laneId={laneId} compact label="Run" triggerStyle={{ height: 22, padding: "0 8px" }} />
-        </>
+        <button
+          type="button"
+          onClick={openLaneInLanesTab}
+          title={`Open ${laneName ?? "lane"} in Lanes`}
+          aria-label={`Open ${laneName ?? "lane"} in Lanes tab`}
+          className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-violet-400/10 bg-violet-500/[0.04] px-2.5 font-mono text-[10px] text-violet-200/60 cursor-pointer transition-colors hover:border-violet-400/20 hover:bg-violet-500/[0.08]"
+        >
+          <LaneLogoMark color={laneAccent} />
+          <span className="max-w-[140px] truncate">{laneName ?? laneId}</span>
+        </button>
       ) : null}
 
       {/* Dirty count badge */}

@@ -128,7 +128,7 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. The center of ADE is the **runtime daemon** — a single per-machine `ade` service that owns projects, lanes, chats, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide socket lives under `~/.ade/sock/ade.sock`.
+Local-first, on purpose. The center of ADE is the **runtime daemon** — a single per-machine `ade` service that owns projects, lanes, chats, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide socket lives under `~/.ade/sock/ade.sock`. When desktop is running, its Electron main process also hosts a **bridge socket** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the headless daemon can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
 apps/ade-cli   ADE runtime daemon (`ade serve`) + `ade` CLI + `ade code` terminal client
@@ -189,6 +189,7 @@ Override it when needed:
 npm run dev:desktop -- --socket /tmp/my-ade-dev.sock
 npm run dev:code -- --socket /tmp/my-ade-dev.sock
 ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
+ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
 To test auto-runtime creation, use the `:auto`/default commands after stopping the dev runtime:

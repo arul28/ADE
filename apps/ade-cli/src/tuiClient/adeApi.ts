@@ -85,8 +85,6 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
 const RESUMABLE_TERMINAL_TOOL_TYPES = new Set([
   "claude",
   "claude-orchestrated",
-  "codex",
-  "codex-orchestrated",
 ]);
 
 export async function listTerminalSessions(
@@ -101,8 +99,7 @@ export async function listTerminalSessions(
     const toolType = session.toolType ?? "";
     if (CHAT_BACKED_TERMINAL_TOOL_TYPES.has(toolType)) return false;
     return RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)
-      || session.resumeMetadata?.provider === "claude"
-      || session.resumeMetadata?.provider === "codex";
+      || session.resumeMetadata?.provider === "claude";
   });
 }
 
@@ -190,6 +187,7 @@ export async function startClaudeTerminalSession(args: {
   laneId: string;
   title?: string | null;
   model?: string | null;
+  reasoningEffort?: string | null;
   permissionMode?: AgentChatPermissionMode | null;
   initialInput?: string | null;
   cols: number;
@@ -202,6 +200,7 @@ export async function startClaudeTerminalSession(args: {
     provider: "claude",
     title: args.title ?? undefined,
     model: args.model ?? undefined,
+    reasoningEffort: args.reasoningEffort ?? undefined,
     permissionMode: args.permissionMode ?? "default",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,

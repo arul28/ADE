@@ -736,6 +736,7 @@ import {
 } from "../chat/codexCliLauncher";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
+import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { deleteMacosVmFromProjectState } from "../macosVm/macosVmRecovery";
 
 export type AppContext = {
@@ -763,6 +764,7 @@ export type AppContext = {
   rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
+  processRegistry?: ProcessRegistryService | null;
   ptyService: ReturnType<typeof createPtyService>;
   diffService: ReturnType<typeof createDiffService>;
   fileService: ReturnType<typeof createFileService>;
@@ -3625,6 +3627,11 @@ export function registerIpc({
   ipcMain.handle(IPC.appWriteClipboardText, async (_event, arg: { text: string }): Promise<void> => {
     const text = typeof arg?.text === "string" ? arg.text : "";
     clipboard.writeText(text);
+  });
+
+  ipcMain.handle(IPC.appReadClipboardText, async (event): Promise<string> => {
+    assertTrustedAppControlSender(event, IPC.appReadClipboardText);
+    return clipboard.readText() ?? "";
   });
 
   ipcMain.handle(IPC.appHasClipboardImage, async (): Promise<boolean> => {

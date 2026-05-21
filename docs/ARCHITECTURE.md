@@ -112,6 +112,12 @@ Use `ADE_VERSION=vX.Y.Z` for a pinned release or `ADE_INSTALL_DIR` to choose the
 
 **Windows packaging.** The installer lays down `ade-cli-windows-wrapper.cmd` plus an `ade-cli-install-path.cmd` helper alongside the bundled Electron Node runtime. The helper installs `%LOCALAPPDATA%\ADE\bin\ade.cmd`, updates the user PATH when needed, and then `ade` works from a new normal Windows shell without a global Node install. See §14.4 for the packaging flow.
 
+**Desktop bridge socket.** The runtime daemon runs `apps/ade-cli/dist/cli.cjs` under `ELECTRON_RUN_AS_NODE=1`, so it has no access to renderer-side Electron APIs (`WebContentsView`, `nativeImage`, `session`, …). A small set of services own real desktop UI and therefore cannot live in the daemon — most notably `BuiltInBrowserService`, which drives the Browser pane's `WebContentsView`. The desktop main process hosts those services and exposes them to the daemon over a side-channel JSON-RPC Unix-domain socket / named pipe.
+
+The socket path is resolved by `apps/ade-cli/src/services/projects/machineLayout.ts`: `<adeHome>/sock/desktop-bridge.sock` on macOS / Linux (e.g. `~/.ade/sock/desktop-bridge.sock` stable, `~/.ade-beta/sock/desktop-bridge.sock` beta), and `\\.\pipe\ade-desktop-bridge[-<channel-suffix>]` on Windows. `ADE_DESKTOP_BRIDGE_SOCKET_PATH` overrides it for dev launches against a non-default ADE home. The server lives in `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, wired up from `main.ts` right after `builtInBrowserService` is constructed and torn down with it on app shutdown. The daemon-side proxy is `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`; `createAdeRuntime` in `bootstrap.ts` assigns it to `runtime.builtInBrowserService` so the existing action registry slot resolves transparently (skipped when `runtimeProfile === "chat"`). Both sides share the same method allowlist: `getStatus, showPanel, setBounds, navigate, createTab, switchTab, closeTab, reload, goBack, goForward, stop, startInspect, stopInspect, captureScreenshot, selectPoint, selectCurrent, clearSelection`.
+
+Today only the `built_in_browser` domain rides this bridge; the pattern is generic and other Electron-only domains can be added the same way. The client lazy-connects on first call and reconnects on the next call after any failure. When no desktop is running, each call surfaces a clear `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` error and every other runtime domain stays functional. This is distinct from the legacy desktop-socket mode (a pre-multi-project pattern where the desktop renderer hosted RPC and the CLI dialed in): the daemon still owns the full action surface — the bridge is narrowly scoped to services that physically require an Electron renderer host.
+
 ### 2.2 Electron desktop client (`apps/desktop/`)
 
 The desktop app is a **client of the runtime**. It owns a trusted main process, a narrow typed preload bridge, the React renderer, and the shared TypeScript contracts that the whole monorepo (including the ADE CLI runtime) consumes — but the data plane it operates on lives in the runtime daemon.
@@ -164,7 +170,9 @@ Native SwiftUI app acting as a controller. It pairs with a runtime daemon over W
 
 ### 2.5 Web app (`apps/web/`)
 
-A Vite/React SPA that serves the public marketing site and download page. Four pages: `HomePage`, `DownloadPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
+A Vite/React SPA that serves the public marketing site, download page, and the deeplink landing page. Five pages: `HomePage`, `DownloadPage`, `OpenPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
+
+The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade.app/open?type=...&...`). `apps/web/api/open.ts` is a Vercel serverless function that self-fetches `index.html`, rewrites OpenGraph + Twitter meta tags from the query params so chat-app unfurlers (Slack, Discord, iMessage, Gmail, Linear) show a rich card without executing JavaScript, then hands the SPA over to `OpenPage` which attempts the `ade://` upgrade in the browser and falls back to an install/marketing card if no handler is registered. See [features/deeplinks/README.md](./features/deeplinks/README.md).
 
 ---
 
@@ -190,7 +198,8 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 |-------|---------|
 | `projects` | One row per opened repo. Keyed by `root_path`. |
 | `lanes` | Worktree-backed units of work. Types: `primary`, `worktree`, `attached`. Supports parent/child stacks, mission binding, color/icon/tags. |
-| `terminal_sessions` | Tracked PTY sessions per lane with transcript path and head SHAs. The `chat_session_id` column (indexed) marks terminals owned by a chat (chat terminal drawer, App Control launch terminal); `ptyService` exposes them through the `ade.terminal.*` IPC and the `terminal` ADE action domain. |
+| `terminal_sessions` | Tracked PTY sessions per lane with transcript path and head SHAs. The `chat_session_id` column (indexed) marks terminals owned by a chat (chat terminal drawer, App Control launch terminal); `ptyService` exposes them through the `ade.terminal.*` IPC and the `terminal` ADE action domain. The `owner_pid` column (indexed) identifies the ADE OS process that owns the live runtime for the row — cross-process reconcile/dispose paths check it before sweeping so concurrent surfaces don't mark each other's live sessions dead. See §3.5. |
+| `runtime_processes` | Process-liveness registry. Every ADE process (desktop main, TUI runtime, `ade serve` daemon) inserts a row on boot keyed by `pid` and refreshes `last_seen` on a 5 s heartbeat. Reconcile / dispose paths cross-reference `terminal_sessions.owner_pid` against the live rows in this table to tell "row whose owner crashed" from "row a sibling process is actively managing." See §3.5. |
 | `session_deltas` | Post-session diff stats + touched files + failure lines. Input to pack generation. |
 | `operations` | Audit log of every significant mutation (git, pack updates). Pre/post HEAD SHAs enable undo. |
 | `process_definitions` / `process_runtime` / `process_runs` | Managed-process lifecycle (derived from `ade.yaml`). |
@@ -256,7 +265,22 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 - `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
 - `mode: "local"` is reserved for force-local repair flows.
 
-### 3.4 Migration strategy
+### 3.4 Cross-process ownership
+
+ADE is a multi-process system on a single machine: the desktop main process, the `ade serve` daemon, and any number of TUI runtimes can all be live against the same project DB simultaneously. To prevent one process from disposing or reconciling another's live PTYs and SDK sessions, every long-lived row gets an `owner_pid` and every process maintains a heartbeat in `runtime_processes`.
+
+`apps/desktop/src/main/services/runtime/processRegistryService.ts` is the per-process registrar.
+
+- On `start()` it inserts/refreshes its own row in `runtime_processes` (`pid`, `role`, optional `projectRoot`, `startedAt`, `lastSeen`) and runs an idempotent `pruneStale()` over rows older than 10× the liveness window.
+- A 5 s heartbeat (`heartbeatIntervalMs`, configurable) writes `last_seen` so siblings can see this process is alive. The interval `unref()`s so it never blocks shutdown.
+- Liveness checks (`isPidLive(pid)`, `listLivePids()`) consider a row live when `last_seen` is within `livenessWindowMs` (default 15 s = 3× heartbeat) so a single missed heartbeat doesn't false-positive a sibling as dead. The registrar's own pid is always reported as live.
+- `stop()` clears its row outright on graceful shutdown so siblings don't have to wait the liveness window to free up ownership.
+
+`ptyService.create()` records `processRegistry.pid` on the new `terminal_sessions` row's `owner_pid`. `sessionService.reconcileStaleRunningSessions()` accepts the registry's `listLivePids()` set and skips any row whose `owner_pid` is in it — only orphaned rows whose owner crashed or exited get swept to `disposed`. Dispose paths run the same check before tearing down runtimes a sibling still manages.
+
+Roles are open-ended strings; today's vocabulary is `desktop-main`, `ade-serve-daemon`, and `tui-runtime`. The desktop main process constructs the registry in `main.ts` and threads it into `ptyService`, `sessionService`, and reconcile callers via the per-project context.
+
+### 3.5 Migration strategy
 
 - Schema is defined idempotently — `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`.
 - One-time schema-compat migration at startup: retrofits `NOT NULL` on PKs and strips UNIQUE/FK constraints incompatible with cr-sqlite CRRs. A pre-cr-sqlite backup (`<db>.pre-crsqlite-w1.bak`) is written on first CRR enablement.
@@ -366,7 +390,7 @@ Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/age
 `apps/desktop/src/shared/ipc.ts` defines the single `IPC` const with ~550 named channel strings in a `ade.<domain>.<action>` namespace:
 
 ```
-ade.app.*                    # app lifecycle, clipboard text and image (writeClipboardText, writeClipboardImage, saveClipboardImageAttachment), paths, image data-URL preview (getImageDataUrl)
+ade.app.*                    # app lifecycle, clipboard text and image (writeClipboardText, writeClipboardImage, saveClipboardImageAttachment), paths, image data-URL preview (getImageDataUrl), and the deeplink navigation push channel ade.app.navigate (AppNavigationRequest payloads from the ade:// protocol handler, the ade code app/navigate JSON-RPC, and the iOS deeplinks.open sync command — see features/deeplinks/README.md)
 ade.project.*                # project open/close/switch/state, in-app directory browser (browseDirectories, getDetail), favicon resolver (resolveIcon)
 ade.onboarding.*
 ade.lanes.*                  # lane list/create/delete/stack/template/env/port/proxy/rebase
@@ -463,7 +487,8 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout. |
+| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts`, `linearLaneCardService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL. |
+| `deeplinks/` | `protocolHandler.ts` | Registers the `ade://` OS protocol handler, owns the single-instance lock, buffers cold-start URLs until `app.whenReady()`, and dispatches parsed URLs through `IPC.appNavigate` to the focused window. Re-used by the iOS Send-to-Mac sync command (`syncRemoteCommandService.deeplinks.open`). Shared parser + builder live in `apps/desktop/src/shared/deeplinks.ts`; the PR "Open in ADE" footer is in `apps/desktop/src/shared/adeDeeplinkFooter.ts`. See [features/deeplinks/README.md](./features/deeplinks/README.md). |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
 | `feedback/` | `feedbackReporterService.ts` | In-app feedback reporting. Two-stage: `prepareDraft` generates a structured issue title + labels (AI-assisted when a model is selected, deterministic fallback otherwise) so the user can review before posting; `submitPreparedDraft` files the GitHub issue. Each submission records `generationMode` and a `generationWarning` so the UI can flag deterministic drafts. |
@@ -489,7 +514,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `issueInventoryService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, issue inventory, AI-assisted resolution, integration planning, and merge-into-existing-lane proposal adoption. |
 | `pty/` | `ptyService.ts` | `node-pty` spawn, PTY I/O bridging, transcript writing. |
 | `remoteRuntime/` | `remoteTargetRegistry.ts`, `sshTransport.ts`, `remoteBootstrap.ts`, `remoteConnectionPool.ts`, `runtimeRpcClient.ts` | Saved SSH machines, ssh-agent/key based transport, first-connect runtime upload/version verification, remote project catalog, action dispatch, and reconnect/eviction for remote runtime bindings. |
-| `runtime/` | `tempCleanupService.ts` | Runtime temp cleanup. |
+| `runtime/` | `tempCleanupService.ts`, `processRegistryService.ts`, `machineStateMigration.ts` | Runtime temp cleanup. `processRegistryService` is the per-process heartbeat registrar against `runtime_processes` (see §3.4); reconcile/dispose paths in `sessionService` and `ptyService` consult it via `listLivePids()` / `isPidLive()` before sweeping `terminal_sessions` rows owned by sibling processes. `machineStateMigration` carries one-shot migrations of the per-machine state files under `~/.ade/`. |
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |
 | `shared/` | `utils.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities. |
 | `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. `globalState.upsertRecentProject` accepts `preserveRecentOrder` so reactivating an already-known project (by app focus, deep link, etc.) refreshes its `lastOpenedAt` in place instead of jumping it to the front of the recents list. |
@@ -1087,6 +1112,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - Multi-device sync and iOS · [Sync and Multi-device](./features/sync-and-multi-device/README.md)
 - Terminal sessions and Work · [Terminals and Sessions](./features/terminals-and-sessions/README.md)
 - Computer-use proof · [Computer Use](./features/computer-use/README.md)
+- Deeplinks · [Deeplinks](./features/deeplinks/README.md)
 - Memory · [Memory](./features/memory/README.md)
 - Settings and onboarding · [Onboarding and Settings](./features/onboarding-and-settings/README.md)
 - Feature index · [features/](./features/)

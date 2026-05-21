@@ -7,7 +7,7 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
   "`ade` is the default control plane for ADE-managed sessions. Use normal shell commands for immediate repo inspection/edit/test work; use ADE CLI when you need ADE state, drawer/session state, proof registration, missions, PR metadata, memory, or managed app/simulator/browser/VM control.",
   "",
   "### Skills",
-  "- ADE ships Agent Skills for deeper operating details. Use the relevant skill instead of relying on long prompt guidance: `ade-cli-control-plane`, `ade-ios-simulator`, `ade-app-control`, `ade-browser`, `ade-pr-workflows`, `ade-lanes-git`, `ade-cto-missions`, and `ade-proof-artifacts`.",
+  "- ADE ships Agent Skills for deeper operating details. Use the relevant skill instead of relying on long prompt guidance: `ade-cli-control-plane`, `ade-ios-simulator`, `ade-app-control`, `ade-browser`, `ade-pr-workflows`, `ade-lanes-git`, `ade-cto-missions`, `ade-proof-artifacts`, `ade-macos-vm`, and `ade-deeplinks`.",
   "- If skills are not auto-listed by your runtime, look for them in project/user `.agents/skills`, `.ade/skills`, `.claude/skills`, or ADE's bundled `agent-skills` resources, then read that skill's `SKILL.md` on demand.",
   `- ${formatAdeAgentSkillRootsForPrompt(skillRoots)}`,
   "- ADE also sets `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions when the bundled skills root is known.",

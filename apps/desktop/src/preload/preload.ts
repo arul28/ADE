@@ -1671,7 +1671,6 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
-      category: "runtime",
     } satisfies RemoteRuntimeStreamEventsRequest;
     const batch =
       binding.kind === "remote"
@@ -2703,6 +2702,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appOpenPath, { path }),
     writeClipboardText: async (text: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
+    readClipboardText: async (): Promise<string> =>
+      ipcRenderer.invoke(IPC.appReadClipboardText),
     hasClipboardImage: async (): Promise<boolean> =>
       ipcRenderer.invoke(IPC.appHasClipboardImage),
     readClipboardImage: async (): Promise<{

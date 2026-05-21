@@ -8,6 +8,14 @@ const path = require("node:path");
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
 const npxCommand = "npx";
+
+// ADE chat shells export ELECTRON_RUN_AS_NODE=1 so the `ade` shim can run
+// cli.cjs through the bundled Electron binary as Node. If that leaks into
+// `npm run dev:desktop`, npx-launched Electron starts in Node mode:
+// Chromium flags become "bad option" errors and `require("electron")` returns
+// a string (so `app.isPackaged` crashes in main.ts). Strip it once so every
+// child inherits a clean env.
+delete process.env.ELECTRON_RUN_AS_NODE;
 const forceViteOptimize =
   process.argv.includes("--force-vite") || process.env.ADE_VITE_FORCE_OPTIMIZE === "1";
 

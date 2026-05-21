@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, sendChatMessage, signalTerminal, steerChatMessage } from "../adeApi";
+import { cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, latestGoal, latestTokenStats, listLaneDiffStats, listPrsByLane, listTerminalSessions, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -313,6 +313,52 @@ describe("createChatSession", () => {
   });
 });
 
+describe("startClaudeTerminalSession", () => {
+  it("passes Claude model reasoning and permission controls to start_cli_session", async () => {
+    const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      tool: async (name: string, args?: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return {
+          sessionId: "term-1",
+          terminalId: "term-1",
+          session: null,
+        };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await startClaudeTerminalSession({
+      connection,
+      laneId: "lane-1",
+      title: "Claude smoke",
+      model: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: "low",
+      permissionMode: "auto",
+      initialInput: "Hello",
+      cols: 100,
+      rows: 28,
+    });
+
+    expect(calls).toEqual([
+      {
+        name: "start_cli_session",
+        args: expect.objectContaining({
+          laneId: "lane-1",
+          provider: "claude",
+          title: "Claude smoke",
+          model: "anthropic/claude-sonnet-4-6",
+          reasoningEffort: "low",
+          permissionMode: "auto",
+          initialInput: "Hello",
+          cols: 100,
+          rows: 28,
+          tracked: true,
+        }),
+      },
+    ]);
+  });
+});
+
 describe("listPrsByLane", () => {
   it("passes through the bulk PR lane action", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
@@ -362,6 +408,45 @@ describe("signalTerminal", () => {
         action: "signal",
         args: { terminalId: "terminal-1", signal: "SIGTERM" },
       },
+    ]);
+  });
+});
+
+describe("listTerminalSessions", () => {
+  it("only exposes Claude Code CLI sessions in the ADE code TUI", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const sessions = [
+      { terminalId: "claude-1", toolType: "claude" },
+      { terminalId: "claude-orch-1", toolType: "claude-orchestrated" },
+      { terminalId: "legacy-claude-1", toolType: "shell", resumeMetadata: { provider: "claude" } },
+      { terminalId: "codex-1", toolType: "codex" },
+      { terminalId: "codex-orch-1", toolType: "codex-orchestrated" },
+      { terminalId: "legacy-codex-1", toolType: "shell", resumeMetadata: { provider: "codex" } },
+      { terminalId: "chat-claude-1", toolType: "claude-chat" },
+      { terminalId: "chat-codex-1", toolType: "codex-chat" },
+      { terminalId: "cursor-1", toolType: "cursor" },
+      { terminalId: "shell-1", toolType: "shell" },
+    ];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return sessions;
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await listTerminalSessions(connection, "lane-1");
+
+    expect(calls).toEqual([
+      {
+        domain: "terminal",
+        action: "list",
+        args: { laneId: "lane-1", limit: 200 },
+      },
+    ]);
+    expect(result.map((session) => session.terminalId)).toEqual([
+      "claude-1",
+      "claude-orch-1",
+      "legacy-claude-1",
     ]);
   });
 });

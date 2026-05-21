@@ -139,16 +139,6 @@ export type ReviewResolvedCompareTarget = {
   branchRef: string | null;
 };
 
-export type ReviewRunBudgetConfig = {
-  unlimited?: boolean;
-  maxFiles: number;
-  maxDiffChars: number;
-  maxPromptChars: number;
-  maxFindings: number;
-  maxFindingsPerPass?: number;
-  maxPublishedFindings?: number;
-};
-
 export type ReviewRunConfig = {
   compareAgainst: ReviewCompareAgainstTarget;
   selectionMode: ReviewSelectionMode;
@@ -156,7 +146,6 @@ export type ReviewRunConfig = {
   modelId: string;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
-  budgets: ReviewRunBudgetConfig;
   publishBehavior: ReviewPublishBehavior;
 };
 

@@ -244,14 +244,6 @@ function makeConfig(overrides: Partial<ReviewRunConfig> = {}): ReviewRunConfig {
     dirtyOnly: false,
     modelId: "openai/gpt-5.4",
     reasoningEffort: "medium",
-    budgets: {
-      maxFiles: 60,
-      maxDiffChars: 180_000,
-      maxPromptChars: 220_000,
-      maxFindings: 12,
-      maxFindingsPerPass: 6,
-      maxPublishedFindings: 6,
-    },
     publishBehavior: "local_only",
     ...overrides,
   };
@@ -919,53 +911,6 @@ describe("reviewService", () => {
     expect(harness.runSessionTurn).not.toHaveBeenCalled();
   });
 
-  it("enforces the final prompt budget without embedding the full diff bundle", async () => {
-    const longDiff = [
-      "diff --git a/src/review.ts b/src/review.ts",
-      "@@ -1,2 +1,200 @@",
-      " context",
-      ...Array.from({ length: 1_000 }, (_, index) => `+exact changed line ${index}: ${"x".repeat(60)}`),
-    ].join("\n");
-    const harness = createHarness({
-      outputs: [
-        makeOutput("No direct findings.", []),
-        makeOutput("No cross-file findings.", []),
-        makeOutput("No checks findings.", []),
-        makeOutput("No security findings.", []),
-        makeOutput("No UI findings.", []),
-      ],
-      config: {
-        budgets: {
-          maxFiles: 60,
-          maxDiffChars: 100_000,
-          maxPromptChars: 4_000,
-          maxFindings: 12,
-          maxFindingsPerPass: 6,
-          maxPublishedFindings: 6,
-        },
-      },
-    });
-    mockMaterializer.materialize.mockResolvedValueOnce(makeMaterializedTarget({
-      fullPatchText: longDiff,
-      changedFiles: [makeChangedFile({ excerpt: longDiff.slice(0, 4_000) })],
-    }));
-
-    const run = await harness.start();
-    await waitFor(
-      () => harness.service.listRuns(),
-      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
-    );
-
-    const detail = await harness.service.getRunDetail({ runId: run.id });
-    const passPrompts = detail?.artifacts.filter((artifact) => artifact.artifactType === "pass_prompt") ?? [];
-    expect(passPrompts).toHaveLength(5);
-    for (const prompt of passPrompts) {
-      expect(prompt.contentText ?? "").toHaveLength(4_000);
-      expect(prompt.contentText ?? "").toContain("...(truncated)...");
-      expect(prompt.contentText ?? "").not.toContain("exact changed line 999");
-    }
-  });
-
   it("passes Codex fast mode to the automation chat while keeping plan permissions", async () => {
     const harness = createHarness({
       outputs: [
@@ -989,42 +934,7 @@ describe("reviewService", () => {
     }));
   });
 
-  it("preserves unlimited review budgets instead of clamping them", async () => {
-    const harness = createHarness({
-      outputs: [
-        makeOutput("No direct findings.", []),
-        makeOutput("No cross-file findings.", []),
-        makeOutput("No checks findings.", []),
-      ],
-      config: {
-        budgets: {
-          unlimited: true,
-          maxFiles: 1,
-          maxDiffChars: 4_000,
-          maxPromptChars: 4_000,
-          maxFindings: 1,
-          maxFindingsPerPass: 1,
-          maxPublishedFindings: 1,
-        },
-      },
-    });
-
-    const run = await harness.start();
-    await waitFor(
-      () => harness.service.listRuns(),
-      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
-    );
-
-    const saved = (await harness.service.listRuns()).find((entry) => entry.id === run.id);
-    expect(saved?.config.budgets).toMatchObject({
-      unlimited: true,
-      maxFiles: Number.MAX_SAFE_INTEGER,
-      maxFindings: Number.MAX_SAFE_INTEGER,
-      maxPublishedFindings: Number.MAX_SAFE_INTEGER,
-    });
-  });
-
-  it("caps the prompt manifest even when review budgets are unlimited", async () => {
+  it("caps the prompt manifest for large diffs", async () => {
     const changedFiles = Array.from({ length: 120 }, (_, index) => makeChangedFile({
       filePath: `src/file-${index}.ts`,
       excerpt: `@@ -1 +1 @@\n+file ${index} ${"x".repeat(200)}`,
@@ -1041,17 +951,6 @@ describe("reviewService", () => {
       ],
       materializedTarget: {
         changedFiles,
-      },
-      config: {
-        budgets: {
-          unlimited: true,
-          maxFiles: 1,
-          maxDiffChars: 4_000,
-          maxPromptChars: 4_000,
-          maxFindings: 1,
-          maxFindingsPerPass: 1,
-          maxPublishedFindings: 1,
-        },
       },
     });
 
@@ -1577,7 +1476,7 @@ describe("reviewService", () => {
     expect(adjudicationArtifact?.contentText).toContain("low_evidence");
   });
 
-  it("applies run and publication budgets and only publishes adjudicated findings", async () => {
+  it("publishes only adjudicated findings", async () => {
     const destination: ReviewPublicationDestination = {
       kind: "github_pr_review",
       prId: "pr-80",
@@ -1607,14 +1506,6 @@ describe("reviewService", () => {
       },
       config: {
         publishBehavior: "auto_publish",
-        budgets: {
-          maxFiles: 60,
-          maxDiffChars: 180_000,
-          maxPromptChars: 220_000,
-          maxFindings: 2,
-          maxFindingsPerPass: 4,
-          maxPublishedFindings: 1,
-        },
       },
       outputs: [
         makeOutput("Diff-risk findings.", [
@@ -1646,12 +1537,12 @@ describe("reviewService", () => {
 
     expect(harness.publishReviewPublication).toHaveBeenCalledTimes(1);
     const publicationArgs = harness.publishReviewPublication.mock.calls[0]?.[0];
-    expect(publicationArgs.findings).toHaveLength(1);
-    expect(publicationArgs.findings[0]?.sourcePass).toBe("adjudicated");
+    expect(publicationArgs.findings.length).toBeGreaterThan(0);
+    expect(publicationArgs.findings.every((finding: { sourcePass: string }) => finding.sourcePass === "adjudicated")).toBe(true);
 
     const detail = await harness.service.getRunDetail({ runId: run.id });
-    expect(detail?.findings).toHaveLength(2);
-    expect(detail?.findings.filter((finding) => finding.publicationState === "published")).toHaveLength(1);
+    expect(detail?.findings.length).toBeGreaterThan(0);
+    expect(detail?.findings.filter((finding) => finding.publicationState === "published")).toHaveLength(publicationArgs.findings.length);
     expect(detail?.publications).toHaveLength(1);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "publication_request")).toBe(true);
   });

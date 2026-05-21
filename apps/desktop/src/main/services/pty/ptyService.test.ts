@@ -248,6 +248,12 @@ function createHarness(overrides: {
     getMode: ReturnType<typeof vi.fn>;
     summarizeTerminal: ReturnType<typeof vi.fn>;
   } | null;
+  processRegistry?: {
+    pid: number;
+    startedAt?: string | null;
+    isPidLive: ReturnType<typeof vi.fn>;
+    isProcessIdentityLive?: ReturnType<typeof vi.fn>;
+  } | null;
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -265,6 +271,7 @@ function createHarness(overrides: {
         laneName: "Test lane",
         laneId: args.laneId,
         manuallyNamed: false,
+        ownerPid: args.ownerPid ?? null,
       });
     }),
     end: vi.fn((args: any) => {
@@ -284,6 +291,7 @@ function createHarness(overrides: {
         status: "running",
         endedAt: null,
         exitCode: null,
+        ...(args.ownerPid !== undefined ? { ownerPid: args.ownerPid } : {}),
       });
       return session;
     }),
@@ -334,6 +342,7 @@ function createHarness(overrides: {
     transcriptsDir: "/tmp/transcripts",
     laneService: laneService as any,
     sessionService: sessionService as any,
+    ...(overrides.processRegistry !== undefined ? { processRegistry: overrides.processRegistry as any } : {}),
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     logger: logger as any,
     broadcastData,
@@ -2358,6 +2367,102 @@ describe("ptyService", () => {
         expect.objectContaining({ sessionId: "orphan-session", exitCode: null }),
       );
       expect(logger.warn).toHaveBeenCalledWith("pty.dispose_orphaned", expect.any(Object));
+    });
+
+    it("skips orphan dispose when a live peer owns the session", async () => {
+      const processRegistry = {
+        pid: 12_345,
+        startedAt: "2026-03-17T00:00:00.000Z",
+        isPidLive: vi.fn((pid: number) => pid === 99_999),
+        isProcessIdentityLive: vi.fn((pid: number, startedAt: string | null) => (
+          pid === 99_999 && startedAt === "2026-03-17T00:01:00.000Z"
+        )),
+      };
+      const { service, sessionService, broadcastExit, logger } = createHarness({ processRegistry });
+      sessionService.get.mockReturnValue({
+        id: "peer-session",
+        sessionId: "peer-session",
+        laneId: "lane-1",
+        tracked: true,
+        ownerPid: 99_999,
+        ownerProcessStartedAt: "2026-03-17T00:01:00.000Z",
+        lastOutputPreview: "still running elsewhere",
+      });
+
+      service.dispose({ ptyId: "missing-pty", sessionId: "peer-session" });
+
+      expect(sessionService.end).not.toHaveBeenCalled();
+      expect(broadcastExit).not.toHaveBeenCalled();
+      expect(processRegistry.isProcessIdentityLive).toHaveBeenCalledWith(99_999, "2026-03-17T00:01:00.000Z");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "pty.dispose_skipped_owned_by_peer",
+        expect.objectContaining({
+          sessionId: "peer-session",
+          ownerPid: 99_999,
+          currentPid: 12_345,
+        }),
+      );
+    });
+
+    it("orphan dispose still ends sessions owned by us or dead peers", async () => {
+      const processRegistry = {
+        pid: 12_345,
+        startedAt: "2026-03-17T00:00:00.000Z",
+        isPidLive: vi.fn(() => false),
+        isProcessIdentityLive: vi.fn(() => false),
+      };
+      const { service, sessionService } = createHarness({ processRegistry });
+      sessionService.get.mockReturnValueOnce({
+        id: "owned-session",
+        sessionId: "owned-session",
+        laneId: "lane-1",
+        tracked: true,
+        ownerPid: 12_345,
+        lastOutputPreview: null,
+      });
+      service.dispose({ ptyId: "missing-pty", sessionId: "owned-session" });
+
+      sessionService.get.mockReturnValueOnce({
+        id: "dead-peer-session",
+        sessionId: "dead-peer-session",
+        laneId: "lane-1",
+        tracked: true,
+        ownerPid: 99_999,
+        lastOutputPreview: null,
+      });
+      service.dispose({ ptyId: "missing-pty", sessionId: "dead-peer-session" });
+
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "owned-session", status: "disposed" }),
+      );
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "dead-peer-session", status: "disposed" }),
+      );
+    });
+
+    it("writes owner_pid when creating a tracked PTY session", async () => {
+      const { service, sessionService } = createHarness({
+        processRegistry: {
+          pid: 12_345,
+          startedAt: "2026-03-17T00:00:00.000Z",
+          isPidLive: vi.fn(),
+          isProcessIdentityLive: vi.fn(),
+        },
+      });
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude session",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude",
+      });
+
+      expect(sessionService.create).toHaveBeenCalledWith(expect.objectContaining({
+        ownerPid: 12_345,
+        ownerProcessStartedAt: "2026-03-17T00:00:00.000Z",
+      }));
     });
 
     it("uses the bound cwd for AI summaries after exit even if the lane mapping changes later", async () => {

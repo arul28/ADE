@@ -149,6 +149,12 @@ type SyncServiceArgs = {
    * same in-memory state and persist to `~/.ade/modelPicker.json`.
    */
   getModelPickerStore?: () => ModelPickerStore | null;
+  /**
+   * Optional handler for the iOS Send-to-Mac deeplink bounce. Wired up by
+   * desktop main.ts; the ade-cli runtime context leaves it unset and the
+   * `deeplinks.open` sync command reports unavailable.
+   */
+  dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
 };
 
 const DRAFT_FILE = "sync-peer-draft.json";
@@ -567,6 +573,7 @@ export function createSyncService(args: SyncServiceArgs) {
     rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
     autoRebaseService: args.autoRebaseService ?? undefined,
     getModelPickerStore: args.getModelPickerStore,
+    dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     logger: args.logger,
   });
 
@@ -635,6 +642,7 @@ export function createSyncService(args: SyncServiceArgs) {
         laneTemplateService: args.laneTemplateService,
         rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
         autoRebaseService: args.autoRebaseService ?? undefined,
+        dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
         computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
         pinStore,
         bootstrapTokenPath: tokenPath,

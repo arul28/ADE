@@ -76,7 +76,7 @@ vi.mock("../../state/appStore", () => ({
 // ---------------------------------------------------------------------------
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
-import { useLaneWorkSessions } from "./useLaneWorkSessions";
+import { __clearLaneWorkSessionCacheForTests, useLaneWorkSessions } from "./useLaneWorkSessions";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -105,6 +105,7 @@ function installWindowAde() {
 describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    __clearLaneWorkSessionCacheForTests();
     installWindowAde();
     // Default: instant resolve for mount-time refresh calls
     listSessionsCachedMock.mockResolvedValue([]);
@@ -112,6 +113,63 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
 
   afterEach(() => {
     delete (window as any).ade;
+  });
+
+  it("hydrates cached lane sessions immediately on remount while refreshing in the background", async () => {
+    const cachedSession = {
+      id: "session-cached",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      toolType: "claude-chat",
+      title: "Cached chat",
+      status: "running",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "idle",
+      resumeCommand: null,
+    } as any;
+    const refreshedSession = {
+      ...cachedSession,
+      id: "session-refreshed",
+      title: "Refreshed chat",
+    };
+
+    listSessionsCachedMock.mockResolvedValueOnce([cachedSession]);
+    const first = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(first.result.current.sessions.map((session) => session.id)).toEqual(["session-cached"]);
+    first.unmount();
+
+    let resolveRefresh: ((value: unknown[]) => void) | null = null;
+    listSessionsCachedMock.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const second = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(second.result.current.loading).toBe(false);
+    expect(second.result.current.sessions.map((session) => session.id)).toEqual(["session-cached"]);
+
+    await act(async () => {
+      expect(resolveRefresh).not.toBeNull();
+      resolveRefresh!([refreshedSession]);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(second.result.current.sessions.map((session) => session.id)).toEqual(["session-refreshed"]);
   });
 
   // -----------------------------------------------------------------------

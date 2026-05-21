@@ -119,6 +119,30 @@ export type AppNavigationTarget =
       prId?: string | null;
       prNumber?: number | null;
       laneId?: string | null;
+      // For inbound deeplinks: when the PR isn't local yet, the renderer needs the
+      // owner/name to either jump to the PRs tab pre-filtered or fall back to the
+      // create-lane-from-PR-branch modal.
+      repoOwner?: string | null;
+      repoName?: string | null;
+    }
+  | {
+      kind: "branch";
+      // Cross-machine deeplink target. The renderer opens the existing
+      // "Create lane from PR branch" preflight modal with these inputs;
+      // if a lane already exists for this branch the renderer routes to it
+      // instead of showing the modal.
+      repoOwner: string;
+      repoName: string;
+      branch: string;
+      prNumber?: number | null;
+    }
+  | {
+      kind: "linear-issue";
+      // Linear coding-tool hand-off. The renderer resolves the actual lane
+      // by looking up lane.linearIssue.identifier; if no lane matches, the
+      // user is offered a fallback (e.g., open lanes filtered by branch).
+      issueIdentifier: string;
+      branch?: string | null;
     }
   | {
       kind: "route";

@@ -237,10 +237,10 @@ export function HeaderUsageControl() {
           </div>
         ) : (
           <Gauge
-            size={14}
+            size={18}
             weight="regular"
-            className={cn("opacity-80", hasErrors && "animate-pulse")}
-            style={hasErrors ? { color: "#F59E0B" } : undefined}
+            className={cn(hasErrors && "animate-pulse")}
+            style={{ color: hasErrors ? "#F59E0B" : "var(--color-accent)" }}
           />
         )}
       </button>

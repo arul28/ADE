@@ -197,6 +197,13 @@ function statusGlyph(status: string | undefined): string {
   return "✓";
 }
 
+function isLowValueHookNotice(noticeKind: string | undefined, message: string): boolean {
+  if (noticeKind !== "hook") return false;
+  const trimmed = message.trim();
+  return /^hook:\s+.+\s+started$/i.test(trimmed)
+    || trimmed.toLowerCase() === "trimmed large tool output before sending it back to claude.";
+}
+
 function multiLine(value: unknown, maxLines = 18): string {
   if (typeof value === "string") return value.split(/\r?\n/).slice(0, maxLines).join("\n");
   return renderObject(value, maxLines);
@@ -719,7 +726,7 @@ export function renderChatLines(args: {
       const normalizedMessage = message.trim().toLowerCase();
       if (!normalizedMessage) continue;
       if (noticeKind === "info" && normalizedMessage === "session ready") continue;
-      if (noticeKind === "hook" && /^hook:\s+.+\s+started$/i.test(message)) continue;
+      if (isLowValueHookNotice(noticeKind, message)) continue;
 
       // Surface the severity-bearing noticeKinds with an error tone so the TUI
       // colorizes them distinctively. Guardian warnings, rate limits, thread

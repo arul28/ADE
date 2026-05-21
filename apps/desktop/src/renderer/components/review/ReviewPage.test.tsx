@@ -2,7 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ReviewPage } from "./ReviewPage";
 import { useAppStore } from "../../state/appStore";
@@ -80,7 +80,6 @@ describe("ReviewPage", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
-        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
       },
       summary: "Reviewed against default branch",
@@ -110,7 +109,6 @@ describe("ReviewPage", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.5",
         reasoningEffort: "high",
-        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
       },
       summary: "Reviewed lane-to-lane diff",
@@ -140,7 +138,6 @@ describe("ReviewPage", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
-        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
       },
       summary: null,
@@ -244,7 +241,7 @@ describe("ReviewPage", () => {
             title: "Diff risk findings",
             mimeType: "application/json",
             contentText: "{\"summary\":\"Direct diff risk\"}",
-            metadata: { passKey: "diff-risk", summary: "Direct diff risk", totalParsedCount: 1, keptCount: 1, budgetTrimmedCount: 0 },
+            metadata: { passKey: "diff-risk", summary: "Direct diff risk", totalParsedCount: 1, keptCount: 1 },
             createdAt: "2026-04-03T12:02:00.000Z",
           },
           {
@@ -254,7 +251,7 @@ describe("ReviewPage", () => {
             title: "Cross-file impact findings",
             mimeType: "application/json",
             contentText: "{\"summary\":\"Cross-file corroboration\"}",
-            metadata: { passKey: "cross-file-impact", summary: "Cross-file corroboration", totalParsedCount: 1, keptCount: 1, budgetTrimmedCount: 0 },
+            metadata: { passKey: "cross-file-impact", summary: "Cross-file corroboration", totalParsedCount: 1, keptCount: 1 },
             createdAt: "2026-04-03T12:02:30.000Z",
           },
           {
@@ -399,12 +396,26 @@ describe("ReviewPage", () => {
 
     await waitFor(() => expect(screen.getByTestId("location-search").textContent).toContain("runId=run-2"));
     expect((await screen.findAllByText("Reviewed lane-to-lane diff")).length).toBeGreaterThan(0);
+    const detailPane = screen.getByTestId("pane-detail");
+    expect(within(detailPane).getByText("Review scope")).toBeTruthy();
+    expect(within(detailPane).getByText("vs.")).toBeTruthy();
+    expect(within(detailPane).getByText("Compare against")).toBeTruthy();
+    expect(within(detailPane).getByText(/Reviewed how bugfix\/review-engine differs from feature\/review-tab/i)).toBeTruthy();
+    expect(within(detailPane).queryByText("Target mode")).toBeNull();
     expect(await screen.findByText("Missing guard on empty result")).toBeTruthy();
     expect(await screen.findByText("Reviewer outputs")).toBeTruthy();
     expect(await screen.findByText(/strong evidence/i)).toBeTruthy();
     expect(await screen.findByText("Review agent transcript available")).toBeTruthy();
     expect(screen.getByRole("button", { name: /open diff risk transcript in work/i })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /open.*work/i }).length).toBeGreaterThan(0);
+    expect(within(detailPane).getByText(/Run run-2 · Started .* · Completed/i)).toBeTruthy();
+    expect(within(detailPane).getByText("Model and reasoning")).toBeTruthy();
+    expect(within(detailPane).getByRole("button", { name: /select model \(current: GPT-5\.5\)/i })).toBeTruthy();
+    expect(within(detailPane).getByRole("button", { name: "Reasoning effort" })).toBeTruthy();
+    expect(within(detailPane).getByRole("button", { name: "Fast mode" })).toBeTruthy();
+    expect(within(detailPane).queryByText("Run id")).toBeNull();
+    expect(within(detailPane).queryByText(/^Lane$/)).toBeNull();
+    expect(within(detailPane).queryByText(/^Publish$/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /rerun/i }));
 
@@ -443,7 +454,6 @@ describe("ReviewPage", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
-        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
       },
       summary: "Multi-pass review kept 1 high-signal finding(s) from 1 candidate(s). Partial review: 1 specialist reviewer failed (Security/data).",
@@ -574,7 +584,8 @@ describe("ReviewPage", () => {
     );
 
     await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
-    expect(screen.getByRole("button", { name: /select model/i })).toBeTruthy();
+    const launchPane = screen.getByTestId("pane-launch");
+    expect(within(launchPane).getByRole("button", { name: /select model/i })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
 
     await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
@@ -600,10 +611,12 @@ describe("ReviewPage", () => {
     );
 
     await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
-    expect(screen.getByText(/Can inspect files and run read-only analysis/i)).toBeTruthy();
-    expect(screen.getByText("Read-only")).toBeTruthy();
+    expect(
+      screen.getByText(/This is read only and the model can only read and inspect files/i),
+    ).toBeTruthy();
 
-    const fastModeButton = screen.getByRole("button", { name: "Fast mode" });
+    const launchPane = screen.getByTestId("pane-launch");
+    const fastModeButton = within(launchPane).getByRole("button", { name: "Fast mode" });
     fireEvent.click(fastModeButton);
     expect(fastModeButton.getAttribute("aria-pressed")).toBe("true");
 
@@ -617,7 +630,7 @@ describe("ReviewPage", () => {
     });
   });
 
-  it("starts a review without ADE budget limits", async () => {
+  it("starts a review with the selected launch config", async () => {
     render(
       <MemoryRouter initialEntries={["/review"]}>
         <Routes>
@@ -627,25 +640,14 @@ describe("ReviewPage", () => {
     );
 
     await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
-    fireEvent.click(screen.getByText("Advanced review budgets"));
-    fireEvent.click(screen.getByRole("button", { name: "No limits" }));
-
-    expect(screen.getByText(/No ADE budget limits will be applied/i)).toBeTruthy();
-    expect(screen.queryByLabelText("Files")).toBeNull();
-
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
 
     await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
     const [{ config }] = (window.ade.review as any).startRun.mock.calls[0];
-    expect(config.budgets).toMatchObject({
-      unlimited: true,
-      maxFiles: Number.MAX_SAFE_INTEGER,
-      maxDiffChars: Number.MAX_SAFE_INTEGER,
-      maxPromptChars: Number.MAX_SAFE_INTEGER,
-      maxFindings: Number.MAX_SAFE_INTEGER,
-      maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
-      maxPublishedFindings: Number.MAX_SAFE_INTEGER,
+    expect(config).toMatchObject({
+      publishBehavior: "local_only",
     });
+    expect(config.budgets).toBeUndefined();
   });
 
   it("uses explicit local base language for non-primary lane comparisons", async () => {
@@ -660,9 +662,9 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
 
     expect(screen.getByText("Compare with main")).toBeTruthy();
-    expect(screen.getByText(/compares this lane's branch to local main/i)).toBeTruthy();
     expect(screen.getByText(/feature\/review-tab: branch changes vs local main/i)).toBeTruthy();
-    expect(screen.getByText(/Pull remote changes into that local base first/i)).toBeTruthy();
+    expect(screen.getByText(/since it split from local main/i)).toBeTruthy();
+    expect(screen.getByText(/Pull or merge remote changes into main first/i)).toBeTruthy();
   });
 
   it("uses local upstream ref language for primary lane comparisons", async () => {
@@ -703,7 +705,7 @@ describe("ReviewPage", () => {
 
     expect(screen.getByText("Compare with origin/main")).toBeTruthy();
     expect(screen.getByText(/local main vs local origin\/main/i)).toBeTruthy();
-    expect(screen.getByText(/local primary branch to local origin\/main/i)).toBeTruthy();
+    expect(screen.getByText(/Reviews local commits on main against local origin\/main/i)).toBeTruthy();
     expect(screen.getAllByText(/fetch or pull first when you want latest remote changes included/i).length).toBeGreaterThan(0);
   });
 
@@ -793,7 +795,6 @@ describe("ReviewPage", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.5",
         reasoningEffort: "medium",
-        budgets: { maxFiles: 25, maxDiffChars: 120000, maxPromptChars: 60000, maxFindings: 8, maxFindingsPerPass: 6, maxPublishedFindings: 6 },
         publishBehavior: "local_only",
       },
       summary: "Missing timestamps should stay visible as missing.",
@@ -826,7 +827,7 @@ describe("ReviewPage", () => {
     );
 
     expect(await screen.findByText("Missing timestamps should stay visible as missing.")).toBeTruthy();
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Run run-missing-time · Started —/)).toBeTruthy();
   });
 
   it("shows an inline error banner when refreshing runs fails after runs are already loaded", async () => {
@@ -841,11 +842,45 @@ describe("ReviewPage", () => {
     );
 
     expect(await screen.findByText("Reviewed against default branch")).toBeTruthy();
+    const detailPane = screen.getByTestId("pane-detail");
+    expect(within(detailPane).getByText("Review scope")).toBeTruthy();
+    expect(within(detailPane).getByText(/Comparing against local main\. Fetch or pull first when you want latest remote changes included\. Selection: Full diff\./i)).toBeTruthy();
+    expect(within(detailPane).queryByText("Selection mode")).toBeNull();
     reviewBridge.listRuns.mockRejectedValueOnce(new Error("Refresh failed"));
 
     fireEvent.click(screen.getByRole("button", { name: /refresh runs/i }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("Refresh failed");
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toContain("Refresh failed");
+    });
     expect(screen.getAllByText("feature/review-tab vs main").length).toBeGreaterThan(0);
+  });
+
+  it("uses the header refresh control for all review tab reloads", async () => {
+    const reviewBridge = window.ade.review as any;
+
+    render(
+      <MemoryRouter initialEntries={["/review?runId=run-2"]}>
+        <Routes>
+          <Route path="/review" element={<ReviewPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Missing guard on empty result")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^refresh$/i })).toBeNull();
+
+    const listRunsCalls = reviewBridge.listRuns.mock.calls.length;
+    const listLaunchContextCalls = reviewBridge.listLaunchContext.mock.calls.length;
+    const getRunDetailCalls = reviewBridge.getRunDetail.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /refresh runs/i }));
+
+    await waitFor(() => {
+      expect(reviewBridge.listRuns.mock.calls.length).toBeGreaterThan(listRunsCalls);
+      expect(reviewBridge.listLaunchContext.mock.calls.length).toBeGreaterThan(listLaunchContextCalls);
+      expect(reviewBridge.getRunDetail.mock.calls.length).toBeGreaterThan(getRunDetailCalls);
+    });
+    expect(reviewBridge.getRunDetail.mock.calls.at(-1)?.[0]).toBe("run-2");
   });
 });

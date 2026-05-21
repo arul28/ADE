@@ -109,13 +109,32 @@ function sharedSurfaceTokens(accent: string, m: number): CSSProperties {
   };
 }
 
+function isLightChatAccent(accent: string): boolean {
+  const normalized = normalizeHex(accent);
+  const r = hexChannel(normalized.slice(1, 3));
+  const g = hexChannel(normalized.slice(3, 5));
+  const b = hexChannel(normalized.slice(5, 7));
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.72;
+}
+
+const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
+  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
+
+/** Codex/OpenAI and other very light accents — pull the highlight stop down slightly. */
+const CHAT_USER_BUBBLE_GRADIENT_LIGHT =
+  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #78716c 10%) 0%, color-mix(in srgb, var(--chat-accent) 58%, #7c3aed 42%) 50%, color-mix(in srgb, var(--chat-accent) 56%, #4c1d95 44%) 100%)";
+
 /** Provider-colored chrome (default) — former “standard” lane accent strength. */
 function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
   const accent = resolveChatSurfaceAccent(mode, accentColor);
   const m = 1;
+  const light = isLightChatAccent(accent);
   return {
-    ["--chat-user-border-accent-mix" as string]: "28%",
-    ["--chat-user-shadow-accent-mix" as string]: "34%",
+    ["--chat-user-border-accent-mix" as string]: light ? "22%" : "28%",
+    ["--chat-user-shadow-accent-mix" as string]: light ? "28%" : "34%",
+    ["--chat-user-bubble-gradient" as string]: light
+      ? CHAT_USER_BUBBLE_GRADIENT_LIGHT
+      : CHAT_USER_BUBBLE_GRADIENT_DEFAULT,
     ...sharedSurfaceTokens(accent, m),
   };
 }
@@ -127,6 +146,7 @@ function neutralChatSurfaceVars(): CSSProperties {
   return {
     ["--chat-user-border-accent-mix" as string]: "20%",
     ["--chat-user-shadow-accent-mix" as string]: "24%",
+    ["--chat-user-bubble-gradient" as string]: CHAT_USER_BUBBLE_GRADIENT_DEFAULT,
     ...sharedSurfaceTokens(accent, m),
   };
 }

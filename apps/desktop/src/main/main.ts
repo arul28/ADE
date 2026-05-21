@@ -6,6 +6,10 @@ import { pathToFileURL } from "node:url";
 import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
+import {
+  handleDeeplinkUrl,
+  registerAdeProtocolHandler,
+} from "./services/deeplinks/protocolHandler";
 import { registerIpc } from "./services/ipc/registerIpc";
 import { createFileLogger } from "./services/logging/logger";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
@@ -34,6 +38,7 @@ import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnos
 import { createSessionService } from "./services/sessions/sessionService";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
+import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createFileService } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
@@ -71,6 +76,8 @@ import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import type {
   OpenProjectBinding,
+  AppNavigationRequest,
+  LaneDeleteProgress,
   LaneSummary,
   PortLease,
   PrEventPayload,
@@ -171,6 +178,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
@@ -815,6 +823,43 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// Only Stable claims `ade://` as the default handler. Beta and Alpha still
+// install the single-instance lock + `open-url` listeners (so a manual
+// `duti` binding still works), but they don't ask the OS to make them the
+// default on boot. Source builds opt in via `ADE_REGISTER_DEEPLINK_HANDLER=1`,
+// which is the dev-test workaround on a machine with Stable also installed.
+const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+const deeplinkClaimAsDefault =
+  process.env.ADE_REGISTER_DEEPLINK_HANDLER === "1" ||
+  (app.isPackaged && deeplinkChannel === null);
+
+const pendingAppNavigationRequests: AppNavigationRequest[] = [];
+let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
+
+const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): void => {
+  if (!dispatchAppNavigationRequest) {
+    pendingAppNavigationRequests.push(request);
+    return;
+  }
+  dispatchAppNavigationRequest(request);
+};
+
+// Register the user-facing `ade://` deeplink scheme + single-instance lock so a
+// second `open ade://...` invocation reuses the running window. Dispatch to the
+// focused window's renderer via the existing IPC.appNavigate channel.
+registerAdeProtocolHandler({
+  claimAsDefault: deeplinkClaimAsDefault,
+  dispatch: dispatchOrQueueAppNavigationRequest,
+  log: (event, fields) => {
+    // Avoid throwing if console is gone; structured logger may not be ready yet.
+    try {
+      console.log(`[main] ${event}`, fields);
+    } catch {
+      // ignore
+    }
+  },
+});
+
 let pendingProjectOpenFiles: string[] = [];
 let handleProjectOpenFile: ((filePath: string) => void) | null = null;
 
@@ -1076,6 +1121,32 @@ app.whenReady().then(async () => {
     getLogger: () => getActiveContext().logger,
     onEvent: (payload) => broadcast(IPC.builtInBrowserEvent, payload),
   });
+
+  // Side-channel JSON-RPC server that lets the runtime daemon proxy
+  // `ade browser …` CLI calls into this Electron main process.
+  // The daemon runs under ELECTRON_RUN_AS_NODE and can't host the browser
+  // service itself (it needs WebContentsView). The bridge socket lives under
+  // `<adeHome>/sock/desktop-bridge.sock`; the daemon discovers it via
+  // resolveMachineAdeLayout() or ADE_DESKTOP_BRIDGE_SOCKET_PATH.
+  const builtInBrowserBridgeLogger = createFileLogger(
+    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
+  );
+  const builtInBrowserBridgeSocketPath =
+    process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || machineAdeLayout.desktopBridgeSocketPath;
+  let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  try {
+    builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
+      socketPath: builtInBrowserBridgeSocketPath,
+      service: builtInBrowserService,
+      logger: builtInBrowserBridgeLogger,
+    });
+  } catch (error) {
+    builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
+      socketPath: builtInBrowserBridgeSocketPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
@@ -1415,6 +1486,14 @@ app.whenReady().then(async () => {
       });
       return true;
     };
+
+    try {
+      if (ctx.laneService?.hasRunningDelete?.()) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("lane_deletes", error);
+    }
 
     try {
       if (ctx.sessionService?.list({ status: "running", limit: 1 }).length > 0) {
@@ -1887,20 +1966,30 @@ app.whenReady().then(async () => {
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
-        void publishLinearLaneCard({
-          issueTracker: tracker,
-          lane,
-          issue,
-          projectRoot,
-          linkedAt,
-        }).catch((error) => {
-          logger.warn("linear.lane_card_publish_failed", {
-            laneId: lane.id,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
+        // Resolve repo lazily so cards posted to Linear carry the cross-machine
+        // ADE deeplink (https://ade.app/open?type=branch&...). If the project
+        // has no GitHub remote, fall back to the legacy hash-anchor URL.
+        void githubService.getRepoOrThrow()
+          .catch(() => null)
+          .then((repo) => publishLinearLaneCard({
+            issueTracker: tracker,
+            lane,
+            issue,
+            projectRoot,
+            linkedAt,
+            repoOwner: repo?.owner ?? null,
+            repoName: repo?.name ?? null,
+            postInitialComment: true,
+            log: (event, fields) => logger.warn(event, fields),
+          }))
+          .catch((error) => {
+            logger.warn("linear.lane_card_publish_failed", {
+              laneId: lane.id,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        });
       },
       teardownDeps: laneTeardownDeps,
       logger,
@@ -1927,8 +2016,17 @@ app.whenReady().then(async () => {
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
     });
+    const processRegistry = createProcessRegistryService({
+      db,
+      logger,
+      role: "desktop-main",
+      projectRoot,
+    });
+    processRegistry.start();
     const reconciledSessions = sessionService.reconcileStaleRunningSessions({
       status: "disposed",
+      liveOwnerPids: processRegistry.listLivePids(),
+      liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
     });
     if (reconciledSessions > 0) {
       logger.warn("sessions.reconciled_stale_running", {
@@ -2450,6 +2548,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
       sessionService,
+      processRegistry,
       aiIntegrationService,
       projectConfigService,
       getLaneRuntimeEnv,
@@ -2858,6 +2957,7 @@ app.whenReady().then(async () => {
       episodicSummaryService,
       laneService,
       sessionService,
+      processRegistry,
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
@@ -3547,6 +3647,21 @@ app.whenReady().then(async () => {
           type: "sync-status",
           snapshot,
         });
+      },
+      // iOS "Send to your Mac" handler. Parses the inbound `ade://...` URL
+      // and routes it through the same protocol dispatcher main.ts wires up
+      // for direct OS clicks, so the renderer's existing AppNavigationBridge
+      // / InboundDeeplinkModal / CrossRepoPrBanner all fire normally.
+      dispatchDeeplinkUrl: async (rawUrl) => {
+        try {
+          handleDeeplinkUrl(rawUrl, "sync:ios", dispatchOrQueueAppNavigationRequest);
+          return { ok: true };
+        } catch (error) {
+          return {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
       },
     });
     syncServiceRef = syncService;
@@ -4375,6 +4490,7 @@ app.whenReady().then(async () => {
       rebaseSuggestionService,
       autoRebaseService,
       sessionService,
+      processRegistry,
       ptyService,
       diffService,
       fileService,
@@ -4829,6 +4945,11 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.apnsService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.processRegistry?.stop();
     } catch {
       // ignore
     }
@@ -5368,6 +5489,7 @@ app.whenReady().then(async () => {
   let shutdownRequested = false;
   let shutdownFinalized = false;
   let quitWarningAcknowledged = false;
+  let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
 
   const shutdownOpenCodeServersBestEffort = (): void => {
@@ -5499,6 +5621,11 @@ app.whenReady().then(async () => {
       } catch {
         // ignore
       }
+      try {
+        builtInBrowserBridgeServer?.dispose();
+      } catch {
+        // ignore
+      }
       setForegroundProject(null);
       dormantContext = createDormantProjectContext(previousRoot);
 
@@ -5555,6 +5682,100 @@ app.whenReady().then(async () => {
     return true;
   };
 
+  const isRunningLaneDeleteProgress = (value: unknown): value is LaneDeleteProgress => {
+    return Boolean(
+      value
+        && typeof value === "object"
+        && !Array.isArray(value)
+        && (value as { overallStatus?: unknown }).overallStatus === "running",
+    );
+  };
+
+  const labelForProjectRoot = (root: string): string => {
+    const normalizedRoot = normalizeProjectRoot(root);
+    const ctx = projectContexts.get(normalizedRoot);
+    return ctx?.project?.displayName || path.basename(normalizedRoot) || normalizedRoot;
+  };
+
+  const getInProcessRunningLaneDeleteLabels = (): string[] => {
+    const labels: string[] = [];
+    for (const ctx of projectContexts.values()) {
+      try {
+        if (!ctx.laneService?.hasRunningDelete?.()) continue;
+        labels.push(ctx.project?.displayName ?? ctx.project?.rootPath ?? "Unknown project");
+      } catch (error) {
+        ctx.logger.warn("lane_delete.quit_probe_failed", {
+          projectRoot: ctx.project?.rootPath ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        labels.push(ctx.project?.displayName ?? ctx.project?.rootPath ?? "Unknown project");
+      }
+    }
+    return labels;
+  };
+
+  const getRuntimeBackedRunningLaneDeleteLabels = async (): Promise<string[]> => {
+    if (shouldUseInProcessProjectRuntime()) return [];
+    const roots = new Set<string>([
+      ...rootsBoundToWindows(),
+      ...projectContexts.keys(),
+    ]);
+    const labels: string[] = [];
+    await Promise.all(Array.from(roots).map(async (root) => {
+      try {
+        const response = await localRuntimePool.callActionForRoot(root, {
+          domain: "lane",
+          action: "listDeleteProgress",
+        });
+        const progress = Array.isArray(response.result) ? response.result : [];
+        if (progress.some(isRunningLaneDeleteProgress)) {
+          labels.push(labelForProjectRoot(root));
+        }
+      } catch (error) {
+        localRuntimeLogger.warn("lane_delete.runtime_quit_probe_failed", {
+          projectRoot: root,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        labels.push(labelForProjectRoot(root));
+      }
+    }));
+    return labels;
+  };
+
+  const getRunningLaneDeleteLabels = async (): Promise<string[]> => {
+    const labels = [
+      ...getInProcessRunningLaneDeleteLabels(),
+      ...await getRuntimeBackedRunningLaneDeleteLabels(),
+    ];
+    return Array.from(new Set(labels));
+  };
+
+  const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
+    const runningDeletes = await getRunningLaneDeleteLabels();
+    if (runningDeletes.length === 0) return true;
+    const detail =
+      runningDeletes.length === 1
+        ? `${runningDeletes[0]} is deleting a lane. Wait for deletion to finish before quitting ADE.`
+        : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ADE.`;
+    const dialogOptions = {
+      type: "warning" as const,
+      buttons: ["Keep ADE open"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Lane delete in progress",
+      message: "ADE cannot quit while a lane is being deleted.",
+      detail,
+    };
+    const parentWindow =
+      ownerWindow && !ownerWindow.isDestroyed()
+        ? ownerWindow
+        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    if (parentWindow) dialog.showMessageBoxSync(parentWindow, dialogOptions);
+    else dialog.showMessageBoxSync(dialogOptions);
+    return false;
+  };
+
   const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>
     showWindowCloseWarning(ownerWindow, {
       buttons: ["Keep ADE open", "Quit ADE"],
@@ -5574,6 +5795,23 @@ app.whenReady().then(async () => {
         "ADE will keep running in other windows. Active agents and background processes continue unless you quit ADE.",
       rememberQuitAcknowledgement: false,
     });
+
+  const requestQuitAfterWarnings = (
+    ownerWindow: BrowserWindow | null | undefined,
+    reason: "before_quit" | "window_close",
+  ): void => {
+    if (shutdownRequested || quitConfirmationInFlight) return;
+    quitConfirmationInFlight = true;
+    void (async () => {
+      try {
+        if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
+        if (!confirmQuitWarning(ownerWindow)) return;
+        requestAppShutdown({ reason, exitCode: 0 });
+      } finally {
+        quitConfirmationInFlight = false;
+      }
+    })();
+  };
 
   const closeWindowWithoutPrompt = (win: BrowserWindow): void => {
     closeWindowWithoutQuitPrompt.add(win.id);
@@ -5595,8 +5833,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
-    if (!confirmQuitWarning(win)) return;
-    requestAppShutdown({ reason: "window_close", exitCode: 0 });
+    requestQuitAfterWarnings(win, "window_close");
   };
 
   const FILE_LIMIT_CODES = new Set(["EMFILE", "ENFILE"]);
@@ -5757,6 +5994,39 @@ app.whenReady().then(async () => {
       emitProjectBindingChangedToWindow(win.id, null);
     }
     return getWindowSession(win.id);
+  };
+
+  let initialWindowNavigationReady = false;
+  const drainPendingAppNavigationRequests = (): void => {
+    for (const request of pendingAppNavigationRequests.splice(0)) {
+      dispatchAppNavigationRequest?.(request);
+    }
+  };
+
+  dispatchAppNavigationRequest = (request) => {
+    void (async () => {
+      let targetWindow =
+        BrowserWindow.getFocusedWindow() ??
+        BrowserWindow.getAllWindows().find((win) => !win.isDestroyed()) ??
+        null;
+      if (!targetWindow) {
+        if (!initialWindowNavigationReady) {
+          pendingAppNavigationRequests.push(request);
+          return;
+        }
+        const opened = await openAdeWindow();
+        targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
+      }
+      if (!targetWindow || targetWindow.isDestroyed()) return;
+      if (targetWindow.isMinimized()) targetWindow.restore();
+      targetWindow.show();
+      targetWindow.focus();
+      targetWindow.webContents.send(IPC.appNavigate, request);
+    })().catch((error: unknown) => {
+      getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const openProjectFileRequest = async (filePath: string): Promise<void> => {
@@ -5921,6 +6191,8 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);
+  initialWindowNavigationReady = true;
+  drainPendingAppNavigationRequests();
   if (shouldShowRuntimeMigrationNotice && process.env.NODE_ENV !== "test") {
     void dialog.showMessageBox(initialWindow, {
       type: "info",
@@ -5945,8 +6217,7 @@ app.whenReady().then(async () => {
     if (shutdownFinalized) return;
     event.preventDefault();
     if (shutdownRequested) return;
-    if (!confirmQuitWarning()) return;
-    requestAppShutdown({ reason: "before_quit", exitCode: 0 });
+    requestQuitAfterWarnings(null, "before_quit");
   });
 });
 

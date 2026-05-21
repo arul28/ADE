@@ -13,12 +13,28 @@ export type SubagentSnapshot = {
   parentToolUseId?: string | null;
   turnId?: string | null;
   background?: boolean;
+  taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+  workflowName?: string;
   startedAt?: string | null;
   endedAt?: string | null;
   tokens?: number;
   durationMs?: number;
   lastToolName?: string;
 };
+
+const SUBAGENT_TASK_TYPES = new Set<NonNullable<SubagentSnapshot["taskType"]>>([
+  "subagent",
+  "background",
+  "local_workflow",
+  "cron",
+  "other",
+]);
+
+function normalizeSubagentTaskType(value: unknown): SubagentSnapshot["taskType"] | undefined {
+  return typeof value === "string" && SUBAGENT_TASK_TYPES.has(value as NonNullable<SubagentSnapshot["taskType"]>)
+    ? value as SubagentSnapshot["taskType"]
+    : undefined;
+}
 
 export type ChatInfoPlanStep = {
   text: string;
@@ -230,6 +246,11 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const summaryFromEvent = [event.summary, event.finalSummary, event.text, event.description]
       .find((value): value is string => typeof value === "string" && value.trim().length > 0);
     const summary = summaryFromEvent ?? existing?.summary ?? "";
+    const incomingTaskType = normalizeSubagentTaskType(event.taskType);
+    const existingTaskType = normalizeSubagentTaskType(existing?.taskType);
+    const incomingWorkflowName = typeof event.workflowName === "string" && event.workflowName.trim().length
+      ? event.workflowName.trim()
+      : undefined;
     const base: SubagentSnapshot = {
       id,
       name: typeof event.description === "string" ? event.description : existing?.name ?? agentType,
@@ -239,6 +260,12 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       parentToolUseId,
       turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId ?? null,
       background: event.background === true || existing?.background === true,
+      ...(incomingTaskType || existingTaskType
+        ? { taskType: incomingTaskType ?? existingTaskType }
+        : {}),
+      ...(incomingWorkflowName || existing?.workflowName
+        ? { workflowName: incomingWorkflowName ?? existing?.workflowName }
+        : {}),
       startedAt,
       endedAt,
       tokens: typeof usage.totalTokens === "number" ? usage.totalTokens : typeof event.tokens === "number" ? event.tokens : existing?.tokens,

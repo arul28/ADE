@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
-import { buildLinearLaneCardAttachment, publishLinearLaneCard } from "./linearLaneCardService";
+import {
+  buildLinearLaneCardAttachment,
+  buildLinearLaneInitialComment,
+  publishLinearLaneCard,
+} from "./linearLaneCardService";
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -118,5 +122,54 @@ describe("linearLaneCardService", () => {
       issueId: "issue-1",
       title: "ADE lane: ABC-42 Fix flaky sync run",
     }));
+  });
+
+  it("uses the cross-machine ADE deeplink when repo is known", () => {
+    const attachment = buildLinearLaneCardAttachment({
+      lane: makeLane(),
+      issue: makeIssue(),
+      projectRoot: "/Users/admin/Projects/ADE",
+      linkedAt: "2026-05-12T20:05:00.000Z",
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+    });
+    expect(attachment.url).toContain("https://ade.app/open?type=branch");
+    expect(attachment.url).toContain("repo=anthropics%2Fclaude-code");
+    expect(attachment.url).toContain("branch=abc-42-fix-flaky-sync-run");
+    expect(attachment.title).toBe("Open in ADE: ABC-42 Fix flaky sync run");
+  });
+
+  it("builds an initial comment with the deeplink", () => {
+    const body = buildLinearLaneInitialComment({
+      lane: makeLane(),
+      issue: makeIssue(),
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+    });
+    expect(body).toContain("Open in ADE");
+    expect(body).toContain("https://ade.app/open?type=branch");
+  });
+
+  it("returns null comment when repo is unknown", () => {
+    const body = buildLinearLaneInitialComment({
+      lane: makeLane(),
+      issue: makeIssue(),
+    });
+    expect(body).toBeNull();
+  });
+
+  it("posts the initial comment when requested and repo is known", async () => {
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-1", url: "https://ade.app/open?type=branch" }));
+    const createComment = vi.fn(async () => ({}));
+    await publishLinearLaneCard({
+      issueTracker: { createIssueAttachment, createComment } as any,
+      lane: makeLane(),
+      issue: makeIssue(),
+      projectRoot: "/Users/admin/Projects/ADE",
+      repoOwner: "a",
+      repoName: "b",
+      postInitialComment: true,
+    });
+    expect(createComment).toHaveBeenCalledWith("issue-1", expect.stringContaining("Open in ADE"));
   });
 });

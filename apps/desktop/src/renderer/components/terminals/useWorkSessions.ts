@@ -785,6 +785,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setSessions((prev) => upsertSessionByStartedAt(prev, optimistic));
   }, [lanes]);
 
+  // Used by the CLI continuation flow to flip a stopped session straight to
+  // the freshly-resumed snapshot returned by pty.sendToSession, so the Work
+  // view swaps the closed snapshot for the live TerminalView without
+  // waiting for the next list refresh.
+  const upsertSessionSnapshot = useCallback((session: TerminalSessionSummary) => {
+    setSessions((prev) => upsertSessionByStartedAt(prev, session));
+  }, []);
+
   const scheduleBackgroundRefresh = useCallback((delayMs = 450) => {
     if (!isWorkRoute) return;
     if (backgroundRefreshTimerRef.current != null) return;
@@ -1377,6 +1385,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     closingPtyIds,
     refresh,
     upsertOptimisticChatSession,
+    upsertSessionSnapshot,
     removeSessionFromList,
     stopRuntime,
     stopAllRuntimes,

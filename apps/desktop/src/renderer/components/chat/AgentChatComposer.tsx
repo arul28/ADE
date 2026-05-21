@@ -33,14 +33,19 @@ import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
-import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
+import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
-import { ChatAttachmentTray, type ChatAttachmentPendingImage } from "./ChatAttachmentTray";
+import {
+  ChatAttachmentTray,
+  CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR,
+  type ChatAttachmentPendingImage,
+} from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
@@ -715,6 +720,7 @@ export function AgentChatComposer({
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
+  providerAuthStatus,
   reasoningEffort,
   codexFastMode = false,
   codexTokenUsage = null,
@@ -834,6 +840,7 @@ export function AgentChatComposer({
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
+  providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
   codexTokenUsage?: CodexThreadTokenUsage | null;
@@ -993,6 +1000,7 @@ export function AgentChatComposer({
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentTrayRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<Range | null>(null);
@@ -1161,6 +1169,21 @@ export function AgentChatComposer({
     clearPreviewForPath(path);
     onRemoveAttachment(path);
   }, [clearPreviewForPath, onRemoveAttachment]);
+
+  const focusComposerInput = useCallback(() => {
+    const target = useRichComposer ? richEditorRef.current : textareaRef.current;
+    target?.focus({ preventScroll: true });
+  }, [useRichComposer]);
+
+  const focusLastImageAttachment = useCallback((): boolean => {
+    const targets = Array.from(
+      attachmentTrayRef.current?.querySelectorAll<HTMLElement>(CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR) ?? [],
+    );
+    const target = targets.at(-1);
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }, []);
 
   useEffect(() => {
     const previous = previousImagePreviewUrlsRef.current;
@@ -2424,6 +2447,17 @@ export function AgentChatComposer({
       if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commandMenuRef.current?.selectCurrent(); return; }
     }
 
+    if (event.key === "ArrowUp" && !commandModified && !event.shiftKey && !event.altKey) {
+      const target = event.currentTarget;
+      const atPromptStart = target instanceof HTMLTextAreaElement
+        ? target.selectionStart === 0 && target.selectionEnd === 0
+        : getRichCursorTextOffset() === 0;
+      if (atPromptStart && focusLastImageAttachment()) {
+        event.preventDefault();
+        return;
+      }
+    }
+
     if (event.key === "@" && !commandModified && !event.altKey) {
       if (!canAttach) return;
       // Let @ be typed into textarea; onChange will detect the trigger
@@ -3134,6 +3168,7 @@ export function AgentChatComposer({
               </div>
             ) : null}
             <ChatAttachmentTray
+              ref={attachmentTrayRef}
               attachments={attachments}
               contextAttachments={contextAttachments}
               pendingImageAttachments={pendingImageAttachments}
@@ -3142,6 +3177,7 @@ export function AgentChatComposer({
               onRemove={handleRemoveAttachment}
               onRemoveContext={onRemoveContextAttachment}
               onRemovePendingImageAttachment={removePendingImageAttachment}
+              onFocusPrompt={focusComposerInput}
               className="px-3 py-0"
             />
           </div>
@@ -3373,6 +3409,7 @@ export function AgentChatComposer({
                   onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
                   surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={parallelLaunchBusy}
                   compact
@@ -3396,6 +3433,7 @@ export function AgentChatComposer({
                   onChange={onModelChange}
                   surfaceKey="chat-composer"
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={modelSelectionLocked}
                   compact
@@ -3420,25 +3458,6 @@ export function AgentChatComposer({
 
           {/* Right: attachment, commands, proof, context, send */}
           <div className="ml-auto flex max-w-full shrink-0 items-center gap-0.5 sm:gap-1">
-            <SmartTooltip
-              content={{
-                label: "Attach from project",
-                description: parallelChatMode
-                  ? attachBlockedReason ?? "Search the project for files to send to every parallel lane."
-                  : "Search the project for files or images to attach to this message.",
-                shortcut: "@",
-              }}
-            >
-              <button
-                type="button"
-                className="inline-flex h-8 min-w-8 max-w-full items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-                disabled={!canAttach}
-                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                aria-label="Open attachment picker"
-              >
-                @
-              </button>
-            </SmartTooltip>
             <SmartTooltip
               content={{
                 label: "Upload file",
@@ -3488,32 +3507,6 @@ export function AgentChatComposer({
                     {contextAttachmentCount}
                   </span>
                 ) : null}
-              </button>
-            </SmartTooltip>
-            <SmartTooltip content={{ label: "Commands", description: "Open the slash-command picker for this chat.", shortcut: "/" }}>
-              <button
-                type="button"
-                className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-                disabled={composerInputLocked}
-                onClick={() => {
-                  if (composerInputLocked) return;
-                  const richEl = richEditorRef.current;
-                  const el = textareaRef.current;
-                  const currentDraft = useRichComposer ? serializeRichEditor() : el?.value ?? "";
-                  if (!currentDraft.length) onDraftChange("/");
-                  if (useRichComposer && !currentDraft.length) setRichEditorText("/");
-                  setCommandMenuTrigger({
-                    type: "slash",
-                    query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
-                    cursorIndex: 0,
-                  });
-                  const anchor = getCommandMenuAnchor(useRichComposer ? richEl : el);
-                  if (anchor) setCommandMenuAnchor(anchor);
-                  (useRichComposer ? richEl : el)?.focus();
-                }}
-                aria-label="Open command picker"
-              >
-                /
               </button>
             </SmartTooltip>
 

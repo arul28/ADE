@@ -1,28 +1,66 @@
 import { describe, expect, it } from "vitest";
 import {
+  CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
+  cycleLaneDeleteScope,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
+  drawerMouseHitForLine,
   encodeTerminalPromptSubmit,
+  encodeTerminalPromptSubmitConfirm,
   footerControlsForAvailability,
+  formFieldUsesPromptInput,
+  isChatSessionAnimating,
   isPromptLineBackspace,
   isPromptWordBackspace,
+  isTerminalSessionFastPollActive,
+  isTerminalSessionWorking,
   isTerminalControlToggle,
   isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
   isCtrlCCopyPlatform,
+  isCtrlInput,
   chatSelectionEdgeDirectionForMouseY,
   chatSelectionFromAnchor,
   chatSelectionPointFromVisibleRows,
   moveChatSelectionFocusByRows,
   parseTerminalMouseInput,
   promptDisplayRows,
+  promptHitLine,
+  modelPickerSurfaceForSetupPane,
+  resolveContextDefault,
+  resolveDrawerPaneWidth,
+  resolveModelPickerEscape,
   resolveChatWrapWidth,
   resolveTerminalPaneWidth,
   splitTerminalControlInput,
   subagentSnapshotsFromEvents,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
+import type { ChatInfoSnapshot } from "../types";
+import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+
+describe("session activity helpers", () => {
+  it("does not animate idle or input-blocked chat sessions", () => {
+    expect(isChatSessionAnimating({ status: "active", awaitingInput: false, idleSinceAt: null })).toBe(true);
+    expect(isChatSessionAnimating({ status: "active", awaitingInput: true, idleSinceAt: null })).toBe(false);
+    expect(isChatSessionAnimating({ status: "active", awaitingInput: false, idleSinceAt: "2026-05-20T07:00:00.000Z" })).toBe(false);
+    expect(isChatSessionAnimating({ status: "idle", awaitingInput: false, idleSinceAt: null })).toBe(false);
+  });
+
+  it("does not animate an idle terminal process but keeps fast polling while it is busy", () => {
+    expect(isTerminalSessionWorking({ status: "running", runtimeState: "running", pid: process.pid })).toBe(true);
+    expect(isTerminalSessionWorking({ status: "running", runtimeState: "running", pid: null })).toBe(false);
+    expect(isTerminalSessionWorking({ status: "running", runtimeState: "idle", pid: process.pid })).toBe(false);
+    expect(isTerminalSessionWorking({ status: "running", runtimeState: "waiting-input", pid: process.pid })).toBe(false);
+
+    expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "running", pid: process.pid })).toBe(true);
+    expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "waiting-input", pid: process.pid })).toBe(true);
+    expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "running", pid: null })).toBe(false);
+    expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "idle", pid: process.pid })).toBe(false);
+    expect(isTerminalSessionFastPollActive({ status: "completed", runtimeState: "exited", pid: process.pid })).toBe(false);
+  });
+});
 
 describe("parseTerminalMouseInput", () => {
   it("parses SGR mouse wheel events from Ink input", () => {
@@ -85,6 +123,14 @@ describe("parseTerminalMouseInput", () => {
     });
   });
 
+  it("parses any-event pointer moves for hover hit-testing", () => {
+    expect(parseTerminalMouseInput("[<35;9;10M")).toEqual({
+      kind: "move",
+      x: 9,
+      y: 10,
+    });
+  });
+
   it("parses mouse modifier bits", () => {
     expect(parseTerminalMouseInput("[<20;5;6M")).toEqual({
       kind: "click",
@@ -127,6 +173,165 @@ describe("parseTerminalMouseInput", () => {
 
   it("ignores normal keyboard input", () => {
     expect(parseTerminalMouseInput("hello")).toBeNull();
+  });
+});
+
+describe("control input normalization", () => {
+  it("matches both Ink ctrl metadata and raw terminal control bytes", () => {
+    expect(isCtrlInput("o", { ctrl: true }, "o")).toBe(true);
+    expect(isCtrlInput("\x0f", {}, "o")).toBe(true);
+    expect(isCtrlInput("\x10", {}, "p")).toBe(true);
+    expect(isCtrlInput("o", { ctrl: true, meta: true }, "o")).toBe(false);
+    expect(isCtrlInput("x", {}, "o")).toBe(false);
+  });
+});
+
+describe("lane delete form helpers", () => {
+  it("cycles lane delete scope through visible destructive choices", () => {
+    expect(cycleLaneDeleteScope("worktree", 1)).toBe("local_branch");
+    expect(cycleLaneDeleteScope("local_branch", 1)).toBe("remote_branch");
+    expect(cycleLaneDeleteScope("remote_branch", 1)).toBe("worktree");
+    expect(cycleLaneDeleteScope("worktree", -1)).toBe("remote_branch");
+    expect(cycleLaneDeleteScope("nonsense", 1)).toBe("local_branch");
+  });
+
+  it("does not treat lane-delete select and toggle rows as prompt text", () => {
+    expect(formFieldUsesPromptInput("lane-delete", "scope")).toBe(false);
+    expect(formFieldUsesPromptInput("lane-delete", "force")).toBe(false);
+    expect(formFieldUsesPromptInput("lane-delete", "confirm")).toBe(true);
+    expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
+  });
+});
+
+describe("right pane context defaults", () => {
+  function laneForContext(overrides: Partial<LaneSummary> = {}): LaneSummary {
+    return {
+      id: "lane-1",
+      name: "Lane one",
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "feature/lane-one",
+      worktreePath: "/tmp/lane-one",
+      parentLaneId: null,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: null,
+      isEditProtected: false,
+      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
+      color: null,
+      icon: null,
+      tags: [],
+      createdAt: "2026-05-20T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function chatInfoForContext(): ChatInfoSnapshot {
+    return {
+      provider: "claude",
+      modelLabel: "Claude Sonnet 4.6",
+      laneLabel: "Lane one",
+      contextPercent: null,
+      tokenSummary: null,
+      goal: null,
+      plan: { current: 0, total: 0, live: false, steps: [] },
+      snapshots: [],
+      inspectedSubagentId: null,
+      streaming: false,
+    };
+  }
+
+  it("keeps the new-chat setup pane ahead of stale lane drawer highlights", () => {
+    const lane = laneForContext();
+    const pane = resolveContextDefault({
+      draftChatActive: true,
+      activeSession: null,
+      activeLane: lane,
+      liveAgentCount: 0,
+      highlightedDrawerLane: lane,
+      drawerMode: "lanes",
+      drawerNav: null,
+      chatInfo: chatInfoForContext(),
+      subagentSnapshots: [],
+      provider: "claude",
+      newChatSetup: {
+        laneId: lane.id,
+        laneLabel: lane.name,
+        rows: [{ kind: "model", label: "Model", value: "Claude Sonnet 4.6", cyclable: true }],
+      },
+      unavailableLaneIds: new Set(),
+    });
+
+    expect(pane).toMatchObject({
+      kind: "new-chat-setup",
+      laneId: "lane-1",
+      laneLabel: "Lane one",
+    });
+  });
+});
+
+describe("model setup picker routing", () => {
+  it("opens the rich picker against the current chat from /model or /effort setup panes", () => {
+    expect(modelPickerSurfaceForSetupPane("model-setup")).toBe("chat");
+  });
+
+  it("keeps the new-chat picker scoped to the draft setup pane", () => {
+    expect(modelPickerSurfaceForSetupPane("new-chat-setup")).toBe("new-chat");
+  });
+});
+
+describe("drawer mouse hit testing", () => {
+  it("widens the drawer responsively on larger terminals", () => {
+    expect(resolveDrawerPaneWidth(100, false)).toBe(0);
+    expect(resolveDrawerPaneWidth(100, true)).toBe(32);
+    expect(resolveDrawerPaneWidth(160, true)).toBe(38);
+    expect(resolveDrawerPaneWidth(228, true)).toBe(43);
+    expect(resolveDrawerPaneWidth(400, true)).toBe(48);
+  });
+
+  it("maps card-style drawer lines to lane and chat rows", () => {
+    // Layout for the selected lane (index 0) with 6 chats:
+    //   y=3 border, y=4 name, y=5 branch, y=6 diff, y=7 (chat margin),
+    //   y=8 CHATS header, y=9 chat 0, y=10 margin, y=11 chat 1, y=12 margin,
+    //   y=13 chat 2, y=14 margin, y=15 chat 3, y=16 margin, y=17 chat 4,
+    //   y=18 margin, y=19 chat 5, y=20 + new chat, y=21 bottom border,
+    //   y=22 marginTop separator, y=23 lane 1 top border, y=24 lane 1 name.
+    expect(drawerMouseHitForLine({ y: 5, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
+      kind: "lane",
+      index: 0,
+    });
+    expect(drawerMouseHitForLine({ y: 9, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
+      kind: "chat",
+      index: 0,
+    });
+    expect(drawerMouseHitForLine({ y: 11, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
+      kind: "chat",
+      index: 1,
+    });
+    expect(drawerMouseHitForLine({ y: 20, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
+      kind: "new-chat",
+    });
+    expect(drawerMouseHitForLine({ y: 24, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
+      kind: "lane",
+      index: 1,
+    });
+    // 5 unselected lanes ahead consume 5 rows each (border+2 content+border+margin),
+    // so lane 5's card body starts at y=28. With 2 chats, chat 0 lands at y=34.
+    expect(drawerMouseHitForLine({ y: 34, laneCount: 6, selectedLaneIndex: 5, chatCount: 2 })).toEqual({
+      kind: "chat",
+      index: 0,
+    });
+  });
+
+});
+
+describe("prompt mouse hit testing", () => {
+  it("maps bottom prompt box lines back to chat focus", () => {
+    expect(promptHitLine({ y: 84, rows: 88, promptRowCount: 1 })).toBe(true);
+    expect(promptHitLine({ y: 87, rows: 88, promptRowCount: 1 })).toBe(true);
+    expect(promptHitLine({ y: 83, rows: 88, promptRowCount: 1 })).toBe(false);
+    expect(promptHitLine({ y: 82, rows: 88, promptRowCount: 3 })).toBe(true);
+    expect(promptHitLine({ y: null, rows: 88, promptRowCount: 1 })).toBe(false);
   });
 });
 
@@ -230,6 +435,44 @@ describe("footer control ordering", () => {
   it("puts chat info first when that pane is available", () => {
     expect(footerControlsForAvailability(true)).toEqual(["agents", "drawer", "details"]);
     expect(footerControlsForAvailability(false)).toEqual(["drawer", "details"]);
+  });
+});
+
+describe("model picker escape handling", () => {
+  const picker = {
+    kind: "model-picker" as const,
+    surface: "chat" as const,
+    query: "",
+    searchMode: false,
+    selection: { kind: "favorites" as const },
+    focusedIndex: 3,
+  };
+
+  it("clears active search before closing the model picker", () => {
+    expect(resolveModelPickerEscape({ ...picker, query: "sonnet", searchMode: true })).toEqual({
+      kind: "clear-search",
+      pane: {
+        ...picker,
+        query: "",
+        searchMode: false,
+        focusedIndex: 0,
+      },
+    });
+
+    expect(resolveModelPickerEscape({ ...picker, query: "", searchMode: true })).toEqual({
+      kind: "clear-search",
+      pane: {
+        ...picker,
+        query: "",
+        searchMode: false,
+        focusedIndex: 0,
+      },
+    });
+  });
+
+  it("closes chat model pickers and returns new-chat model pickers to setup", () => {
+    expect(resolveModelPickerEscape(picker)).toEqual({ kind: "close" });
+    expect(resolveModelPickerEscape({ ...picker, surface: "new-chat" })).toEqual({ kind: "return-new-chat" });
   });
 });
 
@@ -508,5 +751,10 @@ describe("encodeTerminalPromptSubmit", () => {
 
   it("uses bracketed paste for multiline prompts", () => {
     expect(encodeTerminalPromptSubmit("one\r\ntwo")).toBe("\x1b[200~one\ntwo\x1b[201~\r");
+  });
+
+  it("uses a delayed confirm enter for live Claude terminal submissions", () => {
+    expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
+    expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
   });
 });

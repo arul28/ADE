@@ -23,12 +23,6 @@ function makeConfig(overrides: Partial<ReviewRunConfig> = {}): ReviewRunConfig {
     dirtyOnly: false,
     modelId: "openai/gpt-5.4",
     reasoningEffort: "medium",
-    budgets: {
-      maxFiles: 60,
-      maxDiffChars: 180_000,
-      maxPromptChars: 220_000,
-      maxFindings: 12,
-    },
     publishBehavior: "local_only",
     ...overrides,
   };

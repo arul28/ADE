@@ -16,7 +16,7 @@ import {
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
-import { createVmRuntimeStatusReason, shouldMountGitActionsPane } from "./LanesPage";
+import { buildLaneSplitColumnsKey, createVmRuntimeStatusReason, shouldMountGitActionsPane } from "./LanesPage";
 import type {
   GitHubPrListItem,
   LaneSummary,
@@ -318,6 +318,21 @@ describe("resolveVisibleLaneIds", () => {
       selectableFilteredLaneIds: ["lane-other"],
       deletingLaneIds: ["lane-deleting"],
     })).toEqual(["lane-other"]);
+  });
+});
+
+describe("buildLaneSplitColumnsKey", () => {
+  it("does not depend on the current split lane ids", () => {
+    const beforeDelete = buildLaneSplitColumnsKey({
+      laneTilingLayoutSuffix: ":wf",
+      gridResetKey: 2,
+    });
+    const afterDelete = buildLaneSplitColumnsKey({
+      laneTilingLayoutSuffix: ":wf",
+      gridResetKey: 2,
+    });
+
+    expect(afterDelete).toBe(beforeDelete);
   });
 });
 

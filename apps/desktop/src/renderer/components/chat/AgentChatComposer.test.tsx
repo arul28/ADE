@@ -237,7 +237,9 @@ describe("AgentChatComposer", () => {
       }],
     });
 
-    fireEvent.click(screen.getByLabelText("Open command picker"));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "/", selectionStart: 1 },
+    });
     const statusCommand = await screen.findByText("/status");
     const menu = statusCommand.closest(".ade-chat-drawer-glass");
     const composerShell = container.querySelector("[data-chat-composer-mode]");
@@ -328,6 +330,34 @@ describe("AgentChatComposer", () => {
     await waitFor(() => {
       expect(screen.queryByText(/Maximum allowed size is 10 MB/)).toBeNull();
     });
+  });
+
+  it("moves from the prompt to image attachments and removes them from the keyboard", () => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+      attachments: [{ path: "/tmp/pasted-image.png", type: "image" }],
+    });
+
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+
+    const imageButton = screen.getByRole("button", { name: "Open pasted-image.png" });
+    expect(document.activeElement).toBe(imageButton);
+
+    fireEvent.keyDown(imageButton, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(textbox);
+
+    textbox.focus();
+    textbox.setSelectionRange(0, 0);
+    fireEvent.keyDown(textbox, { key: "ArrowUp" });
+    fireEvent.keyDown(imageButton, { key: "Delete" });
+
+    expect(props.onRemoveAttachment).toHaveBeenCalledWith("/tmp/pasted-image.png");
+    expect(document.activeElement).toBe(textbox);
   });
 
   it("stop only interrupts the active turn", () => {
@@ -600,9 +630,7 @@ describe("AgentChatComposer", () => {
     expect(textbox.disabled).toBe(true);
     expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
     expect(screen.queryByLabelText("Send steer message")).toBeNull();
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByLabelText("Open command picker") as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.keyDown(textbox, { key: "Enter" });
 
@@ -744,7 +772,6 @@ describe("AgentChatComposer", () => {
   it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -756,7 +783,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["anthropic/claude-sonnet-4-6"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -768,7 +794,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["cursor/auto"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -780,7 +805,6 @@ describe("AgentChatComposer", () => {
       availableModelIds: ["opencode/openai/gpt-5.4"],
     });
 
-    expect((screen.getByLabelText("Open attachment picker") as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 

@@ -34,6 +34,12 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   pinnedSessionIds: [],
 };
 
+const laneSessionsCacheByScope = new Map<string, TerminalSessionSummary[]>();
+
+export function __clearLaneWorkSessionCacheForTests(): void {
+  laneSessionsCacheByScope.clear();
+}
+
 type QueuedRefresh = {
   showLoading: boolean;
   force: boolean;
@@ -81,6 +87,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
   const hasFetchedOnceRef = useRef(false);
+  const scopeKeyRef = useRef("");
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -92,6 +99,10 @@ export function useLaneWorkSessions(laneId: string | null) {
     if (!normalizedProjectRoot || !laneId) return "";
     return `${normalizedProjectRoot}::${laneId}`;
   }, [projectRoot, laneId]);
+
+  useEffect(() => {
+    scopeKeyRef.current = scopeKey;
+  }, [scopeKey]);
 
   const hasStoredState = scopeKey.length > 0 && scopeKey in laneWorkViewByScope;
   const laneViewState = scopeKey
@@ -140,11 +151,17 @@ export function useLaneWorkSessions(laneId: string | null) {
       refreshInFlightRef.current = true;
       if (showLoading) setLoading(true);
       try {
+        const requestedScopeKey = scopeKeyRef.current;
         const rows = await listSessionsCached(
           { laneId, limit: 200 },
           { force: Boolean(options.force), projectRoot },
         );
-        setSessions(rows.filter((session) => !isRunOwnedSession(session)));
+        if (scopeKeyRef.current !== requestedScopeKey) return;
+        const nextSessions = rows.filter((session) => !isRunOwnedSession(session));
+        setSessions(nextSessions);
+        if (requestedScopeKey) {
+          laneSessionsCacheByScope.set(requestedScopeKey, nextSessions);
+        }
         hasLoadedOnceRef.current = true;
         hasFetchedOnceRef.current = true;
       } catch (err) {
@@ -186,17 +203,21 @@ export function useLaneWorkSessions(laneId: string | null) {
       next.sort((left, right) => (
         new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime()
       ));
+      if (scopeKey) {
+        laneSessionsCacheByScope.set(scopeKey, next);
+      }
       return next;
     });
-  }, [currentLane?.name, laneId, lanes]);
+  }, [currentLane?.name, laneId, lanes, scopeKey]);
 
   useEffect(() => {
-    setSessions([]);
-    hasLoadedOnceRef.current = false;
+    const cachedSessions = scopeKey ? laneSessionsCacheByScope.get(scopeKey) ?? null : null;
+    setSessions(cachedSessions ?? []);
+    hasLoadedOnceRef.current = Boolean(cachedSessions);
     hasFetchedOnceRef.current = false;
     if (!laneId) return;
-    void refresh({ showLoading: true, force: true });
-  }, [laneId, refresh]);
+    void refresh({ showLoading: !cachedSessions, force: !cachedSessions });
+  }, [laneId, refresh, scopeKey]);
 
   useEffect(() => {
     return () => {

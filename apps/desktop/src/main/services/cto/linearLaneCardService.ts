@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import type { IssueTracker, IssueTrackerIssueAttachmentInput } from "./issueTracker";
+import { buildDeeplink } from "../../../shared/deeplinks";
 
 function truncate(value: string, maxLength: number): string {
   const trimmed = value.trim();
@@ -14,7 +15,7 @@ function dateLabel(value: string): string {
   return parsed.toISOString();
 }
 
-function buildCardUrl(issue: LaneLinearIssue, laneId: string): string {
+function buildFallbackLinearUrl(issue: LaneLinearIssue, laneId: string): string {
   const fallback = `https://linear.app/issue/${encodeURIComponent(issue.identifier)}`;
   let url: URL;
   try {
@@ -26,11 +27,37 @@ function buildCardUrl(issue: LaneLinearIssue, laneId: string): string {
   return url.toString();
 }
 
+function buildCardUrl(args: {
+  issue: LaneLinearIssue;
+  laneId: string;
+  branch: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
+}): string {
+  // Prefer the cross-machine ADE deeplink (so the attachment is actually
+  // clickable from Linear and lands in another teammate's ADE). Fall back to
+  // the historical Linear-issue-hash URL when we don't know the repo.
+  if (args.repoOwner && args.repoName) {
+    return buildDeeplink(
+      {
+        kind: "branch",
+        repoOwner: args.repoOwner,
+        repoName: args.repoName,
+        branch: args.branch,
+      },
+      { form: "https" },
+    );
+  }
+  return buildFallbackLinearUrl(args.issue, args.laneId);
+}
+
 export function buildLinearLaneCardAttachment(args: {
   lane: LaneSummary;
   issue: LaneLinearIssue;
   projectRoot: string;
   linkedAt?: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
 }): IssueTrackerIssueAttachmentInput {
   const linkedAt = args.linkedAt?.trim() || args.lane.createdAt || new Date().toISOString();
   const branch = args.issue.branchName?.trim() || args.lane.branchRef;
@@ -38,12 +65,20 @@ export function buildLinearLaneCardAttachment(args: {
   const teamName = args.issue.teamName?.trim() || args.issue.teamKey;
   const projectLabel = args.issue.projectName?.trim() || args.issue.projectSlug;
   const labels = args.issue.labels.length ? args.issue.labels.join(", ") : "None";
+  const cardUrl = buildCardUrl({
+    issue: args.issue,
+    laneId: args.lane.id,
+    branch,
+    repoOwner: args.repoOwner ?? null,
+    repoName: args.repoName ?? null,
+  });
+  const hasDeeplink = Boolean(args.repoOwner && args.repoName);
 
   return {
     issueId: args.issue.id,
-    title: `ADE lane: ${truncate(args.lane.name, 64)}`,
+    title: hasDeeplink ? `Open in ADE: ${truncate(args.lane.name, 56)}` : `ADE lane: ${truncate(args.lane.name, 64)}`,
     subtitle: `${truncate(branch, 56)} - linked {linkedAt__since}`,
-    url: buildCardUrl(args.issue, args.lane.id),
+    url: cardUrl,
     metadata: {
       title: `ADE lane linked to ${args.issue.identifier}`,
       laneId: args.lane.id,
@@ -77,19 +112,69 @@ export function buildLinearLaneCardAttachment(args: {
   };
 }
 
+export function buildLinearLaneInitialComment(args: {
+  lane: LaneSummary;
+  issue: LaneLinearIssue;
+  repoOwner?: string | null;
+  repoName?: string | null;
+}): string | null {
+  if (!args.repoOwner || !args.repoName) return null;
+  const branch = args.issue.branchName?.trim() || args.lane.branchRef;
+  const url = buildDeeplink(
+    {
+      kind: "branch",
+      repoOwner: args.repoOwner,
+      repoName: args.repoName,
+      branch,
+    },
+    { form: "https" },
+  );
+  return `ADE lane available for this issue — [Open in ADE](${url}) (branch \`${branch}\`).`;
+}
+
 export async function publishLinearLaneCard(args: {
   issueTracker: IssueTracker;
   lane: LaneSummary;
   issue: LaneLinearIssue;
   projectRoot: string;
   linkedAt?: string | null;
+  /** Optional: when known, used to render the cross-machine ADE deeplink. */
+  repoOwner?: string | null;
+  repoName?: string | null;
+  /** When true, also post a one-time comment so timeline-watchers see the link. */
+  postInitialComment?: boolean;
+  /** Optional log hook used for the (best-effort) comment-create step. */
+  log?: (event: string, fields: Record<string, unknown>) => void;
 }): Promise<{ url: string; id?: string }> {
-  return args.issueTracker.createIssueAttachment(
+  const result = await args.issueTracker.createIssueAttachment(
     buildLinearLaneCardAttachment({
       lane: args.lane,
       issue: args.issue,
       projectRoot: args.projectRoot,
       linkedAt: args.linkedAt,
+      repoOwner: args.repoOwner ?? null,
+      repoName: args.repoName ?? null,
     }),
   );
+
+  if (args.postInitialComment) {
+    const body = buildLinearLaneInitialComment({
+      lane: args.lane,
+      issue: args.issue,
+      repoOwner: args.repoOwner ?? null,
+      repoName: args.repoName ?? null,
+    });
+    if (body) {
+      try {
+        await args.issueTracker.createComment(args.issue.id, body);
+      } catch (error) {
+        args.log?.("linear.lane_initial_comment_failed", {
+          issueId: args.issue.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  return result;
 }

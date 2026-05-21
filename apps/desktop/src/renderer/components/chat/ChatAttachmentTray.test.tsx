@@ -133,6 +133,30 @@ describe("ChatAttachmentTray", () => {
     expect(onRemove).toHaveBeenCalledWith("/tmp/pasted-image.png");
   });
 
+  it("removes focused image attachments with delete keys and can return focus to the prompt", () => {
+    const onRemove = vi.fn();
+    const onFocusPrompt = vi.fn();
+
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/tmp/pasted-image.png", type: "image" }]}
+        mode="standard"
+        onRemove={onRemove}
+        onFocusPrompt={onFocusPrompt}
+      />,
+    );
+
+    const openButton = screen.getByRole("button", { name: "Open pasted-image.png" });
+    openButton.focus();
+
+    fireEvent.keyDown(openButton, { key: "ArrowDown" });
+    expect(onFocusPrompt).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(openButton, { key: "Backspace" });
+    expect(onRemove).toHaveBeenCalledWith("/tmp/pasted-image.png");
+    expect(onFocusPrompt).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps non-image attachments as filename chips", () => {
     render(
       <ChatAttachmentTray

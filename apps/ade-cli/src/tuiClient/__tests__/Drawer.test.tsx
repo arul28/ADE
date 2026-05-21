@@ -42,16 +42,22 @@ afterEach(() => {
 });
 
 describe("Drawer diff stats", () => {
-  it("renders per-lane diff stats from line stats, not ahead/behind commits", () => {
+  it("renders the selected lane's diff stats from line stats, not ahead/behind, and hides others", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
 
-    const frame = stripAnsi(render(
+    const lanes = [
+      lane("lane-1", "TUI", "feat", "2026-05-12T11:55:00.000Z", 99, 88),
+      lane("lane-2", "Drawer", "draw", "2026-05-12T11:57:00.000Z", 42, 24),
+    ];
+    const diffByLaneId = {
+      "lane-1": { additions: 64, deletions: 18, files: 5 },
+      "lane-2": { additions: 428, deletions: 112, files: 6 },
+    };
+
+    const frameSelectFirst = stripAnsi(render(
       <Drawer
-        lanes={[
-          lane("lane-1", "TUI", "feat", "2026-05-12T11:55:00.000Z", 99, 88),
-          lane("lane-2", "Drawer", "draw", "2026-05-12T11:57:00.000Z", 42, 24),
-        ]}
+        lanes={lanes}
         sessions={[]}
         activeLaneId="lane-1"
         activeSessionId={null}
@@ -59,22 +65,40 @@ describe("Drawer diff stats", () => {
         selectedLaneIndex={0}
         selectedChatIndex={-1}
         panelHeight={30}
-        diffByLaneId={{
-          "lane-1": { additions: 64, deletions: 18, files: 5 },
-          "lane-2": { additions: 428, deletions: 112, files: 6 },
-        }}
+        diffByLaneId={diffByLaneId}
       />,
     ).lastFrame() ?? "");
 
-    expect(frame).toContain("+64");
-    expect(frame).toContain("−18");
-    expect(frame).toContain("5m");
-    expect(frame).toContain("+428");
-    expect(frame).toContain("−112");
-    expect(frame).not.toContain("+492");
-    expect(frame).not.toContain("−130");
-    expect(frame).not.toContain("+141 / −112");
-    expect(frame).not.toContain("-18");
+    // lane-1 is selected → its diff renders; lane-2 stays hidden.
+    expect(frameSelectFirst).toContain("+64");
+    expect(frameSelectFirst).toContain("−18");
+    expect(frameSelectFirst).toContain("5m");
+    expect(frameSelectFirst).not.toContain("+428");
+    expect(frameSelectFirst).not.toContain("−112");
+    expect(frameSelectFirst).not.toContain("+492");
+    expect(frameSelectFirst).not.toContain("−130");
+    expect(frameSelectFirst).not.toContain("+141 / −112");
+    expect(frameSelectFirst).not.toContain("-18");
+
+    const frameSelectSecond = stripAnsi(render(
+      <Drawer
+        lanes={lanes}
+        sessions={[]}
+        activeLaneId="lane-2"
+        activeSessionId={null}
+        browsingLaneId="lane-2"
+        selectedLaneIndex={1}
+        selectedChatIndex={-1}
+        panelHeight={30}
+        diffByLaneId={diffByLaneId}
+      />,
+    ).lastFrame() ?? "");
+
+    // lane-2 selected → its diff shows; lane-1 stays hidden.
+    expect(frameSelectSecond).toContain("+428");
+    expect(frameSelectSecond).toContain("−112");
+    expect(frameSelectSecond).not.toContain("+64");
+    expect(frameSelectSecond).not.toContain("−18");
   });
 });
 
@@ -141,9 +165,56 @@ describe("Drawer lane and chat navigation layout", () => {
 
     expect(laneModeFrame).toContain("First chat");
     expect(laneModeFrame).toContain("enter chats");
+    expect(laneModeFrame).not.toContain("││");
     expect(chatModeFrame).toContain("CHATS · 1");
     expect(chatModeFrame.indexOf("First chat")).toBeLessThan(chatModeFrame.indexOf("+ new chat"));
-    expect(chatModeFrame).toContain("lane card");
+    expect(chatModeFrame).not.toContain("││");
+    // Chats-mode footer now hints at how to escape the chat list since arrows
+    // no longer pop back into lanes on their own.
+    expect(chatModeFrame).toContain("esc lanes");
+    expect(chatModeFrame).toContain("select chat");
+    // Old "lane card" / "next lane" hints are gone now that arrows stay in
+    // chats.
+    expect(chatModeFrame).not.toContain("lane card");
+    expect(chatModeFrame).not.toContain("next lane");
+  });
+
+  it("makes split add mode obvious in the drawer chrome", () => {
+    const sessions: AgentChatSessionSummary[] = [
+      {
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        title: "First chat",
+        status: "idle",
+        startedAt: "2026-05-12T11:30:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:31:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      },
+    ];
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "Feature", "feature/chat-nav", "2026-05-12T11:55:00.000Z")]}
+        sessions={sessions}
+        activeLaneId="lane-1"
+        activeSessionId="chat-1"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={0}
+        panelHeight={30}
+        mode="chats"
+        focused
+        addMode
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("PICK CHAT");
+    expect(frame).toContain("select chat in left pane");
+    expect(frame).toContain("↵/click");
   });
 
   it("does not offer a new chat action for a missing lane worktree", () => {

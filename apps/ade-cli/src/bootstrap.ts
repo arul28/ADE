@@ -74,6 +74,7 @@ import { createUsageTrackingService } from "../../desktop/src/main/services/usag
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
+import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
 import {
   createComputerUseArtifactBrokerService,
@@ -89,6 +90,11 @@ import {
 } from "../../desktop/src/main/services/appControl/appControlService";
 import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
+import {
+  createBuiltInBrowserDesktopBridgeClient,
+  type BuiltInBrowserDesktopBridgeClient,
+} from "./services/builtInBrowser/desktopBridgeClient";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import {
@@ -447,9 +453,20 @@ export async function createAdeRuntime(args: {
   sessionService.onChanged((event) => {
     pushEvent("runtime", { type: "terminal_session_changed", event });
   });
+  const processRegistry = createProcessRegistryService({
+    db,
+    logger,
+    role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
+    projectRoot,
+  });
+  processRegistry.start();
+  let runtimeCreated = false;
+  try {
   sessionService.reconcileStaleRunningSessions({
     status: "disposed",
     excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
+    liveOwnerPids: processRegistry.listLivePids(),
+    liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
   });
   const sessionDeltaService = createSessionDeltaService({
     db,
@@ -608,9 +625,10 @@ export async function createAdeRuntime(args: {
     transcriptsDir: paths.transcriptsDir,
     laneService,
     sessionService,
+    processRegistry,
     logger,
-    broadcastData: (event) => pushEvent("runtime", { type: "pty_data", event }),
-    broadcastExit: (event) => pushEvent("runtime", { type: "pty_exit", event }),
+    broadcastData: (event) => pushEvent("pty", { type: "pty_data", event }),
+    broadcastExit: (event) => pushEvent("pty", { type: "pty_exit", event }),
     onSessionEnded: () => {},
     getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
     loadPty: () => nodePty
@@ -841,6 +859,21 @@ export async function createAdeRuntime(args: {
         }),
       });
 
+  // `built_in_browser` is hosted by the desktop's Electron main process (the
+  // browser pane owns a WebContentsView). The runtime daemon proxies calls
+  // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+  // individual calls fail clearly. Override the socket path with
+  // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+  // ADE home.
+  const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
+    ? null
+    : createBuiltInBrowserDesktopBridgeClient({
+        socketPath:
+          process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+          || resolveMachineAdeLayout().desktopBridgeSocketPath,
+        logger,
+      });
+
   const aiOrchestratorService = createAiOrchestratorService({
     db,
     logger,
@@ -922,6 +955,7 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       laneService,
       sessionService,
+      processRegistry,
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
@@ -1187,6 +1221,7 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService,
     iosSimulatorService,
     appControlService,
+    builtInBrowserService: builtInBrowserBridge as unknown as BuiltInBrowserService | null,
     macosVmService,
     orchestratorService,
     aiOrchestratorService,
@@ -1205,6 +1240,7 @@ export async function createAdeRuntime(args: {
       swallow(() => portAllocationService.dispose());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
+      swallow(() => builtInBrowserBridge?.dispose());
       swallow(() => macosVmService?.dispose());
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
@@ -1212,6 +1248,7 @@ export async function createAdeRuntime(args: {
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
+      swallow(() => processRegistry.stop());
       swallow(() => db.flushNow());
       swallow(() => db.close());
     }
@@ -1234,5 +1271,15 @@ export async function createAdeRuntime(args: {
   };
   automationService.bindAdeActionRegistry(adeActionLookup);
 
+  runtimeCreated = true;
   return runtime;
+  } finally {
+    if (!runtimeCreated) {
+      try {
+        processRegistry.stop();
+      } catch {
+        // Preserve the original startup failure.
+      }
+    }
+  }
 }

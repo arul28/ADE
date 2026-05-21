@@ -7364,6 +7364,10 @@ enum RemoteCommandKind: String, Sendable {
   case retryPrChecks
   case openPr
   case setMutePush
+  /// Ask the paired desktop to open an `ade://...` deep link locally.
+  /// Used when iOS encounters a link it can't render itself (lane, repo
+  /// branch, owner/repo PR) and the user wants to bounce it to their Mac.
+  case openDeeplink
 }
 
 extension SyncService: LiveActivityHost {
@@ -7482,6 +7486,7 @@ extension SyncService {
     case .retryPrChecks: action = "prs.rerunChecks"
     case .openPr: action = "prs.getDetail"
     case .setMutePush: action = "notification_prefs"
+    case .openDeeplink: action = "deeplinks.open"
     }
 
     var args: [String: Any] = [:]
@@ -7529,6 +7534,24 @@ extension SyncService {
       } else {
         args["muteUntil"] = NSNull()
       }
+    case .openDeeplink:
+      // Desktop `deeplinks.open` expects a `url` arg — the same `ade://...`
+      // string the user tapped on iOS. We pass it through verbatim so the
+      // host can reuse its own router.
+      guard let url = (payload["url"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !url.isEmpty,
+        let components = URLComponents(string: url),
+        let scheme = components.scheme?.lowercased(),
+        scheme == "ade" ||
+          (
+            scheme == "https" &&
+            components.host?.lowercased() == "ade.app" &&
+            components.path.hasPrefix("/open")
+          ) else {
+        return
+      }
+      args["url"] = url
     }
 
     // For now we send via the opaque command envelope — the desktop's
