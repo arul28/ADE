@@ -3042,8 +3042,13 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     let releaseStop: (() => void) | null = null;
+    let stopStarted: (() => void) | null = null;
+    const stopStartedPromise = new Promise<void>((resolve) => {
+      stopStarted = resolve;
+    });
     fake.processService.stopAll.mockImplementation(async () => {
       fake.calls.push("stop_processes");
+      stopStarted?.();
       await new Promise<void>((resolve) => {
         releaseStop = resolve;
       });
@@ -3053,7 +3058,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
 
     const deletePromise = service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
-    await new Promise((r) => setTimeout(r, 10));
+    await stopStartedPromise;
     expect(service.hasRunningDelete()).toBe(true);
 
     expect(releaseStop).not.toBeNull();
