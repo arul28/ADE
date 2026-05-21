@@ -1071,6 +1071,7 @@ export type CursorCloudListRunsResult = {
 export type CursorCloudCreateRunRequest = {
   promptText: string;
   repoUrl: string;
+  idempotencyKey?: string | null;
   startingRef?: string | null;
   modelId?: string | null;
   agentName?: string | null;

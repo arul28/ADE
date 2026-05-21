@@ -339,7 +339,7 @@ export type AgentChatEvent =
       turnId?: string;
       itemId?: string;
       errorInfo?: string | {
-        category: "auth" | "rate_limit" | "budget" | "network" | "unknown" | "agent_cli_missing" | "agent_cli_auth";
+        category: "auth" | "rate_limit" | "budget" | "network" | "busy" | "unknown" | "agent_cli_missing" | "agent_cli_auth";
         provider?: string;
         model?: string;
         agentCli?: {
@@ -982,6 +982,7 @@ export type AgentChatModelInfo = {
   isDefault: boolean;
   reasoningEfforts?: Array<{ effort: string; description: string }>;
   serviceTiers?: string[];
+  aliases?: string[];
   maxThinkingTokens?: number | null;
   // OpenCode-backed model metadata
   modelId?: ModelId;

@@ -10,8 +10,9 @@ describe("buildModelPickerSearchText", () => {
         providerDisplayName: "opencode",
         name: "Claude Opus 4.7",
         subProvider: "GitHub Copilot",
+        aliases: ["opus-latest"],
       }),
-    ).toBe("claude opus 4.7 github copilot opencode opencode");
+    ).toBe("claude opus 4.7 github copilot opencode opencode opus-latest");
   });
 });
 
@@ -125,6 +126,20 @@ describe("scoreModelPickerSearch", () => {
           name: "GPT-5 Codex",
         },
         "personal",
+      ),
+    ).not.toBeNull();
+  });
+
+  it("matches Cursor SDK aliases returned by model discovery", () => {
+    expect(
+      scoreModelPickerSearch(
+        {
+          family: "cursor",
+          providerDisplayName: "Cursor",
+          name: "Composer 2",
+          aliases: ["composer-latest"],
+        },
+        "composer-latest",
       ),
     ).not.toBeNull();
   });

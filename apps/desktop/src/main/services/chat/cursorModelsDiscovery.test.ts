@@ -119,7 +119,7 @@ describe("parseCursorCliModelsStdout", () => {
   it("probes exact Cursor SDK models when requested", async () => {
     cursorModelsListMock.mockResolvedValue([
       { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 4.6 Medium" },
-      { id: "composer-2", displayName: "Composer 2" },
+      { id: "composer-2", displayName: "Composer 2", aliases: ["composer-latest"] },
       { id: "auto", displayName: "Auto" },
     ]);
 
@@ -129,7 +129,9 @@ describe("parseCursorCliModelsStdout", () => {
       "cursor/auto",
       "cursor/claude-4.6-sonnet-medium",
       "cursor/composer-2",
+      "cursor/composer-latest",
     ]);
+    expect(descriptors.find((descriptor) => descriptor.id === "cursor/composer-2")?.aliases).toContain("composer-latest");
     expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
   });
@@ -139,6 +141,7 @@ describe("parseCursorCliModelsStdout", () => {
       {
         id: "composer-2",
         displayName: "Composer 2",
+        aliases: ["composer-latest"],
         parameters: [
           {
             id: "reasoning_effort",
@@ -175,6 +178,14 @@ describe("parseCursorCliModelsStdout", () => {
     });
     expect(resolveCursorSdkModelSelectionParams({
       modelSdkId: "composer-2",
+      reasoningEffort: "high",
+      fastMode: true,
+    })).toEqual([
+      { id: "reasoning_effort", value: "high" },
+      { id: "speed", value: "fast" },
+    ]);
+    expect(resolveCursorSdkModelSelectionParams({
+      modelSdkId: "composer-latest",
       reasoningEffort: "high",
       fastMode: true,
     })).toEqual([

@@ -27,6 +27,7 @@ export type CursorCliModelRow = {
   id: string;
   displayName?: string;
   description?: string;
+  aliases?: string[];
   parameters?: CursorModelParameterDefinition[];
   variants?: CursorModelVariant[];
   reasoningTiers?: string[];
@@ -128,6 +129,26 @@ function addUnique(out: string[], value: string | null | undefined): void {
   if (!out.some((entry) => normalizeCursorMetadataText(entry) === normalized)) {
     out.push(normalized);
   }
+}
+
+function normalizeCursorModelRef(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function normalizeCursorAliasList(value: unknown, canonicalId?: string): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const canonical = normalizeCursorModelRef(canonicalId).toLowerCase();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const alias = normalizeCursorModelRef(entry);
+    if (!alias || !/^[\w.-]+$/i.test(alias)) continue;
+    const normalized = alias.toLowerCase();
+    if (normalized === canonical || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(alias);
+  }
+  return out.length ? out : undefined;
 }
 
 function isReasoningParameterLike(parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">): boolean {
@@ -334,6 +355,7 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
     const description = typeof model.description === "string" && model.description.trim().length
       ? model.description.trim()
       : undefined;
+    const aliases = normalizeCursorAliasList((model as { aliases?: unknown }).aliases, id);
     const parameters = normalizeCursorParameterDefinitions((model as { parameters?: unknown }).parameters);
     const variants = normalizeCursorModelVariants((model as { variants?: unknown }).variants);
     const tiers = deriveCursorRuntimeTiers({ parameters, variants });
@@ -341,6 +363,7 @@ function normalizeSdkModelRows(models: SDKModel[]): CursorCliModelRow[] {
       id,
       ...(displayName ? { displayName } : {}),
       ...(description ? { description } : {}),
+      ...(aliases ? { aliases } : {}),
       ...(parameters ? { parameters } : {}),
       ...(variants ? { variants } : {}),
       ...(tiers.reasoningTiers.length ? { reasoningTiers: tiers.reasoningTiers } : {}),
@@ -378,10 +401,12 @@ function normalizeCursorModelRows(models: unknown[]): CursorCliModelRow[] {
         : "";
     const parameters = normalizeCursorParameterDefinitions(record.parameters);
     const variants = normalizeCursorModelVariants(record.variants);
+    const aliases = normalizeCursorAliasList(record.aliases, id);
     const tiers = deriveCursorRuntimeTiers({ parameters, variants });
     rows.push({
       id,
       ...(displayName ? { displayName } : {}),
+      ...(aliases ? { aliases } : {}),
       ...(parameters ? { parameters } : {}),
       ...(variants ? { variants } : {}),
       ...(tiers.reasoningTiers.length ? { reasoningTiers: tiers.reasoningTiers } : {}),
@@ -574,10 +599,23 @@ function cursorRowsToDescriptors(rows: CursorCliModelRow[]): ModelDescriptor[] {
     const id = String(row.id ?? "").trim();
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName, {
+    const aliases = normalizeCursorAliasList(row.aliases, id) ?? [];
+    const descriptorOptions = {
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+    };
+    descriptors.push(createDynamicCursorCliModelDescriptor(id, row.displayName, {
+      ...descriptorOptions,
+      ...(aliases.length ? { aliases } : {}),
     }));
+    for (const alias of aliases) {
+      if (seen.has(alias)) continue;
+      seen.add(alias);
+      descriptors.push(createDynamicCursorCliModelDescriptor(alias, `${row.displayName ?? id} (${alias})`, {
+        ...descriptorOptions,
+        aliases: [id],
+      }));
+    }
   }
   return sortCursorCliDescriptorsForPicker(descriptors);
 }
@@ -589,7 +627,11 @@ export function resolveCursorSdkModelSelectionParams(args: {
 }): CursorModelParameterValue[] | undefined {
   const modelSdkId = args.modelSdkId.trim();
   if (!modelSdkId || !sdkCached?.models.length) return undefined;
-  const row = sdkCached.models.find((entry) => entry.id === modelSdkId);
+  const normalizedModelSdkId = modelSdkId.toLowerCase();
+  const row = sdkCached.models.find((entry) =>
+    entry.id.trim().toLowerCase() === normalizedModelSdkId
+    || (entry.aliases ?? []).some((alias) => alias.trim().toLowerCase() === normalizedModelSdkId),
+  );
   if (!row) return undefined;
   const reasoning = normalizeCursorMetadataText(args.reasoningEffort);
   const wantsFast = args.fastMode === true;
@@ -688,7 +730,14 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
               const id = trimmedId || trimmedModel;
               const displayName = (typeof r.name === "string" ? r.name : undefined)
                 ?? (typeof r.displayName === "string" ? r.displayName : undefined);
-              if (id) models.push({ id, displayName });
+              const aliases = normalizeCursorAliasList(r.aliases, id);
+              if (id) {
+                models.push({
+                  id,
+                  displayName,
+                  ...(aliases ? { aliases } : {}),
+                });
+              }
             }
           }
           if (models.length) {

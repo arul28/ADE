@@ -253,6 +253,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     (m: ModelDescriptor) => ({
       name: m.displayName,
       shortName: m.shortId,
+      aliases: m.aliases,
       subProvider: modelSubProvider(m) || undefined,
       family: m.family,
       providerDisplayName: providerLabel(m.family),

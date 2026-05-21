@@ -220,6 +220,7 @@ export function descriptorsFromAgentChatModelCatalog(
             shortId: base.shortId,
             family,
             color: model.color ?? base.color,
+            ...(model.aliases?.length ? { aliases: model.aliases } : base.aliases?.length ? { aliases: base.aliases } : {}),
             capabilities,
             ...(runtimeReasoningTiers?.length ? { reasoningTiers: runtimeReasoningTiers } : {}),
             ...(model.serviceTiers !== undefined
