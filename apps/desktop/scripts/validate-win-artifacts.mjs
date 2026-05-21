@@ -17,7 +17,7 @@ const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // ONNX payloads. Keep a ceiling, but size it to the current required toolset.
 const DEFAULT_MAX_UNPACKED_BYTES = 720 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
-const BUNDLED_AGENT_SKILLS = [
+const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
   "ade-app-control",
@@ -128,7 +128,7 @@ async function assertPathExists(targetPath, description) {
 
 async function assertBundledAgentSkills(agentSkillsRoot) {
   await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
-  for (const skillName of BUNDLED_AGENT_SKILLS) {
+  for (const skillName of bundledAgentSkills) {
     await assertPathExists(
       path.join(agentSkillsRoot, skillName, "SKILL.md"),
       `bundled ADE agent skill ${skillName}`,

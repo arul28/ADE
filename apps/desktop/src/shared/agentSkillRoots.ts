@@ -42,9 +42,9 @@ function homePath(env: NodeJS.ProcessEnv): string | null {
   return drive && pathPart ? normalizePathEntry(`${drive}${pathPart}`) : null;
 }
 
-const ANCESTOR_SKILL_DIRS = [".claude", ".agents", ".ade", ".codex"] as const;
-const PROMPT_AGENT_SKILL_ROOT_LIMIT = 4;
-type AncestorSkillDir = (typeof ANCESTOR_SKILL_DIRS)[number];
+const ancestorSkillDirs = [".claude", ".agents", ".ade", ".codex"] as const;
+const promptAgentSkillRootLimit = 4;
+type AncestorSkillDir = (typeof ancestorSkillDirs)[number];
 
 function addAncestorSkillRoots(
   roots: string[],
@@ -136,12 +136,12 @@ export function getAgentSkillRootCandidates(options: {
   const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
 
   const home = normalizePathEntry(options.home) ?? homePath(env);
-  for (const dirName of ANCESTOR_SKILL_DIRS) {
+  for (const dirName of ancestorSkillDirs) {
     addAncestorSkillRoots(roots, seen, cwd, dirName, home);
   }
 
   if (home) {
-    for (const dirName of ANCESTOR_SKILL_DIRS) {
+    for (const dirName of ancestorSkillDirs) {
       addPath(roots, seen, joinPath(home, dirName, "skills"));
     }
   }
@@ -156,7 +156,7 @@ export function getAdeAgentSkillRootsForPrompt(options: {
   resourcesPath?: string | null;
   cwd?: string | null;
 } = {}): string[] {
-  return getAdeAgentSkillRootCandidates(options).slice(0, PROMPT_AGENT_SKILL_ROOT_LIMIT);
+  return getAdeAgentSkillRootCandidates(options).slice(0, promptAgentSkillRootLimit);
 }
 
 export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): string {

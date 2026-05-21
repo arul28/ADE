@@ -1,6 +1,6 @@
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 
-export const ADE_BUNDLED_AGENT_SKILLS = [
+export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
   "ade-app-control",
@@ -21,7 +21,7 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
   "",
   "### Skills",
   "- ADE exposes Agent Skills from project, user, runtime, and bundled ADE skill roots. Use the relevant skill instead of relying on long prompt guidance.",
-  `- Bundled ADE skills include: ${ADE_BUNDLED_AGENT_SKILLS.map((name) => `\`${name}\``).join(", ")}.`,
+  `- Bundled ADE skills include: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
   "- ADE injects this guidance into ADE-hosted Work chats, Work tab CLI launches, ADE Code/TUI sessions, CTO and mission worker prompts, and mobile-started work that executes through ADE's desktop or project runtime.",
   "- Skills use the Agent Skills package shape: `<skill-name>/SKILL.md` plus optional `references/`, `scripts/`, and `assets/` files. When a skill applies, read its `SKILL.md` before acting, then load referenced files only when needed.",
   "- If skills are not auto-listed by your runtime, look for them in project/user `.agents/skills`, `.ade/skills`, `.claude/skills`, or ADE's bundled `agent-skills` resources, then read that skill's `SKILL.md` on demand.",

@@ -15,22 +15,13 @@ import type { ComputerUseArtifactBrokerService } from "../../computerUse/compute
 import { getLocalComputerUseCapabilities } from "../../computerUse/localComputerUse";
 import { nowIso } from "../../shared/utils";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
-import { buildDeeplink } from "../../../../shared/deeplinks";
+import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import type { AgentChatCompletionReport } from "../../../../shared/types";
 
 const execFileAsync = promisify(execFile);
 
 function formatToolError(prefix: string, err: unknown): { success: false; error: string } {
   return { success: false, error: `${prefix}: ${err instanceof Error ? err.message : String(err)}` };
-}
-
-function buildAdePrUrl(pr: { repoOwner: string; repoName: string; githubPrNumber: number }): string {
-  return buildDeeplink({
-    kind: "pr",
-    repoOwner: pr.repoOwner,
-    repoName: pr.repoName,
-    prNumber: pr.githubPrNumber,
-  });
 }
 
 export interface WorkflowToolDeps {

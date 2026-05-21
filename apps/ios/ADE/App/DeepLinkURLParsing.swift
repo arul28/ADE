@@ -3,7 +3,7 @@ import Foundation
 enum ADEDeepLinkURLParsing {
   static func splitRepo(_ value: String?) -> (owner: String, repo: String)? {
     guard let value else { return nil }
-    let pieces = value.split(separator: "/", maxSplits: 1).map(String.init)
+    let pieces = value.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
     guard pieces.count == 2,
           !pieces[0].isEmpty,
           !pieces[1].isEmpty else {

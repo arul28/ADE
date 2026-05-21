@@ -1142,6 +1142,9 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
 
 function localProjectBindingForRoot(rootPath: string): OpenProjectBinding {
   const trimmed = rootPath.trim();
+  if (!trimmed) {
+    throw new Error("Project root path is required.");
+  }
   const displayName = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed;
   return {
     kind: "local",
@@ -2829,17 +2832,24 @@ contextBridge.exposeInMainWorld("ade", {
       // See openRepo above: `clearAround` runs cleanup twice, so nulling the
       // binding inside it would clobber the new one set by the
       // appProjectBindingChanged listener.
+      const normalizedRootPath = typeof rootPath === "string" ? rootPath.trim() : "";
+      if (!normalizedRootPath) {
+        throw new Error("Project root path is required.");
+      }
       const previousBinding = currentProjectBinding;
-      rememberProjectBinding(localProjectBindingForRoot(rootPath));
       try {
-        return await clearAround(
+        const project = await clearAround(
           () => {
             clearProjectScopedReadCaches();
           },
           () => runProjectRuntimeTransition(() =>
-            ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+            ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath: normalizedRootPath }),
           ),
         );
+        rememberProjectBinding(
+          localProjectBindingForRoot(project?.rootPath ?? normalizedRootPath),
+        );
+        return project;
       } catch (error) {
         rememberProjectBinding(previousBinding);
         throw error;

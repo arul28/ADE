@@ -2403,11 +2403,15 @@ function prLinkUrls(pr: unknown): { githubUrl?: string; adeUrl?: string } {
   const prNumber = asPositiveInteger(
     pr.githubPrNumber ?? pr.prNumber ?? pr.number,
   );
+  const derivedGithubUrl = repoOwner && repoName && prNumber
+    ? `https://github.com/${repoOwner}/${repoName}/pull/${prNumber}`
+    : null;
   const adeUrl = repoOwner && repoName && prNumber
     ? buildDeeplink({ kind: "pr", repoOwner, repoName, prNumber })
     : null;
+  const resolvedGithubUrl = githubUrl ?? derivedGithubUrl;
   return {
-    ...(githubUrl ? { githubUrl } : {}),
+    ...(resolvedGithubUrl ? { githubUrl: resolvedGithubUrl } : {}),
     ...(adeUrl ? { adeUrl } : {}),
   };
 }

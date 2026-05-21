@@ -194,7 +194,7 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
-  it("uses an explicit local runtime root over the window session binding during project switches", async () => {
+  it("uses an explicit local runtime root when it is already open in the window", async () => {
     const localRuntimeConnectionPool = {
       callActionForRoot: vi.fn(async () => ({
         ok: true,
@@ -210,8 +210,12 @@ describe("registerRuntimeBridge", () => {
       localRuntimeConnectionPool: localRuntimeConnectionPool as any,
       getWindowSession: () => ({
         windowId: 7,
-        project: null,
+        project: { rootPath: "/old-repo", displayName: "Old", baseRef: "main" },
         binding: localBinding("/old-repo"),
+        openProjectTabs: [
+          { rootPath: "/old-repo", displayName: "Old", baseRef: "main" },
+          { rootPath: "/new-repo", displayName: "New", baseRef: "main" },
+        ],
       }),
     });
 
@@ -235,6 +239,108 @@ describe("registerRuntimeBridge", () => {
         domain: "lane",
         action: "list",
       }),
+    );
+  });
+
+  it("rejects explicit local runtime roots that are not bound to the window session", async () => {
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(),
+      callSyncForRoot: vi.fn(),
+      subscribeEventsForRoot: vi.fn(async () => vi.fn()),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+        binding: localBinding("/repo"),
+        openProjectTabs: [
+          { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+        ],
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/other-repo",
+          request: {
+            domain: "lane",
+            action: "list",
+            args: {},
+          },
+        },
+      ),
+    ).rejects.toThrow(/not available/i);
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallSync)?.(eventForSender(), {
+        rootPath: "/other-repo",
+        method: "sync.getStatus",
+        params: {},
+      }),
+    ).rejects.toThrow(/not available/i);
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeStreamEvents)?.(eventForSender(), {
+        rootPath: "/other-repo",
+        request: { cursor: 0, limit: 10 },
+      }),
+    ).rejects.toThrow(/not available/i);
+
+    expect(localRuntimeConnectionPool.callActionForRoot).not.toHaveBeenCalled();
+    expect(localRuntimeConnectionPool.callSyncForRoot).not.toHaveBeenCalled();
+    expect(localRuntimeConnectionPool.subscribeEventsForRoot).not.toHaveBeenCalled();
+  });
+
+  it("authorizes explicit local roots for sync and event streams from open tabs", async () => {
+    const localRuntimeConnectionPool = {
+      callSyncForRoot: vi.fn(async () => ({ connectedPeers: [] })),
+      subscribeEventsForRoot: vi.fn(async () => vi.fn()),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+        binding: localBinding("/repo"),
+        openProjectTabs: [
+          { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+          { rootPath: "/other-repo", displayName: "Other", baseRef: "main" },
+        ],
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallSync)?.(eventForSender(), {
+        rootPath: "/other-repo",
+        method: "sync.getStatus",
+        params: { includeTransferReadiness: true },
+      }),
+    ).resolves.toEqual({ connectedPeers: [] });
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeStreamEvents)?.(
+        eventForSender(sender(102)),
+        {
+          rootPath: "/other-repo",
+          request: { cursor: 2, limit: 10, category: "sync" },
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 2, hasMore: false });
+
+    expect(localRuntimeConnectionPool.callSyncForRoot).toHaveBeenCalledWith(
+      "/other-repo",
+      "sync.getStatus",
+      { includeTransferReadiness: true },
+    );
+    expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
+      "/other-repo",
+      { cursor: 2, limit: 10, category: "sync" },
+      expect.any(Function),
+      expect.any(Function),
     );
   });
 

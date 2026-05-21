@@ -125,7 +125,7 @@ the ADE link with:
 ade link pr <owner/repo> <number> --no-clipboard
 ```
 
-for the ADE link. Prefer the default HTTPS form in chat and terminal output
+Use that output for the ADE link. Prefer the default HTTPS form in chat and terminal output
 because it is clickable, shareable, and upgrades into the ADE PRs tab.
 
 When you copy a deeplink from a lane context menu in the desktop UI, the

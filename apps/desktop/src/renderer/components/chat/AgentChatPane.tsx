@@ -6041,6 +6041,13 @@ export function AgentChatPane({
     sessionMutationKind,
   ]);
 
+  const handleExecutionModeChange = useCallback((nextExecutionMode: AgentChatExecutionMode) => {
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+    }
+    setExecutionMode(nextExecutionMode);
+  }, [draftLaunchConfigScopeKey, selectedSessionId]);
+
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
@@ -6870,7 +6877,7 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
-            onExecutionModeChange={setExecutionMode}
+            onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
             onClaudePermissionModeChange={(value) => { void updateNativeControls({ claudePermissionMode: value }); }}

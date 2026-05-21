@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ADE_BUNDLED_AGENT_SKILLS, buildAdeCliAgentGuidance } from "./adeCliGuidance";
+import { adeBundledAgentSkills, buildAdeCliAgentGuidance } from "./adeCliGuidance";
 
 describe("ADE CLI guidance", () => {
   it("preinjects bundled skill discovery guidance for every ADE runtime surface", () => {
@@ -14,7 +14,7 @@ describe("ADE CLI guidance", () => {
     expect(guidance).toContain("ADE_AGENT_SKILLS_DIRS");
     expect(guidance).toContain("<skill-name>/SKILL.md");
     expect(guidance).toContain("references/");
-    for (const skillName of ADE_BUNDLED_AGENT_SKILLS) {
+    for (const skillName of adeBundledAgentSkills) {
       expect(guidance).toContain(`\`${skillName}\``);
     }
   });

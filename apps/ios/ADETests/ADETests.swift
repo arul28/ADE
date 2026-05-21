@@ -115,6 +115,16 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(target.detail, "#42 in arul/ADE")
   }
 
+  func testDeepLinkRepoParserRejectsMalformedRepoValues() throws {
+    let valid = try XCTUnwrap(ADEDeepLinkURLParsing.splitRepo("arul/ADE"))
+
+    XCTAssertEqual(valid.owner, "arul")
+    XCTAssertEqual(valid.repo, "ADE")
+    XCTAssertNil(ADEDeepLinkURLParsing.splitRepo("arul/ADE/extra"))
+    XCTAssertNil(ADEDeepLinkURLParsing.splitRepo("arul/"))
+    XCTAssertNil(ADEDeepLinkURLParsing.splitRepo("/ADE"))
+  }
+
   @MainActor
   func testTerminalEmulatorSkipsDuplicateRevisionRenders() {
     let view = ADETerminalTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 300))

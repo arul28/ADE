@@ -49,7 +49,7 @@ import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
-import { buildDeeplink } from "../../../../shared/deeplinks";
+import { buildAdePrUrl } from "../../../../shared/deeplinks";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -187,15 +187,6 @@ function deriveChatProvider(args: { modelId?: string | null }): { provider: Agen
     return { provider: "opencode", model: args.modelId?.trim() || "" };
   }
   return resolveChatProviderForDescriptor(descriptor);
-}
-
-function buildAdePrUrl(pr: PrSummary): string {
-  return buildDeeplink({
-    kind: "pr",
-    repoOwner: pr.repoOwner,
-    repoName: pr.repoName,
-    prNumber: pr.githubPrNumber,
-  });
 }
 
 function buildIssueBrief(issue: Awaited<ReturnType<IssueTracker["fetchIssueById"]>>): string {

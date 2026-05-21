@@ -2875,20 +2875,18 @@ describe("preload OAuth bridge", () => {
     await pendingSwitch;
   });
 
-  it("routes local runtime actions to the pending project root during a project switch", async () => {
+  it("keeps the previous local runtime binding until a project switch succeeds", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
       resolveSwitch = resolve;
     });
+    const localRuntimeRoots: string[] = [];
     const invoke = vi.fn(async (channel: string, arg?: unknown) => {
       if (channel === IPC.projectSwitchToPath) {
         return switchPromise;
       }
       if (channel === IPC.localRuntimeCallAction) {
-        expect(arg).toEqual({
-          rootPath: "/next",
-          request: { domain: "lane", action: "list", args: {} },
-        });
+        localRuntimeRoots.push((arg as { rootPath?: string }).rootPath ?? "");
         return { result: [] };
       }
       if (channel === IPC.appGetWindowSession) {
@@ -2929,9 +2927,54 @@ describe("preload OAuth bridge", () => {
 
     await expect(bridge.lanes.list()).resolves.toEqual([]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
+    expect(localRuntimeRoots).toEqual(["/old"]);
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
+
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+    expect(localRuntimeRoots).toEqual(["/old", "/next"]);
+  });
+
+  it("rejects empty project switch paths before updating local runtime binding", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/old", displayName: "Old", baseRef: "main" },
+          binding: {
+            kind: "local",
+            key: "local:/old",
+            rootPath: "/old",
+            displayName: "Old",
+          },
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.project.switchToPath("   ")).rejects.toThrow(/required/i);
+
+    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSwitchToPath, expect.anything());
   });
 
   it("falls through read-only chat actions to IPC while a project switch is in flight", async () => {
