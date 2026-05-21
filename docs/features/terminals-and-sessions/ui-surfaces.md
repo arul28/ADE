@@ -617,7 +617,7 @@ provider, so continuation commands the OpenCode preamble emits
 correctly. `startupDelayMs` is forwarded into the `ade.pty.create`
 payload only when the caller passes it (so non-Work callers don't
 inherit a non-zero default); the Work CLI launch path in
-`AgentChatPane` passes `WORK_CLI_STARTUP_DELAY_MS = 180` and
+`AgentChatPane` passes `workCliStartupDelayMs = 180` and
 intentionally omits `command` / `args` so every Work CLI launch
 goes through the shell + `startupCommand` path (see
 [pty-and-processes.md](./pty-and-processes.md#create-flow-createargs)
