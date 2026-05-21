@@ -1223,7 +1223,7 @@ describe("adeRpcServer", () => {
     };
     runtime.sessionService.get.mockReturnValue(session);
     runtime.ptyService.list.mockReturnValue([session]);
-    await initialize(handler, { role: "external" });
+    await initialize(handler, { role: "agent" });
 
     const created = await handler({
       jsonrpc: "2.0",
@@ -1283,6 +1283,20 @@ describe("adeRpcServer", () => {
     });
     expect(listed).toEqual({ sessions: [session] });
     expect(runtime.ptyService.list).toHaveBeenCalledWith({ laneId: "lane-1", limit: 20 });
+  });
+
+  it("hides direct PTY RPC methods from external sessions", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "external" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "pty.create",
+      params: { args: { laneId: "lane-1", title: "Claude", cols: 120, rows: 40 } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    expect(runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
   it("routes app/navigate through the runtime navigation service", async () => {

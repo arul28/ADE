@@ -163,6 +163,7 @@ create table if not exists terminal_sessions (
       resume_metadata_json text,
       archived_at text,
       chat_session_id text,
+      owner_process_started_at text,
       foreign key(lane_id) references lanes(id)
     );
 
@@ -189,6 +190,10 @@ create index if not exists idx_terminal_sessions_chat_session_id on terminal_ses
 alter table terminal_sessions add column owner_pid integer;
 
 create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid);
+
+alter table terminal_sessions add column owner_process_started_at text;
+
+create index if not exists idx_terminal_sessions_owner_process on terminal_sessions(owner_pid, owner_process_started_at);
 
 create table if not exists runtime_processes (
       pid integer primary key,
