@@ -35,17 +35,79 @@ function thresholdColor(percent: number): string {
   return "#22C55E";
 }
 
-function weeklyPercentFor(snapshot: UsageSnapshot | null, provider: UsageProvider): number | null {
+function clampPercent(percent: number): number | null {
+  if (!Number.isFinite(percent)) return null;
+  return Math.max(0, Math.min(100, percent));
+}
+
+function windowPercentFor(
+  snapshot: UsageSnapshot | null,
+  provider: UsageProvider,
+  windowType: "five_hour" | "weekly" | "monthly",
+): number | null {
   if (!snapshot) return null;
-  const weekly = snapshot.windows.find(
-    (w) => w.provider === provider && (w.windowType === "weekly" || w.windowType === "monthly"),
-  );
-  if (!weekly) return null;
-  return Math.max(0, Math.min(100, weekly.percentUsed));
+  const window = snapshot.windows.find((w) => w.provider === provider && w.windowType === windowType);
+  if (!window) return null;
+  return clampPercent(window.percentUsed);
 }
 
 const OPEN_USAGE_EVENT = "ade-open-usage-drawer";
-const HEADER_USAGE_STARTUP_DELAY_MS = 5_000;
+const HEADER_USAGE_REFRESH_INTERVAL_MS = 120_000;
+const HEADER_USAGE_FOCUS_REFRESH_STALE_MS = 60_000;
+const HEADER_USAGE_PROVIDER_STATUS_REFRESH_MS = 300_000;
+
+type HeaderUsageWindowSummary = {
+  fiveHourPercent: number | null;
+  planPercent: number | null;
+  planLabel: "wk" | "mo";
+};
+
+function headerUsageFor(snapshot: UsageSnapshot | null, provider: UsageProvider): HeaderUsageWindowSummary {
+  const weeklyPercent = windowPercentFor(snapshot, provider, "weekly");
+  const monthlyPercent = windowPercentFor(snapshot, provider, "monthly");
+  return {
+    fiveHourPercent: windowPercentFor(snapshot, provider, "five_hour"),
+    planPercent: weeklyPercent ?? monthlyPercent,
+    planLabel: weeklyPercent == null && monthlyPercent != null ? "mo" : "wk",
+  };
+}
+
+function percentLabel(percent: number | null): string {
+  return percent == null ? "…" : `${Math.round(percent)}%`;
+}
+
+function percentStyle(percent: number | null): React.CSSProperties {
+  return {
+    color: percent == null ? "var(--color-muted-fg)" : thresholdColor(percent),
+  };
+}
+
+function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
+  return `5h ${percentLabel(usage.fiveHourPercent)}, ${usage.planLabel} ${percentLabel(usage.planPercent)}`;
+}
+
+function HeaderProviderUsageChip({
+  provider,
+  usage,
+}: {
+  provider: UsageProvider;
+  usage: HeaderUsageWindowSummary;
+}) {
+  return (
+    <div
+      className="flex items-center gap-1"
+      title={`${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`}
+    >
+      <ProviderLogo provider={provider} size={14} />
+      <span className="inline-flex items-center gap-0.5 font-mono text-[9px] font-semibold tabular-nums">
+        <span className="text-muted-fg">5h</span>
+        <span style={percentStyle(usage.fiveHourPercent)}>{percentLabel(usage.fiveHourPercent)}</span>
+        <span className="ml-1 text-muted-fg">{usage.planLabel}</span>
+        <span style={percentStyle(usage.planPercent)}>{percentLabel(usage.planPercent)}</span>
+      </span>
+    </div>
+  );
+}
 
 export function HeaderUsageControl() {
   const [open, setOpen] = useState(false);
@@ -56,51 +118,92 @@ export function HeaderUsageControl() {
   const [budgetError, setBudgetError] = useState<string | null>(null);
   const [guardrailsOpen, setGuardrailsOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const snapshotRef = useRef<UsageSnapshot | null>(null);
 
-  // Delay background usage reads during project boot, but hydrate immediately
-  // when the drawer is opened.
+  const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
+    snapshotRef.current = nextSnapshot;
+    setSnapshot(nextSnapshot);
+  }, []);
+
   useEffect(() => {
     if (!window.ade?.usage) return;
+    const usageBridge = window.ade.usage;
     let cancelled = false;
-    let unsubscribe: (() => void) | undefined;
-    const timer = window.setTimeout(() => {
-      window.ade.usage.getSnapshot()
-        .then((nextSnapshot) => {
-          if (!cancelled) setSnapshot(nextSnapshot);
-        })
-        .catch(() => {
-          if (!cancelled) setSnapshot(null);
-        });
-      unsubscribe = window.ade.usage.onUpdate?.((next) => {
-        if (!cancelled) setSnapshot(next);
+    let requestSerial = 0;
+    const readSnapshot = async (force: boolean) => {
+      try {
+        const nextSnapshot = force
+          ? await usageBridge.refresh()
+          : await usageBridge.getSnapshot();
+        return { failed: false, snapshot: nextSnapshot };
+      } catch {
+        return { failed: true, snapshot: null };
+      }
+    };
+    const unsubscribe = usageBridge.onUpdate?.((nextSnapshot) => {
+      if (!cancelled) applySnapshot(nextSnapshot);
+    });
+    const refreshIfMounted = (force: boolean) => {
+      if (cancelled) return;
+      const currentRequest = ++requestSerial;
+      void readSnapshot(force).then(({ failed, snapshot: nextSnapshot }) => {
+        if (cancelled) return;
+        if (failed && snapshotRef.current) return;
+        const isLatestRequest = currentRequest === requestSerial;
+        const isInitialCachedSnapshot = !force && snapshotRef.current == null;
+        if (isLatestRequest || isInitialCachedSnapshot) applySnapshot(nextSnapshot);
       });
-    }, open ? 0 : HEADER_USAGE_STARTUP_DELAY_MS);
+    };
+
+    // Get any cached value onto the button immediately, then force a poll so a
+    // cold app launch does not wait for the drawer to be opened.
+    refreshIfMounted(false);
+    refreshIfMounted(true);
+
+    const interval = window.setInterval(() => {
+      refreshIfMounted(true);
+    }, HEADER_USAGE_REFRESH_INTERVAL_MS);
+
+    const refreshOnFocus = () => {
+      if (cancelled) return;
+      const latestSnapshot = snapshotRef.current;
+      const lastPolledAt = latestSnapshot?.lastPolledAt ? new Date(latestSnapshot.lastPolledAt).getTime() : 0;
+      if (!lastPolledAt || Date.now() - lastPolledAt >= HEADER_USAGE_FOCUS_REFRESH_STALE_MS) {
+        refreshIfMounted(true);
+      }
+    };
+    window.addEventListener("focus", refreshOnFocus);
+
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
       unsubscribe?.();
     };
-  }, [open]);
+  }, [applySnapshot]);
 
   // Fetch provider connection status so we can hide providers whose CLI is
   // not installed on this machine.
   useEffect(() => {
     if (!window.ade?.ai?.getStatus) return;
+    const aiBridge = window.ade.ai;
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      window.ade.ai.getStatus()
+    const loadProviderStatus = () => {
+      aiBridge.getStatus()
         .then((status) => {
           if (!cancelled) setProviderConnections(status.providerConnections ?? null);
         })
         .catch(() => {
           if (!cancelled) setProviderConnections(null);
         });
-    }, open ? 0 : HEADER_USAGE_STARTUP_DELAY_MS);
+    };
+    loadProviderStatus();
+    const interval = window.setInterval(loadProviderStatus, HEADER_USAGE_PROVIDER_STATUS_REFRESH_MS);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.clearInterval(interval);
     };
-  }, [open]);
+  }, []);
 
   // Listen for programmatic open requests (used by the threshold toast).
   useEffect(() => {
@@ -115,23 +218,6 @@ export function HeaderUsageControl() {
       (provider) => providerConnections[provider]?.runtimeDetected !== false,
     );
   }, [providerConnections]);
-
-  // Refresh on drawer open so the snapshot reflects current usage without
-  // waiting for the next background poll.
-  useEffect(() => {
-    if (!open || !window.ade?.usage?.refresh) return;
-    let cancelled = false;
-    void window.ade.usage.refresh()
-      .then((next) => {
-        if (!cancelled && next) setSnapshot(next);
-      })
-      .catch(() => {
-        // Refresh errors are surfaced by the drawer itself.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   useEffect(() => {
     if (!open || !window.ade?.usage?.getBudgetConfig) return;
@@ -175,20 +261,17 @@ export function HeaderUsageControl() {
   }, [open]);
 
   const providersWithUsage = useMemo(
-    () =>
-      detectedProviders.map((provider) => ({
-        provider,
-        percent: weeklyPercentFor(snapshot, provider),
-      })),
+    () => detectedProviders.map((provider) => ({
+      provider,
+      usage: headerUsageFor(snapshot, provider),
+    })),
     [detectedProviders, snapshot],
   );
   const hasErrors = (snapshot?.errors.length ?? 0) > 0;
 
-  const titleParts: string[] = [];
-  for (const { provider, percent } of providersWithUsage) {
-    if (percent == null) continue;
-    titleParts.push(`${PROVIDER_LABEL[provider]} ${Math.round(percent)}%`);
-  }
+  const titleParts = providersWithUsage.map(
+    ({ provider, usage }) => `${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`,
+  );
   let buttonTitle: string;
   if (titleParts.length > 0) {
     buttonTitle = `Usage · ${titleParts.join(" · ")}${hasErrors ? " · warnings" : ""}`;
@@ -197,14 +280,6 @@ export function HeaderUsageControl() {
   } else {
     buttonTitle = "Usage";
   }
-
-  // Render per-provider chips only when (a) we have at least one detected
-  // provider AND (b) we have a real percent for at least one of them.
-  // Otherwise we fall back to the gauge icon — empty em-dashes ("Claude —")
-  // are worse UX than a single neutral icon during the initial poll.
-  const hasAnyChip =
-    providersWithUsage.length > 0 &&
-    providersWithUsage.some(({ percent }) => percent != null);
 
   return (
     <>
@@ -221,18 +296,10 @@ export function HeaderUsageControl() {
         aria-expanded={open}
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        {hasAnyChip ? (
+        {providersWithUsage.length > 0 ? (
           <div className="flex items-center gap-2">
-            {providersWithUsage.map(({ provider, percent }) => (
-              <div key={provider} className="flex items-center gap-1">
-                <ProviderLogo provider={provider} size={14} />
-                <span
-                  className="font-mono text-[10px] font-semibold tabular-nums"
-                  style={{ color: percent == null ? "var(--color-muted-fg)" : thresholdColor(percent) }}
-                >
-                  {percent == null ? "—" : `${Math.round(percent)}%`}
-                </span>
-              </div>
+            {providersWithUsage.map(({ provider, usage }) => (
+              <HeaderProviderUsageChip key={provider} provider={provider} usage={usage} />
             ))}
           </div>
         ) : (
@@ -287,7 +354,7 @@ export function HeaderUsageControl() {
               </button>
             </div>
             <div className="space-y-3 p-3">
-              <UsageQuotaPanel onSnapshotChange={setSnapshot} />
+              <UsageQuotaPanel onSnapshotChange={applySnapshot} />
 
               <section
                 className="rounded-lg border border-white/10 bg-card/95 p-3 backdrop-blur-sm"
