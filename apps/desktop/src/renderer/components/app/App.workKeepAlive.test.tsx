@@ -11,13 +11,19 @@ const workLifecycle = vi.hoisted(() => ({
   unmounts: 0,
 }));
 
+const lanesLifecycle = vi.hoisted(() => ({
+  mounts: 0,
+  unmounts: 0,
+}));
+
 const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
   project: { rootPath: "/fake/project" },
+  projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
   theme: "dark",
   openProjectTabRoots: [] as string[],
-  projectInfoByRoot: {} as Record<string, { rootPath: string }>,
+  projectInfoByRoot: {} as Record<string, { rootPath: string; displayName?: string }>,
 }));
 
 vi.mock("../../state/appStore", async () => {
@@ -126,18 +132,42 @@ vi.mock("../files/FilesPage", async () => {
   };
 });
 
-vi.mock("../lanes/LanesPage", () => ({
-  LanesPage: () => <div data-testid="lanes-page" />,
-}));
+vi.mock("../lanes/LanesPage", async () => {
+  const ReactModule = await vi.importActual("react") as typeof ReactNamespace;
+  const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;
+
+  return {
+    LanesPage: ({ active = true }: { active?: boolean }) => {
+      const navigate = Router.useNavigate();
+      ReactModule.useEffect(() => {
+        lanesLifecycle.mounts += 1;
+        return () => {
+          lanesLifecycle.unmounts += 1;
+        };
+      }, []);
+
+      return (
+        <div data-testid="lanes-page" data-active={active ? "true" : "false"}>
+          <button type="button" onClick={() => navigate("/files")}>
+            Lanes open files
+          </button>
+        </div>
+      );
+    },
+  };
+});
 
 describe("App Work route keep-alive", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     workLifecycle.mounts = 0;
     workLifecycle.unmounts = 0;
+    lanesLifecycle.mounts = 0;
+    lanesLifecycle.unmounts = 0;
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
     appStoreState.project = { rootPath: "/fake/project" };
+    appStoreState.projectTransition = null;
     appStoreState.theme = "dark";
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
@@ -256,6 +286,59 @@ describe("App Work route keep-alive", () => {
     await screen.findByTestId("project-page");
     expect(screen.queryByTestId("work-page")).toBeNull();
     expect(workLifecycle.mounts).toBe(0);
+  });
+
+  it("keeps the Lanes page mounted after visiting it and leaving for another tab", async () => {
+    window.history.replaceState({}, "", "/lanes");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    const lanesPage = await screen.findByTestId("lanes-page");
+    await waitFor(() => {
+      expect(lanesLifecycle.mounts).toBe(1);
+    });
+    expect(lanesLifecycle.unmounts).toBe(0);
+    expect(lanesPage.closest("[aria-hidden='true']")).toBeNull();
+    expect(lanesPage.getAttribute("data-active")).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Lanes open files" }));
+    await screen.findByTestId("files-page");
+
+    const parkedLanesSurface = screen.getByTestId("lanes-page").closest("[aria-hidden='true']");
+    expect(parkedLanesSurface).not.toBeNull();
+    expect(screen.getByTestId("lanes-page").getAttribute("data-active")).toBe("false");
+    expect(lanesLifecycle.mounts).toBe(1);
+    expect(lanesLifecycle.unmounts).toBe(0);
+  });
+
+  it("covers the old project surface while a cold project switch is pending", async () => {
+    appStoreState.projectTransition = {
+      kind: "switching",
+      rootPath: "/other/project",
+      startedAtMs: 123,
+    };
+    appStoreState.projectInfoByRoot = {
+      "/other/project": { rootPath: "/other/project", displayName: "Other project" },
+    };
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    expect(screen.getByTestId("project-transition-veil").textContent).toContain(
+      "Switching to Other project...",
+    );
+  });
+
+  it("does not mount Lanes until the user first navigates to /lanes", async () => {
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    expect(screen.queryByTestId("lanes-page")).toBeNull();
+    expect(lanesLifecycle.mounts).toBe(0);
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

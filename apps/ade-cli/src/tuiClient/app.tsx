@@ -15,7 +15,7 @@ import {
 } from "../../../desktop/src/shared/modelRegistry";
 import { resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { CURSOR_AVAILABLE_MODE_IDS, CURSOR_MODE_LABELS } from "../../../desktop/src/shared/cursorModes";
-import { getAdeAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
+import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -857,23 +857,24 @@ function titleFromMarkdown(filePath: string, fallback: string): string {
   }
 }
 
-function listClaudeCompatMarkdownEntries(workspaceRoot: string, kind: "agents" | "skills"): string {
+function listAgentMarkdownEntries(workspaceRoot: string, kind: "agents" | "skills"): string {
   const roots = kind === "agents"
     ? [
         { label: "project", dir: path.join(workspaceRoot, ".claude", "agents") },
         { label: "user", dir: claudeHomePath("agents") },
       ]
-    : [
-        { label: "project", dir: path.join(workspaceRoot, ".claude", "skills") },
-        { label: "ADE", dir: path.join(workspaceRoot, ".ade", "skills") },
-        { label: "user", dir: claudeHomePath("skills") },
-        ...getAdeAgentSkillRootCandidates({ includeDeepSourceFallbacks: true })
-          .map((dir) => ({ label: "bundled", dir })),
-      ];
+    : getAgentSkillRootCandidates({ cwd: workspaceRoot, includeDeepSourceFallbacks: true })
+        .map((dir) => ({ label: "skill root", dir }));
   const rows: string[] = [];
   for (const root of roots) {
     if (!fs.existsSync(root.dir)) continue;
-    for (const entry of fs.readdirSync(root.dir, { withFileTypes: true })) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
       const filePath = entry.isDirectory()
         ? path.join(root.dir, entry.name, "SKILL.md")
         : path.join(root.dir, entry.name);
@@ -883,8 +884,12 @@ function listClaudeCompatMarkdownEntries(workspaceRoot: string, kind: "agents" |
       rows.push(`- ${title} (${root.label})\n  ${filePath}`);
     }
   }
-  if (!rows.length) return `No Claude ${kind} were found in project or user config.`;
-  return [`Claude ${kind}:`, "", ...rows].join("\n");
+  if (!rows.length) {
+    return kind === "skills"
+      ? "No agent skills were found in project, user, or bundled ADE skill roots."
+      : "No Claude agents were found in project or user config.";
+  }
+  return [kind === "skills" ? "Agent skills:" : "Claude agents:", "", ...rows].join("\n");
 }
 
 function ensureClaudeInitFiles(workspaceRoot: string): string {
@@ -5467,15 +5472,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         setRightPane({ kind: "details", title: "Agents", body: "/agents is only available for Claude chats." });
         return;
       }
-      setRightPane({ kind: "details", title: "Agents", body: listClaudeCompatMarkdownEntries(project.workspaceRoot, "agents") });
+      setRightPane({ kind: "details", title: "Agents", body: listAgentMarkdownEntries(project.workspaceRoot, "agents") });
       return;
     }
     if (name === "/skills") {
-      if (activeCommandProvider !== "claude") {
-        setRightPane({ kind: "details", title: "Skills", body: "/skills is only available for Claude chats." });
-        return;
-      }
-      setRightPane({ kind: "details", title: "Skills", body: listClaudeCompatMarkdownEntries(project.workspaceRoot, "skills") });
+      setRightPane({ kind: "details", title: "Skills", body: listAgentMarkdownEntries(project.workspaceRoot, "skills") });
       return;
     }
     if (name === "/init") {

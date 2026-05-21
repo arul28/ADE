@@ -32,6 +32,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
+import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -1187,7 +1188,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_pr_from_lane",
-    description: "Create a PR from a lane branch. Drafts a title/body from ADE context when omitted.",
+    description: "Create a PR from a lane branch. Drafts a title/body from ADE context when omitted. Returns GitHub and ADE PR URLs when available.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -2385,6 +2386,30 @@ function parseEnvBoolean(value: string | undefined): boolean | null {
 
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function asPositiveInteger(value: unknown): number | null {
+  let parsed = NaN;
+  if (typeof value === "number") parsed = value;
+  else if (typeof value === "string") parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function prLinkUrls(pr: unknown): { githubUrl?: string; adeUrl?: string } {
+  if (!isRecord(pr)) return {};
+  const githubUrl = asOptionalTrimmedString(pr.githubUrl);
+  const repoOwner = asOptionalTrimmedString(pr.repoOwner);
+  const repoName = asOptionalTrimmedString(pr.repoName);
+  const prNumber = asPositiveInteger(
+    pr.githubPrNumber ?? pr.prNumber ?? pr.number,
+  );
+  const adeUrl = repoOwner && repoName && prNumber
+    ? buildDeeplink({ kind: "pr", repoOwner, repoName, prNumber })
+    : null;
+  return {
+    ...(githubUrl ? { githubUrl } : {}),
+    ...(adeUrl ? { adeUrl } : {}),
+  };
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -6791,7 +6816,7 @@ async function runTool(args: {
       ...(baseBranch ? { baseBranch } : {}),
       ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
     });
-    return { pr };
+    return { pr, ...prLinkUrls(pr) };
   }
 
   if (name === "pr_update_title") {

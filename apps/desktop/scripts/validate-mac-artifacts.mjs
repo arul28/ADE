@@ -15,6 +15,18 @@ const releaseDir = path.join(appDir, "release");
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 const DEFAULT_MAX_UNPACKED_BYTES = 600 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const BUNDLED_AGENT_SKILLS = [
+  "ade-cli-control-plane",
+  "ade-ios-simulator",
+  "ade-app-control",
+  "ade-browser",
+  "ade-pr-workflows",
+  "ade-lanes-git",
+  "ade-cto-missions",
+  "ade-proof-artifacts",
+  "ade-macos-vm",
+  "ade-deeplinks",
+];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -110,6 +122,16 @@ async function assertPathExists(targetPath, description) {
     await fs.access(targetPath);
   } catch {
     throw new Error(`[release:mac] Missing ${description}: ${targetPath}`);
+  }
+}
+
+async function assertBundledAgentSkills(agentSkillsRoot) {
+  await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
+  for (const skillName of BUNDLED_AGENT_SKILLS) {
+    await assertPathExists(
+      path.join(agentSkillsRoot, skillName, "SKILL.md"),
+      `bundled ADE agent skill ${skillName}`,
+    );
   }
 }
 
@@ -322,7 +344,7 @@ async function validatePackagedRuntime(appPath, description) {
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
-  const bundledAgentSkillsPath = path.join(resourcesPath, "agent-skills", "ade-cli-control-plane", "SKILL.md");
+  const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const iosSimHelperRoot = path.join(resourcesPath, "native", "ios-sim-helpers");
   const iosSimHelperBuildScript = path.join(iosSimHelperRoot, "build.sh");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
@@ -339,7 +361,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
-  await assertPathExists(bundledAgentSkillsPath, "bundled ADE agent skills");
+  await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(iosSimHelperBuildScript, "bundled iOS simulator helper build script");
   await assertPathExists(path.join(iosSimHelperRoot, "sim-capture.swift"), "bundled iOS simulator capture helper source");
   await assertPathExists(path.join(iosSimHelperRoot, "sim-input.m"), "bundled iOS simulator input helper source");

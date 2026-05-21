@@ -1140,6 +1140,17 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   }
 }
 
+function localProjectBindingForRoot(rootPath: string): OpenProjectBinding {
+  const trimmed = rootPath.trim();
+  const displayName = trimmed.split(/[\\/]/).filter(Boolean).pop() ?? trimmed;
+  return {
+    kind: "local",
+    key: `local:${trimmed}`,
+    rootPath: trimmed,
+    displayName,
+  };
+}
+
 async function refreshProjectBinding(): Promise<OpenProjectBinding | null> {
   if (projectBindingRefreshPromise) return projectBindingRefreshPromise;
   const refreshVersion = projectBindingVersion;
@@ -1205,8 +1216,9 @@ async function callLocalProjectActionIfBound<T>(
   if (!binding) return { handled: false };
   try {
     const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+      rootPath: binding.rootPath,
       request: { domain, action, ...request },
-  })) as RemoteRuntimeActionResult;
+    })) as RemoteRuntimeActionResult;
     return { handled: true, result: response.result as T };
   } catch (error) {
     const canUseFallback =
@@ -1231,6 +1243,7 @@ async function callLocalProjectActionStrictIfBound<T>(
   const binding = await getLocalProjectBinding();
   if (!binding) return { handled: false };
   const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+    rootPath: binding.rootPath,
     request: { domain, action, ...request },
   })) as RemoteRuntimeActionResult;
   return { handled: true, result: response.result as T };
@@ -1384,6 +1397,7 @@ async function callLocalProjectSyncIfBound<T>(
   if (!binding) return { handled: false };
   try {
     const result = (await ipcRenderer.invoke(IPC.localRuntimeCallSync, {
+      rootPath: binding.rootPath,
       method,
       params,
     })) as T;
@@ -1680,6 +1694,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
             request,
           })) as RemoteRuntimeStreamEventsResult)
         : ((await ipcRenderer.invoke(IPC.localRuntimeStreamEvents, {
+            rootPath: binding.rootPath,
             request,
           })) as RemoteRuntimeStreamEventsResult);
 
@@ -2814,15 +2829,21 @@ contextBridge.exposeInMainWorld("ade", {
       // See openRepo above: `clearAround` runs cleanup twice, so nulling the
       // binding inside it would clobber the new one set by the
       // appProjectBindingChanged listener.
-      rememberProjectBinding(null);
-      return clearAround(
-        () => {
-          clearProjectScopedReadCaches();
-        },
-        () => runProjectRuntimeTransition(() =>
-          ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
-        ),
-      );
+      const previousBinding = currentProjectBinding;
+      rememberProjectBinding(localProjectBindingForRoot(rootPath));
+      try {
+        return await clearAround(
+          () => {
+            clearProjectScopedReadCaches();
+          },
+          () => runProjectRuntimeTransition(() =>
+            ipcRenderer.invoke(IPC.projectSwitchToPath, { rootPath }),
+          ),
+        );
+      } catch (error) {
+        rememberProjectBinding(previousBinding);
+        throw error;
+      }
     },
     forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),

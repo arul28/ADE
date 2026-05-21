@@ -1350,6 +1350,8 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject);
     }
+    const cachedWarmLanes =
+      cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
     const restoredWarmSelection =
       cachedProject != null
         ? get().laneSelectionByProject[cachedProject.rootPath] ?? { laneId: null, sessionId: null }
@@ -1376,8 +1378,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             projectHydrated: true,
             showWelcome: false,
             isNewTabOpen: false,
+            laneSnapshots: cachedWarmLanes?.laneSnapshots ?? [],
+            lanes: cachedWarmLanes?.lanes ?? [],
+            lanesLoading: !cachedWarmLanes,
+            laneDeleteProgressByLaneId: {},
             selectedLaneId: restoredWarmSelection.laneId,
             focusedSessionId: restoredWarmSelection.sessionId,
+            laneInspectorTabs: {},
+            keybindings: null,
+            terminalAttention: EMPTY_TERMINAL_ATTENTION,
+            macosVmTabIndicator: null,
           }
         : {}),
       ...(outgoingProjectRoot
@@ -1449,7 +1459,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         void window.ade.project.listRecent().then((recentRows) => {
           const recentRoots = new Set(recentRows.map((r: { rootPath: string }) => r.rootPath));
           const activeRoot = get().project?.rootPath ?? null;
-          const retainedRoots = [activeRoot, ...recentRoots];
+          const openProjectRoots = new Set(get().openProjectTabRoots);
+          const retainedRootSet = new Set<string>();
+          for (const root of [activeRoot, ...recentRoots, ...openProjectRoots]) {
+            const key = normalizeProjectKey(root);
+            if (key) retainedRootSet.add(key);
+          }
+          const retainedRoots = Array.from(retainedRootSet);
           set((prev) => {
             const nextWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
@@ -1457,20 +1473,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             const nextLaneCache: Record<string, { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] }> = {};
             const nextSessionsCache: Record<string, unknown[]> = {};
             for (const [key, value] of Object.entries(prev.workViewByProject)) {
-              if (key === activeRoot || recentRoots.has(key)) nextWorkViews[key] = value;
+              if (retainedRootSet.has(key)) nextWorkViews[key] = value;
             }
             for (const [scopeKey, value] of Object.entries(prev.laneWorkViewByScope)) {
               const projectKey = scopeKey.split("::")[0];
-              if (projectKey === activeRoot || recentRoots.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
+              if (retainedRootSet.has(projectKey)) nextLaneWorkViews[scopeKey] = value;
             }
             for (const [key, value] of Object.entries(prev.laneSelectionByProject)) {
-              if (key === activeRoot || recentRoots.has(key)) nextLaneSelections[key] = value;
+              if (retainedRootSet.has(key)) nextLaneSelections[key] = value;
             }
             for (const [key, value] of Object.entries(prev.laneCacheByProject)) {
-              if (key === activeRoot || recentRoots.has(key)) nextLaneCache[key] = value;
+              if (retainedRootSet.has(key)) nextLaneCache[key] = value;
             }
             for (const [key, value] of Object.entries(prev.sessionsCacheByProject)) {
-              if (key === activeRoot || recentRoots.has(key)) nextSessionsCache[key] = value;
+              if (retainedRootSet.has(key)) nextSessionsCache[key] = value;
             }
             persistWorkViewState({
               workViewByProject: nextWorkViews,

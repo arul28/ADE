@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { getAdeAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
+import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
 
 export type DiscoveredClaudeSlashCommand = {
   name: string;
@@ -252,27 +252,6 @@ function claudeRootsByPrecedence(cwd: string): string[] {
   return roots;
 }
 
-function ancestorSkillRoots(cwd: string, dirName: ".agents" | ".ade"): string[] {
-  const roots: string[] = [];
-  const seen = new Set<string>();
-  const home = path.resolve(os.homedir());
-  let current = path.resolve(cwd);
-  let depth = 0;
-  while (depth < 25) {
-    const candidate = path.join(current, dirName, "skills");
-    if (!seen.has(candidate)) {
-      seen.add(candidate);
-      roots.push(candidate);
-    }
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    if (current === home) break;
-    current = parent;
-    depth += 1;
-  }
-  return roots;
-}
-
 function skillRootsByPrecedence(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
@@ -283,12 +262,12 @@ function skillRootsByPrecedence(cwd: string): string[] {
     roots.push(resolved);
   };
 
-  for (const root of claudeRootsByPrecedence(cwd)) addRoot(path.join(root, "skills"));
-  for (const root of ancestorSkillRoots(cwd, ".agents")) addRoot(root);
-  for (const root of ancestorSkillRoots(cwd, ".ade")) addRoot(root);
-  addRoot(path.join(os.homedir(), ".agents", "skills"));
-  addRoot(path.join(os.homedir(), ".ade", "skills"));
-  for (const root of getAdeAgentSkillRootCandidates({ dirname: __dirname, includeDeepSourceFallbacks: true })) addRoot(root);
+  for (const root of getAgentSkillRootCandidates({
+    cwd,
+    dirname: __dirname,
+    home: os.homedir(),
+    includeDeepSourceFallbacks: true,
+  })) addRoot(root);
   return roots;
 }
 

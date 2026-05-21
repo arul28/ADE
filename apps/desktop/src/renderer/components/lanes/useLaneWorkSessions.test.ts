@@ -10,6 +10,7 @@ const focusSessionSpy = vi.fn();
 const selectLaneSpy = vi.fn();
 const setWorkViewStateSpy = vi.fn();
 const setLaneWorkViewStateSpy = vi.fn();
+let fakeProjectRoot = "/fake/project";
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted by vitest)
@@ -59,7 +60,7 @@ vi.mock("../../lib/sessions", () => ({
 vi.mock("../../state/appStore", () => ({
   useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
     const fakeState: Record<string, unknown> = {
-      project: { rootPath: "/fake/project" },
+      project: { rootPath: fakeProjectRoot },
       lanes: [{ id: "lane-1", name: "Lane 1" }],
       focusSession: focusSessionSpy,
       focusedSessionId: null,
@@ -98,6 +99,30 @@ function installWindowAde() {
   };
 }
 
+function makeSession(id: string, laneId: string, title = id) {
+  return {
+    id,
+    laneId,
+    laneName: laneId,
+    ptyId: null,
+    tracked: true,
+    pinned: false,
+    toolType: "claude-chat",
+    title,
+    status: "running",
+    startedAt: "2026-05-01T12:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    transcriptPath: "",
+    headShaStart: null,
+    headShaEnd: null,
+    lastOutputPreview: null,
+    summary: null,
+    runtimeState: "idle",
+    resumeCommand: null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -109,6 +134,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     installWindowAde();
     // Default: instant resolve for mount-time refresh calls
     listSessionsCachedMock.mockResolvedValue([]);
+    fakeProjectRoot = "/fake/project";
   });
 
   afterEach(() => {
@@ -332,6 +358,114 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(openTabIdx).toBeGreaterThanOrEqual(0);
     expect(queuedDoneIdx).toBeLessThan(focusIdx);
     expect(queuedDoneIdx).toBeLessThan(openTabIdx);
+  });
+
+  it("replays a queued refresh against the latest lane after switching lanes mid-refresh", async () => {
+    const fetchedLaneIds: string[] = [];
+    let firstRefreshResolve: ((rows: unknown[]) => void) | null = null;
+    let secondRefreshResolve: ((rows: unknown[]) => void) | null = null;
+
+    listSessionsCachedMock.mockImplementation((args: { laneId: string }) => {
+      fetchedLaneIds.push(args.laneId);
+      if (fetchedLaneIds.length === 1) {
+        return new Promise((resolve) => {
+          firstRefreshResolve = resolve;
+        });
+      }
+      if (fetchedLaneIds.length === 2) {
+        return new Promise((resolve) => {
+          secondRefreshResolve = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    const { result, rerender } = renderHook(
+      ({ laneId }: { laneId: string }) => useLaneWorkSessions(laneId),
+      { initialProps: { laneId: "lane-1" } },
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedLaneIds).toEqual(["lane-1"]);
+
+    act(() => {
+      rerender({ laneId: "lane-2" });
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedLaneIds).toEqual(["lane-1"]);
+
+    await act(async () => {
+      expect(firstRefreshResolve).not.toBeNull();
+      firstRefreshResolve!([makeSession("session-old", "lane-1")]);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedLaneIds).toEqual(["lane-1", "lane-2"]);
+
+    await act(async () => {
+      expect(secondRefreshResolve).not.toBeNull();
+      secondRefreshResolve!([makeSession("session-new", "lane-2")]);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-new"]);
+  });
+
+  it("replays a queued refresh against the latest project after switching projects mid-refresh", async () => {
+    const fetchedProjectRoots: Array<string | null | undefined> = [];
+    let firstRefreshResolve: ((rows: unknown[]) => void) | null = null;
+    let secondRefreshResolve: ((rows: unknown[]) => void) | null = null;
+
+    listSessionsCachedMock.mockImplementation((_args: { laneId: string }, options?: { projectRoot?: string | null }) => {
+      fetchedProjectRoots.push(options?.projectRoot);
+      if (fetchedProjectRoots.length === 1) {
+        return new Promise((resolve) => {
+          firstRefreshResolve = resolve;
+        });
+      }
+      if (fetchedProjectRoots.length === 2) {
+        return new Promise((resolve) => {
+          secondRefreshResolve = resolve;
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    const { result, rerender } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+
+    fakeProjectRoot = "/other/project";
+    act(() => {
+      rerender();
+    });
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedProjectRoots).toEqual(["/fake/project"]);
+
+    await act(async () => {
+      expect(firstRefreshResolve).not.toBeNull();
+      firstRefreshResolve!([makeSession("session-old", "lane-1")]);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(fetchedProjectRoots).toEqual(["/fake/project", "/other/project"]);
+
+    await act(async () => {
+      expect(secondRefreshResolve).not.toBeNull();
+      secondRefreshResolve!([makeSession("session-new", "lane-1")]);
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions.map((session) => session.id)).toEqual(["session-new"]);
   });
 
   // -----------------------------------------------------------------------

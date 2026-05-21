@@ -170,7 +170,7 @@ The `ade` surface evolves. Don't assume flag names or output shapes from this pl
    - **"PR already exists for lane"** → recover the existing PR number via `ade prs list --lane <id>` (or equivalent) and skip to Phase 0.4.
    - **Auth error** (token expired, permission denied) → exit with `status: blocked`, `exitReason: "ade-auth-failed"`. Do NOT silently fall back; surface to the user.
    - **Genuine internal error, reproducible after retry** → only now fall back.
-6. **Capture the PR number.** The create command's output format varies (JSON, plain number, URL). If you can't extract it reliably, run `ade prs list --lane <id> --json` as a cross-check. If ADE's output is opaque after reasonable effort, `gh pr view --json number -q .number` is a safe cross-check since the PR now exists on GitHub.
+6. **Capture the PR number and links.** `ade prs create --text` prints separate GitHub URL and ADE URL rows when available; JSON output carries the same data as `githubUrl` and `adeUrl`. If the create output is missing the ADE URL but you have the repo and PR number, run `ade link pr <owner/repo> <number> --no-clipboard` to mint it. If you can't extract the PR number reliably, run `ade prs list --lane <id> --json` as a cross-check. If ADE's output is opaque after reasonable effort, `gh pr view --json number -q .number` is a safe cross-check since the PR now exists on GitHub.
 
 Only after steps 1–6 have been genuinely attempted should the fallback run:
 

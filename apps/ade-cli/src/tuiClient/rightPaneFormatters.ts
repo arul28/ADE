@@ -1,3 +1,5 @@
+import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -33,6 +35,27 @@ function pickBoolean(record: JsonRecord, keys: string[]): boolean | null {
     if (value != null) return value;
   }
   return null;
+}
+
+function pickPositiveInteger(record: JsonRecord, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    let parsed = NaN;
+    if (typeof value === "number") parsed = value;
+    else if (typeof value === "string") parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function unwrapPrValue(value: unknown): { root: JsonRecord; pr: JsonRecord } | null {
+  const root = unwrapStructured(value);
+  if (!isRecord(root)) return null;
+  const nested = root.pr;
+  return {
+    root,
+    pr: isRecord(nested) ? nested : root,
+  };
 }
 
 function firstRecordArray(value: unknown, keys: string[]): JsonRecord[] {
@@ -110,9 +133,11 @@ export function formatSystemDetails(args: {
 }
 
 export function formatPrSummary(value: unknown): string {
-  const pr = unwrapStructured(value);
-  if (!isRecord(pr)) return "No PR data.";
+  const unwrapped = unwrapPrValue(value);
+  if (!unwrapped) return "No PR data.";
+  const { root, pr } = unwrapped;
   const number = pickString(pr, ["number", "githubPrNumber", "prNumber"]);
+  const prNumber = pickPositiveInteger(pr, ["number", "githubPrNumber", "prNumber"]);
   const state = pickString(pr, ["state", "status"]) ?? "unknown";
   const draft = pickBoolean(pr, ["isDraft", "draft"]) === true ? " · draft" : "";
   const title = pickString(pr, ["title", "name"]) ?? "Untitled PR";
@@ -120,7 +145,17 @@ export function formatPrSummary(value: unknown): string {
   const lane = pickString(pr, ["laneName", "laneId"]);
   const head = pickString(pr, ["headBranch", "headRefName", "branchRef", "branch"]);
   const base = pickString(pr, ["baseBranch", "baseRefName", "baseRef", "targetBranch"]);
-  const url = pickString(pr, ["htmlUrl", "url", "webUrl"]);
+  const githubUrl = pickString(root, ["githubUrl", "githubPrUrl"])
+    ?? pickString(pr, ["githubUrl", "htmlUrl", "url", "webUrl"]);
+  const fallbackUrl = pickString(pr, ["htmlUrl", "url", "webUrl"]);
+  const repoOwner = pickString(pr, ["repoOwner", "owner"]);
+  const repoName = pickString(pr, ["repoName", "repo"]);
+  const derivedAdeUrl = repoOwner && repoName && prNumber
+    ? buildDeeplink({ kind: "pr", repoOwner, repoName, prNumber })
+    : null;
+  const adeUrl = pickString(root, ["adeUrl", "adePrUrl"])
+    ?? pickString(pr, ["adeUrl", "adePrUrl"])
+    ?? derivedAdeUrl;
   const mergeable = pickString(pr, ["mergeable", "mergeStateStatus"]);
   const rows = [
     `#${number ?? id ?? "?"} · ${state}${draft}`,
@@ -130,7 +165,9 @@ export function formatPrSummary(value: unknown): string {
     lane ? `lane      ${lane}` : null,
     head || base ? `branch    ${head ?? "unknown"}${base ? ` -> ${base}` : ""}` : null,
     mergeable ? `merge     ${mergeable}` : null,
-    url ? `url       ${url}` : null,
+    githubUrl ? `github   ${githubUrl}` : null,
+    fallbackUrl && fallbackUrl !== githubUrl ? `url      ${fallbackUrl}` : null,
+    adeUrl ? `ade      ${adeUrl}` : null,
   ];
   return rows.filter((row): row is string => row != null).join("\n");
 }

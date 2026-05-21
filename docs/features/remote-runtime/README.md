@@ -26,7 +26,11 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   local or remote runtime is bound, while most other local-runtime actions may
   use guarded Electron IPC fallbacks for safe daemon failures. When
   `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1`, local-bound windows skip local runtime
-  actions and event polling and use guarded Electron IPC fallbacks.
+  actions and event polling and use guarded Electron IPC fallbacks. During a
+  project switch, preload records a pending local binding for the target root
+  and includes `rootPath` on local runtime action/sync/event calls so early
+  renderer requests hit the destination daemon project instead of the previous
+  window session binding.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods plus project-scoped action dispatch.
 - `apps/ade-cli/src/services/projects/` — machine project registry and

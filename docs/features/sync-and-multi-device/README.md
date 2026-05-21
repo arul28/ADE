@@ -168,7 +168,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   command when no project is open or when the caller did not bundle a
   matching `projectId` (see *Scope enforcement* below). Mobile /
   controller CLI launches resolve the target lane worktree before
-  building provider argv/env so ADE Agent Skills roots stay lane-aware.
+  building provider argv/env so Agent Skill roots and
+  `ADE_AGENT_SKILLS_DIRS` stay lane-aware.
   Lane reparent commands parse the optional `stackBaseBranchRef`
   override and forward it to the host lane service so controllers can
   pick a specific branch to stack onto instead of always using the

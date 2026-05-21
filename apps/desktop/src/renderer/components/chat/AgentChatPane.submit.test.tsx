@@ -884,6 +884,121 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("does not let a late lane-session hydration overwrite a model picked for the draft", async () => {
+    const lanes = [
+      {
+        id: "lane-1",
+        name: "current-lane",
+        laneType: "worktree",
+        branchRef: "refs/heads/current-lane",
+        worktreePath: "/tmp/project-under-test/current-lane",
+      },
+      {
+        id: "lane-2",
+        name: "target-lane",
+        laneType: "worktree",
+        branchRef: "refs/heads/target-lane",
+        worktreePath: "/tmp/project-under-test/target-lane",
+      },
+    ] as any[];
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      lanes,
+      selectedLaneId: "lane-1",
+    });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: "xhigh",
+      codexFastMode: false,
+      executionMode: "focused",
+      updatedAt: "2026-05-20T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+    const { create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    let resolveLaneTwoSessions!: (rows: AgentChatSessionSummary[]) => void;
+    const laneTwoSessions = new Promise<AgentChatSessionSummary[]>((resolve) => {
+      resolveLaneTwoSessions = resolve;
+    });
+    window.ade.agentChat.list = vi.fn().mockImplementation(async ({ laneId }: { laneId: string }) => (
+      laneId === "lane-2" ? laneTwoSessions : []
+    )) as any;
+
+    function DraftLaneHarness() {
+      const [laneId, setLaneId] = React.useState("lane-1");
+      return (
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={laneId}
+            forceDraftMode
+            embeddedWorkLayout
+            availableLanes={lanes}
+            onLaneChange={setLaneId}
+          />
+        </MemoryRouter>
+      );
+    }
+
+    render(<DraftLaneHarness />);
+
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Launch on the selected lane and model." } });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /target-lane/i }));
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    await act(async () => {
+      resolveLaneTwoSessions([
+        buildSession("lane-2-previous", {
+          laneId: "lane-2",
+          model: "gpt-5.4",
+          modelId: "openai/gpt-5.4",
+          reasoningEffort: "high",
+        }),
+      ]);
+      await laneTwoSessions;
+    });
+
+    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(claudeLabel)}`, "i") })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-2",
+        provider: "claude",
+        modelId: "anthropic/claude-sonnet-4-6",
+      }));
+    });
+  });
+
   it("loads Claude slash commands for a draft chat before session creation", async () => {
     installAdeMocks({ sessions: [], includeClaudeModel: true });
     vi.mocked(window.ade.agentChat.slashCommands).mockImplementation(async (args) => {

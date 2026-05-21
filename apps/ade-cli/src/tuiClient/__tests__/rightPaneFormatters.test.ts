@@ -42,6 +42,39 @@ describe("rightPaneFormatters", () => {
     expect(body).not.toContain("\"title\"");
   });
 
+  it("formats PR create links from the new action envelope", () => {
+    const body = formatPrSummary({
+      pr: {
+        id: "pr-42",
+        laneId: "lane-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/acme/ade/pull/42",
+        title: "Add PR deeplinks",
+        state: "open",
+      },
+      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
+
+    expect(body).toContain("#42 · open");
+    expect(body).toContain("github   https://github.com/acme/ade/pull/42");
+    expect(body).toContain("ade      https://ade.app/open?type=pr&repo=acme%2Fade&number=42");
+  });
+
+  it("derives an ADE PR URL when repo metadata is present", () => {
+    const body = formatPrSummary({
+      repoOwner: "acme",
+      repoName: "ade",
+      githubPrNumber: 7,
+      title: "Review parity",
+      githubUrl: "https://github.com/acme/ade/pull/7",
+    });
+
+    expect(body).toContain("github   https://github.com/acme/ade/pull/7");
+    expect(body).toContain("ade      https://ade.app/open?type=pr&repo=acme%2Fade&number=7");
+  });
+
   it("summarizes PR checks", () => {
     const body = formatPrChecks([
       { name: "ci / unit", status: "completed", conclusion: "success", completedAt: "2026-05-20T12:34:00.000Z" },

@@ -11,7 +11,7 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, and parallel model-slot controls. |
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
@@ -104,16 +104,19 @@ and a footer that contains the composer.
   isn't connected.
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
-- **Slash commands.** Local commands (`/clear`, `/login`) are always
-  available and resolved renderer-side. SDK commands and project/user
-  Claude commands discovered by `claudeSlashCommandDiscovery` merge in
-  through `ade.agentChat.slashCommands`; discovery walks ancestor
-  `.claude` roots and reads `.claude/commands`, `~/.claude/commands`,
-  `.claude/skills/*/SKILL.md`, and `~/.claude/skills/*/SKILL.md` command
-  metadata so both command files and local skills can appear in the
-  picker. Only `/clear` with `source: "local"` is intercepted client-side
-  — every other command is sent to the agent verbatim so provider-native
-  commands still flow. The composer also
+- **Slash commands.** Local commands (`/clear`, `/login`) are available
+  where the current provider owns them and are resolved renderer-side.
+  SDK commands, Codex prompt files (`.codex/prompts/**/*.md`), Claude
+  command files (`.claude/commands/**/*.md`), and Agent Skill entries
+  from `.claude/skills`, `.agents/skills`, `.ade/skills`,
+  `.codex/skills`, inherited `ADE_AGENT_SKILLS_DIRS`, and bundled ADE
+  skill roots merge in through `ade.agentChat.slashCommands`.
+  Claude sessions use Claude SDK/runtime commands plus Claude-compatible
+  command/skill files; Codex, Droid, Cursor, and OpenCode also expose
+  the filesystem-backed prompt/skill list when their native runtimes do
+  not auto-list it. Only `/clear` with `source: "local"` is intercepted
+  client-side — every other command is sent to the agent verbatim so
+  provider-native commands still flow. The composer also
   decides whether a leading-slash draft is a command or just a sentence
   via `isProviderSlashCommandInput` (heuristics in
   `shared/chatSlashCommands.ts`): `"/rebase the lane?"` is treated as

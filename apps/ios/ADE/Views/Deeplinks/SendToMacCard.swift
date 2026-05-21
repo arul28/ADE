@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Categorises an `ade://...` URL that iOS can't open natively so the
+/// Categorises an ADE URL that iOS can't open natively so the
 /// `SendToMacCard` can render a short, human description ("Lane shared with
 /// you" / "Branch feat-x in acme/widget" / "ADE-123") without re-parsing the
 /// URL inside the view body.
@@ -8,6 +8,7 @@ struct SendToMacTarget: Equatable, Identifiable {
   enum Kind: Equatable {
     case lane(id: String)
     case repoBranch(owner: String, repo: String, branch: String)
+    case pr(owner: String, repo: String, number: Int)
     case linearIssue(identifier: String, branch: String?)
     case other
   }
@@ -20,11 +21,15 @@ struct SendToMacTarget: Equatable, Identifiable {
   /// from spawning duplicate sheets.
   var id: String { url.absoluteString }
 
-  /// Best-effort parse of an `ade://...` URL. Unknown shapes fall back to
-  /// `.other` so the card can still render a generic "Open this on your Mac"
-  /// message rather than refusing to display.
+  /// Best-effort parse of ADE's custom scheme and HTTPS mirror. Unknown
+  /// shapes fall back to `.other` so the card can still render a generic
+  /// "Open this on your Mac" message rather than refusing to display.
   init(url: URL) {
     self.url = url
+    if let kind = SendToMacTarget.parseHttpsOpenURL(url) {
+      self.kind = kind
+      return
+    }
     let host = url.host?.lowercased()
     let parts = url.pathComponents.filter { $0 != "/" }
     switch host {
@@ -48,6 +53,16 @@ struct SendToMacTarget: Equatable, Identifiable {
       } else {
         self.kind = .other
       }
+    case "pr":
+      if parts.count >= 3,
+         !parts[0].isEmpty,
+         !parts[1].isEmpty,
+         let number = Int(parts[2]),
+         number > 0 {
+        self.kind = .pr(owner: parts[0], repo: parts[1], number: number)
+      } else {
+        self.kind = .other
+      }
     case "linear-issue":
       // `ade://linear-issue/<ADE-123>[?branch=<branch>]` — Linear hand-off.
       // The branch hint is optional; the desktop resolves the actual lane
@@ -68,10 +83,45 @@ struct SendToMacTarget: Equatable, Identifiable {
     }
   }
 
+  private static func parseHttpsOpenURL(_ url: URL) -> Kind? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          components.scheme?.lowercased() == "https",
+          components.host?.lowercased() == "ade.app",
+          components.path == "/open" else {
+      return nil
+    }
+    let query = adeQueryValues(from: components)
+    switch query["type"]?.lowercased() {
+    case "lane":
+      guard let id = query["id"], !id.isEmpty else { return .other }
+      return .lane(id: id)
+    case "branch":
+      guard let repo = splitRepo(query["repo"]),
+            let branch = query["branch"],
+            !branch.isEmpty else {
+        return .other
+      }
+      return .repoBranch(owner: repo.owner, repo: repo.repo, branch: branch)
+    case "pr":
+      guard let repo = splitRepo(query["repo"]),
+            let number = positiveInteger(query["number"]) else {
+        return .other
+      }
+      return .pr(owner: repo.owner, repo: repo.repo, number: number)
+    case "linear-issue":
+      guard let identifier = query["issue"], !identifier.isEmpty else { return .other }
+      let branch = query["branch"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+      return .linearIssue(identifier: identifier, branch: branch?.isEmpty == false ? branch : nil)
+    default:
+      return .other
+    }
+  }
+
   var headline: String {
     switch kind {
     case .lane: return "Lane shared with you"
     case .repoBranch(_, _, _): return "Branch shared with you"
+    case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
     case .other: return "Shared from your Mac"
     }
@@ -83,6 +133,8 @@ struct SendToMacTarget: Equatable, Identifiable {
       return "Lane \(shortenedLaneId(id))"
     case .repoBranch(let owner, let repo, let branch):
       return "Branch \(branch) in \(owner)/\(repo)"
+    case .pr(let owner, let repo, let number):
+      return "#\(number) in \(owner)/\(repo)"
     case .linearIssue(let identifier, let branch):
       if let branch, !branch.isEmpty {
         return "\(identifier) on \(branch)"
@@ -181,6 +233,7 @@ struct SendToMacCard: View {
     switch target.kind {
     case .lane: return "square.stack.3d.up"
     case .repoBranch: return "arrow.triangle.branch"
+    case .pr: return "arrow.triangle.merge"
     case .linearIssue: return "smallcircle.filled.circle"
     case .other: return "link"
     }
@@ -319,4 +372,33 @@ struct SendToMacCard: View {
     try? await Task.sleep(nanoseconds: 600_000_000)
     onDismiss()
   }
+}
+
+private func splitRepo(_ value: String?) -> (owner: String, repo: String)? {
+  guard let value else { return nil }
+  let pieces = value.split(separator: "/", maxSplits: 1).map(String.init)
+  guard pieces.count == 2,
+        !pieces[0].isEmpty,
+        !pieces[1].isEmpty else {
+    return nil
+  }
+  return (pieces[0], pieces[1])
+}
+
+private func positiveInteger(_ value: String?) -> Int? {
+  guard let value,
+        let number = Int(value),
+        number > 0 else {
+    return nil
+  }
+  return number
+}
+
+private func adeQueryValues(from components: URLComponents) -> [String: String] {
+  var query: [String: String] = [:]
+  for item in components.queryItems ?? [] {
+    guard let value = item.value else { continue }
+    query[item.name.lowercased()] = value
+  }
+  return query
 }

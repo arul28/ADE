@@ -435,7 +435,16 @@ function createRuntime() {
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
-      createFromLane: vi.fn(async () => ({ id: "pr-new", laneId: "lane-1", title: "New PR", status: "open" })),
+      createFromLane: vi.fn(async () => ({
+        id: "pr-new",
+        laneId: "lane-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/acme/ade/pull/42",
+        title: "New PR",
+        status: "open",
+      })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
       getChecks: vi.fn(async () => [
@@ -4538,6 +4547,10 @@ describe("adeRpcServer", () => {
       closeLinearIssueOnMerge: true,
     });
     expect(created?.isError).toBeUndefined();
+    expect(created?.structuredContent).toMatchObject({
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
       laneId: "lane-1",
       baseBranch: "main",

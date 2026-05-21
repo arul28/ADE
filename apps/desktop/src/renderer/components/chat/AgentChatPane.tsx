@@ -1799,6 +1799,10 @@ export function AgentChatPane({
     surfaceProfile,
     workDraftKind,
   }), [laneId, projectRoot, surfaceProfile, workDraftKind]);
+  const draftLaunchConfigScopeKey = useMemo(
+    () => `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftKind}`,
+    [laneId, projectRoot, surfaceProfile, workDraftKind],
+  );
   const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -2055,6 +2059,7 @@ export function AgentChatPane({
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
+  const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
   const selectedSession = useMemo(
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
@@ -2884,6 +2889,9 @@ export function AgentChatPane({
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
+      if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) {
+        return;
+      }
       const lastLaunchConfig = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
       if (lastLaunchConfig) {
         applyLaunchConfigToComposer(lastLaunchConfig);
@@ -2927,7 +2935,7 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [applyLaunchConfigToComposer, initialNativeControls, lastLaunchConfigStorageKey]);
+  }, [applyLaunchConfigToComposer, draftLaunchConfigScopeKey, initialNativeControls, lastLaunchConfigStorageKey]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -3559,6 +3567,8 @@ export function AgentChatPane({
     pendingSelectedSessionIdRef.current = null;
     appliedInitialSessionIdRef.current = initialSessionId ?? null;
     eagerCreateFiredRef.current = false;
+    draftLaunchConfigHydratedRef.current = null;
+    draftLaunchConfigTouchedKeyRef.current = null;
     if (forceDraft && !lockSessionId) {
       draftSelectionLockedRef.current = true;
       setSelectedSessionId(null);
@@ -3593,7 +3603,8 @@ export function AgentChatPane({
 
   useEffect(() => {
     if (selectedSessionId || lockSessionId) return;
-    const draftKey = `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftKind}`;
+    if (draftLaunchConfigTouchedKeyRef.current === draftLaunchConfigScopeKey) return;
+    const draftKey = draftLaunchConfigScopeKey;
     const latestSessionConfig = sessions[0]
       ? buildLastLaunchConfig(sessions[0], initialNativeControls)
       : null;
@@ -3614,6 +3625,7 @@ export function AgentChatPane({
   }, [
     applyLaunchConfigToComposer,
     initialNativeControls,
+    draftLaunchConfigScopeKey,
     laneId,
     lastLaunchConfigStorageKey,
     lockSessionId,
@@ -5832,6 +5844,9 @@ export function AgentChatPane({
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+    }
 
     const nextControls: NativeControlState = {
       ...nativeControlsRef.current,
@@ -5914,6 +5929,7 @@ export function AgentChatPane({
 
     await updatePromise;
   }, [
+    draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
     refreshSessions,
@@ -5931,6 +5947,9 @@ export function AgentChatPane({
 
   const handleReasoningEffortChange = useCallback((nextReasoningEffort: string | null) => {
     const previousReasoningEffort = reasoningEffort;
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+    }
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -5959,6 +5978,7 @@ export function AgentChatPane({
       setError(err instanceof Error ? err.message : String(err));
     });
   }, [
+    draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
     reasoningEffort,
@@ -5969,6 +5989,9 @@ export function AgentChatPane({
 
   const handleCodexFastModeChange = useCallback((enabled: boolean) => {
     const previousFastMode = codexFastMode;
+    if (!selectedSessionId) {
+      draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+    }
     setCodexFastMode(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -6010,6 +6033,7 @@ export function AgentChatPane({
     void updatePromise.catch(() => {});
   }, [
     codexFastMode,
+    draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
     refreshSessions,
@@ -6767,6 +6791,8 @@ export function AgentChatPane({
             onClick={() => {
               pendingSelectedSessionIdRef.current = null;
               draftSelectionLockedRef.current = true;
+              draftLaunchConfigHydratedRef.current = null;
+              draftLaunchConfigTouchedKeyRef.current = null;
               setError(null);
               setSelectedSessionId(null);
               setDraft("");
@@ -6876,6 +6902,9 @@ export function AgentChatPane({
               }
               if (isPersistentIdentitySurface && sessionMutationKind) {
                 return;
+              }
+              if (!selectedSessionId) {
+                draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
               }
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {

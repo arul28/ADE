@@ -19,6 +19,12 @@ function joinPath(root: string, ...parts: string[]): string {
   return [root.replace(/[\\/]+$/, ""), ...parts.map((part) => part.replace(/^[\\/]+|[\\/]+$/g, ""))].join(sep);
 }
 
+function parentPath(value: string): string | null {
+  const normalized = value.replace(/[\\/]+$/, "");
+  const parent = normalized.replace(/[\\/][^\\/]+$/, "");
+  return parent && parent !== normalized ? parent : null;
+}
+
 function addPath(target: string[], seen: Set<string>, value: string | null | undefined): void {
   const normalized = normalizePathEntry(value);
   if (!normalized) return;
@@ -26,6 +32,35 @@ function addPath(target: string[], seen: Set<string>, value: string | null | und
   if (seen.has(key)) return;
   seen.add(key);
   target.push(normalized);
+}
+
+function homePath(env: NodeJS.ProcessEnv): string | null {
+  const home = normalizePathEntry(env.HOME ?? env.USERPROFILE);
+  if (home) return home;
+  const drive = normalizePathEntry(env.HOMEDRIVE);
+  const pathPart = String(env.HOMEPATH ?? "").trim();
+  return drive && pathPart ? normalizePathEntry(`${drive}${pathPart}`) : null;
+}
+
+const ANCESTOR_SKILL_DIRS = [".claude", ".agents", ".ade", ".codex"] as const;
+type AncestorSkillDir = (typeof ANCESTOR_SKILL_DIRS)[number];
+
+function addAncestorSkillRoots(
+  roots: string[],
+  seen: Set<string>,
+  cwd: string | null | undefined,
+  dirName: AncestorSkillDir,
+  home: string | null,
+): void {
+  let current = normalizePathEntry(cwd);
+  if (!current) return;
+  for (let depth = 0; depth < 25; depth += 1) {
+    addPath(roots, seen, joinPath(current, dirName, "skills"));
+    if (home && current.toLowerCase() === home.toLowerCase()) break;
+    const parent = parentPath(current);
+    if (!parent) break;
+    current = parent;
+  }
 }
 
 export function splitAdeAgentSkillRoots(value: string | null | undefined): string[] {
@@ -57,10 +92,12 @@ export function getAdeAgentSkillRootCandidates(options: {
   const seen = new Set<string>();
 
   const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
-  if (cwd) {
+  const processCwd = typeof proc?.cwd === "function" ? proc.cwd() : null;
+  for (const rootCwd of [cwd, processCwd]) {
+    if (!rootCwd) continue;
     // Prefer the active lane worktree before inherited app roots.
-    addPath(roots, seen, joinPath(cwd, "apps", "desktop", "resources", "agent-skills"));
-    addPath(roots, seen, joinPath(cwd, "resources", "agent-skills"));
+    addPath(roots, seen, joinPath(rootCwd, "apps", "desktop", "resources", "agent-skills"));
+    addPath(roots, seen, joinPath(rootCwd, "resources", "agent-skills"));
   }
 
   for (const root of splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV])) addPath(roots, seen, root);
@@ -83,12 +120,42 @@ export function getAdeAgentSkillRootCandidates(options: {
   return roots;
 }
 
+export function getAgentSkillRootCandidates(options: {
+  env?: NodeJS.ProcessEnv;
+  resourcesPath?: string | null;
+  cwd?: string | null;
+  dirname?: string | null;
+  home?: string | null;
+  includeDeepSourceFallbacks?: boolean;
+} = {}): string[] {
+  const proc = processRef();
+  const env = options.env ?? proc?.env ?? {};
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  const cwd = options.cwd ?? (typeof proc?.cwd === "function" ? proc.cwd() : null);
+
+  const home = normalizePathEntry(options.home) ?? homePath(env);
+  for (const dirName of ANCESTOR_SKILL_DIRS) {
+    addAncestorSkillRoots(roots, seen, cwd, dirName, home);
+  }
+
+  if (home) {
+    for (const dirName of ANCESTOR_SKILL_DIRS) {
+      addPath(roots, seen, joinPath(home, dirName, "skills"));
+    }
+  }
+
+  for (const root of getAdeAgentSkillRootCandidates(options)) addPath(roots, seen, root);
+
+  return roots;
+}
+
 export function getAdeAgentSkillRootsForPrompt(options: {
   env?: NodeJS.ProcessEnv;
   resourcesPath?: string | null;
   cwd?: string | null;
 } = {}): string[] {
-  return getAdeAgentSkillRootCandidates(options).slice(0, 4);
+  return getAgentSkillRootCandidates(options);
 }
 
 export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): string {
@@ -96,7 +163,7 @@ export function formatAdeAgentSkillRootsForPrompt(roots: readonly string[]): str
     .map((root) => normalizePathEntry(root))
     .filter((root): root is string => Boolean(root));
   if (!normalized.length) {
-    return "The exact bundled ADE skills root is exposed as `ADE_AGENT_SKILLS_DIRS` when ADE launches this CLI; inspect that env var if your runtime does not auto-list ADE skills.";
+    return "The exact agent skill roots are exposed as `ADE_AGENT_SKILLS_DIRS` when ADE launches this CLI; inspect that env var if your runtime does not auto-list skills.";
   }
-  return `Bundled ADE skills root${normalized.length === 1 ? "" : "s"} for this session: ${normalized.join(", ")}. Read \`<root>/<skill-name>/SKILL.md\` on demand when a named ADE skill is relevant.`;
+  return `Agent skill root${normalized.length === 1 ? "" : "s"} for this session: ${normalized.join(", ")}. Read \`<root>/<skill-name>/SKILL.md\` on demand when a named skill is relevant.`;
 }

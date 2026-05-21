@@ -253,8 +253,9 @@ A handful have more logic:
   shell command (the `shell` provider takes no startup payload at all).
   The host resolves the requested lane worktree before building that
   launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
-  the lane's bundled `agent-skills` root instead of whichever project
-  root the daemon process happened to start from.
+  lane-local `.claude` / `.agents` / `.ade` / `.codex` skill dirs and
+  bundled ADE resources instead of whichever project root the daemon
+  process happened to start from.
   Claude launches mint a pre-assigned `--session-id` upfront via
   `randomUUID()` so continuation works as soon as the row exists.
   After `ptyService.create` returns, any `initialInput`

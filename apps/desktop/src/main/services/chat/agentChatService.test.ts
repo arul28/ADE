@@ -4633,7 +4633,18 @@ describe("createAgentChatService", () => {
       expect(names).not.toContain("/apps");
     });
 
-    it("returns local commands for a opencode session", async () => {
+    it("returns local and filesystem-backed skill commands for an opencode session", async () => {
+      const skillDir = path.join(tmpRoot, ".agents", "skills", "deploy-helper");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
+        "---",
+        "name: deploy-helper",
+        "description: Use this skill for deployment help",
+        "---",
+        "",
+        "Deploy safely.",
+        "",
+      ].join("\n"));
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -4648,6 +4659,13 @@ describe("createAgentChatService", () => {
       const clearCmd = commands.find((c: any) => c.name === "/clear");
       expect(clearCmd).toBeDefined();
       expect(clearCmd!.source).toBe("local");
+      expect(commands).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: "/deploy-helper",
+          description: "Use this skill for deployment help",
+          source: "sdk",
+        }),
+      ]));
     });
 
     it("returns Claude and Codex prompt commands plus /clear for a droid lane", async () => {

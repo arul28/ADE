@@ -16,6 +16,7 @@ import {
   CliDeeplinkUsageError,
   runDeeplinkCommand,
 } from "./commands/deeplinks";
+import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   findAdeManagedWorktreeRoot,
@@ -83,6 +84,7 @@ type FormatterId =
   | "files-tree"
   | "files-search"
   | "prs-list"
+  | "pr-create"
   | "pr-detail"
   | "pr-checks"
   | "pr-comments"
@@ -998,7 +1000,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR from a lane
+    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
@@ -11564,6 +11566,47 @@ function cell(value: unknown, width = 42): string {
   return truncateCell(String(value), width);
 }
 
+function positiveInteger(value: unknown): number | null {
+  let parsed = NaN;
+  if (typeof value === "number") parsed = value;
+  else if (typeof value === "string") parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function getPrCreateLinks(value: unknown): {
+  pr: JsonObject;
+  githubUrl: string | null;
+  adeUrl: string | null;
+} {
+  const result = unwrapActionEnvelope(value);
+  const root = isRecord(result) ? result : {};
+  const pr = firstRecord(root, ["pr"]) ?? root;
+  const githubUrl =
+    asString(root.githubUrl) ??
+    asString(root.githubPrUrl) ??
+    asString(pr.githubUrl) ??
+    asString(pr.url);
+  const explicitAdeUrl = asString(root.adeUrl) ?? asString(root.adePrUrl);
+  const repoOwner = asString(pr.repoOwner);
+  const repoName = asString(pr.repoName);
+  const prNumber = positiveInteger(pr.githubPrNumber ?? pr.prNumber ?? pr.number);
+  const derivedAdeUrl = repoOwner && repoName && prNumber
+    ? buildDeeplink({ kind: "pr", repoOwner, repoName, prNumber })
+    : null;
+  return { pr, githubUrl, adeUrl: explicitAdeUrl ?? derivedAdeUrl };
+}
+
+function summarizePrCreateResult(value: unknown): unknown {
+  const result = unwrapActionEnvelope(value);
+  if (!isRecord(result)) return result;
+  const { githubUrl, adeUrl } = getPrCreateLinks(result);
+  return {
+    ...result,
+    ...(githubUrl ? { githubUrl } : {}),
+    ...(adeUrl ? { adeUrl } : {}),
+  };
+}
+
 function formatAutomationRunDetail(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const run = isRecord(value.run) ? value.run : value;
@@ -11766,6 +11809,20 @@ function formatPrList(value: unknown): string {
     ]),
     "ADE pull requests\n(no PRs)",
   );
+}
+
+function formatPrCreate(value: unknown): string {
+  const { pr, githubUrl, adeUrl } = getPrCreateLinks(value);
+  const prNumber = positiveInteger(pr.githubPrNumber ?? pr.prNumber ?? pr.number);
+  return renderKeyValues("ADE pull request created", [
+    ["id", pr.id],
+    ["number", prNumber ? `#${prNumber}` : null],
+    ["title", pr.title],
+    ["state", pr.state ?? pr.status],
+    ["lane", pr.laneId],
+    ["GitHub URL", githubUrl],
+    ["ADE URL", adeUrl],
+  ]);
 }
 
 function formatPrChecks(value: unknown): string {
@@ -12895,6 +12952,8 @@ function formatTextOutput(
       return formatFilesSearch(value);
     case "prs-list":
       return formatPrList(value);
+    case "pr-create":
+      return formatPrCreate(value);
     case "pr-detail":
       return renderKeyValues(
         "ADE pull request",
@@ -12999,6 +13058,7 @@ function inferFormatter(
   if (label === "file search" || label === "file quick-open")
     return "files-search";
   if (label === "pr list" || label === "pr list open") return "prs-list";
+  if (label === "pr create") return "pr-create";
   if (label === "pr detail" || label === "pr health") return "pr-detail";
   if (label === "pr checks") return "pr-checks";
   if (label === "pr comments") return "pr-comments";
@@ -13174,6 +13234,10 @@ function summarizeExecution(args: {
       attempts: [],
       timeline: [],
     };
+  }
+
+  if (plan.label === "PR create") {
+    return summarizePrCreateResult(values.result ?? values);
   }
 
   const result = values.result ?? values;

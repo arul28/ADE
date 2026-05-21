@@ -194,6 +194,50 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  it("uses an explicit local runtime root over the window session binding during project switches", async () => {
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        ok: true,
+        domain: "lane",
+        action: "list",
+        result: [],
+        statusHints: {},
+      })),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: localBinding("/old-repo"),
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/new-repo",
+          request: {
+            domain: "lane",
+            action: "list",
+            args: {},
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ result: [] });
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/new-repo",
+      expect.objectContaining({
+        domain: "lane",
+        action: "list",
+      }),
+    );
+  });
+
   it("forwards remote project runtime actions through the selected target and project", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteConnectMock.mockResolvedValue({

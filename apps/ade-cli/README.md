@@ -239,7 +239,7 @@ ade git push --lane lane-id
 ade git branches --lane lane-id --text
 ade git user-identity --lane lane-id --text
 ade diff patch --lane lane-id --path src/file.ts --text
-ade prs create --lane lane-id --base main --title "Fix checkout flow"
+ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed

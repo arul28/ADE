@@ -23,13 +23,13 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `scripts/tui-web.mjs` | Dev browser mirror for `ade code`: ensures the dev runtime, spawns one PTY, serves xterm.js + WebSocket bridge (`npm run dev:code:web`). |
 | `apps/ade-cli/src/cli.ts` | Resolves the built or source TUI entry and forwards the parsed launch context to `runAdeCodeCli`. |
 | `apps/ade-cli/src/tuiClient/cli.tsx` | TUI entry: argv parsing, project discovery, connection bootstrap, Ink mount. Built to `apps/ade-cli/dist/tuiClient/cli.mjs`. |
-| `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. Owns the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. |
+| `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. Owns the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. Also backs `/skills` by listing Agent Skill roots from project, user, inherited, and bundled ADE locations, independent of the active provider. |
 | `apps/ade-cli/src/tuiClient/deeplinkRow.ts` | Pure helper used by the `Ctrl+Y` keybinding. Maps the focused lane or PR row (including parsing a GitHub PR URL when the right pane only carries the URL) onto a `DeeplinkTarget` and returns the built `ade://` URL. Tested in `tuiClient/__tests__/deeplinkKeybind.test.ts`. |
 | `apps/ade-cli/src/commands/deeplinks.ts` | `ade open`, `ade link`, and `ade linear install` subcommands. Shares the parser + builder with the desktop main process so URLs round-trip across both surfaces. See [features/deeplinks/README.md](../deeplinks/README.md). |
 | `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
 | `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation, provider readiness, API-key status, OpenCode diagnostics, project slash-command discovery, lane diff stats (`listLaneDiffStats`), per-lane PR summaries (`listPrsByLane`), the Claude steer family (`steerChatMessage`, `cancelSteerMessage`, `editSteerMessage`, `dispatchSteerMessage`), the provider-grouped model catalog (`getModelCatalog(args?: AgentChatModelCatalogArgs)` → `AgentChatModelCatalog`), and the cross-surface model-picker favorites / recents (`getModelPickerFavorites`, `toggleModelPickerFavorite`, `getModelPickerRecents`, `pushModelPickerRecent`) backed by the top-level `modelPicker.*` JSON-RPC methods on `adeRpcServer`. |
-| `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships `/lane delete` (right-pane confirmation form that destroys the active lane) and `/effort` (reasoning-effort-only picker, a narrower companion to `/model`). `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. |
+| `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships `/lane delete` (right-pane confirmation form that destroys the active lane), `/effort` (reasoning-effort-only picker, a narrower companion to `/model`), and provider-agnostic `/skills` for Agent Skill discovery. `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. |
 | `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | Pure formatters for right-pane result panes (PR summary / review / checks / comments, memory search, Linear status, system details). Keeps `app.tsx` free of ad-hoc rendering helpers. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
 | `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream. Produces `AggregatedBlock`s (assistant text, tool-calls / files-changed / plan / memory / compaction groups, runtime-activity rows for subagent and activity envelopes, queued steers) and `derivePendingSteers`, consumed by `ChatView` and the right-pane steer view. |
@@ -124,7 +124,7 @@ Heartbeats are kept alive with `startTuiHeartbeat` so the runtime knows the chat
 
 ## Slash commands
 
-`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. The TUI also discovers project command files and Codex prompts before a chat exists, then refreshes against server-provided `AgentChatSlashCommand`s from the active runtime via `getSlashCommands`. Provider/runtime commands win over same-named built-ins except for local terminal controls such as `/login`, `/quit`, and `/clear`.
+`commands.ts` exports the built-in slash command catalog. `placement` decides whether the command runs inline in the chat or opens the right pane. The TUI also discovers project command files, Codex prompts, and Agent Skill roots before a chat exists, then refreshes against server-provided `AgentChatSlashCommand`s from the active runtime via `getSlashCommands`. Provider/runtime commands win over same-named built-ins except for local terminal controls such as `/login`, `/quit`, and `/clear`.
 
 Inline (acts on chat or shell):
 
@@ -154,7 +154,7 @@ Right pane (open the contextual drawer):
 | `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |
 | `/agents` | List Claude agents from user/project config (Claude only). |
 | `/info` | Open the Chat Info pane for the active chat (plan, Codex goal, subagents). |
-| `/skills` | List Claude skills from user/project config (Claude only). |
+| `/skills` | List Agent Skills from project, user, inherited, and bundled ADE roots. |
 | `/context` | Show Claude context usage breakdown (Claude only). |
 | `/init` | Generate AGENTS.md and Claude pointer files (Claude only). |
 | `/status` | Project, lane, runtime state summary. |
@@ -186,7 +186,7 @@ Inline chat commands (run through the active Claude SDK session, Claude only):
 | `/fast [on\|off]` | Toggle Claude fast mode through the active SDK session. |
 | `/goal [<objective>\|clear\|pause\|resume]` | Set, pause, resume, or clear the chat goal. Token-budget management is intentionally not exposed — when a Codex thread reports `budget_limited`, ADE auto-clears the runtime budget and the goal banner stays in the active state. |
 
-Claude-only commands only appear in the slash palette when the active chat's provider is `claude`. The palette filters built-in entries by their `providers` whitelist so a Codex / OpenCode / Cursor chat does not show parity affordances that have no backing call.
+Claude-only commands only appear in the slash palette when the active chat's provider is `claude`. The palette filters built-in entries by their `providers` whitelist so a Codex / OpenCode / Cursor chat does not show parity affordances that have no backing call. `/skills` is deliberately provider-agnostic because it only reads markdown package roots and does not call a provider runtime.
 
 Several slash commands forward to a desktop route when issued from `ade code`:
 

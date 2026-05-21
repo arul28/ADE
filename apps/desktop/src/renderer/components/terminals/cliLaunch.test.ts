@@ -224,9 +224,11 @@ describe("buildTrackedCliStartupCommand", () => {
         laneWorktreePath: "/repo/.ade/worktrees/chat-lane",
       });
 
+      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/.claude/skills");
+      expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/.agents/skills");
       expect(launch.args.at(-1)).toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]?.startsWith(
-        "/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills",
+        "/repo/.ade/worktrees/chat-lane/.claude/skills",
       )).toBe(true);
     });
 
@@ -260,6 +262,8 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast --resume \"$ADE_CURSOR_CHAT_ID\"");
       expect(launch.startupCommand).toContain("Continue with cursor-agent --resume");
       expect(launch.startupCommand).toContain("Review this lane.");
+      expect(launch.startupCommand).toContain("ADE session guidance");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
     it("launches Droid through exec with model, reasoning, autonomy, guidance, and prompt", () => {
@@ -273,8 +277,10 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.command).toBe("droid");
       expect(launch.args).toEqual(expect.arrayContaining(["exec", "--model", "sonnet", "--reasoning-effort", "high", "--auto", "low"]));
       expect(launch.args.at(-1)).toContain("ADE session guidance");
+      expect(launch.args.at(-1)).toContain("ADE_AGENT_SKILLS_DIRS");
       expect(launch.args.at(-1)).toContain("Run the Droid path.");
       expect(launch.startupCommand).toContain("droid exec --model sonnet --reasoning-effort high --auto low");
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
     it("launches OpenCode with inline permission config", () => {

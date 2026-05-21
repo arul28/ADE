@@ -296,7 +296,9 @@ Renderer surfaces:
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
   through `--append-system-prompt`, while every other provider receives
   a leading prompt from `buildAdeCliInlineGuidance(...)`. Launch env also
-  carries `ADE_AGENT_SKILLS_DIRS` when a bundled skills root is known.
+  carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
+  lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
+  bundled ADE resources.
   The legacy
   `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
   are now thin wrappers over `buildTrackedCliLaunchCommand` for
@@ -345,10 +347,13 @@ Renderer surfaces:
   imports.
 - `apps/desktop/src/shared/adeCliGuidance.ts` — single source of truth
   for ADE session guidance injected into tracked CLI launches. Exposes
-  builders plus compatibility constants; callers pass lane-aware skill
-  roots so prompt text can point agents at the right bundled ADE skills.
+  builders plus the canonical bundled ADE skill list; callers pass
+  lane-aware skill roots so prompt text can point agents at the active
+  Agent Skills search path and explain the `<skill>/SKILL.md`
+  package shape.
 - `apps/desktop/src/shared/agentSkillRoots.ts` — resolves candidate
-  ADE Agent Skills roots from the active lane worktree, inherited
+  Agent Skill roots from the active lane worktree, ancestor and home
+  `.claude` / `.agents` / `.ade` / `.codex` directories, inherited
   `ADE_AGENT_SKILLS_DIRS`, packaged resources, and source fallbacks,
   then formats the prompt line / env var value.
 - `apps/desktop/src/renderer/components/terminals/workSurfaceVisibility.ts`

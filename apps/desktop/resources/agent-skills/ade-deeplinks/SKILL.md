@@ -116,6 +116,18 @@ cross-machine link to any Linear issue linked to the lane (Linear attachment
 + one-time comment). Agents do not need to call `ade link` for those flows —
 they fire on PR creation / Linear-link events.
 
+Agents should still include a user-facing ADE PR link when handing off a newly
+created or adopted PR. Use the GitHub PR URL for the browser link and the
+`adeUrl` printed by `ade prs create`. If the PR came from another path, mint
+the ADE link with:
+
+```bash
+ade link pr <owner/repo> <number> --no-clipboard
+```
+
+for the ADE link. Prefer the default HTTPS form in chat and terminal output
+because it is clickable, shareable, and upgrades into the ADE PRs tab.
+
 When you copy a deeplink from a lane context menu in the desktop UI, the
 right-click menu offers: Copy lane link, Copy branch link (cross-machine),
 Copy PR link, Copy Linear-issue link.

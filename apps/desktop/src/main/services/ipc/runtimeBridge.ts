@@ -596,7 +596,7 @@ export function registerRuntimeBridge({
     IPC.localRuntimeCallAction,
     async (
       event,
-      arg: { request: RemoteRuntimeActionRequest },
+      arg: { rootPath?: string | null; request: RemoteRuntimeActionRequest },
     ): Promise<RemoteRuntimeActionResult> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
@@ -617,10 +617,13 @@ export function registerRuntimeBridge({
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
       const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
+      const requestedRootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const rootPath =
-        binding?.kind === "local"
+        requestedRootPath ||
+        (binding?.kind === "local"
           ? binding.rootPath
-          : (session?.project?.rootPath ?? null);
+          : (session?.project?.rootPath ?? null));
       if (!rootPath) {
         throw new Error(
           "Local runtime project is not available for this window.",
@@ -641,7 +644,7 @@ export function registerRuntimeBridge({
     IPC.localRuntimeCallSync,
     async (
       event,
-      arg: { method: string; params?: Record<string, unknown> },
+      arg: { rootPath?: string | null; method: string; params?: Record<string, unknown> },
     ): Promise<unknown> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
@@ -654,10 +657,13 @@ export function registerRuntimeBridge({
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
       const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
+      const requestedRootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const rootPath =
-        binding?.kind === "local"
+        requestedRootPath ||
+        (binding?.kind === "local"
           ? binding.rootPath
-          : (session?.project?.rootPath ?? null);
+          : (session?.project?.rootPath ?? null));
       if (!rootPath) {
         throw new Error(
           "Local runtime project is not available for this window.",
@@ -675,7 +681,7 @@ export function registerRuntimeBridge({
     IPC.localRuntimeStreamEvents,
     async (
       event,
-      arg: { request?: RemoteRuntimeStreamEventsRequest },
+      arg: { rootPath?: string | null; request?: RemoteRuntimeStreamEventsRequest },
     ): Promise<RemoteRuntimeStreamEventsResult> => {
       if (!localRuntimeConnectionPool) {
         throw new Error("Local runtime daemon is not available.");
@@ -684,18 +690,24 @@ export function registerRuntimeBridge({
       const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
       const session = getWindowSession ? getWindowSession(windowId) : null;
       const binding = session?.binding;
+      const requestedRootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const rootPath =
-        binding?.kind === "local"
+        requestedRootPath ||
+        (binding?.kind === "local"
           ? binding.rootPath
-          : (session?.project?.rootPath ?? null);
+          : (session?.project?.rootPath ?? null));
       if (!rootPath) {
         return { events: [], nextCursor: 0, hasMore: false };
       }
-      if (binding?.kind === "local") {
+      if (binding?.kind === "local" || requestedRootPath) {
+        const bindingKey = requestedRootPath
+          ? `local:${requestedRootPath}`
+          : binding?.key ?? `local:${rootPath}`;
         ensureRuntimeEventSubscription(
           event.sender,
-          binding.key,
-          `${binding.key}:${arg?.request?.category ?? "*"}`,
+          bindingKey,
+          `${bindingKey}:${arg?.request?.category ?? "*"}`,
           (onEvent, onEnded) =>
             localRuntimeConnectionPool.subscribeEventsForRoot(
               rootPath,

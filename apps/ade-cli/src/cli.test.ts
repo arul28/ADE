@@ -2175,6 +2175,51 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("summarizes PR create output with GitHub and ADE links", () => {
+    const connection = {
+      mode: "headless" as const,
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      socketPath: "/tmp/project/.ade/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const summarized = summarizeExecution({
+      plan: { kind: "execute", label: "PR create", steps: [] },
+      connection,
+      values: {
+        result: {
+          pr: {
+            id: "pr-42",
+            laneId: "lane-1",
+            repoOwner: "acme",
+            repoName: "ade",
+            githubPrNumber: 42,
+            githubUrl: "https://github.com/acme/ade/pull/42",
+            title: "Add PR deeplinks",
+            state: "open",
+          },
+        },
+      },
+    } as any);
+
+    expect(summarized).toMatchObject({
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
+
+    const text = formatOutput(
+      summarized,
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "pr-create",
+    );
+    expect(text).toContain("ADE pull request created");
+    expect(text).toContain("GitHub URL");
+    expect(text).toContain("https://github.com/acme/ade/pull/42");
+    expect(text).toContain("ADE URL");
+    expect(text).toContain("https://ade.app/open?type=pr&repo=acme%2Fade&number=42");
+  });
+
   it("maps lane create Linear issue JSON to the typed RPC tool", () => {
     const plan = buildCliPlan([
       "lanes",

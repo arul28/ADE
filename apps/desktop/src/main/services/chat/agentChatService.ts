@@ -1671,7 +1671,6 @@ type ResolvedChatConfig = {
 
 const MAX_PENDING_STEERS = 10;
 const MAX_INJECTED_PROJECT_COMMANDS = 20;
-const MAX_INJECTED_PROJECT_SKILLS = 20;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
@@ -14448,9 +14447,7 @@ export function createAgentChatService(args: {
       const projectCommandFiles = projectSlashCommands.filter((cmd) => cmd.source === "command");
       const projectSkillFiles = projectSlashCommands.filter((cmd) => cmd.source === "skill");
       const visibleProjectCommandFiles = projectCommandFiles.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
-      const visibleProjectSkillFiles = projectSkillFiles.slice(0, MAX_INJECTED_PROJECT_SKILLS);
       const hiddenProjectCommandCount = projectCommandFiles.length - visibleProjectCommandFiles.length;
-      const hiddenProjectSkillCount = projectSkillFiles.length - visibleProjectSkillFiles.length;
       const formatDiscoveredCommand = (cmd: (typeof projectSlashCommands)[number]): string => {
         const desc = cmd.description.trim();
         const head = desc.length ? `- ${cmd.name} — ${desc}` : `- ${cmd.name}`;
@@ -14473,8 +14470,7 @@ export function createAgentChatService(args: {
           ...(projectSkillFiles.length ? [
             "",
             "Skills (autonomously usable when relevant):",
-            ...visibleProjectSkillFiles.map(formatDiscoveredCommand),
-            ...(hiddenProjectSkillCount > 0 ? [`- ${hiddenProjectSkillCount} more skill(s) hidden to keep startup context lean. Use slash command search or inspect skill roots if needed.`] : []),
+            ...projectSkillFiles.map(formatDiscoveredCommand),
           ] : []),
         ]
         : [];
@@ -21595,6 +21591,25 @@ export function createAgentChatService(args: {
       return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     };
 
+    const filesystemBackedCommands = (): AgentChatSlashCommand[] => {
+      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      const skillAndCommandFiles: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
+        .filter(isDispatchableClaudeSdkSlashCommand)
+        .map((cmd) => ({
+          name: cmd.name,
+          description: cmd.description,
+          argumentHint: cmd.argumentHint,
+          source: "sdk" as const,
+        }));
+      return mergeSlashCommands([promptCommands, skillAndCommandFiles]);
+    };
+
     // Claude SDK commands plus filesystem-backed Claude Code commands/skills.
     if (provider === "claude") {
       const runtimeCommands: AgentChatSlashCommand[] = (managed?.runtime?.kind === "claude" ? managed.runtime.slashCommands : [])
@@ -21627,49 +21642,13 @@ export function createAgentChatService(args: {
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
-        .filter(isVisibleCodexSlashCommand)
-        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
-      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
-        .filter(isDispatchableClaudeSdkSlashCommand)
-        .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
-      return mergeSlashCommands([promptCommands, claudeProjectCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
+      const promptCommands = filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
+      return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
-    // Droid uses Claude/Codex models under the hood, so surface the same
-    // filesystem-backed prompt commands codex exposes (Claude `.claude/commands`
-    // and Codex `.codex/prompts`) plus a local `/clear` for chat housekeeping.
-    if (provider === "droid") {
-      const promptCommands: AgentChatSlashCommand[] = discoverCodexSlashCommands(laneWorktreePath)
-        .map((cmd) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
-      const claudeProjectCommands: AgentChatSlashCommand[] = discoverClaudeSlashCommands(laneWorktreePath)
-        .filter(isDispatchableClaudeSdkSlashCommand)
-        .map((cmd) => ({
-          name: cmd.name,
-          description: cmd.description,
-          argumentHint: cmd.argumentHint,
-          source: "sdk" as const,
-        }));
-      return mergeSlashCommands([promptCommands, claudeProjectCommands, localCommands]);
-    }
-
-    // OpenCode / Cursor — only local commands
-    return localCommands;
+    // Droid, Cursor, and OpenCode can all use the same filesystem-backed prompt
+    // and skill list even when their native runtimes do not auto-list it.
+    return mergeSlashCommands([filesystemBackedCommands(), localCommands]);
   };
 
   const normalizeClaudeSessionTimestamp = (value: unknown): string | null => {
