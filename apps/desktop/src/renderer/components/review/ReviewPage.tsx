@@ -577,7 +577,9 @@ function formatReviewEvidenceLine(run: NormalizedRun, detail: NormalizedDetail |
   return "Evidence and saved artifacts are available below.";
 }
 
-function formatCompareTargetDescription(run: NormalizedRun): string {
+function formatCompareTargetDescription(
+  run: Pick<NormalizedRun, "target" | "compareTarget">,
+): string {
   if (run.target.mode === "working_tree") {
     return "Comparing against the current HEAD commit in this lane.";
   }

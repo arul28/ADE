@@ -186,6 +186,20 @@ alter table terminal_sessions add column chat_session_id text;
 
 create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id);
 
+alter table terminal_sessions add column owner_pid integer;
+
+create index if not exists idx_terminal_sessions_owner_pid on terminal_sessions(owner_pid);
+
+create table if not exists runtime_processes (
+      pid integer primary key,
+      role text not null,
+      project_root text,
+      started_at text not null,
+      last_seen text not null
+    );
+
+create index if not exists idx_runtime_processes_last_seen on runtime_processes(last_seen);
+
 create table if not exists claude_sessions (
       session_id text primary key,
       lane_id text not null,

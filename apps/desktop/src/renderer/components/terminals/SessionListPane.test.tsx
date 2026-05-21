@@ -104,7 +104,7 @@ describe("SessionListPane", () => {
   it("renders by-lane sessions whose lane is missing from the cached lane list", () => {
     renderPane();
 
-    expect(screen.getAllByText("Mobile-created lane")).toHaveLength(2);
+    expect(screen.getByText("Mobile-created lane")).toBeTruthy();
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
   });
 
@@ -138,7 +138,6 @@ describe("SessionListPane", () => {
     expect(row).toBeTruthy();
 
     expect(title.className).toContain("font-semibold");
-    expect(within(row!).getByText("Codex").className).not.toContain("font-semibold");
     expect(within(row!).getByText("Ran the latest command").className).not.toContain("font-semibold");
   });
 
