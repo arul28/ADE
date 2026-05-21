@@ -1030,6 +1030,28 @@ describe("ptyService", () => {
       }
     });
 
+    it("clears delayed startup command writes when disposed", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+        const created = await service.create({
+          laneId: "lane-1",
+          title: "Disposed delayed startup",
+          cols: 80,
+          rows: 24,
+          startupCommand: "echo disposed",
+          startupDelayMs: 180,
+        });
+
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        await vi.advanceTimersByTimeAsync(180);
+
+        expect(mockPty.write).not.toHaveBeenCalledWith("echo disposed\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("hydrates transcript reads from recent live output before the file stream flushes", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const created = await service.create({

@@ -207,8 +207,9 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     `normalizeStartupCommandDelayMs`; non-numeric / negative / `NaN`
     inputs collapse to `0`). When the delay is positive the write is
     scheduled with `setTimeout(...).unref()` so the timer never blocks
-    process exit, and the scheduled callback bails out if the PTY was
-    disposed in the meantime. This is what the renderer Work CLI
+    process exit; `closeEntry` / `dispose` clear the pending timer, and
+    the scheduled callback also bails out if the PTY was disposed in
+    the meantime. This is what the renderer Work CLI
     launch path uses (`WORK_CLI_STARTUP_DELAY_MS = 180` in
     `AgentChatPane`) to give the spawned shell a beat to finish
     drawing its initial prompt before the CLI invocation is typed in,
