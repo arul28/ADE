@@ -63,6 +63,7 @@ function descriptorToModelOption(descriptor: ModelDescriptor): AiModelDescriptor
     id: descriptor.id,
     label: descriptor.displayName,
     description: `${descriptor.family} (${describeModelSource(descriptor)})`,
+    ...(descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
   };
 }
 

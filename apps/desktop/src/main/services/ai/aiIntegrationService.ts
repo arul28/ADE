@@ -1176,10 +1176,12 @@ export function createAiIntegrationService(args: {
     const repoUrl = args.repoUrl.trim();
     if (!promptText) throw new Error("Prompt is required.");
     if (!repoUrl) throw new Error("Cursor cloud repo is required.");
+    const idempotencyKey = args.idempotencyKey?.trim() || undefined;
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await import("@cursor/sdk");
     const agent = await Agent.create({
       apiKey,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
       ...(args.modelId?.trim() ? { model: { id: args.modelId.trim() } } : {}),
       ...(args.agentName?.trim() ? { name: args.agentName.trim() } : {}),
       cloud: {
@@ -1192,7 +1194,7 @@ export function createAiIntegrationService(args: {
         skipReviewerRequest: args.skipReviewerRequest !== false,
       },
     });
-    const run = await agent.send(promptText);
+    const run = await agent.send(promptText, idempotencyKey ? { idempotencyKey } : undefined);
     const agentSummary: CursorCloudAgentSummary = {
       agentId: agent.agentId,
       name: args.agentName?.trim() || "Cursor cloud agent",
