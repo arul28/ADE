@@ -160,8 +160,8 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  Workspace, AI, Mobile Push, Integrations, Memory, Lane Templates,
-  and Usage. Onboarding / Help / Tours route deep links land in
+  Workspace, AI, Mobile Push, Integrations, Memory, and Lane Templates.
+  Onboarding / Help / Tours route deep links land in
   General (`TAB_ALIASES`); tutorial replay and tour entry points live
   under the Help menu in the top bar, not as a Settings tab. The
   legacy `OnboardingSection` was removed — its surface lives in the
@@ -210,17 +210,27 @@ Renderer — settings:
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget
   guardrails are now consolidated here; Settings no longer has a
-  Usage tab. The header shows weekly-window peaks per tracked
-  provider with green/amber/red thresholds at 75% / 100%; the panel
-  drills down into all reset windows, last-poll status, and per-
-  provider error chips. Cursor usage polling was removed (it required
-  a team-admin API key that desktop users almost never have); only
-  `claude` and `codex` are tracked in `TRACKED_PROVIDERS`. The popup
-  hydrates from `ade.usage.getSnapshot` and re-fetches via the
-  explicit Refresh control. Budget caps round-trip through
-  `ade.usage.getBudgetConfig` / `saveBudgetConfig`. Threshold
-  crossings (25 / 50 / 75 / 100 %) emit `UsageThresholdEvent`s the
-  notification bus turns into APNs alerts.
+  Usage tab. The header renders one compact chip per detected tracked
+  provider with the 5-hour window and the plan window (`wk` when a
+  weekly window is present, otherwise `mo`). Percent values are clamped
+  to 0-100, color through the green/amber/red thresholds at 75% /
+  100%, and show an ellipsis while missing. On mount, the button reads
+  the cached `ade.usage.getSnapshot`, immediately forces
+  `ade.usage.refresh`, ignores a slower cached startup read when a
+  fresher forced refresh has already landed, refreshes every 120 s, and
+  refreshes on window focus when the latest poll is older than 60 s.
+  Provider detection comes from `ade.ai.getStatus` on mount and every
+  5 min; CLIs not detected on the machine are hidden from the header,
+  while installed-but-unauthenticated providers stay visible in the
+  panel as "Not signed in". The panel auto-refreshes on open, subscribes
+  to usage `onUpdate`, and drills down into 5-hour, weekly, monthly,
+  and other reset windows, last-poll status, daily 7-day usage, and
+  per-provider error chips. Cursor usage polling was removed (it
+  required a team-admin API key that desktop users almost never have);
+  only `claude` and `codex` are tracked in `TRACKED_PROVIDERS`. Budget
+  caps round-trip through `ade.usage.getBudgetConfig` /
+  `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
+  `UsageThresholdEvent`s the notification bus turns into APNs alerts.
 - `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
   — proxy/preview configuration UI.
 - `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
