@@ -235,14 +235,6 @@ function hasNoticeDetail(detail: string | AgentChatNoticeDetail | undefined): bo
   );
 }
 
-function isNoticeMessageRedundantWithDetail(message: string, detail: string | AgentChatNoticeDetail): boolean {
-  const m = message.trim();
-  if (!m) return true;
-  if (typeof detail === "string") return m === detail.trim();
-  if (detail.summary?.trim() === m) return true;
-  return false;
-}
-
 function renderNoticeDetail(detail: string | AgentChatNoticeDetail): React.ReactNode {
   if (typeof detail === "string") {
     return <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">{detail}</div>;
@@ -1207,39 +1199,6 @@ function MinimalThought({ text, isLive }: { text: string; isLive: boolean }) {
   );
 }
 
-function MinimalMemoryNotice({
-  message,
-  detail,
-}: {
-  message: string;
-  detail: string | AgentChatNoticeDetail;
-}) {
-  const [open, setOpen] = useState(false);
-  const Caret = open ? CaretDown : CaretRight;
-  return (
-    <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        className="flex max-w-full items-center gap-1.5 py-0.5 text-left transition-colors hover:text-fg/80"
-      >
-        <Caret size={9} weight="bold" className="shrink-0 text-violet-400/45" />
-        <MagnifyingGlass size={12} weight="duotone" className="shrink-0 text-fg/40" />
-        <span className="font-medium text-fg/45">Memory</span>
-      </button>
-      {open ? (
-        <div className="mt-1.5 space-y-2 pl-4 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/55">
-          {message.trim() && !isNoticeMessageRedundantWithDetail(message, detail) ? (
-            <div className="text-fg/50">{message}</div>
-          ) : null}
-          {renderNoticeDetail(detail)}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 /* ── Tool result card ── */
 
 const TOOL_RESULT_TRUNCATE_LIMIT = 500;
@@ -1282,7 +1241,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
           {toolDisplay.secondaryLabel ? (
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
-          {preview.length && !event.tool.includes("memory") ? <span className="max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{preview}</span> : null}
+          {preview.length ? <span className="max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{preview}</span> : null}
           {event.status ? (
             <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}
@@ -2518,11 +2477,6 @@ function renderEvent(
             );
           })}
         </div>
-        {usage.memoryFiles?.length ? (
-          <div className="mt-3 border-t border-cyan-100/10 pt-2 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-cyan-100/40">
-            {usage.memoryFiles?.length ? <span>{usage.memoryFiles.length} memory file{usage.memoryFiles.length === 1 ? "" : "s"}</span> : null}
-          </div>
-        ) : null}
       </div>
     );
   }
@@ -2565,7 +2519,6 @@ function renderEvent(
       rate_limit: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
       hook: { border: "border-violet-500/18", bg: "bg-violet-500/[0.06]", text: "text-violet-300", icon: Note },
       file_persist: { border: "border-emerald-500/18", bg: "bg-emerald-500/[0.06]", text: "text-emerald-300", icon: Note },
-      memory: { border: "border-cyan-500/18", bg: "bg-cyan-500/[0.06]", text: "text-cyan-300", icon: MagnifyingGlass },
       info: { border: "border-border/14", bg: "bg-surface-recessed/70", text: "text-muted-fg/55", icon: Note },
       warning: { border: "border-amber-500/18", bg: "bg-amber-500/[0.06]", text: "text-amber-300", icon: Warning },
       error: { border: "border-red-500/18", bg: "bg-red-500/[0.06]", text: "text-red-300", icon: Warning },
@@ -2580,10 +2533,6 @@ function renderEvent(
     const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
       ? "usage"
       : event.noticeKind.replace("_", " ");
-
-    if (hasDetail && event.noticeKind === "memory" && event.detail) {
-      return <MinimalMemoryNotice message={event.message} detail={event.detail} />;
-    }
 
     if (hasDetail && event.noticeKind === "rate_limit" && inferredSeverity !== "error") {
       const detail = typeof event.detail === "string"

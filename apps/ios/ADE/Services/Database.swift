@@ -381,11 +381,7 @@ final class DatabaseService {
       throw error
     }
 
-    var rebuiltFts = false
-    if touchedTables.contains("unified_memories") {
-      try rebuildUnifiedMemoriesFts()
-      rebuiltFts = true
-    }
+    let rebuiltFts = false
 
     if appliedCount > 0 {
       notifyDidChange()
@@ -2436,7 +2432,6 @@ final class DatabaseService {
     try ensureColumn(tableName: "missions", columnName: "archived_at", definition: "text")
 
     try ensureColumn(tableName: "mission_interventions", columnName: "resolution_kind", definition: "text")
-    try ensureColumn(tableName: "unified_memories", columnName: "access_score", definition: "real not null default 0")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 
@@ -2686,16 +2681,6 @@ final class DatabaseService {
     } catch {
       let lowered = sql.lowercased()
       let message = (error as NSError).localizedDescription.lowercased()
-      if lowered.contains("create virtual table if not exists unified_memories_fts"),
-         message.contains("no such module: fts") {
-        try run("""
-          create table if not exists unified_memories_fts (
-            rowid integer primary key,
-            content text not null
-          )
-        """)
-        return
-      }
       // Desktop wraps `alter table ... add column` in try/catch for idempotency;
       // the extracted bootstrap loses that context, so tolerate the re-run here.
       if lowered.contains("alter table"), lowered.contains("add column"),
@@ -2766,7 +2751,6 @@ final class DatabaseService {
          and name not like 'crsql_%'
          and name not like '%__crsql_clock'
          and name not like '%__crsql_pks'
-         and name not like 'unified_memories_fts%'
     """
     return query(sql) { statement in
       (
@@ -2806,16 +2790,6 @@ final class DatabaseService {
 
   private func readCurrentSiteId() -> String? {
     queryString("select lower(hex(site_id)) from crsql_site_id where ordinal = 0 limit 1")
-  }
-
-  private func rebuildUnifiedMemoriesFts() throws {
-    guard hasTable(named: "unified_memories"), hasTable(named: "unified_memories_fts") else { return }
-    do {
-      try exec("insert into unified_memories_fts(unified_memories_fts) values ('rebuild')")
-    } catch {
-      try exec("delete from unified_memories_fts")
-      try exec("insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories")
-    }
   }
 
   private func resetLegacyCacheDatabaseIfNeeded() throws {

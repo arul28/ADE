@@ -9,7 +9,6 @@ import {
   nowIso,
   getErrorMessage,
   isEnoentError,
-  toMemoryEntryDto,
   uniqueSorted,
   uniqueStrings,
   asArray,
@@ -122,14 +121,6 @@ describe("isEnoentError", () => {
   it("returns false for null/undefined", () => {
     expect(isEnoentError(null)).toBe(false);
     expect(isEnoentError(undefined)).toBe(false);
-  });
-});
-
-describe("toMemoryEntryDto", () => {
-  it("normalizes embedded field to boolean", () => {
-    expect(toMemoryEntryDto({ id: "1", embedded: true })).toEqual({ id: "1", embedded: true });
-    expect(toMemoryEntryDto({ id: "2", embedded: undefined as any })).toEqual({ id: "2", embedded: false });
-    expect(toMemoryEntryDto({ id: "3" } as any)).toEqual({ id: "3", embedded: false });
   });
 });
 

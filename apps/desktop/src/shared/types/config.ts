@@ -652,15 +652,9 @@ export type AutomationToolFamily =
   | "github"
   | "linear"
   | "browser"
-  | "memory"
   | "mission";
 
 export type AutomationContextSourceType =
-  | "project-memory"
-  | "automation-memory"
-  | "worker-memory"
-  | "procedures"
-  | "skills"
   | "linked-doc"
   | "linked-repo"
   | "path-rules";
@@ -822,11 +816,6 @@ export type AutomationContextSource = {
   required?: boolean;
 };
 
-export type AutomationMemoryConfig = {
-  mode: "none" | "project" | "automation" | "automation-plus-project" | "automation-plus-employee";
-  ruleScopeKey?: string | null;
-};
-
 export type AutomationGuardrails = {
   budgetUsd?: number;
   maxDurationMin?: number;
@@ -865,15 +854,13 @@ export type AutomationRule = {
   toolPalette: AutomationToolFamily[];
   /** @deprecated Replaced by `includeProjectContext` in the UI. */
   contextSources: AutomationContextSource[];
-  /** @deprecated Replaced by `includeProjectContext` in the UI. */
-  memory: AutomationMemoryConfig;
   guardrails: AutomationGuardrails;
   outputs: AutomationOutputs;
   /** @deprecated Review/verification gate no longer surfaced in the UI. */
   verification: AutomationVerification;
   billingCode: string;
   queueStatus?: AutomationRunQueueStatus;
-  /** Single collapsed toggle that replaces the legacy memory/context-source knobs. */
+  /** Single collapsed toggle that replaces the legacy context-source knobs. */
   includeProjectContext?: boolean;
   /** @deprecated Legacy compatibility shim for action-list surfaces. */
   actions: AutomationAction[];
@@ -899,7 +886,6 @@ export type ConfigAutomationRule = {
   reviewProfile?: AutomationReviewProfile;
   toolPalette?: AutomationToolFamily[];
   contextSources?: AutomationContextSource[];
-  memory?: AutomationMemoryConfig;
   guardrails?: AutomationGuardrails;
   outputs?: AutomationOutputs;
   verification?: AutomationVerification;
@@ -925,7 +911,6 @@ export type AiTaskRoutingKey =
   | "implementation"
   | "review"
   | "conflict_resolution"
-  | "memory_consolidation"
   | "narrative"
   | "pr_description"
   | "terminal_summary"
@@ -951,7 +936,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "memory_consolidation"
   | "mission_planning"
   | "orchestrator"
   | "initial_context";

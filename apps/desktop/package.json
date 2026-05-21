@@ -55,7 +55,6 @@
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/space-grotesk": "^5.2.10",
-    "@huggingface/transformers": "^3.8.1",
     "@linear/sdk": "^84.0.0",
     "@lobehub/fluent-emoji": "^4.1.0",
     "@lobehub/icons": "^5.2.0",
@@ -98,7 +97,6 @@
     "motion": "^12.34.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
-    "onnxruntime-node": "^1.24.3",
     "opencode-ai": "^1.15.5",
     "path-browserify": "^1.0.1",
     "react": "^18.3.1",
@@ -162,14 +160,12 @@
       "dist/**/*",
       "electron.cjs",
       "package.json",
-      "vendor/**/*",
-      "!node_modules/onnxruntime-node/**"
+      "vendor/**/*"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
       "node_modules/node-pty/**/*",
       "node_modules/sql.js/**/*",
-      "node_modules/@huggingface/transformers/node_modules/onnxruntime-node/**",
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64/**",

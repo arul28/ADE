@@ -399,7 +399,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -904,7 +903,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code                                      Start the TUI for the current project
     $ ade code --print-state                       Smoke-test attach/embed state
     $ ade code --embedded                          Force the embedded runtime fallback
-    $ ade code --require-socket                    Fail instead of embedding when no socket exists
+    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no socket exists
     $ ade code --socket /tmp/ade.sock              Attach to a specific runtime socket
     $ ade code --lane <id|name|branch>             Launch focused on a specific lane
     $ ade --project-root <path> code                Launch against a specific ADE project
@@ -1359,14 +1358,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade tests logs <run-id> --text                Tail a test run log
     $ ade tests stop <run-id>                       Stop an active test run
 `,
-  memory: `${ADE_BANNER}
-  Memory
-
-    $ ade memory add --category fact --content "User prefers concise summaries"
-    $ ade memory search -q "release process" --text
-    $ ade memory pin <memory-id>
-    $ ade memory core --arg projectSummary="Current focus"
-`,
   usage: `${ADE_BANNER}
   Usage and provider quotas
 
@@ -1387,11 +1378,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   cto: `${ADE_BANNER}
   CTO and Work state
 
-    $ ade cto state --text                          Read CTO identity, core memory, and recent sessions
+    $ ade cto state --text                          Read CTO identity, recent sessions
     $ ade cto chats list --text                     List CTO work chats
     $ ade cto chats spawn --lane <lane> --prompt "plan this"
     $ ade cto chats send <session> --text "continue"
-    $ ade actions run cto_state.updateCoreMemory --input-json '{"projectSummary":"..."}'
     $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
 `,
   linear: `${ADE_BANNER}
@@ -7595,89 +7585,6 @@ function buildBrowserPlan(args: string[]): CliPlan {
   };
 }
 
-function buildMemoryPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "search";
-  if (sub === "actions")
-    return {
-      kind: "execute",
-      label: "memory actions",
-      steps: [listActionsStep("actions", "memory")],
-    };
-  if (sub === "add")
-    return {
-      kind: "execute",
-      label: "memory add",
-      steps: [
-        actionCallStep(
-          "result",
-          "memory_add",
-          collectGenericObjectArgs(args, {
-            content: requireValue(
-              readValue(args, ["--content"]) ?? args.join(" "),
-              "content",
-            ),
-            category: requireValue(readValue(args, ["--category"]), "category"),
-            scope: readValue(args, ["--scope"]),
-          }),
-        ),
-      ],
-    };
-  if (sub === "search")
-    return {
-      kind: "execute",
-      label: "memory search",
-      steps: [
-        actionCallStep(
-          "result",
-          "memory_search",
-          collectGenericObjectArgs(args, {
-            query: requireValue(
-              readValue(args, ["--query", "-q"]) ?? args.join(" "),
-              "query",
-            ),
-          }),
-        ),
-      ],
-    };
-  if (sub === "pin")
-    return {
-      kind: "execute",
-      label: "memory pin",
-      steps: [
-        actionCallStep(
-          "result",
-          "memory_pin",
-          collectGenericObjectArgs(args, {
-            id: requireValue(
-              readValue(args, ["--memory", "--memory-id", "--id"]) ??
-                firstPositional(args),
-              "memory id",
-            ),
-          }),
-        ),
-      ],
-    };
-  if (sub === "core")
-    return {
-      kind: "execute",
-      label: "memory core",
-      steps: [
-        actionCallStep(
-          "result",
-          "memory_update_core",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  return {
-    kind: "execute",
-    label: `memory ${sub}`,
-    steps: [
-      actionStep("result", "memory", sub, collectGenericObjectArgs(args)),
-    ],
-  };
-}
-
 function buildSettingsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "get";
   if (sub === "actions")
@@ -8813,7 +8720,6 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--max-prompt-chars",
   "--max-rounds",
   "--memory",
-  "--memory-id",
   "--merge-method",
   "--message",
   "--method",
@@ -9191,7 +9097,6 @@ function buildCliPlan(command: string[]): CliPlan {
     primary === "builtin-browser"
   )
     return buildBrowserPlan(args);
-  if (primary === "memory") return buildMemoryPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting")

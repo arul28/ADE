@@ -458,7 +458,7 @@ export function PrIssueResolverModal({
               <div style={{ display: "flex", alignItems: "center", gap: 8, color: COLORS.textMuted }}>
                 <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} />
                 <span style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5 }}>
-                  Launch uses the normal work-chat path, tools, and memory-aware prompt behavior.
+                  Launch uses the normal work-chat path, tools, and project prompt behavior.
                 </span>
               </div>
               {copyNotice ? (

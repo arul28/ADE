@@ -70,7 +70,7 @@ ADE tracks rebase suggestions per-lane. When an upstream branch changes, a compa
 
 ## Runtime context
 
-ADE keeps runtime context local to the work being done. Agents receive lane/session state, selected artifacts, mission details, memory retrievals, and explicit user instructions. When they need product or architecture knowledge, they inspect the repo directly instead of relying on generated PRD or architecture summaries.
+ADE keeps runtime context local to the work being done. Agents receive lane/session state, selected artifacts, mission details, and explicit user instructions. When they need product or architecture knowledge, they inspect the repo directly instead of relying on generated PRD or architecture summaries.
 
 ADE also stores some compatibility artifacts under `.ade/artifacts/packs/` for audit and replay:
 
@@ -102,15 +102,14 @@ A **Session** is a terminal session with metadata attached — full transcript, 
 
 ## CTO
 
-The **CTO** (Chief Technical Officer agent) is ADE's always-on, project-aware AI agent that sits at the top of the agent org chart. Unlike lane-level agents that focus on specific tasks, the CTO maintains a persistent memory of the entire project and orchestrates work across all lanes.
+The **CTO** (Chief Technical Officer agent) is ADE's always-on, project-aware AI agent that sits at the top of the agent org chart. Unlike lane-level agents that focus on specific tasks, the CTO coordinates work across lanes and worker agents.
 
 The CTO can:
-- Maintain and update a **project memory** (architecture, decisions, team conventions)
 - **Spawn Worker agents** in specific lanes to handle delegated tasks
 - **Sync with Linear** — read issues, update status, create new issues when problems are discovered
 - **Manage budgets** — track per-agent and per-mission token spend, enforce limits
 - **Surface risks** — proactively flag conflict risks, stale lanes, and budget overruns
-- **Conduct retrospectives** — periodically review what missions succeeded and what failed, and update project memory accordingly
+- **Conduct retrospectives** — periodically review what missions succeeded and what failed
 
 The CTO is configured from the **CTO** tab (model, budget limit, Linear workspace, worker-spawning policy). Related global preferences — per-role models, monthly caps, Linear integration — live under **Settings → AI**, **Settings → Usage**, and **Settings → Integrations**.
 
@@ -257,9 +256,6 @@ When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or th
   </Accordion>
   <Accordion title="Mission management" icon="bullseye">
     Create missions, update step status, add artifacts, create interventions, and report progress back to the Mission coordinator.
-  </Accordion>
-  <Accordion title="Memory" icon="brain">
-    Add to and search the project's persistent memory store. Rate-limited per session to prevent memory spam.
   </Accordion>
   <Accordion title="Computer-use artifacts" icon="desktop">
     Route screenshots, browser traces, video recordings, and console logs to their owners (missions, PRs, Linear issues, chat sessions).
@@ -440,7 +436,7 @@ Project
     Phase profiles, budget management, interventions, and audit log export.
   </Card>
   <Card title="CTO Agent" icon="robot" href="/cto/overview">
-    Configure the CTO with Linear sync, persistent memory, and worker spawning policies.
+    Configure the CTO with Linear sync and worker spawning policies.
   </Card>
   <Card title="ADE CLI" icon="terminal" href="/configuration/settings">
     Review the native ADE CLI action surface and project readiness settings.

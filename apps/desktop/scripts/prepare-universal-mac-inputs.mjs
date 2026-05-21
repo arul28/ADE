@@ -296,22 +296,6 @@ async function assertUniversalInputsReady() {
     "x64 sharp libvips runtime",
   );
   await assertPathExists(
-    path.join(
-      appDir,
-      "node_modules",
-      "@huggingface",
-      "transformers",
-      "node_modules",
-      "onnxruntime-node",
-      "bin",
-      "napi-v3",
-      "darwin",
-      "x64",
-      "onnxruntime_binding.node",
-    ),
-    "x64 ONNX Runtime binding from @huggingface/transformers",
-  );
-  await assertPathExists(
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),
     "x64 crsqlite dylib",
   );

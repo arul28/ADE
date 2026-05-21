@@ -28,11 +28,10 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/commands/deeplinks.ts` | `ade open`, `ade link`, and `ade linear install` subcommands. Shares the parser + builder with the desktop main process so URLs round-trip across both surfaces. See [features/deeplinks/README.md](../deeplinks/README.md). |
 | `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
-| `apps/ade-cli/src/tuiClient/adeApi.ts` | Typed wrappers over `AdeCodeConnection.action` / `actionList` for lanes, chat, models, navigation, provider readiness, API-key status, OpenCode diagnostics, project slash-command discovery, lane diff stats (`listLaneDiffStats`), per-lane PR summaries (`listPrsByLane`), the Claude steer family (`steerChatMessage`, `cancelSteerMessage`, `editSteerMessage`, `dispatchSteerMessage`), the provider-grouped model catalog (`getModelCatalog(args?: AgentChatModelCatalogArgs)` → `AgentChatModelCatalog`), and the cross-surface model-picker favorites / recents (`getModelPickerFavorites`, `toggleModelPickerFavorite`, `getModelPickerRecents`, `pushModelPickerRecent`) backed by the top-level `modelPicker.*` JSON-RPC methods on `adeRpcServer`. |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships `/lane delete` (right-pane confirmation form that destroys the active lane), `/effort` (reasoning-effort-only picker, a narrower companion to `/model`), and provider-agnostic `/skills` for Agent Skill discovery. `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. |
-| `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | Pure formatters for right-pane result panes (PR summary / review / checks / comments, memory search, Linear status, system details). Keeps `app.tsx` free of ad-hoc rendering helpers. |
+| `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | Pure formatters for right-pane result panes (PR summary / review / checks / comments, Linear status, system details). Keeps `app.tsx` free of ad-hoc rendering helpers. |
 | `apps/ade-cli/src/tuiClient/format.ts` | Transcript rendering helpers for the TUI. |
-| `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream. Produces `AggregatedBlock`s (assistant text, tool-calls / files-changed / plan / memory / compaction groups, runtime-activity rows for subagent and activity envelopes, queued steers) and `derivePendingSteers`, consumed by `ChatView` and the right-pane steer view. |
+| `apps/ade-cli/src/tuiClient/aggregate.ts` | Pure derivations on top of the chat event stream. Produces `AggregatedBlock`s (assistant text, tool-calls / files-changed / plan / compaction groups, runtime-activity rows for subagent and activity envelopes, queued steers) and `derivePendingSteers`, consumed by `ChatView` and the right-pane steer view. |
 | `apps/ade-cli/src/tuiClient/drawerSelection.ts` | Pure selectors for the lane / chat drawer (active row, expanded groups, keyboard navigation). |
 | `apps/ade-cli/src/tuiClient/eventDedup.ts` | Reserves and syncs chat-event dedupe keys so replayed runtime events do not render twice. |
 | `apps/ade-cli/src/tuiClient/feedback.ts` | Builds the multi-field `/feedback` form. Validates required fields, packs the `FeedbackDraftInput` envelope, and adds project / lane / runtime context before submission. |
@@ -135,7 +134,6 @@ Inline (acts on chat or shell):
 | `/clear` | Clear the local TUI transcript view. |
 | `/open` | Hand the current ADE context off to desktop via `app/navigate`. |
 | `/quit` | Exit `ade code`. |
-| `/remember <fact>` | Write a durable ADE memory entry. |
 | `/steer cancel` | Remove the latest staged steer message from the local queue. |
 | `/steer edit <text>` | Edit the latest staged steer message. |
 | `/steer send` | Claude only: deliver the latest staged steer inline into the active turn (SDK `dispatchSteer mode: "inline"`). |
@@ -162,7 +160,6 @@ Right pane (open the contextual drawer):
 | `/log` | Recent commits. |
 | `/pr`, `/pr open`, `/pr review`, `/pr checks` | PR state, create/open PR, reviews, checks. |
 | `/linear …` (`list`, `workflows`, `run`, `route`, `sync`, `ingress`, `pull`, `comment`, `status`, `assign`) | Linear sub-router; backed by `linearCommands.ts`. |
-| `/memory [query]`, `/forget` | Search and manage ADE memory. |
 | `/chats` | Sessions in the active lane. |
 | `/switch [lane\|chat]` | Switcher palette. |
 | `/help` | Keymap and command help. |

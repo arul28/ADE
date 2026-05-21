@@ -21,13 +21,6 @@ export const settingsTour: Tour = {
       placement: "right",
     },
     {
-      target: '[data-tour="settings.memory"]',
-      title: "What AI remembers",
-      body: "Your AI helpers remember things between conversations — preferences, project notes, decisions you've made. This is where you see what they remember, pin things you want kept, or forget things you don't.",
-      docUrl: docs.settingsGeneral,
-      placement: "right",
-    },
-    {
       target: '[data-tour="settings.laneTemplates"]',
       title: "Reusable lane recipes",
       body: "Save a lane setup as a **template** — its tools, scripts, runtime — so the next time you make a lane, you can apply the recipe in one click instead of setting it up again.",

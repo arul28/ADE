@@ -640,7 +640,7 @@ private extension AgentChatSessionSummary {
 // fields come through as plain `String` so unknown server values don't break
 // decoding (e.g. a future "deferred" run state).
 
-// MARK: CTO identity + memory
+// MARK: CTO identity
 
 struct CtoModelPreferences: Codable, Hashable {
   var provider: String
@@ -689,25 +689,6 @@ struct CtoIdentityPatch: Codable, Hashable {
   var modelPreferences: CtoModelPreferences?
 }
 
-/// Mirrors desktop `CtoCoreMemory`.
-struct CtoCoreMemory: Codable, Hashable {
-  var version: Int?
-  var updatedAt: String?
-  var projectSummary: String
-  var criticalConventions: [String]
-  var userPreferences: [String]
-  var activeFocus: [String]
-  var notes: [String]
-}
-
-struct CtoCoreMemoryPatch: Codable, Hashable {
-  var projectSummary: String?
-  var criticalConventions: [String]?
-  var userPreferences: [String]?
-  var activeFocus: [String]?
-  var notes: [String]?
-}
-
 /// Mirrors desktop `CtoSessionLogEntry`.
 struct CtoRecentSession: Codable, Hashable, Identifiable {
   var id: String
@@ -724,7 +705,6 @@ struct CtoRecentSession: Codable, Hashable, Identifiable {
 /// Mirrors desktop `CtoSnapshot`.
 struct CtoSnapshot: Codable, Hashable {
   var identity: CtoIdentity
-  var coreMemory: CtoCoreMemory
   var recentSessions: [CtoRecentSession]?
 }
 
@@ -795,11 +775,6 @@ struct AgentIdentity: Codable, Hashable, Identifiable {
   var model: String? { adapterConfig?.model ?? adapterConfig?.modelId }
   var provider: String? { adapterConfig?.provider }
 }
-
-/// `cto.getAgentCoreMemory` returns the same shape as `CtoCoreMemory` — the
-/// desktop service reuses the `AgentCoreMemory` type which has the same
-/// fields. Keep as a typealias so UI call sites read naturally.
-typealias AgentCoreMemory = CtoCoreMemory
 
 struct AgentConfigRevision: Codable, Hashable, Identifiable {
   var id: String
@@ -1277,7 +1252,6 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case hook
   case filePersist = "file_persist"
   case info
-  case memory
   case providerHealth = "provider_health"
   case threadError = "thread_error"
 }

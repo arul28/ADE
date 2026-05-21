@@ -88,7 +88,6 @@
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
 		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
-		H10000000000000000000003 /* CtoBriefEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000012 /* CtoBriefEditor.swift */; };
 		H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoIdentityEditor.swift */; };
 		H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000015 /* CtoSettingsScreen.swift */; };
 		H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000016 /* CtoSharedHelpers.swift */; };
@@ -299,7 +298,6 @@
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
-		H10000000000000000000012 /* CtoBriefEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoBriefEditor.swift; path = ADE/Views/Cto/CtoBriefEditor.swift; sourceTree = "<group>"; };
 		H10000000000000000000014 /* CtoIdentityEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoIdentityEditor.swift; path = ADE/Views/Cto/CtoIdentityEditor.swift; sourceTree = "<group>"; };
 		H10000000000000000000015 /* CtoSettingsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSettingsScreen.swift; path = ADE/Views/Cto/CtoSettingsScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000016 /* CtoSharedHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSharedHelpers.swift; path = ADE/Views/Cto/CtoSharedHelpers.swift; sourceTree = "<group>"; };
@@ -581,7 +579,6 @@
 		H10000000000000000000020 /* Cto */ = {
 			isa = PBXGroup;
 			children = (
-				H10000000000000000000012 /* CtoBriefEditor.swift */,
 				H10000000000000000000014 /* CtoIdentityEditor.swift */,
 				H1000000000000000000001B /* CtoReloadHelpers.swift */,
 				H10000000000000000000010 /* CtoRootScreen.swift */,
@@ -1140,7 +1137,6 @@
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
 				H10000000000000000000001 /* CtoRootScreen.swift in Sources */,
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
-				H10000000000000000000003 /* CtoBriefEditor.swift in Sources */,
 				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,
 				H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */,
 				H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */,

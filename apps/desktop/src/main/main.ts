@@ -133,21 +133,6 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createMissionService } from "./services/missions/missionService";
 import { createMissionPreflightService } from "./services/missions/missionPreflightService";
-import { createBatchConsolidationService } from "./services/memory/batchConsolidationService";
-import { createEmbeddingService } from "./services/memory/embeddingService";
-import { createEmbeddingWorkerService } from "./services/memory/embeddingWorkerService";
-import { createHybridSearchService } from "./services/memory/hybridSearchService";
-import { createMemoryService, type Memory } from "./services/memory/memoryService";
-import { createProjectMemoryFilesService } from "./services/memory/memoryFilesService";
-import { createMemoryLifecycleService } from "./services/memory/memoryLifecycleService";
-import { createMemoryBriefingService } from "./services/memory/memoryBriefingService";
-import { createMissionMemoryLifecycleService } from "./services/memory/missionMemoryLifecycleService";
-import { createEpisodicSummaryService } from "./services/memory/episodicSummaryService";
-import { createHumanWorkDigestService } from "./services/memory/humanWorkDigestService";
-import { createProceduralLearningService } from "./services/memory/proceduralLearningService";
-import { createMemoryRepairService } from "./services/memory/memoryRepairService";
-import { createSkillRegistryService } from "./services/memory/skillRegistryService";
-import { createKnowledgeCaptureService } from "./services/memory/knowledgeCaptureService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createWorkerAgentService } from "./services/cto/workerAgentService";
 import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
@@ -347,9 +332,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_TEAM_RUNTIME_RECOVERY",
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
-  "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
-  "ADE_ENABLE_MEMORY_CONSOLIDATION",
-  "ADE_ENABLE_MEMORY_FILE_SYNC",
   "ADE_ENABLE_SYNC_INIT",
 ]);
 
@@ -365,14 +347,6 @@ function isBackgroundTaskEnabled(enableFlag?: string): boolean {
     defaultEnabledBackgroundTaskFlags.has(enableFlag)
   );
 }
-
-function shouldEmbedMemory(memory: Pick<Memory, "status" | "pinned">): boolean {
-  return memory.status === "promoted" || memory.pinned === true;
-}
-
-const episodicSummaryEnabled = isBackgroundTaskEnabled(
-  "ADE_ENABLE_EPISODIC_SUMMARY",
-);
 
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = source?.[key];
@@ -1836,9 +1810,6 @@ app.whenReady().then(async () => {
     > | null = null;
     let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null =
       null;
-    let humanWorkDigestService: ReturnType<
-      typeof createHumanWorkDigestService
-    > | null = null;
     let conflictServiceRef: ReturnType<typeof createConflictService> | null =
       null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
@@ -1879,15 +1850,6 @@ app.whenReady().then(async () => {
         preHeadSha: prev,
         postHeadSha,
       });
-      const laneTypeRow = db.get<{ lane_type: string | null }>(
-        `select lane_type from lanes where id = ? and project_id = ? limit 1`,
-        [laneId, projectId],
-      );
-      if (String(laneTypeRow?.lane_type ?? "").trim() === "primary") {
-        void humanWorkDigestService
-          ?.onHeadChanged({ preHeadSha: prev, postHeadSha })
-          .catch(() => {});
-      }
       void rebaseSuggestionService
         ?.onParentHeadChanged({
           laneId,
@@ -2272,10 +2234,6 @@ app.whenReady().then(async () => {
     });
     prServiceRef = prService;
 
-    let knowledgeCaptureServiceRef: ReturnType<
-      typeof createKnowledgeCaptureService
-    > | null = null;
-
     // --- Mobile push notifications (APNs + event bus) -----------------------
     // ApnsService is instantiated but left unconfigured here; the Mobile Push
     // settings panel calls into it once the user uploads a `.p8` key. The
@@ -2394,15 +2352,8 @@ app.whenReady().then(async () => {
         if (changedPrs.length > 0) {
           prService.markHotRefresh(changedPrs.map((pr) => pr.id));
         }
-        await Promise.all([
-          ...changedPrs.map(
-            (pr) =>
-              knowledgeCaptureServiceRef?.capturePrFeedback({
-                prId: pr.id,
-                prNumber: pr.githubPrNumber ?? null,
-              }) ?? Promise.resolve(),
-          ),
-          ...changes.map(
+        await Promise.all(
+          changes.map(
             ({
               pr,
               previousState,
@@ -2418,7 +2369,7 @@ app.whenReady().then(async () => {
               return Promise.resolve();
             },
           ),
-        ]);
+        );
       },
     });
     prPollingServiceRef = prPollingService;
@@ -2615,195 +2566,11 @@ app.whenReady().then(async () => {
       sessionService,
     });
 
-    let batchConsolidationServiceRef: ReturnType<
-      typeof createBatchConsolidationService
-    > | null = null;
-    let embeddingWorkerServiceRef: ReturnType<
-      typeof createEmbeddingWorkerService
-    > | null = null;
-    const embeddingService = createEmbeddingService({
-      logger,
-      cacheDir: path.join(app.getPath("userData"), "transformers-cache"),
-    });
-    const hasEmbeddingSensitiveActivity = () => {
-      try {
-        const activeRuns = db.get<{ count: number }>(
-          `
-            SELECT count(1) AS count
-            FROM orchestrator_runs
-            WHERE project_id = ?
-              AND status IN ('queued', 'bootstrapping', 'active', 'paused', 'completing')
-          `,
-          [projectId],
-        );
-        if (Number(activeRuns?.count ?? 0) > 0) return true;
-      } catch {
-        return true;
-      }
-
-      try {
-        return sessionService.list({ status: "running", limit: 1 }).length > 0;
-      } catch {
-        return true;
-      }
-    };
-    // Auto-detect previously downloaded embedding model at startup
-    void embeddingService.probeCache().catch(() => {
-      /* best-effort */
-    });
-    const hybridSearchService = createHybridSearchService({
-      db,
-      embeddingService,
-      canUseEmbeddings: () => !hasEmbeddingSensitiveActivity(),
-      logger,
-    });
-    let ctoStateServiceRef: ReturnType<typeof createCtoStateService> | null =
-      null;
-    let memoryFilesServiceRef: ReturnType<
-      typeof createProjectMemoryFilesService
-    > | null = null;
-    let syncMemoryDocsTimer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedSyncMemoryDocs = () => {
-      if (syncMemoryDocsTimer) clearTimeout(syncMemoryDocsTimer);
-      syncMemoryDocsTimer = setTimeout(() => {
-        try {
-          ctoStateServiceRef?.syncDerivedMemoryDocs();
-        } catch {
-          // Ignore best-effort generated doc sync errors.
-        }
-        try {
-          memoryFilesServiceRef?.sync();
-        } catch {
-          // Ignore best-effort generated memory file sync errors.
-        }
-      }, 2_000);
-    };
-    const memoryService = createMemoryService(db, {
-      hybridSearchService,
-      onMemoryMutated: () => {
-        batchConsolidationServiceRef?.scheduleAutoConsolidationCheck();
-        debouncedSyncMemoryDocs();
-      },
-      onMemoryUpserted: (event) => {
-        if ((event.created || event.contentChanged) && shouldEmbedMemory(event.memory)) {
-          embeddingWorkerServiceRef?.queueMemory(event.memory.id);
-        }
-      },
-    });
-    const memoryFilesService = createProjectMemoryFilesService({
-      projectRoot,
-      projectId,
-      memoryService,
-    });
-    memoryFilesServiceRef = memoryFilesService;
-    const batchConsolidationService = createBatchConsolidationService({
-      db,
-      logger,
-      aiIntegrationService,
-      projectConfigService,
-      projectId,
-      projectRoot,
-      onStatus: (event) =>
-        emitProjectEvent(projectRoot, IPC.memoryConsolidationStatus, event),
-      onMemoryInserted: (memoryId) => {
-        const memory = memoryService.getMemory(memoryId);
-        if (memory && shouldEmbedMemory(memory)) {
-          embeddingWorkerServiceRef?.queueMemory(memoryId);
-        }
-      },
-    });
-    batchConsolidationServiceRef = batchConsolidationService;
-    const memoryLifecycleService = createMemoryLifecycleService({
-      db,
-      logger,
-      projectId,
-      onStatus: (event) =>
-        emitProjectEvent(projectRoot, IPC.memorySweepStatus, event),
-    });
-    const memoryRepairService = createMemoryRepairService({
-      db,
-      projectId,
-      logger,
-    });
-    const embeddingWorkerService = createEmbeddingWorkerService({
-      db,
-      logger,
-      projectId,
-      embeddingService,
-      sessionService,
-      processBeforeStart: false,
-      canProcess: () => !hasEmbeddingSensitiveActivity(),
-      deferMs: 60_000,
-    });
-    embeddingWorkerServiceRef = embeddingWorkerService;
-    const memoryBriefingService = createMemoryBriefingService({
-      memoryService,
-      memoryFilesService,
-      projectRoot,
-      humanWorkDigestService: {
-        getRecentCommitSummaries: async (count?: number) => {
-          return humanWorkDigestService?.getRecentCommitSummaries(count) ?? [];
-        },
-      },
-    });
-    const missionMemoryLifecycleService = createMissionMemoryLifecycleService({
-      logger,
-      memoryService,
-    });
-    let skillRegistryServiceRef: ReturnType<
-      typeof createSkillRegistryService
-    > | null = null;
-    const proceduralLearningService = createProceduralLearningService({
-      db,
-      logger,
-      projectId,
-      memoryService,
-      onProcedurePromoted: (memoryId) => {
-        void skillRegistryServiceRef
-          ?.exportProcedureSkill({ id: memoryId })
-          .catch(() => {});
-      },
-    });
-    const episodicSummaryService = createEpisodicSummaryService({
-      projectId,
-      projectRoot,
-      logger,
-      enabled: episodicSummaryEnabled,
-      aiIntegrationService,
-      memoryService,
-      onEpisodeSaved: (memoryId) =>
-        proceduralLearningService.onEpisodeSaved(memoryId),
-    });
-    const knowledgeCaptureService = createKnowledgeCaptureService({
-      db,
-      projectId,
-      logger,
-      memoryService,
-      proceduralLearningService,
-      prService,
-    });
-    knowledgeCaptureServiceRef = knowledgeCaptureService;
-    humanWorkDigestService = createHumanWorkDigestService({
-      projectId,
-      projectRoot,
-      logger,
-    });
-    const skillRegistryService = createSkillRegistryService({
-      db,
-      projectId,
-      projectRoot,
-      logger,
-      memoryService,
-      proceduralLearningService,
-    });
-    skillRegistryServiceRef = skillRegistryService;
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: adePaths.adeDir,
-      memoryService,
     });
-    ctoStateServiceRef = ctoStateService;
 
     const workerAgentService = createWorkerAgentService({
       db,
@@ -2835,14 +2602,6 @@ app.whenReady().then(async () => {
         });
       }
 
-      try {
-        memoryRepairService.runRepair();
-      } catch (error) {
-        logger.warn("memory.repair.failed", {
-          projectRoot,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
     });
 
     const workerRevisionService = createWorkerRevisionService({
@@ -2874,8 +2633,6 @@ app.whenReady().then(async () => {
       workerAdapterRuntimeService,
       workerTaskSessionService,
       workerBudgetService,
-      memoryService,
-      memoryBriefingService,
       ctoStateService,
       logger,
       autoStart: false,
@@ -2932,8 +2689,6 @@ app.whenReady().then(async () => {
     const agentChatService = createAgentChatService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
-      projectId,
-      memoryService,
       fileService,
       workerAgentService,
       workerHeartbeatService,
@@ -2954,7 +2709,6 @@ app.whenReady().then(async () => {
       conflictService,
       getWorkerBudgetService: () => workerBudgetService,
       getMissionBudgetService: () => missionBudgetServiceRef,
-      episodicSummaryService,
       laneService,
       sessionService,
       processRegistry,
@@ -2967,22 +2721,6 @@ app.whenReady().then(async () => {
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onAgentChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
-
-        // Capture agent session errors as failure gotchas for the memory system
-        if (event.event.type === "error" && event.provenance?.runId) {
-          const prov = event.provenance;
-          void knowledgeCaptureServiceRef
-            ?.captureFailureGotcha({
-              missionId: prov.runId!,
-              runId: prov.runId!,
-              stepId: null,
-              attemptId: prov.attemptId ?? null,
-              stepKey: prov.stepKey ?? null,
-              summary: `Agent session error in ${prov.role ?? "agent"} session`,
-              errorMessage: event.event.message,
-            })
-            .catch(() => {});
-        }
       },
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {
@@ -3106,7 +2844,6 @@ app.whenReady().then(async () => {
       testService,
       issueInventoryService,
       prService,
-      embeddingService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
     const automationIngressService = createAutomationIngressService({
@@ -3146,14 +2883,6 @@ app.whenReady().then(async () => {
               intervention.body?.trim() || intervention.title?.trim() || null,
           },
         );
-      },
-      onInterventionResolved: ({ missionId, intervention }) => {
-        void knowledgeCaptureService
-          .captureResolvedIntervention({
-            missionId,
-            intervention,
-          })
-          .catch(() => {});
       },
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.missionsEvent, event);
@@ -3283,22 +3012,6 @@ app.whenReady().then(async () => {
     );
 
     scheduleBackgroundProjectTask(
-      "memory.files.initial_sync",
-      () =>
-        measureProjectInitStep("memory.files.initial_sync", () => {
-          memoryFilesService.sync();
-        }),
-      (error) => {
-        logger.warn("memory_files.sync_failed", {
-          projectRoot,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_MEMORY_FILE_SYNC",
-    );
-
-    scheduleBackgroundProjectTask(
       "lanes.port_allocation_recovery",
       () => recoverPortAllocations(),
       (error) => {
@@ -3320,12 +3033,6 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       aiIntegrationService,
-      memoryService,
-      memoryBriefingService,
-      missionMemoryLifecycleService,
-      episodicSummaryService,
-      proceduralLearningService,
-      knowledgeCaptureService,
       onEvent: (event) => {
         aiOrchestratorServiceRef?.onOrchestratorRuntimeEvent(event);
         emitProjectEvent(projectRoot, IPC.orchestratorEvent, event);
@@ -3551,7 +3258,6 @@ app.whenReady().then(async () => {
       aiIntegrationService,
       projectConfigService,
       missionBudgetService,
-      humanWorkDigestService,
       computerUseArtifactBrokerService,
     });
     const aiOrchestratorService = createAiOrchestratorService({
@@ -3568,8 +3274,6 @@ app.whenReady().then(async () => {
       queueLandingService,
       projectRoot,
       missionBudgetService,
-      humanWorkDigestService,
-      missionMemoryLifecycleService,
       computerUseArtifactBrokerService,
       onThreadEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.orchestratorThreadEvent, event),
@@ -3728,21 +3432,6 @@ app.whenReady().then(async () => {
       prService,
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event);
-
-        // Capture linear workflow failures as gotchas for the memory system
-        if (
-          event.type === "linear-workflow-run" &&
-          event.milestone === "failed"
-        ) {
-          void knowledgeCaptureServiceRef
-            ?.captureFailureGotcha({
-              missionId: event.runId,
-              runId: event.runId,
-              summary: `Linear workflow failed for ${event.issueIdentifier}: ${event.message}`,
-              errorMessage: event.message,
-            })
-            .catch(() => {});
-        }
       },
     });
     linearDispatcherServiceRef = linearDispatcherService;
@@ -3902,8 +3591,6 @@ app.whenReady().then(async () => {
     automationService?.bindMissionRuntime({
       missionService,
       aiOrchestratorService,
-      memoryBriefingService,
-      proceduralLearningService,
       budgetCapService,
       workerHeartbeatService,
     });
@@ -3955,76 +3642,6 @@ app.whenReady().then(async () => {
       },
       0,
       "ADE_ENABLE_CONFIG_RELOAD",
-    );
-
-    scheduleBackgroundProjectTask(
-      "memory.lifecycle.startup_sweep",
-      () => memoryLifecycleService.runStartupSweepIfDue(),
-      (error) => {
-        logger.warn("memory.lifecycle.startup_sweep_failed", {
-          projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_MEMORY_STARTUP_SWEEP",
-    );
-    scheduleBackgroundProjectTask(
-      "memory.consolidation.startup_check",
-      () => batchConsolidationService.runAutoConsolidationIfNeeded(),
-      (error) => {
-        logger.warn("memory.consolidation.startup_check_failed", {
-          projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_MEMORY_CONSOLIDATION",
-    );
-    scheduleBackgroundProjectTask(
-      "memory.embedding_worker.start",
-      async () => {
-        const status = await embeddingWorkerService.start();
-        if (status.queueDepth > 0) {
-          logger.info("memory.embedding_worker.backlog_sweep", {
-            projectId,
-            queueDepth: status.queueDepth,
-          });
-        }
-        embeddingService.startHealthCheck();
-      },
-      (error) => {
-        logger.warn("memory.embedding_worker.start_failed", {
-          projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      120_000,
-      "ADE_ENABLE_EMBEDDING_WORKER",
-    );
-    scheduleBackgroundProjectTask(
-      "memory.human_digest.sync",
-      () => humanWorkDigestService.syncKnowledge(),
-      (error) => {
-        logger.warn("memory.human_digest.startup_sync_failed", {
-          projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      45_000,
-      "ADE_ENABLE_HUMAN_DIGEST",
-    );
-    scheduleBackgroundProjectTask(
-      "memory.skill_registry.start",
-      () => skillRegistryService.start(),
-      (error) => {
-        logger.warn("memory.skill_registry.start_failed", {
-          projectId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      60_000,
-      "ADE_ENABLE_SKILL_REGISTRY",
     );
 
     // Head watcher: detects commits/rebases made outside ADE's Git UI (e.g. in the terminal),
@@ -4217,7 +3834,6 @@ app.whenReady().then(async () => {
       prSummaryService,
       queueLandingService,
       fileService,
-      memoryService,
       ctoStateService,
       workerAgentService,
       workerBudgetService,
@@ -4419,7 +4035,7 @@ app.whenReady().then(async () => {
     // Helper: materialize an AdeRuntime-shaped bag from the current set of
     // locally-created services so that the registry's service map resolves.
     // Using a function closure means this stays reactive to late-bound refs
-    // like `ctoStateServiceRef`.
+    // like CTO state bindings.
     function buildAdeActionRuntimeForAutomations(): AdeRuntime {
       return {
         laneService,
@@ -4432,7 +4048,6 @@ app.whenReady().then(async () => {
         missionService,
         aiOrchestratorService,
         orchestratorService,
-        memoryService,
         ctoStateService,
         workerAgentService,
         sessionService,
@@ -4534,17 +4149,6 @@ app.whenReady().then(async () => {
       processService,
       sessionDeltaService,
       testService,
-      memoryService,
-      batchConsolidationService,
-      memoryLifecycleService,
-      memoryBriefingService,
-      missionMemoryLifecycleService,
-      episodicSummaryService,
-      humanWorkDigestService,
-      proceduralLearningService,
-      skillRegistryService,
-      embeddingService,
-      embeddingWorkerService,
       ctoStateService,
       workerAgentService,
       adeProjectService,
@@ -4734,17 +4338,6 @@ app.whenReady().then(async () => {
       processService: null,
       sessionDeltaService: null,
       testService: null,
-      embeddingService: null,
-      embeddingWorkerService: null,
-      memoryService: null,
-      batchConsolidationService: null,
-      memoryLifecycleService: null,
-      memoryBriefingService: null,
-      missionMemoryLifecycleService: null,
-      episodicSummaryService: null,
-      humanWorkDigestService: null,
-      proceduralLearningService: null,
-      skillRegistryService: null,
       ctoStateService: null,
       workerAgentService: null,
       adeProjectService: null,
@@ -4859,27 +4452,12 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.embeddingService?.stopHealthCheck?.();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.embeddingService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
       await ctx.laneProxyService?.dispose?.();
     } catch {
       // ignore
     }
     try {
       ctx.oauthRedirectService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.skillRegistryService?.dispose?.();
     } catch {
       // ignore
     }

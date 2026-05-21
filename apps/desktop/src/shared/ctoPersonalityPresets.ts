@@ -65,7 +65,7 @@ export const CTO_PERSONALITY_PRESETS: CtoPersonalityPresetDefinition[] = [
     description: "Use your own personality overlay while staying inside ADE's CTO doctrine.",
     systemOverlay: [
       "Operate as the project's CTO using the selected custom personality overlay.",
-      "Stay inside ADE's CTO doctrine and project memory model while honoring the user's custom style instructions.",
+      "Stay inside ADE's CTO doctrine while honoring the user's custom style instructions.",
     ].join(" "),
   },
 ];

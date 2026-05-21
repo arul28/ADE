@@ -909,8 +909,7 @@ function normalizeDraft(args: {
 
   const includeProjectContext = typeof args.draft.includeProjectContext === "boolean"
     ? args.draft.includeProjectContext
-    : Boolean(args.draft.memory?.mode && args.draft.memory.mode !== "none")
-      || Boolean(args.draft.contextSources?.length);
+    : Boolean(args.draft.contextSources?.length);
 
   const normalized: AutomationRuleDraftNormalized = {
     ...(args.draft.id ? { id: safeTrim(args.draft.id) } : {}),
@@ -936,7 +935,7 @@ function normalizeDraft(args: {
         : "quick",
     toolPalette: Array.isArray(args.draft.toolPalette) && args.draft.toolPalette.length
       ? [...new Set(args.draft.toolPalette)]
-      : ["repo", "memory", "mission"],
+      : ["repo", "mission"],
     contextSources: includeProjectContext && Array.isArray(args.draft.contextSources) && args.draft.contextSources.length
       ? args.draft.contextSources.map((source) => ({
           type: source.type,
@@ -946,16 +945,8 @@ function normalizeDraft(args: {
           ...(typeof source.required === "boolean" ? { required: source.required } : {}),
         }))
       : includeProjectContext
-        ? [{ type: "project-memory" }, { type: "procedures" }]
+        ? []
         : [],
-    memory: includeProjectContext && args.draft.memory?.mode
-      ? {
-          mode: args.draft.memory.mode,
-          ...(safeTrim(args.draft.memory.ruleScopeKey) ? { ruleScopeKey: safeTrim(args.draft.memory.ruleScopeKey) } : {}),
-        }
-      : includeProjectContext
-        ? { mode: "automation-plus-project", ruleScopeKey: safeTrim(args.draft.id) || slugify(name) }
-        : { mode: "none" },
     guardrails: {
       ...(typeof args.draft.guardrails?.budgetUsd === "number" ? { budgetUsd: args.draft.guardrails.budgetUsd } : {}),
       ...(typeof args.draft.guardrails?.maxDurationMin === "number" ? { maxDurationMin: args.draft.guardrails.maxDurationMin } : {}),
@@ -1042,9 +1033,8 @@ function createEmptyDraft(): AutomationRuleDraft {
     execution: { kind: "agent-session", session: {} },
     executor: { mode: "automation-bot" },
     reviewProfile: "quick",
-    toolPalette: ["repo", "memory", "mission"],
-    contextSources: [{ type: "project-memory" }, { type: "procedures" }],
-    memory: { mode: "automation-plus-project" },
+    toolPalette: ["repo", "mission"],
+    contextSources: [],
     guardrails: {},
     outputs: { disposition: "comment-only", createArtifact: true },
     verification: { verifyBeforePublish: false, mode: "intervention" },
@@ -1306,7 +1296,6 @@ export function createAutomationPlannerService({
         reviewProfile: normalized.reviewProfile,
         toolPalette: normalized.toolPalette,
         contextSources: normalized.contextSources,
-        memory: normalized.memory,
         guardrails: normalized.guardrails,
         outputs: normalized.outputs,
         verification: normalized.verification,

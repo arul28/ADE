@@ -518,29 +518,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
   });
 
-  it("renders memory system notices as a minimal thought-style disclosure in the transcript", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "system_notice",
-          noticeKind: "memory",
-          message: "Memory: 3 relevant entries injected",
-          detail: {
-            summary: "Memory: 3 relevant entries injected",
-          },
-        },
-      },
-    ]);
-
-    expect(screen.getByText("Memory")).toBeTruthy();
-    expect(screen.queryByText("Memory: 3 relevant entries injected")).toBeNull();
-    fireEvent.click(screen.getByText("Memory"));
-    expect(screen.getAllByText("Memory: 3 relevant entries injected")).toHaveLength(1);
-    expect(screen.queryByText("Memory lookup")).toBeNull();
-  });
-
   it("renders provider health and thread error notices distinctly", () => {
     renderMessageList([
       {

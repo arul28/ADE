@@ -28,7 +28,6 @@ import type {
   OrchestratorGateEntry,
   OrchestratorGateReport,
   OrchestratorGateStatus,
-  OrchestratorMemoryHierarchy,
   OrchestratorRun,
   OrchestratorRunGraph,
   OrchestratorRunStatus,
@@ -87,13 +86,7 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "../prs/prService";
-import type { createMemoryService } from "../memory/memoryService";
 import type { AiTaskType } from "../ai/aiIntegrationService";
-import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
-import type { KnowledgeCaptureService } from "../memory/knowledgeCaptureService";
-import type { MemoryBriefing, MemoryBriefingService } from "../memory/memoryBriefingService";
-import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
-import type { ProceduralLearningService } from "../memory/proceduralLearningService";
 import { asRecord, nowIso, parseJsonRecord, TERMINAL_STEP_STATUSES, filterExecutionSteps, isDisplayOnlyTaskStep, buildQuestionThreadLink } from "./orchestratorContext";
 import { parseNumericDependencyIndices } from "./missionLifecycle";
 import { getMissionStateDocumentPath } from "./missionStateDoc";
@@ -298,12 +291,6 @@ export type OrchestratorExecutorStartArgs = {
   previousCheckpoint?: string;
   /** Summary/error from the previous attempt on the same step (for retry context). */
   previousAttemptSummary?: string;
-  /** Optional memory service for injecting project memory into prompts and supporting memory tools. */
-  memoryService?: unknown;
-  /** Project ID for memory service scoping. */
-  memoryProjectId?: string;
-  /** Precomputed shared memory briefing for prompt assembly. */
-  memoryBriefing?: MemoryBriefing | null;
 };
 
 export type OrchestratorExecutorAdapter = {
@@ -465,7 +452,6 @@ export class ReflectionValidationError extends Error {
 
 type PainPointCounter = Map<string, { label: string; count: number }>;
 
-const RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD = 2;
 const RETROSPECTIVE_TREND_LOOKBACK_LIMIT = 50;
 const ISO_8601_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const RETRY_BASE_MS = 10_000;
@@ -1960,12 +1946,6 @@ export function createOrchestratorService({
   prService,
   projectConfigService,
   aiIntegrationService,
-  memoryService,
-  memoryBriefingService,
-  missionMemoryLifecycleService,
-  episodicSummaryService,
-  proceduralLearningService,
-  knowledgeCaptureService,
   onEvent
 }: {
   db: AdeDb;
@@ -1977,12 +1957,6 @@ export function createOrchestratorService({
   prService?: ReturnType<typeof createPrService>;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
-  memoryBriefingService?: MemoryBriefingService | null;
-  missionMemoryLifecycleService?: MissionMemoryLifecycleService | null;
-  episodicSummaryService?: EpisodicSummaryService | null;
-  proceduralLearningService?: ProceduralLearningService | null;
-  knowledgeCaptureService?: KnowledgeCaptureService | null;
   onEvent?: (event: OrchestratorEvent) => void;
 }) {
   const adapters = new Map<OrchestratorExecutorKind, OrchestratorExecutorAdapter>();
@@ -2247,70 +2221,6 @@ export function createOrchestratorService({
       `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
       [JSON.stringify(updatedMeta), nowIso(), runId, projectId]
     );
-  };
-
-  const persistUsedProcedureIds = (runId: string, usedProcedureIds: string[] | null | undefined): string[] => {
-    const normalized = [...new Set((usedProcedureIds ?? []).map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0))];
-    if (normalized.length === 0) return [];
-    const runRow = getRunRow(runId);
-    if (!runRow) return normalized;
-    const metadata = parseJsonRecord(runRow.metadata_json) ?? {};
-    const existing = Array.isArray(metadata.usedProcedureIds)
-      ? metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [];
-    const merged = [...new Set([...existing, ...normalized])];
-    if (merged.length === existing.length) return merged;
-    db.run(
-      `update orchestrator_runs set metadata_json = ?, updated_at = ? where id = ? and project_id = ?`,
-      [
-        JSON.stringify({
-          ...metadata,
-          usedProcedureIds: merged,
-        }),
-        nowIso(),
-        runId,
-        projectId,
-      ]
-    );
-    return merged;
-  };
-
-  const applyProcedureOutcomeFeedback = (input: {
-    runId: string;
-    finalStatus: OrchestratorRunStatus;
-    metadata: Record<string, unknown>;
-    reason: string;
-  }): Record<string, unknown> => {
-    if (!proceduralLearningService || (input.finalStatus !== "succeeded" && input.finalStatus !== "failed")) {
-      return input.metadata;
-    }
-    const usedProcedureIds = Array.isArray(input.metadata.usedProcedureIds)
-      ? input.metadata.usedProcedureIds.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [];
-    if (usedProcedureIds.length === 0) return input.metadata;
-    const existingFeedback = asRecord(input.metadata.procedureOutcomeFeedback) ?? {};
-    const pending = [...new Set(usedProcedureIds)].filter((procedureId) => !asRecord(existingFeedback[procedureId]));
-    if (pending.length === 0) return input.metadata;
-    proceduralLearningService.updateProcedureOutcomes(
-      pending.map((memoryId) => ({
-        memoryId,
-        outcome: input.finalStatus === "succeeded" ? "success" : "failure",
-        reason: input.reason,
-      })),
-    );
-    const appliedAt = nowIso();
-    const nextFeedback = { ...existingFeedback };
-    for (const procedureId of pending) {
-      nextFeedback[procedureId] = {
-        outcome: input.finalStatus,
-        reason: input.reason,
-        appliedAt,
-      };
-    }
-    return {
-      ...input.metadata,
-      procedureOutcomeFeedback: nextFeedback,
-    };
   };
 
   const persistRuntimeEvent = (args: {
@@ -4659,141 +4569,6 @@ export function createOrchestratorService({
       deepPackV2.consumedBytes = measureBytes(deepPackV2);
     }
 
-    const recentWorkerDigests = db.all<{
-      step_key: string | null;
-      status: string;
-      summary: string;
-      created_at: string;
-    }>(
-      `
-        select step_key, status, summary, created_at
-        from orchestrator_worker_digests
-        where project_id = ?
-          and mission_id = ?
-          and run_id = ?
-        order by created_at desc
-        limit 12
-      `,
-      [projectId, args.run.missionId, args.run.id]
-    ).map((row) => ({
-      stepKey: row.step_key ?? null,
-      status: String(row.status ?? "").trim() || "unknown",
-      summary: clipText(String(row.summary ?? ""), 360),
-      createdAt: row.created_at
-    }));
-
-    const recentCheckpoints = db.all<{
-      id: string;
-      trigger: string;
-      summary: string;
-      created_at: string;
-    }>(
-      `
-        select id, trigger, summary, created_at
-        from orchestrator_context_checkpoints
-        where project_id = ?
-          and mission_id = ?
-          and (run_id = ? or run_id is null)
-        order by created_at desc
-        limit 8
-      `,
-      [projectId, args.run.missionId, args.run.id]
-    ).map((row) => ({
-      id: row.id,
-      trigger: row.trigger,
-      summary: clipText(String(row.summary ?? ""), 280),
-      createdAt: row.created_at
-    }));
-
-    const MEMORY_L1_BUDGET_BYTES = 10_240;
-    const MEMORY_L2_BUDGET_BYTES = 6_144;
-
-    let memoryL1: OrchestratorMemoryHierarchy["l1"] = {
-      budgetBytes: MEMORY_L1_BUDGET_BYTES,
-      consumedBytes: 0,
-      truncated: false,
-      stepKey: executionPackV2.stepKey,
-      stepTitle: executionPackV2.stepTitle,
-      dependencies: executionPackV2.dependencies,
-      handoffIds: executionPackV2.handoffIds,
-      handoffDigest: executionPackV2.handoffDigest ?? null,
-      recentWorkerDigests,
-      recentCheckpoints
-    };
-    memoryL1.consumedBytes = measureBytes(memoryL1);
-    if (memoryL1.consumedBytes > MEMORY_L1_BUDGET_BYTES) {
-      memoryL1 = {
-        ...memoryL1,
-        truncated: true,
-        recentWorkerDigests: memoryL1.recentWorkerDigests.slice(0, 8),
-        recentCheckpoints: memoryL1.recentCheckpoints.slice(0, 5),
-        handoffIds: memoryL1.handoffIds.slice(0, 10)
-      };
-      memoryL1.consumedBytes = measureBytes(memoryL1);
-    }
-    if (memoryL1.consumedBytes > MEMORY_L1_BUDGET_BYTES) {
-      memoryL1 = {
-        ...memoryL1,
-        recentWorkerDigests: memoryL1.recentWorkerDigests.slice(0, 5),
-        recentCheckpoints: memoryL1.recentCheckpoints.slice(0, 3),
-        dependencies: memoryL1.dependencies.slice(0, 10),
-        handoffIds: memoryL1.handoffIds.slice(0, 6)
-      };
-      memoryL1.consumedBytes = measureBytes(memoryL1);
-    }
-
-    let memoryL2: OrchestratorMemoryHierarchy["l2"] = {
-      budgetBytes: MEMORY_L2_BUDGET_BYTES,
-      consumedBytes: 0,
-      truncated: false,
-      docsMode: deepPackV2.docsMode,
-      docsCount: deepPackV2.docsCount,
-      fullDocsIncluded: deepPackV2.fullDocsIncluded,
-      docsRefsOnly: deepPackV2.docsRefsOnly,
-      packRefs: [
-        {
-          packKey: "project",
-          level: projectExportLevel,
-          approxTokens: null
-        },
-        ...(lanePackKey
-          ? [
-              {
-                packKey: lanePackKey,
-                level: laneExportLevel,
-                approxTokens: null
-              }
-            ]
-          : [])
-      ]
-    };
-    memoryL2.consumedBytes = measureBytes(memoryL2);
-    if (memoryL2.consumedBytes > MEMORY_L2_BUDGET_BYTES) {
-      memoryL2 = {
-        ...memoryL2,
-        truncated: true,
-        packRefs: memoryL2.packRefs.slice(0, 1)
-      };
-      memoryL2.consumedBytes = measureBytes(memoryL2);
-    }
-
-    const memoryHierarchy: OrchestratorMemoryHierarchy = {
-      schema: "ade.contextMemoryHierarchy.v1",
-      l0: {
-        budgetBytes: controlPackV2.budgetBytes,
-        consumedBytes: controlPackV2.consumedBytes,
-        truncated: controlPackV2.truncated,
-        frontier: controlPackV2.frontier,
-        openQuestions: controlPackV2.openQuestions,
-        activeClaims: controlPackV2.activeClaims,
-        activeClaimConflicts: controlPackV2.activeClaimConflicts,
-        gateState: controlPackV2.gateState,
-        recentDecisions: controlPackV2.recentDecisions
-      },
-      l1: memoryL1,
-      l2: memoryL2
-    };
-
     const laneVersionId = laneExport ? `live:${lanePackKey ?? "lane"}:${sha256(Buffer.from(laneExport.content))}` : null;
     const projectVersionId = `live:project:${sha256(Buffer.from(projectExport.content))}`;
     const cursor: OrchestratorContextSnapshotCursor = {
@@ -4811,12 +4586,10 @@ export function createOrchestratorService({
 	      controlPackV2,
 	      executionPackV2,
 	      deepPackV2,
-        memoryHierarchy,
 	      contextSources: [
 	        "control_pack_v2",
 	        "execution_pack_v2",
 	        "deep_pack_v2",
-          "memory_hierarchy_v1",
 	        `context_export:project:${projectExportLevel}`,
 	        ...(lanePackKey ? [`context_export:${lanePackKey}:${laneExportLevel}`] : []),
         ...(packDeltaDigest ? ["delta_digest"] : []),
@@ -5638,29 +5411,6 @@ export function createOrchestratorService({
           const contextDir = path.join(resolveAdeLayout(projectRoot).orchestratorContextsDir, args.run.id);
           fs.mkdirSync(contextDir, { recursive: true });
           const contextFilePath = path.join(contextDir, `${args.attempt.id}.json`);
-          const memoryHierarchy = (() => {
-            const snapshotId = args.attempt.contextSnapshotId;
-            if (!snapshotId) return null;
-            const row = db.get<{ cursor_json: string | null }>(
-              `
-                select cursor_json
-                from orchestrator_context_snapshots
-                where id = ?
-                  and project_id = ?
-                limit 1
-              `,
-              [snapshotId, projectId]
-            );
-            if (!row?.cursor_json) return null;
-            try {
-              const parsed = JSON.parse(row.cursor_json) as Record<string, unknown>;
-              const hierarchy = parsed?.memoryHierarchy;
-              if (!hierarchy || typeof hierarchy !== "object" || Array.isArray(hierarchy)) return null;
-              return hierarchy as OrchestratorMemoryHierarchy;
-            } catch {
-              return null;
-            }
-          })();
           const contextManifest = {
             schema: "ade.orchestratorWorkerContext.v1",
             mission: {
@@ -5696,11 +5446,6 @@ export function createOrchestratorService({
               truncated: entry.truncated,
               contentPreview: clipText(entry.content, 1_200)
             })),
-            contextBroker: {
-              assembly: "memory_hierarchy_v1",
-              availableTiers: memoryHierarchy ? ["l0", "l1", "l2"] : []
-            },
-            memoryHierarchy,
             generatedAt: nowIso()
           };
           fs.writeFileSync(contextFilePath, `${JSON.stringify(contextManifest, null, 2)}\n`, "utf8");
@@ -6413,7 +6158,6 @@ export function createOrchestratorService({
         firstSeenRunId: String(row.first_seen_run_id),
         lastSeenRetrospectiveId: String(row.last_seen_retrospective_id),
         lastSeenRunId: String(row.last_seen_run_id),
-        promotedMemoryId: row.promoted_memory_id ? String(row.promoted_memory_id) : null,
         createdAt: String(row.created_at),
         updatedAt: String(row.updated_at),
       }));
@@ -6618,91 +6362,61 @@ export function createOrchestratorService({
         );
       }
 
-      if (memoryService) {
-        const seenPatternKeys = new Set<string>();
-        for (const patternLabel of persisted.patternsToCapture) {
-          const normalizedLabel = String(patternLabel ?? "").trim();
-          const patternKey = normalizePainPointKey(normalizedLabel);
-          if (!patternKey || seenPatternKeys.has(patternKey)) continue;
-          seenPatternKeys.add(patternKey);
-          const existingPattern = db.get<any>(
-            `
-              select *
-              from orchestrator_reflection_pattern_stats
-              where project_id = ?
-                and pattern_key = ?
-              limit 1
-            `,
-            [projectId, patternKey]
-          );
-          let patternStatId: string;
-          let nextCount = 1;
-          let promotedMemoryId: string | null = null;
-          if (existingPattern) {
-            patternStatId = String(existingPattern.id);
-            nextCount = Number(existingPattern.occurrence_count ?? 0) + 1;
-            promotedMemoryId = existingPattern.promoted_memory_id ? String(existingPattern.promoted_memory_id) : null;
-            db.run(
-              `
-                update orchestrator_reflection_pattern_stats
-                set
-                  pattern_label = ?,
-                  occurrence_count = ?,
-                  last_seen_retrospective_id = ?,
-                  last_seen_run_id = ?,
-                  updated_at = ?
-                where id = ?
-              `,
-              [normalizedLabel, nextCount, persisted.id, persisted.runId, generatedAt, patternStatId]
-            );
-          } else {
-            patternStatId = randomUUID();
-            db.run(
-              `
-                insert into orchestrator_reflection_pattern_stats(
-                  id, project_id, pattern_key, pattern_label,
-                  occurrence_count, first_seen_retrospective_id, first_seen_run_id,
-                  last_seen_retrospective_id, last_seen_run_id, promoted_memory_id,
-                  created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `,
-              [patternStatId, projectId, patternKey, normalizedLabel, 1, persisted.id, persisted.runId, persisted.id, persisted.runId, null, generatedAt, generatedAt]
-            );
-          }
+      const seenPatternKeys = new Set<string>();
+      for (const patternLabel of persisted.patternsToCapture) {
+        const normalizedLabel = String(patternLabel ?? "").trim();
+        const patternKey = normalizePainPointKey(normalizedLabel);
+        if (!patternKey || seenPatternKeys.has(patternKey)) continue;
+        seenPatternKeys.add(patternKey);
+        const existingPattern = db.get<any>(
+          `
+            select *
+            from orchestrator_reflection_pattern_stats
+            where project_id = ?
+              and pattern_key = ?
+            limit 1
+          `,
+          [projectId, patternKey]
+        );
+        let patternStatId: string;
+        const nextCount = existingPattern ? Number(existingPattern.occurrence_count ?? 0) + 1 : 1;
+        if (existingPattern) {
+          patternStatId = String(existingPattern.id);
           db.run(
             `
-              insert or ignore into orchestrator_reflection_pattern_sources(
-                id, project_id, pattern_stat_id, retrospective_id, mission_id, run_id, created_at
-              ) values (?, ?, ?, ?, ?, ?, ?)
+              update orchestrator_reflection_pattern_stats
+              set
+                pattern_label = ?,
+                occurrence_count = ?,
+                last_seen_retrospective_id = ?,
+                last_seen_run_id = ?,
+                updated_at = ?
+              where id = ?
             `,
-            [randomUUID(), projectId, patternStatId, persisted.id, persisted.missionId, persisted.runId, generatedAt]
+            [normalizedLabel, nextCount, persisted.id, persisted.runId, generatedAt, patternStatId]
           );
-          if (!promotedMemoryId && nextCount >= RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) {
-            try {
-              const confidence = Math.min(0.95, 0.7 + ((nextCount - RETROSPECTIVE_PATTERN_PROMOTION_THRESHOLD) * 0.05));
-              const memory = memoryService.addCandidateMemory({
-                projectId,
-                scope: "project",
-                category: "pattern",
-                content: `[retrospective] ${normalizedLabel}`,
-                importance: "medium",
-                confidence,
-                sourceRunId: runId,
-              });
-              promotedMemoryId = memory.id;
-              db.run(
-                `
-                  update orchestrator_reflection_pattern_stats
-                  set promoted_memory_id = ?, updated_at = ?
-                  where id = ?
-                `,
-                [promotedMemoryId, generatedAt, patternStatId]
-              );
-            } catch {
-              // best-effort only
-            }
-          }
+        } else {
+          patternStatId = randomUUID();
+          db.run(
+            `
+              insert into orchestrator_reflection_pattern_stats(
+                id, project_id, pattern_key, pattern_label,
+                occurrence_count, first_seen_retrospective_id, first_seen_run_id,
+                last_seen_retrospective_id, last_seen_run_id,
+                created_at, updated_at
+              ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [patternStatId, projectId, patternKey, normalizedLabel, 1, persisted.id, persisted.runId, persisted.id, persisted.runId, generatedAt, generatedAt]
+          );
         }
+        db.run(
+          `
+            insert or ignore into orchestrator_reflection_pattern_sources(
+              id, project_id, pattern_stat_id, retrospective_id, mission_id, run_id, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?)
+          `,
+          [randomUUID(), projectId, patternStatId, persisted.id, persisted.missionId, persisted.runId, generatedAt]
+        );
       }
 
       persistRuntimeEvent({ runId, eventType: "retrospective_generated", payload: { retrospectiveId: persisted.id } });
@@ -8850,33 +8564,6 @@ export function createOrchestratorService({
             : step;
 
           const allSteps = listStepRows(run.id).map(toStep);
-          const briefingFilePatterns = Array.isArray(stepWithWorktree.metadata?.fileScopes)
-            ? stepWithWorktree.metadata.fileScopes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-            : [];
-          const employeeAgentId =
-            typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
-              ? run.metadata.employeeAgentId.trim()
-              : null;
-          const memoryBriefing = memoryBriefingService
-            ? await memoryBriefingService.buildBriefing({
-                projectId,
-                missionId: run.missionId,
-                runId: run.id,
-                ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
-                taskDescription: stepWithWorktree.title,
-                phaseContext: typeof stepWithWorktree.metadata?.phaseInstructions === "string"
-                  ? stepWithWorktree.metadata.phaseInstructions
-                  : typeof stepWithWorktree.metadata?.instructions === "string"
-                    ? stepWithWorktree.metadata.instructions
-                    : null,
-                handoffSummaries: Array.isArray(stepWithWorktree.metadata?.handoffSummaries)
-                  ? stepWithWorktree.metadata.handoffSummaries.map((entry) => String(entry ?? ""))
-                  : [],
-                filePatterns: briefingFilePatterns,
-                mode: "mission_worker",
-              })
-            : null;
-          persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
           const promptPack = buildFullPrompt(
             {
               run,
@@ -8891,12 +8578,9 @@ export function createOrchestratorService({
               createTrackedSession: async () => {
                 throw new Error("In-process execution does not create tracked terminal sessions.");
               },
-              ...(memoryBriefing ? { memoryBriefing } : {}),
             },
             "opencode",
-            memoryService
-              ? { memoryService, projectId, workerRuntime: "in_process", memoryBriefing }
-              : { projectId, workerRuntime: "in_process" },
+            { workerRuntime: "in_process" },
           );
 
           const stepType = String(step.metadata?.stepType ?? step.metadata?.taskType ?? "").trim().toLowerCase();
@@ -8966,7 +8650,6 @@ export function createOrchestratorService({
               runId: run.id,
               stepId: step.id,
               attemptId: attempt.id,
-              ...(memoryService ? { memoryService } : {}),
             });
 
             appendTimelineEvent({
@@ -9210,32 +8893,6 @@ export function createOrchestratorService({
           }
           return s;
         })();
-        const employeeAgentId =
-          typeof run.metadata?.employeeAgentId === "string" && run.metadata.employeeAgentId.trim().length > 0
-            ? run.metadata.employeeAgentId.trim()
-            : null;
-        const memoryBriefing = memoryBriefingService
-          ? await memoryBriefingService.buildBriefing({
-              projectId,
-              missionId: run.missionId,
-              runId: run.id,
-              ...(employeeAgentId ? { agentId: employeeAgentId, includeAgentMemory: true } : {}),
-              taskDescription: stepForExecutor.title,
-              phaseContext: typeof stepForExecutor.metadata?.phaseInstructions === "string"
-                ? stepForExecutor.metadata.phaseInstructions
-                : typeof stepForExecutor.metadata?.instructions === "string"
-                  ? stepForExecutor.metadata.instructions
-                  : null,
-              handoffSummaries: Array.isArray(stepForExecutor.metadata?.handoffSummaries)
-                ? stepForExecutor.metadata.handoffSummaries.map((entry) => String(entry ?? ""))
-                : [],
-              filePatterns: Array.isArray(stepForExecutor.metadata?.fileScopes)
-                ? stepForExecutor.metadata.fileScopes.map((entry) => String(entry ?? ""))
-                : [],
-              mode: "mission_worker",
-            })
-          : null;
-        persistUsedProcedureIds(run.id, memoryBriefing?.usedProcedureIds);
         const result = await adapter.start({
           run,
           step: stepForExecutor,
@@ -9253,8 +8910,6 @@ export function createOrchestratorService({
             }),
           permissionConfig,
           ...recoveryContext,
-          ...(memoryBriefing ? { memoryBriefing } : {}),
-          ...(memoryService ? { memoryService, memoryProjectId: projectId } : {})
         });
         if (result.status === "accepted") {
           const sessionId = typeof result.sessionId === "string" ? result.sessionId.trim() : "";
@@ -10081,40 +9736,6 @@ export function createOrchestratorService({
       const workerState = status === "succeeded" ? "idle" : "disposed";
       let validationContractUnfulfilledSignal = false;
       let validationSelfCheckReminder = false;
-
-      if (status === "failed" && !restartInterruptedFailure) {
-        const gotchaLines = [
-	          `Step "${step.stepKey}" failed.`,
-	          `Summary: ${String(envelope.summary ?? effectiveErrorMessage ?? defaultSummary).trim() || "Unknown failure."}`,
-	          `Error class: ${errorClass}`,
-	          restartInterruptedFailure
-	            ? "Infrastructure retry scheduled after app restart/shutdown; step retry budget was preserved."
-	            : shouldRetry
-	              ? `Retry scheduled (${step.retryCount + 1}/${step.retryLimit}).`
-	              : "No retries remain for this failure.",
-        ];
-        missionMemoryLifecycleService?.recordFailureGotcha({
-          projectId,
-          missionId: run.missionId,
-          runId: run.id,
-          content: gotchaLines.join(" "),
-          confidence: shouldRetry ? 0.8 : 0.95,
-        });
-        void knowledgeCaptureService?.captureFailureGotcha({
-          missionId: run.missionId,
-          runId: run.id,
-          stepId: step.id,
-          attemptId: attempt.id,
-          stepKey: step.stepKey,
-          summary: String(envelope.summary ?? defaultSummary).trim() || defaultSummary,
-          errorMessage: effectiveErrorMessage ?? null,
-          fileScopePattern: typeof stepMetadata.fileScopePattern === "string"
-            ? stepMetadata.fileScopePattern
-            : Array.isArray(stepMetadata.fileScopes)
-              ? String(stepMetadata.fileScopes[0] ?? "").trim() || null
-              : null,
-        }).catch(() => {});
-      }
 
       db.run(
         `
@@ -13423,23 +13044,13 @@ export function createOrchestratorService({
       // Persist completion diagnostics
       const existingMeta = parseJsonRecord(runRow.metadata_json) ?? {};
       const finalizedAt = nowIso();
-      const updatedMeta = applyProcedureOutcomeFeedback({
-        runId,
-        finalStatus,
-        metadata: {
-          ...existingMeta,
-          completionDiagnostics: evaluation.diagnostics,
-          completionRiskFactors: evaluation.riskFactors,
-          completionValidation: validation,
-          finalizedAt,
-        },
-        reason:
-          finalStatus === "succeeded"
-            ? "Mission run completed successfully."
-            : toOptionalNonEmptyString(runRow.last_error)
-              || (evaluation.diagnostics[0] ? JSON.stringify(evaluation.diagnostics[0]) : null)
-              || "Mission run failed.",
-      });
+      const updatedMeta = {
+        ...existingMeta,
+        completionDiagnostics: evaluation.diagnostics,
+        completionRiskFactors: evaluation.riskFactors,
+        completionValidation: validation,
+        finalizedAt,
+      };
       updateRunStatus(runId, finalStatus, {
         metadata_json: JSON.stringify(updatedMeta),
         ...(finalStatus === "succeeded" ? { last_error: null } : {})
@@ -13452,58 +13063,6 @@ export function createOrchestratorService({
           phase: "done",
           completionValidated: true,
           lastValidationError: null
-        });
-      }
-
-      const missionEntries = missionMemoryLifecycleService?.listMissionEntries({
-        projectId,
-        missionId: run.missionId,
-        runId,
-        status: "all",
-      }) ?? [];
-      const sharedFacts = missionEntries
-        .filter((entry) =>
-          entry.category === "fact"
-          || entry.category === "decision"
-          || entry.category === "gotcha"
-          || entry.category === "handoff"
-          || entry.category === "digest"
-          || entry.category === "pattern"
-          || entry.category === "procedure"
-        )
-        .map((entry) => `[${entry.category}] ${entry.content}`);
-      try {
-        missionMemoryLifecycleService?.finalizeMission({
-          projectId,
-          missionId: run.missionId,
-          runId,
-          finalStatus: finalStatus === "succeeded" ? "succeeded" : finalStatus === "failed" ? "failed" : "canceled",
-        });
-      } catch {
-        // Mission lifecycle cleanup is best-effort.
-      }
-      if (episodicSummaryService) {
-        const decisions = missionEntries
-          .filter((entry) => entry.category === "decision")
-          .map((entry) => entry.content);
-        const gotchas = missionEntries
-          .filter((entry) => entry.category === "gotcha")
-          .map((entry) => entry.content);
-        episodicSummaryService.enqueueMissionSummary({
-          missionId: run.missionId,
-          runId,
-          taskDescription: typeof run.metadata?.missionGoal === "string" && run.metadata.missionGoal.trim().length > 0
-            ? run.metadata.missionGoal.trim()
-            : `Mission ${run.missionId}`,
-          finalStatus: finalStatus === "succeeded" ? "success" : finalStatus === "failed" ? "failure" : "partial",
-          startedAt: run.startedAt,
-          endedAt: finalizedAt,
-          sharedFacts,
-          decisions,
-          gotchas,
-          workerOutputs: steps
-            .filter((step) => step.status === "succeeded" || step.status === "failed")
-            .map((step) => `${step.stepKey}: ${step.title} (${step.status})`),
         });
       }
 

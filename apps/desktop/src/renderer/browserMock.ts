@@ -124,92 +124,6 @@ const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
 const threeDaysAgo = new Date(Date.now() - 259200000).toISOString();
 const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
 
-function createMockMemoryHealthStats(overrides: Partial<any> = {}): any {
-  return {
-    scopes: [
-      {
-        scope: "project",
-        current: 0,
-        max: 2000,
-        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
-      },
-      {
-        scope: "agent",
-        current: 0,
-        max: 500,
-        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
-      },
-      {
-        scope: "mission",
-        current: 0,
-        max: 200,
-        counts: { tier1: 0, tier2: 0, tier3: 0, archived: 0 },
-      },
-    ],
-    lastSweep: null,
-    lastConsolidation: null,
-    embeddings: {
-      entriesEmbedded: 0,
-      entriesTotal: 0,
-      queueDepth: 0,
-      processing: false,
-      lastBatchProcessedAt: null,
-      cacheEntries: 0,
-      cacheHits: 0,
-      cacheMisses: 0,
-      cacheHitRate: 0,
-      model: {
-        modelId: "Xenova/all-MiniLM-L6-v2",
-        state: "idle",
-        activity: "idle",
-        installState: "missing",
-        cacheDir: "/tmp/mock-transformers-cache",
-        installPath: "/tmp/mock-transformers-cache/Xenova/all-MiniLM-L6-v2",
-        progress: null,
-        loaded: null,
-        total: null,
-        file: null,
-        error: null,
-      },
-    },
-    ...overrides,
-  };
-}
-
-function createMockSweepResult(overrides: Partial<any> = {}): any {
-  return {
-    sweepId: "browser-mock-sweep",
-    projectId: MOCK_PROJECT.id,
-    reason: "manual",
-    startedAt: now,
-    completedAt: now,
-    halfLifeDays: 30,
-    entriesDecayed: 0,
-    entriesDemoted: 0,
-    entriesPromoted: 0,
-    entriesArchived: 0,
-    entriesOrphaned: 0,
-    durationMs: 0,
-    ...overrides,
-  };
-}
-
-function createMockConsolidationResult(overrides: Partial<any> = {}): any {
-  return {
-    consolidationId: "browser-mock-consolidation",
-    projectId: MOCK_PROJECT.id,
-    reason: "manual",
-    startedAt: now,
-    completedAt: now,
-    clustersFound: 0,
-    entriesMerged: 0,
-    entriesCreated: 0,
-    tokensUsed: 0,
-    durationMs: 0,
-    ...overrides,
-  };
-}
-
 // ── Lane defaults (fields required by LaneSummary) ────────────
 function makeLane(
   id: string,
@@ -2469,25 +2383,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     );
   }
   w.__adeBrowserMock = true;
-  const sharedMemoryHealthStats = createMockMemoryHealthStats();
-  const resolveDownloadedMemoryHealthStats = async () => {
-    sharedMemoryHealthStats.embeddings = {
-      ...sharedMemoryHealthStats.embeddings,
-      model: {
-        ...sharedMemoryHealthStats.embeddings.model,
-        state: "ready",
-        activity: "ready",
-        installState: "installed",
-        progress: 100,
-        loaded: 1,
-        total: 1,
-        file: "/tmp/mock-model.onnx",
-        error: null,
-      },
-    };
-    return sharedMemoryHealthStats;
-  };
-
   const BROWSER_MOCK_LOCAL_DEVICE: any = {
     deviceId: "browser-mock-device",
     siteId: "browser-mock-site",
@@ -3375,12 +3270,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 prompt:
                   "Review the latest PR update and leave a concise follow-up summary with any high-signal next steps.",
                 reviewProfile: "incremental",
-                toolPalette: ["repo", "git", "github", "memory", "mission"],
-                contextSources: [
-                  { type: "project-memory" },
-                  { type: "automation-memory" },
-                ],
-                memory: { mode: "automation-plus-project" },
+                toolPalette: ["repo", "git", "github", "mission"],
+                contextSources: [],
                 guardrails: {},
                 outputs: { disposition: "comment-only", createArtifact: true },
                 verification: {
@@ -3500,13 +3391,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           summary: "Automation-owned chat thread for PR follow-up work.",
         },
         actions: [],
-        procedureFeedback: [
-          {
-            procedureId: "pr-review",
-            outcome: "observation",
-            reason: "Captured a concise PR follow-up summary.",
-          },
-        ],
         ingressEvent: {
           id: "ingress-1",
           source: "github-relay",
@@ -3604,9 +3488,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           executor: { mode: "automation-bot" },
           prompt: "Review the latest changes.",
           reviewProfile: "quick",
-          toolPalette: ["repo", "memory", "mission"],
-          contextSources: [{ type: "project-memory" }],
-          memory: { mode: "automation-plus-project" },
+          toolPalette: ["repo", "mission"],
+          contextSources: [],
           guardrails: {},
           outputs: { disposition: "comment-only", createArtifact: true },
           verification: { verifyBeforePublish: false, mode: "intervention" },
@@ -4551,24 +4434,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           version: 1,
           persona: "Mock CTO persona",
           modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30,
-          },
           updatedAt: now,
-        },
-        coreMemory: ADE_DB_SNAPSHOT?.ctoState?.coreMemory ?? {
-          version: 1,
-          updatedAt: now,
-          projectSummary: "Mock project summary",
-          criticalConventions: [],
-          userPreferences: [],
-          activeFocus: [],
-          notes: [],
         },
         recentSessions: ADE_DB_SNAPSHOT?.ctoState?.recentSessions ?? [],
+        recentSubordinateActivity:
+          ADE_DB_SNAPSHOT?.ctoState?.recentSubordinateActivity ?? [],
       }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",
@@ -4581,31 +4451,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         createdAt: now,
         lastActivityAt: now,
       }),
-      updateCoreMemory: resolvedArg({
-        identity: {
-          name: "CTO",
-          version: 1,
-          persona: "Mock CTO persona",
-          modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30,
-          },
-          updatedAt: now,
-        },
-        coreMemory: {
-          version: 2,
-          updatedAt: now,
-          projectSummary: "Mock project summary",
-          criticalConventions: [],
-          userPreferences: [],
-          activeFocus: [],
-          notes: [],
-        },
-        recentSessions: [],
-      }),
       listSessionLogs: resolvedArg([]),
       updateIdentity: resolvedArg({
         identity: {
@@ -4613,24 +4458,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           version: 1,
           persona: "Mock CTO persona",
           modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30,
-          },
           updatedAt: now,
-        },
-        coreMemory: {
-          version: 1,
-          updatedAt: now,
-          projectSummary: "Mock project summary",
-          criticalConventions: [],
-          userPreferences: [],
-          activeFocus: [],
-          notes: [],
         },
         recentSessions: [],
+        recentSubordinateActivity: [],
       }),
       previewSystemPrompt: resolvedArg({
         prompt: "You are the CTO for this project inside ADE.",
@@ -4647,9 +4478,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             content: "Operate as a strategic CTO.",
           },
           {
-            id: "memory",
-            title: "Memory and continuity model",
-            content: "Project continuity comes from memory layers.",
+            id: "continuity",
+            title: "Continuity model",
+            content: "CTO continuity uses the current project context.",
+          },
+          {
+            id: "capabilities",
+            title: "Capability manifest",
+            content: "ADE capabilities are exposed through registered tools.",
           },
         ],
       }),
@@ -4716,24 +4552,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         status: "completed",
       }),
       listAgentRuns: resolved([]),
-      getAgentCoreMemory: resolvedArg({
-        version: 1,
-        updatedAt: now,
-        projectSummary: "Mock worker memory",
-        criticalConventions: [],
-        userPreferences: [],
-        activeFocus: [],
-        notes: [],
-      }),
-      updateAgentCoreMemory: resolvedArg({
-        version: 2,
-        updatedAt: now,
-        projectSummary: "Mock worker memory",
-        criticalConventions: [],
-        userPreferences: [],
-        activeFocus: [],
-        notes: [],
-      }),
       listAgentSessionLogs: resolvedArg([]),
       getLinearWorkflowCatalog: resolvedArg({
         users: [],
@@ -5623,57 +5441,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           nextAction: "Run npm link in apps/ade-cli for local development.",
         },
       }),
-    },
-    memory: {
-      pin: resolvedArg(undefined),
-      updateCore: resolvedArg({
-        identity: {
-          name: "CTO",
-          version: 1,
-          persona: "Mock CTO persona",
-          modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30,
-          },
-          updatedAt: now,
-        },
-        recent: [],
-        coreMemory: {
-          responsibilities: [],
-          activePriorities: [],
-          constraints: [],
-          preferences: [],
-        },
-      }),
-      getBudget: resolved([]),
-      getCandidates: resolved([]),
-      promote: resolvedArg(undefined),
-      archive: resolvedArg(undefined),
-      promoteMissionEntry: resolvedArg(null),
-      listMissionEntries: resolvedArg([]),
-      listProcedures: resolvedArg([]),
-      getProcedureDetail: resolvedArg(null),
-      exportProcedureSkill: resolvedArg(null),
-      listIndexedSkills: resolved([]),
-      reindexSkills: resolvedArg([]),
-      syncKnowledge: resolved(null),
-      getKnowledgeSyncStatus: resolved({
-        syncing: false,
-        lastSeenHeadSha: null,
-        currentHeadSha: null,
-        diverged: false,
-        lastDigestAt: null,
-        lastDigestMemoryId: null,
-        lastError: null,
-      }),
-      search: resolvedArg([]),
-      getHealthStats: resolved(sharedMemoryHealthStats),
-      downloadEmbeddingModel: resolveDownloadedMemoryHealthStats,
-      runSweep: resolved(createMockSweepResult()),
-      runConsolidation: resolved(createMockConsolidationResult()),
     },
     zoom: {
       getLevel: () => 0,

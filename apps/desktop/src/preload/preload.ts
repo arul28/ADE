@@ -86,12 +86,10 @@ import type {
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
-  CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
   AgentIdentity,
-  AgentCoreMemory,
   AgentSessionLogEntry,
   AgentConfigRevision,
   AgentBudgetSnapshot,
@@ -110,8 +108,6 @@ import type {
   CtoListAgentTaskSessionsArgs,
   CtoClearAgentTaskSessionArgs,
   AgentTaskSession,
-  CtoGetAgentCoreMemoryArgs,
-  CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
   CtoOnboardingState,
   CtoSystemPromptPreview,
@@ -629,17 +625,6 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
-  ChangeDigest,
-  KnowledgeSyncStatus,
-  MemoryHealthStats,
-  MemoryEntryDto,
-  MemoryConsolidationResult,
-  MemoryConsolidationStatusEventPayload,
-  MemoryLifecycleSweepResult,
-  MemorySweepStatusEventPayload,
-  ProcedureDetail,
-  ProcedureListItem,
-  SkillIndexEntry,
   GetMissionBudgetTelemetryArgs,
   GetMissionBudgetStatusArgs,
   MissionBudgetTelemetrySnapshot,
@@ -8248,182 +8233,6 @@ contextBridge.exposeInMainWorld("ade", {
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor(),
   },
-  memory: {
-    add: async (args: {
-      projectId?: string;
-      scope?: "user" | "project" | "lane" | "mission" | "agent";
-      scopeOwnerId?: string;
-      category:
-        | "fact"
-        | "preference"
-        | "pattern"
-        | "decision"
-        | "gotcha"
-        | "convention";
-      content: string;
-      importance?: "low" | "medium" | "high";
-      sourceRunId?: string;
-    }): Promise<unknown> =>
-      callProjectRuntimeActionOr("memory", "add", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryAdd, args),
-      ),
-    pin: async (args: { id: string }): Promise<void> =>
-      callProjectRuntimeActionOr("memory", "pin", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryPin, args),
-      ),
-    updateCore: async (args: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> =>
-      callProjectRuntimeActionOr(
-        "cto_state",
-        "updateCoreMemory",
-        { args: args.patch ?? {} },
-        () => ipcRenderer.invoke(IPC.memoryUpdateCore, args),
-      ),
-    getBudget: async (
-      args: {
-        projectId?: string;
-        level?: string;
-        scope?: "user" | "project" | "lane" | "mission" | "agent";
-        scopeOwnerId?: string;
-      } = {},
-    ): Promise<unknown[]> =>
-      callProjectRuntimeActionOr("memory", "getBudget", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryGetBudget, args),
-      ),
-    getCandidates: async (
-      args: { projectId?: string; limit?: number } = {},
-    ): Promise<unknown[]> =>
-      callProjectRuntimeActionOr("memory", "getCandidates", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryGetCandidates, args),
-      ),
-    promote: async (args: { id: string }): Promise<void> =>
-      callProjectRuntimeActionOr("memory", "promote", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryPromote, args),
-      ),
-    promoteMissionEntry: async (args: {
-      id: string;
-      missionId: string;
-    }): Promise<MemoryEntryDto | null> =>
-      callProjectRuntimeActionOr(
-        "memory",
-        "promoteMissionEntry",
-        { args },
-        () => ipcRenderer.invoke(IPC.memoryPromoteMissionEntry, args),
-      ),
-    archive: async (args: { id: string }): Promise<void> =>
-      callProjectRuntimeActionOr("memory", "archive", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryArchive, args),
-      ),
-    search: async (args: {
-      query: string;
-      projectId?: string;
-      scope?: "user" | "project" | "lane" | "mission" | "agent";
-      scopeOwnerId?: string;
-      limit?: number;
-      mode?: "lexical" | "hybrid";
-      status?: "promoted" | "candidate" | "archived" | "all";
-    }): Promise<unknown[]> =>
-      callProjectRuntimeActionOr("memory", "search", { args }, () =>
-        ipcRenderer.invoke(IPC.memorySearch, args),
-      ),
-    list: async (
-      args: {
-        scope?: "project" | "agent" | "mission";
-        tier?: 1 | 2 | 3;
-        status?: "promoted" | "candidate" | "archived" | "all";
-        limit?: number;
-      } = {},
-    ): Promise<MemoryEntryDto[]> =>
-      callProjectRuntimeActionOr("memory", "list", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryList, args),
-      ),
-    listMissionEntries: async (args: {
-      missionId: string;
-      runId?: string | null;
-      status?: "promoted" | "candidate" | "archived" | "all";
-    }): Promise<MemoryEntryDto[]> =>
-      callProjectRuntimeActionOr("memory", "listMissionEntries", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryListMissionEntries, args),
-      ),
-    listProcedures: async (
-      args: {
-        status?: "promoted" | "candidate" | "archived" | "all";
-        scope?: "project" | "agent" | "mission";
-        query?: string;
-      } = {},
-    ): Promise<ProcedureListItem[]> =>
-      callProjectRuntimeActionOr("memory", "listProcedures", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryListProcedures, args),
-      ),
-    getProcedureDetail: async (args: {
-      id: string;
-    }): Promise<ProcedureDetail | null> =>
-      callProjectRuntimeActionOr("memory", "getProcedureDetail", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryGetProcedureDetail, args),
-      ),
-    exportProcedureSkill: async (args: {
-      id: string;
-      name?: string;
-    }): Promise<{ path: string; skill: SkillIndexEntry | null } | null> =>
-      callProjectRuntimeActionOr(
-        "memory",
-        "exportProcedureSkill",
-        { args },
-        () => ipcRenderer.invoke(IPC.memoryExportProcedureSkill, args),
-      ),
-    listIndexedSkills: async (): Promise<SkillIndexEntry[]> =>
-      callProjectRuntimeActionOr("memory", "listIndexedSkills", {}, () =>
-        ipcRenderer.invoke(IPC.memoryListIndexedSkills),
-      ),
-    reindexSkills: async (
-      args: { paths?: string[] } = {},
-    ): Promise<SkillIndexEntry[]> =>
-      callProjectRuntimeActionOr("memory", "reindexSkills", { args }, () =>
-        ipcRenderer.invoke(IPC.memoryReindexSkills, args),
-      ),
-    syncKnowledge: async (): Promise<ChangeDigest | null> =>
-      callProjectRuntimeActionOr("memory", "syncKnowledge", {}, () =>
-        ipcRenderer.invoke(IPC.memorySyncKnowledge),
-      ),
-    getKnowledgeSyncStatus: async (): Promise<KnowledgeSyncStatus> =>
-      callProjectRuntimeActionOr("memory", "getKnowledgeSyncStatus", {}, () =>
-        ipcRenderer.invoke(IPC.memoryGetKnowledgeSyncStatus),
-      ),
-    getHealthStats: async (): Promise<MemoryHealthStats> =>
-      callProjectRuntimeActionOr("memory", "getHealthStats", {}, () =>
-        ipcRenderer.invoke(IPC.memoryHealthStats),
-      ),
-    downloadEmbeddingModel: async (): Promise<MemoryHealthStats> =>
-      callProjectRuntimeActionOr("memory", "downloadEmbeddingModel", {}, () =>
-        ipcRenderer.invoke(IPC.memoryDownloadEmbeddingModel),
-      ),
-    runSweep: async (): Promise<MemoryLifecycleSweepResult> =>
-      callProjectRuntimeActionOr("memory", "runSweep", {}, () =>
-        ipcRenderer.invoke(IPC.memoryRunSweep),
-      ),
-    onSweepStatus: (cb: (payload: MemorySweepStatusEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: MemorySweepStatusEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.memorySweepStatus, listener);
-      return () => ipcRenderer.removeListener(IPC.memorySweepStatus, listener);
-    },
-    runConsolidation: async (): Promise<MemoryConsolidationResult> =>
-      callProjectRuntimeActionOr("memory", "runConsolidation", {}, () =>
-        ipcRenderer.invoke(IPC.memoryRunConsolidation),
-      ),
-    onConsolidationStatus: (
-      cb: (payload: MemoryConsolidationStatusEventPayload) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: MemoryConsolidationStatusEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.memoryConsolidationStatus, listener);
-      return () =>
-        ipcRenderer.removeListener(IPC.memoryConsolidationStatus, listener);
-    },
-  },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>
       callProjectRuntimeActionOr(
@@ -8437,15 +8246,6 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AgentChatSession> =>
       callProjectRuntimeActionOr("chat", "ensureCtoSession", { args }, () =>
         ipcRenderer.invoke(IPC.ctoEnsureSession, args),
-      ),
-    updateCoreMemory: async (
-      args: CtoUpdateCoreMemoryArgs,
-    ): Promise<CtoSnapshot> =>
-      callProjectRuntimeActionOr(
-        "cto_state",
-        "updateCoreMemory",
-        { arg: args.patch ?? {} },
-        () => ipcRenderer.invoke(IPC.ctoUpdateCoreMemory, args),
       ),
     listSessionLogs: async (
       args: CtoListSessionLogsArgs = {},
@@ -8537,24 +8337,6 @@ contextBridge.exposeInMainWorld("ade", {
         "listAgentRuns",
         { args },
         () => ipcRenderer.invoke(IPC.ctoListAgentRuns, args),
-      ),
-    getAgentCoreMemory: async (
-      args: CtoGetAgentCoreMemoryArgs,
-    ): Promise<AgentCoreMemory> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "getCoreMemory",
-        { arg: args.agentId },
-        () => ipcRenderer.invoke(IPC.ctoGetAgentCoreMemory, args),
-      ),
-    updateAgentCoreMemory: async (
-      args: CtoUpdateAgentCoreMemoryArgs,
-    ): Promise<AgentCoreMemory> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "updateCoreMemory",
-        { argsList: [args.agentId, args.patch ?? {}] },
-        () => ipcRenderer.invoke(IPC.ctoUpdateAgentCoreMemory, args),
       ),
     listAgentSessionLogs: async (
       args: CtoListAgentSessionLogsArgs,

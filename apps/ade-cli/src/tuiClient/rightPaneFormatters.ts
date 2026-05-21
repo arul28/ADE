@@ -264,28 +264,6 @@ export function formatPrComments(value: unknown): string {
   return lines.join("\n");
 }
 
-export function formatMemorySearch(value: unknown): string {
-  const root = unwrapStructured(value);
-  const record = isRecord(root) ? root : {};
-  const memories = firstRecordArray(record, ["memories", "items", "results"]);
-  const query = pickString(record, ["query"]) ?? "project";
-  const scope = pickString(record, ["scope"]) ?? "project";
-  const status = pickString(record, ["status"]) ?? "all";
-  if (!memories.length) return `No ${scope} memories matched "${query}" (${status}).`;
-  const lines = [`Memory · ${scope} · ${status} · ${formatCount("match", memories.length)}`, ""];
-  for (const memory of memories.slice(0, 10)) {
-    const meta = [
-      pickString(memory, ["status"]),
-      pickString(memory, ["category"]),
-      pickString(memory, ["importance"]),
-    ].filter(Boolean).join("/");
-    const id = pickString(memory, ["id"]);
-    lines.push(`- ${meta || "memory"}${id ? ` ${id}` : ""}`);
-    lines.push(`  ${truncate(memory.content, 96) || "(empty)"}`);
-  }
-  return lines.join("\n");
-}
-
 export function formatLinearStatus(value: unknown): string {
   const root = unwrapStructured(value);
   if (!isRecord(root)) return "Linear status is not available.";

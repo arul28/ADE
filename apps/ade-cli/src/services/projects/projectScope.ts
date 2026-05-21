@@ -36,9 +36,6 @@ export class ProjectScopeRegistry {
     private readonly projectRegistry: ProjectRegistry,
     private readonly options: {
       syncRuntime?: AdeRuntimeSyncOptions;
-      runtimeCapabilities?: {
-        memory?: boolean;
-      };
       onDisposeProject?: (projectId: ProjectId) => void;
     } = {},
   ) {}
@@ -67,7 +64,6 @@ export class ProjectScopeRegistry {
         projectRoot: record.rootPath,
         workspaceRoot: record.rootPath,
         chatRuntime: "agent",
-        capabilities: this.options.runtimeCapabilities,
         ...(syncRuntime ? { syncRuntime } : {}),
       });
       return new ProjectScope({

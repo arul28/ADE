@@ -631,49 +631,12 @@ function createRuntime() {
       })),
     } as any,
     fileService: null,
-    memoryService: {
-      writeMemory: vi.fn(() => ({
-        accepted: true,
-        memory: {
-          id: "memory-1",
-          scope: "project",
-          status: "candidate",
-          tier: 3,
-          category: "fact",
-          content: "x",
-          importance: "medium",
-          confidence: 0.6,
-          promotedAt: null,
-          sourceRunId: null,
-          createdAt: new Date().toISOString()
-        },
-        deduped: false,
-        mergedIntoId: null,
-        reason: null,
-      })),
-      addSharedFact: vi.fn(() => ({
-        id: "shared-fact-1"
-      })),
-      pinMemory: vi.fn(() => ({
-        id: "memory-1",
-        pinned: true,
-        tier: 1
-      })),
-      promoteMemory: vi.fn(),
-      searchMemories: vi.fn(() => [])
-    } as any,
     ctoStateService: {
       getIdentity: vi.fn(() => ({
         name: "CTO",
         version: 1,
         persona: "test",
         modelPreferences: { provider: "codex", model: "gpt-5.4-codex", modelId: "openai/gpt-5.4-codex" },
-        memoryPolicy: {
-          autoCompact: true,
-          compactionThreshold: 0.7,
-          preCompactionFlush: true,
-          temporalDecayHalfLifeDays: 30
-        },
         updatedAt: new Date().toISOString()
       })),
       getSnapshot: vi.fn((recentLimit = 10) => ({
@@ -682,22 +645,7 @@ function createRuntime() {
           version: 1,
           persona: "test",
           modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30
-          },
           updatedAt: new Date().toISOString()
-        },
-        coreMemory: {
-          version: 3,
-          updatedAt: "2026-03-05T12:00:00.000Z",
-          projectSummary: "summary",
-          criticalConventions: [],
-          userPreferences: [],
-          activeFocus: [],
-          notes: []
         },
         recentSessions: Array.from({ length: recentLimit }, (_, index) => ({
           id: `session-${index + 1}`,
@@ -713,45 +661,8 @@ function createRuntime() {
         })),
         recentSubordinateActivity: [],
       })),
-      updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
-        identity: {
-          name: "CTO",
-          version: 1,
-          persona: "test",
-          modelPreferences: { provider: "claude", model: "sonnet" },
-          memoryPolicy: {
-            autoCompact: true,
-            compactionThreshold: 0.7,
-            preCompactionFlush: true,
-            temporalDecayHalfLifeDays: 30
-          },
-          updatedAt: new Date().toISOString()
-        },
-        coreMemory: {
-          version: 3,
-          updatedAt: "2026-03-05T12:00:00.000Z",
-          projectSummary: String((patch as { projectSummary?: unknown }).projectSummary ?? "summary"),
-          criticalConventions: [],
-          userPreferences: [],
-          activeFocus: [],
-          notes: []
-        },
-        recentSessions: []
-      }))
     } as any,
-    workerAgentService: {
-      updateCoreMemory: vi.fn((patch: Record<string, unknown>) => ({
-        version: 4,
-        updatedAt: "2026-03-05T13:00:00.000Z",
-        projectSummary: String((patch as { projectSummary?: unknown }).projectSummary ?? "worker-summary"),
-        criticalConventions: [],
-        userPreferences: [],
-        activeFocus: Array.isArray((patch as { activeFocus?: unknown }).activeFocus)
-          ? (patch as { activeFocus: string[] }).activeFocus
-          : [],
-        notes: []
-      }))
-    } as any,
+    workerAgentService: {} as any,
     flowPolicyService: {
       getPolicy: vi.fn(() => ({ workflows: [], legacyConfig: { projects: [] } })),
       savePolicy: vi.fn((policy: Record<string, unknown>) => policy),
@@ -1034,7 +945,6 @@ function createRuntime() {
           firstSeenRunId: "run-0",
           lastSeenRetrospectiveId: "retro:run-1",
           lastSeenRunId: "run-1",
-          promotedMemoryId: "memory-candidate-1",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }
@@ -1544,11 +1454,7 @@ describe("adeRpcServer", () => {
         "check_conflicts",
         "merge_lane",
         "ask_user",
-        "memory_add",
-        "memory_pin",
-        "memory_update_core",
         "reflection_add",
-        "memory_search",
         "get_environment_info",
         "launch_app",
         "interact_gui",
@@ -1809,8 +1715,6 @@ describe("adeRpcServer", () => {
       expect(names).toEqual(
         expect.arrayContaining([
           "ask_user",
-          "memory_search",
-          "memory_add",
           "create_lane",
           "run_tests",
         ])
@@ -3890,224 +3794,6 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("uses trusted env run context for shared-fact writes instead of initialize payload runId", async () => {
-    await withEnv({ ADE_RUN_ID: "run-from-env" }, async () => {
-      const fixture = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-from-identity",
-        attemptId: "attempt-from-identity"
-      });
-      const response = await callTool(handler, "memory_add", {
-        content: "Cache layer requires warm-up before benchmark runs.",
-        category: "fact",
-        importance: "high"
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.memoryService.writeMemory).toHaveBeenCalledWith(
-        expect.objectContaining({
-          scope: "mission",
-          scopeOwnerId: "run-from-env",
-          status: "promoted",
-          tier: 2,
-          confidence: 1,
-        })
-      );
-      expect(fixture.runtime.memoryService.addSharedFact).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runId: "run-from-env",
-          stepId: "step-from-identity",
-        })
-      );
-      expect(response.structuredContent.memory).toEqual(
-        expect.objectContaining({
-          written: true,
-          durability: "candidate",
-          tier: 3,
-        })
-      );
-      expect(response.structuredContent).toEqual(
-        expect.objectContaining({
-          saved: true,
-          durability: "candidate",
-        })
-      );
-      expect(response.structuredContent.sharedFact.written).toBe(true);
-    });
-  });
-
-  it("supports memory_search scope/status filters and returns enriched memory rows", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.memoryService.searchMemories = vi.fn(() => ([
-      {
-        id: "memory-42",
-        scope: "mission",
-        status: "candidate",
-        category: "pattern",
-        content: "Service B can lag by ~90s after deploy.",
-        importance: "high",
-        confidence: 0.82,
-        createdAt: "2026-03-01T10:00:00.000Z",
-        promotedAt: null,
-        sourceRunId: "run-1",
-      }
-    ]));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-      });
-      const response = await callTool(handler, "memory_search", {
-        query: "deploy lag",
-        scope: "mission",
-        status: "candidate",
-        limit: 7,
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.memoryService.searchMemories).toHaveBeenCalledWith(
-        "deploy lag",
-        "project-1",
-        "mission",
-        7,
-        "candidate",
-        "run-1",
-      );
-      expect(response.structuredContent.scope).toBe("mission");
-      expect(response.structuredContent.status).toBe("candidate");
-      expect(response.structuredContent.memories[0]).toEqual(
-        expect.objectContaining({
-          id: "memory-42",
-          scope: "mission",
-          status: "candidate",
-          confidence: 0.82,
-        })
-      );
-    });
-  });
-
-  it("pins memory entries through memory_pin", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "worker-1", role: "agent" });
-    const response = await callTool(handler, "memory_pin", { id: "memory-42" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.memoryService.pinMemory).toHaveBeenCalledWith("memory-42");
-    expect(response.structuredContent.pinned).toBe(true);
-  });
-
-  it("exposes memory_update_core and writes CTO core memory", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, {
-      callerId: "cto-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1"
-    });
-
-    const response = await callTool(handler, "memory_update_core", {
-      projectSummary: "Stabilize checkout retries and tighten CI gating.",
-      activeFocus: ["checkout reliability", "merge safety"]
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ctoStateService.updateCoreMemory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectSummary: "Stabilize checkout retries and tighten CI gating.",
-        activeFocus: ["checkout reliability", "merge safety"]
-      })
-    );
-    expect(response.structuredContent.updated).toBe(true);
-    expect(response.structuredContent.version).toBe(3);
-    expect(response.structuredContent.updatedAt).toBe("2026-03-05T12:00:00.000Z");
-  });
-
-  it("routes memory_update_core to worker core memory when agent ownerId is set", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      ownerId: "worker-agent-1",
-      missionId: "mission-1",
-      runId: "run-1"
-    });
-
-    const response = await callTool(handler, "memory_update_core", {
-      projectSummary: "Worker-specific checkout strategy",
-      activeFocus: ["checkout reliability"]
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
-      "worker-agent-1",
-      expect.objectContaining({
-        projectSummary: "Worker-specific checkout strategy",
-        activeFocus: ["checkout reliability"]
-      })
-    );
-    expect(fixture.runtime.ctoStateService.updateCoreMemory).not.toHaveBeenCalled();
-    expect(response.structuredContent.updated).toBe(true);
-    expect(response.structuredContent.version).toBe(4);
-    expect(response.structuredContent.updatedAt).toBe("2026-03-05T13:00:00.000Z");
-  });
-
-  it("derives worker ownerId from chat session identity when OpenCode launch omits it", async () => {
-    await withEnv({ ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.agentChatService.getSessionSummary = vi.fn(async (sessionId: string) => ({
-        sessionId,
-        laneId: "lane-1",
-        title: "Worker chat",
-        provider: "opencode",
-        model: "gpt-5.4-codex",
-        status: "idle",
-        lastActivityAt: "2026-03-17T19:00:00.000Z",
-        createdAt: "2026-03-17T19:00:00.000Z",
-        identityKey: "agent:worker-agent-1",
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "chat-from-identity",
-        role: "agent",
-        chatSessionId: "chat-from-identity",
-        missionId: "mission-1",
-        runId: "run-1",
-      });
-
-      const response = await callTool(handler, "memory_update_core", {
-        projectSummary: "Worker-specific checkout strategy",
-        activeFocus: ["checkout reliability"],
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.workerAgentService.updateCoreMemory).toHaveBeenCalledWith(
-        "worker-agent-1",
-        expect.objectContaining({
-          projectSummary: "Worker-specific checkout strategy",
-          activeFocus: ["checkout reliability"],
-        }),
-      );
-      expect(fixture.runtime.ctoStateService.updateCoreMemory).not.toHaveBeenCalled();
-    });
-  });
-
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -4627,7 +4313,6 @@ describe("adeRpcServer", () => {
 
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "mission")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(true);
@@ -4645,31 +4330,6 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "layout")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "tiling_tree")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "graph_state")).toBe(true);
-  });
-
-  it("hides memory tools and actions when the runtime disables memory", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.capabilities = { memory: false };
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const listed = await handler({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "ade/actions/list",
-      params: {},
-    }) as { actions: Array<{ name: string }> };
-    expect(listed.actions.some((entry) => entry.name.startsWith("memory_"))).toBe(false);
-
-    const memoryCall = await callTool(handler, "memory_add", {
-      content: "Remember this",
-      category: "fact",
-    });
-    expect(memoryCall.isError).toBe(true);
-    expect(String(memoryCall.error?.message ?? "")).toContain("Tool not available");
-
-    const actionList = await callTool(handler, "list_ade_actions", { domain: "all" });
-    expect(actionList.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "memory")).toBe(false);
   });
 
   it("invokes ADE actions dynamically and returns status hints", async () => {
@@ -6134,10 +5794,6 @@ describe("adeRpcServer", () => {
         },
         askUserEvents: [],
         askUserRateLimit: { maxCalls: 1, windowMs: 1000 },
-        memoryAddEvents: [],
-        memoryAddRateLimit: { maxCalls: 1, windowMs: 1000 },
-        memorySearchEvents: [],
-        memorySearchRateLimit: { maxCalls: 1, windowMs: 1000 },
       };
     }
 

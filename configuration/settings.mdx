@@ -1,6 +1,6 @@
 ---
 title: "Settings"
-description: "Reference for every section in ADE Settings — General, Appearance, Workspace, AI, Mobile Push, Integrations, Memory, Lane Templates, and Usage."
+description: "Reference for every section in ADE Settings — General, Appearance, Workspace, AI, Mobile Push, Integrations, Lane Templates, and Usage."
 icon: "sliders"
 ---
 
@@ -21,7 +21,6 @@ Settings are organized into nine sections in the left navigation panel. Changes 
   <Card title="AI" icon="brain" href="#ai">Providers, per-role models, context management.</Card>
   <Card title="Mobile Push" icon="mobile" href="#mobile-push">iPhone pairing, tailnet discovery, and push notifications.</Card>
   <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and proof backends.</Card>
-  <Card title="Memory" icon="database" href="#memory">Unified memory scopes, retention, consolidation.</Card>
   <Card title="Lane Templates" icon="layer-group" href="#lane-templates">Reusable lane profiles and defaults.</Card>
   <Card title="Usage" icon="bolt" href="#usage">Spend graphs and monthly totals across providers.</Card>
 </CardGroup>
@@ -134,7 +133,7 @@ ADE's default model applies to all agents unless you set role-specific overrides
 | Validator | Mission validation and review | `claude-sonnet-4-6` |
 | Automation | Event-driven automation runs | `claude-haiku-4-5` |
 | Chat | Interactive chat sessions | `claude-sonnet-4-6` |
-| CTO | Project-level memory and delegation | `claude-opus-4-7` |
+| CTO | Project-level leadership and delegation | `claude-opus-4-7` |
 
 <Tip>
 Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for mission planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
@@ -205,7 +204,7 @@ The pairing panel also surfaces everything the old Sync section managed:
 | Sync history | Per-domain last-synced timestamps | — |
 
 <Note>
-Sync uses cr-sqlite for CRDT replication. Missions, lanes, memory, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
+Sync uses cr-sqlite for CRDT replication. Missions, lanes, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
 </Note>
 
 ---
@@ -243,23 +242,6 @@ ADE connects to Linear for bidirectional issue sync.
 ADE stores intentional proof artifacts (screenshots, recordings, traces) that agents capture via the `ade proof` CLI. This panel shows which capture backends are available on the current machine and their health state.
 
 For full proof documentation, see [Proof](/computer-use/overview).
-
----
-
-## Memory
-
-ADE's unified memory system replaces the older context pack, CTO memory, and chat memory layers. Memory is organized into three scopes and three tiers.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Project memory cap | Max entries at project scope | 2,000 |
-| Agent memory cap | Max entries per agent scope | 500 |
-| Mission memory cap | Max entries per mission scope | 200 |
-| Tier 1 cap | Max pinned entries per scope | 20 |
-| Consolidation schedule | How often ADE runs its weekly memory consolidation batch | Weekly |
-| Vector store | On-device sqlite-vec index with local embedding model | On |
-
-Entries are scored with a composite of semantic similarity, recency, importance, confidence, and access frequency. Temporal decay has a 30-day half-life; entries fall from Tier 2 to Tier 3 at 90 days and auto-archive at 180 days.
 
 ---
 

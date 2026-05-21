@@ -47,7 +47,6 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -148,7 +147,6 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -249,7 +247,6 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -527,11 +524,10 @@ _    ____  _____
 
   CTO and Work state
 
-    $ ade cto state --text                          Read CTO identity, core memory, and recent sessions
+    $ ade cto state --text                          Read CTO identity, recent sessions
     $ ade cto chats list --text                     List CTO work chats
     $ ade cto chats spawn --lane <lane> --prompt "plan this"
     $ ade cto chats send <session> --text "continue"
-    $ ade actions run cto_state.updateCoreMemory --input-json '{"projectSummary":"..."}'
     $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
 
 ## ade linear --help
@@ -819,20 +815,6 @@ _    ____  _____
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open.
 
-## ade memory --help
-_    ____  _____
-    / \  |  _ \| ____|
-   / _ \ | | | |  _|
-  / ___ \| |_| | |___
- /_/   \_\____/|_____|
-
-  Memory
-
-    $ ade memory add --category fact --content "User prefers concise summaries"
-    $ ade memory search -q "release process" --text
-    $ ade memory pin <memory-id>
-    $ ade memory core --arg projectSummary="Current focus"
-
 ## ade settings --help
 _    ____  _____
     / \  |  _ \| ____|
@@ -879,7 +861,6 @@ _    ____  _____
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade macos-vm status | start | guide          Run lane-tied macOS VMs for agent work
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade memory add | search | pin                 Use ADE memory
     $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install

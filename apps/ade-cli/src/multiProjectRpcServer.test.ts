@@ -125,13 +125,10 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("passes runtime capability flags into project scopes", async () => {
+  it("passes runtime state into project scopes", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
-    const runtime = {
-      capabilities: { memory: false },
-      dispose: vi.fn(),
-    };
+    const runtime = { dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(async () => ({
         registryProjectId: added.projectId,
@@ -165,7 +162,7 @@ describe("multi-project RPC server", () => {
       method: "ade/actions/list",
       params: { projectId: added.projectId },
     }) as { actions: Array<{ name: string }> };
-    expect(actions.actions.some((entry) => entry.name.startsWith("memory_"))).toBe(false);
+    expect(actions.actions.length).toBeGreaterThan(0);
     expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId);
 
     handler.dispose();

@@ -39,12 +39,6 @@ export type AutomationConfidenceScore = {
   reason: string;
 };
 
-export type AutomationProcedureFeedback = {
-  procedureId: string;
-  outcome: "success" | "failure" | "observation";
-  reason: string;
-};
-
 export type AutomationRun = {
   id: string;
   automationId: string;
@@ -95,7 +89,6 @@ export type AutomationRunDetail = {
   rule: AutomationRule | null;
   chatSession: AgentChatSessionSummary | null;
   actions: AutomationActionResult[];
-  procedureFeedback: AutomationProcedureFeedback[];
   ingressEvent: AutomationIngressEventRecord | null;
 };
 
@@ -262,7 +255,6 @@ export type AutomationRuleDraft = {
   reviewProfile: AutomationReviewProfile;
   toolPalette: AutomationToolFamily[];
   contextSources: AutomationContextSource[];
-  memory: AutomationRule["memory"];
   guardrails: AutomationGuardrails;
   outputs: AutomationOutputs;
   verification: AutomationVerification;

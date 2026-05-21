@@ -1,6 +1,6 @@
 # ADE — Product Requirements
 
-ADE is a **per-machine local-first runtime daemon** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider AI chat, multi-agent missions, a persistent CTO agent, pipeline automations, PR stacking, conflict simulation, computer-use proofs, a cross-scope memory system, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
+ADE is a **per-machine local-first runtime daemon** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider AI chat, multi-agent missions, a persistent CTO agent, pipeline automations, PR stacking, conflict simulation, computer-use proofs, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
 
 This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
@@ -21,7 +21,6 @@ The primary unit of work inside any project is a **lane**: an isolated git workt
 
 Layered on top, all owned by the runtime:
 - **Agents** — chat, CTO operator, workers. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware. CTO worker adapter types: `claude-local`, `codex-local`, `process`.
-- **Memory** — persistent knowledge across sessions. Scoped to project/agent/mission.
 - **Automations** — rule-based background workflows triggered by events, cron, webhooks.
 - **Computer use** — control plane that fans out to Ghost OS, agent-browser, or local fallback for UI automation proofs.
 - **Linear** — first-class two-way integration owned by the CTO agent.
@@ -45,7 +44,6 @@ ADE is the control plane. It does not execute browser automation or computer-use
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
-| Memory | Structured, searchable, compaction-aware knowledge entries. | [memory/README.md](./features/memory/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
 ---
@@ -68,14 +66,13 @@ ADE is the control plane. It does not execute browser automation or computer-use
 
 - [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
 - [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
-- [**Memory**](./features/memory/README.md) — Unified SQLite + FTS + embeddings. Write gate, compaction, procedural learning, daily sweep, hybrid retrieval (BM25+cosine+MMR).
 - [**History**](./features/history/README.md) — Operations timeline + chat transcripts + exports. Every service follows the same `runTrackedOperation` recording pattern.
 
 ### Orchestration
 
 - [**Missions**](./features/missions/README.md) — Coordinator agent, delegation graph, validation gates (19 VAL-XXX assertions), result-lane closeout, worker fan-out.
 - [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → three execution surfaces (mission, agent-session, built-in). Confidence + verification + human review.
-- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator with four-layer prompt model. Owns Linear workflows, pipeline builder, worker team, identity/memory.
+- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator with identity, context continuity, Linear workflows, pipeline builder, and worker team.
 
 ### Workspace surfaces
 

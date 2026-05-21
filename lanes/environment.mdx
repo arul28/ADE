@@ -81,4 +81,4 @@ The **Lane Proxy** is an internal ADE service that ensures AI agents never accid
 
 When an agent session starts in a lane, ADE assigns it a scoped proxy context. All filesystem operations in that session are validated against the lane's worktree path. Attempts to modify files outside the lane's directory are blocked and logged. This is a safety guarantee — even if an agent produces a path-traversal tool call, it cannot affect a different lane's files.
 
-Agent sessions are also scoped to a lane's memory context. The Lane Pack injected at session start is the pack for that specific lane, not a global pack or a neighboring lane's pack. Context does not leak across lanes.
+Agent sessions are also scoped to a lane's context. The Lane Pack injected at session start is the pack for that specific lane, not a global pack or a neighboring lane's pack. Context does not leak across lanes.

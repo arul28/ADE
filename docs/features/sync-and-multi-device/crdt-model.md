@@ -45,10 +45,7 @@ SELECT crsql_as_crr('table_name');
 
 **Exclusions:**
 
-- `sqlite_%`, `crsql_%`, `unified_memories_fts%` — virtual / internal /
-  FTS tables
-- `unified_memories_fts` in particular stays local-only and is rebuilt
-  from synced `unified_memories` content
+- `sqlite_%`, `crsql_%` — virtual / internal tables
 
 The migration is dynamic: any new table that appears in
 `sqlite_master` and is not in the excluded set is marked as a CRR
@@ -214,14 +211,7 @@ column. Dropping or renaming a column on a replicated table is not
 supported by the current adapter and must be migrated through a copy
 table.
 
-### Rule 3: FTS indexes stay local
-
-Full-text search indexes (`unified_memories_fts` today) are not
-synced. After a remote changeset touches `unified_memories`, ADE
-rebuilds the FTS index locally. Adding a new FTS5 index follows the
-same pattern.
-
-### Rule 4: Machine-bound state is not a CRR
+### Rule 3: Machine-bound state is not a CRR
 
 Do not add tables to the replicated set that only matter on one
 device. Worktrees, PTY handles, transcripts, and caches are
@@ -254,7 +244,6 @@ writer wins on ties by `site_id`).
 
 After apply, ADE runs post-hooks:
 
-- Rebuild FTS if `unified_memories` rows changed.
 - Emit relevant IPC events (`laneChanged`, `prsChanged`, etc.) so the
   renderer re-queries the affected projections.
 - On iOS, post `Notification.Name.adeDatabaseDidChange` so SwiftUI
@@ -278,7 +267,6 @@ After apply, ADE runs post-hooks:
 | iOS pure-SQL emulation | Implemented, wire-compatible |
 | Dynamic CRR discovery | Implemented |
 | `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) |
-| FTS rebuild after remote apply | Implemented |
 | Column drop/rename on replicated tables | **Not supported** — use copy-table migration |
 | Statement caching in `node:sqlite` adapter | Deferred; prepares per call today, revisit before heavier loads |
 
@@ -295,10 +283,6 @@ After apply, ADE runs post-hooks:
   suites that create scratch tables in the main DB will see them
   replicated on the next connection. Use an in-memory DB or a
   dedicated test DB path for scratch tables.
-- **`unified_memories_fts` rebuild is not incremental.** Large
-  `unified_memories` batches cause a full FTS rebuild on apply.
-  If this becomes a hotspot the rebuild can be narrowed to rows
-  touched by the batch, but that is not implemented today.
 - **`ade_next_db_version()` is synchronous and unlocked.** Under
   heavy concurrent write load on iOS (which is unlikely because the
   phone is a controller-only device with limited write surface), the

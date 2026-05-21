@@ -8,7 +8,7 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is a **per-machine ADE runtime daemon** (`apps/ade-cli/`, started with `ade serve`). The daemon hosts every project on that machine through a project registry and exposes a multi-project JSON-RPC surface on a Unix socket / Windows named pipe at `~/.ade/sock/ade.sock`. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** that bind to a runtime — local or remote — and invoke runtime-owned actions through that one surface.
 
-The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, a multi-provider AI runtime, a deterministic orchestrator for multi-step missions, a Linear-integrated CTO agent acting as a team lead, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, a SQLite-backed memory system, the sync host that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, a multi-provider AI runtime, a deterministic orchestrator for multi-step missions, a Linear-integrated CTO agent acting as a team lead, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync host that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as four runtime/client packages plus the marketing site:
 
@@ -76,7 +76,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 - **Daemon (`ade serve`)** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, and listens on `~/.ade/sock/ade.sock` (Windows: a named pipe under `\\.\pipe\ade-<hash>`, with the hash derived in `apps/desktop/src/shared/adeRuntimeIpc.ts`). Installable / removable as a login service with `ade serve --install-service` / `--uninstall-service` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
 - **Single-session CLI** — `ade <command>` connects to the local daemon over the machine socket, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through a daemon — used in CI and for one-off scripts.
-- **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes; does not expose remote memory features.
+- **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes.
 - **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to `~/.ade/sock/ade.sock` and will start `ade serve` if the socket is missing. `ade --socket /path code` requires a specific socket; `ade code --embedded` keeps the legacy in-process fallback explicit.
 
 **Multi-project RPC.** The daemon exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `~/.ade/`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`.
@@ -94,7 +94,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`.
 
-**Action surface.** First-class command families cover lanes, git, diffs, files, PRs, path-to-merge, runs, shells, chats, agents, CTO, Linear, tests, proof, memory, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE socket), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The action allow-list adds two domains for these surfaces: `app_control` (every public method on `AppControlService`) and `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`).
+**Action surface.** First-class command families cover lanes, git, diffs, files, PRs, path-to-merge, runs, shells, chats, agents, CTO, Linear, tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE socket), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The action allow-list adds two domains for these surfaces: `app_control` (every public method on `AppControlService`) and `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`).
 
 **Proof subcommands** — `ade proof capture` (alias of `screenshot`), `ade proof attach <path>`, `ade proof record`, `ade proof launch`, `ade proof interact`, `ade proof list/status/environment/ingest`. `attach` infers the artifact kind from the file extension and routes through `ingest_computer_use_artifacts` with `backendStyle: "manual"`. Capture-style commands set `preferHeadless: true` on the plan so the connection layer drops to headless mode unless `--socket` is explicitly requested. All proof subcommands accept `--owner-kind` / `--owner-id` (with `chat` and `pr` aliases) to layer an explicit owner on top of the inferred session identity.
 
@@ -185,7 +185,7 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
 - **Engine source**: `apps/desktop/src/main/services/state/kvDb.ts` (schema bootstrap, CRR enablement, sync API) and `crsqliteExtension.ts` (extension loader). Both the desktop main process and the ADE CLI runtime import the same engine module from here; they do not maintain parallel schemas. The database is owned by whichever process opened it first for a given project — in normal operation that is the runtime daemon, with desktop's in-process services acting as legacy fallbacks.
 - **Database file**: `<project_root>/.ade/ade.db`.
 - **WAL mode** handles durability; `flushNow()` is a no-op.
-- **CRRs**: eligible tables are marked via `SELECT crsql_as_crr('table_name')` at startup. Virtual/internal tables (`sqlite_%`, `crsql_%`, `unified_memories_fts%`) are excluded. Marking is dynamic — new tables are picked up automatically unless excluded.
+- **CRRs**: eligible tables are marked via `SELECT crsql_as_crr('table_name')` at startup. Virtual/internal tables (`sqlite_%`, `crsql_%`) are excluded. Marking is dynamic — new tables are picked up automatically unless excluded.
 - **Sync API** (`AdeDb.sync`): `getSiteId()`, `getDbVersion()`, `exportChangesSince(version)`, `applyChanges(changes)`. Used by the sync transport.
 - **Merge semantics**: last-writer-wins per column with Lamport timestamps; each device has a site ID at `.ade/secrets/sync-site-id`.
 - **Engineering rule under CRR retrofit**: app-level `ON CONFLICT(...)` upserts must target PK only; secondary UNIQUE constraints do not survive CRR marking.
@@ -207,9 +207,6 @@ Schema bootstrap in `kvDb.ts` creates ~103 tables. Anchor tables for agents read
 | `missions` / `mission_runs` / `mission_steps` / `mission_step_attempts` | Mission lifecycle with runs, steps, attempts. |
 | `pull_requests` / `pr_review_threads` / `pr_checks` | GitHub PR projections with queue and stack metadata. |
 | `integration_proposals` | PR merge-plan simulations. Stores source lanes, pairwise results, sequential resolution state, optional adopted merge target (`preferred_integration_lane_id`), and merge-target drift snapshot (`merge_into_head_sha`). |
-| `unified_memories` + `unified_memories_fts` + `unified_memory_embeddings` | Primary memory store + FTS4 index + vector embeddings. |
-| `memory_procedure_*`, `memory_skill_index`, `knowledge_capture_ledger` | Procedural memories and ingestion dedupe. |
-| `cto_core_memory_state` | Per-project CTO core-memory blob. |
 | `computer_use_artifacts` + `computer_use_artifact_links` | Canonical proof-artifact records and cross-domain ownership. |
 | `devices` + `sync_cluster_state` | Device registry and singleton host-authority row (host is `brain_device_id` internally; legacy naming). |
 | `kv` | Generic key-value store for UI layout, config trust hashes, misc settings, and short-lived recovery records such as `agent-chat-parallel-launch:<projectRoot>:<laneId>`. |
@@ -230,14 +227,11 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── transcripts/             # PTY transcripts (ignored)
 │   ├── cache/                   # Runtime scratch (ignored)
 │   ├── artifacts/               # Pack exports, history artifacts (ignored)
-│   ├── memory/                  # Promoted-memory markdown mirror (ignored)
 │   ├── cto/
 │   │   ├── identity.yaml        # Shared CTO identity (tracked)
-│   │   ├── core-memory.json     # Runtime CTO core memory (ignored)
 │   │   ├── CURRENT.md           # Running status markdown (ignored)
-│   │   ├── MEMORY.md            # Runtime memory mirror (ignored)
 │   │   └── daily/<YYYY-MM-DD>.md
-│   ├── agents/<slug>/           # Per-worker identity + core memory (runtime, ignored)
+│   ├── agents/<slug>/           # Per-worker identity and daily logs (runtime, ignored)
 │   ├── templates/               # Lane/mission templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
 │   ├── workflows/linear/        # Linear workflow config (tracked when present)
@@ -257,7 +251,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 1. **Git-tracked shared scaffold** — `.ade/.gitignore`, `ade.yaml`, `cto/identity.yaml`, human-authored `templates/**`, `skills/**`, `workflows/linear/**`, `project-icons/**`. This is the only `.ade/` subset that flows through normal clone/pull. The shared `.ade/.gitignore` is now `*` with explicit allowlist entries for those scaffold files (so the next time someone touches `.ade/` from a fresh tool the runtime state stays out of git automatically).
 2. **ADE sync state** — the replicated `ade.db` tables that flow through cr-sqlite over WebSocket when devices join the same host.
-3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, generated context/memory markdown. Never leaves the device.
+3. **Machine-local runtime** — worktrees, caches, transcripts, artifacts, secrets, sockets, and generated context markdown. Never leaves the device.
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 
@@ -330,19 +324,16 @@ Agent tools are split by domain:
 
 | File | Domain |
 |------|--------|
-| `ai/tools/universalTools.ts` | Turn-level memory guard + mutating tools (`bash`, `writeFile`, `editFile`); gates on `TurnMemoryPolicyState` for `required` turns. |
-| `ai/tools/memoryTools.ts` | `memoryAdd`, `memorySearch`; `resolveAgentMemoryWritePolicy()`; `MemoryWriteEvent` emission. |
+| `ai/tools/universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read/search tools, web tools, todos, and ask-user. |
 | `ai/tools/workflowTools.ts` | Mission / workflow interaction tools. |
 | `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. |
 | `ai/tools/linearTools.ts` | Linear integration tool surface. |
 | `ai/tools/webFetch.ts` / `webSearch.ts` | Outbound web access. |
 | `ai/tools/readFileRange.ts` / `globSearch.ts` / `grepSearch.ts` | Read-only file tools shared across all roles. |
 | `ai/tools/editFile.ts` | Edit-path tool wired to ADE-controlled write flow. |
-| `ai/tools/systemPrompt.ts` | Base system prompt; memory usage instructions baked in. |
+| `ai/tools/systemPrompt.ts` | Base system prompt; adapts wording based on exposed tool names. |
 
 **ADE CLI is the cross-process action surface.** Workers spawned as CLI children inherit ADE context env vars and can call the `ade` command to invoke ADE-owned actions layered on top of their native provider tools.
-
-**Turn classification** (`universalTools.ts`): the chat service classifies each user turn as `required` (mentions fix/debug/implement/refactor → memory search mandatory before mutations), `soft` (explain/review/design → memory auto-injected but not gated), or `none` (meta/greeting → no injection/gating).
 
 ### 4.4 Model registry specifics
 
@@ -366,7 +357,7 @@ Agent tools are split by domain:
 - `delegationContracts.ts`, `missionBudgetService.ts` — contract + budget enforcement.
 - Validation baseline: required validation contracts are runtime-enforced. Auto-spawned validator steps per target step. Missing validation blocks phase transitions with signals `validation_contract_unfulfilled`, `validation_self_check_reminder`, `validation_auto_spawned`, `validation_gate_blocked`.
 
-Interactive chat (Terminals, Work) bypasses mission runtime semantics but still flows through the unified executor with the same memory/permission plumbing.
+Interactive chat (Terminals, Work) bypasses mission runtime semantics but still flows through the unified executor with the same permission plumbing.
 
 Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/agents/README.md), and [Missions orchestration](./features/missions/orchestration.md).
 
@@ -406,9 +397,8 @@ ade.prs.*                    # stacked PR queue, integration, issue inventory,
                              # ade.prs.pathToMerge.stop) and ade.prs.retargetBase used
                              # by the queue Automate Merging modal
 ade.conflicts.*              # risk matrix, simulation, proposals
-ade.memory.*                 # memory CRUD, search, health, embeddings
 ade.missions.* / ade.orchestrator.*
-ade.cto.*                    # identity, core memory, agent roster, Linear
+ade.cto.*                    # identity, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
 ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state.
                              # Includes ade.agentChat.modelCatalog (provider-grouped catalog
@@ -463,7 +453,6 @@ High-frequency events flow from main → renderer via `webContents.send(channel,
 | `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph |
 | `ade.project.missing` | projectService | Shell banner |
 | `ade.project.state.event` | projectState | Startup flow |
-| `ade.memory.*` events | memory services | Settings → Memory |
 | `ade.sync.*` events | syncService | Settings → Sync |
 
 Consolidated reads: `getFullMissionView` returns metadata, run, steps, chat threads, interventions, artifacts, and usage in one IPC — replacing 5+ per-mission-selection calls.
@@ -487,7 +476,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts`, `linearLaneCardService.ts` | CTO identity + core memory; worker agents; Linear sync/ingress/OAuth/routing/dispatcher/closeout. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL. |
+| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts`, `linearLaneCardService.ts` | CTO identity, worker agents, session logs, and Linear sync/ingress/OAuth/routing/dispatcher/closeout. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL. |
 | `deeplinks/` | `protocolHandler.ts` | Registers the `ade://` OS protocol handler, owns the single-instance lock, buffers cold-start URLs until `app.whenReady()`, and dispatches parsed URLs through `IPC.appNavigate` to the focused window. Re-used by the iOS Send-to-Mac sync command (`syncRemoteCommandService.deeplinks.open`). Shared parser + builder live in `apps/desktop/src/shared/deeplinks.ts`; the PR "Open in ADE" footer is in `apps/desktop/src/shared/adeDeeplinkFooter.ts`. See [features/deeplinks/README.md](./features/deeplinks/README.md). |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
@@ -504,7 +493,6 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `logging/` | `logger.ts` | File-backed structured logger. |
 | `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions with per-call timeouts where needed, polls runtime events, and installs the background service best-effort in packaged builds. |
 | `macosVm/` | `macosVmService.ts`, `rfbDirectClient.ts`, `credentialsStore.ts`, `runtimeBootstrap.ts`, `macosVmRecovery.ts` | Lane-tied macOS VM lifecycle and GUI control. `macosVmService.ts` uses Lume, stores VM records in `.ade/cache`, mounts direct lane roots when safe (otherwise a sanitized rsync mirror), and exposes screenshot/click/type/select through headless VNC or visible-window fallbacks. `credentialsStore.ts` keeps guest user credentials in the macOS Keychain (`/usr/bin/security`, service `ade-macos-vm-<vmName>` / account `ade-cli`); renderers only see a summary. `runtimeBootstrap.ts` installs the in-guest ade-runtime over SSH+SCP with a five-phase progress signal (`ssh-probe`, `write-script`, `scp-script`, `run-script`, `verify-marker`). `macosVmRecovery.ts` is a standalone CLI cleanup path for stale records / lease / VNC credentials when the desktop surface cannot reach them. |
-| `memory/` | `unifiedMemoryService.ts` (canonical; listed under `memory/memoryService.ts`), `memoryBriefingService.ts`, `memoryLifecycleService.ts`, `batchConsolidationService.ts`, `embeddingService.ts`, `embeddingWorkerService.ts`, `hybridSearchService.ts`, `episodicSummaryService.ts`, `knowledgeCaptureService.ts`, `humanWorkDigestService.ts`, `proceduralLearningService.ts`, `compactionFlushPrompt.ts`, `skillRegistryService.ts`, `memoryFilesService.ts`, `memoryRepairService.ts`, `missionMemoryLifecycleService.ts` | Unified memory subsystem — see §10. |
 | `missions/` | `missionService.ts`, `missionPreflightService.ts`, `phaseEngine.ts` | Mission CRUD, preflight validation, phase lifecycle. |
 | `onboarding/` | `onboardingService.ts` | First-run flow, defaults detection, existing lane discovery. |
 | `opencode/` | `openCodeRuntime.ts`, `openCodeServerManager.ts`, `openCodeBinaryManager.ts`, `openCodeInventory.ts`, `openCodeModelCatalog.ts` | OpenCode server spawn, binary resolution, model discovery. |
@@ -527,7 +515,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 
 Startup sequencing: every background service goes through `scheduleBackgroundProjectTask()` in `main.ts`, which provides explicit labels, `ADE_ENABLE_*` env gates, `project.startup_task_begin`/`_done`/`_enabled`/`_skipped` telemetry, and per-task delays. Integrations stay **dormant-until-configured**.
 
-Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `ade_rpc.socket_server_start`, `memory.files.initial_sync`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. The memory-file mirror sync and sync-service initialization are now scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_MEMORY_FILE_SYNC` and `ADE_ENABLE_SYNC_INIT` respectively (both default-on).
+Project-init step timing goes through `measureProjectInitStep(step, task)` — a wrapper that logs `project.init_step { projectRoot, step, durationMs }` around each hot-path operation (`db_open`, `lane.ensure_primary`, `ade_rpc.socket_server_start`, `sync.initialize`, etc.) so cold-start latency shows up in the logs by phase. Sync-service initialization is scheduled through `scheduleBackgroundProjectTask` rather than awaited inline, gated by `ADE_ENABLE_SYNC_INIT`.
 
 Shutdown pipeline: `main.ts` owns a single `requestAppShutdown({ reason, exitCode, fastKillFirst?, forceAfterMs? })` path driving a central state machine (`shutdownRequested` → `shutdownPromise` → `shutdownFinalized`). Hooks into `before-quit`, `window close`, `SIGINT`, `SIGTERM`, `process.exit`, `will-quit`, and `uncaughtException` all funnel through it. `runImmediateProcessCleanup()` disposes the orchestrator, automations, tests, processes, PTYs, agent chat runtimes, DB flush, and then calls `shutdownOpenCodeServers()`. A `forceAfterMs` timer (default 8 s, 5 s for signals/uncaught) hard-exits if cleanup hangs. User-initiated quit (main window close or `before-quit`) routes through `confirmQuitWarning()` — a modal dialog that explains that quitting will end agents and background processes owned by the desktop session, including OpenCode servers, terminal sessions, and test runs.
 
@@ -594,7 +582,7 @@ automations/    # rule list, pipeline builder
 missions/       # MissionsPage + decomposed sub-modules
 cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
 onboarding/     # first-run flows
-settings/       # keybindings, agents, data, context, memory, sync
+settings/       # keybindings, agents, data, context, sync
 chat/           # AgentChatPane + composer + subpanels
 shared/         # MentionInput, shared interactive bits
 ui/             # pure presentation primitives
@@ -764,72 +752,12 @@ Related Git docs: [Lanes](./features/lanes/README.md), [Lane runtime isolation](
 
 ---
 
-## 10. Memory System
+## 10. Context Continuity
 
-### 10.1 Scopes
-
-Memory is partitioned into three scopes (`UnifiedMemoryScope`):
-
-| Scope | Visibility | Writer |
-|-------|-----------|--------|
-| `project` | All runtimes in the project | Agents with active claims + policy grant |
-| `agent` | Runtimes using the same agent identity | Policy-filtered by `scope_owner_id = agent.id` |
-| `mission` | Runtimes in the current run/mission | Agents in the run, `scope_owner_id = run/mission.id` |
-
-Legacy aliases `user` → `agent`, `lane` → `mission` (normalized on read/write). CTO **core memory** sits outside this model as a per-project always-in-context JSON blob.
-
-Categories: `fact`, `preference`, `pattern`, `decision`, `gotcha`, `convention`, `episode`, `procedure`, `digest`, `handoff`.
-
-### 10.2 Storage
-
-SQLite tables:
-
-- `unified_memories` — primary entries with scope, tier (1/2/3), category, content, importance, confidence, access_score, composite_score, pinned, status (`candidate`/`promoted`/`archived`), dedupe_key, timestamps.
-- `unified_memories_fts` — FTS4 index kept in sync via triggers. Used for BM25 lexical search.
-- `unified_memory_embeddings` — vector embeddings per `(memory_id, embedding_model)`. Model: `Xenova/all-MiniLM-L6-v2`, 384 dim, mean-pooled and normalized.
-- `memory_procedure_*` — extended metadata for procedure memories (trigger, steps markdown, confidence history, export state).
-- `memory_skill_index` — file registry for exported/imported skill markdown.
-- `knowledge_capture_ledger` — dedupe ledger.
-- `cto_core_memory_state` — per-project CTO blob.
-
-### 10.3 Write paths and quality controls
-
-Services under `apps/desktop/src/main/services/memory/`:
-
-- `memoryTools.ts` — agent `memoryAdd` tool + `resolveAgentMemoryWritePolicy()` (pin → tier 1/promoted; strict gate → tier 2/promoted; otherwise candidate at tier 3 with confidence 0.6).
-- `episodicSummaryService.ts` — builds `EpisodicMemory` after agent sessions.
-- `knowledgeCaptureService.ts` — processes interventions/errors/PR feedback into convention/preference/pattern/gotcha.
-- `humanWorkDigestService.ts` — builds `ChangeDigest` from git commits (no longer writes digest rows to memory; surfaces state instead).
-- `memoryFilesService.ts` — mirrors promoted project memory to `.ade/memory/MEMORY.md` + topic files.
-- `proceduralLearningService.ts` — identifies repeatable workflows from episode memories.
-- `batchConsolidationService.ts` — clusters similar memories (Jaccard threshold 0.7), merges via AI, archives originals.
-- `compactionFlushPrompt.ts` — `DEFAULT_FLUSH_PROMPT` fed to the Claude SDK `PreCompact` hook so durable findings are saved before compaction. Claude-only; other providers don't currently expose an equivalent hook.
-
-Quality controls:
-
-- **Dedup** — Jaccard ≥ 0.85 on normalized content merges into the existing entry; exact `dedupe_key` always merges.
-- **Write gate** — `WriteGateMode` (`default` | `strict`); strict accepts only `convention`/`pattern`/`gotcha`/`decision`.
-- **Code-derivable rejection** — `rejectCodeDerivableContent()` runs heuristic checks: `looksLikeRawDiffOrCodeDump`, `looksLikeRawStackTrace`, `looksLikeSessionSummary`, `looksLikeRawGitHistory`, `looksLikePathDump`.
-- **Category allowlist** — only the 10 defined categories accepted.
-
-### 10.4 Read paths
-
-- **Memory briefing** (`memoryBriefingService.ts`) — builds `MemoryBriefing` for mission workers with sections `l0`/`l1`/`l2`/`mission` + shared facts + tracking arrays. Budgets: `lite` (3), `standard` (8), `deep` (20). Modes: `mission_worker`, `heartbeat`, `wake_on_demand`, `prompt_preview`.
-- **Direct-source injection** — briefing service also injects synthetic memories from `git log`, `CLAUDE.md`/`agents.md`/`AGENTS.md`, and `.ade/memory/MEMORY.md` (all as tier-1 promoted synthetic entries).
-- **Agent tool** — `memorySearch` supports `lexical` (BM25) and `hybrid` (BM25 + cosine with MMR λ=0.7 for diversity; min 40 vector candidates).
-- **IPC** — renderer Settings → Memory panel for list/search/inspect.
-
-### 10.5 Compaction / synthesis / lifecycle
-
-- **Decay**: `nextScore = currentScore * 0.5^(daysSinceAccess / halfLifeDays)`, halfLife default 30 days. Exempt: `preference`, `convention`, pinned.
-- **Sweep** (`memoryLifecycleService.ts`) — applies decay, demotes below threshold, promotes qualifying candidates, archives above scope limits (project 2000, agent 500, mission 200). Processes in chunks of 250.
-- **Consolidation** (`batchConsolidationService.ts`) — targets scopes at 80%+ capacity; groups by `(scope, scope_owner_id, category)`; clusters at Jaccard 0.7; merges via AI.
-- **Stale detection** — entries not accessed in 24h flagged for demotion.
-- **Turn-level guard** (`universalTools.ts`) — for `required` turns, mutating tools are blocked until the agent calls `memorySearch`.
-
-Embedding worker (`embeddingWorkerService.ts`) processes unembedded entries in batches; states `idle → loading → ready` (or `unavailable`). Health polled every 10s in Settings → Memory. Probe cache auto-loads model from local HuggingFace cache when present.
-
-Related memory docs: [Memory](./features/memory/README.md), [Memory storage](./features/memory/storage.md), and [Memory compaction](./features/memory/compaction.md).
+ADE carries continuity through the records owned by each runtime surface:
+chat transcripts, CTO and worker session logs, daily logs, and explicit
+context documents. These are read directly by the services that need them;
+there is no separate retrieval layer in between.
 
 ---
 
@@ -844,8 +772,7 @@ ADE does not generate PRD or architecture bootstrap documents. Agent prompts tel
 | Narrative generation | `LaneExportStandard` (lane, bounded) |
 | Conflict proposal | `LaneExportLite` (lane) + `LaneExportLite` (peer, optional) + `ConflictExportStandard` |
 | PR description | `LaneExportStandard` with commit history |
-| Mission planning | Memory briefing + mission-scoped data + direct repo inspection guidance |
-| Memory briefing (worker turn) | `MemoryBriefing` (l0/l1/l2/mission sections + shared facts + direct-source injections) |
+| Mission planning | Mission-scoped data + direct repo inspection guidance |
 | Initial context (repo scan) | Targeted file/commit digests |
 
 ---
@@ -938,7 +865,6 @@ The sync subsystem is **owned by the ADE runtime daemon** (`apps/ade-cli/src/ser
 - LWW per column via Lamport timestamps is the default merge.
 - `ON CONFLICT(...)` upserts must target PK only (non-PK UNIQUE does not survive CRR retrofit).
 - Non-PK merge cases use explicit select-then-update.
-- After applying remote changesets that touch `unified_memories`, the local FTS index is rebuilt.
 
 ### 13.5 Secret isolation
 
@@ -1012,7 +938,7 @@ Stages:
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).
 
-Sharding is required because the desktop suite is large enough to be slow in a single process. See memory: always shard test runs.
+Sharding is required because the desktop suite is large enough to be slow in a single process.
 
 ### 14.3 Test organization
 
@@ -1020,7 +946,7 @@ Sharding is required because the desktop suite is large enough to be slow in a s
 - **Config**: `apps/desktop/vitest.config.ts` (base), plus project-specific configs for `unit-main`, `unit-renderer`, `unit-shared` when needed.
 - **Test locations**: colocated with source (`*.test.ts` / `*.test.tsx`) under `src/**`.
 - **Setup**: `apps/desktop/src/test/setup.ts` (browser/DOM mocks via `browserMock.ts`).
-- **Philosophy** (from memory): only tests that carry real value; aggressive removal of brittle UI/render tests; keep mutation + integration coverage solid.
+- **Philosophy**: keep tests that carry real value; aggressively remove brittle UI/render tests; keep mutation + integration coverage solid.
 - **Smoke tests**: `orchestratorSmoke.test.ts` for complex mock orchestration flows; `packagedRuntimeSmoke.test.ts` for packaged runtime.
 
 ### 14.4 Packaging (Electron Builder)
@@ -1035,7 +961,7 @@ Windows:
 
 - `npm run dist:win` — x64 installer via `electron-builder --win --x64`, wrapped with `validate:win:artifacts` (preflight) and `validate:win:release` (post-build) checks in `apps/desktop/scripts/validate-win-artifacts.mjs`.
 - Windows-only wrappers for the bundled `ade` CLI ship in `apps/desktop/scripts/`: `ade-cli-windows-wrapper.cmd` (launcher) and `ade-cli-install-path.cmd` (idempotent PATH install helper). The platform-agnostic `.sh` wrapper covers macOS/Linux.
-- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/`, a Windows node-pty ConPTY worker, and the `@huggingface/transformers` ONNX Runtime native addon + DirectML DLL used by local-only memory embedding. `validate-win-artifacts.mjs` asserts each one is unpacked.
+- The Windows installer bundles the prebuilt `cr-sqlite` native binary from `apps/desktop/vendor/crsqlite/win32-x64/` and a Windows node-pty ConPTY worker. `validate-win-artifacts.mjs` asserts each one is unpacked.
 - GitHub Actions `release-core.yml` builds and validates Windows artifacts. The release job picks up `WINDOWS_CSC_LINK` / `WINDOWS_CSC_KEY_PASSWORD` (or legacy `WIN_CSC_*`) from secrets and forwards them as electron-builder's `CSC_LINK` / `CSC_KEY_PASSWORD` to sign the installer and `app.exe`; the desktop config sets SHA-256 hashing and the DigiCert RFC3161 timestamp server. When the secrets are absent, the workflow still produces unsigned Windows artifacts.
 - Ongoing Windows integration lane (rebase with `main`, smoke tests, backlog): `docs/development/windows-port-lane.md`.
 
@@ -1084,7 +1010,6 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - **Dev tools probe** — `devToolsService.ts` checks for `git` and `gh` CLI availability at startup, surfacing warnings in UI.
 - **Port allocation** — `portAllocationService.ts` manages per-lane port leases with orphan recovery.
 - **Runtime diagnostics** — `runtimeDiagnosticsService.ts` surfaces lane launch context and runtime state.
-- **Embedding health** — polled at 10s intervals in Settings → Memory (raised from 1.5s to reduce renderer churn).
 - **Sync telemetry** — `sync_cluster_state` + device registry surfaced in Settings → Sync.
 - **Operation timeline** — `operationService.ts` + History page provide full audit trail for debugging and undo.
 - **Shutdown sequence**:
@@ -1113,6 +1038,5 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 - Terminal sessions and Work · [Terminals and Sessions](./features/terminals-and-sessions/README.md)
 - Computer-use proof · [Computer Use](./features/computer-use/README.md)
 - Deeplinks · [Deeplinks](./features/deeplinks/README.md)
-- Memory · [Memory](./features/memory/README.md)
 - Settings and onboarding · [Onboarding and Settings](./features/onboarding-and-settings/README.md)
 - Feature index · [features/](./features/)

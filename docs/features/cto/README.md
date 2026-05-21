@@ -8,7 +8,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 
 ### Main services (apps/desktop/src/main/services/cto/)
 
-- `ctoStateService.ts` — identity, core memory, session logs, daily logs, system-prompt preview; owns immutable doctrine, personality overlay, memory operating model, environment knowledge, and capability manifest constants.
+- `ctoStateService.ts` — identity, session logs, daily logs, system-prompt preview; owns immutable doctrine, personality overlay, CTO continuity model, environment knowledge, and capability manifest constants.
 - `workerAgentService.ts` — worker CRUD, worker identity, config revisions, org tree.
 - `workerHeartbeatService.ts` — heartbeat policy and worker-activity telemetry.
 - `workerBudgetService.ts` — budget snapshots per worker and CTO org.
@@ -40,8 +40,8 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `AgentSidebar.tsx` — memoized worker tree; budget footer isolated so budget refresh does not rerender siblings.
 - `OnboardingBanner.tsx` / `OnboardingWizard.tsx` — minimal first-run flow: personality preset only.
 - `IdentityEditor.tsx` — editable identity surface (personality preset + custom overlay + model). No longer a full identity-prompt editor.
-- `CtoSettingsPanel.tsx` — identity, core memory (project summary / conventions / preferences / focus / notes), onboarding reset.
-- `CtoPromptPreview.tsx` — three-section prompt preview: doctrine, personality overlay, memory model.
+- `CtoSettingsPanel.tsx` — identity, recent sessions, and onboarding reset.
+- `CtoPromptPreview.tsx` — prompt preview: doctrine, personality overlay, CTO continuity, environment knowledge, and capabilities.
 - `TeamPanel.tsx` — worker editor and detail view.
 - `WorkerCreationWizard.tsx` — two-step wizard: template selection then configure.
 - `WorkerActivityFeed.tsx` — recent worker sessions and runs.
@@ -75,7 +75,7 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 
 1. **Immutable doctrine** — `IMMUTABLE_CTO_DOCTRINE` in `ctoStateService.ts`. Defines the CTO role, ADE environment, precision rules. Always injected. Not user-editable. Not compacted away. Runs even after context compaction via `refreshReconstructionContext()`.
 2. **Personality overlay** — one of six presets (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). Only the `custom` preset reads `customPersonality` from the identity record.
-3. **Memory operating model** — `CTO_MEMORY_OPERATING_MODEL` describes the four-layer continuity model (doctrine + long-term brief + current context + durable searchable memory) and the compaction/recovery rules.
+3. **CTO continuity model** — the runtime describes doctrine, current context, and compaction/recovery rules.
 4. **Environment knowledge** — `CTO_ENVIRONMENT_KNOWLEDGE` is a glossary of ADE entities (lanes, chats vs terminals vs subprocess agents, missions, workers, convergence, conflicts) plus the intent-to-tool routing guide. Distinguishes `spawnChat` from `createTerminal` from `spawn_agent` explicitly.
 5. **Capability manifest** — `CTO_CAPABILITY_MANIFEST` lists the complete operator tool surface. It is intentionally kept in sync with `ctoOperatorTools.ts` tool registrations, not auto-generated.
 
@@ -86,19 +86,17 @@ These layers combine into `CtoSystemPromptPreview` which the onboarding and sett
 On disk under `.ade/cto/`:
 
 - `identity.yaml` — name, personality preset, custom overlay, model, reasoningEffort.
-- `MEMORY.md` — long-term CTO brief (summary, conventions, preferences, active focus, notes).
 - `CURRENT.md` — current working context (recent sessions, worker activity).
-- `daily/YYYY-MM-DD.md` — append-only daily logs via `appendDailyLog`, `readDailyLog`, `listDailyLogs`.
-Portability rule (Phase 6 W3): identity YAML and the project memory schema are git-tracked; runtime memory files, daily logs, and session state are local or ADE-sync only.
+Portability rule: identity YAML is git-tracked; generated CTO continuity files and session state are local or ADE-sync only.
 
 ### Tab model (`CtoPage.tsx`)
 
 | Tab | What loads | When |
 | --- | --- | --- |
 | Chat | CTO session, subordinate activity summary | Immediate |
-| Team | Agents, revisions, worker core memory, worker runs | On tab activation |
+| Team | Agents, revisions, worker runs | On tab activation |
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity, core memory, session logs | On tab activation |
+| Settings | Identity and session logs | On tab activation |
 
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
@@ -122,13 +120,13 @@ Linear poll / webhook
 
 ## CTO operator tools
 
-Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, memory. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
+Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, missions, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, and CTO continuity. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
 
 The environment knowledge block inside the system prompt teaches intent-to-tool routing (e.g. "start a chat" -> `spawnChat`, "open a terminal" -> `createTerminal`). The capability manifest is injected in full, not summarized, so the CTO can pick the right tool even for less common actions.
 
 ## Cross-links
 
-- `identity-and-memory.md` — personality presets, core memory, daily logs, post-compaction recovery.
+- `../agents/identity-and-personas.md` — personality presets, identity reconstruction, daily logs, post-compaction recovery.
 - `pipeline-builder.md` — the new visual Linear workflow builder (fragile area).
 - `linear-integration.md` — connection model, workflow engine, dispatcher, sync loop, ingress, headless parity.
 - `workers.md` — worker creation wizard, team panel, adapter types, budgets.
@@ -150,6 +148,6 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 ## Gotchas and fragile areas
 
 - **Pipeline builder** (`pipeline/`) is the newest surface. Nested `downstreamTarget` chain is stored recursively but edited as a flat list via `flattenTargetChain` / `rebuildTargetChain`. See `pipeline-builder.md` for the detailed mapping.
-- **Identity re-injection after compaction** happens inside `refreshReconstructionContext()` — changes to the doctrine / personality / memory model or capability manifest must keep the preview and runtime in sync. The capability manifest is the single place to keep aligned with tool registrations.
+- **Identity re-injection after compaction** happens inside `refreshReconstructionContext()` — changes to the doctrine, personality, CTO continuity model, or capability manifest must keep the preview and runtime in sync. The capability manifest is the single place to keep aligned with tool registrations.
 - **Workflow match precedence** runs by `priority` descending; values inside a trigger group are OR-ed, populated groups are AND-ed. A `watchOnly` route logs a match without launching.
 - **Dynamic employee delegation** — when routing resolves no employee, runs enter `awaiting_delegation` instead of dispatching to an invalid target. Do not assume dispatch always happens.

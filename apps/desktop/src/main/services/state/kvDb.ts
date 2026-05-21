@@ -193,8 +193,7 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
         and name not like 'sqlite_%'
         and name not like 'crsql_%'
         and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'
-        and name not like 'unified_memories_fts%'`
+        and name not like '%__crsql_pks'`
   );
 
   let changed = false;
@@ -321,8 +320,7 @@ function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled:
         and name not like 'sqlite_%'
         and name not like 'crsql_%'
         and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'
-        and name not like 'unified_memories_fts%'`
+        and name not like '%__crsql_pks'`
   );
 
   // Build a lookup: tableName -> list of { column, references, action }
@@ -441,8 +439,7 @@ function listEligibleCrrTables(db: DatabaseSyncType): string[] {
         and name not like 'sqlite_%'
         and name not like 'crsql_%'
         and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'
-        and name not like 'unified_memories_fts%'`
+        and name not like '%__crsql_pks'`
   );
   return tables
     .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
@@ -837,40 +834,10 @@ function normalizeIncomingCrsqlChange(db: DatabaseSyncType, change: CrsqlChangeR
   throw new Error(`Unsupported incoming CRSQL primary key for ${change.table}.${change.cid}: unsupported scalar shape.`);
 }
 
-function rebuildUnifiedMemoriesFts(db: DatabaseSyncType): void {
-  if (!rawHasTable(db, "unified_memories") || !rawHasTable(db, "unified_memories_fts")) {
-    return;
-  }
-  try {
-    runStatement(db, "insert into unified_memories_fts(unified_memories_fts) values ('rebuild')");
-  } catch {
-    runStatement(db, "delete from unified_memories_fts");
-    runStatement(db, "insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories");
-  }
-}
-
 type MigrationDb = {
   run: (sql: string, params?: SqlValue[]) => void;
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
 };
-
-function dropUnifiedMemoryFtsTriggers(db: Pick<MigrationDb, "run">): void {
-  db.run("drop trigger if exists unified_memories_fts_ai");
-  db.run("drop trigger if exists unified_memories_fts_bd");
-  db.run("drop trigger if exists unified_memories_fts_bu");
-  db.run("drop trigger if exists unified_memories_fts_au");
-}
-
-/**
- * True when an error indicates the SQLite build lacks FTS4/FTS5 or the
- * FTS virtual table metadata is corrupted — both recoverable states.
- */
-function isRecoverableFtsSchemaError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/no such module: fts4/i.test(message)) return true;
-  if (/no such module: fts5/i.test(message)) return true;
-  return /malformed database schema/i.test(message) && /unified_memories_fts/i.test(message);
-}
 
 function wrapRawDb(db: DatabaseSyncType): MigrationDb {
   return {
@@ -881,96 +848,6 @@ function wrapRawDb(db: DatabaseSyncType): MigrationDb {
       return getRow<T>(db, sql, params);
     },
   };
-}
-
-function removeUnavailableUnifiedMemoryFtsTable(db: MigrationDb): void {
-  try {
-    db.run("drop table if exists unified_memories_fts");
-    return;
-  } catch (error) {
-    if (!isRecoverableFtsSchemaError(error)) throw error;
-  }
-
-  // If this Node SQLite build lacks the FTS module, SQLite cannot even DROP an
-  // existing FTS virtual table. Remove that stale virtual table metadata so the
-  // local-first DB can degrade to the plain fallback search table.
-  db.run("pragma writable_schema = on");
-  try {
-    db.run(`
-      delete from sqlite_master
-      where name = 'unified_memories_fts'
-        or tbl_name = 'unified_memories_fts'
-        or name like 'unified_memories_fts_%'
-        or tbl_name like 'unified_memories_fts_%'
-        or name like 'sqlite_autoindex_unified_memories_fts_%'
-    `);
-    const versionRow = db.get<{ schema_version: number }>("pragma schema_version");
-    const nextVersion = Number(versionRow?.schema_version ?? 0) + 1;
-    db.run(`pragma schema_version = ${Number.isFinite(nextVersion) ? nextVersion : 1}`);
-  } finally {
-    db.run("pragma writable_schema = off");
-  }
-}
-
-function repairUnifiedMemoryFtsSchemaForRuntime(db: MigrationDb): void {
-  if (isFts4Available(db)) return;
-  removeUnavailableUnifiedMemoryFtsTable(db);
-}
-
-function repairMalformedUnifiedMemoryFtsSchema(db: DatabaseSyncType): void {
-  try {
-    getRow(db, "select 1 as ok");
-    return;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/malformed database schema/i.test(message) || !/unified_memories_fts/i.test(message)) {
-      throw error;
-    }
-  }
-  removeUnavailableUnifiedMemoryFtsTable(wrapRawDb(db));
-}
-
-function isFts4Available(db: Pick<MigrationDb, "run">): boolean {
-  try {
-    db.run("create virtual table if not exists temp.__ade_fts4_probe using fts4(content)");
-    db.run("drop table if exists temp.__ade_fts4_probe");
-    return true;
-  } catch (error) {
-    if (!isRecoverableFtsSchemaError(error)) throw error;
-    return false;
-  }
-}
-
-function ensureUnifiedMemoriesSearchTable(db: MigrationDb): void {
-  const ftsAvailable = isFts4Available(db);
-  const existing = db.get<{ sql: string | null }>(
-    "select sql from sqlite_master where type = 'table' and name = 'unified_memories_fts' limit 1",
-  );
-  const existingIsVirtual = /\bcreate\s+virtual\s+table\b/i.test(existing?.sql ?? "");
-
-  if (!ftsAvailable) {
-    if (existingIsVirtual) {
-      dropUnifiedMemoryFtsTriggers(db);
-      removeUnavailableUnifiedMemoryFtsTable(db);
-    }
-    db.run(`
-      create table if not exists unified_memories_fts (
-        rowid integer primary key,
-        content text not null
-      )
-    `);
-    return;
-  }
-
-  if (!existingIsVirtual && db.get("select 1 as present from sqlite_master where type = 'table' and name = 'unified_memories_fts' limit 1")) {
-    db.run("drop table if exists unified_memories_fts");
-  }
-  db.run(`
-    create virtual table if not exists unified_memories_fts using fts4(
-      content,
-      content='unified_memories'
-    )
-  `);
 }
 
 function parseAlterTableTarget(sql: string): string | null {
@@ -2596,377 +2473,7 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_orchestrator_metrics_samples_run_created on orchestrator_metrics_samples(run_id, created_at)");
   db.run("create index if not exists idx_orchestrator_metrics_samples_metric_created on orchestrator_metrics_samples(metric, created_at)");
 
-  // WS8 Memory & Context Enhancement System.
-  db.run(`
-    create table if not exists memories (
-      id text primary key,
-      project_id text not null,
-      scope text not null,
-      category text not null,
-      content text not null,
-      importance text default 'medium',
-      source_session_id text,
-      source_pack_key text,
-      status text default 'promoted',
-      agent_id text,
-      confidence real default 1.0,
-      promoted_at text,
-      source_run_id text,
-      created_at text not null,
-      last_accessed_at text not null,
-      access_count integer default 0
-    )
-  `);
-  db.run("create index if not exists idx_memories_project_scope on memories(project_id, scope)");
-  db.run("create index if not exists idx_memories_project_importance on memories(project_id, importance)");
-  db.run("create index if not exists idx_memories_last_accessed on memories(last_accessed_at)");
-  db.run("create index if not exists idx_memories_status on memories(project_id, status)");
-  db.run("create index if not exists idx_memories_agent on memories(agent_id)");
-
-  // Unified memory backend (project/agent/mission scopes, tiered retrieval).
-  db.run(`
-    create table if not exists unified_memories (
-      id text primary key,
-      project_id text not null,
-      scope text not null,
-      scope_owner_id text,
-      tier integer not null default 2,
-      category text not null,
-      content text not null,
-      importance text not null default 'medium',
-      confidence real not null default 1.0,
-      observation_count integer not null default 1,
-      status text not null default 'promoted',
-      source_type text not null default 'agent',
-      source_id text,
-      source_session_id text,
-      source_pack_key text,
-      source_run_id text,
-      file_scope_pattern text,
-      agent_id text,
-      pinned integer not null default 0,
-      access_score real not null default 0,
-      composite_score real not null default 0,
-      write_gate_reason text,
-      dedupe_key text not null default '',
-      created_at text not null,
-      updated_at text not null,
-      last_accessed_at text not null,
-      access_count integer not null default 0,
-      promoted_at text,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_unified_memories_project_scope_tier on unified_memories(project_id, scope, tier)");
-  db.run("create index if not exists idx_unified_memories_scope_owner on unified_memories(project_id, scope, scope_owner_id)");
-  db.run("create index if not exists idx_unified_memories_project_status on unified_memories(project_id, status)");
-  db.run("create index if not exists idx_unified_memories_project_pinned on unified_memories(project_id, pinned, tier)");
-  db.run("create index if not exists idx_unified_memories_project_accessed on unified_memories(project_id, last_accessed_at)");
-  db.run("create index if not exists idx_unified_memories_project_dedupe on unified_memories(project_id, scope, scope_owner_id, dedupe_key)");
-  try { db.run("alter table unified_memories add column access_score real not null default 0"); } catch {}
-  ensureUnifiedMemoriesSearchTable(db);
-  try {
-    db.run(`
-      update unified_memories
-      set access_score = case
-        when coalesce(access_score, 0) > 0 then access_score
-        when coalesce(composite_score, 0) > 0 then composite_score
-        else min(1.0, max(0.0, coalesce(access_count, 0) / 10.0))
-      end
-    `);
-  } catch (error) {
-    if (!isReadonlyDatabaseError(error)) throw error;
-  }
-
-  db.run(`
-    create trigger if not exists unified_memories_fts_ai after insert on unified_memories begin
-      insert into unified_memories_fts(rowid, content)
-      values (new.rowid, new.content);
-    end
-  `);
-  db.run(`
-    create trigger if not exists unified_memories_fts_bd before delete on unified_memories begin
-      delete from unified_memories_fts
-      where rowid = old.rowid;
-    end
-  `);
-  db.run(`
-    create trigger if not exists unified_memories_fts_bu before update on unified_memories begin
-      delete from unified_memories_fts
-      where rowid = old.rowid;
-    end
-  `);
-  db.run(`
-    create trigger if not exists unified_memories_fts_au after update on unified_memories begin
-      insert into unified_memories_fts(rowid, content)
-      values (new.rowid, new.content);
-    end
-  `);
-
-  db.run(`
-    create table if not exists unified_memory_embeddings (
-      id text primary key,
-      memory_id text not null,
-      project_id text not null,
-      embedding_model text not null,
-      embedding_blob blob not null,
-      dimensions integer not null,
-      norm real,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(memory_id) references unified_memories(id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_unified_memory_embeddings_project on unified_memory_embeddings(project_id)");
-  db.run("create index if not exists idx_unified_memory_embeddings_memory on unified_memory_embeddings(memory_id)");
-
-  db.run(`
-    create table if not exists memory_procedure_details (
-      memory_id text primary key,
-      trigger text not null,
-      procedure_markdown text not null,
-      success_count integer not null default 0,
-      failure_count integer not null default 0,
-      last_used_at text,
-      exported_skill_path text,
-      exported_at text,
-      superseded_by_memory_id text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(memory_id) references unified_memories(id),
-      foreign key(superseded_by_memory_id) references unified_memories(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_procedure_details_updated on memory_procedure_details(updated_at desc)");
-  db.run("create index if not exists idx_memory_procedure_details_exported on memory_procedure_details(exported_at desc)");
-
-  db.run(`
-    create table if not exists memory_procedure_sources (
-      procedure_memory_id text not null,
-      episode_memory_id text not null,
-      created_at text not null,
-      primary key (procedure_memory_id, episode_memory_id),
-      foreign key(procedure_memory_id) references unified_memories(id),
-      foreign key(episode_memory_id) references unified_memories(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_procedure_sources_episode on memory_procedure_sources(episode_memory_id)");
-
-  db.run(`
-    create table if not exists memory_procedure_history (
-      id text primary key,
-      procedure_memory_id text not null,
-      confidence real not null,
-      outcome text not null,
-      reason text,
-      recorded_at text not null,
-      foreign key(procedure_memory_id) references unified_memories(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_procedure_history_procedure on memory_procedure_history(procedure_memory_id, recorded_at desc)");
-
-  db.run(`
-    create table if not exists memory_skill_index (
-      id text primary key,
-      path text not null,
-      kind text not null,
-      source text not null,
-      memory_id text,
-      content_hash text not null,
-      last_modified_at text,
-      archived_at text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(memory_id) references unified_memories(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_skill_index_memory on memory_skill_index(memory_id)");
-  db.run("create index if not exists idx_memory_skill_index_archived on memory_skill_index(archived_at)");
-
-  db.run(`
-    create table if not exists memory_capture_ledger (
-      id text primary key,
-      project_id text not null,
-      source_type text not null,
-      source_key text not null,
-      memory_id text,
-      episode_memory_id text,
-      metadata_json text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(project_id) references projects(id),
-      foreign key(memory_id) references unified_memories(id),
-      foreign key(episode_memory_id) references unified_memories(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_capture_ledger_source on memory_capture_ledger(project_id, source_type, updated_at desc)");
-  db.run("create index if not exists idx_memory_capture_ledger_memory on memory_capture_ledger(memory_id)");
-
-  db.run(`
-    create table if not exists memory_sweep_log (
-      sweep_id text primary key,
-      project_id text not null,
-      trigger_reason text not null,
-      started_at text not null,
-      completed_at text not null,
-      entries_decayed integer not null default 0,
-      entries_demoted integer not null default 0,
-      entries_promoted integer not null default 0,
-      entries_archived integer not null default 0,
-      entries_orphaned integer not null default 0,
-      duration_ms integer not null default 0,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_memory_sweep_log_project_completed on memory_sweep_log(project_id, completed_at desc)");
-
-  db.run(`
-    create table if not exists memory_consolidation_log (
-      consolidation_id text primary key,
-      project_id text not null,
-      trigger_reason text not null,
-      started_at text not null,
-      completed_at text not null,
-      clusters_found integer not null default 0,
-      entries_merged integer not null default 0,
-      entries_created integer not null default 0,
-      tokens_used integer not null default 0,
-      duration_ms integer not null default 0
-    )
-  `);
-  db.run("create index if not exists idx_memory_consolidation_log_project_completed on memory_consolidation_log(project_id, completed_at desc)");
-
-  // One-time safe backfill from legacy memories table.
-  let skippedLegacyMemoryBackfillForReadonly = false;
-  try {
-    db.run(`
-      insert or ignore into unified_memories (
-        id,
-        project_id,
-        scope,
-        scope_owner_id,
-        tier,
-        category,
-        content,
-        importance,
-        confidence,
-        observation_count,
-        status,
-        source_type,
-        source_id,
-        source_session_id,
-        source_pack_key,
-        source_run_id,
-        file_scope_pattern,
-        agent_id,
-        pinned,
-        access_score,
-        composite_score,
-        write_gate_reason,
-        dedupe_key,
-        created_at,
-        updated_at,
-        last_accessed_at,
-        access_count,
-        promoted_at
-      )
-      select
-        id,
-        project_id,
-        case scope
-          when 'project' then 'project'
-          when 'mission' then 'mission'
-          when 'user' then 'agent'
-          when 'lane' then 'mission'
-          else 'project'
-        end as scope,
-        case scope
-          when 'mission' then coalesce(source_run_id, agent_id, source_session_id)
-          when 'user' then coalesce(agent_id, source_session_id)
-          when 'lane' then coalesce(agent_id, source_session_id)
-          else null
-        end as scope_owner_id,
-        case
-          when status = 'archived' then 3
-          when status = 'candidate' then 3
-          else 2
-        end as tier,
-        category,
-        content,
-        coalesce(importance, 'medium') as importance,
-        coalesce(confidence, 1.0) as confidence,
-        case
-          when coalesce(access_count, 0) > 0 then access_count
-          else 1
-        end as observation_count,
-        coalesce(status, 'promoted') as status,
-        'system' as source_type,
-        coalesce(source_run_id, source_session_id, source_pack_key, agent_id) as source_id,
-        source_session_id,
-        source_pack_key,
-        source_run_id,
-        null as file_scope_pattern,
-        agent_id,
-        0 as pinned,
-        min(1.0, max(0.0, coalesce(access_count, 0) / 10.0)) as access_score,
-        0 as composite_score,
-        null as write_gate_reason,
-        lower(trim(content)) as dedupe_key,
-        coalesce(created_at, last_accessed_at, datetime('now')) as created_at,
-        coalesce(promoted_at, last_accessed_at, created_at, datetime('now')) as updated_at,
-        coalesce(last_accessed_at, created_at, datetime('now')) as last_accessed_at,
-        coalesce(access_count, 0) as access_count,
-        promoted_at
-      from memories
-    `);
-  } catch (error) {
-    if (!isReadonlyDatabaseError(error)) throw error;
-    skippedLegacyMemoryBackfillForReadonly = true;
-  }
-  if (!skippedLegacyMemoryBackfillForReadonly) {
-    try {
-      db.run("insert into unified_memories_fts(unified_memories_fts) values ('rebuild')");
-    } catch (error) {
-      if (isReadonlyDatabaseError(error)) {
-        skippedLegacyMemoryBackfillForReadonly = true;
-      } else {
-        try {
-          db.run("delete from unified_memories_fts");
-          db.run("insert into unified_memories_fts(rowid, content) select rowid, content from unified_memories");
-        } catch (fallbackError) {
-          if (!isReadonlyDatabaseError(fallbackError)) throw fallbackError;
-        }
-      }
-    }
-  }
-
-  // Canonicalize mission memory ownership from run ids to mission ids where possible.
-  try {
-    db.run(`
-      update unified_memories
-      set scope_owner_id = (
-        select r.mission_id
-        from orchestrator_runs r
-        where r.id = unified_memories.scope_owner_id
-          and coalesce(r.mission_id, '') != ''
-        limit 1
-      ),
-      updated_at = datetime('now')
-      where scope = 'mission'
-        and coalesce(scope_owner_id, '') != ''
-        and exists (
-          select 1
-          from orchestrator_runs r
-          where r.id = unified_memories.scope_owner_id
-            and coalesce(r.mission_id, '') != ''
-        )
-    `);
-  } catch {
-    // Best-effort migration for older databases.
-  }
-
-  // CTO persistent identity/core-memory/session-log state.
+  // CTO persistent identity/core-continuity/session-log state.
   db.run(`
     create table if not exists cto_identity_state (
       project_id text primary key,
@@ -2976,16 +2483,6 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_cto_identity_state_updated on cto_identity_state(updated_at)");
-
-  db.run(`
-    create table if not exists cto_core_memory_state (
-      project_id text primary key,
-      version integer not null,
-      payload_json text not null,
-      updated_at text not null
-    )
-  `);
-  db.run("create index if not exists idx_cto_core_memory_state_updated on cto_core_memory_state(updated_at)");
 
   db.run(`
     create table if not exists cto_session_logs (
@@ -3118,7 +2615,6 @@ function migrate(db: MigrationDb) {
       first_seen_run_id text not null,
       last_seen_retrospective_id text not null,
       last_seen_run_id text not null,
-      promoted_memory_id text,
       created_at text not null,
       updated_at text not null
     )
@@ -3754,7 +3250,6 @@ function migrate(db: MigrationDb) {
       severity text,
       reason text,
       note text,
-      embedding_json text,
       source_finding_id text,
       hit_count integer not null default 0,
       created_at text not null,
@@ -3961,9 +3456,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     return crsqliteLoaded;
   };
 
-  repairMalformedUnifiedMemoryFtsSchema(db);
-  repairUnifiedMemoryFtsSchemaForRuntime(wrapRawDb(db));
-
   try {
     // Existing CRR tables install triggers that call cr-sqlite functions on
     // ordinary writes. Load the extension before any migrations or repair
@@ -4002,7 +3494,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     });
 
     const migrateDb = makeMigrateDb();
-    repairUnifiedMemoryFtsSchemaForRuntime(migrateDb);
     migrate(migrateDb);
     removeExcludedCrrMetadata(db, logger);
 
@@ -4025,7 +3516,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
       const remigrateDb = makeMigrateDb();
-      repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
       removeExcludedCrrMetadata(db, logger);
     }
@@ -4045,7 +3535,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         disableCrrTriggersForUnavailableRuntime(db, logger);
       }
       const remigrateDb = makeMigrateDb();
-      repairUnifiedMemoryFtsSchemaForRuntime(remigrateDb);
       migrate(remigrateDb);
       removeExcludedCrrMetadata(db, logger);
     }
@@ -4197,17 +3686,11 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         throw err;
       }
 
-      let rebuiltFts = false;
-      if (touchedTables.has("unified_memories")) {
-        rebuildUnifiedMemoriesFts(db);
-        rebuiltFts = true;
-      }
-
       return {
         appliedCount,
         dbVersion: sync.getDbVersion(),
         touchedTables: Array.from(touchedTables).sort(),
-        rebuiltFts,
+        rebuiltFts: false,
       };
     },
   };

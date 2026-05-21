@@ -17,7 +17,7 @@ description: "Release notes for ADE v1.0.2 — March 15, 2026"
 - **Claude runtime probe** — Cache is now scoped by project root to prevent cross-project contamination when switching projects
 - **Auth error detection** — Deduplicated `isClaudeRuntimeAuthError` and `CLAUDE_RUNTIME_AUTH_ERROR` into a single shared module
 - **GitHub token migration** — Added completion flag to skip redundant filesystem checks after first migration
-- **Memory doc sync** — Debounced `syncDerivedMemoryDocs` (2s) to avoid write storms during rapid memory mutations
+- **Derived context doc sync** — Debounced context-doc writes to avoid write storms during rapid updates
 - **Automation run details** — Fixed double DB lookup for ingress events in `getRunDetail`
 - **Chat session comment** — Corrected stale "lazy boot" comment to reflect eager pre-warm behavior
 - **Docs site branding** — Updated Mintlify config with correct logo paths and canonical URL

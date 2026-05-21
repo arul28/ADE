@@ -213,7 +213,6 @@ operations:
 - Chat turns and agent reasoning (chat transcript instead).
 - Individual tool calls during a session.
 - UI navigation events.
-- Memory writes/reads (Settings -> Memory).
 - PR comment polling / check re-runs (captured in PR module).
 - Context-pack generation telemetry.
 - AI token usage (`ai_usage_log`).

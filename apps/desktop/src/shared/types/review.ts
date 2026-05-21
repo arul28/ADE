@@ -73,7 +73,6 @@ export type ReviewSuppression = {
   severity: ReviewSeverity | null;
   reason: ReviewDismissReason | null;
   note: string | null;
-  embedding: number[] | null;
   sourceFindingId: string | null;
   hitCount: number;
   createdAt: string;

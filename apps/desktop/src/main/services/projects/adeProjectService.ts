@@ -71,12 +71,6 @@ const DEFAULT_CTO_IDENTITY = YAML.stringify(
       model: "sonnet",
       reasoningEffort: "high",
     },
-    memoryPolicy: {
-      autoCompact: true,
-      compactionThreshold: 0.7,
-      preCompactionFlush: true,
-      temporalDecayHalfLifeDays: 30,
-    },
     updatedAt: "1970-01-01T00:00:00.000Z",
   },
   { indent: 2 },

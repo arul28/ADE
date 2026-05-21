@@ -9,7 +9,7 @@ Worker spawn paths use whatever provider CLIs are installed on the runtime host.
 All in `apps/desktop/src/main/services/orchestrator/`. Files in this directory are loaded by the runtime daemon's project scope (and by the desktop main process for local projects); the path reflects the source tree, not the host process.
 
 - `orchestratorService.ts` — row-level persistence and the low-level run state machine. `tickRun`, `completeAttempt`, claim acquisition, gate reports. ~8000 LOC. The most delicate file in the service layer.
-- `aiOrchestratorService.ts` — the façade used by the rest of the app and by the AI surfaces. Wires mission + orchestrator + AI integration + memory + budget + conflict services. Owns top-level flows: `pauseMissionWithIntervention`, `steerMission`, run finalization, recovery.
+- `aiOrchestratorService.ts` — the façade used by the rest of the app and by the AI surfaces. Wires mission + orchestrator + AI integration + budget + conflict services. Owns top-level flows: `pauseMissionWithIntervention`, `steerMission`, run finalization, recovery.
 - `coordinatorAgent.ts` — the coordinator brain. Provider-agnostic AI agent that runs until the mission is terminal. Owns planning lifecycle, tool execution, compaction, checkpointing.
 - `coordinatorTools.ts` — the coordinator's tool surface: `spawn_worker`, `check_status`, `send_message_to_worker`, `ask_user`, `finalize_run`, `check_finalization_status`, `mark_phase_complete`, `request_lane`, `request_human_review`, DAG mutation helpers.
 - `planningQuestionPolicy.ts` — shared Planning clarification policy. It normalizes phase prompts, mission prompts, and planner-owned manual-input interventions so `coordinatorAgent`, `coordinatorTools`, and `orchestratorService.completeAttempt` agree on when Planning can exit.
@@ -47,7 +47,7 @@ All in `apps/desktop/src/main/services/orchestrator/`. Files in this directory a
 
 The coordinator is a provider-agnostic AI agent that runs until the mission is terminal. Its dependencies (`CoordinatorAgentDeps`):
 
-- `orchestratorService`, `missionService`, `projectConfigService`, `memoryService`, optional `getMissionBudgetStatus`.
+- `orchestratorService`, `missionService`, `projectConfigService`, optional `getMissionBudgetStatus`.
 - `runId`, `missionId`, `missionGoal`, `modelId`.
 - Project context (`projectRoot`, `projectDocPaths`, `projectKnowledge`, `fileTree`).
 - Available providers.
@@ -73,7 +73,7 @@ The coordinator is a provider-agnostic AI agent that runs until the mission is t
 - `BATCH_DELAY_MS = 200` — coalesces incoming events before processing.
 - `MAX_TOOL_STEPS_PER_TURN = 25` — upper bound on tool calls per coordinator turn.
 - `COMPACTION_THRESHOLD_RATIO = 0.50` — when to trigger context compaction.
-- `MAX_CONVERSATION_HISTORY = 200` — max turns held in memory before compaction.
+- `MAX_CONVERSATION_HISTORY = 200` — max turns held in the coordinator conversation before compaction.
 - `MAX_EVENT_RETRY_COUNT = 2` — retries per queued event.
 - `CHECKPOINT_TURN_INTERVAL = 5` — checkpoint every N turns.
 

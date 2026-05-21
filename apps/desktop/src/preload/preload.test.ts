@@ -1907,7 +1907,7 @@ describe("preload OAuth bridge", () => {
     };
     const ctoSession = { id: "session-cto", identityKey: "cto" };
     const workerSession = { id: "session-worker", identityKey: "agent:worker-1" };
-    const scan = { detection: null, coreMemoryPatch: { projectSummary: "Detected project setup." }, createdMemoryIds: ["mem-1"] };
+    const scan = { detection: null };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };

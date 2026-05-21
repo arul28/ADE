@@ -4,7 +4,7 @@ Agent Chat is the interactive AI coding surface inside ADE. Each chat binds a
 lane (git worktree + branch), a provider runtime (Claude, Codex, OpenCode,
 Cursor), and a transcript into a persistent `AgentChatSession`. The user talks
 to the agent the same way they would use any IDE copilot, but with ADE's
-lane/session tracking, tool approval flow, memory integration, and handoff
+lane/session tracking, tool approval flow, identity continuity, and handoff
 machinery layered on top.
 
 ## Source file map
@@ -394,15 +394,8 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   `ClaudeChatRuntimeState`.
 - **Claude post-compaction identity re-injection.** When a CTO or worker
   identity session undergoes context compaction, the service calls
-  `refreshReconstructionContext()` to re-inject persona + core memory +
+  `refreshReconstructionContext()` to re-inject persona and continuity
   protocols. Missing this path loses CTO identity mid-session.
-- **ADE CLI approval bypass during auto-compaction.** The Claude runtime
-  sets `compactionInProgress` when the SDK `PreCompact` hook fires and
-  keeps it set for 60 s (the SDK emits no `PostCompact` signal). While
-  the flag is true, `canUseTool` auto-approves ADE CLI tools (notably
-  `memory_add`) so the compaction flush can persist memories without
-  blocking on an approval prompt that no user is present to answer.
-  Non-ADE CLI tools still go through the normal approval gate.
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently
@@ -477,9 +470,6 @@ config service):
 
 ## Related docs
 
-- [Memory README](../memory/README.md) -- memory tools are provisioned
-  for every chat; turn-level memory guard blocks mutations on "required"
-  intents until `memorySearch` is called.
 - [Agents README](../agents/README.md) -- CTO and worker identities,
   persona overlays, tool policy.
 - [History README](../history/README.md) -- chat sessions are not

@@ -62,7 +62,6 @@ import {
 import { createReviewSuppressionService, type ReviewSuppressionService } from "./reviewSuppressionService";
 import { buildDiffContextForFinding } from "./reviewDiffContext";
 import { buildToolBackedEvidence } from "./reviewToolEvidence";
-import type { EmbeddingService } from "../memory/embeddingService";
 
 type ReviewRunRow = {
   id: string;
@@ -1579,7 +1578,6 @@ export function createReviewService({
   testService,
   issueInventoryService,
   prService,
-  embeddingService,
   onEvent,
 }: {
   db: AdeDb;
@@ -1595,7 +1593,6 @@ export function createReviewService({
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
   issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
   prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication">;
-  embeddingService?: Pick<EmbeddingService, "embed"> | null;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
@@ -1611,9 +1608,7 @@ export function createReviewService({
   });
   const suppressionService: ReviewSuppressionService = createReviewSuppressionService({
     db,
-    logger,
     projectId,
-    embeddingService: embeddingService ?? null,
   });
   const activeRuns = new Set<string>();
   const cancelledRuns = new Set<string>();
@@ -3089,7 +3084,6 @@ export function createReviewService({
           reason: args.reason ?? null,
           note: args.note ?? null,
           sourceFindingId: finding.id,
-          seedText: `${finding.title}\n${finding.body}`,
         })
         .catch((error) => {
           logger.warn("review.suppression.create_failed", {

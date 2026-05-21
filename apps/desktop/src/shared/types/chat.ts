@@ -535,7 +535,7 @@ export type AgentChatEvent =
     }
   | {
       type: "system_notice";
-      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "memory" | "provider_health" | "thread_error" | "warning" | "error" | "config";
+      noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "provider_health" | "thread_error" | "warning" | "error" | "config";
       severity?: "info" | "warning" | "error";
       status?: string;
       message: string;
@@ -885,11 +885,6 @@ export type AgentChatContextUsage = {
   rawMaxTokens?: number;
   percentage: number;
   model?: string;
-  memoryFiles?: Array<{
-    path: string;
-    type?: string;
-    tokens: number;
-  }>;
 };
 
 export type AgentChatContextUsageArgs = {

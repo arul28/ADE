@@ -130,7 +130,7 @@ It uses Lume as the first provider, keeps VM records under
 `.ade/cache/macos-vms`, stores managed VNC credentials under `.ade/secrets`, and
 mounts either the lane root directly or a sanitized rsync mirror. The mirror is
 used whenever the lane root contains `.ade/`; it excludes secrets, ADE runtime
-databases, caches, transcripts, generated local memory/history, nested
+databases, caches, transcripts, generated local history, nested
 worktrees, agent state, and `.git`.
 
 Control flows through `ade.macosVm.*` IPC and the `macos_vm` ADE action domain:

@@ -1,20 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { ArrowCounterClockwise, PencilSimple } from "@phosphor-icons/react";
-import type { CtoCoreMemory, CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
+import type { CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
 import { IdentityEditor } from "./IdentityEditor";
 import { TimelineEntry } from "./shared/TimelineEntry";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { inputCls, labelCls, textareaCls } from "./shared/designTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { getCtoPersonalityPreset } from "./identityPresets";
 import { CtoPromptPreview } from "./CtoPromptPreview";
 
-/* ── Helpers ── */
-
-function splitTrimmed(val: string): string[] {
-  return val.split(",").map((s) => s.trim()).filter(Boolean);
-}
+const CARD_CLASS = "rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] p-4 shadow-card backdrop-blur-[20px]";
 
 function describeIdentityPersonality(identity: CtoIdentity): string {
   if (identity.personality === "custom") {
@@ -23,85 +18,38 @@ function describeIdentityPersonality(identity: CtoIdentity): string {
   return getCtoPersonalityPreset(identity.personality ?? "strategic").description;
 }
 
-type CoreMemoryPatch = Partial<{
-  projectSummary: string;
-  criticalConventions: string[];
-  userPreferences: string[];
-  activeFocus: string[];
-  notes: string[];
-}>;
-
-/* ── Main Panel ── */
-
 export function CtoSettingsPanel({
   identity,
-  coreMemory,
   sessionLogs,
   onSaveIdentity,
-  onSaveCoreMemory,
   onResetOnboarding,
 }: {
   identity: CtoIdentity | null;
-  coreMemory: CtoCoreMemory | null;
   sessionLogs: CtoSessionLogEntry[];
   onSaveIdentity: (patch: Record<string, unknown>) => Promise<void>;
-  onSaveCoreMemory: (patch: CoreMemoryPatch) => Promise<void>;
   onResetOnboarding?: () => void;
 }) {
   const [identityEditing, setIdentityEditing] = useState(false);
-  const [memoryEditing, setMemoryEditing] = useState(false);
-  const [memoryDraft, setMemoryDraft] = useState({ projectSummary: "", criticalConventions: "", userPreferences: "", activeFocus: "", notes: "" });
-  const [memorySaving, setMemorySaving] = useState(false);
-  const [memoryError, setMemoryError] = useState<string | null>(null);
+  const [settingsTab, setSettingsTab] = useState<"identity" | "history">("identity");
 
-  useEffect(() => {
-    if (!memoryEditing && coreMemory) {
-      setMemoryDraft({
-        projectSummary: coreMemory.projectSummary,
-        criticalConventions: coreMemory.criticalConventions.join(", "),
-        userPreferences: coreMemory.userPreferences.join(", "),
-        activeFocus: coreMemory.activeFocus.join(", "),
-        notes: coreMemory.notes.join(", "),
-      });
-    }
-  }, [coreMemory, memoryEditing]);
-
-  const handleSaveMemory = async () => {
-    setMemorySaving(true); setMemoryError(null);
-    try {
-      await onSaveCoreMemory({
-        projectSummary: memoryDraft.projectSummary.trim() || coreMemory?.projectSummary,
-        criticalConventions: splitTrimmed(memoryDraft.criticalConventions),
-        userPreferences: splitTrimmed(memoryDraft.userPreferences),
-        activeFocus: splitTrimmed(memoryDraft.activeFocus),
-        notes: splitTrimmed(memoryDraft.notes),
-      });
-      setMemoryEditing(false);
-    } catch (err) { setMemoryError(err instanceof Error ? err.message : "Save failed."); }
-    finally { setMemorySaving(false); }
-  };
-
-  const [settingsTab, setSettingsTab] = useState<"identity" | "brief">("identity");
-
-  const SUB_TABS = [
+  const subTabs = [
     { id: "identity" as const, label: "Identity", tooltip: "CTO personality, model, and reasoning configuration." },
-    { id: "brief" as const, label: "Brief", tooltip: "Project summary, conventions, and focus areas that persist across sessions." },
+    { id: "history" as const, label: "History", tooltip: "Recent CTO sessions and continuity context." },
   ];
 
   return (
-    <div className="flex flex-col h-full min-h-0 p-4 gap-4">
-      {/* Sub-tab bar */}
+    <div className="flex h-full min-h-0 flex-col gap-4 p-4">
       <div className="flex items-center gap-1">
-        {SUB_TABS.map(({ id, label, tooltip }) => (
+        {subTabs.map(({ id, label, tooltip }) => (
           <SmartTooltip key={id} content={{ label, description: tooltip }} side="bottom">
             <button
               type="button"
               onClick={() => setSettingsTab(id)}
               className={cn(
-                "rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150",
+                "rounded-md border px-3 py-1.5 text-xs font-medium transition-all duration-150",
                 settingsTab === id
-                  ? "bg-accent/10 text-accent border border-accent/20"
-                  : "text-muted-fg/50 hover:text-muted-fg/80 hover:bg-white/[0.03] border border-transparent",
+                  ? "border-accent/20 bg-accent/10 text-accent"
+                  : "border-transparent text-muted-fg/50 hover:bg-white/[0.03] hover:text-muted-fg/80",
               )}
             >
               {label}
@@ -116,23 +64,21 @@ export function CtoSettingsPanel({
         )}
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-4">
-        {/* ── Identity sub-tab ── */}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
         {settingsTab === "identity" && (
           <>
             {identityEditing ? (
               <IdentityEditor identity={identity} onSave={onSaveIdentity} onCancel={() => setIdentityEditing(false)} />
             ) : identity ? (
               <div className="space-y-4">
-                {/* Identity card */}
-                <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid var(--color-accent)" }}>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-xs font-semibold text-fg">CTO Identity</div>
+                <div className={CARD_CLASS} style={{ borderLeft: "3px solid var(--color-accent)" }}>
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-xs font-semibold text-fg">CTO identity</div>
                     <Button variant="outline" size="sm" onClick={() => setIdentityEditing(true)}>
                       <PencilSimple size={10} /> Edit
                     </Button>
                   </div>
-                  <div className="text-xs text-muted-fg/55 leading-relaxed mb-3">{describeIdentityPersonality(identity)}</div>
+                  <div className="mb-3 text-xs leading-relaxed text-muted-fg/55">{describeIdentityPersonality(identity)}</div>
                   <div className="flex flex-wrap gap-1.5">
                     {[
                       { label: `${identity.modelPreferences.provider}/${identity.modelPreferences.model}` },
@@ -146,9 +92,8 @@ export function CtoSettingsPanel({
                   </div>
                 </div>
 
-                {/* Prompt preview card */}
-                <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #60A5FA" }}>
-                  <div className="text-xs font-semibold text-fg mb-3">Prompt Preview</div>
+                <div className={CARD_CLASS} style={{ borderLeft: "3px solid #60A5FA" }}>
+                  <div className="mb-3 text-xs font-semibold text-fg">Prompt preview</div>
                   <CtoPromptPreview compact />
                 </div>
               </div>
@@ -158,91 +103,23 @@ export function CtoSettingsPanel({
           </>
         )}
 
-        {/* ── Brief sub-tab ── */}
-        {settingsTab === "brief" && (
-          <>
-            {/* Brief card */}
-            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #22C55E" }}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-semibold text-fg">Project Brief</div>
-                {!memoryEditing && (
-                  <Button variant="outline" size="sm" onClick={() => setMemoryEditing(true)} data-testid="core-memory-edit-btn">
-                    <PencilSimple size={10} /> Edit
-                  </Button>
-                )}
-              </div>
-              <div className="text-[11px] text-muted-fg/40 mb-3">
-                The persistent brief ADE reloads after compaction and across fresh chat resumes.
-              </div>
-
-            {memoryEditing ? (
-              <div className="space-y-3">
-                {[
-                  { key: "projectSummary" as const, label: "Summary", multiline: true },
-                  { key: "criticalConventions" as const, label: "Conventions", multiline: false },
-                  { key: "userPreferences" as const, label: "Preferences", multiline: false },
-                  { key: "activeFocus" as const, label: "Focus", multiline: false },
-                  { key: "notes" as const, label: "Notes", multiline: false },
-                ].map(({ key, label, multiline }) => (
-                  <label key={key} className="space-y-1.5 block">
-                    <div className={labelCls}>{label}</div>
-                    {multiline ? (
-                      <textarea className={cn(textareaCls, "min-h-[60px]")} rows={3} value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
-                    ) : (
-                      <input className={inputCls} placeholder="comma-separated" value={memoryDraft[key]} onChange={(e) => setMemoryDraft((d) => ({ ...d, [key]: e.target.value }))} />
-                    )}
-                  </label>
-                ))}
-                {memoryError && <div className="text-xs text-error" data-testid="core-memory-save-error">{memoryError}</div>}
-                <div className="flex gap-2">
-                  <Button variant="primary" disabled={memorySaving} onClick={handleSaveMemory} data-testid="core-memory-save-btn">
-                    {memorySaving ? "Saving..." : "Save"}
-                  </Button>
-                  <Button variant="outline" disabled={memorySaving} onClick={() => { setMemoryEditing(false); setMemoryError(null); }} data-testid="core-memory-cancel-btn">
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            ) : coreMemory ? (
-              <div className="space-y-3" data-testid="core-memory-view">
-                <div className="text-xs text-muted-fg/55 leading-relaxed">
-                  {coreMemory.projectSummary || "No project summary yet."}
-                </div>
-                {[
-                  { items: coreMemory.criticalConventions, label: "Conventions" },
-                  { items: coreMemory.activeFocus, label: "Focus" },
-                  { items: coreMemory.userPreferences, label: "Preferences" },
-                  { items: coreMemory.notes, label: "Notes" },
-                ].filter(({ items }) => items.length > 0).map(({ items, label }) => (
-                  <div key={label} className="flex items-start gap-2">
-                    <span className="text-[10px] font-medium text-muted-fg/50 shrink-0">{label}:</span>
-                    <span className="text-[10px] text-muted-fg/40">{items.join(", ")}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-xs text-muted-fg/40">Loading...</div>
-            )}
+        {settingsTab === "history" && (
+          <div className={CARD_CLASS} style={{ borderLeft: "3px solid #FBBF24" }}>
+            <div className="mb-3 text-xs font-semibold text-fg">Session history</div>
+            <div className="max-h-80 space-y-1 overflow-y-auto" data-testid="session-history-list">
+              {sessionLogs.length === 0 ? (
+                <div className="py-2 text-[10px] text-muted-fg/40">No sessions yet.</div>
+              ) : sessionLogs.map((session) => (
+                <TimelineEntry
+                  key={session.id}
+                  timestamp={session.createdAt}
+                  title={session.summary}
+                  status={session.capabilityMode}
+                  statusVariant={session.capabilityMode === "full_tooling" ? "success" : "muted"}
+                />
+              ))}
             </div>
-
-            {/* Session history card */}
-            <div className="rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.7),rgba(18,16,34,0.8))] backdrop-blur-[20px] shadow-card p-4" style={{ borderLeft: "3px solid #FBBF24" }}>
-              <div className="text-xs font-semibold text-fg mb-3">Session History</div>
-              <div className="max-h-48 overflow-y-auto space-y-1" data-testid="session-history-list">
-                {sessionLogs.length === 0 ? (
-                  <div className="text-[10px] text-muted-fg/40 py-2">No sessions yet.</div>
-                ) : sessionLogs.map((s) => (
-                  <TimelineEntry
-                    key={s.id}
-                    timestamp={s.createdAt}
-                    title={s.summary}
-                    status={s.capabilityMode}
-                    statusVariant={s.capabilityMode === "full_tooling" ? "success" : "muted"}
-                  />
-                ))}
-              </div>
-            </div>
-          </>
+          </div>
         )}
       </div>
     </div>

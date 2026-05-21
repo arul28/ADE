@@ -1277,7 +1277,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.getWorkerStatus = tool({
-    description: "Inspect a worker agent, including its memory and recent runs.",
+    description: "Inspect a worker agent, including its current status and recent runs.",
     inputSchema: z.object({
       agentId: z.string(),
     }),
@@ -1286,12 +1286,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       const worker = deps.workerAgentService.getAgent(agentId, { includeDeleted: true });
       if (!worker) return { success: false, error: `Worker not found: ${agentId}` };
       const recentRuns = deps.workerHeartbeatService?.listRuns({ agentId, limit: 10 }) ?? [];
-      const coreMemory = deps.workerAgentService.getCoreMemory(agentId);
       return {
         success: true,
         worker,
         statusSummary: summarizeWorkerStatus(worker.status),
-        coreMemory,
         recentRuns,
       };
     },

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   formatLinearStatus,
-  formatMemorySearch,
   formatPrChecks,
   formatPrComments,
   formatPrReview,
@@ -119,27 +118,6 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("PR review · 1 review · 1 thread · 0 comments");
     expect(body).toContain("FAIL maintainer: Needs a test.");
     expect(body).toContain("resolved src/a.ts:9");
-  });
-
-  it("summarizes memory search results", () => {
-    const body = formatMemorySearch({
-      query: "deploy lag",
-      scope: "project",
-      status: "candidate",
-      memories: [
-        {
-          id: "memory-1",
-          status: "candidate",
-          category: "pattern",
-          importance: "high",
-          content: "Service B can lag by ~90s after deploy.",
-        },
-      ],
-    });
-
-    expect(body).toContain("Memory · project · candidate · 1 match");
-    expect(body).toContain("candidate/pattern/high memory-1");
-    expect(body).toContain("Service B can lag");
   });
 
   it("formats Linear status as stable rows", () => {

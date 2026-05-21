@@ -24,7 +24,7 @@ export function SiteFooter() {
             </div>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-fg">
               The all-in-one AI development environment. Agent chat, worktrees,
-              missions, memory, automations, and 35+ built-in tools.
+              missions, automations, and 35+ built-in tools.
             </p>
           </div>
 

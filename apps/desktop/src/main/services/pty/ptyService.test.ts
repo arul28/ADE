@@ -1006,6 +1006,30 @@ describe("ptyService", () => {
       expect(mockPty.write).toHaveBeenCalledWith("echo hello\r");
     });
 
+    it("delays startup command writes when requested", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "With delayed startup",
+          cols: 80,
+          rows: 24,
+          startupCommand: "echo delayed",
+          startupDelayMs: 180,
+        });
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(179);
+        expect(mockPty.write).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockPty.write).toHaveBeenCalledWith("echo delayed\r");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("hydrates transcript reads from recent live output before the file stream flushes", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const created = await service.create({

@@ -3,7 +3,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import type {
-  CtoCoreMemory,
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
@@ -14,7 +13,6 @@ import type {
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { getCtoPersonalityPreset } from "../../../shared/ctoPersonalityPresets";
 import { getDefaultModelDescriptor, listModelDescriptorsForProvider, type ModelProviderGroup } from "../../../shared/modelRegistry";
-import type { createMemoryService, Memory, MemoryCategory } from "../memory/memoryService";
 import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
@@ -23,10 +21,7 @@ type CtoStateServiceArgs = {
   db: AdeDb;
   projectId: string;
   adeDir: string;
-  memoryService?: Pick<ReturnType<typeof createMemoryService>, "listMemories">;
 };
-
-type CoreMemoryPatch = Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
 
 type AppendCtoSessionLogArgs = {
   sessionId: string;
@@ -53,17 +48,8 @@ type PersistedDoc<T> = {
   updatedAt: string;
 };
 
-const CTO_LONG_TERM_MEMORY_RELATIVE_PATH = ".ade/cto/MEMORY.md";
 const CTO_CURRENT_CONTEXT_RELATIVE_PATH = ".ade/cto/CURRENT.md";
 const CTO_REQUIRED_ONBOARDING_STEPS = ["identity"] as const;
-const DURABLE_MEMORY_CATEGORY_ORDER: MemoryCategory[] = [
-  "decision",
-  "convention",
-  "pattern",
-  "gotcha",
-  "preference",
-  "fact",
-];
 
 const CTO_MODEL_PROVIDER_GROUPS: ModelProviderGroup[] = ["claude", "codex", "cursor", "droid", "opencode"];
 
@@ -106,7 +92,7 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- Own architecture, execution quality, engineering continuity, and technical direction",
   "- Keep a working mental model of conventions, active work, known risks, and prior decisions",
   "- Use ADE surfaces and delegation paths when they help move the project forward",
-  "- Search the repo and project memory before asking the user for context that ADE already has",
+  "- Search the repo and reconstructed CTO/worker context before asking the user for context that ADE already has",
   "- Be decisive when the tradeoff is clear, and escalate when a decision is risky or irreversible",
   "- Execute user requests precisely — when a user asks for a specific model, lane, or configuration, honor the request exactly",
   "- Proactively check project health, recent events, and worker status to stay aware of the project state",
@@ -121,21 +107,16 @@ const IMMUTABLE_CTO_DOCTRINE = [
   ADE_CLI_INLINE_GUIDANCE,
 ].join("\n");
 
-const CTO_MEMORY_OPERATING_MODEL = [
+const CTO_CONTINUITY_OPERATING_MODEL = [
   "ADE continuity model:",
   "1. Immutable doctrine: ADE always re-applies this CTO doctrine. It is not user-editable and it is not compacted away.",
-  `2. Long-term CTO brief: ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. ADE maintains this project-level state for summary, conventions, preferences, focus, and standing notes.`,
-  `3. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions, worker activity, and active carry-forward context.`,
-  "4. Durable searchable project memory. Use memorySearch to retrieve reusable context and memoryAdd to store stable lessons, decisions, patterns, gotchas, and preferences.",
+  `2. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions and worker activity.`,
   "",
   "Compaction and recovery rules:",
-  "- Treat memory as mandatory operating infrastructure, not optional notes.",
-  "- Before non-trivial work, before asking the user to restate context, and before entering an unfamiliar subsystem, re-ground yourself in the long-term brief, current context, and durable memory.",
+  "- Treat injected CTO continuity as current operating context, not optional notes.",
+  "- Before non-trivial work, before asking the user to restate context, and before entering an unfamiliar subsystem, re-ground yourself in the current context ADE already injects.",
   "- ADE already injects reconstructed CTO state into the session. Do not spend turns shell-reading relative .ade/cto files from the workspace unless an explicit absolute file path is required.",
-  "- Use memoryUpdateCore only when the standing project brief changes: summary, conventions, preferences, active focus, or standing notes.",
-  "- Use memoryAdd for reusable decisions, patterns, gotchas, and stable preferences that are likely to matter again.",
   "- Do not write ephemeral turn-by-turn status, scratch notes, or one-off observations that can be recovered from the repo or recent chat history.",
-  "- Distill important session context before compaction removes detail, but persist only durable insights.",
 ].join("\n");
 
 function buildCtoEnvironmentKnowledge(): string {
@@ -186,7 +167,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  /files — File explorer for browsing and editing project files.",
   "  /prs — Pull request management: list, detail view, convergence, queue, GitHub integration.",
   "  /missions — Mission control center: create missions, monitor runs, view artifacts and logs.",
-  "  /cto — CTO settings page: your identity, core memory, team/workers, Linear integration.",
+  "  /cto — CTO settings page: your identity, team/workers, Linear integration.",
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
@@ -242,13 +223,9 @@ function buildCtoEnvironmentKnowledge(): string {
   "  - List rules: listAutomations. Trigger manually: triggerAutomation. View history: listAutomationRuns.",
   "  - Rules can be configured in /automations or /settings.",
   "",
-  "## Memory System",
+  "## CTO Continuity",
   "",
-  "  ADE has a 4-layer memory model (detailed in the Memory and Continuity section).",
-  "  - memorySearch: retrieve stored decisions, patterns, conventions, gotchas.",
-  "  - memoryAdd: store durable lessons for future sessions.",
-  "  - memoryUpdateCore: update the standing project brief (summary, conventions, preferences, focus, notes).",
-  "  - memoryPin / memoryDelete: manage individual memory items.",
+  "  ADE keeps CTO continuity through the current working context, recent sessions, and worker activity.",
   "",
   "## Tests",
   "",
@@ -441,13 +418,6 @@ const CTO_CAPABILITY_MANIFEST = [
   "  getProjectBudgetStatus — Get project-wide budget and spending snapshot.",
   "  getWorkerCostBreakdown — Get cost breakdown per worker agent. Params: agentId, monthKey.",
   "",
-  "## Memory",
-  "  memorySearch — Search stored decisions, patterns, conventions, gotchas. Params: query.",
-  "  memoryAdd — Store a durable lesson/decision for future sessions. Params: category, content.",
-  "  memoryUpdateCore — Update the standing project brief (summary, conventions, preferences, focus, notes). Params: patch.",
-  "  memoryPin — Pin an important memory item. Params: memoryId.",
-  "  memoryDelete — Remove a memory item. Params: memoryId.",
-  "",
   "# Operating Rules",
   "",
   "- Internal ADE actions run through service-backed tools even when no renderer click occurs.",
@@ -537,10 +507,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
     source.modelPreferences && typeof source.modelPreferences === "object"
       ? (source.modelPreferences as Record<string, unknown>)
       : {};
-  const memoryPolicyRaw =
-    source.memoryPolicy && typeof source.memoryPolicy === "object"
-      ? (source.memoryPolicy as Record<string, unknown>)
-      : {};
   const communicationStyleRaw =
     source.communicationStyle && typeof source.communicationStyle === "object"
       ? (source.communicationStyle as Record<string, unknown>)
@@ -602,16 +568,6 @@ function normalizeIdentity(input: unknown): CtoIdentity | null {
         ? { reasoningEffort: (modelPreferencesRaw.reasoningEffort as string | null | undefined) ?? null }
         : {}),
     },
-    memoryPolicy: {
-      autoCompact: memoryPolicyRaw.autoCompact !== false,
-      compactionThreshold: Number.isFinite(Number(memoryPolicyRaw.compactionThreshold))
-        ? Math.max(0.1, Math.min(1, Number(memoryPolicyRaw.compactionThreshold)))
-        : 0.7,
-      preCompactionFlush: memoryPolicyRaw.preCompactionFlush !== false,
-      temporalDecayHalfLifeDays: Number.isFinite(Number(memoryPolicyRaw.temporalDecayHalfLifeDays))
-        ? Math.max(1, Math.floor(Number(memoryPolicyRaw.temporalDecayHalfLifeDays)))
-        : 30,
-    },
     ...(onboardingState ? { onboardingState } : {}),
     updatedAt,
   };
@@ -625,47 +581,6 @@ function clipText(value: string, maxLength = 220): string {
   const normalized = squishText(value);
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
-}
-
-function labelForMemoryCategory(category: MemoryCategory): string {
-  switch (category) {
-    case "decision":
-      return "Decisions";
-    case "convention":
-      return "Conventions";
-    case "pattern":
-      return "Patterns";
-    case "gotcha":
-      return "Gotchas";
-    case "preference":
-      return "Preferences";
-    case "fact":
-      return "Facts";
-    default:
-      return "Other";
-  }
-}
-
-function normalizeCoreMemory(input: unknown): CtoCoreMemory | null {
-  if (!input || typeof input !== "object") return null;
-  const source = input as Record<string, unknown>;
-  const version = Math.max(1, Math.floor(Number(source.version ?? 1)));
-  const updatedAt = typeof source.updatedAt === "string" && source.updatedAt.trim().length
-    ? source.updatedAt
-    : nowIso();
-
-  return {
-    version,
-    updatedAt,
-    projectSummary:
-      typeof source.projectSummary === "string" && source.projectSummary.trim().length
-        ? source.projectSummary.trim()
-        : "Project context is being built through conversations and mission outcomes.",
-    criticalConventions: uniqueStrings(asStringArray(source.criticalConventions)),
-    userPreferences: uniqueStrings(asStringArray(source.userPreferences)),
-    activeFocus: uniqueStrings(asStringArray(source.activeFocus)),
-    notes: uniqueStrings(asStringArray(source.notes)),
-  };
 }
 
 function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
@@ -729,26 +644,7 @@ function makeDefaultIdentity(): CtoIdentity {
       model: "sonnet",
       reasoningEffort: "high",
     },
-    memoryPolicy: {
-      autoCompact: true,
-      compactionThreshold: 0.7,
-      preCompactionFlush: true,
-      temporalDecayHalfLifeDays: 30,
-    },
     updatedAt: timestamp,
-  };
-}
-
-function makeDefaultCoreMemory(): CtoCoreMemory {
-  const timestamp = nowIso();
-  return {
-    version: 1,
-    updatedAt: timestamp,
-    projectSummary: "No CTO brief saved yet. Add the project purpose, rules, and current priorities here.",
-    criticalConventions: [],
-    userPreferences: [],
-    activeFocus: [],
-    notes: [],
   };
 }
 
@@ -758,8 +654,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   const identityPath = path.join(ctoDir, "identity.yaml");
   // Only identity.yaml belongs to the shared Git-tracked ADE scaffold in W3.
   // The remaining files here are generated local/runtime state.
-  const coreMemoryPath = path.join(ctoDir, "core-memory.json");
-  const memoryDocPath = path.join(ctoDir, "MEMORY.md");
   const currentContextPath = path.join(ctoDir, "CURRENT.md");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
   const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");
@@ -794,44 +688,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     args.db.run(
       `
         insert into cto_identity_state(project_id, version, payload_json, updated_at)
-        values(?, ?, ?, ?)
-        on conflict(project_id) do update set
-          version = excluded.version,
-          payload_json = excluded.payload_json,
-          updated_at = excluded.updated_at
-      `,
-      [args.projectId, payload.version, JSON.stringify(payload), payload.updatedAt]
-    );
-  };
-
-  const readCoreMemoryFromFile = (): PersistedDoc<CtoCoreMemory> | null => {
-    if (!fs.existsSync(coreMemoryPath)) return null;
-    const parsed = safeJsonParse<unknown>(fs.readFileSync(coreMemoryPath, "utf8"), null);
-    const payload = normalizeCoreMemory(parsed);
-    if (!payload) return null;
-    return { payload, updatedAt: payload.updatedAt };
-  };
-
-  const readCoreMemoryFromDb = (): PersistedDoc<CtoCoreMemory> | null => {
-    const row = args.db.get<{ payload_json: string; updated_at: string }>(
-      `select payload_json, updated_at from cto_core_memory_state where project_id = ? limit 1`,
-      [args.projectId]
-    );
-    if (!row?.payload_json) return null;
-    const payload = normalizeCoreMemory(safeJsonParse(row.payload_json, null));
-    if (!payload) return null;
-    const updatedAt = row.updated_at?.trim() || payload.updatedAt;
-    return { payload: { ...payload, updatedAt }, updatedAt };
-  };
-
-  const writeCoreMemoryToFile = (payload: CtoCoreMemory): void => {
-    writeTextAtomic(coreMemoryPath, `${JSON.stringify(payload, null, 2)}\n`);
-  };
-
-  const writeCoreMemoryToDb = (payload: CtoCoreMemory): void => {
-    args.db.run(
-      `
-        insert into cto_core_memory_state(project_id, version, payload_json, updated_at)
         values(?, ?, ?, ?)
         on conflict(project_id) do update set
           version = excluded.version,
@@ -955,18 +811,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     );
   };
 
-  const reconcileDocs = (): { identity: CtoIdentity; coreMemory: CtoCoreMemory } => {
-    const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
-    const coreMemory = chooseCanonical(readCoreMemoryFromFile(), readCoreMemoryFromDb(), makeDefaultCoreMemory);
-
-    writeIdentityToFile(identity);
-    writeIdentityToDb(identity);
-    writeCoreMemoryToFile(coreMemory);
-    writeCoreMemoryToDb(coreMemory);
-
-    return { identity, coreMemory };
-  };
-
   const reconcileSessionLogs = (): void => {
     const dbEntries = listSessionLogsFromDb();
     const fileEntries = listSessionLogsFromFile();
@@ -988,15 +832,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     }
   };
 
-  const reconcileAll = (): { identity: CtoIdentity; coreMemory: CtoCoreMemory } => {
-    const docs = reconcileDocs();
+  const reconcileAll = (): CtoIdentity => {
+    const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
+    writeIdentityToFile(identity);
+    writeIdentityToDb(identity);
     reconcileSessionLogs();
-    return docs;
+    return identity;
   };
 
-  const getIdentity = (): CtoIdentity => reconcileAll().identity;
-
-  const getCoreMemory = (): CtoCoreMemory => reconcileAll().coreMemory;
+  const getIdentity = (): CtoIdentity => reconcileAll();
 
   const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
     reconcileAll();
@@ -1029,115 +873,26 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   };
 
   const getSnapshot = (recentLimit = 20): CtoSnapshot => {
-    const docs = reconcileAll();
+    const identity = reconcileAll();
     return {
-      identity: docs.identity,
-      coreMemory: docs.coreMemory,
+      identity,
       recentSessions: getSessionLogs(recentLimit),
       recentSubordinateActivity: getSubordinateActivityLogs(recentLimit),
     };
   };
 
-  const listDurableMemoryHighlights = (limit = 12): Memory[] => {
-    if (!args.memoryService) return [];
-    const promoted = args.memoryService.listMemories({
-      projectId: args.projectId,
-      scope: "project",
-      status: "promoted",
-      categories: DURABLE_MEMORY_CATEGORY_ORDER,
-      limit: Math.max(limit * 2, 24),
-    });
-    const curated = promoted.filter((memory) =>
-      memory.pinned
-      || memory.tier === 1
-      || memory.importance === "high"
-    );
-    return (curated.length > 0 ? curated : promoted).slice(0, limit);
-  };
-
-  const buildDurableHighlightLines = (memories: ReadonlyArray<Memory>): string[] => {
-    if (memories.length === 0) {
-      return ["- No promoted durable memories yet. Use memoryAdd for reusable decisions, patterns, and gotchas."];
-    }
-
-    const lines: string[] = [];
-    for (const category of DURABLE_MEMORY_CATEGORY_ORDER) {
-      const group = memories.filter((memory) => memory.category === category);
-      if (group.length === 0) continue;
-      lines.push(`### ${labelForMemoryCategory(category)}`);
-      for (const memory of group) {
-        lines.push(`- ${clipText(memory.content, 260)}${memory.pinned ? " (pinned)" : ""}`);
-      }
-      lines.push("");
-    }
-    while (lines[lines.length - 1] === "") lines.pop();
-    return lines;
-  };
-
-  const listRecentDailyLogSnippets = (lineLimits = [14, 8]): Array<{ date: string; lines: string[] }> => {
-    return listDailyLogs(lineLimits.length)
-      .map((date, index) => {
-        const raw = readDailyLog(date)?.trim();
-        if (!raw) return null;
-        const entries = raw.split("\n").map((line) => line.trim()).filter(Boolean);
-        if (entries.length === 0) return null;
-        const sliceSize = lineLimits[index] ?? lineLimits[lineLimits.length - 1] ?? 8;
-        return {
-          date,
-          lines: entries.length > sliceSize ? entries.slice(-sliceSize) : entries,
-        };
-      })
-      .filter((entry): entry is { date: string; lines: string[] } => Boolean(entry));
-  };
-
-  const buildLongTermMemoryLines = (snapshot: CtoSnapshot): string[] => {
-    const lines: string[] = [];
-    lines.push("## Core brief");
-    lines.push(`- Project summary: ${snapshot.coreMemory.projectSummary}`);
-    lines.push(
-      snapshot.coreMemory.criticalConventions.length > 0
-        ? `- Critical conventions: ${snapshot.coreMemory.criticalConventions.join("; ")}`
-        : "- Critical conventions: none captured yet",
-    );
-    if (snapshot.coreMemory.userPreferences.length > 0) {
-      lines.push(`- User preferences: ${snapshot.coreMemory.userPreferences.join("; ")}`);
-    }
-    if (snapshot.coreMemory.activeFocus.length > 0) {
-      lines.push(`- Active focus: ${snapshot.coreMemory.activeFocus.join("; ")}`);
-    }
-    if (snapshot.coreMemory.notes.length > 0) {
-      lines.push(`- Notes: ${snapshot.coreMemory.notes.join("; ")}`);
-    }
-
-    lines.push("");
-    lines.push("## Durable project memory highlights");
-    lines.push(...buildDurableHighlightLines(listDurableMemoryHighlights()));
-    return lines;
-  };
-
   const buildCurrentContextLines = (snapshot: CtoSnapshot): string[] => {
-    const lines: string[] = [];
-    lines.push("## Active context");
-    if (snapshot.coreMemory.activeFocus.length > 0) {
-      lines.push(...snapshot.coreMemory.activeFocus.map((item) => `- Focus: ${item}`));
-    } else {
-      lines.push("- Focus: no active focus captured yet");
-    }
-    if (snapshot.coreMemory.notes.length > 0) {
-      lines.push(...snapshot.coreMemory.notes.map((item) => `- Note: ${item}`));
-    }
-
+    const lines: string[] = ["## Recent CTO sessions"];
     if (snapshot.recentSessions.length > 0) {
-      lines.push("");
-      lines.push("## Recent CTO sessions");
       for (const entry of snapshot.recentSessions) {
         lines.push(`- [${entry.createdAt}] ${clipText(entry.summary, 220)}`);
       }
+    } else {
+      lines.push("- No recent CTO sessions recorded.");
     }
 
     if (snapshot.recentSubordinateActivity.length > 0) {
-      lines.push("");
-      lines.push("## Recent worker activity");
+      lines.push("", "## Recent worker activity");
       for (const entry of snapshot.recentSubordinateActivity) {
         const detailParts = [
           entry.taskKey ? `task ${entry.taskKey}` : "",
@@ -1149,22 +904,10 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       }
     }
 
-    const recentLogs = listRecentDailyLogSnippets();
-    if (recentLogs.length > 0) {
-      lines.push("");
-      lines.push("## Daily carry-forward");
-      for (const log of recentLogs) {
-        lines.push(`### ${log.date}`);
-        lines.push(...log.lines);
-        lines.push("");
-      }
-      while (lines[lines.length - 1] === "") lines.pop();
-    }
-
     return lines;
   };
 
-  const renderGeneratedMemoryDoc = (
+  const renderGeneratedContextDoc = (
     title: string,
     intro: string,
     bodyLines: ReadonlyArray<string>,
@@ -1178,39 +921,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     ].join("\n").trim();
   };
 
-  const syncDerivedMemoryDocs = (snapshot = getSnapshot(8)): void => {
-    const longTermDoc = renderGeneratedMemoryDoc(
-      "CTO Memory",
-      "Internal ADE-generated long-term CTO memory. This mirrors the persistent continuity brief plus promoted durable project memory.",
-      buildLongTermMemoryLines(snapshot),
-    );
-    const currentContextBody = renderGeneratedMemoryDoc(
+  const syncDerivedContextDoc = (snapshot = getSnapshot(8)): void => {
+    const currentContextBody = renderGeneratedContextDoc(
       "CTO Current Context",
-      "Internal ADE-generated working context for continuity across compaction and session resumes.",
+      "Internal ADE-generated working context for session resumes.",
       buildCurrentContextLines(snapshot),
     );
-    writeTextAtomic(memoryDocPath, `${longTermDoc}\n`);
     writeTextAtomic(currentContextPath, `${currentContextBody}\n`);
-  };
-
-  const updateCoreMemory = (patch: CoreMemoryPatch): CtoSnapshot => {
-    const current = getCoreMemory();
-    const timestamp = nowIso();
-    const next: CtoCoreMemory = {
-      ...current,
-      version: current.version + 1,
-      updatedAt: timestamp,
-      ...(typeof patch.projectSummary === "string" ? { projectSummary: patch.projectSummary.trim() } : {}),
-      ...(patch.criticalConventions ? { criticalConventions: uniqueStrings(asStringArray(patch.criticalConventions)) } : {}),
-      ...(patch.userPreferences ? { userPreferences: uniqueStrings(asStringArray(patch.userPreferences)) } : {}),
-      ...(patch.activeFocus ? { activeFocus: uniqueStrings(asStringArray(patch.activeFocus)) } : {}),
-      ...(patch.notes ? { notes: uniqueStrings(asStringArray(patch.notes)) } : {}),
-    };
-    writeCoreMemoryToFile(next);
-    writeCoreMemoryToDb(next);
-    const snapshot = getSnapshot();
-    syncDerivedMemoryDocs(snapshot);
-    return snapshot;
   };
 
   const appendSessionLog = (entry: AppendCtoSessionLogArgs): CtoSessionLogEntry => {
@@ -1228,7 +945,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     insertSessionLogToDb(next);
     const written = appendSessionLogToFile(next);
-    syncDerivedMemoryDocs();
+    syncDerivedContextDoc();
     return written;
   };
 
@@ -1254,20 +971,17 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       createdAt: nowIso(),
     };
     appendSubordinateActivityToFile(next);
-    syncDerivedMemoryDocs();
+    syncDerivedContextDoc();
     return next;
   };
 
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
-    sections.push("CTO Memory Stack");
+    sections.push("CTO Context");
     sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
-    sections.push(`- Layer 1 — runtime identity and operating doctrine. Hidden system instructions and identity.yaml keep you in the CTO role.`);
-    sections.push(`- Layer 2 — long-term CTO brief at ${CTO_LONG_TERM_MEMORY_RELATIVE_PATH}. Update this layer with memoryUpdateCore when the project summary, conventions, preferences, focus, or standing notes change.`);
-    sections.push(`- Layer 3 — current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. This layer carries active focus, recent sessions, worker activity, and daily logs through compaction.`);
-    sections.push("- Layer 4 — searchable durable project memory. Use memorySearch before non-trivial work and memoryAdd for reusable decisions, conventions, patterns, gotchas, and stable preferences.");
-    sections.push("- Memory write policy: use memoryUpdateCore for standing brief changes, use memoryAdd for durable reusable lessons, and skip ephemeral status notes.");
+    sections.push("- Runtime identity and operating doctrine keep you in the CTO role.");
+    sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions and worker activity through session resumes.`);
     sections.push("");
     sections.push("ADE Operational Knowledge");
     sections.push(buildCtoEnvironmentKnowledge());
@@ -1277,10 +991,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push(`- Persona: ${snapshot.identity.persona}`);
     sections.push(`- Preferred model: ${snapshot.identity.modelPreferences.provider}/${snapshot.identity.modelPreferences.model}`);
     sections.push("");
-    sections.push("Layer 2 — Long-term CTO brief");
-    sections.push(...buildLongTermMemoryLines(snapshot));
-    sections.push("");
-    sections.push("Layer 3 — Current working context");
+    sections.push("Current working context");
     sections.push(...buildCurrentContextLines(snapshot));
 
     return sections.join("\n").trim();
@@ -1303,7 +1014,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
     writeIdentityToFile(updated);
     writeIdentityToDb(updated);
-    syncDerivedMemoryDocs();
+    syncDerivedContextDoc();
     return next;
   };
 
@@ -1345,7 +1056,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       ...current,
       ...patch,
       modelPreferences: { ...current.modelPreferences, ...(patch.modelPreferences ?? {}) },
-      memoryPolicy: { ...current.memoryPolicy, ...(patch.memoryPolicy ?? {}) },
       version: current.version + 1,
       updatedAt: timestamp,
     };
@@ -1353,7 +1063,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     writeIdentityToFile(next);
     writeIdentityToDb(next);
     const snapshot = getSnapshot();
-    syncDerivedMemoryDocs(snapshot);
+    syncDerivedContextDoc(snapshot);
     return snapshot;
   };
 
@@ -1375,9 +1085,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         content: resolvePersonalityOverlay(identity),
       },
       {
-        id: "memory",
-        title: "Memory and continuity model",
-        content: CTO_MEMORY_OPERATING_MODEL,
+        id: "continuity",
+        title: "Continuity model",
+        content: CTO_CONTINUITY_OPERATING_MODEL,
       },
       {
         id: "knowledge",
@@ -1403,66 +1113,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     };
   };
 
-  /* ── Daily log ── */
-
-  const dailyLogDir = path.join(ctoDir, "daily");
-
-  const getDailyLogPath = (date?: string): string => {
-    const day = date ?? nowIso().slice(0, 10); // YYYY-MM-DD
-    return path.join(dailyLogDir, `${day}.md`);
-  };
-
-  const appendDailyLog = (entry: string, date?: string): void => {
-    fs.mkdirSync(dailyLogDir, { recursive: true });
-    const logPath = getDailyLogPath(date);
-    const timestamp = nowIso().slice(11, 19); // HH:MM:SS
-    fs.appendFileSync(logPath, `- [${timestamp}] ${entry.trim()}\n`, "utf8");
-    syncDerivedMemoryDocs();
-  };
-
-  const readDailyLog = (date?: string): string | null => {
-    const logPath = getDailyLogPath(date);
-    if (!fs.existsSync(logPath)) return null;
-    return fs.readFileSync(logPath, "utf8");
-  };
-
-  const listDailyLogs = (limit = 7): string[] => {
-    if (!fs.existsSync(dailyLogDir)) return [];
-    return fs.readdirSync(dailyLogDir)
-      .filter((f) => f.endsWith(".md"))
-      .sort()
-      .reverse()
-      .slice(0, limit)
-      .map((f) => f.replace(/\.md$/, ""));
-  };
-
-  const appendContinuityCheckpoint = (args: {
-    reason: "compaction" | "manual";
-    entries: Array<{ role: "user" | "assistant"; text: string }>;
-  }): void => {
-    const latestUser = [...args.entries].reverse().find((entry) => entry.role === "user" && squishText(entry.text).length > 0);
-    const latestAssistant = [...args.entries].reverse().find((entry) => entry.role === "assistant" && squishText(entry.text).length > 0);
-    const detailParts = [
-      latestUser ? `user: ${clipText(latestUser.text, 180)}` : "",
-      latestAssistant ? `cto: ${clipText(latestAssistant.text, 180)}` : "",
-    ].filter((value) => value.length > 0);
-    if (detailParts.length === 0) return;
-    appendDailyLog(
-      `${args.reason === "compaction" ? "Compaction checkpoint" : "Continuity checkpoint"} — ${detailParts.join(" | ")}`
-    );
-  };
-
   // Ensure the state is initialized as soon as the service is created.
   reconcileAll();
-  syncDerivedMemoryDocs();
+  syncDerivedContextDoc();
 
   return {
     getIdentity,
-    getCoreMemory,
     getSessionLogs,
     getSubordinateActivityLogs,
     getSnapshot,
-    updateCoreMemory,
     updateIdentity,
     appendSessionLog,
     appendSubordinateActivity,
@@ -1472,11 +1131,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     dismissOnboarding,
     resetOnboarding,
     previewSystemPrompt,
-    appendDailyLog,
-    appendContinuityCheckpoint,
-    readDailyLog,
-    listDailyLogs,
-    syncDerivedMemoryDocs,
+    syncDerivedContextDoc,
   };
 }
 

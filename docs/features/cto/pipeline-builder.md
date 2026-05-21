@@ -125,5 +125,5 @@ Every field in `FIELD_LABELS` carries a `tier` (`essential`, `advanced`, `expert
 
 - `README.md` — overall CTO architecture and the source file map that includes this surface.
 - `linear-integration.md` — how these workflow definitions drive dispatcher, routing, and sync.
-- `identity-and-memory.md` — `supervisorIdentityKey` ties into the same identity model used by CTO and worker chat sessions.
+- `../agents/identity-and-personas.md` — `supervisorIdentityKey` ties into the same identity model used by CTO and worker chat sessions.
 - `../missions/README.md` — `target.type === "mission"` dispatches through the mission runtime.

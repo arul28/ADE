@@ -454,14 +454,6 @@ async function validatePackageHygiene(resourcesPath) {
   // Source-map and binary-package hygiene checks are paused until the
   // perf-fixes packaging changes are reapplied with proper exclusions.
 
-  await assertPathMissing(
-    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "darwin"),
-    "macOS ONNX Runtime payload in Windows package",
-  );
-  await assertPathMissing(
-    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "linux"),
-    "Linux ONNX Runtime payload in Windows package",
-  );
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "deps"), "node-pty source dependency tree");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "src"), "node-pty source tree");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "prebuilds", "darwin-arm64"), "macOS node-pty arm64 prebuild in Windows package");
@@ -475,10 +467,6 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-x64"), "Codex Linux x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
-  await assertPathMissing(
-    path.join(unpackedPath, "node_modules", "@huggingface", "transformers", "node_modules", "onnxruntime-node", "bin", "napi-v3", "win32", "arm64"),
-    "Windows arm64 ONNX Runtime payload in Windows x64 package",
-  );
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "build", "Release", "conpty"), "duplicate node-pty build conpty payload in Windows package");
   await assertPathMissing(
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
@@ -512,17 +500,6 @@ async function validatePackagedRuntime(appDir) {
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
-  const onnxRuntimeWinPath = path.join(
-    nodeModulesPath,
-    "@huggingface",
-    "transformers",
-    "node_modules",
-    "onnxruntime-node",
-    "bin",
-    "napi-v3",
-    "win32",
-    "x64",
-  );
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
 
@@ -538,9 +515,6 @@ async function validatePackagedRuntime(appDir) {
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(sqlJsModulePath, "unpacked sql.js module");
-  await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime_binding.node"), "Windows ONNX Runtime native addon");
-  await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime.dll"), "Windows ONNX Runtime DLL");
-  await assertPathExists(path.join(onnxRuntimeWinPath, "DirectML.dll"), "Windows DirectML DLL");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertPathExists(crsqliteDllPath, "unpacked Windows cr-sqlite extension");
   const adeCliTuiContents = await fsp.readFile(adeCliTuiPath, "utf8");

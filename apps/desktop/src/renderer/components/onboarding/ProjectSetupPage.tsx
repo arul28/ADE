@@ -7,14 +7,13 @@ import { GitHubSection } from "../settings/GitHubSection";
 import { LinearSection } from "../settings/LinearSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { DevToolsSection } from "./DevToolsSection";
-import { EmbeddingsSection } from "./EmbeddingsSection";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { publishOnboardingStatusUpdated } from "../../lib/onboardingStatusEvents";
 
-type SetupStep = "tools" | "ai" | "helpers" | "github" | "embeddings" | "linear";
+type SetupStep = "tools" | "ai" | "helpers" | "github" | "linear";
 
-const STEP_ORDER: SetupStep[] = ["tools", "ai", "helpers", "github", "embeddings", "linear"];
+const STEP_ORDER: SetupStep[] = ["tools", "ai", "helpers", "github", "linear"];
 
 const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   tools: {
@@ -33,10 +32,6 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
     title: "GitHub",
     subtitle: "Enable PR and code review workflows",
   },
-  embeddings: {
-    title: "Semantic search",
-    subtitle: "Local vector model for smart memory search",
-  },
   linear: {
     title: "Linear",
     subtitle: "Issue tracking and CTO workflow routing",
@@ -52,7 +47,6 @@ const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   },
   helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
   github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
-  embeddings: { heading: "Semantic Search", sub: "A small local model that enables meaning-based memory search instead of just keyword matching." },
   linear: { heading: "Linear Integration", sub: "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." },
 };
 
@@ -103,7 +97,6 @@ export function ProjectSetupPage() {
     if (step === "ai") return <ProvidersSection forceRefreshOnMount />;
     if (step === "helpers") return <AiFeaturesSection />;
     if (step === "github") return <GitHubSection />;
-    if (step === "embeddings") return <EmbeddingsSection />;
     if (step === "linear") return <LinearSection />;
     return null;
   })();

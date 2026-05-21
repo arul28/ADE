@@ -150,7 +150,6 @@ const TOOL_FAMILIES: Array<{ value: AutomationToolFamily; label: string }> = [
   { value: "github", label: "GitHub" },
   { value: "linear", label: "Linear" },
   { value: "browser", label: "Browser" },
-  { value: "memory", label: "Memory" },
   { value: "mission", label: "Mission" },
 ];
 
@@ -318,7 +317,6 @@ function triggerLabel(trigger: AutomationTrigger): string {
 
 function computeIncludeProjectContext(draft: AutomationRuleDraft): boolean {
   if (typeof draft.includeProjectContext === "boolean") return draft.includeProjectContext;
-  if (draft.memory?.mode && draft.memory.mode !== "none") return true;
   if ((draft.contextSources ?? []).length > 0) return true;
   return false;
 }
@@ -641,7 +639,7 @@ export function RuleEditorPanel({
   const modelValue = draft.modelConfig?.orchestratorModel ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
   const outputs = draft.outputs ?? { disposition: "comment-only" as const, createArtifact: true };
   const verification = draft.verification ?? { verifyBeforePublish: false, mode: "intervention" as const };
-  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo", "memory", "mission"];
+  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo", "mission"];
   const permissionMeta = permissionControlsForModel(modelValue.modelId);
   const currentPermission = permissionMeta
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
@@ -930,16 +928,13 @@ export function RuleEditorPanel({
               <div className="space-y-3">
                 <Toggle
                   label="Include project context"
-                  hint="Memory + procedures from this project"
+                  hint="Linked docs and project paths"
                   checked={includeProjectContext}
                   onChange={(next) => {
                     setDraft({
                       ...draft,
                       includeProjectContext: next,
-                      memory: { mode: next ? "automation-plus-project" : "none" },
-                      contextSources: next
-                        ? (draft.contextSources?.length ? draft.contextSources : [{ type: "project-memory" }])
-                        : [],
+                      contextSources: next ? (draft.contextSources?.length ? draft.contextSources : []) : [],
                     });
                   }}
                 />

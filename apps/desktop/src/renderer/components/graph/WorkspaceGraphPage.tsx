@@ -1080,7 +1080,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       return;
     }
     // Pack metadata removed in W6. Keep freshness indicators available using
-    // current timestamp snapshot while unified memory health tooling matures.
+    // current timestamp snapshots.
     setNodeTooltipPack({
       deterministicUpdatedAt: new Date().toISOString(),
       narrativeUpdatedAt: null

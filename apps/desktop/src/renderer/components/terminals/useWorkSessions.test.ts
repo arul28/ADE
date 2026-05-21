@@ -389,6 +389,73 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.selectedItemId).toBe("new-pty-session");
   });
 
+  it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      viewMode: "tabs" as const,
+      draftKind: "cli" as const,
+      laneFilter: "all",
+      statusFilter: "all" as const,
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "new-pty-session",
+      ptyId: "pty-1",
+      pid: 1234,
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockResolvedValueOnce([
+      makeSession("new-pty-session", "lane-1", {
+        ptyId: null,
+        title: "Persisted row before pty id backfill",
+        toolType: null,
+        runtimeState: null,
+      }),
+    ]);
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Dina prompt",
+      });
+    });
+
+    expect(result.current.sessions).toEqual([
+      expect.objectContaining({
+        id: "new-pty-session",
+        ptyId: "pty-1",
+        title: "Persisted row before pty id backfill",
+        toolType: "codex",
+        runtimeState: "running",
+        status: "running",
+      }),
+    ]);
+    expect(workState.openItemIds).toContain("new-pty-session");
+    expect(workState.activeItemId).toBe("new-pty-session");
+  });
+
   it("showDraftKind: clears the active session and re-enters chat draft mode without closing tabs", () => {
     const previousState = {
       openItemIds: ["session-1", "session-2"],

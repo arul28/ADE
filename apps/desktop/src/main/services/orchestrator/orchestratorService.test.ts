@@ -45,8 +45,6 @@ async function createFixture(args: {
   conflictService?: any;
   projectConfigService?: Record<string, unknown> | null;
   aiIntegrationService?: Record<string, unknown> | null;
-  memoryService?: Record<string, unknown> | null;
-  memoryBriefingService?: Record<string, unknown> | null;
   onEvent?: (event: any) => void;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-orchestrator-"));
@@ -155,8 +153,6 @@ async function createFixture(args: {
     ptyService,
     projectConfigService: (args.projectConfigService ?? null) as any,
     aiIntegrationService: (args.aiIntegrationService ?? null) as any,
-    memoryService: (args.memoryService ?? null) as any,
-    memoryBriefingService: (args.memoryBriefingService ?? null) as any,
     onEvent: args.onEvent,
   });
 
@@ -7586,15 +7582,10 @@ describe("orchestratorService", () => {
       structuredOutput: { ok: true },
       sessionId: null
     }));
-    const memoryService = {
-      writeMemory: vi.fn(),
-      getMemoryBudget: vi.fn(() => []),
-    };
     const fixture = await createFixture({
       aiIntegrationService: {
         executeTask
-      },
-      memoryService,
+      }
     });
     try {
       const started = fixture.service.startRun({
@@ -7630,226 +7621,8 @@ describe("orchestratorService", () => {
           runId: started.run.id,
           stepId: step.id,
           attemptId: attempt.id,
-          memoryService,
         })
       );
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("passes explicit employee agent memory context into in-process worker briefings", async () => {
-    const executeTask = vi.fn(async () => ({
-      text: "api/local execution completed",
-      structuredOutput: { ok: true },
-      sessionId: null
-    }));
-    const buildBriefing = vi.fn(async () => ({
-      project: [],
-      mission: [],
-      sharedFacts: [],
-      episodic: [],
-      agent: [],
-    }));
-    const fixture = await createFixture({
-      aiIntegrationService: {
-        executeTask,
-      },
-      memoryService: {
-        writeMemory: vi.fn(),
-        getMemoryBudget: vi.fn(() => []),
-      },
-      memoryBriefingService: {
-        buildBriefing,
-      },
-    });
-    try {
-      const started = fixture.service.startRun({
-        missionId: fixture.missionId,
-        metadata: {
-          employeeAgentId: "employee-42",
-        },
-        steps: [
-          {
-            stepKey: "api-worker-memory",
-            title: "API worker memory",
-            stepIndex: 0,
-            laneId: fixture.laneId,
-            executorKind: "opencode",
-            metadata: {
-              modelId: "opencode/openai/gpt-5.4",
-            },
-          },
-        ],
-      });
-      const step = fixture.service.listSteps(started.run.id)[0];
-      if (!step) throw new Error("Missing step");
-
-      const attempt = await fixture.service.startAttempt({
-        runId: started.run.id,
-        stepId: step.id,
-        ownerId: "owner",
-      });
-
-      expect(attempt.status).toBe("succeeded");
-      expect(buildBriefing).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: fixture.projectId,
-          missionId: fixture.missionId,
-          runId: started.run.id,
-          agentId: "employee-42",
-          includeAgentMemory: true,
-          taskDescription: "API worker memory",
-          mode: "mission_worker",
-        }),
-      );
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("passes explicit employee agent memory context into CLI-backed worker briefings", async () => {
-    const buildBriefing = vi.fn(async () => ({
-      project: [],
-      mission: [],
-      sharedFacts: [],
-      episodic: [],
-      agent: [],
-    }));
-    const fixture = await createFixture({
-      memoryService: {
-        writeMemory: vi.fn(),
-        getMemoryBudget: vi.fn(() => []),
-      },
-      memoryBriefingService: {
-        buildBriefing,
-      },
-    });
-    try {
-      fixture.service.registerExecutorAdapter({
-        kind: "opencode",
-        start: async () => ({
-          status: "completed",
-          result: {
-            schema: "ade.orchestratorAttempt.v1",
-            success: true,
-            summary: "ok",
-            outputs: null,
-            warnings: [],
-            sessionId: null,
-            trackedSession: false,
-          },
-        }),
-      });
-
-      const started = fixture.service.startRun({
-        missionId: fixture.missionId,
-        metadata: {
-          employeeAgentId: "employee-84",
-        },
-        steps: [
-          {
-            stepKey: "cli-worker-memory",
-            title: "CLI worker memory",
-            stepIndex: 0,
-            laneId: fixture.laneId,
-            executorKind: "opencode",
-            metadata: {
-              modelId: "anthropic/claude-sonnet-4-6",
-            },
-          },
-        ],
-      });
-      const step = fixture.service.listSteps(started.run.id)[0];
-      if (!step) throw new Error("Missing step");
-
-      const attempt = await fixture.service.startAttempt({
-        runId: started.run.id,
-        stepId: step.id,
-        ownerId: "owner",
-      });
-
-      expect(attempt.status).toBe("succeeded");
-      expect(buildBriefing).toHaveBeenCalledWith(
-        expect.objectContaining({
-          projectId: fixture.projectId,
-          missionId: fixture.missionId,
-          runId: started.run.id,
-          agentId: "employee-84",
-          includeAgentMemory: true,
-          taskDescription: "CLI worker memory",
-          mode: "mission_worker",
-        }),
-      );
-    } finally {
-      fixture.dispose();
-    }
-  });
-
-  it("omits agent memory briefing context when a run has no explicit employee agent id", async () => {
-    const buildBriefing = vi.fn(async () => ({
-      project: [],
-      mission: [],
-      sharedFacts: [],
-      episodic: [],
-      agent: [],
-    }));
-    const fixture = await createFixture({
-      memoryService: {
-        writeMemory: vi.fn(),
-        getMemoryBudget: vi.fn(() => []),
-      },
-      memoryBriefingService: {
-        buildBriefing,
-      },
-    });
-    try {
-      fixture.service.registerExecutorAdapter({
-        kind: "opencode",
-        start: async () => ({
-          status: "completed",
-          result: {
-            schema: "ade.orchestratorAttempt.v1",
-            success: true,
-            summary: "ok",
-            outputs: null,
-            warnings: [],
-            sessionId: null,
-            trackedSession: false,
-          },
-        }),
-      });
-
-      const started = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [
-          {
-            stepKey: "cli-worker-no-employee",
-            title: "CLI worker no employee",
-            stepIndex: 0,
-            laneId: fixture.laneId,
-            executorKind: "opencode",
-            metadata: {
-              modelId: "anthropic/claude-sonnet-4-6",
-            },
-          },
-        ],
-      });
-      const step = fixture.service.listSteps(started.run.id)[0];
-      if (!step) throw new Error("Missing step");
-
-      const attempt = await fixture.service.startAttempt({
-        runId: started.run.id,
-        stepId: step.id,
-        ownerId: "owner",
-      });
-
-      expect(attempt.status).toBe("succeeded");
-      const firstBriefingCall = buildBriefing.mock.calls.at(0) as unknown[] | undefined;
-      const briefingArgs = firstBriefingCall?.[0] as Record<string, unknown> | undefined;
-      expect(briefingArgs).toBeTruthy();
-      expect(briefingArgs?.agentId).toBeUndefined();
-      expect(briefingArgs?.includeAgentMemory).toBeUndefined();
     } finally {
       fixture.dispose();
     }
@@ -9257,110 +9030,4 @@ describe("orchestratorService", () => {
     }
   });
 
-  it("promotes repeated patterns to candidate memory once with traceable sources", async () => {
-    const addCandidateMemory = vi.fn((opts: any) => ({
-      id: "candidate-memory-1",
-      ...opts
-    }));
-    const fixture = await createFixture({
-      memoryService: {
-        addCandidateMemory,
-      }
-    });
-    try {
-      const runOne = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [{ stepKey: "one", title: "One", stepIndex: 0 }]
-      });
-      const stepOne = fixture.service.listSteps(runOne.run.id)[0];
-      if (!stepOne) throw new Error("Expected step one");
-      const attemptOne = await fixture.service.startAttempt({ runId: runOne.run.id, stepId: stepOne.id, ownerId: "owner" });
-      await fixture.service.completeAttempt({
-        attemptId: attemptOne.id,
-        status: "succeeded",
-        result: {
-          schema: "ade.orchestratorAttempt.v1",
-          success: true,
-          summary: "done",
-          outputs: {},
-          warnings: [],
-          sessionId: null,
-          trackedSession: false
-        }
-      });
-      fixture.service.addReflection({
-        missionId: fixture.missionId,
-        runId: runOne.run.id,
-        stepId: stepOne.id,
-        attemptId: attemptOne.id,
-        agentRole: "implementer",
-        phase: "development",
-        signalType: "pattern",
-        observation: "Use barrel exports from index.ts",
-        recommendation: "Check index.ts first when wiring imports",
-        context: "import resolution",
-        occurredAt: "2026-03-05T01:40:00.000Z"
-      });
-      fixture.service.finalizeRun({ runId: runOne.run.id, force: true });
-      fixture.service.generateRunRetrospective({ runId: runOne.run.id });
-      expect(addCandidateMemory).not.toHaveBeenCalled();
-
-      const runTwo = fixture.service.startRun({
-        missionId: fixture.missionId,
-        steps: [{ stepKey: "two", title: "Two", stepIndex: 0 }]
-      });
-      const stepTwo = fixture.service.listSteps(runTwo.run.id)[0];
-      if (!stepTwo) throw new Error("Expected step two");
-      const attemptTwo = await fixture.service.startAttempt({ runId: runTwo.run.id, stepId: stepTwo.id, ownerId: "owner" });
-      await fixture.service.completeAttempt({
-        attemptId: attemptTwo.id,
-        status: "succeeded",
-        result: {
-          schema: "ade.orchestratorAttempt.v1",
-          success: true,
-          summary: "done",
-          outputs: {},
-          warnings: [],
-          sessionId: null,
-          trackedSession: false
-        }
-      });
-      fixture.service.addReflection({
-        missionId: fixture.missionId,
-        runId: runTwo.run.id,
-        stepId: stepTwo.id,
-        attemptId: attemptTwo.id,
-        agentRole: "implementer",
-        phase: "development",
-        signalType: "pattern",
-        observation: "Use barrel exports from index.ts",
-        recommendation: "Check index.ts first when wiring imports",
-        context: "import resolution",
-        occurredAt: "2026-03-05T01:45:00.000Z"
-      });
-      fixture.service.finalizeRun({ runId: runTwo.run.id, force: true });
-      fixture.service.generateRunRetrospective({ runId: runTwo.run.id });
-      fixture.service.generateRunRetrospective({ runId: runTwo.run.id });
-      expect(addCandidateMemory).toHaveBeenCalledTimes(1);
-
-      const patternStats = fixture.service.listRetrospectivePatternStats({ limit: 10 });
-      const stat = patternStats.find((entry) => entry.patternKey.includes("use barrel exports"));
-      expect(stat).toBeTruthy();
-      expect(stat?.occurrenceCount).toBe(2);
-      expect(stat?.promotedMemoryId).toBe("candidate-memory-1");
-
-      if (!stat) throw new Error("Expected pattern stat");
-      const sourceRows = fixture.db.all<{ count: number }>(
-        `
-          select count(*) as count
-          from orchestrator_reflection_pattern_sources
-          where pattern_stat_id = ?
-        `,
-        [stat.id]
-      );
-      expect(Number(sourceRows[0]?.count ?? 0)).toBe(2);
-    } finally {
-      fixture.dispose();
-    }
-  });
 });

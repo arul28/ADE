@@ -245,23 +245,4 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("passes runtime capability options into project runtimes", async () => {
-    const { registry, first } = createRegistry();
-    const scopeRegistry = new ProjectScopeRegistry(registry, {
-      runtimeCapabilities: {
-        memory: false,
-      },
-    });
-
-    await scopeRegistry.get(first.projectId);
-
-    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(createAdeRuntimeMock.mock.calls[0]?.[0]).toMatchObject({
-      capabilities: {
-        memory: false,
-      },
-    });
-
-    await scopeRegistry.disposeAll();
-  });
 });

@@ -3,7 +3,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import YAML from "yaml";
 import type {
-  AgentCoreMemory,
   AgentIdentity,
   AgentLinearIdentity,
   AgentRole,
@@ -41,8 +40,6 @@ type PersistedDoc<T> = {
 export type WorkerOrgNode = AgentIdentity & {
   reports: WorkerOrgNode[];
 };
-
-type CoreMemoryPatch = Partial<Omit<AgentCoreMemory, "version" | "updatedAt">>;
 
 type AppendWorkerSessionLogArgs = {
   sessionId: string;
@@ -117,28 +114,6 @@ function assertEnvRefSecretPolicy(value: unknown, pathLabel: string): void {
       }
     }
   }
-}
-
-function normalizeWorkerCoreMemory(input: unknown): AgentCoreMemory | null {
-  if (!input || typeof input !== "object") return null;
-  const source = input as Record<string, unknown>;
-  const version = Math.max(1, Math.floor(Number(source.version ?? 1)));
-  const updatedAt = typeof source.updatedAt === "string" && source.updatedAt.trim().length
-    ? source.updatedAt
-    : nowIso();
-
-  return {
-    version,
-    updatedAt,
-    projectSummary:
-      typeof source.projectSummary === "string" && source.projectSummary.trim().length
-        ? source.projectSummary.trim()
-        : "Worker context is being built through direct sessions and CTO delegation.",
-    criticalConventions: uniqueStrings(asStringArray(source.criticalConventions)),
-    userPreferences: uniqueStrings(asStringArray(source.userPreferences)),
-    activeFocus: uniqueStrings(asStringArray(source.activeFocus)),
-    notes: uniqueStrings(asStringArray(source.notes)),
-  };
 }
 
 function normalizeWorkerSessionLogEntry(input: unknown): AgentSessionLogEntry | null {
@@ -298,7 +273,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
 
   const agentDirForSlug = (slug: string): string => path.join(agentsRootDir, slug);
   const identityPathForSlug = (slug: string): string => path.join(agentDirForSlug(slug), "identity.yaml");
-  const coreMemoryPathForSlug = (slug: string): string => path.join(agentDirForSlug(slug), "core-memory.json");
   const sessionsPathForSlug = (slug: string): string => path.join(agentDirForSlug(slug), "sessions.jsonl");
   const taskSessionsPathForSlug = (slug: string): string => path.join(agentDirForSlug(slug), "task-sessions.jsonl");
 
@@ -307,10 +281,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
     const dir = agentDirForSlug(slug);
     fs.mkdirSync(dir, { recursive: true });
     writeTextAtomic(identityPathForSlug(slug), YAML.stringify(identity, { indent: 2 }));
-    if (!fs.existsSync(coreMemoryPathForSlug(slug))) {
-      const memory = makeDefaultCoreMemory(identity.name);
-      writeTextAtomic(coreMemoryPathForSlug(slug), `${JSON.stringify(memory, null, 2)}\n`);
-    }
     if (!fs.existsSync(sessionsPathForSlug(slug))) {
       fs.writeFileSync(sessionsPathForSlug(slug), "", "utf8");
     }
@@ -690,56 +660,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
     return chain;
   };
 
-  const makeDefaultCoreMemory = (name: string): AgentCoreMemory => {
-    const timestamp = nowIso();
-    return {
-      version: 1,
-      updatedAt: timestamp,
-      projectSummary: `${name} memory initialized. Capture worker-specific context and conventions here.`,
-      criticalConventions: [],
-      userPreferences: [],
-      activeFocus: [],
-      notes: [],
-    };
-  };
-
-  const getCoreMemory = (agentId: string): AgentCoreMemory => {
-    reconcileStorage();
-    const identity = getAgent(agentId, { includeDeleted: true });
-    if (!identity) throw new Error(`Unknown worker agent '${agentId}'.`);
-    const filePath = coreMemoryPathForSlug(identity.slug);
-    if (!fs.existsSync(filePath)) {
-      const next = makeDefaultCoreMemory(identity.name);
-      writeTextAtomic(filePath, `${JSON.stringify(next, null, 2)}\n`);
-      return next;
-    }
-    const parsed = safeJsonParse<unknown>(fs.readFileSync(filePath, "utf8"), null);
-    const normalized = normalizeWorkerCoreMemory(parsed);
-    if (normalized) return normalized;
-    const fallback = makeDefaultCoreMemory(identity.name);
-    writeTextAtomic(filePath, `${JSON.stringify(fallback, null, 2)}\n`);
-    return fallback;
-  };
-
-  const updateCoreMemory = (agentId: string, patch: CoreMemoryPatch): AgentCoreMemory => {
-    const current = getCoreMemory(agentId);
-    const timestamp = nowIso();
-    const next: AgentCoreMemory = {
-      ...current,
-      version: current.version + 1,
-      updatedAt: timestamp,
-      ...(typeof patch.projectSummary === "string" ? { projectSummary: patch.projectSummary.trim() } : {}),
-      ...(patch.criticalConventions ? { criticalConventions: uniqueStrings(asStringArray(patch.criticalConventions)) } : {}),
-      ...(patch.userPreferences ? { userPreferences: uniqueStrings(asStringArray(patch.userPreferences)) } : {}),
-      ...(patch.activeFocus ? { activeFocus: uniqueStrings(asStringArray(patch.activeFocus)) } : {}),
-      ...(patch.notes ? { notes: uniqueStrings(asStringArray(patch.notes)) } : {}),
-    };
-    const identity = getAgent(agentId, { includeDeleted: true });
-    if (!identity) throw new Error(`Unknown worker agent '${agentId}'.`);
-    writeTextAtomic(coreMemoryPathForSlug(identity.slug), `${JSON.stringify(next, null, 2)}\n`);
-    return next;
-  };
-
   const listSessionLogs = (agentId: string, limit = 20): AgentSessionLogEntry[] => {
     reconcileStorage();
     const identity = getAgent(agentId, { includeDeleted: true });
@@ -781,7 +701,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
   const buildReconstructionContext = (agentId: string, recentLimit = 8): string => {
     const identity = getAgent(agentId, { includeDeleted: true });
     if (!identity) return "";
-    const memory = getCoreMemory(agentId);
     const sessions = listSessionLogs(agentId, recentLimit);
     const sections: string[] = [];
     sections.push("Worker Identity");
@@ -790,21 +709,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
     if (identity.title) sections.push(`- Title: ${identity.title}`);
     sections.push(`- Capabilities: ${identity.capabilities.join("; ") || "none listed"}`);
     sections.push(`- Adapter: ${identity.adapterType}`);
-    sections.push("");
-    sections.push("Core Memory");
-    sections.push(`- Project summary: ${memory.projectSummary}`);
-    if (memory.criticalConventions.length) {
-      sections.push(`- Critical conventions: ${memory.criticalConventions.join("; ")}`);
-    }
-    if (memory.userPreferences.length) {
-      sections.push(`- User preferences: ${memory.userPreferences.join("; ")}`);
-    }
-    if (memory.activeFocus.length) {
-      sections.push(`- Active focus: ${memory.activeFocus.join("; ")}`);
-    }
-    if (memory.notes.length) {
-      sections.push(`- Notes: ${memory.notes.join("; ")}`);
-    }
     if (sessions.length) {
       sections.push("");
       sections.push("Recent Sessions");
@@ -838,8 +742,6 @@ export function createWorkerAgentService(args: WorkerAgentServiceArgs) {
     removeAgent,
     listOrgTree,
     getChainOfCommand,
-    getCoreMemory,
-    updateCoreMemory,
     listSessionLogs,
     appendSessionLog,
     buildReconstructionContext,

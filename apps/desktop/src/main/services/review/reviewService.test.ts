@@ -127,7 +127,6 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       severity text,
       reason text,
       note text,
-      embedding_json text,
       source_finding_id text,
       hit_count integer not null default 0,
       created_at text not null,

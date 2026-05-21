@@ -1,17 +1,15 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation } from "react-router-dom";
-import { Brain, GearSix, Stack, Database, FolderSimple, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
+import { Brain, GearSix, Stack, FolderSimple, Plugs, Palette, DeviceMobile } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
-import { MemoryHealthTab } from "../settings/MemoryHealthTab";
 import { AiSettingsSection } from "../settings/AiSettingsSection";
 import { WorkspaceSettingsSection } from "../settings/WorkspaceSettingsSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
-import { useAppStore } from "../../state/appStore";
 
 const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
@@ -20,7 +18,6 @@ const SECTIONS = [
   { id: "ai", label: "AI", icon: Brain },
   { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile },
   { id: "integrations", label: "Integrations", icon: Plugs },
-  { id: "memory", label: "Memory", icon: Database },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
 ] as const;
 
@@ -52,16 +49,10 @@ function padIndex(i: number): string {
 export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const projectBinding = useAppStore((s) => s.projectBinding);
-  const memoryAvailable = projectBinding?.kind !== "remote";
-  const visibleSections = memoryAvailable
-    ? SECTIONS
-    : SECTIONS.filter((entry) => entry.id !== "memory");
   const tabParam = searchParams.get("tab");
-  const canonicalTab = tabParam && visibleSections.some((s) => s.id === tabParam)
+  const canonicalTab = tabParam && SECTIONS.some((s) => s.id === tabParam)
     ? (tabParam as SectionId)
     : tabParam && TAB_ALIASES[tabParam]
-      && (TAB_ALIASES[tabParam] !== "memory" || memoryAvailable)
       ? TAB_ALIASES[tabParam]
       : null;
   const validTab = canonicalTab;
@@ -74,10 +65,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     if (validTab && validTab !== section) {
       setSection(validTab);
     }
-    if (!memoryAvailable && section === "memory") {
-      setSection("general");
-    }
-  }, [active, memoryAvailable, validTab, section]);
+  }, [active, validTab, section]);
 
   useEffect(() => {
     if (!active) return;
@@ -124,7 +112,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           SETTINGS
         </div>
 
-        {visibleSections.map((s, i) => {
+        {SECTIONS.map((s, i) => {
           const isActive = section === s.id;
           const isHovered = hoveredId === s.id;
 
@@ -184,7 +172,6 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "ai" && <AiSettingsSection />}
         {section === "mobile-push" && <MobilePushPanel />}
         {section === "integrations" && <IntegrationsSettingsSection />}
-        {section === "memory" && <MemoryHealthTab />}
         {section === "lane-templates" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             <LaneTemplatesSection />

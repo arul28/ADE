@@ -16,7 +16,6 @@ const ENTRIES: Entry[] = [
   { name: "iOS app", page: "28", href: "/getting-started/install" },
   { name: "Linear sync", page: "18", href: "/cto/linear" },
   { name: "Local models", page: "23", href: "/configuration/ai-providers" },
-  { name: "Memory (unified)", page: "16", href: "/cto/memory" },
   { name: "Merge conflicts", page: "26", href: "/tools/conflicts" },
   { name: "Missions", page: "14", href: "/missions/overview" },
   { name: "Mobile sync", page: "28", href: "/tools/project-home" },

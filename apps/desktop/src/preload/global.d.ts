@@ -154,17 +154,6 @@ import type {
   BudgetCapScope,
   BudgetCapProvider,
   BudgetCapConfig,
-  ChangeDigest,
-  KnowledgeSyncStatus,
-  MemoryHealthStats,
-  MemoryEntryDto,
-  MemoryConsolidationResult,
-  MemoryConsolidationStatusEventPayload,
-  MemoryLifecycleSweepResult,
-  MemorySweepStatusEventPayload,
-  ProcedureDetail,
-  ProcedureListItem,
-  SkillIndexEntry,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -200,12 +189,10 @@ import type {
   ApnsBridgeSendTestPushResult,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
-  CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
   AgentIdentity,
-  AgentCoreMemory,
   AgentSessionLogEntry,
   AgentConfigRevision,
   AgentBudgetSnapshot,
@@ -224,8 +211,6 @@ import type {
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
   CtoListAgentRunsArgs,
-  CtoGetAgentCoreMemoryArgs,
-  CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
   CtoUpdateIdentityArgs,
   CtoOnboardingState,
@@ -2284,97 +2269,11 @@ declare global {
         setLevel: (level: number) => void;
         getFactor: () => number;
       };
-      memory?: {
-        add: (args: {
-          projectId?: string;
-          scope?: "user" | "project" | "lane" | "mission" | "agent";
-          scopeOwnerId?: string;
-          category:
-            | "fact"
-            | "preference"
-            | "pattern"
-            | "decision"
-            | "gotcha"
-            | "convention";
-          content: string;
-          importance?: "low" | "medium" | "high";
-          sourceRunId?: string;
-        }) => Promise<unknown>;
-        pin: (args: { id: string }) => Promise<void>;
-        updateCore: (args: CtoUpdateCoreMemoryArgs) => Promise<CtoSnapshot>;
-        getBudget: (args?: {
-          projectId?: string;
-          level?: string;
-          scope?: "user" | "project" | "lane" | "mission" | "agent";
-          scopeOwnerId?: string;
-        }) => Promise<unknown[]>;
-        getCandidates: (args?: {
-          projectId?: string;
-          limit?: number;
-        }) => Promise<unknown[]>;
-        promote: (args: { id: string }) => Promise<void>;
-        promoteMissionEntry: (args: {
-          id: string;
-          missionId: string;
-        }) => Promise<MemoryEntryDto | null>;
-        archive: (args: { id: string }) => Promise<void>;
-        search: (args: {
-          query: string;
-          projectId?: string;
-          scope?: "user" | "project" | "lane" | "mission" | "agent";
-          scopeOwnerId?: string;
-          limit?: number;
-          mode?: "lexical" | "hybrid";
-          status?: "promoted" | "candidate" | "archived" | "all";
-        }) => Promise<unknown[]>;
-        list: (args?: {
-          scope?: "project" | "agent" | "mission";
-          tier?: 1 | 2 | 3;
-          status?: "promoted" | "candidate" | "archived" | "all";
-          limit?: number;
-        }) => Promise<MemoryEntryDto[]>;
-        listMissionEntries: (args: {
-          missionId: string;
-          runId?: string | null;
-          status?: "promoted" | "candidate" | "archived" | "all";
-        }) => Promise<MemoryEntryDto[]>;
-        listProcedures: (args?: {
-          status?: "promoted" | "candidate" | "archived" | "all";
-          scope?: "project" | "agent" | "mission";
-          query?: string;
-        }) => Promise<ProcedureListItem[]>;
-        getProcedureDetail: (args: {
-          id: string;
-        }) => Promise<ProcedureDetail | null>;
-        exportProcedureSkill: (args: {
-          id: string;
-          name?: string;
-        }) => Promise<{ path: string; skill: SkillIndexEntry | null } | null>;
-        listIndexedSkills: () => Promise<SkillIndexEntry[]>;
-        reindexSkills: (args?: {
-          paths?: string[];
-        }) => Promise<SkillIndexEntry[]>;
-        syncKnowledge: () => Promise<ChangeDigest | null>;
-        getKnowledgeSyncStatus: () => Promise<KnowledgeSyncStatus>;
-        getHealthStats: () => Promise<MemoryHealthStats>;
-        downloadEmbeddingModel: () => Promise<MemoryHealthStats>;
-        runSweep: () => Promise<MemoryLifecycleSweepResult>;
-        onSweepStatus: (
-          cb: (payload: MemorySweepStatusEventPayload) => void,
-        ) => () => void;
-        runConsolidation: () => Promise<MemoryConsolidationResult>;
-        onConsolidationStatus: (
-          cb: (payload: MemoryConsolidationStatusEventPayload) => void,
-        ) => () => void;
-      };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;
         ensureSession: (
           args?: CtoEnsureSessionArgs,
         ) => Promise<AgentChatSession>;
-        updateCoreMemory: (
-          args: CtoUpdateCoreMemoryArgs,
-        ) => Promise<CtoSnapshot>;
         listSessionLogs: (
           args?: CtoListSessionLogsArgs,
         ) => Promise<CtoSessionLogEntry[]>;
@@ -2401,12 +2300,6 @@ declare global {
         listAgentRuns: (
           args?: CtoListAgentRunsArgs,
         ) => Promise<WorkerAgentRun[]>;
-        getAgentCoreMemory: (
-          args: CtoGetAgentCoreMemoryArgs,
-        ) => Promise<AgentCoreMemory>;
-        updateAgentCoreMemory: (
-          args: CtoUpdateAgentCoreMemoryArgs,
-        ) => Promise<AgentCoreMemory>;
         listAgentSessionLogs: (
           args: CtoListAgentSessionLogsArgs,
         ) => Promise<AgentSessionLogEntry[]>;

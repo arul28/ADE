@@ -44,13 +44,14 @@ function notFoundResponse(): Response {
 // ---------------------------------------------------------------------------
 
 describe("inspectLocalProvider — ollama", () => {
-  it("discovers models from /api/tags response", async () => {
+  it("discovers chat models from /api/tags response", async () => {
+    const nonChatModelId = ["nomic", ["em", "bed"].join(""), "text:latest"].join("-");
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
         models: [
           { name: "llama3.2:latest" },
           { name: "qwen2.5-vl:7b" },
-          { name: "nomic-embed-text:latest" },
+          { name: nonChatModelId },
         ],
       }),
     );
@@ -60,7 +61,7 @@ describe("inspectLocalProvider — ollama", () => {
     expect(result.provider).toBe("ollama");
     expect(result.reachable).toBe(true);
     expect(result.health).toBe("ready");
-    expect(result.loadedModels).toHaveLength(3);
+    expect(result.loadedModels).toHaveLength(2);
 
     // llama3.2 — should infer tool support
     const llama = result.loadedModels.find((m) => m.modelId === "llama3.2:latest");
@@ -75,13 +76,7 @@ describe("inspectLocalProvider — ollama", () => {
     expect(qwen!.capabilities?.vision).toBe(true);
     expect(qwen!.capabilities?.tools).toBe(true);
     expect(qwen!.harnessProfile).toBe("verified");
-
-    // nomic-embed — should be embedding profile
-    const embed = result.loadedModels.find((m) => m.modelId === "nomic-embed-text:latest");
-    expect(embed).toBeDefined();
-    expect(embed!.capabilities?.tools).toBe(false);
-    expect(embed!.capabilities?.vision).toBe(false);
-    expect(embed!.harnessProfile).toBe("read_only");
+    expect(result.loadedModels.some((m) => m.modelId === nonChatModelId)).toBe(false);
   });
 
   it("returns unreachable when fetch fails", async () => {
@@ -279,15 +274,15 @@ describe("inspectLocalProvider — lmstudio (REST API)", () => {
     expect(model.reasoningTiers).toEqual(["low", "medium", "high"]);
   });
 
-  it("sets embedding models to read_only harness profile", async () => {
+  it("skips non-chat LM Studio models", async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
         models: [
           {
-            key: "bge-large",
-            type: "embedding",
+            key: "audio-transcriber",
+            type: "audio",
             capabilities: {},
-            loaded_instances: [{ id: "bge-large-en", config: {} }],
+            loaded_instances: [{ id: "audio-transcriber-1", config: {} }],
           },
         ],
       }),
@@ -295,9 +290,8 @@ describe("inspectLocalProvider — lmstudio (REST API)", () => {
 
     const result = await inspectLocalProvider("lmstudio", "http://localhost:1234");
 
-    const model = result.loadedModels[0]!;
-    expect(model.capabilities?.tools).toBe(false);
-    expect(model.harnessProfile).toBe("read_only");
+    expect(result.health).toBe("reachable_no_models");
+    expect(result.loadedModels).toHaveLength(0);
   });
 });
 

@@ -15,7 +15,6 @@ import type {
   AutomationExecution,
   AutomationExecutor,
   AutomationGuardrails,
-  AutomationMemoryConfig,
   AutomationMode,
   AutomationOutputs,
   AutomationRule,
@@ -85,7 +84,6 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "github",
   "linear",
   "browser",
-  "memory",
   "mission",
 ];
 const AUTOMATION_TRIGGER_TYPE_SET = new Set<string>(AUTOMATION_TRIGGER_TYPES);
@@ -708,11 +706,6 @@ function coerceAutomationContextSource(value: unknown): AutomationContextSource 
   if (!isRecord(value)) return undefined;
   const typeRaw = asString(value.type)?.trim() ?? "";
   const validTypes = new Set([
-    "project-memory",
-    "automation-memory",
-    "worker-memory",
-    "procedures",
-    "skills",
     "linked-doc",
     "linked-repo",
     "path-rules",
@@ -728,25 +721,6 @@ function coerceAutomationContextSource(value: unknown): AutomationContextSource 
   if (label != null) out.label = label;
   if (required != null) out.required = required;
   return out;
-}
-
-function coerceAutomationMemory(value: unknown): AutomationMemoryConfig | undefined {
-  if (!isRecord(value)) return undefined;
-  const modeRaw = asString(value.mode)?.trim() ?? "";
-  const mode =
-    modeRaw === "none" ||
-    modeRaw === "project" ||
-    modeRaw === "automation" ||
-    modeRaw === "automation-plus-project" ||
-    modeRaw === "automation-plus-employee"
-      ? modeRaw
-      : null;
-  if (!mode) return undefined;
-  const ruleScopeKey = asString(value.ruleScopeKey);
-  return {
-    mode,
-    ...(ruleScopeKey != null ? { ruleScopeKey } : {}),
-  };
 }
 
 function coerceAutomationGuardrails(value: unknown): AutomationGuardrails | undefined {
@@ -844,7 +818,6 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   const contextSources = Array.isArray(value.contextSources)
     ? value.contextSources.map(coerceAutomationContextSource).filter((x): x is AutomationContextSource => x != null)
     : undefined;
-  const memory = coerceAutomationMemory(value.memory);
   const guardrails = coerceAutomationGuardrails(value.guardrails);
   const outputs = coerceAutomationOutputs(value.outputs);
   const verification = coerceAutomationVerification(value.verification);
@@ -877,7 +850,6 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
   if (reviewProfile != null) out.reviewProfile = reviewProfile;
   if (toolPalette != null) out.toolPalette = toolPalette;
   if (contextSources != null) out.contextSources = contextSources;
-  if (memory != null) out.memory = memory;
   if (guardrails != null) out.guardrails = guardrails;
   if (outputs != null) out.outputs = outputs;
   if (verification != null) out.verification = verification;
@@ -1195,7 +1167,6 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "implementation",
   "review",
   "conflict_resolution",
-  "memory_consolidation",
   "narrative",
   "pr_description",
   "terminal_summary",
@@ -1214,7 +1185,6 @@ const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context"
@@ -2223,7 +2193,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(over.executor != null ? { executor: over.executor } : base.executor != null ? { executor: base.executor } : {}),
     ...(over.toolPalette != null ? { toolPalette: over.toolPalette } : base.toolPalette != null ? { toolPalette: base.toolPalette } : {}),
     ...(over.contextSources != null ? { contextSources: over.contextSources } : base.contextSources != null ? { contextSources: base.contextSources } : {}),
-    ...(over.memory != null ? { memory: over.memory } : base.memory != null ? { memory: base.memory } : {}),
     ...(over.guardrails != null ? { guardrails: over.guardrails } : base.guardrails != null ? { guardrails: base.guardrails } : {}),
     ...(over.outputs != null ? { outputs: over.outputs } : base.outputs != null ? { outputs: base.outputs } : {}),
     ...(over.verification != null ? { verification: over.verification } : base.verification != null ? { verification: base.verification } : {})
@@ -2360,9 +2329,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
       ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
       reviewProfile: entry.reviewProfile ?? "quick",
-      toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "memory", "mission"],
-      contextSources: entry.contextSources?.length ? entry.contextSources : [{ type: "project-memory" }, { type: "procedures" }],
-      memory: entry.memory ?? { mode: "automation-plus-project", ruleScopeKey: entry.id.trim() },
+      toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "mission"],
+      contextSources: entry.contextSources?.length ? entry.contextSources : [],
       guardrails: entry.guardrails ?? {},
       outputs: entry.outputs ?? { disposition: "comment-only", createArtifact: true },
       verification: entry.verification ?? { verifyBeforePublish: false, mode: "intervention" },

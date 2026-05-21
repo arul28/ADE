@@ -39,7 +39,6 @@ ade linear sync --text
 ## Operating rules
 
 - Keep worker briefs small and specific.
-- Use project memory for non-obvious conventions and past pitfalls, not for information derivable from code or git.
+- Inspect source docs and code for non-obvious conventions and past pitfalls.
 - When polling long-running mission/worker state, return compact summaries instead of pasting full logs.
 - If a worker result conflicts with repo evidence, inspect the files yourself before merging its conclusion.
-

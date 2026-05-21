@@ -432,7 +432,7 @@ describe("buildCoordinatorPromptInspector", () => {
       projectContext: {
         projectRoot: "/Users/dev/myproject",
         projectDocPaths: ["docs/ARCHITECTURE.md", "docs/PRD.md"],
-        projectKnowledge: ["Uses TypeScript with strict mode"],
+        projectHints: ["Uses TypeScript with strict mode"],
         fileTree: "src/\n  main/\n  renderer/",
       },
     });

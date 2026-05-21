@@ -43,7 +43,6 @@ import type { createPrSummaryService } from "../../desktop/src/main/services/prs
 import type { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
 import { createPathToMergeOrchestrator } from "../../desktop/src/main/services/prs/pathToMergeOrchestrator";
-import { createMemoryService } from "../../desktop/src/main/services/memory/memoryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
@@ -157,9 +156,6 @@ export type AdeRuntime = {
   projectRoot: string;
   workspaceRoot: string;
   projectId: string;
-  capabilities?: {
-    memory?: boolean;
-  };
   project: { rootPath: string; displayName: string; baseRef: string };
   paths: AdeRuntimePaths;
   logger: Logger;
@@ -198,7 +194,6 @@ export type AdeRuntime = {
   issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   pathToMergeOrchestrator?: ReturnType<typeof createPathToMergeOrchestrator> | null;
   fileService?: ReturnType<typeof createFileService> | null;
-  memoryService: ReturnType<typeof createMemoryService>;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
   workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
@@ -391,9 +386,6 @@ export async function createAdeRuntime(args: {
   chatRuntime?: "headless-stub" | "agent";
   runtimeProfile?: "full" | "chat";
   syncRuntime?: AdeRuntimeSyncOptions;
-  capabilities?: {
-    memory?: boolean;
-  };
 } | string): Promise<AdeRuntime> {
   const resolvedArgs = typeof args === "string"
     ? { projectRoot: args, workspaceRoot: args }
@@ -709,7 +701,6 @@ export async function createAdeRuntime(args: {
     ON orchestrator_evaluations(run_id, evaluated_at)
   `);
 
-  const memoryService = createMemoryService(db);
   const ctoStateService = createCtoStateService({
     db,
     projectId,
@@ -773,7 +764,6 @@ export async function createAdeRuntime(args: {
     ptyService,
     prService: undefined,
     projectConfigService,
-    memoryService,
     onEvent: (e) => {
       pushEvent("orchestrator", e as unknown as Record<string, unknown>);
       if (aiCoordinatorWakeReasons.has(e.reason)) {
@@ -811,7 +801,6 @@ export async function createAdeRuntime(args: {
     aiIntegrationService,
     projectConfigService,
     missionBudgetService,
-    humanWorkDigestService: null,
     computerUseArtifactBrokerService,
   });
   const iosSimulatorService = chatOnlyRuntime
@@ -939,8 +928,6 @@ export async function createAdeRuntime(args: {
       projectRoot,
       adeDir: paths.adeDir,
       transcriptsDir: paths.transcriptsDir,
-      projectId,
-      memoryService,
       fileService: headlessLinearServices.fileService,
       workerAgentService,
       workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
@@ -1017,7 +1004,6 @@ export async function createAdeRuntime(args: {
         testService,
         issueInventoryService,
         prService: headlessLinearServices.prService,
-        embeddingService: null,
         onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
       })
     : null;
@@ -1164,9 +1150,6 @@ export async function createAdeRuntime(args: {
     projectRoot,
     workspaceRoot,
     projectId,
-    capabilities: {
-      memory: resolvedArgs.capabilities?.memory ?? true,
-    },
     project,
     paths,
     logger,
@@ -1202,7 +1185,6 @@ export async function createAdeRuntime(args: {
     agentChatService,
     issueInventoryService,
     pathToMergeOrchestrator,
-    memoryService,
     ctoStateService,
     workerAgentService,
     adeProjectService,

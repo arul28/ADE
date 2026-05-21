@@ -89,18 +89,12 @@ describe("kvDb mission schema migration", () => {
       ])
     );
 
-    expect(listColumnNames(db, "memories")).toEqual(
-      expect.arrayContaining(["status", "agent_id", "confidence", "promoted_at", "source_run_id"])
-    );
-
     const expectedIndexes = [
       "idx_missions_project_updated",
       "idx_mission_steps_mission_index",
       "idx_mission_events_mission_created",
       "idx_mission_artifacts_mission_created",
       "idx_mission_interventions_mission_status",
-      "idx_memories_status",
-      "idx_memories_agent"
     ];
 
     for (const indexName of expectedIndexes) {

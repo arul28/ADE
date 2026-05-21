@@ -738,7 +738,7 @@ describe("AgentChatPane companion drawers", () => {
       timestamp: "2026-05-12T00:00:00.000Z",
       event: {
         type: "text",
-        text: "Persistent memory view text",
+        text: "Persistent identity view text",
         itemId: "persistent-text",
         turnId: "turn-1",
       },
@@ -752,11 +752,11 @@ describe("AgentChatPane companion drawers", () => {
       },
     );
 
-    expect(await screen.findByText("Persistent memory view text")).toBeTruthy();
+    expect(await screen.findByText("Persistent identity view text")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Clear view" }));
 
     await waitFor(() => {
-      expect(screen.queryByText("Persistent memory view text")).toBeNull();
+      expect(screen.queryByText("Persistent identity view text")).toBeNull();
     });
     expect(globalThis.window.ade.agentChat.delete).not.toHaveBeenCalled();
   });
@@ -2661,11 +2661,13 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         profile: "codex",
         title: "Run the unified CLI launch",
-        command: "codex",
+        startupDelayMs: 180,
         tracked: true,
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.command).toBeUndefined();
+    expect(launchArgs.args).toBeUndefined();
     expect(launchArgs.startupCommand).toContain("ADE session guidance");
     expect(launchArgs.startupCommand).toContain("Run the unified CLI launch.");
     expect(create).not.toHaveBeenCalled();

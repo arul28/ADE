@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// CTO Worker detail drill-down. Header, activity, budget, core memory,
-/// revisions. Mirrors screen-worker-detail.jsx.
+/// CTO Worker detail drill-down. Header, activity, budget, revisions.
+/// Mirrors screen-worker-detail.jsx.
 struct CtoWorkerDetailScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismissView
@@ -12,12 +12,10 @@ struct CtoWorkerDetailScreen: View {
   @State private var agent: AgentIdentity?
   @State private var budgetSnapshotWorker: AgentBudgetSnapshotWorker?
   @State private var companyCapCents: Int?
-  @State private var coreMemory: AgentCoreMemory?
   @State private var runs: [WorkerAgentRun] = []
   @State private var revisions: [AgentConfigRevision] = []
   @State private var isLoading = false
   @State private var errorMessage: String?
-  @State private var memoryLoadError: String?
 
   @State private var pendingStatusMutation = false
   @State private var pendingWakeup = false
@@ -47,8 +45,6 @@ struct CtoWorkerDetailScreen: View {
         activitySection
 
         budgetSection
-
-        coreMemorySection
 
         revisionsSection
 
@@ -316,100 +312,6 @@ struct CtoWorkerDetailScreen: View {
     }
   }
 
-  // MARK: - Core memory
-
-  private var coreMemorySection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      CtoSectionHeader(title: "Core memory")
-        .padding(.horizontal, 20)
-
-      VStack(alignment: .leading, spacing: 0) {
-        if let memoryLoadError {
-          Text("Core memory unavailable: \(memoryLoadError)")
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.vertical, 11)
-            .padding(.horizontal, 14)
-
-          Divider().opacity(0.08)
-        }
-
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Specialization")
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .textCase(.uppercase)
-            .tracking(0.4)
-          Text(specializationText)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.vertical, 11)
-        .padding(.horizontal, 14)
-
-        Divider().opacity(0.08)
-
-        VStack(alignment: .leading, spacing: 6) {
-          Text("Conventions (\(coreMemory?.criticalConventions.count ?? 0))")
-            .font(.caption2.monospaced().weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .textCase(.uppercase)
-            .tracking(0.4)
-          if let conventions = coreMemory?.criticalConventions, !conventions.isEmpty {
-            FlowLayout(spacing: 5) {
-              ForEach(conventions, id: \.self) { item in
-                LearnedChip(text: item)
-              }
-            }
-          } else {
-            Text("No conventions captured yet.")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .padding(.vertical, 11)
-        .padding(.horizontal, 14)
-
-        if let focus = coreMemory?.activeFocus, !focus.isEmpty {
-          Divider().opacity(0.08)
-          VStack(alignment: .leading, spacing: 6) {
-            Text("Focus (\(focus.count))")
-              .font(.caption2.monospaced().weight(.semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .textCase(.uppercase)
-              .tracking(0.4)
-            FlowLayout(spacing: 5) {
-              ForEach(focus, id: \.self) { item in
-                LearnedChip(text: item)
-              }
-            }
-          }
-          .padding(.vertical, 11)
-          .padding(.horizontal, 14)
-        }
-      }
-      .background(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .fill(ADEColor.glassBackground)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-      .padding(.horizontal, 16)
-    }
-  }
-
-  private var specializationText: String {
-    let summary = coreMemory?.projectSummary.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if !summary.isEmpty { return summary }
-    // Fall back to the worker's own systemPromptExtension when memory is empty.
-    let prompt = agent?.systemPromptExtension?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return prompt.isEmpty ? "No specialization captured." : prompt
-  }
-
   // MARK: - Revisions
 
   private var revisionsSection: some View {
@@ -508,12 +410,11 @@ struct CtoWorkerDetailScreen: View {
 
     async let agentsR = CtoAsyncResult { try await syncService.fetchCtoAgents() }
     async let budgetR = CtoAsyncResult { try await syncService.fetchCtoBudget() }
-    async let memoryR = CtoAsyncResult { try await syncService.fetchAgentCoreMemory(agentId: agentId) }
     async let runsR = CtoAsyncResult { try await syncService.listAgentRuns(agentId: agentId, limit: 20) }
     async let revisionsR = CtoAsyncResult { try await syncService.listAgentRevisions(agentId: agentId, limit: 10) }
 
-    let (agentsResult, budgetResult, memoryResult, runsResult, revisionsResult) =
-      await (agentsR, budgetR, memoryR, runsR, revisionsR)
+    let (agentsResult, budgetResult, runsResult, revisionsResult) =
+      await (agentsR, budgetR, runsR, revisionsR)
 
     if case .success(let fetched) = agentsResult {
       agent = fetched.first(where: { $0.id == agentId })
@@ -526,16 +427,6 @@ struct CtoWorkerDetailScreen: View {
       companyCapCents = snap.companyCapMonthlyCents
     }
 
-    switch memoryResult {
-    case .success(let mem):
-      coreMemory = mem
-      memoryLoadError = nil
-    case .failure(let err):
-      // Clear the previous snapshot so the unavailable error renders alone instead of
-      // showing stale memory content under a fresh failure banner.
-      coreMemory = nil
-      memoryLoadError = err.localizedDescription
-    }
     if case .success(let fetched) = runsResult { runs = fetched }
     if case .success(let fetched) = revisionsResult { revisions = fetched }
   }

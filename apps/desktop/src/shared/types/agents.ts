@@ -105,16 +105,6 @@ export type WorkerTemplate = {
   model?: string;
 };
 
-export type AgentCoreMemory = {
-  version: number;
-  updatedAt: string;
-  projectSummary: string;
-  criticalConventions: string[];
-  userPreferences: string[];
-  activeFocus: string[];
-  notes: string[];
-};
-
 export type AgentSessionLogEntry = {
   id: string;
   prevHash?: string | null;
@@ -130,7 +120,6 @@ export type AgentSessionLogEntry = {
 
 export type AgentSnapshot = {
   identity: AgentIdentity;
-  coreMemory: AgentCoreMemory;
   recentSessions: AgentSessionLogEntry[];
 };
 
@@ -364,15 +353,6 @@ export type CtoListAgentRunsArgs = {
   agentId?: string;
   limit?: number;
   statuses?: WorkerAgentRunStatus[];
-};
-
-export type CtoGetAgentCoreMemoryArgs = {
-  agentId: string;
-};
-
-export type CtoUpdateAgentCoreMemoryArgs = {
-  agentId: string;
-  patch: Partial<Omit<AgentCoreMemory, "version" | "updatedAt">>;
 };
 
 export type CtoListAgentSessionLogsArgs = {

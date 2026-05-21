@@ -14,7 +14,6 @@ import {
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import { loadAgentBrowserArtifactPayloadFromFile, parseAgentBrowserArtifactPayload } from "../../desktop/src/main/services/proof/agentBrowserArtifactAdapter";
-import { resolveAgentMemoryWritePolicy } from "../../desktop/src/main/services/memory/memoryService";
 import {
   ADE_ACTION_ALLOWLIST,
   ADE_ACTION_DOMAIN_NAMES,
@@ -169,16 +168,6 @@ type SessionState = {
   identity: SessionIdentity;
   askUserEvents: number[];
   askUserRateLimit: {
-    maxCalls: number;
-    windowMs: number;
-  };
-  memoryAddEvents: number[];
-  memoryAddRateLimit: {
-    maxCalls: number;
-    windowMs: number;
-  };
-  memorySearchEvents: number[];
-  memorySearchRateLimit: {
     maxCalls: number;
     windowMs: number;
   };
@@ -456,36 +445,6 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "memory_add",
-    description: "Save durable project knowledge for future missions and workers. Use this only for important decisions, conventions, repeatable patterns, stable preferences, or gotchas. If the standing CTO brief itself changed, use memory_update_core instead. Do not store ephemeral task chatter.",
-    inputSchema: {
-      type: "object",
-      required: ["content", "category"],
-      additionalProperties: false,
-      properties: {
-        content: { type: "string", minLength: 1 },
-        category: { type: "string", enum: ["fact", "preference", "pattern", "decision", "gotcha", "convention"] },
-        importance: { type: "string", enum: ["low", "medium", "high"], default: "medium" },
-        scope: { type: "string", enum: ["project", "mission", "agent"] }
-      }
-    }
-  },
-  {
-    name: "memory_update_core",
-    description: "Update the standing Tier-1 CTO brief when the project summary, conventions, preferences, focus, or notes change. Do not use this for one-off discoveries; save those with memory_add instead.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        projectSummary: { type: "string" },
-        criticalConventions: { type: "array", items: { type: "string" } },
-        userPreferences: { type: "array", items: { type: "string" } },
-        activeFocus: { type: "array", items: { type: "string" } },
-        notes: { type: "array", items: { type: "string" } }
-      }
-    }
-  },
-  {
     name: "reflection_add",
     description: "Record a structured reflection entry for mission introspection and retrospective synthesis.",
     inputSchema: {
@@ -508,21 +467,6 @@ const TOOL_SPECS: ToolSpec[] = [
           minLength: 1,
           pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$"
         }
-      }
-    }
-  },
-  {
-    name: "memory_search",
-    description: "Search project memories for relevant context from earlier missions and workers before you guess, especially at session start and before architectural decisions.",
-    inputSchema: {
-      type: "object",
-      required: ["query"],
-      additionalProperties: false,
-      properties: {
-        query: { type: "string", minLength: 1 },
-        scope: { type: "string", enum: ["project", "mission", "agent"] },
-        status: { type: "string", enum: ["promoted", "candidate", "archived", "all"], default: "promoted" },
-        limit: { type: "number", minimum: 1, maximum: 50, default: 5 }
       }
     }
   },
@@ -826,18 +770,6 @@ const TOOL_SPECS: ToolSpec[] = [
       type: "object",
       additionalProperties: false,
       properties: {}
-    }
-  },
-  {
-    name: "memory_pin",
-    description: "Pin a memory entry into always-available Tier-1 context.",
-    inputSchema: {
-      type: "object",
-      required: ["id"],
-      additionalProperties: false,
-      properties: {
-        id: { type: "string", minLength: 1 }
-      }
     }
   },
   {
@@ -1714,7 +1646,7 @@ const TOOL_SPECS: ToolSpec[] = [
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "get_cto_state",
-    description: "Read the reconstructed CTO identity, memory, and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
+    description: "Read the reconstructed CTO identity and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2153,13 +2085,6 @@ const ALL_TOOL_SPECS: ToolSpec[] = [
   ...COORDINATOR_TOOL_SPECS,
 ];
 const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
-const MEMORY_TOOL_NAMES = new Set([
-  "memory_add",
-  "memory_update_core",
-  "memory_search",
-  "memory_pin",
-]);
-
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
   "list_ade_actions",
@@ -2180,7 +2105,6 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_review_comments",
   "pr_refresh_issue_inventory",
   "pr_preview_issue_resolution_prompt",
-  "memory_search",
   "get_cto_state",
   "listChats",
   "getChatStatus",
@@ -2236,9 +2160,6 @@ const MUTATION_TOOLS = new Set([
   "pr_start_issue_resolution",
   "pr_reply_to_review_thread",
   "pr_resolve_review_thread",
-  "memory_add",
-  "memory_pin",
-  "memory_update_core",
   "reflection_add",
   "spawnChat",
   "sendChatMessage",
@@ -2633,77 +2554,6 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
   }
 
   return owners;
-}
-
-type MemoryToolCategory = "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
-type MemoryToolImportance = "low" | "medium" | "high";
-type MemoryToolScope = "project" | "mission" | "agent";
-type MemoryToolSearchStatus = "promoted" | "candidate" | "archived" | "all";
-type MemoryServiceScope = "project" | "agent" | "mission";
-type SharedFactType = "api_pattern" | "schema_change" | "config" | "architectural" | "gotcha";
-
-function parseMemoryToolCategory(value: unknown): MemoryToolCategory {
-  const category = asTrimmedString(value);
-  if (
-    category === "fact" ||
-    category === "preference" ||
-    category === "pattern" ||
-    category === "decision" ||
-    category === "gotcha" ||
-    category === "convention"
-  ) {
-    return category;
-  }
-  throw new JsonRpcError(
-    JsonRpcErrorCode.invalidParams,
-    "category must be one of: fact, preference, pattern, decision, gotcha, convention"
-  );
-}
-
-function parseMemoryToolImportance(value: unknown): MemoryToolImportance {
-  const importance = asOptionalTrimmedString(value) ?? "medium";
-  if (importance === "low" || importance === "medium" || importance === "high") {
-    return importance;
-  }
-  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "importance must be one of: low, medium, high");
-}
-
-function parseMemoryToolScope(value: unknown, fallback: MemoryToolScope): MemoryToolScope {
-  const scope = asOptionalTrimmedString(value) ?? fallback;
-  if (scope === "project" || scope === "mission" || scope === "agent") {
-    return scope;
-  }
-  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "scope must be one of: project, mission, agent");
-}
-
-function mapMemoryToolScopeToServiceScope(scope: MemoryToolScope): MemoryServiceScope {
-  if (scope === "agent") return "agent";
-  return scope;
-}
-
-function resolveMemoryToolScopeOwnerId(scope: MemoryToolScope, callerCtx: CallerContext): string | null {
-  if (scope === "mission") {
-    return callerCtx.runId ?? null;
-  }
-  if (scope === "agent") {
-    return callerCtx.callerId ?? callerCtx.attemptId ?? null;
-  }
-  return null;
-}
-
-function parseMemoryToolSearchStatus(value: unknown): MemoryToolSearchStatus {
-  const status = asOptionalTrimmedString(value) ?? "promoted";
-  if (status === "promoted" || status === "candidate" || status === "archived" || status === "all") {
-    return status;
-  }
-  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "status must be one of: promoted, candidate, archived, all");
-}
-
-function mapMemoryCategoryToSharedFactType(category: MemoryToolCategory): SharedFactType {
-  if (category === "pattern") return "api_pattern";
-  if (category === "preference" || category === "convention") return "config";
-  if (category === "gotcha") return "gotcha";
-  return "architectural";
 }
 
 function jsonText(value: unknown): string {
@@ -3591,7 +3441,6 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
 
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  const memoryAllowed = runtime.capabilities?.memory !== false;
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
     ?.getBackendStatus()
     ?.backends.some((backend) => backend.available) ?? false;
@@ -3601,7 +3450,6 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
   const keepVisibleTool = (tool: ToolSpec): boolean => (
     (!shouldHideLocalComputerUse || !LOCAL_COMPUTER_USE_TOOL_NAMES.has(tool.name))
     && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
-    && (memoryAllowed || !MEMORY_TOOL_NAMES.has(tool.name))
   );
   const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
   const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
@@ -3839,26 +3687,6 @@ function ensureAskUserAllowed(session: SessionState): void {
 
   session.askUserEvents.push(now);
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
-}
-
-function ensureMemoryAddAllowed(session: SessionState): void {
-  const now = Date.now();
-  const cutoff = now - session.memoryAddRateLimit.windowMs;
-  session.memoryAddEvents = session.memoryAddEvents.filter((ts) => ts >= cutoff);
-  if (session.memoryAddEvents.length >= session.memoryAddRateLimit.maxCalls) {
-    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "memory_add rate limit exceeded.");
-  }
-  session.memoryAddEvents.push(now);
-}
-
-function ensureMemorySearchAllowed(session: SessionState): void {
-  const now = Date.now();
-  const cutoff = now - session.memorySearchRateLimit.windowMs;
-  session.memorySearchEvents = session.memorySearchEvents.filter((ts) => ts >= cutoff);
-  if (session.memorySearchEvents.length >= session.memorySearchRateLimit.maxCalls) {
-    throw new JsonRpcError(JsonRpcErrorCode.policyDenied, "memory_search rate limit exceeded.");
-  }
-  session.memorySearchEvents.push(now);
 }
 
 type CoordinatorToolCacheEntry = {
@@ -4816,9 +4644,6 @@ async function runTool(args: {
 }): Promise<unknown> {
   const { runtime, session, name, toolArgs } = args;
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
-  if (runtime.capabilities?.memory === false && MEMORY_TOOL_NAMES.has(name)) {
-    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Tool not available in this runtime: ${name}`);
-  }
   if (isToolHiddenForStandaloneChat(name, callerCtx)) {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
   }
@@ -6192,183 +6017,6 @@ async function runTool(args: {
     return runtime.computerUseArtifactBrokerService.getBackendStatus();
   }
 
-  if (name === "memory_add") {
-    ensureMemoryAddAllowed(session);
-
-    const content = assertNonEmptyString(toolArgs.content, "content");
-    const category = parseMemoryToolCategory(toolArgs.category);
-    const importance = parseMemoryToolImportance(toolArgs.importance);
-    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
-    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
-    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
-    const writePolicy = resolveAgentMemoryWritePolicy({ pin: false, writeGateMode: "default" });
-
-    type MemoryWriteOutcome = {
-      written: boolean;
-      id: string | null;
-      error: string | null;
-      reason: string | null;
-      durability: "candidate" | "promoted" | "rejected";
-      tier: number | null;
-      deduped: boolean;
-      mergedIntoId: string | null;
-    };
-
-    let memoryOutcome: MemoryWriteOutcome;
-    try {
-      const result = runtime.memoryService.writeMemory({
-        projectId: runtime.projectId,
-        scope: serviceScope,
-        ...(scopeOwnerId ? { scopeOwnerId } : {}),
-        tier: writePolicy.tier,
-        category,
-        content,
-        importance,
-        status: writePolicy.status,
-        confidence: writePolicy.confidence,
-        writeGateMode: "default",
-        ...(callerCtx.runId ? { sourceRunId: callerCtx.runId } : {})
-      });
-      if (result.accepted && result.memory) {
-        memoryOutcome = {
-          written: true,
-          id: result.memory.id,
-          error: null,
-          reason: result.reason ?? null,
-          durability: result.memory.status as "candidate" | "promoted",
-          tier: result.memory.tier,
-          deduped: result.deduped === true,
-          mergedIntoId: result.mergedIntoId ?? null,
-        };
-      } else {
-        memoryOutcome = {
-          written: false, id: null, error: result.reason ?? "memory write rejected",
-          reason: null, durability: "rejected", tier: null, deduped: false, mergedIntoId: null,
-        };
-      }
-    } catch (error) {
-      memoryOutcome = {
-        written: false, id: null, error: error instanceof Error ? error.message : String(error),
-        reason: null, durability: "rejected", tier: null, deduped: false, mergedIntoId: null,
-      };
-    }
-
-    const sharedFactAttempted = Boolean(callerCtx.runId) && requestedScope === "mission";
-    const sharedFactType = mapMemoryCategoryToSharedFactType(category);
-    const sharedFactMemoryService = runtime.memoryService as typeof runtime.memoryService & {
-      addSharedFact?: (args: {
-        runId: string;
-        stepId?: string;
-        factType: string;
-        content: string;
-      }) => { id: string };
-    };
-    let sharedFactWritten = false;
-    let sharedFactId: string | null = null;
-    let sharedFactError: string | null = null;
-
-    if (sharedFactAttempted && typeof sharedFactMemoryService.addSharedFact === "function") {
-      try {
-        const sharedFact = sharedFactMemoryService.addSharedFact({
-          runId: callerCtx.runId as string,
-          stepId: callerCtx.stepId ?? undefined,
-          factType: sharedFactType,
-          content
-        });
-        sharedFactWritten = true;
-        sharedFactId = sharedFact.id;
-      } catch (error) {
-        sharedFactError = error instanceof Error ? error.message : String(error);
-      }
-    }
-
-    return {
-      content,
-      category,
-      importance,
-      scope: requestedScope,
-      memory: {
-        written: memoryOutcome.written,
-        durability: memoryOutcome.durability,
-        id: memoryOutcome.id,
-        tier: memoryOutcome.tier,
-        deduped: memoryOutcome.deduped,
-        mergedIntoId: memoryOutcome.mergedIntoId,
-        ...(memoryOutcome.error ? { error: memoryOutcome.error } : {})
-      },
-      sharedFact: {
-        attempted: sharedFactAttempted,
-        written: sharedFactWritten,
-        id: sharedFactId,
-        ...(sharedFactAttempted
-          ? {
-              runId: callerCtx.runId,
-              stepId: callerCtx.stepId ?? null,
-              factType: sharedFactType
-            }
-          : {}),
-        ...(sharedFactError ? { error: sharedFactError } : {})
-      },
-      wroteAny: memoryOutcome.written || sharedFactWritten,
-      saved: memoryOutcome.written,
-      durability: memoryOutcome.durability,
-      reason: memoryOutcome.written ? memoryOutcome.reason : (memoryOutcome.error ?? "memory write rejected"),
-      deduped: memoryOutcome.deduped,
-      mergedIntoId: memoryOutcome.mergedIntoId,
-    };
-  }
-
-  if (name === "memory_update_core") {
-    ensureMemoryAddAllowed(session);
-
-    const patch: Partial<{
-      projectSummary: string;
-      criticalConventions: string[];
-      userPreferences: string[];
-      activeFocus: string[];
-      notes: string[];
-    }> = {};
-
-    if (typeof toolArgs.projectSummary === "string") {
-      patch.projectSummary = toolArgs.projectSummary;
-    }
-    if (Array.isArray(toolArgs.criticalConventions)) {
-      patch.criticalConventions = toolArgs.criticalConventions.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
-    }
-    if (Array.isArray(toolArgs.userPreferences)) {
-      patch.userPreferences = toolArgs.userPreferences.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
-    }
-    if (Array.isArray(toolArgs.activeFocus)) {
-      patch.activeFocus = toolArgs.activeFocus.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
-    }
-    if (Array.isArray(toolArgs.notes)) {
-      patch.notes = toolArgs.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0);
-    }
-
-    const hasPatch = Object.values(patch).some((value) => value !== undefined);
-    if (!hasPatch) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "memory_update_core requires at least one patch field.");
-    }
-
-    if (callerCtx.role === "agent" && callerCtx.ownerId && runtime.workerAgentService) {
-      const coreMemory = runtime.workerAgentService.updateCoreMemory(callerCtx.ownerId, patch);
-      return {
-        updated: true,
-        version: coreMemory.version,
-        updatedAt: coreMemory.updatedAt,
-        coreMemory
-      };
-    }
-
-    const snapshot = runtime.ctoStateService.updateCoreMemory(patch);
-    return {
-      updated: true,
-      version: snapshot.coreMemory.version,
-      updatedAt: snapshot.coreMemory.updatedAt,
-      coreMemory: snapshot.coreMemory
-    };
-  }
-
   if (name === "reflection_add") {
     const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
     const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
@@ -6413,60 +6061,6 @@ async function runTool(args: {
     }
 
     return { reflection };
-  }
-
-  if (name === "memory_search") {
-    ensureMemorySearchAllowed(session);
-
-    const query = assertNonEmptyString(toolArgs.query, "query");
-    const requestedScope = parseMemoryToolScope(toolArgs.scope, callerCtx.runId ? "mission" : "project");
-    const serviceScope = mapMemoryToolScopeToServiceScope(requestedScope);
-    const scopeOwnerId = resolveMemoryToolScopeOwnerId(requestedScope, callerCtx);
-    const status = parseMemoryToolSearchStatus(toolArgs.status);
-    const statusFilter =
-      status === "all"
-        ? (["promoted", "candidate", "archived"] as const)
-        : status;
-    const limit = Math.max(1, Math.min(50, Math.floor(asNumber(toolArgs.limit, 5))));
-    const memories = await runtime.memoryService.searchMemories(
-      query,
-      runtime.projectId,
-      serviceScope,
-      limit,
-      statusFilter,
-      scopeOwnerId
-    );
-
-    return {
-      query,
-      scope: requestedScope,
-      status,
-      count: memories.length,
-      memories: memories.map((memory) => ({
-        id: memory.id,
-        scope: memory.scope,
-        status: memory.status,
-        category: memory.category,
-        content: memory.content,
-        importance: memory.importance,
-        confidence: memory.confidence,
-        createdAt: memory.createdAt,
-        promotedAt: memory.promotedAt,
-        sourceRunId: memory.sourceRunId
-      }))
-    };
-  }
-
-  if (name === "memory_pin") {
-    ensureMemoryAddAllowed(session);
-
-    const id = assertNonEmptyString(toolArgs.id, "id");
-    runtime.memoryService.pinMemory(id);
-    return {
-      id,
-      pinned: true,
-      tier: "pinned"
-    };
   }
 
   if (name === "run_tests") {
@@ -7785,16 +7379,6 @@ export function createAdeRpcRequestHandler(args: {
       maxCalls: 6,
       windowMs: 60_000
     },
-    memoryAddEvents: [],
-    memoryAddRateLimit: {
-      maxCalls: 10,
-      windowMs: 60_000
-    },
-    memorySearchEvents: [],
-    memorySearchRateLimit: {
-      maxCalls: 20,
-      windowMs: 60_000
-    }
   };
 
   const auditActionCall = async (

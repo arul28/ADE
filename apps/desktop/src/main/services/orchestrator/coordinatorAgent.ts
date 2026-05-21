@@ -58,7 +58,6 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createMissionService } from "../missions/missionService";
-import type { createMemoryService } from "../memory/memoryService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -104,7 +103,7 @@ export type CoordinatorUserRules = {
 export type CoordinatorProjectContext = {
   projectRoot: string;
   projectDocPaths?: string[];
-  projectKnowledge?: string[];
+  projectHints?: string[];
   fileTree?: string;
 };
 
@@ -133,7 +132,6 @@ export type CoordinatorAgentDeps = {
     "createSession" | "runSessionTurn" | "interrupt" | "dispose"
   > | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService> | null;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   onDagMutation: (event: DagMutationEvent) => void;
   onCoordinatorMessage?: (message: string) => void;
@@ -554,7 +552,6 @@ const RECOVERED_IDLE_WHILE_WORKERS_RUNNING_TOOLS = new Set([
   ...RECOVERED_STATUS_PROBE_TOOLS,
   "broadcast",
   "get_worker_output",
-  "memory_search",
   "message_worker",
   "send_message",
   "update_mission_state",
@@ -843,7 +840,6 @@ export class CoordinatorAgent {
       projectRoot: deps.projectRoot,
       workspaceRoot: deps.workspaceRoot,
       missionService: deps.missionService,
-      memoryService: deps.memoryService,
       projectId: deps.projectId,
       getMissionBudgetStatus: deps.getMissionBudgetStatus,
       onDagMutation: deps.onDagMutation,
@@ -4008,18 +4004,17 @@ When you enter the Planning phase (your first phase), follow this protocol:
    - Do NOT hand the planning worker a pre-written implementation plan, exact edit list, commit message, or "confirm this plan" instructions.
 4. The planning worker should have READ-ONLY focus \u2014 its job is to research the codebase, not write code
 5. Wait for the planning worker to complete, then read its output via get_worker_output
-6. After reading the planner output, call memory_search with 2-3 key terms from the mission goal. This surfaces past gotchas, architectural decisions, and repeatable patterns the planner may not have known about. One quick search is enough — do not delay. Incorporate any relevant results into the worker briefs you write in step 9.
-7. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
-8. After the planning worker finishes, call set_current_phase with phaseKey "${firstPostPlanningPhaseKey}" before creating implementation tasks or spawning code-changing workers.
-9. Once you are in ${firstPostPlanningPhaseName}, use the research findings to build the implementation DAG via create_task:
+6. Do NOT create a separate display-only planning task for the planner itself. The planning worker IS the planning phase execution record.
+7. After the planning worker finishes, call set_current_phase with phaseKey "${firstPostPlanningPhaseKey}" before creating implementation tasks or spawning code-changing workers.
+8. Once you are in ${firstPostPlanningPhaseName}, use the research findings to build the implementation DAG via create_task:
    - Create tasks with proper dependsOn relationships reflecting real code dependencies
    - Set parallelism based on the planner\u2019s analysis of independent workstreams
    - Each task should be scoped for ONE worker in ONE session
    - The DAG is visible to the user in real-time \u2014 structure it clearly
    - create_task is for user-visible implementation work breakdown, not for the planning worker itself.
    - When you later spawn_worker, dependsOn should reference EXECUTABLE prerequisite workers, not just display-only task cards
-10. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
-11. Then begin execution in the configured phase order (spawn workers, delegate tasks, and continue phase-by-phase).
+9. Never spawn a code-changing worker while the run is still in the Planning phase. Planning workers must stay read-only; transition phases first.
+10. Then begin execution in the configured phase order (spawn workers, delegate tasks, and continue phase-by-phase).
 
 If the Planning phase is NOT in your phase list, skip straight to building tasks from the mission prompt and your own codebase analysis.`;
     }
@@ -4047,9 +4042,9 @@ You can spawn these types of workers:
           projectSection += `\n- ${docPath}`;
         }
       }
-      if (ctx.projectKnowledge && ctx.projectKnowledge.length > 0) {
-        projectSection += "\n\nProject memory highlights:";
-        for (const line of ctx.projectKnowledge.slice(0, 12)) {
+      if (ctx.projectHints && ctx.projectHints.length > 0) {
+        projectSection += "\n\nProject context hints:";
+        for (const line of ctx.projectHints.slice(0, 12)) {
           projectSection += `\n- ${line}`;
         }
       }
@@ -4244,23 +4239,7 @@ Your initial plan is a hypothesis. Adjust it as you learn:
 - Be willing to abandon sunk work — a bad approach at 80% is worse than a good approach at 0%
 - When using revise_plan, always provide explicit dependencyPatches — the runtime will NOT auto-rewire dependencies
 
-### 6.5 Persist Mission Memory
-Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
-
-ALWAYS save (memory_add) when you:
-- Discover a convention that is NOT documented anywhere in the codebase or docs
-- Make or observe a decision with non-obvious reasoning (e.g., "chose X over Y because Z")
-- Hit a pitfall that other developers or future missions would hit too
-- Find a pattern that contradicts what the code structure would suggest
-
-DO NOT save:
-- File paths, doc paths, or directory listings — discoverable with search tools
-- Session metadata, task status, or mission progress — that is what update_mission_state is for
-- Raw error messages or stack traces without a distilled lesson
-- Things derivable from code, git log, or git blame
-- Obvious patterns already visible in the codebase (e.g., "this project uses TypeScript")
-
-Use memory_search at mission start and before writing worker briefs on unfamiliar subsystems to surface past gotchas.
+### 6.5 Durable Mission State
 Use update_mission_state after significant coordinator decisions so run-local rationale survives context compaction.
 Use read_mission_state before major plan changes or mission completion to refresh this run's durable state.
 Keep mission-state summaries concise: short outcomes, short decisions, actionable issue descriptions.
@@ -4329,8 +4308,6 @@ Keep mission-state summaries concise: short outcomes, short decisions, actionabl
 | Transfer step to lane | transfer_lane |
 | Non-critical and failing | skip_step |
 | Restructure the plan | revise_plan (with dependencyPatches) |
-| Search project memory | memory_search |
-| Persist project memory | memory_add |
 | Persist run-local durable state | update_mission_state |
 | Reload run-local durable state | read_mission_state |
 | Log structured reflection signal | reflection_add |

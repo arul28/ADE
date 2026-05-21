@@ -354,7 +354,7 @@ export function HomePage() {
             src="/images/screenshots/cto.png"
             alt="ADE CTO — org chart of worker agents"
             figNumber="Fig. 5"
-            caption="The CTO — an org chart of worker agents, each with its own memory and budget."
+            caption="The CTO — an org chart of worker agents, each with its own budget."
             rotate={-0.4}
             tone="ink"
           />

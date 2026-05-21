@@ -35,7 +35,7 @@ When ADE opens a repository for the first time, it creates a `.ade/` directory a
       features/        ← feature artifacts (Linear-linked)
       conflicts/       ← conflict resolution context
       missions/        ← mission plans and phase snapshots
-  cto/                 ← CTO identity, memory, and configuration
+  cto/                 ← CTO identity and configuration
   worktrees/           ← git worktrees for lanes (one per lane)
   db/                  ← SQLite database for lanes, sessions, history
 ```
@@ -48,7 +48,7 @@ Add `.ade/` to your `.gitignore` if it is not already there. The `.ade/` directo
 
 ## First-Run Onboarding
 
-When ADE opens a new repository, it launches the **project setup wizard** — a 6-step flow that configures your development tools, AI providers, GitHub integration, semantic search, and Linear.
+When ADE opens a new repository, it launches the **project setup wizard** — a 5-step flow that configures your development tools, AI providers, GitHub integration, background helpers, and Linear.
 
 <Steps>
   <Step title="Dev tools check">
@@ -67,9 +67,6 @@ When ADE opens a new repository, it launches the **project setup wizard** — a 
   </Step>
   <Step title="GitHub">
     Authenticate with GitHub for PR management, CI sync, and stacked PR workflows. ADE uses the GitHub CLI (`gh`) for authentication — if you are already logged in via `gh auth login`, ADE detects this automatically.
-  </Step>
-  <Step title="Semantic search">
-    Build a local embedding index for faster context retrieval. This indexes your codebase so agents can find relevant code without scanning every file. The initial build takes 30 seconds to a few minutes depending on repo size.
   </Step>
   <Step title="Linear">
     Connect Linear for bidirectional issue tracking with the CTO agent. This step is optional — skip it if you do not use Linear. See [Linear Integration](/cto/linear) for details.
@@ -96,7 +93,7 @@ From here, [create your first lane](/getting-started/first-lane) and [run your f
 
 When you re-open a project that was previously configured, ADE loads the existing `.ade/` directory and restores your lanes, sessions, and settings. No onboarding wizard runs on subsequent opens.
 
-If you want to re-run onboarding (e.g., to reconfigure providers or rebuild the embedding index), open **Settings > Project** and click **Re-run Setup Wizard**.
+If you want to re-run onboarding, open **Settings > Project** and click **Re-run Setup Wizard**.
 
 ---
 

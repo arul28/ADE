@@ -2690,14 +2690,6 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "cto.getBudgetSnapshot", as: AgentBudgetSnapshot.self)
   }
 
-  func fetchAgentCoreMemory(agentId: String) async throws -> AgentCoreMemory {
-    try await sendDecodableCommand(
-      action: "cto.getAgentCoreMemory",
-      args: ["agentId": agentId],
-      as: AgentCoreMemory.self
-    )
-  }
-
   func listAgentRuns(agentId: String, limit: Int? = nil) async throws -> [WorkerAgentRun] {
     var args: [String: Any] = ["agentId": agentId]
     if let limit { args["limit"] = limit }
@@ -2762,15 +2754,6 @@ final class SyncService: ObservableObject {
     let patchArgs = try encodedCommandArgs(from: patch)
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
-      args: ["patch": patchArgs],
-      as: CtoSnapshot.self
-    )
-  }
-
-  func updateCtoCoreMemory(patch: CtoCoreMemoryPatch) async throws -> CtoSnapshot {
-    let patchArgs = try encodedCommandArgs(from: patch)
-    return try await sendDecodableCommand(
-      action: "cto.updateCoreMemory",
       args: ["patch": patchArgs],
       as: CtoSnapshot.self
     )

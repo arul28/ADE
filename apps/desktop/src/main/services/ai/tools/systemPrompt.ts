@@ -90,14 +90,6 @@ export function buildCodingAgentSystemPrompt(args: {
   const toolNames = [...new Set((args.toolNames ?? []).filter((entry) => entry.trim().length > 0))];
   const interactive = args.interactive !== false;
   const runtime = args.runtime;
-  const hasMemoryTools = toolNames.some((name) =>
-    name === "memorySearch"
-    || name === "memoryAdd"
-    || name === "memoryPin"
-    || name === "memoryUpdateCore"
-    || name.startsWith("memory_"),
-  );
-  const hasCoreMemoryTool = toolNames.some((name) => name === "memoryUpdateCore" || name === "memory_update_core");
   const hasCreateLane = toolNames.includes("createLane");
   const hasCreatePr = toolNames.includes("createPrFromLane");
   const hasCaptureScreenshot = toolNames.includes("captureScreenshot");
@@ -185,31 +177,6 @@ export function buildCodingAgentSystemPrompt(args: {
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
     buildAdeCliAgentGuidance(adeSkillRoots),
-    ...(hasMemoryTools
-      ? [
-          "",
-          "## Memory",
-          "You have access to a persistent project memory that survives across sessions.",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls. Do not guess when you can check.",
-          ...(hasCoreMemoryTool
-            ? ["**Keep the project brief current:** Use memoryUpdateCore when the project summary, standing conventions, user preferences, or active focus changes. Use memoryAdd for reusable lessons that should survive beyond the current brief."]
-            : []),
-          "**Write sparingly and well:** Only save knowledge that is NOT derivable from the code, git history, or project files. Ask yourself: could a developer find this by reading the codebase? If yes, do not save it.",
-          "GOOD memories (non-obvious, high-value):",
-          "- \"Convention: always use snake_case for DB columns — ORM breaks with camelCase\"",
-          "- \"Decision: chose Postgres over Mongo for ACID transactions in payments — discussed in design review 2025-12\"",
-          "- \"Pitfall: CI silently skips tests if file doesn't match *.test.ts — cost us a week of debugging\"",
-          "- \"User prefers terse responses with no trailing summaries\"",
-          "BAD memories (never save these):",
-          "- File paths, directory listings, or code structure (use grep/find)",
-          "- Raw error messages or stack traces without a lesson learned",
-          "- Task progress, status updates, or session summaries",
-          "- Git history, recent changes, or who-changed-what (use git log/blame)",
-          "- Obvious patterns already visible in the codebase",
-          "- Debugging solutions or fix recipes (the fix is in the code; the commit message has the context)",
-          "Format: lead with the concrete rule or fact, then a brief WHY. One actionable insight per memory.",
-        ]
-      : []),
     ...(hasWorkflowTools
       ? [
           "",

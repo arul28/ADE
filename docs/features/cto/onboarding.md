@@ -9,7 +9,7 @@ The first-run flow for a project. Intentionally short: the CTO is usable before 
 - `OnboardingBanner.tsx` — non-modal banner rendered at the top of the CTO page while `onboardingState` is incomplete. Two buttons: "Continue" (opens wizard) and dismiss.
 - `OnboardingWizard.tsx` — the single-step wizard. Personality preset grid plus optional custom-overlay textarea. Auto-rotating hints in a side chip.
 - `IdentityEditor.tsx` — the editor shown in CTO Settings after onboarding is complete. Same personality model plus a model selector (provider + model + reasoning effort).
-- `CtoPromptPreview.tsx` — three-section preview (doctrine, personality, memory model) used inside onboarding and settings.
+- `CtoPromptPreview.tsx` — prompt preview (doctrine, personality, CTO continuity, environment knowledge, capabilities) used inside onboarding and settings.
 
 ### Services
 
@@ -48,7 +48,7 @@ The first-run flow for a project. Intentionally short: the CTO is usable before 
    - `custom` -> Sparkle icon, pink.
 3. If `custom` is selected, a textarea appears for `customPersonality`. Validation: custom must have non-empty text; otherwise save fails with "Add custom personality guidance or choose one of the built-in presets."
 4. Side hint chip cycles through:
-   - "Memory layers active"
+   - "CTO continuity active"
    - "Context discovered automatically"
    - "Recovery across compaction"
    - "Doctrine stays immutable"
@@ -67,15 +67,15 @@ There is no separate step for model selection, Linear connection, or worker hiri
 
 `applyModelSelection(draft, modelId)` centralizes the model change so provider + model short id + reasoning effort stay in sync. `coerceConfiguredModel` falls back to the first configured model if the previously saved one is no longer available.
 
-The editor reuses the personality preset grid from the wizard. Nothing outside the personality + custom overlay + model selection can be edited — the doctrine and memory model are immutable and the capability manifest is maintained in code.
+The editor reuses the personality preset grid from the wizard. Nothing outside the personality + custom overlay + model selection can be edited — the doctrine and CTO continuity model are immutable and the capability manifest is maintained in code.
 
 ## Prompt preview
 
-`CtoPromptPreview.tsx` renders the three-section system prompt exactly as the runtime assembles it:
+`CtoPromptPreview.tsx` renders the system prompt exactly as the runtime assembles it:
 
 1. Doctrine — immutable ADE-owned CTO mission statement.
 2. Personality overlay — the selected preset's `systemOverlay` text, or the custom text.
-3. Memory + environment model — the operating rules for continuity and the intent-to-tool routing map.
+3. CTO continuity + environment model — the operating rules for continuity and the intent-to-tool routing map.
 
 This is the same snapshot returned by `ctoStateService.buildSystemPromptPreview()`. Keeping the preview in code next to the runtime guarantees the UI never drifts from what the CTO actually sees.
 
@@ -96,5 +96,5 @@ Dismissal does not count as completion. The banner is hidden but the state still
 ## Cross-links
 
 - `README.md` — CTO shell and tab model.
-- `identity-and-memory.md` — the four-layer prompt model the presets feed into.
+- `../agents/identity-and-personas.md` — the CTO identity and continuity model the presets feed into.
 - `pipeline-builder.md` — Linear connection is the natural next step after onboarding; the pipeline builder lives in the Workflows tab.

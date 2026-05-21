@@ -238,8 +238,7 @@ describe("automationPlannerService.validateDraft", () => {
       triggers: [{ type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" }],
       trigger: { type: "github.issue_opened", titleRegex: "^Bug", bodyRegex: "crash", repo: "acme/ade" },
       includeProjectContext: false,
-      memory: { mode: "none" },
-      contextSources: [{ type: "project-memory" }],
+      contextSources: [],
       actions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
       legacyActions: [{ type: "ade-action", adeAction: { domain: "issue", action: "setLabels", args: { labels: ["triage"] } } }],
     });
@@ -522,7 +521,6 @@ function createDraft(
     reviewProfile: "quick",
     toolPalette: [],
     contextSources: [],
-    memory: { mode: "project" },
     guardrails: {},
     outputs: { disposition: "comment-only", createArtifact: true },
     verification: { verifyBeforePublish: false, mode: "intervention" },

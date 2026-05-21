@@ -50,7 +50,6 @@ function createDb(): { raw: Database; db: AdeDb } {
       severity text,
       reason text,
       note text,
-      embedding_json text,
       source_finding_id text,
       hit_count integer not null default 0,
       created_at text not null,
@@ -67,15 +66,6 @@ function createDb(): { raw: Database; db: AdeDb } {
   return { raw, db };
 }
 
-const logger = {
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined,
-  debug: () => undefined,
-  trace: () => undefined,
-  child: () => logger,
-} as unknown as Parameters<typeof createReviewSuppressionService>[0]["logger"];
-
 describe("reviewSuppressionService", () => {
   let dbHandle: ReturnType<typeof createDb>;
   beforeEach(() => {
@@ -85,7 +75,6 @@ describe("reviewSuppressionService", () => {
   it("creates a suppression and lists it back", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -103,7 +92,6 @@ describe("reviewSuppressionService", () => {
   it("matches a near-duplicate finding by title tokens", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -130,7 +118,6 @@ describe("reviewSuppressionService", () => {
   it("does not match unrelated findings", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -155,7 +142,6 @@ describe("reviewSuppressionService", () => {
   it("respects path-scoped patterns", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -192,7 +178,6 @@ describe("reviewSuppressionService", () => {
   it("path glob `src/**/*.ts` matches both shallow and nested files", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -242,7 +227,6 @@ describe("reviewSuppressionService", () => {
   it("path glob `?` matches exactly one non-slash character", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -289,13 +273,11 @@ describe("reviewSuppressionService", () => {
     expect(slashed).toBeNull();
   });
 
-  it("title-match fallback fires when embeddings are weak/missing but tokens overlap", async () => {
-    // No embeddingService is provided, so both sides fall back to the
-    // title-token (Jaccard) path with the TITLE_SIM_THRESHOLD bar (0.55).
-    // The pre-fix logic applied the embedding threshold here and rejected.
+  it("title-match fallback fires when tokens overlap", async () => {
+    // Both sides use the title-token (Jaccard) path with the
+    // TITLE_SIM_THRESHOLD bar (0.55).
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     await svc.create({
@@ -322,7 +304,6 @@ describe("reviewSuppressionService", () => {
   it("removes a suppression", async () => {
     const svc = createReviewSuppressionService({
       db: dbHandle.db as unknown as import("../state/kvDb").AdeDb,
-      logger,
       projectId: "proj-1",
     });
     const created = await svc.create({

@@ -391,7 +391,7 @@ function DismissModal({ open, initialKind, finding, onClose, onSubmit }: Dismiss
                 ))}
               </div>
               <p className="mt-2 text-[10px] text-[#6E7F92]">
-                Future runs skip findings semantically similar to this one within the chosen scope. You can remove suppressions later from the Learnings panel.
+                Future runs skip similar findings within the chosen scope. You can remove suppressions later from the Learnings panel.
               </p>
             </div>
           ) : null}

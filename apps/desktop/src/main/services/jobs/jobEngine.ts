@@ -55,7 +55,7 @@ export function createJobEngine({
       try {
         logger.info("jobs.refresh_lane.begin", payload);
         // Pack refresh pipeline removed in W6. Lane refresh job remains as a
-        // scheduling hook for downstream memory/conflict upkeep.
+        // scheduling hook for downstream conflict upkeep.
 
         logger.info("jobs.refresh_lane.done", payload);
       } catch (error) {

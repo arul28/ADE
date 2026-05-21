@@ -42,7 +42,7 @@ const ADD_OPTIONS: readonly AddOption[] = [
     label: "ADE action",
     icon: Code,
     accent: "#A78BFA",
-    description: "Call any ADE CLI domain — git, lane, PR, tests, memory, and more.",
+    description: "Call any ADE CLI domain — git, lane, PR, tests, and more.",
   },
   {
     kind: "run-tests",

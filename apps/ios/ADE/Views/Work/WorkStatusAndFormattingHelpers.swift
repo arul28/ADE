@@ -717,7 +717,6 @@ func noticeTitle(for kind: String) -> String {
   case "rate_limit": return "Rate limit notice"
   case "hook": return "Hook notice"
   case "file_persist": return "File persistence"
-  case "memory": return "Memory notice"
   case "provider_health": return "Provider health"
   case "thread_error": return "Thread notice"
   default: return "System notice"
@@ -730,7 +729,6 @@ func noticeIcon(for kind: String) -> String {
   case "rate_limit": return "speedometer"
   case "hook": return "bolt.badge.clock"
   case "file_persist": return "externaldrive.badge.checkmark"
-  case "memory": return "brain.head.profile"
   case "provider_health": return "waveform.path.ecg"
   case "thread_error": return "exclamationmark.bubble"
   default: return "info.circle"
@@ -741,7 +739,7 @@ func noticeTint(for kind: String) -> ColorToken {
   switch kind {
   case "auth", "thread_error": return .danger
   case "rate_limit", "hook": return .warning
-  case "provider_health", "memory": return .secondary
+  case "provider_health": return .secondary
   default: return .accent
   }
 }

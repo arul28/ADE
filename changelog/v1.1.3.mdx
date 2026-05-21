@@ -74,7 +74,7 @@ The CLI is now usable in an environment with only `gh auth login`, and its RPC s
 
 - **GitHub token fallback chain.** `ADE_GITHUB_TOKEN → GITHUB_TOKEN → GH_TOKEN → gh auth token`. The headless CLI can't read desktop's Electron `safeStorage`-encrypted token (different bundle identity), so it now reads from `gh auth token` as a last resort. If none returns a token, the existing "missing token" error points at `gh auth login`.
 - **Project root = workspace root by default.** When `--project-root` or `ADE_PROJECT_ROOT` fixes the project root, `workspaceRoot` defaults to that path unless explicitly overridden.
-- **`hasHelpFlag` respects value-carrying flags.** ~120 long-flags that take a value (including `-q` for files/memory search) are treated as value carriers, so `--help` after a pending-value flag is handed to the flag instead of triggering help.
+- **`hasHelpFlag` respects value-carrying flags.** ~120 long-flags that take a value (including `-q` for file search) are treated as value carriers, so `--help` after a pending-value flag is handed to the flag instead of triggering help.
 - **Integration lane provenance.** Only flag an integration lane as "adopted" when `preferred_integration_lane_id === integration_lane_id`; mismatched scratch lanes stay "ade-created" so cleanup/delete can remove them.
 - **PR row handoff cleanup.** `prService.upsertRow` nulls `integration_proposals.linked_pr_id` alongside `pr_group_members` when a PR row moves lanes, so old integration workflows don't silently track the new lane's PR status.
 - **No duplicate guidance.** `promptInspector` dedupes the `ADE_CLI_AGENT_GUIDANCE` block; `agentChatService` skips first-user-message guidance injection for Claude sessions (the system prompt already carries it).

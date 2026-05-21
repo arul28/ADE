@@ -55,7 +55,6 @@ export type AggregatedBlock =
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
-  | { kind: "memory"; id: string; turnId: string | null; live: boolean; hitCount?: number; text?: string }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
@@ -236,14 +235,6 @@ function isExpandedFailureEvent(event: AgentChatEvent): boolean {
   if (event.type === "file_change") return event.status === "failed";
   if (event.type === "command") return event.status === "failed" || (event.exitCode ?? 0) !== 0;
   return false;
-}
-
-function parseMemoryHits(text: string | undefined): number | undefined {
-  if (!text) return undefined;
-  const match = /(\d+)\s*hits?/i.exec(text);
-  if (!match) return undefined;
-  const value = Number.parseInt(match[1]!, 10);
-  return Number.isFinite(value) ? value : undefined;
 }
 
 function findLastBlock<K extends AggregatedBlock["kind"]>(
@@ -664,26 +655,6 @@ export function aggregateChatBlocks(args: {
         current,
         total,
         live: true,
-      });
-      continue;
-    }
-    if (event.type === "system_notice" && (event as { noticeKind?: string }).noticeKind === "memory") {
-      const message = (event as { message?: string }).message ?? "";
-      const hitCount = parseMemoryHits(message);
-      const existing = findLastBlock(blocks, "memory", turnId);
-      if (existing) {
-        existing.hitCount = hitCount ?? existing.hitCount;
-        existing.text = message || existing.text;
-        existing.live = false;
-        continue;
-      }
-      blocks.push({
-        kind: "memory",
-        id,
-        turnId,
-        live: false,
-        hitCount,
-        text: message,
       });
       continue;
     }

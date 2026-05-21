@@ -225,21 +225,6 @@ try {
         "opencode",
       ),
     )) &&
-    (await pathExists(
-      path.join(
-        appDir,
-        "node_modules",
-        "@huggingface",
-        "transformers",
-        "node_modules",
-        "onnxruntime-node",
-        "bin",
-        "napi-v3",
-        "darwin",
-        "x64",
-        "onnxruntime_binding.node",
-      ),
-    )) &&
     (await pathExists(path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib")));
 
   if (env.ADE_X64_APP_PATH || env.ADE_X64_APP_ZIP || !hasPreparedX64Inputs) {

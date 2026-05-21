@@ -79,7 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Claude runtime probe** — cache is now scoped by project root to prevent cross-project contamination when switching projects
 - **Auth error detection** — deduplicated `isClaudeRuntimeAuthError` and `CLAUDE_RUNTIME_AUTH_ERROR` into a single shared module
 - **GitHub token migration** — added completion flag to skip redundant filesystem checks after first migration
-- **Memory doc sync** — debounced `syncDerivedMemoryDocs` (2s) to avoid write storms during rapid memory mutations
+- **Derived context doc sync** — debounced context-doc writes to avoid write storms during rapid updates
 - **Automation run details** — fixed double DB lookup for ingress events in `getRunDetail`
 - **Chat session comment** — corrected stale "lazy boot" comment to reflect eager pre-warm behavior
 - **Docs site branding** — updated Mintlify config with correct logo paths and canonical URL
@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Multimodal chat** — Claude agent chat now supports image attachments via base64 content blocks, with a new file upload picker and clipboard paste support in the composer
-- **CTO daily logs** — CTO persona gains a Memory Protocol and Decision Framework; daily log utilities (append/read/list) auto-inject recent context into CTO sessions
+- **CTO daily logs** — CTO persona gains a context protocol and decision framework; daily log utilities (append/read/list) auto-inject recent context into CTO sessions
 - **ADE CLI auth service** — full OAuth and token-based authentication flows for connecting ADE CLI (795-line service with PKCE support)
 - **Onboarding rewrite** — replaced the 1,373-line `OnboardingPage` with a focused 328-line `ProjectSetupPage`
 - **New settings sections** — Lane Behavior, Lane Templates (expanded), Integrations, Workspace Settings, and AI Settings panels
@@ -106,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Run network panel** — new `RunNetworkPanel` component for the Run page
 - **Computer use panel** — new `ChatComputerUsePanel` for inline computer-use artifacts
 - **Vercel docs proxy** — `/docs` route now rewrites to the Mintlify-hosted documentation site
-- **New documentation pages** — `cto/memory.mdx`, `docs/features/MEMORY.md`, and expanded getting-started guides
+- **Expanded getting-started guides** — broader first-run setup coverage
 
 ### Changed
 

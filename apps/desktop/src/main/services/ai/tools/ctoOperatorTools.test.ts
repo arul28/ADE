@@ -760,14 +760,12 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: false, error: expect.stringContaining("Worker heartbeat service") });
     });
 
-    it("gets worker status with core memory and recent runs", async () => {
+    it("gets worker status with recent runs", async () => {
       const worker = { id: "w-1", name: "Alice", status: "active" };
-      const coreMemory = { notes: ["some note"] };
       const runs = [{ id: "run-1" }];
       const deps = buildDeps({
         workerAgentService: {
           getAgent: vi.fn().mockReturnValue(worker),
-          getCoreMemory: vi.fn().mockReturnValue(coreMemory),
         } as any,
         workerHeartbeatService: {
           listRuns: vi.fn().mockReturnValue(runs),
@@ -781,7 +779,6 @@ describe("createCtoOperatorTools", () => {
         success: true,
         worker,
         statusSummary: "Worker is active.",
-        coreMemory,
         recentRuns: runs,
       });
     });

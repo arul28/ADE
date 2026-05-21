@@ -105,8 +105,6 @@ Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operati
 
 Local project bindings prefer the local `ade serve` daemon for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. The legacy in-process Electron services remain only as a guarded fallback while the last IPC surfaces are migrated. Setting `ADE_DISABLE_LOCAL_RUNTIME_DAEMON=1` disables that local daemon path for development/diagnostics: preload avoids local runtime action calls and the event pump, and desktop sync IPC reports a standalone unavailable snapshot instead of starting the daemon.
 
-Memory and embedding features are disabled for remote runtimes in v1. The static remote runtime does not bundle `onnxruntime-node`.
-
 ## Mobile reachability
 
 iOS does not SSH into a machine. The phone connects to the runtime daemon's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.

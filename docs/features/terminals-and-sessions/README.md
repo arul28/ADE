@@ -388,7 +388,7 @@ Renderer surfaces:
   keeps VNC credentials in `.ade/secrets`, enforces a machine-wide
   single-VM lease, mounts direct lane roots when safe, and otherwise
   maintains a sanitized rsync mirror that excludes ADE secrets, runtime
-  databases, caches, transcripts, generated local memory/history,
+  databases, caches, transcripts, generated local history,
   worktrees, agents, and `.git`.
 - `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
   headless VNC bridge for screenshot, click, and type operations. It

@@ -1221,70 +1221,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // memory
-  // ---------------------------------------------------------------------------
-  {
-    domain: "memory",
-    action: "writeMemory",
-    label: "Write memory",
-    description: "Insert or upsert a memory entry into the unified memory store.",
-    params: [
-      { name: "projectId", type: "string", required: true },
-      { name: "scope", type: "enum", required: true, enumValues: ["project", "agent", "mission"] },
-      { name: "scopeOwnerId", type: "string", description: "Agent ID for agent scope, mission/run ID for mission scope." },
-      { name: "category", type: "enum", required: true, enumValues: ["fact", "preference", "pattern", "decision", "gotcha", "convention", "episode", "procedure", "digest", "handoff"] },
-      { name: "content", type: "string", required: true, description: "Memory body text." },
-      { name: "importance", type: "enum", enumValues: ["low", "medium", "high"] },
-      { name: "confidence", type: "number", description: "Confidence in [0,1]." },
-      { name: "status", type: "enum", enumValues: ["candidate", "promoted", "archived"] },
-      { name: "tier", type: "number", description: "Memory tier (1=pinned, 2=hot, 3=cold)." },
-      { name: "pinned", type: "boolean" },
-      { name: "sourceSessionId", type: "string" },
-      { name: "sourceRunId", type: "string" },
-      { name: "sourceType", type: "string" },
-      { name: "sourceId", type: "string" },
-      { name: "agentId", type: "string" },
-      { name: "fileScopePattern", type: "string" },
-      { name: "writeGateMode", type: "enum", enumValues: ["default", "strict"] },
-    ],
-  },
-  {
-    domain: "memory",
-    action: "pinMemory",
-    label: "Pin memory",
-    description: "Promote a memory entry to Tier 1 (pinned, never decays).",
-    params: [{ name: "id", type: "string", required: true, description: "Memory entry ID." }],
-  },
-  {
-    domain: "memory",
-    action: "searchMemories",
-    label: "Search memories",
-    description: "Run a hybrid (semantic + lexical) search against the unified memory store.",
-    params: [
-      { name: "projectId", type: "string", required: true },
-      { name: "query", type: "string", required: true },
-      { name: "scope", type: "enum", enumValues: ["project", "agent", "mission"] },
-      { name: "scopeOwnerId", type: "string" },
-      { name: "limit", type: "number" },
-      { name: "mode", type: "enum", enumValues: ["lexical", "hybrid"] },
-      { name: "status", type: "enum", enumValues: ["candidate", "promoted", "archived"] },
-      { name: "tiers", type: "json", description: "Array of tier numbers, e.g. [1,2]." },
-    ],
-  },
-  {
-    domain: "memory",
-    action: "addSharedFact",
-    label: "Add shared mission fact",
-    description: "Record a shared mission fact that all workers on the run can read.",
-    params: [
-      { name: "runId", type: "string", required: true },
-      { name: "stepId", type: "string" },
-      { name: "factType", type: "string", required: true, description: "Fact category (e.g. decision, gotcha)." },
-      { name: "content", type: "string", required: true },
-    ],
-  },
-
-  // ---------------------------------------------------------------------------
   // mission
   // ---------------------------------------------------------------------------
   {
@@ -1921,25 +1857,9 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     description: "Return the CTO agent's current snapshot (identity + recent activity).",
     params: [{ name: "recentLimit", type: "number", description: "Number of recent items to include." }],
   },
-  {
-    domain: "cto_state",
-    action: "updateCoreMemory",
-    label: "Update CTO core memory",
-    description: "Patch the CTO's persisted core memory document.",
-    params: [{ name: "patch", type: "json", required: true, description: "Partial CtoCoreMemory patch." }],
-  },
-
   // ---------------------------------------------------------------------------
   // worker_agent
   // ---------------------------------------------------------------------------
-  {
-    domain: "worker_agent",
-    action: "updateCoreMemory",
-    label: "Update worker agent core memory",
-    description: "Patch a worker agent's persisted core memory document.",
-    params: [{ name: "patch", type: "json", required: true }],
-  },
-
   // ---------------------------------------------------------------------------
   // session
   // ---------------------------------------------------------------------------
