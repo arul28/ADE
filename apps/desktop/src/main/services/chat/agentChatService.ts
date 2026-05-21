@@ -2760,7 +2760,7 @@ function classifyCursorSdkChatError(
       },
     };
   }
-  return classifyAcpHostError(
+  return classifyProviderHostError(
     error,
     args.cloud ? "Cursor Cloud" : "Cursor",
     args.modelDisplayName ?? "Cursor SDK",
