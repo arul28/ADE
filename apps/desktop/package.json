@@ -50,7 +50,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.139",
-    "@cursor/sdk": "^1.0.9",
+    "@cursor/sdk": "^1.0.13",
     "@factory/droid-sdk": "^0.2.0",
     "@floating-ui/react": "^0.27.19",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",

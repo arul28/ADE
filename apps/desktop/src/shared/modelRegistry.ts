@@ -743,6 +743,7 @@ export function createDynamicCursorCliModelDescriptor(
   options?: {
     reasoningTiers?: string[];
     serviceTiers?: string[];
+    aliases?: string[];
     capabilities?: Partial<ModelCapabilities>;
   },
 ): ModelDescriptor {
@@ -769,6 +770,7 @@ export function createDynamicCursorCliModelDescriptor(
     cliCommand: "cursor",
     ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
     ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
+    ...(options?.aliases?.length ? { aliases: [...options.aliases] } : {}),
     isCliWrapped: false,
   };
 }

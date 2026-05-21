@@ -75,6 +75,7 @@ export type CursorSdkCloudSendStreamPayload = {
   promptText: string;
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
+  idempotencyKey?: string | null;
   agentName?: string | null;
   repoUrl: string;
   startingRef?: string | null;
@@ -92,6 +93,7 @@ export type CursorSdkCloudFollowupPayload = {
   promptText: string;
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
+  idempotencyKey?: string | null;
 };
 
 export type CursorSdkCloudRunCancelPayload = {
@@ -205,7 +207,7 @@ export type CursorSdkRuntime = "local" | "cloud";
 
 export type CursorSdkWorkerResponse =
   | { type: "response"; requestId: string; ok: true; result?: unknown }
-  | { type: "response"; requestId: string; ok: false; error: string }
+  | { type: "response"; requestId: string; ok: false; error: string; errorCode?: string }
   | { type: "ready"; agentId: string; modelSdkId: string; transport: "sdk" }
   | {
       type: "run_started";

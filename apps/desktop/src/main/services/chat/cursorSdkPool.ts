@@ -306,7 +306,11 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       if (!waiter) return;
       pending.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
-      else waiter.reject(new Error(`Cursor SDK ${waiter.type} failed: ${message.error || "unknown error"}`));
+      else {
+        const error = new Error(`Cursor SDK ${waiter.type} failed: ${message.error || "unknown error"}`) as Error & { code?: string };
+        if (message.errorCode) error.code = message.errorCode;
+        waiter.reject(error);
+      }
       return;
     }
     if (message.type === "ready") {

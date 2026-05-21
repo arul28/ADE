@@ -1848,6 +1848,7 @@ function codexModelInfoFromDescriptor(
     supportsReasoning: descriptor.capabilities.reasoning,
     supportsTools: descriptor.capabilities.tools,
     color: descriptor.color,
+    ...(descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
   };
 }
 
@@ -2266,7 +2267,7 @@ function formatCodexErrorInfo(value: unknown): string | undefined {
   }
 }
 
-type ChatErrorCategory = "auth" | "rate_limit" | "network" | "unknown";
+type ChatErrorCategory = "auth" | "rate_limit" | "network" | "busy" | "unknown";
 
 function readErrorMessage(value: unknown): string {
   if (value instanceof Error) {
@@ -2721,6 +2722,49 @@ function isCursorRuntimeAuthError(error: unknown): boolean {
   if (/\b(authentication|unauthorized|forbidden)\b/i.test(message)) return true;
   return /\bapi[- ]?key\b/i.test(message)
     && /\b(invalid|missing|required|revoked|expired|rejected|unauthorized|forbidden|not provided|not found)\b/i.test(message);
+}
+
+function isCursorSdkAgentBusyError(error: unknown): boolean {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+  const code = typeof record?.code === "string" ? record.code.trim().toLowerCase() : "";
+  const statusCode = readErrorStatusCode(error);
+  const message = readErrorMessage(error).toLowerCase();
+  return code === "agent_busy"
+    || statusCode === 409
+    || message.includes("agent_busy")
+    || message.includes("agent busy")
+    || message.includes("already has an active run")
+    || message.includes("active run in progress")
+    || message.includes("already running another task");
+}
+
+function classifyCursorSdkChatError(
+  error: unknown,
+  args: { cloud?: boolean; modelDisplayName?: string | null } = {},
+): {
+  message: string;
+  detail?: string;
+  errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+} {
+  if (isCursorSdkAgentBusyError(error)) {
+    const raw = readErrorMessage(error);
+    return {
+      message: args.cloud
+        ? "Cursor Cloud is already running this agent. Wait for the active run to finish or cancel it before sending another follow-up."
+        : "Cursor is already running this chat. Wait for the active turn to finish or cancel it before sending another message.",
+      ...(raw ? { detail: raw } : {}),
+      errorInfo: {
+        category: "busy",
+        provider: args.cloud ? "Cursor Cloud" : "Cursor",
+        ...(args.modelDisplayName ? { model: args.modelDisplayName } : {}),
+      },
+    };
+  }
+  return classifyAcpHostError(
+    error,
+    args.cloud ? "Cursor Cloud" : "Cursor",
+    args.modelDisplayName ?? "Cursor SDK",
+  );
 }
 
 function hasCustomChatSessionTitle(title: string | null | undefined, provider: AgentChatProvider): boolean {
@@ -15940,6 +15984,7 @@ export function createAgentChatService(args: {
     const normalizedMsg = message.toLowerCase();
     const isBusyError = normalizedMsg.includes("turn is already active")
       || normalizedMsg.includes("already active")
+      || normalizedMsg.includes("agent_busy")
       || normalizedMsg.includes("busy");
 
     if (!isBusyError) {
@@ -16022,6 +16067,12 @@ export function createAgentChatService(args: {
       reasoningEffort: session.reasoningEffort,
       fastMode: session.codexFastMode === true,
     });
+
+  const cursorCloudIdempotencyKey = (
+    managed: ManagedChatSession,
+    turnId: string,
+    operation: "create" | "followup",
+  ): string => `ade:${managed.session.id}:${turnId}:cursor-cloud:${operation}`;
 
   const normalizeCursorSdkToolName = (name: string): string =>
     name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -17271,10 +17322,15 @@ export function createAgentChatService(args: {
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
       } else {
-        const msg = error instanceof Error ? error.message : String(error);
+        const classified = classifyCursorSdkChatError(error, {
+          modelDisplayName: resolveSessionModelDescriptor(managed.session)?.displayName ?? managed.session.model,
+        });
+        const msg = classified.message;
         emitChatEvent(managed, {
           type: "error",
           message: msg,
+          ...(classified.detail ? { detail: classified.detail } : {}),
+          errorInfo: classified.errorInfo,
           turnId,
         });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
@@ -17555,6 +17611,7 @@ export function createAgentChatService(args: {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
           promptText,
+          idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "followup"),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
         };
@@ -17572,6 +17629,7 @@ export function createAgentChatService(args: {
           apiKey,
           promptText,
           repoUrl,
+          idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
           ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
@@ -17664,8 +17722,18 @@ export function createAgentChatService(args: {
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
       } else {
-        const msg = error instanceof Error ? error.message : String(error);
-        emitChatEvent(managed, { type: "error", message: msg, turnId });
+        const classified = classifyCursorSdkChatError(error, {
+          cloud: true,
+          modelDisplayName: resolveSessionModelDescriptor(managed.session)?.displayName ?? managed.session.model,
+        });
+        const msg = classified.message;
+        emitChatEvent(managed, {
+          type: "error",
+          message: msg,
+          ...(classified.detail ? { detail: classified.detail } : {}),
+          errorInfo: classified.errorInfo,
+          turnId,
+        });
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -20421,6 +20489,7 @@ export function createAgentChatService(args: {
           supportsTools: d.capabilities.tools,
           ...(d.serviceTiers?.length ? { serviceTiers: d.serviceTiers } : {}),
           color: d.color,
+          ...(d.aliases?.length ? { aliases: d.aliases } : {}),
         }));
       } catch {
         return [];
@@ -20666,6 +20735,7 @@ export function createAgentChatService(args: {
           ...descriptor,
           displayName: info.displayName?.trim() || descriptor.displayName,
           ...(info.color ? { color: info.color } : {}),
+          ...(info.aliases?.length ? { aliases: info.aliases } : descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
           capabilities: {
             ...descriptor.capabilities,
             ...(typeof info.supportsReasoning === "boolean" ? { reasoning: info.supportsReasoning } : {}),
@@ -20711,6 +20781,7 @@ export function createAgentChatService(args: {
         supportsTools: descriptor.capabilities.tools,
         ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
         color: descriptor.color,
+        ...(descriptor.aliases?.length ? { aliases: descriptor.aliases } : {}),
       };
       descriptorInfo.set(catalogDescriptorInfoKey(groupKey, providerKey, descriptor.id), { provider: "opencode", info });
     }
@@ -20754,6 +20825,11 @@ export function createAgentChatService(args: {
                 displayName: descriptor.displayName,
                 description: entry?.info.description ?? null,
                 isDefault: entry?.info.isDefault ?? false,
+                ...(entry?.info.aliases?.length
+                  ? { aliases: entry.info.aliases }
+                  : descriptor.aliases?.length
+                    ? { aliases: descriptor.aliases }
+                    : {}),
                 ...(reasoningEfforts?.length ? { reasoningEfforts } : {}),
                 maxThinkingTokens: entry?.info.maxThinkingTokens ?? null,
                 modelId: descriptor.id,

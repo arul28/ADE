@@ -2,9 +2,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type * as CursorSdkModuleTypes from "@cursor/sdk";
-import type { AgentOptions } from "@cursor/sdk";
+import type { AgentOptions, ModelSelection, SDKModel, SendOptions } from "@cursor/sdk";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkCloudArtifactDownloadResult,
@@ -38,6 +38,8 @@ let currentRun: SdkRun | null = null;
 let hookServer: net.Server | null = null;
 const hookWaiters = new Map<string, (decision: CursorSdkHookDecision) => void>();
 const cloudRuns = new Map<string, { run: SdkRun; agentId: string }>();
+let cloudModelsCache: { at: number; keyHash: string; models: SDKModel[] } | null = null;
+const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
 
 function post(message: CursorSdkWorkerResponse): void {
   if (process.send) {
@@ -80,6 +82,61 @@ function errorMessage(error: unknown): string {
       ? error.name
       : "Unknown Cursor SDK error";
   return detailEntries.length ? `${primary} (${detailEntries.join(", ")})` : primary;
+}
+
+function errorCode(error: unknown): string | undefined {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+  const json = typeof (record as { toJSON?: () => unknown } | null)?.toJSON === "function"
+    ? (() => {
+        try {
+          const value = (record as { toJSON: () => unknown }).toJSON();
+          return value && typeof value === "object" && !Array.isArray(value)
+            ? value as Record<string, unknown>
+            : null;
+        } catch {
+          return null;
+        }
+      })()
+    : null;
+  const code = record?.code ?? json?.code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+}
+
+function isAgentBusyError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  const code = errorCode(error)?.toLowerCase();
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
+  const status = typeof record?.status === "number"
+    ? record.status
+    : typeof record?.statusCode === "number"
+      ? record.statusCode
+      : undefined;
+  const BusyCtor = sdkModule?.AgentBusyError;
+  return (BusyCtor != null && error instanceof BusyCtor)
+    || code === "agent_busy"
+    || status === 409
+    || message.includes("agent_busy")
+    || message.includes("agent busy")
+    || message.includes("already has an active run")
+    || message.includes("active run in progress");
+}
+
+function classifyWorkerError(error: unknown): { error: string; errorCode?: string } {
+  if (isAgentBusyError(error)) {
+    const detail = errorMessage(error);
+    const busyMessage = "Cursor agent is already running another task. Wait for that run to finish or cancel it before sending a follow-up.";
+    return {
+      error: detail && !detail.toLowerCase().includes("already running")
+        ? `${busyMessage} (${detail})`
+        : busyMessage,
+      errorCode: "agent_busy",
+    };
+  }
+  const code = errorCode(error);
+  return {
+    error: errorMessage(error),
+    ...(code ? { errorCode: code } : {}),
+  };
 }
 
 async function getSdk(): Promise<CursorSdkModule> {
@@ -191,6 +248,69 @@ function buildCursorModelSelection(
   if (!id) return undefined;
   const normalizedParams = normalizeCursorModelParams(params);
   return normalizedParams ? { id, params: normalizedParams } : { id };
+}
+
+function normalizeId(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function apiKeyHash(apiKey: string | null | undefined): string {
+  return createHash("sha256").update(String(apiKey ?? "")).digest("hex").slice(0, 16);
+}
+
+function trimIdempotencyKey(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function buildSendOptions(
+  model: ModelSelection | undefined,
+  idempotencyKey?: string | null,
+): SendOptions | undefined {
+  const key = trimIdempotencyKey(idempotencyKey);
+  if (!model && !key) return undefined;
+  return {
+    ...(model ? { model } : {}),
+    ...(key ? { idempotencyKey: key } : {}),
+  };
+}
+
+async function listCloudModelsForValidation(apiKey: string | undefined): Promise<SDKModel[]> {
+  const keyHash = apiKeyHash(apiKey);
+  const now = Date.now();
+  if (cloudModelsCache && cloudModelsCache.keyHash === keyHash && now - cloudModelsCache.at < CLOUD_MODEL_VALIDATION_TTL_MS) {
+    return cloudModelsCache.models;
+  }
+  const { Cursor } = await getSdk();
+  const models = await Cursor.models.list({ apiKey });
+  cloudModelsCache = { at: now, keyHash, models };
+  return models;
+}
+
+async function validateCloudModelSelection(apiKey: string | undefined, model: ModelSelection | undefined): Promise<void> {
+  const id = model?.id.trim();
+  if (!id) return;
+  let models: SDKModel[];
+  try {
+    models = await listCloudModelsForValidation(apiKey);
+  } catch (error) {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK cloud model validation skipped.",
+      detail: { modelId: id, error: errorMessage(error) },
+    });
+    return;
+  }
+
+  const wanted = normalizeId(id);
+  const matched = models.some((entry) =>
+    normalizeId(entry.id) === wanted
+    || (entry.aliases ?? []).some((alias) => normalizeId(alias) === wanted),
+  );
+  if (!matched) {
+    throw new Error(`Cursor Cloud model "${id}" is not available for this API key.`);
+  }
 }
 
 async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string; modelSdkId: string }> {
@@ -360,6 +480,8 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
     name: payload.agentName?.trim() || undefined,
     cloud,
   };
+  const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
+  if (idempotencyKey) options.idempotencyKey = idempotencyKey;
   const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
   if (modelSelection) options.model = modelSelection;
   return options;
@@ -369,6 +491,8 @@ function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partia
   const options: Partial<AgentOptions> = {
     apiKey: payload.apiKey?.trim() || undefined,
   };
+  const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
+  if (idempotencyKey) options.idempotencyKey = idempotencyKey;
   const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
   if (modelSelection) options.model = modelSelection;
   return options;
@@ -509,9 +633,10 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     return {};
   }
   if (req.type === "cloud.send.stream") {
-    const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
     const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
-    const sendOpts = modelSelection ? { model: modelSelection } : undefined;
+    await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
+    const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
+    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey);
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,
@@ -532,7 +657,8 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
   if (req.type === "cloud.followup") {
     const cloudAgent = await Agent.resume(req.payload.agentId, buildCloudResumeOptions(req.payload));
     const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
-    const sendOpts = modelSelection ? { model: modelSelection } : undefined;
+    await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
+    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey);
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,
@@ -556,13 +682,12 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
       await entry.run.cancel();
       return { ok: true };
     }
-    const run = await Agent.getRun(req.payload.runId, {
+    await Agent.cancelRun(req.payload.runId, {
       runtime: "cloud",
       agentId: req.payload.agentId,
       apiKey: req.payload.apiKey?.trim() || undefined,
     });
-    await run.cancel();
-    return { ok: true, viaGetRun: true };
+    return { ok: true, viaCancelRun: true };
   }
   if (req.type === "cloud.run.attach") {
     const run = await Agent.getRun(req.payload.runId, {
@@ -684,7 +809,7 @@ process.on("message", (raw: unknown) => {
       const result = await dispatch(req);
       post({ type: "response", requestId: req.requestId, ok: true, result });
     } catch (error) {
-      post({ type: "response", requestId: req.requestId, ok: false, error: errorMessage(error) });
+      post({ type: "response", requestId: req.requestId, ok: false, ...classifyWorkerError(error) });
     }
   })();
 });

@@ -7,6 +7,7 @@ export type ModelPickerSearchableItem = {
   displayName?: string;
   shortName?: string;
   subProvider?: string;
+  aliases?: string[];
   family: ProviderFamily;
   /** Provider display label. Falls back to `family` when omitted. */
   providerDisplayName?: string;
@@ -122,6 +123,7 @@ function getModelPickerSearchFields(item: ModelPickerSearchableItem): string[] {
   return [
     normalizeSearchQuery(resolveName(item)),
     ...(item.shortName ? [normalizeSearchQuery(item.shortName)] : []),
+    ...(item.aliases ?? []).map((alias) => normalizeSearchQuery(alias)).filter(Boolean),
     ...(item.subProvider ? [normalizeSearchQuery(item.subProvider)] : []),
     normalizeSearchQuery(item.family),
     normalizeSearchQuery(resolveProviderDisplayName(item)),
@@ -148,6 +150,7 @@ function scoreModelPickerSearchToken(
 export function buildModelPickerSearchText(item: ModelPickerSearchableItem): string {
   return normalizeSearchQuery(
     [resolveName(item), item.shortName, item.subProvider, item.family, resolveProviderDisplayName(item)]
+      .concat(item.aliases ?? [])
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .join(" "),
   );

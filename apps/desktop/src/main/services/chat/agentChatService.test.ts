@@ -546,7 +546,9 @@ vi.mock("./cursorSdkPool", () => ({
         if (type === "cloud.send.stream") {
           mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
           if (mockState.cursorSdkCloudResponses.has(type)) {
-            return mockState.cursorSdkCloudResponses.get(type);
+            const response = mockState.cursorSdkCloudResponses.get(type);
+            if (response instanceof Error) throw response;
+            return response;
           }
           return {
             agentId: "cloud-agent-1",
@@ -558,7 +560,9 @@ vi.mock("./cursorSdkPool", () => ({
         if (type === "cloud.followup") {
           mockState.cursorSdkCloudRequests.push({ type, payload: (payload as Record<string, unknown>) ?? {} });
           if (mockState.cursorSdkCloudResponses.has(type)) {
-            return mockState.cursorSdkCloudResponses.get(type);
+            const response = mockState.cursorSdkCloudResponses.get(type);
+            if (response instanceof Error) throw response;
+            return response;
           }
           return {
             agentId: (payload as Record<string, unknown>)?.agentId ?? "cloud-agent-1",
@@ -15388,6 +15392,7 @@ describe("createAgentChatService", () => {
       const sentPayload = cloudCalls[0].payload;
       expect(sentPayload.repoUrl).toBe("https://github.com/example/repo.git");
       expect(typeof sentPayload.promptText).toBe("string");
+      expect(String(sentPayload.idempotencyKey ?? "")).toMatch(new RegExp(`^ade:${session.id}:.+:cursor-cloud:create$`));
 
       const refreshed = await service.getSessionSummary(session.id);
       expect(refreshed?.cursorCloudAgentId).toBe("cloud-agent-1");
@@ -15478,6 +15483,58 @@ describe("createAgentChatService", () => {
       expect(types).toEqual(expect.arrayContaining(["cloud.send.stream", "cloud.followup"]));
       const followup = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.followup");
       expect(followup?.payload.agentId).toBe("cloud-agent-1");
+      expect(String(followup?.payload.idempotencyKey ?? "")).toContain(":cursor-cloud:followup");
+    });
+
+    it("surfaces Cursor SDK agent busy conflicts as busy cloud errors", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "First.",
+        runtime: "cloud",
+        cloudOverrides: { repoUrl: "https://github.com/example/repo.git" },
+      } as any, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "done" }> } =>
+          event.event.type === "done" && event.sessionId === session.id,
+      );
+
+      mockState.cursorSdkCloudResponses.set("cloud.followup", Object.assign(
+        new Error("Cursor SDK cloud.followup failed: Cursor agent is already running another task. (agent_busy)"),
+        { code: "agent_busy" },
+      ));
+      events.length = 0;
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Second.",
+        runtime: "cloud",
+      } as any, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+
+      expect(errorEvent.event.message).toContain("already running this agent");
+      expect(errorEvent.event.errorInfo).toMatchObject({
+        category: "busy",
+        provider: "Cursor Cloud",
+      });
     });
 
     it("emits a 'done' event after a cloud send and flips session runtime to cloud", async () => {
