@@ -104,8 +104,9 @@ function event(sessionId: string, sequence: number, type: string): AgentChatEven
 
 async function flushAsyncEffects() {
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 12; i++) {
+      await Promise.resolve();
+    }
   });
 }
 
@@ -159,14 +160,14 @@ describe("AdeCodeApp polling", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps active polling on summary refreshes without hydrating chat history", async () => {
+  it("polls summary refreshes without hydrating chat history", async () => {
     const instance = render(<AdeCodeApp project={project} />);
     await flushAsyncEffects();
 
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
     await flushAsyncEffects();
 

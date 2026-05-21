@@ -1,0 +1,269 @@
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function unwrapStructured(value: unknown): unknown {
+  if (isRecord(value) && isRecord(value.structuredContent)) return value.structuredContent;
+  return value;
+}
+
+function asString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function pickString(record: JsonRecord, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = asString(record[key]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function pickBoolean(record: JsonRecord, keys: string[]): boolean | null {
+  for (const key of keys) {
+    const value = asBoolean(record[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function firstRecordArray(value: unknown, keys: string[]): JsonRecord[] {
+  const root = unwrapStructured(value);
+  if (Array.isArray(root)) return root.filter(isRecord);
+  if (!isRecord(root)) return [];
+  for (const key of keys) {
+    const candidate = root[key];
+    if (Array.isArray(candidate)) return candidate.filter(isRecord);
+  }
+  return [];
+}
+
+function truncate(value: unknown, max = 96): string {
+  const text = (asString(value) ?? "")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[`*_>#|]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function shortIso(value: unknown): string | null {
+  const text = asString(value);
+  if (!text) return null;
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})(?:T(\d{2}:\d{2}))?/);
+  return match ? `${match[1]}${match[2] ? ` ${match[2]}` : ""}` : text;
+}
+
+function statusWord(status: unknown, conclusion?: unknown): "OK" | "FAIL" | "WAIT" | "SKIP" | string {
+  const rawConclusion = asString(conclusion)?.toLowerCase() ?? "";
+  const rawStatus = asString(status)?.toLowerCase() ?? "";
+  const raw = rawConclusion && rawConclusion !== "null" ? rawConclusion : rawStatus;
+  if (!raw) return "unknown";
+  if (["success", "passed", "passing", "completed", "ready", "ok"].includes(raw)) return "OK";
+  if (["failure", "failed", "failing", "error", "timed_out", "cancelled", "action_required", "changes_requested"].includes(raw)) return "FAIL";
+  if (["pending", "running", "in_progress", "queued", "requested", "waiting"].includes(raw)) return "WAIT";
+  if (["neutral", "skipped", "stale"].includes(raw)) return "SKIP";
+  return raw.toUpperCase();
+}
+
+function formatCount(noun: string, count: number): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function commentPreview(record: JsonRecord): string {
+  const author = pickString(record, ["author", "user", "reviewer", "login"]) ?? "unknown";
+  const body = truncate(record.body ?? record.comment ?? record.summary, 84) || "(no body)";
+  return `${author}: ${body}`;
+}
+
+function threadLocation(thread: JsonRecord): string {
+  const path = pickString(thread, ["path", "filePath", "filename"]) ?? "conversation";
+  const line = pickString(thread, ["line", "originalLine", "startLine"]);
+  return line ? `${path}:${line}` : path;
+}
+
+export function formatSystemDetails(args: {
+  project: { projectRoot?: string; workspaceRoot?: string };
+  pid: number;
+  mode?: string;
+}): string {
+  const rows = [
+    ["project", args.project.projectRoot ?? "unknown"],
+    ["workspace", args.project.workspaceRoot ?? "unknown"],
+    ["mode", args.mode ?? "ready"],
+    ["process", String(args.pid)],
+    ["node", process.version],
+    ["platform", `${process.platform} ${process.arch}`],
+  ];
+  return rows.map(([key, value]) => `${key.padEnd(10)} ${value}`).join("\n");
+}
+
+export function formatPrSummary(value: unknown): string {
+  const pr = unwrapStructured(value);
+  if (!isRecord(pr)) return "No PR data.";
+  const number = pickString(pr, ["number", "githubPrNumber", "prNumber"]);
+  const state = pickString(pr, ["state", "status"]) ?? "unknown";
+  const draft = pickBoolean(pr, ["isDraft", "draft"]) === true ? " · draft" : "";
+  const title = pickString(pr, ["title", "name"]) ?? "Untitled PR";
+  const id = pickString(pr, ["id", "prId"]);
+  const lane = pickString(pr, ["laneName", "laneId"]);
+  const head = pickString(pr, ["headBranch", "headRefName", "branchRef", "branch"]);
+  const base = pickString(pr, ["baseBranch", "baseRefName", "baseRef", "targetBranch"]);
+  const url = pickString(pr, ["htmlUrl", "url", "webUrl"]);
+  const mergeable = pickString(pr, ["mergeable", "mergeStateStatus"]);
+  const rows = [
+    `#${number ?? id ?? "?"} · ${state}${draft}`,
+    title,
+    "",
+    id ? `id        ${id}` : null,
+    lane ? `lane      ${lane}` : null,
+    head || base ? `branch    ${head ?? "unknown"}${base ? ` -> ${base}` : ""}` : null,
+    mergeable ? `merge     ${mergeable}` : null,
+    url ? `url       ${url}` : null,
+  ];
+  return rows.filter((row): row is string => row != null).join("\n");
+}
+
+export function formatPrChecks(value: unknown): string {
+  const checks = firstRecordArray(value, ["checks", "items", "results"]);
+  if (!checks.length) return "No PR checks.";
+  let ok = 0;
+  let fail = 0;
+  let wait = 0;
+  for (const check of checks) {
+    const status = statusWord(check.status, check.conclusion);
+    if (status === "OK") ok += 1;
+    else if (status === "FAIL") fail += 1;
+    else if (status === "WAIT") wait += 1;
+  }
+  const summary = [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]
+    .filter(Boolean)
+    .join(" · ") || `${checks.length} check${checks.length === 1 ? "" : "s"}`;
+  return [
+    `PR checks · ${summary}`,
+    "",
+    ...checks.slice(0, 16).map((check) => {
+      const status = statusWord(check.status, check.conclusion).padEnd(4);
+      const name = truncate(pickString(check, ["name", "context", "workflowName"]) ?? "unnamed check", 72);
+      const when = shortIso(check.completedAt ?? check.startedAt);
+      return `${status} ${name}${when ? ` · ${when}` : ""}`;
+    }),
+  ].join("\n");
+}
+
+export function formatPrReview(value: unknown): string {
+  const root = unwrapStructured(value);
+  const reviews = firstRecordArray(root, ["reviews"]);
+  const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
+  const comments = firstRecordArray(root, ["comments", "issueComments"]);
+  const lines = [
+    `PR review · ${formatCount("review", reviews.length)} · ${formatCount("thread", threads.length)} · ${formatCount("comment", comments.length)}`,
+  ];
+  if (reviews.length) {
+    lines.push("", "Reviews");
+    for (const review of reviews.slice(0, 8)) {
+      const state = statusWord(review.state, review.conclusion);
+      const who = pickString(review, ["reviewer", "author", "user"]) ?? "unknown";
+      const body = truncate(review.body, 76);
+      lines.push(`- ${state} ${who}${body ? `: ${body}` : ""}`);
+    }
+  }
+  if (threads.length) {
+    lines.push("", "Review threads");
+    for (const thread of threads.slice(0, 8)) {
+      const state = pickBoolean(thread, ["isResolved", "resolved"]) ? "resolved" : "open";
+      const commentsInThread = Array.isArray(thread.comments) ? thread.comments.filter(isRecord) : [];
+      const firstComment = commentsInThread[0] ?? thread;
+      lines.push(`- ${state} ${threadLocation(thread)} · ${commentPreview(firstComment)}`);
+    }
+  }
+  if (comments.length) {
+    lines.push("", "Issue comments");
+    for (const comment of comments.slice(0, 8)) {
+      lines.push(`- ${commentPreview(comment)}`);
+    }
+  }
+  if (!reviews.length && !threads.length && !comments.length) lines.push("", "No PR reviews or comments.");
+  return lines.join("\n");
+}
+
+export function formatPrComments(value: unknown): string {
+  const root = unwrapStructured(value);
+  const summary = isRecord(root) && isRecord(root.summary) ? root.summary : null;
+  const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
+  const comments = firstRecordArray(root, ["comments", "issueComments"]);
+  const headerParts = [
+    summary ? pickString(summary, ["checksStatus"]) : null,
+    summary ? `${asString(summary.actionableComments) ?? "0"} actionable` : null,
+  ].filter(Boolean);
+  const lines = [`PR comments${headerParts.length ? ` · ${headerParts.join(" · ")}` : ""}`];
+  if (threads.length) {
+    lines.push("", "Review threads");
+    for (const thread of threads.slice(0, 10)) {
+      const state = pickBoolean(thread, ["isResolved", "resolved"]) ? "resolved" : "open";
+      const commentsInThread = Array.isArray(thread.comments) ? thread.comments.filter(isRecord) : [];
+      const firstComment = commentsInThread[0] ?? thread;
+      lines.push(`- ${state} ${threadLocation(thread)} · ${commentPreview(firstComment)}`);
+    }
+  }
+  if (comments.length) {
+    lines.push("", "Issue comments");
+    for (const comment of comments.slice(0, 10)) {
+      lines.push(`- ${commentPreview(comment)}`);
+    }
+  }
+  if (!threads.length && !comments.length) lines.push("", "No actionable PR comments.");
+  return lines.join("\n");
+}
+
+export function formatMemorySearch(value: unknown): string {
+  const root = unwrapStructured(value);
+  const record = isRecord(root) ? root : {};
+  const memories = firstRecordArray(record, ["memories", "items", "results"]);
+  const query = pickString(record, ["query"]) ?? "project";
+  const scope = pickString(record, ["scope"]) ?? "project";
+  const status = pickString(record, ["status"]) ?? "all";
+  if (!memories.length) return `No ${scope} memories matched "${query}" (${status}).`;
+  const lines = [`Memory · ${scope} · ${status} · ${formatCount("match", memories.length)}`, ""];
+  for (const memory of memories.slice(0, 10)) {
+    const meta = [
+      pickString(memory, ["status"]),
+      pickString(memory, ["category"]),
+      pickString(memory, ["importance"]),
+    ].filter(Boolean).join("/");
+    const id = pickString(memory, ["id"]);
+    lines.push(`- ${meta || "memory"}${id ? ` ${id}` : ""}`);
+    lines.push(`  ${truncate(memory.content, 96) || "(empty)"}`);
+  }
+  return lines.join("\n");
+}
+
+export function formatLinearStatus(value: unknown): string {
+  const root = unwrapStructured(value);
+  if (!isRecord(root)) return "Linear status is not available.";
+  const connected = pickBoolean(root, ["connected"]);
+  const tokenStored = pickBoolean(root, ["tokenStored"]);
+  const oauthAvailable = pickBoolean(root, ["oauthAvailable"]);
+  const rows = [
+    ["connected", connected == null ? "unknown" : connected ? "yes" : "no"],
+    ["token", tokenStored == null ? "unknown" : tokenStored ? "stored" : "missing"],
+    ["auth", pickString(root, ["authMode"]) ?? "unknown"],
+    ["oauth", oauthAvailable == null ? "unknown" : oauthAvailable ? "available" : "unavailable"],
+    ["viewer", pickString(root, ["viewerName", "viewerId"]) ?? "not signed in"],
+    ["org", pickString(root, ["organizationName", "organizationUrlKey", "organizationId"]) ?? "unknown"],
+    ["expires", shortIso(root.tokenExpiresAt) ?? "unknown"],
+    ["checked", shortIso(root.checkedAt) ?? "unknown"],
+  ];
+  return rows.map(([key, rowValue]) => `${key.padEnd(10)} ${rowValue}`).join("\n");
+}

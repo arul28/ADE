@@ -3521,7 +3521,6 @@ function buildPrPlan(args: string[]): CliPlan {
     status: "getStatus",
     files: "getFiles",
     "action-runs": "getActionRuns",
-    activity: "getActivity",
     reviews: "getReviews",
     threads: "getReviewThreads",
     deployments: "getDeployments",

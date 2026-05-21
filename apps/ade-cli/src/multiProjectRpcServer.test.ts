@@ -19,6 +19,7 @@ function createRegistry() {
     secretsDir: path.join(root, "home", "secrets"),
     sockDir: path.join(root, "home", "sock"),
     socketPath: path.join(root, "home", "sock", "ade.sock"),
+    desktopBridgeSocketPath: path.join(root, "home", "sock", "desktop-bridge.sock"),
     binDir: path.join(root, "home", "bin"),
     runtimeDir: path.join(root, "home", "runtime"),
   });
@@ -33,6 +34,9 @@ function makeRuntime(label: string) {
     },
     laneService: {
       list: vi.fn(async () => [{ id: `${label}-lane`, name: label }]),
+    },
+    sessionService: {
+      get: vi.fn(() => null),
     },
     syncService: {
       getStatus: vi.fn(async () => ({ role: "brain", label })),

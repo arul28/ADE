@@ -172,6 +172,7 @@ import { createComputerUseArtifactBrokerService } from "./services/computerUse/c
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
+import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
@@ -1077,6 +1078,32 @@ app.whenReady().then(async () => {
     getLogger: () => getActiveContext().logger,
     onEvent: (payload) => broadcast(IPC.builtInBrowserEvent, payload),
   });
+
+  // Side-channel JSON-RPC server that lets the runtime daemon proxy
+  // `ade browser …` CLI calls into this Electron main process.
+  // The daemon runs under ELECTRON_RUN_AS_NODE and can't host the browser
+  // service itself (it needs WebContentsView). The bridge socket lives under
+  // `<adeHome>/sock/desktop-bridge.sock`; the daemon discovers it via
+  // resolveMachineAdeLayout() or ADE_DESKTOP_BRIDGE_SOCKET_PATH.
+  const builtInBrowserBridgeLogger = createFileLogger(
+    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
+  );
+  const builtInBrowserBridgeSocketPath =
+    process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || machineAdeLayout.desktopBridgeSocketPath;
+  let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
+  try {
+    builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
+      socketPath: builtInBrowserBridgeSocketPath,
+      service: builtInBrowserService,
+      logger: builtInBrowserBridgeLogger,
+    });
+  } catch (error) {
+    builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
+      socketPath: builtInBrowserBridgeSocketPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   const loadPty = () => {
     // node-pty is a native dependency; keep the require inside the main process runtime.
@@ -5502,6 +5529,11 @@ app.whenReady().then(async () => {
       }
       try {
         builtInBrowserService.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        builtInBrowserBridgeServer?.dispose();
       } catch {
         // ignore
       }

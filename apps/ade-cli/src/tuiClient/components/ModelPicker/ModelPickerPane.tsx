@@ -35,14 +35,16 @@ function ModelPickerSearchBar({
   searchMode: boolean;
   width: number;
 }) {
-  const displayed = endTruncate(query || "search models…", Math.max(8, width - 4));
+  const displayed = endTruncate(query || "search models…", Math.max(8, width - 8));
   return (
     <Box flexDirection="row" marginBottom={1}>
+      <Text color={searchMode ? theme.color.violet : theme.color.borderSoft}>[</Text>
       <Text color={searchMode ? theme.color.violet : theme.color.t4}>{searchMode ? "▸" : "/"}</Text>
-      <Text> </Text>
+      <Text color={theme.color.borderSoft}> </Text>
       <Text color={query ? theme.color.t1 : theme.color.t4} dimColor={!query}>
         {displayed}
       </Text>
+      <Text color={searchMode ? theme.color.violet : theme.color.borderSoft}>]</Text>
     </Box>
   );
 }
@@ -56,7 +58,7 @@ function ModelPickerRail({
   selectedIndex: number;
   width: number;
 }) {
-  const labelWidth = Math.max(6, Math.min(14, width - 4));
+  const labelWidth = Math.max(4, Math.min(9, width - 4));
   return (
     <Box flexDirection="column" marginRight={1}>
       {entries.map((entry, index) => {
@@ -93,6 +95,10 @@ function ModelListRow({
 }) {
   const labelMax = Math.max(8, width - 4);
   const starColor = entry.isFavorite ? theme.color.warning : theme.color.t5;
+  const brand = theme.provider(entry.family);
+  const activeChip = active ? " now" : "";
+  const localChip = entry.family === "ollama" || entry.family === "lmstudio" ? " local" : "";
+  const chipWidth = activeChip.length + localChip.length;
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
@@ -102,6 +108,7 @@ function ModelListRow({
         <Text color={starColor}>
           {entry.isFavorite ? " ★" : " ☆"}
         </Text>
+        <Text color={brand.color}> {brand.glyph}</Text>
         <Text
           color={
             !entry.isAvailable
@@ -116,17 +123,17 @@ function ModelListRow({
           bold={selected || active}
         >
           {" "}
-          {endTruncate(entry.displayName, labelMax)}
+          {endTruncate(entry.displayName, Math.max(6, labelMax - chipWidth - 4))}
         </Text>
         {active ? (
-          <Text color={theme.color.t4} dimColor>
-            {" "}
-            ·{" "}now
-          </Text>
+          <Text color={theme.color.violet}> now</Text>
+        ) : null}
+        {localChip ? (
+          <Text color={theme.color.running}> local</Text>
         ) : null}
       </Box>
       {entry.subProvider ? (
-        <Box marginLeft={4}>
+        <Box marginLeft={6}>
           <Text color={theme.color.t4} dimColor>
             {endTruncate(entry.subProvider, labelMax - 2)}
           </Text>
@@ -166,6 +173,9 @@ export function ModelPickerPane({
 }) {
   const innerWidth = Math.max(20, width - 4);
   const railEntry = state.railEntries[state.railIndex] ?? state.railEntries[0];
+  const activeEntry = state.activeModelId
+    ? state.entries.find((entry) => entry.modelId === state.activeModelId) ?? null
+    : null;
   const headingLabel = state.query.trim()
     ? "Search results"
     : railEntry?.kind === "favorites"
@@ -183,11 +193,22 @@ export function ModelPickerPane({
     <Box flexDirection="column">
       <ModelPickerSearchBar query={state.query} searchMode={state.searchMode} width={innerWidth} />
 
+      <Box flexDirection="column" marginBottom={1}>
+        <Text color={theme.color.t4} dimColor>
+          {state.entries.length} model{state.entries.length === 1 ? "" : "s"} · {headingLabel}
+        </Text>
+        {activeEntry ? (
+          <Text color={theme.color.violet} wrap="truncate-end">
+            Using {theme.provider(activeEntry.family).glyph} {endTruncate(activeEntry.displayName, Math.max(8, innerWidth - 10))}
+          </Text>
+        ) : null}
+      </Box>
+
       <Box flexDirection="row">
         <ModelPickerRail
           entries={state.railEntries}
           selectedIndex={state.railIndex}
-          width={Math.max(10, Math.floor(innerWidth / 3))}
+          width={Math.max(8, Math.floor(innerWidth / 4))}
         />
 
 	        <Box flexDirection="column" flexGrow={1}>

@@ -6,7 +6,7 @@ import { MissionComputerUsePanel } from "./MissionComputerUsePanel";
 
 type ArtifactGroupMode = "phase" | "step" | "worker" | "type";
 
-const ARTIFACT_GROUP_MODES: ArtifactGroupMode[] = ["phase", "step", "worker", "type"];
+const ARTIFACT_GROUP_MODES: readonly ArtifactGroupMode[] = ["phase", "step", "worker", "type"];
 
 function isExternalUri(value: string): boolean {
   return /^https?:\/\//i.test(value);

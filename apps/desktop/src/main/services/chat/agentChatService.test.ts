@@ -4399,6 +4399,174 @@ describe("createAgentChatService", () => {
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
     });
+
+    it("flags task_type=background as background and propagates taskType through the lifecycle", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Bash run_in_background-style task: no Task tool; SDK directly emits
+        // task_started with task_type: "background".
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-bg-1",
+          description: "Launch dev desktop with desktop RPC socket enabled",
+          task_type: "background",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-bg-1",
+          status: "completed",
+          summary: "Process exited",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-bg-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Kick off a background task.",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-1",
+      );
+
+      const startEnvelope = events.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-bg-1",
+      );
+      const resultEnvelope = events.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "task-bg-1",
+      );
+
+      expect((startEnvelope?.event as any)?.background).toBe(true);
+      expect((startEnvelope?.event as any)?.taskType).toBe("background");
+      expect((resultEnvelope?.event as any)?.taskType).toBe("background");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("suppresses task_* events entirely when the SDK marks them skip_transcript", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-skip-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Ambient task — session title generator. Must not surface anywhere.
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-ambient-1",
+          description: "Generate session title",
+          task_type: "other",
+          skip_transcript: true,
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "task-ambient-1",
+          summary: "thinking…",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-ambient-1",
+          status: "completed",
+          summary: "Done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-skip-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Drive an ambient task.",
+      });
+
+      // Give the runtime a beat to flush events for the ambient task.
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.event.type === "status")).toBe(true);
+      });
+
+      const subagentEvents = events.filter((e) =>
+        e.event.type === "subagent_started"
+        || e.event.type === "subagent_progress"
+        || e.event.type === "subagent_result"
+      );
+
+      expect(subagentEvents).toEqual([]);
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
   });
 
   // --------------------------------------------------------------------------

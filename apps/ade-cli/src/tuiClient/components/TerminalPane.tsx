@@ -103,6 +103,96 @@ function stripTerminalControls(value: string): string {
     .replace(/\r(?!\n)/g, "\n");
 }
 
+const CLAUDE_SPINNER_RE = /^[✻✶✳✢✽·◐◑◒◓⏺●○]\s*(?:\d+|[.·…-]+)?$/;
+const CLAUDE_SPINNER_STATUS_WORDS = [
+  "baked",
+  "churned",
+  "churning",
+  "cogitated",
+  "crunched",
+  "crunching",
+  "hatching",
+  "orbiting",
+  "pondered",
+  "thinking",
+  "tinkered",
+  "topsy",
+  "topy",
+  "working",
+] as const;
+const CLAUDE_SPINNER_STATUS_RE = new RegExp(
+  `^[✻✶✳✢✽·◐◑◒◓]\\s*(?:${CLAUDE_SPINNER_STATUS_WORDS.join("|")})\\b`,
+  "i",
+);
+const CLAUDE_USAGE_STATUS_RE = /^\(?\d+s\s+·\s+↓\s*[\d.]+[kKmM]?\s+tokens?\)?$/;
+const TERMINAL_BOX_CHROME_RE = /^[\s╭╮╰╯│┃┌┐└┘├┤┬┴┼─━═║╔╗╚╝╟╢╤╧╪]+$/;
+const CLAUDE_INPUT_CHROME_RE = /^│\s*(?:[>›?]\s*.*)?\s*│?$/;
+const CLAUDE_PROMPT_CHROME_RE = /^[❯>›]\s*/;
+const CLAUDE_FOOTER_CHROME_RE = /^(?:esc|ctrl|shift\+tab|tab|enter|return|auto-accept|bypass permissions|accept edits|edit mode)\b/i;
+const CLAUDE_SESSION_CHROME_RE = /(?:Claude Code\s*v?\d|What's new|Welcome back|release-notes|Statusline JSON|Claude Max|Organization|MCP server failed|connector needs auth|Claude in Chrome enabled|Resume this session with:|claude --resume|for shortcuts|low\s*·\s*\/effort|Added\s*`?claude|agent_id|parent_agent_id|~\/.*(?:Projects|worktrees)|\/mcp|\/chrome)/i;
+const CLAUDE_LOGO_RE = /[▐▛▜▝▘█]{2,}/;
+
+function normalizeClosedTerminalLine(line: string): string {
+  return line
+    .replace(/\u00a0/g, " ")
+    .replace(/^[⏺●]\s*/, "");
+}
+
+function isShortClaudeSpinnerResidue(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 10) return false;
+  if (!/^[✻✶✳✢✽·◐◑◒◓….\sA-Za-z]+$/.test(trimmed)) return false;
+  const letters = trimmed.replace(/[✻✶✳✢✽·◐◑◒◓….\s]/g, "").toLowerCase();
+  if (!letters) return true;
+  if (letters === "ok" || letters === "yes" || letters === "no") return false;
+  return letters.length <= 1
+    || (letters.length <= 4 && /^[a-z]+$/.test(letters))
+    || CLAUDE_SPINNER_STATUS_WORDS.some((word) => word.includes(letters));
+}
+
+function isNoisyClosedTerminalLine(line: string): boolean {
+  const normalized = normalizeClosedTerminalLine(line);
+  const trimmed = normalized.trim();
+  if (!trimmed) return false;
+  if (CLAUDE_SPINNER_RE.test(trimmed)) return true;
+  if (CLAUDE_SPINNER_STATUS_RE.test(trimmed)) return true;
+  if (CLAUDE_USAGE_STATUS_RE.test(trimmed)) return true;
+  if (TERMINAL_BOX_CHROME_RE.test(trimmed)) return true;
+  if (CLAUDE_INPUT_CHROME_RE.test(trimmed) && /[╭╮╰╯│┃─━═]/.test(normalized)) return true;
+  if (CLAUDE_PROMPT_CHROME_RE.test(trimmed)) return true;
+  if (CLAUDE_FOOTER_CHROME_RE.test(trimmed)) return true;
+  if (CLAUDE_SESSION_CHROME_RE.test(trimmed)) return true;
+  if (CLAUDE_LOGO_RE.test(trimmed)) return true;
+  if (/^·\s*esc to interrupt$/i.test(trimmed)) return true;
+  if (/^←\s*for agents$/i.test(trimmed)) return true;
+  return false;
+}
+
+function compactClosedTerminalTranscript(value: string): string[] {
+  const lines = stripTerminalControls(value).split(/\r\n|\n|\r/);
+  const compacted: string[] = [];
+  let lastWasBlank = false;
+  for (const rawLine of lines) {
+    const line = normalizeClosedTerminalLine(rawLine).trimEnd();
+    if (isNoisyClosedTerminalLine(line)) continue;
+    const blank = line.trim().length === 0;
+    if (blank && lastWasBlank) continue;
+    compacted.push(line);
+    lastWasBlank = blank;
+  }
+  while (compacted.length && compacted[0]!.trim().length === 0) compacted.shift();
+  while (compacted.length && compacted[compacted.length - 1]!.trim().length === 0) compacted.pop();
+  const numericResidueCount = compacted.filter((line) => /^\d{1,3}$/.test(line.trim())).length;
+  if (numericResidueCount >= 4) {
+    return compacted.filter((line) => !/^\d{1,3}$/.test(line.trim()));
+  }
+  const spinnerResidueCount = compacted.filter(isShortClaudeSpinnerResidue).length;
+  if (spinnerResidueCount >= 4) {
+    return compacted.filter((line) => !isShortClaudeSpinnerResidue(line));
+  }
+  return compacted;
+}
+
 function rgbColor(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const safe = Math.max(0, Math.min(0xffffff, Math.floor(value)));
@@ -226,9 +316,11 @@ export function styledRowsFromSnapshotRows(rows: TerminalSnapshotRow[], maxRows:
 }
 
 function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number): TerminalStyledRow[] {
-  const text = stripTerminalControls(transcript ?? "").trimEnd();
-  if (!text) return [{ runs: [{ text: "No terminal output yet.", style: {} }] }];
-  return text.split(/\r\n|\n|\r/).slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
+  const lines = compactClosedTerminalTranscript(transcript ?? "");
+  if (!lines.length) {
+    return [{ runs: [{ text: "Terminal closed. Resume the chat to view live output.", style: {} }] }];
+  }
+  return lines.slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
 }
 
 function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number): TerminalStyledRow[] {

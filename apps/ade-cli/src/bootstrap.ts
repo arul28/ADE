@@ -89,6 +89,11 @@ import {
 } from "../../desktop/src/main/services/appControl/appControlService";
 import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
+import {
+  createBuiltInBrowserDesktopBridgeClient,
+  type BuiltInBrowserDesktopBridgeClient,
+} from "./services/builtInBrowser/desktopBridgeClient";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import {
@@ -841,6 +846,21 @@ export async function createAdeRuntime(args: {
         }),
       });
 
+  // `built_in_browser` is hosted by the desktop's Electron main process (the
+  // browser pane owns a WebContentsView). The runtime daemon proxies calls
+  // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+  // individual calls fail clearly. Override the socket path with
+  // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+  // ADE home.
+  const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
+    ? null
+    : createBuiltInBrowserDesktopBridgeClient({
+        socketPath:
+          process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+          || resolveMachineAdeLayout().desktopBridgeSocketPath,
+        logger,
+      });
+
   const aiOrchestratorService = createAiOrchestratorService({
     db,
     logger,
@@ -1187,6 +1207,7 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService,
     iosSimulatorService,
     appControlService,
+    builtInBrowserService: builtInBrowserBridge as unknown as BuiltInBrowserService | null,
     macosVmService,
     orchestratorService,
     aiOrchestratorService,
@@ -1205,6 +1226,7 @@ export async function createAdeRuntime(args: {
       swallow(() => portAllocationService.dispose());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
+      swallow(() => builtInBrowserBridge?.dispose());
       swallow(() => macosVmService?.dispose());
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());

@@ -146,6 +146,7 @@ function createRegistry() {
     secretsDir: path.join(root, "home", "secrets"),
     sockDir: path.join(root, "home", "sock"),
     socketPath: path.join(root, "home", "sock", "ade.sock"),
+    desktopBridgeSocketPath: path.join(root, "home", "sock", "desktop-bridge.sock"),
     binDir: path.join(root, "home", "bin"),
     runtimeDir: path.join(root, "home", "runtime"),
   });

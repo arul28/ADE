@@ -332,6 +332,66 @@ describe("deriveChatSubagentSnapshots", () => {
     ]);
   });
 
+  it("propagates Claude SDK taskType and marks background-typed tasks as background", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "task-bg-bash",
+          parentToolUseId: "tool-use-9",
+          description: "Launch dev desktop with desktop RPC socket enabled",
+          background: true,
+          taskType: "background",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.500Z",
+        event: {
+          type: "subagent_started",
+          taskId: "task-workflow",
+          description: "Run the /spec workflow",
+          background: true,
+          taskType: "local_workflow",
+          workflowName: "spec",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "task-agent",
+          agentId: "agent-1",
+          agentType: "Explore",
+          parentToolUseId: "tool-use-10",
+          description: "Find Subagents panel + chat logs",
+          taskType: "subagent",
+        },
+      },
+    ];
+
+    const snapshots = deriveChatSubagentSnapshots(events);
+    const byTask = new Map(snapshots.map((snap) => [snap.taskId, snap]));
+
+    expect(byTask.get("task-bg-bash")).toEqual(expect.objectContaining({
+      background: true,
+      taskType: "background",
+    }));
+    expect(byTask.get("task-workflow")).toEqual(expect.objectContaining({
+      background: true,
+      taskType: "local_workflow",
+      workflowName: "spec",
+    }));
+    expect(byTask.get("task-agent")).toEqual(expect.objectContaining({
+      background: false,
+      taskType: "subagent",
+      agentType: "Explore",
+    }));
+  });
+
   it("keys Claude snapshots by SDK agent id and preserves background state", () => {
     const events: AgentChatEventEnvelope[] = [
       {

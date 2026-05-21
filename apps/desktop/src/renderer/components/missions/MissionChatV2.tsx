@@ -365,12 +365,12 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
       return;
     }
     if (
-      (jumpTarget.kind === "worker" || jumpTarget.kind === "teammate" || jumpTarget.kind === "coordinator" || jumpTarget.kind === "agent")
+      (jumpTarget.kind === "worker" || jumpTarget.kind === "workers" || jumpTarget.kind === "teammate" || jumpTarget.kind === "coordinator" || jumpTarget.kind === "agent")
       && !threads.length
     ) {
       return;
     }
-    if (jumpTarget.kind === "worker" || jumpTarget.kind === "agent") {
+    if (jumpTarget.kind === "worker" || jumpTarget.kind === "workers" || jumpTarget.kind === "agent") {
       if (!threads.length) return;
       const ct = threads.find((t) => t.threadType === "coordinator");
       setSelectedChannelId(ct ? `thread:${ct.id}` : "global");
@@ -380,7 +380,10 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     onJumpHandled();
   }, [jumpTarget, onJumpHandled, threads]);
 
-  useEffect(() => { if (selectedChannel?.kind !== "worker" && selectedChannel?.kind !== "orchestrator") return; if (threadMessages.length > 0) setJumpNotice(null); }, [selectedChannel, threadMessages.length]);
+  useEffect(() => {
+    if (selectedChannel?.kind !== "worker" && selectedChannel?.kind !== "orchestrator") return;
+    if (threadMessages.length > 0) setJumpNotice(null);
+  }, [selectedChannel, threadMessages.length]);
 
   // ── Displayed messages ──
   const displayMessages = useMemo(() => {
@@ -408,7 +411,14 @@ export const MissionChatV2 = React.memo(function MissionChatV2({
     return threadMessages;
   }, [selectedChannel, threadMessages, missionId, runId, runView]);
 
-  const attemptNameMap = useMemo(() => { const m = new Map<string, string>(); for (const t of threads) if (t.attemptId) m.set(t.attemptId, t.title || (t.threadType === "coordinator" ? "Orchestrator" : "Worker")); return m; }, [threads]);
+  const attemptNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const thread of threads) {
+      if (!thread.attemptId) continue;
+      map.set(thread.attemptId, thread.title || (thread.threadType === "coordinator" ? "Orchestrator" : "Worker"));
+    }
+    return map;
+  }, [threads]);
   const threadIntervention = useMemo(
     () => findThreadIntervention({ interventions, selectedChannel, runId }),
     [interventions, runId, selectedChannel],

@@ -619,7 +619,7 @@ function renderPane(args: {
   };
 }
 
-describe("PrDetailPane issue resolver CTA", () => {
+describe("PrDetailPane", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
       convergenceStatesByPrId: {},

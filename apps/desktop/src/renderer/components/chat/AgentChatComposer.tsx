@@ -33,14 +33,19 @@ import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
-import { getModelById, modelSupportsFastMode } from "../../../shared/modelRegistry";
+import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
+import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
 import { CodexTokenInline } from "./codex/CodexTokenInline";
-import { ChatAttachmentTray, type ChatAttachmentPendingImage } from "./ChatAttachmentTray";
+import {
+  ChatAttachmentTray,
+  CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR,
+  type ChatAttachmentPendingImage,
+} from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { LinearIssueBrowser, linearBrowserIssueToLaneIssue } from "../app/LinearIssueBrowser";
@@ -715,6 +720,7 @@ export function AgentChatComposer({
   sdkSlashCommands = [],
   modelId,
   availableModelIds,
+  providerAuthStatus,
   reasoningEffort,
   codexFastMode = false,
   codexTokenUsage = null,
@@ -834,6 +840,7 @@ export function AgentChatComposer({
   sdkSlashCommands?: AgentChatSlashCommand[];
   modelId: string;
   availableModelIds?: string[];
+  providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
   codexTokenUsage?: CodexThreadTokenUsage | null;
@@ -993,6 +1000,7 @@ export function AgentChatComposer({
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const attachmentTrayRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<HTMLDivElement | null>(null);
   const richSelectionRef = useRef<Range | null>(null);
@@ -1161,6 +1169,21 @@ export function AgentChatComposer({
     clearPreviewForPath(path);
     onRemoveAttachment(path);
   }, [clearPreviewForPath, onRemoveAttachment]);
+
+  const focusComposerInput = useCallback(() => {
+    const target = useRichComposer ? richEditorRef.current : textareaRef.current;
+    target?.focus({ preventScroll: true });
+  }, [useRichComposer]);
+
+  const focusLastImageAttachment = useCallback((): boolean => {
+    const targets = Array.from(
+      attachmentTrayRef.current?.querySelectorAll<HTMLElement>(CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR) ?? [],
+    );
+    const target = targets.at(-1);
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }, []);
 
   useEffect(() => {
     const previous = previousImagePreviewUrlsRef.current;
@@ -2424,6 +2447,17 @@ export function AgentChatComposer({
       if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commandMenuRef.current?.selectCurrent(); return; }
     }
 
+    if (event.key === "ArrowUp" && !commandModified && !event.shiftKey && !event.altKey) {
+      const target = event.currentTarget;
+      const atPromptStart = target instanceof HTMLTextAreaElement
+        ? target.selectionStart === 0 && target.selectionEnd === 0
+        : getRichCursorTextOffset() === 0;
+      if (atPromptStart && focusLastImageAttachment()) {
+        event.preventDefault();
+        return;
+      }
+    }
+
     if (event.key === "@" && !commandModified && !event.altKey) {
       if (!canAttach) return;
       // Let @ be typed into textarea; onChange will detect the trigger
@@ -3134,6 +3168,7 @@ export function AgentChatComposer({
               </div>
             ) : null}
             <ChatAttachmentTray
+              ref={attachmentTrayRef}
               attachments={attachments}
               contextAttachments={contextAttachments}
               pendingImageAttachments={pendingImageAttachments}
@@ -3142,6 +3177,7 @@ export function AgentChatComposer({
               onRemove={handleRemoveAttachment}
               onRemoveContext={onRemoveContextAttachment}
               onRemovePendingImageAttachment={removePendingImageAttachment}
+              onFocusPrompt={focusComposerInput}
               className="px-3 py-0"
             />
           </div>
@@ -3373,6 +3409,7 @@ export function AgentChatComposer({
                   onChange={(next) => onParallelSlotModelChange?.(parallelConfiguringIndex, next)}
                   surfaceKey={`chat-composer-parallel-${parallelConfiguringIndex}`}
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={parallelLaunchBusy}
                   compact
@@ -3396,6 +3433,7 @@ export function AgentChatComposer({
                   onChange={onModelChange}
                   surfaceKey="chat-composer"
                   {...(availableModelIds ? { availableModelIds } : {})}
+                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   disabled={modelSelectionLocked}
                   compact

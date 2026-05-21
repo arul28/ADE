@@ -91,6 +91,10 @@ function refreshProviderLabel(provider: AgentChatModelCatalogRefreshProvider): s
   return providerLabel(provider);
 }
 
+function providerIsReady(status: AuthStatus | undefined): boolean {
+  return status === "ok" || status === "limited";
+}
+
 export type ModelPickerContentProps = {
   value: string;
   surfaceKey: string;
@@ -213,9 +217,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, []);
 
   const handleSelectRail = useCallback((next: RailSelection) => {
+    if (next === selection && next !== "favorites" && next !== "recents") {
+      onProviderRailSelect?.(next.slice("provider:".length) as ProviderFamily);
+    }
     setSelection(next);
     searchRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [onProviderRailSelect, selection]);
 
   // authOnly === true hides models whose family isn't ready;
   // when off, all models are shown (including unauthed, which the row dims + offers sign-in).
@@ -621,6 +628,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                 opencodeBinaryInstalled={opencodeBinaryInstalled}
                 opencodeBinaryKnown={opencodeBinaryKnown}
                 refreshingProvider={activeProviderRefreshing ? activeRefreshProvider : null}
+                providerAuthStatus={effectiveAuth}
                 {...(onOpenSignIn ? { onOpenSignIn } : {})}
               />
             ) : (
@@ -675,6 +683,7 @@ function EmptyState({
   opencodeBinaryInstalled,
   opencodeBinaryKnown,
   refreshingProvider,
+  providerAuthStatus,
   onOpenSignIn,
 }: {
   selection: RailSelection;
@@ -682,6 +691,7 @@ function EmptyState({
   opencodeBinaryInstalled: boolean;
   opencodeBinaryKnown: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
+  providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: () => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
@@ -714,7 +724,13 @@ function EmptyState({
         </div>
       );
     }
-    return <ProviderEmptyState family={family} {...(onOpenSignIn ? { onOpenSignIn } : {})} />;
+    return (
+      <ProviderEmptyState
+        family={family}
+        mode={providerIsReady(providerAuthStatus?.[family]) ? "discovery-empty" : "default"}
+        {...(onOpenSignIn ? { onOpenSignIn } : {})}
+      />
+    );
   }
   let body = "No models match this view.";
   if (searchActive) body = "No models match your search.";
