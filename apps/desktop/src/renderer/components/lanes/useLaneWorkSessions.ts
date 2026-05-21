@@ -87,6 +87,8 @@ export function useLaneWorkSessions(laneId: string | null) {
   const hasActiveSessionsRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
   const hasFetchedOnceRef = useRef(false);
+  const laneIdRef = useRef<string | null>(laneId);
+  const projectRootRef = useRef<string | null>(projectRoot);
   const scopeKeyRef = useRef("");
 
   const currentLane = useMemo(
@@ -101,8 +103,10 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [projectRoot, laneId]);
 
   useEffect(() => {
+    laneIdRef.current = laneId;
+    projectRootRef.current = projectRoot;
     scopeKeyRef.current = scopeKey;
-  }, [scopeKey]);
+  }, [laneId, projectRoot, scopeKey]);
 
   const hasStoredState = scopeKey.length > 0 && scopeKey in laneWorkViewByScope;
   const laneViewState = scopeKey
@@ -123,7 +127,9 @@ export function useLaneWorkSessions(laneId: string | null) {
 
   const refresh = useCallback(
     async (options: { showLoading?: boolean; force?: boolean } = {}) => {
-      if (!laneId) {
+      const targetLaneId = laneIdRef.current;
+      const targetProjectRoot = projectRootRef.current;
+      if (!targetLaneId) {
         setSessions([]);
         hasLoadedOnceRef.current = true;
         return;
@@ -153,8 +159,8 @@ export function useLaneWorkSessions(laneId: string | null) {
       try {
         const requestedScopeKey = scopeKeyRef.current;
         const rows = await listSessionsCached(
-          { laneId, limit: 200 },
-          { force: Boolean(options.force), projectRoot },
+          { laneId: targetLaneId, limit: 200 },
+          { force: Boolean(options.force), projectRoot: targetProjectRoot },
         );
         if (scopeKeyRef.current !== requestedScopeKey) return;
         const nextSessions = rows.filter((session) => !isRunOwnedSession(session));
@@ -178,7 +184,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         }
       }
     },
-    [laneId, projectRoot],
+    [],
   );
 
   const scheduleBackgroundRefresh = useCallback((delayMs = 300) => {

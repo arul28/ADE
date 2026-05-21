@@ -35,7 +35,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/context", description: "Show Claude context usage", placement: "right", providers: ["claude"] },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"] },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right" },
-  { name: "/skills", description: "List Claude skills from user and project config", placement: "right", providers: ["claude"] },
+  { name: "/skills", description: "List agent skills from project, user, and ADE bundled roots", placement: "right" },
   { name: "/compact", description: "Compact the active chat context", placement: "chat", argumentHint: "[instructions]", providers: ["claude", "codex"] },
   { name: "/init", description: "Generate AGENTS.md and Claude pointer files", placement: "right", providers: ["claude"] },
   { name: "/usage", description: "Show Claude usage through the active SDK session", placement: "chat", providers: ["claude"] },

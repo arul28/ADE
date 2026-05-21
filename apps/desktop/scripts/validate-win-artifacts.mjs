@@ -17,6 +17,18 @@ const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // ONNX payloads. Keep a ceiling, but size it to the current required toolset.
 const DEFAULT_MAX_UNPACKED_BYTES = 720 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const bundledAgentSkills = [
+  "ade-cli-control-plane",
+  "ade-ios-simulator",
+  "ade-app-control",
+  "ade-browser",
+  "ade-pr-workflows",
+  "ade-lanes-git",
+  "ade-cto-missions",
+  "ade-proof-artifacts",
+  "ade-macos-vm",
+  "ade-deeplinks",
+];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -111,6 +123,16 @@ async function assertPathExists(targetPath, description) {
     await fsp.access(targetPath);
   } catch {
     fail(`Missing ${description}: ${targetPath}`);
+  }
+}
+
+async function assertBundledAgentSkills(agentSkillsRoot) {
+  await assertPathExists(agentSkillsRoot, "bundled ADE agent skills root");
+  for (const skillName of bundledAgentSkills) {
+    await assertPathExists(
+      path.join(agentSkillsRoot, skillName, "SKILL.md"),
+      `bundled ADE agent skill ${skillName}`,
+    );
   }
 }
 
@@ -486,7 +508,7 @@ async function validatePackagedRuntime(appDir) {
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
-  const bundledAgentSkillsPath = path.join(resourcesPath, "agent-skills", "ade-cli-control-plane", "SKILL.md");
+  const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");
   const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
@@ -513,7 +535,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
   await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
-  await assertPathExists(bundledAgentSkillsPath, "bundled ADE agent skills");
+  await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(sqlJsModulePath, "unpacked sql.js module");
   await assertPathExists(path.join(onnxRuntimeWinPath, "onnxruntime_binding.node"), "Windows ONNX Runtime native addon");

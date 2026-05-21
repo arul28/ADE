@@ -49,6 +49,7 @@ import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
+import { buildAdePrUrl } from "../../../../shared/deeplinks";
 
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
@@ -2024,7 +2025,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!deps.prService) return { success: false, error: "PR service is not available." };
       try {
         const pr = await deps.prService.createFromLane({ laneId, title, body: body ?? "", draft });
-        return { success: true, pr };
+        return { success: true, pr, githubUrl: pr.githubUrl, adeUrl: buildAdePrUrl(pr) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

@@ -4,7 +4,12 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "./types";
-import { ADE_AGENT_SKILLS_DIRS_ENV, getAdeAgentSkillRootsForPrompt, joinAdeAgentSkillRoots } from "./agentSkillRoots";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  getAdeAgentSkillRootsForPrompt,
+  getAgentSkillRootCandidates,
+  joinAdeAgentSkillRoots,
+} from "./agentSkillRoots";
 import { buildAdeCliAgentGuidance, buildAdeCliInlineGuidance } from "./adeCliGuidance";
 import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { commandArrayToLine, quoteShellArg } from "./shell";
@@ -300,7 +305,9 @@ export function buildTrackedCliLaunchCommand(args: {
 }): TrackedCliLaunchCommand {
   validateLaunchProfilePermissionMode(args.provider, args.permissionMode);
   const initialPrompt = normalizeInitialPrompt(args.initialPrompt);
-  const skillRoots = getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath ?? undefined });
+  const skillRoots = args.laneWorktreePath
+    ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
+    : getAdeAgentSkillRootsForPrompt();
   const agentSkillEnv = adeAgentSkillEnv(skillRoots);
 
   if (args.provider === "claude") {

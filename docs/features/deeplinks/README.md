@@ -90,6 +90,12 @@ ADE CLI — outbound + inbound:
   - `ade linear install` writes `~/.linear/coding-tools.json` so Linear's
     "Open issue in coding tool" dropdown can launch ADE. Backs up the
     previous file alongside.
+- `apps/ade-cli/src/cli.ts` and `apps/ade-cli/src/adeRpcServer.ts` —
+  PR creation formatters/tools include the ADE HTTPS PR URL next to the
+  GitHub URL when the PR number and repo are known. Agents should use
+  that `adeUrl` in final handoffs; if a PR was adopted through another
+  path, `ade link pr <owner/repo> <number> --no-clipboard` mints the
+  same URL.
 - `apps/ade-cli/src/tuiClient/deeplinkRow.ts` — pure helper used by the
   TUI's `Ctrl+Y` keybinding. Resolves the focused row (lane / PR) to a
   canonical `ade://` URL, including parsing GitHub PR URLs to lift
@@ -202,6 +208,13 @@ so the next call replaces it in place rather than appending. When the PR
 is first created, the footer initially carries the branch link only;
 once the PR number is known, a follow-up patch re-renders the block
 with the PR link included.
+
+Agent closeout still includes explicit links. `ade prs create` and the
+private `create_pr_from_lane` action return both `githubUrl` and
+`adeUrl` when available, and the text formatter prints them as separate
+rows. The GitHub PR body footer is automatic, but the final chat or TUI
+handoff should still include the GitHub URL and the ADE HTTPS PR URL so
+the user can jump directly to either GitHub or the ADE PRs tab.
 
 ## Channel handling
 

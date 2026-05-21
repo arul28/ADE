@@ -1,6 +1,6 @@
 import Foundation
 
-/// Central router for `ade://` URLs and deep-link requests posted from the
+/// Central router for ADE URLs and deep-link requests posted from the
 /// notification delegate. Existing tab/navigation views listen to
 /// `.adeDeepLinkRequested` and flip their selection when fired; new
 /// cross-machine shapes (lane / repo / extended pr / linear-issue) instead
@@ -23,8 +23,12 @@ final class DeepLinkRouter {
   ///   * `ade://pr/<owner>/<repo>/<number>`
   ///   * `ade://linear-issue/<ADE-123>[?branch=<branch>]`
   ///
+  /// Also accepts the web mirror used by CLI / agent handoff output:
+  /// `https://ade.app/open?type=<lane|branch|pr|linear-issue>&...`.
+  ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
   func handle(_ url: URL) {
+    if routeHttpsOpenURL(url) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
     let pathComponents = url.pathComponents.filter { $0 != "/" }
@@ -76,6 +80,36 @@ final class DeepLinkRouter {
     default:
       return
     }
+  }
+
+  private func routeHttpsOpenURL(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          components.scheme?.lowercased() == "https",
+          components.host?.lowercased() == "ade.app",
+          components.path == "/open" else {
+      return false
+    }
+
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
+    switch query["type"]?.lowercased() {
+    case "lane":
+      guard query["id"]?.isEmpty == false else { return true }
+      postSendToMac(url: url)
+    case "branch":
+      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
+            query["branch"]?.isEmpty == false else { return true }
+      postSendToMac(url: url)
+    case "pr":
+      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
+            ADEDeepLinkURLParsing.positiveInteger(query["number"]) != nil else { return true }
+      postSendToMac(url: url)
+    case "linear-issue":
+      guard query["issue"]?.isEmpty == false else { return true }
+      postSendToMac(url: url)
+    default:
+      break
+    }
+    return true
   }
 
   /// Synthesise a deep link from a notification payload's `sessionId` /

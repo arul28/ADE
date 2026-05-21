@@ -861,6 +861,8 @@ describe("appStore", () => {
     it("activates a warm project tab before the backend switch round trip finishes", async () => {
       const projectA = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
       const projectB = { rootPath: "/p/b", displayName: "B", baseRef: "main" } as any;
+      const cachedLanesB = [{ id: "lane-B2", name: "Lane B2" }] as any[];
+      const cachedSnapshotsB = [{ lane: cachedLanesB[0] }] as any[];
       let resolveSwitch!: (project: typeof projectB) => void;
       (window.ade.project.switchToPath as any).mockReturnValueOnce(
         new Promise((resolve) => {
@@ -879,6 +881,10 @@ describe("appStore", () => {
         laneSelectionByProject: {
           "/p/b": { laneId: "lane-B2", sessionId: "session-B2" },
         },
+        lanes: [{ id: "lane-A1", name: "Lane A1" }] as any[],
+        laneCacheByProject: {
+          "/p/b": { lanes: cachedLanesB, laneSnapshots: cachedSnapshotsB },
+        },
       });
 
       const pending = useAppStore.getState().switchProjectToPath("/p/b");
@@ -890,6 +896,9 @@ describe("appStore", () => {
       );
       expect(useAppStore.getState().selectedLaneId).toBe("lane-B2");
       expect(useAppStore.getState().focusedSessionId).toBe("session-B2");
+      expect(useAppStore.getState().lanes).toBe(cachedLanesB);
+      expect(useAppStore.getState().laneSnapshots).toBe(cachedSnapshotsB);
+      expect(useAppStore.getState().lanesLoading).toBe(false);
       expect(useAppStore.getState().laneSelectionByProject["/p/a"]).toEqual({
         laneId: "lane-A1",
         sessionId: "session-A1",
@@ -967,6 +976,67 @@ describe("appStore", () => {
           "/p/a": true,
           "/p/b": true,
         });
+      } finally {
+        window.setTimeout = originalWindowSetTimeout;
+        vi.useRealTimers();
+      }
+    });
+
+    it("retains project-scoped Work and lane caches for open project tabs even when they are absent from recents", async () => {
+      const originalWindowSetTimeout = window.setTimeout;
+      vi.useFakeTimers();
+      window.setTimeout = globalThis.setTimeout as typeof window.setTimeout;
+      try {
+        const workState = useAppStore.getState().getWorkViewState("/p/c");
+        useAppStore.setState({
+          project: { rootPath: "/p/b", displayName: "B", baseRef: "main" } as any,
+          openProjectTabRoots: ["/p/a", "/p/b", "/p/c"],
+          workViewByProject: {
+            "/p/c": { ...workState, openItemIds: ["session-c"], activeItemId: "session-c", selectedItemId: "session-c" },
+            "/p/d": { ...workState, openItemIds: ["session-d"], activeItemId: "session-d", selectedItemId: "session-d" },
+          },
+          laneWorkViewByScope: {
+            "/p/c::lane-c": { ...workState, openItemIds: ["session-c"] },
+            "/p/d::lane-d": { ...workState, openItemIds: ["session-d"] },
+          },
+          laneSelectionByProject: {
+            "/p/c": { laneId: "lane-c", sessionId: "session-c" },
+            "/p/d": { laneId: "lane-d", sessionId: "session-d" },
+          },
+          laneCacheByProject: {
+            "/p/c": { lanes: [{ id: "lane-c", name: "Lane C" }] as any[], laneSnapshots: [] },
+            "/p/d": { lanes: [{ id: "lane-d", name: "Lane D" }] as any[], laneSnapshots: [] },
+          },
+          sessionsCacheByProject: {
+            "/p/c": [{ id: "session-c" }],
+            "/p/d": [{ id: "session-d" }],
+          },
+        } as any);
+
+        const nextProject = { rootPath: "/p/a", displayName: "A", baseRef: "main" } as any;
+        (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
+        (window.ade.project.listRecent as any).mockResolvedValueOnce([
+          { rootPath: "/p/a" },
+          { rootPath: "/p/b" },
+        ]);
+
+        await useAppStore.getState().switchProjectToPath("/p/a");
+        await vi.advanceTimersByTimeAsync(750);
+
+        expect(useAppStore.getState().workViewByProject["/p/c"]?.openItemIds).toEqual(["session-c"]);
+        expect(useAppStore.getState().laneWorkViewByScope["/p/c::lane-c"]?.openItemIds).toEqual(["session-c"]);
+        expect(useAppStore.getState().laneSelectionByProject["/p/c"]).toEqual({
+          laneId: "lane-c",
+          sessionId: "session-c",
+        });
+        expect(useAppStore.getState().laneCacheByProject["/p/c"]?.lanes[0]?.id).toBe("lane-c");
+        expect(useAppStore.getState().sessionsCacheByProject["/p/c"]).toEqual([{ id: "session-c" }]);
+
+        expect(useAppStore.getState().workViewByProject["/p/d"]).toBeUndefined();
+        expect(useAppStore.getState().laneWorkViewByScope["/p/d::lane-d"]).toBeUndefined();
+        expect(useAppStore.getState().laneSelectionByProject["/p/d"]).toBeUndefined();
+        expect(useAppStore.getState().laneCacheByProject["/p/d"]).toBeUndefined();
+        expect(useAppStore.getState().sessionsCacheByProject["/p/d"]).toBeUndefined();
       } finally {
         window.setTimeout = originalWindowSetTimeout;
         vi.useRealTimers();

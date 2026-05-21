@@ -10,7 +10,7 @@ filtering before exposing the final list.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, the executor, and lane-scoped ADE guidance / skill-root env for worker CLI launches. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, the executor, and lane-scoped ADE guidance / skill-root env for worker CLI launches. `create_pr_from_lane` returns the PR payload plus GitHub and ADE PR URLs when they can be derived. |
 | `apps/ade-cli/src/bootstrap.ts` | Builds `AdeRuntime` from desktop services for headless CLI execution. |
 | `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, and socket/headless client wiring. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
@@ -19,8 +19,8 @@ filtering before exposing the final list.
 | `apps/desktop/src/main/services/orchestrator/coordinatorTools.ts` | Coordinator tool set for the mission orchestrator. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
-| `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), to use bundled ADE skills, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
-| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves lane-aware ADE Agent Skills roots, formats the prompt line, and joins roots for `ADE_AGENT_SKILLS_DIRS`. |
+| `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), which bundled ADE skills exist, how Agent Skills are shaped (`<skill>/SKILL.md` plus optional `references/`, `scripts/`, `assets/`), which ADE-hosted surfaces receive the guidance, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
+| `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves generic Agent Skill roots for prompts and `ADE_AGENT_SKILLS_DIRS`: ancestor and home `.claude/skills`, `.agents/skills`, `.ade/skills`, `.codex/skills`, inherited env roots, packaged resources, and source fallbacks. |
 
 ## Two-path tool dispatch
 
@@ -234,10 +234,14 @@ prompts should prefer documented commands such as `ade lanes list`,
 `apps/desktop/src/shared/adeCliGuidance.ts` builds the canonical text
 the chat / agent system prompt embeds whenever a session has CLI
 access. Callers pass skill roots from `agentSkillRoots.ts`, usually
-using the active lane worktree as `cwd`, so a lane-local
-`apps/desktop/resources/agent-skills` root appears before inherited
-environment or packaged app roots. The same root list is joined into
-`ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions.
+using the active lane worktree as `cwd`, so lane-local
+`.claude/skills`, `.agents/skills`, `.ade/skills`, `.codex/skills`,
+and bundled ADE resources appear before inherited environment,
+packaged app, and source-fallback roots. The same full root list is
+joined into `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions,
+headless worker launches, Work-tab CLI launches, ADE Code/TUI
+sessions, CTO/mission worker prompts, and mobile-started work that
+runs through ADE's runtime.
 
 The guidance tells the agent that `ade` *should* be available, and
 gives it an ordered fallback chain when `command -v ade` fails:

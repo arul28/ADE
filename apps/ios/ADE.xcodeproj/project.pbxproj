@@ -39,6 +39,7 @@
 		AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000012 /* DeepLinkRouter.swift */; };
 		AA5300000000000000000003 /* NotificationCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000013 /* NotificationCategories.swift */; };
 		K10000000000000000000001 /* SendToMacCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000001 /* SendToMacCard.swift */; };
+		K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* DeepLinkURLParsing.swift */; };
 		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
 		AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000002 /* ADEWorkspaceWidget.swift */; };
 		AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */; };
@@ -244,6 +245,7 @@
 		AA5300000000000000000012 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkRouter.swift; path = ADE/App/DeepLinkRouter.swift; sourceTree = "<group>"; };
 		AA5300000000000000000013 /* NotificationCategories.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationCategories.swift; path = ADE/App/NotificationCategories.swift; sourceTree = "<group>"; };
 		K20000000000000000000001 /* SendToMacCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SendToMacCard.swift; path = ADE/Views/Deeplinks/SendToMacCard.swift; sourceTree = "<group>"; };
+		K20000000000000000000002 /* DeepLinkURLParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkURLParsing.swift; path = ADE/App/DeepLinkURLParsing.swift; sourceTree = "<group>"; };
 		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
 		AA5200000000000000000002 /* ADEWorkspaceWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidget.swift; path = ADEWidgets/ADEWorkspaceWidget.swift; sourceTree = "<group>"; };
 		AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidgetViews.swift; path = ADEWidgets/ADEWorkspaceWidgetViews.swift; sourceTree = "<group>"; };
@@ -685,6 +687,7 @@
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
 				AA5300000000000000000011 /* AppDelegate.swift */,
 				AA5300000000000000000012 /* DeepLinkRouter.swift */,
+				K20000000000000000000002 /* DeepLinkURLParsing.swift */,
 				AA5300000000000000000013 /* NotificationCategories.swift */,
 			);
 			name = App;
@@ -1159,6 +1162,7 @@
 				F300000000000000000000F4 /* PerSessionOverrideView.swift in Sources */,
 				AA5300000000000000000001 /* AppDelegate.swift in Sources */,
 				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
+				K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */,
 				AA5300000000000000000003 /* NotificationCategories.swift in Sources */,
 				K10000000000000000000001 /* SendToMacCard.swift in Sources */,
 			);

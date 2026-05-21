@@ -69,7 +69,12 @@ import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import type { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
-import { ADE_AGENT_SKILLS_DIRS_ENV, joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../desktop/src/shared/agentSkillRoots";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  getAdeAgentSkillRootsForPrompt,
+  joinAdeAgentSkillRoots,
+  splitAdeAgentSkillRoots,
+} from "../../desktop/src/shared/agentSkillRoots";
 import { createUsageTrackingService } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { createBudgetCapService } from "../../desktop/src/main/services/usage/budgetCapService";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -373,6 +378,10 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
     next[ADE_AGENT_SKILLS_DIRS_ENV],
     inferAgentSkillsRootForCliEntry(cliEntry),
   );
+  next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
+    env: next,
+    cwd: process.cwd(),
+  }));
   return next;
 }
 

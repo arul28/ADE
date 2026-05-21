@@ -435,7 +435,16 @@ function createRuntime() {
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
-      createFromLane: vi.fn(async () => ({ id: "pr-new", laneId: "lane-1", title: "New PR", status: "open" })),
+      createFromLane: vi.fn(async () => ({
+        id: "pr-new",
+        laneId: "lane-1",
+        repoOwner: "acme",
+        repoName: "ade",
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/acme/ade/pull/42",
+        title: "New PR",
+        status: "open",
+      })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
       landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
       getChecks: vi.fn(async () => [
@@ -4538,6 +4547,10 @@ describe("adeRpcServer", () => {
       closeLinearIssueOnMerge: true,
     });
     expect(created?.isError).toBeUndefined();
+    expect(created?.structuredContent).toMatchObject({
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
     expect(fixture.runtime.prService.createFromLane).toHaveBeenCalledWith({
       laneId: "lane-1",
       baseBranch: "main",
@@ -4568,6 +4581,36 @@ describe("adeRpcServer", () => {
     const comment = await callTool(handler, "pr_add_comment", { prId: "pr-1", body: "Looks good" });
     expect(comment?.isError).toBeUndefined();
     expect(fixture.runtime.prService.addComment).toHaveBeenCalledWith({ prId: "pr-1", body: "Looks good" });
+  });
+
+  it("synthesizes PR browser links from repo metadata when RPC PR creation omits githubUrl", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.prService.createFromLane = vi.fn(async () => ({
+      id: "pr-new",
+      laneId: "lane-1",
+      repoOwner: "acme",
+      repoName: "ade",
+      githubPrNumber: 42,
+      title: "New PR",
+      status: "open",
+    })) as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
+
+    const created = await callTool(handler, "create_pr_from_lane", {
+      laneId: "lane-1",
+      baseBranch: "main",
+      title: "My PR",
+      body: "Body text",
+      draft: true,
+      closeLinearIssueOnMerge: true,
+    });
+
+    expect(created?.isError).toBeUndefined();
+    expect(created?.structuredContent).toMatchObject({
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      adeUrl: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
   });
 
   it("lists ADE actions across runtime domains", async () => {

@@ -174,6 +174,10 @@ function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
 }
 
+function isLanesRoutePath(pathname: string): boolean {
+  return pathname === "/lanes" || pathname.startsWith("/lanes/");
+}
+
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -224,14 +228,45 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
   }
 }
 
+function projectNameFromRoot(rootPath: string | null | undefined): string | null {
+  if (!rootPath) return null;
+  const segments = rootPath.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] ?? rootPath;
+}
+
+function ProjectTransitionVeil({ label }: { label: string }) {
+  return (
+    <div
+      data-testid="project-transition-veil"
+      className="absolute inset-0 z-30 flex items-center justify-center bg-bg/95 text-fg backdrop-blur-sm"
+      aria-live="polite"
+      aria-busy="true"
+    >
+      <div className="flex items-center gap-2 rounded-md border border-border/70 bg-card/95 px-3 py-2 text-[12px] font-medium shadow-2xl">
+        <span
+          aria-hidden="true"
+          className="h-3 w-3 shrink-0 animate-spin rounded-full border border-muted-fg/40 border-t-accent"
+        />
+        <span className="max-w-[320px] truncate">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
+  const isLanesRoute = isLanesRoutePath(route.split(/[?#]/, 1)[0] || "/work");
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
+  const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
+  const [lanesMounted, setLanesMounted] = React.useState(isLanesRoute);
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
+  const shouldRenderLanes = lanesMounted || isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
+  const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
 
   React.useEffect(() => {
     if (!isWorkRoute) return;
@@ -240,11 +275,24 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   }, [isWorkRoute, route]);
 
   React.useEffect(() => {
+    if (!isLanesRoute) return;
+    setLanesRoute(route);
+    setLanesMounted(true);
+  }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
     const node = workSurfaceRef.current;
     if (!node) return;
     if (isWorkRoute) node.removeAttribute("inert");
     else node.setAttribute("inert", "");
   }, [isWorkRoute, shouldRenderWork]);
+
+  React.useEffect(() => {
+    const node = lanesSurfaceRef.current;
+    if (!node) return;
+    if (isLanesRoute) node.removeAttribute("inert");
+    else node.setAttribute("inert", "");
+  }, [isLanesRoute, shouldRenderLanes]);
 
   const workSurface = shouldRenderWork ? (
     <Routes location={visibleWorkRoute}>
@@ -273,20 +321,43 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     </Routes>
   ) : null;
 
+  const lanesSurface = shouldRenderLanes ? (
+    <Routes location={visibleLanesRoute}>
+      <Route path="/lanes/*" element={
+        <div
+          ref={lanesSurfaceRef}
+          className="h-full min-h-0 w-full"
+          aria-hidden={!isLanesRoute}
+          style={!isLanesRoute
+            ? {
+              position: "absolute",
+              inset: 0,
+              zIndex: -1,
+              opacity: 0,
+              pointerEvents: "none",
+            }
+            : undefined}
+        >
+          <PageErrorBoundary>
+            <React.Suspense fallback={LazyFallback}>
+              <LanesPage active={active && isLanesRoute} />
+            </React.Suspense>
+          </PageErrorBoundary>
+        </div>
+      } />
+    </Routes>
+  ) : null;
+
   return (
     <div className="relative h-full min-h-0 w-full">
       {workSurface}
-      {!isWorkRoute ? (
+      {lanesSurface}
+      {!isWorkRoute && !isLanesRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
           <Route path="/project" element={<PageErrorBoundary><RunPage /></PageErrorBoundary>} />
           <Route path="/onboarding" element={<PageErrorBoundary><ProjectSetupPage /></PageErrorBoundary>} />
           <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
-          <Route path="/lanes" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(LanesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
           <Route path="/files" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(FilesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
@@ -439,6 +510,7 @@ function ProjectTabHost() {
   const activeProject = useAppStore((s) => s.project);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
+  const projectTransition = useAppStore((s) => s.projectTransition);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
@@ -567,6 +639,23 @@ function ProjectTabHost() {
     );
   }
 
+  const transitionTargetName = projectTransition?.rootPath
+    ? projectInfoByRoot[projectTransition.rootPath]?.displayName
+      ?? projectNameFromRoot(projectTransition.rootPath)
+    : null;
+  let transitionLabel: string | null = null;
+  switch (projectTransition?.kind) {
+    case "switching":
+      transitionLabel = `Switching${transitionTargetName ? ` to ${transitionTargetName}` : " projects"}...`;
+      break;
+    case "opening":
+      transitionLabel = "Opening project...";
+      break;
+    case "closing":
+      transitionLabel = "Closing project...";
+      break;
+  }
+
   return (
     <div className="relative h-full min-h-0 w-full">
       {mountedProjects.map((project) => {
@@ -583,6 +672,7 @@ function ProjectTabHost() {
           />
         );
       })}
+      {transitionLabel ? <ProjectTransitionVeil label={transitionLabel} /> : null}
     </div>
   );
 }

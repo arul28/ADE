@@ -250,6 +250,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.review.startRun(startArgs)).resolves.toEqual(run);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "review", action: "startRun", args: startArgs },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.reviewStartRun, expect.anything());
@@ -300,6 +301,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.review.startRun(args)).rejects.toThrow("not callable");
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "review", action: "startRun", args },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.reviewStartRun, expect.anything());
@@ -458,6 +460,7 @@ describe("preload OAuth bridge", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: {
         domain: "lane",
         action: "create",
@@ -754,6 +757,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.lanes.list()).resolves.toEqual(lanes);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "lane", action: "list", args: {} },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
@@ -807,6 +811,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.agentChat.modelCatalog({ mode: "cached" })).resolves.toEqual(catalog);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.agentChatModelCatalog, { mode: "cached" });
@@ -902,12 +907,15 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.prs.getGitHubSnapshot()).resolves.toEqual(snapshot);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "pr", action: "getDetail", arg: "pr-1" },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "pr", action: "listWithConflicts", args: {} },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "pr", action: "getGithubSnapshot", args: {} },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetDetail, expect.anything());
@@ -961,9 +969,11 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.prs.createLaneFromPrBranch(args)).rejects.toThrow("not callable");
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "pr", action: "preflightCreateLaneFromPrBranch", args },
     });
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "pr", action: "createLaneFromPrBranch", args },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsPreflightCreateLaneFromPrBranch, expect.anything());
@@ -1196,6 +1206,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.files.listWorkspaces()).resolves.toEqual(workspaces);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "file", action: "listWorkspaces", args: {} },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
@@ -1246,6 +1257,7 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.files.listWorkspaces()).rejects.toThrow("ade.localRuntime.callAction");
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: { domain: "file", action: "listWorkspaces", args: {} },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.filesListWorkspaces, expect.anything());
@@ -2861,6 +2873,108 @@ describe("preload OAuth bridge", () => {
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;
+  });
+
+  it("keeps the previous local runtime binding until a project switch succeeds", async () => {
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const localRuntimeRoots: string[] = [];
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.projectSwitchToPath) {
+        return switchPromise;
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        localRuntimeRoots.push((arg as { rootPath?: string }).rootPath ?? "");
+        return { result: [] };
+      }
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/old", displayName: "Old", baseRef: "main" },
+          binding: {
+            kind: "local",
+            key: "local:/old",
+            rootPath: "/old",
+            displayName: "Old",
+          },
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.lanesList, expect.anything());
+    expect(localRuntimeRoots).toEqual(["/old"]);
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+
+    await expect(bridge.lanes.list()).resolves.toEqual([]);
+    expect(localRuntimeRoots).toEqual(["/old", "/next"]);
+  });
+
+  it("rejects empty project switch paths before updating local runtime binding", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/old", displayName: "Old", baseRef: "main" },
+          binding: {
+            kind: "local",
+            key: "local:/old",
+            rootPath: "/old",
+            displayName: "Old",
+          },
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.project.switchToPath("   ")).rejects.toThrow(/required/i);
+
+    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSwitchToPath, expect.anything());
   });
 
   it("falls through read-only chat actions to IPC while a project switch is in flight", async () => {

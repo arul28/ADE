@@ -141,7 +141,7 @@ describe("commands", () => {
     }));
   });
 
-  it("includes Phase 4 Claude parity builtins", () => {
+  it("includes Claude parity builtins plus provider-agnostic skills", () => {
     const rows = paletteCommands("/", [], { provider: "claude" });
     for (const name of ["/agents", "/skills", "/init"]) {
       expect(rows).toContainEqual(expect.objectContaining({ name, source: "ade" }));
@@ -155,11 +155,15 @@ describe("commands", () => {
     }
   });
 
-  it("filters Phase 4 Claude-only builtins outside Claude chats", () => {
+  it("keeps provider-agnostic skills visible outside Claude chats", () => {
     const rows = paletteCommands("/", [], { provider: "codex" });
-    for (const name of ["/agents", "/skills", "/init", "/usage", "/insights", "/fast"]) {
+    for (const name of ["/agents", "/init", "/usage", "/insights", "/fast"]) {
       expect(rows).not.toContainEqual(expect.objectContaining({ name }));
     }
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/skills",
+      description: "List agent skills from project, user, and ADE bundled roots",
+    }));
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/compact",
       description: "Compact the active chat context",

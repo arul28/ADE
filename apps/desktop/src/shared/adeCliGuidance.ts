@@ -1,5 +1,18 @@
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 
+export const adeBundledAgentSkills = [
+  "ade-cli-control-plane",
+  "ade-ios-simulator",
+  "ade-app-control",
+  "ade-browser",
+  "ade-pr-workflows",
+  "ade-lanes-git",
+  "ade-cto-missions",
+  "ade-proof-artifacts",
+  "ade-macos-vm",
+  "ade-deeplinks",
+] as const;
+
 export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
   return [
   "## ADE CLI",
@@ -7,10 +20,13 @@ export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeA
   "`ade` is the default control plane for ADE-managed sessions. Use normal shell commands for immediate repo inspection/edit/test work; use ADE CLI when you need ADE state, drawer/session state, proof registration, missions, PR metadata, memory, or managed app/simulator/browser/VM control.",
   "",
   "### Skills",
-  "- ADE ships Agent Skills for deeper operating details. Use the relevant skill instead of relying on long prompt guidance: `ade-cli-control-plane`, `ade-ios-simulator`, `ade-app-control`, `ade-browser`, `ade-pr-workflows`, `ade-lanes-git`, `ade-cto-missions`, `ade-proof-artifacts`, `ade-macos-vm`, and `ade-deeplinks`.",
+  "- ADE exposes Agent Skills from project, user, runtime, and bundled ADE skill roots. Use the relevant skill instead of relying on long prompt guidance.",
+  `- Bundled ADE skills include: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
+  "- ADE injects this guidance into ADE-hosted Work chats, Work tab CLI launches, ADE Code/TUI sessions, CTO and mission worker prompts, and mobile-started work that executes through ADE's desktop or project runtime.",
+  "- Skills use the Agent Skills package shape: `<skill-name>/SKILL.md` plus optional `references/`, `scripts/`, and `assets/` files. When a skill applies, read its `SKILL.md` before acting, then load referenced files only when needed.",
   "- If skills are not auto-listed by your runtime, look for them in project/user `.agents/skills`, `.ade/skills`, `.claude/skills`, or ADE's bundled `agent-skills` resources, then read that skill's `SKILL.md` on demand.",
   `- ${formatAdeAgentSkillRootsForPrompt(skillRoots)}`,
-  "- ADE also sets `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions when the bundled skills root is known.",
+  "- ADE also sets `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions when skill roots are known so CLI runtimes can discover the same skills.",
   "",
   "### Minimum operating rules",
   "- Start with `ade doctor --text` when the ADE environment is unclear. Use `ade help <command>` for exact flags and `ade actions list --text` as the escape hatch for service actions without a typed command.",

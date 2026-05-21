@@ -15,6 +15,7 @@ import type { ComputerUseArtifactBrokerService } from "../../computerUse/compute
 import { getLocalComputerUseCapabilities } from "../../computerUse/localComputerUse";
 import { nowIso } from "../../shared/utils";
 import { getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
+import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import type { AgentChatCompletionReport } from "../../../../shared/types";
 
 const execFileAsync = promisify(execFile);
@@ -128,6 +129,8 @@ export function createWorkflowTools(
             prId: pr.id,
             prNumber: pr.githubPrNumber,
             url: pr.githubUrl,
+            githubUrl: pr.githubUrl,
+            adeUrl: buildAdePrUrl(pr),
             title: pr.title,
             state: pr.state,
           };

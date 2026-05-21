@@ -52,6 +52,14 @@ Services. The canonical implementations run inside the runtime
 daemon; the desktop main-process files below stay as fallback targets
 for the legacy in-process IPC path.
 
+CLI and agent entry points:
+
+| File | Responsibility |
+|------|---------------|
+| `apps/ade-cli/src/cli.ts` | User-facing `ade prs` commands and text formatters. `ade prs create --text` prints both the GitHub PR URL and the ADE HTTPS PR URL when repo owner/name and PR number are available. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private action/RPC wrapper for PR tools. `create_pr_from_lane` returns `{ pr, githubUrl, adeUrl }` so agents can include both links in closeout. |
+| `apps/desktop/src/main/services/ai/tools/workflowTools.ts`, `ctoOperatorTools.ts` | Managed chat/CTO PR creation tools return both `githubUrl` and `adeUrl` alongside the PR object. |
+
 Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
