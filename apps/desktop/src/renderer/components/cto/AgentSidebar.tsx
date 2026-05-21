@@ -170,7 +170,7 @@ export const AgentSidebar = React.memo(function AgentSidebar({
         </div>
         <div className="mt-2 text-sm font-semibold text-fg">Control room</div>
         <div className="mt-1 text-[11px] leading-5 text-muted-fg/40">
-          Persistent leadership, durable memory, and worker coordination.
+          Persistent leadership, core continuity, and worker coordination.
         </div>
       </div>
 

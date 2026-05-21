@@ -37,7 +37,6 @@ const BASE_DRAFT: Pick<
   | "reviewProfile"
   | "toolPalette"
   | "contextSources"
-  | "memory"
   | "outputs"
   | "verification"
   | "legacyActions"
@@ -46,9 +45,8 @@ const BASE_DRAFT: Pick<
   mode: "review",
   executor: { mode: "automation-bot" },
   reviewProfile: "quick",
-  toolPalette: ["repo", "git", "memory"],
-  contextSources: [{ type: "project-memory" }],
-  memory: { mode: "automation-plus-project" },
+  toolPalette: ["repo", "git"],
+  contextSources: [],
   outputs: { disposition: "comment-only", createArtifact: true },
   verification: { verifyBeforePublish: false, mode: "intervention" },
   legacyActions: [],
@@ -72,7 +70,7 @@ const TEMPLATES: TemplateDefinition[] = [
       modelConfig: DEFAULT_MODEL_HIGH,
       prompt:
         "Review this pull request. Cite concrete risks and missing tests; skip filler. Reference file paths and checks that support each finding.",
-      toolPalette: ["repo", "git", "github", "memory"],
+      toolPalette: ["repo", "git", "github"],
       guardrails: { maxDurationMin: 20 },
       billingCode: "auto:pr-review-session",
       actions: [],
@@ -95,7 +93,7 @@ const TEMPLATES: TemplateDefinition[] = [
       modelConfig: DEFAULT_MODEL,
       prompt:
         "Triage this new issue. Identify the likely owner/area, suggest a severity, and ask one sharp reproduction question if anything is missing.",
-      toolPalette: ["repo", "git", "github", "memory"],
+      toolPalette: ["repo", "git", "github"],
       guardrails: { maxDurationMin: 10 },
       billingCode: "auto:issue-triage",
       actions: [],
@@ -135,7 +133,6 @@ const TEMPLATES: TemplateDefinition[] = [
       prompt: "",
       toolPalette: ["github"],
       contextSources: [],
-      memory: { mode: "none" },
       guardrails: { maxDurationMin: 2 },
       billingCode: "auto:auto-label-issue",
       actions: [
@@ -169,7 +166,7 @@ const TEMPLATES: TemplateDefinition[] = [
       modelConfig: DEFAULT_MODEL,
       prompt:
         "Scan open issues. For each issue idle for 60+ days with no owner signal, post a short explanatory comment and close it. Keep comments courteous.",
-      toolPalette: ["github", "memory"],
+      toolPalette: ["github"],
       guardrails: { maxDurationMin: 25 },
       billingCode: "auto:stale-issue-closer",
       actions: [],
@@ -214,7 +211,6 @@ const TEMPLATES: TemplateDefinition[] = [
       execution: { kind: "built-in", builtIn: { actions: [{ type: "run-tests", suiteId: "" }] } },
       prompt: "",
       toolPalette: ["tests"],
-      memory: { mode: "project" },
       guardrails: { maxDurationMin: 30 },
       billingCode: "auto:nightly-test-sweep",
       actions: [{ type: "run-tests", suite: "" }],
@@ -238,7 +234,6 @@ const TEMPLATES: TemplateDefinition[] = [
       execution: { kind: "built-in", builtIn: { actions: [{ type: "predict-conflicts" }] } },
       prompt: "",
       toolPalette: ["git"],
-      memory: { mode: "project" },
       guardrails: { maxDurationMin: 10 },
       billingCode: "auto:push-conflict-scan",
       actions: [{ type: "predict-conflicts" }],
@@ -261,8 +256,8 @@ const TEMPLATES: TemplateDefinition[] = [
       execution: { kind: "agent-session", session: { title: "Linear triage" } },
       modelConfig: DEFAULT_MODEL,
       prompt:
-        "Triage this new Linear issue. Recommend likely owner, severity, and next step. Use linked project memory for context.",
-      toolPalette: ["linear", "repo", "memory"],
+        "Triage this new Linear issue. Recommend likely owner, severity, and next step. Use linked project context.",
+      toolPalette: ["linear", "repo"],
       guardrails: { maxDurationMin: 15 },
       billingCode: "auto:linear-intake",
       actions: [],
@@ -285,7 +280,7 @@ const TEMPLATES: TemplateDefinition[] = [
       modelConfig: DEFAULT_MODEL,
       prompt:
         "A reviewer commented on the PR. Address their feedback concretely. If it needs a code change, outline the change; otherwise answer directly.",
-      toolPalette: ["repo", "git", "github", "memory"],
+      toolPalette: ["repo", "git", "github"],
       guardrails: { maxDurationMin: 15 },
       billingCode: "auto:pr-comment-responder",
       actions: [],
@@ -309,7 +304,7 @@ const TEMPLATES: TemplateDefinition[] = [
       modelConfig: DEFAULT_MODEL,
       prompt:
         "A label was just added to this issue. Post a short, friendly comment linking repro steps and the most relevant doc section. Keep it under 5 sentences.",
-      toolPalette: ["github", "memory"],
+      toolPalette: ["github"],
       guardrails: { maxDurationMin: 5 },
       billingCode: "auto:assignee-welcome",
       actions: [],

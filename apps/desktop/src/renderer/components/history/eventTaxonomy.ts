@@ -192,8 +192,6 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   "test.run_failed":    { label: "Tests Failed",   category: "process", iconName: "XCircle",     description: "Tests failed",     importance: "high" },
 
   // ── System ──────────────────────────────────────────────────
-  "memory.sweep":          { label: "Memory Sweep",       category: "system", iconName: "Broom",          description: "Memory sweep executed",   importance: "low" },
-  "memory.consolidation":  { label: "Memory Consolidate", category: "system", iconName: "Database",       description: "Memory consolidation",    importance: "low" },
   "config.changed":        { label: "Config Changed",     category: "system", iconName: "Sliders",        description: "Configuration changed",   importance: "medium" },
   "budget.warning":        { label: "Budget Warning",     category: "system", iconName: "CurrencyDollar", description: "Budget threshold warning", importance: "high" },
   "budget.exceeded":       { label: "Budget Exceeded",    category: "system", iconName: "Warning",        description: "Budget exceeded",          importance: "high" },

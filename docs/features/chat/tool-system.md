@@ -10,8 +10,7 @@ worker to respawn.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
-| `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, memory search/add/pin/updateCore, todo, web fetch/search, ask-user. Available to every agent. |
-| `apps/desktop/src/main/services/ai/tools/memoryTools.ts` | `memorySearch`, `memoryAdd`, `memoryPin` builders. Imported by `universalTools.ts`. |
+| `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
 | `apps/desktop/src/main/services/ai/tools/workflowTools.ts` | `createLane`, `createPrFromLane`, `captureScreenshot`, `reportCompletion`, and the four PR issue-resolution tools. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, worker management, Linear dispatch, pipeline settings, issue inventory. |
 | `apps/desktop/src/main/services/ai/tools/linearTools.ts` | Linear-only tools for CTO when Linear is connected. |
@@ -32,50 +31,9 @@ Built by `createUniversalToolSet()` in `universalTools.ts`.
 | `writeFile` | Create or replace a file. | Blocked in `plan` mode. |
 | `bash` | Shell command with configurable sandbox. Emits `command` events. | Blocked in `plan`; sandboxed per `WorkerSandboxConfig` for API/local models; CLI-wrapped models delegate to the CLI's own gating. |
 | `grep`, `glob` | Search tools backed by `grepSearch.ts` / `globSearch.ts`. | Read-only. |
-| `memorySearch`, `memoryAdd`, `memoryPin`, `memoryUpdateCore` | Memory tools. See [Memory tools](#memory-tools). | Always allowed; `memoryUpdateCore` only exposed to CTO/worker identity sessions. |
 | `webFetch`, `webSearch` | Web tools; backed by `webFetch.ts` and `webSearch.ts`. | Always allowed. |
 | `askUser` (universal form) | Legacy ask-user helper. Claude SDK sessions use their native `AskUserQuestion` tool instead; see [ask-user](#ask-user-handling). | Always allowed. |
 | `TodoWrite`, `TodoRead` | Session-state todo list. Writes emit `todo_update` events. | Always allowed. |
-
-### Memory tools
-
-`memoryTools.ts` defines:
-
-- `memorySearch({ query, scope?, scopeOwnerId?, limit? })` -- Queries the
-  unified memory store. Satisfies the turn-level memory guard
-  (`TurnMemoryPolicyState.explicitSearchPerformed = true`).
-- `memoryAdd({ content, category, scope?, scopeOwnerId?, importance?,
-  pin?, writeMode? })` -- Writes a new memory. Returns `durability`
-  (`candidate | promoted | rejected`), `tier`, and dedup metadata.
-  Emits a `MemoryWriteEvent` callback so `agentChatService` can surface
-  write status in the UI.
-- `memoryPin({ id })` -- Pin to Tier 1.
-
-`memoryUpdateCore` is a variant built from `UniversalToolSetOptions.onMemoryUpdateCore`; it
-lets CTO and worker identity sessions rewrite their `CtoCoreMemory` /
-`AgentCoreMemory` block.
-
-The system prompt inspects tool names at build time; if memory tools are
-present, the prompt includes usage guidance (when to search, when to
-add, what not to add).
-
-### Turn-level memory guard
-
-`universalTools.ts` accepts `turnMemoryPolicyState`:
-
-```ts
-type TurnMemoryPolicyState = {
-  classification: "none" | "soft" | "required";
-  orientationSatisfied: boolean;
-  explicitSearchPerformed: boolean;
-};
-```
-
-`agentChatService` classifies each user turn by intent and, when the
-turn is `required`, blocks `bash`, `writeFile`, and `editFile` until
-`memorySearch` has been called. The gate reads
-`explicitSearchPerformed` (set by `memorySearch`). See the [Memory
-README](../memory/README.md) for the policy itself.
 
 ### Permission gate
 
@@ -195,17 +153,15 @@ runtime-specific filtering:
 
 Additional exposure rules:
 
-- `memoryUpdateCore` is only present when the session has an
-  `identityKey` and the runtime passes an `onMemoryUpdateCore` callback.
 - `captureScreenshot` is hidden entirely when computer use is disabled.
 - Linear tools are hidden when the Linear integration is not connected.
 
 ## Fragile and tricky wiring
 
 - **System-prompt name-detection.** `buildCodingAgentSystemPrompt` branches on
-  exact tool-name matches (including `memoryUpdateCore`, `createLane`,
-  `createPrFromLane`, `captureScreenshot`, `reportCompletion`,
-  `TodoWrite`, `TodoRead`, and the four `pr*` tools). Renaming any of
+  exact tool-name matches (including `createLane`, `createPrFromLane`,
+  `captureScreenshot`, `reportCompletion`, `TodoWrite`, `TodoRead`, and
+  the four `pr*` tools). Renaming any of
   these tools silently strips the corresponding prompt guidance. Keep
   name changes synchronized.
 - **Tool name normalisation.** ADE CLI-exposed tools appear as
@@ -218,10 +174,6 @@ Additional exposure rules:
   otherwise; unexpected defaults happen when the session's permission
   mode is `default` (Claude-native behavior) and the callback is
   omitted.
-- **Write-gate ordering.** `memoryAdd` with `writeMode: "strict"` filters
-  through `STRICT_WRITE_CATEGORIES` (`convention`, `pattern`, `gotcha`,
-  `decision`) at write time. Agents that request strict writes for
-  other categories silently fall back to `default`.
 - **Ask-user input schema.** Claude SDK `AskUserQuestion` inputs are
   coerced to `AskUserToolInput` shape inside `agentChatService`. Codex
   elicitations arrive through the `codex app-server` JSON-RPC stream
@@ -231,8 +183,6 @@ Additional exposure rules:
 ## Related docs
 
 - [Chat README](README.md) -- the service that provisions tools.
-- [Memory README](../memory/README.md) -- the memory store behind
-  `memorySearch`/`memoryAdd`.
 - [Agents Tool Registration](../agents/tool-registration.md) -- ADE CLI
   action registration and the private ADE RPC bridge used by the desktop app.
 </content>

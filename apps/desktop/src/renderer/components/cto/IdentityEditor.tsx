@@ -235,7 +235,7 @@ export function IdentityEditor({
               onChange={(event) => setDraft((current) => ({ ...current, customPersonality: event.target.value }))}
             />
             <div className="text-[11px] leading-5 text-muted-fg/40">
-              This custom text changes the CTO's personality. ADE still owns the core doctrine and memory model.
+              This custom text changes the CTO's personality. ADE still owns the core doctrine and runtime guardrails.
             </div>
           </label>
         ) : null}

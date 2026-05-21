@@ -14,7 +14,6 @@ import type {
   AutomationIngressSource,
   AutomationIngressStatus,
   AutomationManualTriggerRequest,
-  AutomationProcedureFeedback,
   AutomationRule,
   AutomationRuleSummary,
   AutomationRun,
@@ -38,8 +37,6 @@ import type { createTestService } from "../tests/testService";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import type { createAgentChatService } from "../chat/agentChatService";
-import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
-import type { createProceduralLearningService } from "../memory/proceduralLearningService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../orchestrator/providerOrchestratorAdapter";
@@ -166,8 +163,6 @@ type AutomationRunRow = {
   summary: string | null;
   confidence_json: string | null;
   billing_code: string | null;
-  linked_procedure_ids_json: string | null;
-  procedure_feedback_json: string | null;
 };
 
 type AutomationActionRow = {
@@ -199,7 +194,6 @@ type AutomationQueueItemRow = {
   spend_usd: number | null;
   verification_required: number | null;
   suggested_actions_json: string | null;
-  procedure_signals_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -256,7 +250,6 @@ const TOOL_FAMILY_ALLOWED_TOOLS: Record<AutomationToolFamily, string[]> = {
     "browser_type",
     "browser_take_screenshot",
   ],
-  memory: ["memory_search", "memory_add"],
   mission: [
     "get_mission",
     "get_run_graph",
@@ -282,14 +275,6 @@ function safeJsonParseArray<T>(raw: string | null): T[] {
 function clampText(raw: string, max: number): string {
   if (raw.length <= max) return raw;
   return `${raw.slice(0, max)}\n...(truncated)...\n`;
-}
-
-function summarizeMemoryContent(content: string, fallback: string): string {
-  const firstLine = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-  return firstLine ?? fallback;
 }
 
 function dedupeStrings(values: Array<string | null | undefined>): string[] {
@@ -573,7 +558,7 @@ function labelForConfidence(value: number): "low" | "medium" | "high" {
   return "low";
 }
 
-function computeConfidence(rule: AutomationRule, procedureCount: number): AutomationConfidenceScore {
+function computeConfidence(rule: AutomationRule): AutomationConfidenceScore {
   const baseByProfile: Record<AutomationRule["reviewProfile"], number> = {
     quick: 0.58,
     incremental: 0.64,
@@ -583,17 +568,14 @@ function computeConfidence(rule: AutomationRule, procedureCount: number): Automa
     "cross-repo-contract": 0.68,
   };
   const contextBoost = Math.min(0.12, rule.contextSources.length * 0.015);
-  const procedureBoost = Math.min(0.1, procedureCount * 0.03);
   const thresholdPenalty = typeof rule.guardrails.confidenceThreshold === "number"
     ? Math.max(0, rule.guardrails.confidenceThreshold - 0.65) * 0.25
     : 0;
-  const value = Math.max(0.2, Math.min(0.95, baseByProfile[rule.reviewProfile] + contextBoost + procedureBoost - thresholdPenalty));
+  const value = Math.max(0.2, Math.min(0.95, baseByProfile[rule.reviewProfile] + contextBoost - thresholdPenalty));
   return {
     value,
     label: labelForConfidence(value),
-    reason: procedureCount > 0
-      ? `Confidence boosted by ${procedureCount} retrieved procedures and ${rule.contextSources.length} context sources.`
-      : `Based on ${rule.reviewProfile} review profile with ${rule.contextSources.length} context sources.`
+    reason: `Based on ${rule.reviewProfile} review profile with ${rule.contextSources.length} context sources.`
   };
 }
 
@@ -612,8 +594,6 @@ function canonicalizeTriggerForRuntime(trigger: AutomationTrigger): AutomationTr
 
 function deriveIncludeProjectContext(rule: AutomationRule): boolean {
   if (typeof rule.includeProjectContext === "boolean") return rule.includeProjectContext;
-  const memoryMode = rule.memory?.mode;
-  if (memoryMode && memoryMode !== "none") return true;
   if ((rule.contextSources ?? []).length > 0) return true;
   return false;
 }
@@ -684,13 +664,8 @@ export function normalizeRuntimeRule(rule: AutomationRule): AutomationRule {
     trigger: primary,
     executor: { mode: "automation-bot" },
     reviewProfile: rule.reviewProfile ?? "quick",
-    toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "memory", "mission"],
-    contextSources: includeProjectContext
-      ? (rule.contextSources?.length ? rule.contextSources : [{ type: "project-memory" }, { type: "procedures" }])
-      : [],
-    memory: includeProjectContext
-      ? (rule.memory ?? { mode: "automation-plus-project", ruleScopeKey: rule.id })
-      : { mode: "none" },
+    toolPalette: rule.toolPalette?.length ? rule.toolPalette : ["repo", "mission"],
+    contextSources: includeProjectContext && rule.contextSources?.length ? rule.contextSources : [],
     guardrails: sanitizedGuardrails,
     includeProjectContext,
     outputs: {
@@ -894,8 +869,6 @@ export function createAutomationService({
   agentChatService,
   missionService,
   aiOrchestratorService,
-  memoryBriefingService,
-  proceduralLearningService,
   budgetCapService,
   adeActionRegistry,
   onEvent
@@ -911,8 +884,6 @@ export function createAutomationService({
   agentChatService?: ReturnType<typeof createAgentChatService>;
   missionService?: ReturnType<typeof createMissionService>;
   aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService>;
-  memoryBriefingService?: ReturnType<typeof createMemoryBriefingService>;
-  proceduralLearningService?: ReturnType<typeof createProceduralLearningService>;
   budgetCapService?: ReturnType<typeof createBudgetCapService>;
   /**
    * Registry that resolves `ade-action` automation steps to a concrete
@@ -934,8 +905,6 @@ export function createAutomationService({
   let missionServiceRef = missionService;
   let aiOrchestratorServiceRef = aiOrchestratorService;
   let agentChatServiceRef = agentChatService;
-  let memoryBriefingServiceRef = memoryBriefingService;
-  let proceduralLearningServiceRef = proceduralLearningService;
   let budgetCapServiceRef = budgetCapService;
   let workerHeartbeatServiceRef: ReturnType<typeof createWorkerHeartbeatService> | null = null;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
@@ -1012,8 +981,6 @@ export function createAutomationService({
       ["summary", "alter table automation_runs add column summary text"],
       ["confidence_json", "alter table automation_runs add column confidence_json text"],
       ["billing_code", "alter table automation_runs add column billing_code text"],
-      ["linked_procedure_ids_json", "alter table automation_runs add column linked_procedure_ids_json text"],
-      ["procedure_feedback_json", "alter table automation_runs add column procedure_feedback_json text"],
     ] as const;
     for (const [column, sql] of runColumns) {
       if (!columnExists("automation_runs", column)) safeAlter(sql);
@@ -1038,7 +1005,6 @@ export function createAutomationService({
         spend_usd real not null default 0,
         verification_required integer not null default 0,
         suggested_actions_json text,
-        procedure_signals_json text,
         created_at text not null,
         updated_at text not null,
         foreign key(project_id) references projects(id),
@@ -1264,7 +1230,6 @@ export function createAutomationService({
     queueStatus?: AutomationRunQueueStatus;
     actionsTotal?: number;
     confidence?: AutomationConfidenceScore | null;
-    linkedProcedureIds?: string[];
     summary?: string | null;
     queueItemId?: string | null;
     chatSessionId?: string | null;
@@ -1307,10 +1272,8 @@ export function createAutomationService({
           trigger_metadata,
           summary,
           confidence_json,
-          billing_code,
-          linked_procedure_ids_json,
-          procedure_feedback_json
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?)
+          billing_code
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?, ?)
       `,
       [
         runId,
@@ -1336,8 +1299,6 @@ export function createAutomationService({
         args.summary ?? null,
         confidence ? JSON.stringify(confidence) : null,
         args.rule.billingCode,
-        JSON.stringify(args.linkedProcedureIds ?? []),
-        JSON.stringify([]),
       ]
     );
     return toRun({
@@ -1365,8 +1326,6 @@ export function createAutomationService({
       summary: args.summary ?? null,
       confidence_json: confidence ? JSON.stringify(confidence) : null,
       billing_code: args.rule.billingCode,
-      linked_procedure_ids_json: JSON.stringify(args.linkedProcedureIds ?? []),
-      procedure_feedback_json: JSON.stringify([]),
     });
   };
 
@@ -1436,7 +1395,7 @@ export function createAutomationService({
       select
         id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
         executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-        trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+        trigger_metadata, summary, confidence_json, billing_code
       from automation_runs
       where project_id = ? and id = ?
       limit 1
@@ -1448,7 +1407,7 @@ export function createAutomationService({
     `
       select
         id, automation_id, run_id, mission_id, position, title, mode, queue_status, trigger_type, summary, severity_summary,
-        confidence_json, file_count, spend_usd, verification_required, suggested_actions_json, procedure_signals_json,
+        confidence_json, file_count, spend_usd, verification_required, suggested_actions_json,
         created_at, updated_at
       from automation_queue_items
       where project_id = ? and id = ?
@@ -1537,7 +1496,6 @@ export function createAutomationService({
     confidence: AutomationConfidenceScore | null;
     spendUsd?: number;
     verificationRequired?: boolean;
-    procedureSignals?: string[];
   }): string => {
     const queueItemId = args.id?.trim() || randomUUID();
     const timestamp = nowIso();
@@ -1548,7 +1506,7 @@ export function createAutomationService({
         `
           update automation_queue_items
           set run_id = ?, mission_id = ?, queue_status = ?, summary = ?, severity_summary = ?, confidence_json = ?,
-              spend_usd = ?, verification_required = ?, procedure_signals_json = ?, updated_at = ?
+              spend_usd = ?, verification_required = ?, updated_at = ?
           where id = ? and project_id = ?
         `,
         [
@@ -1560,7 +1518,6 @@ export function createAutomationService({
           args.confidence ? JSON.stringify(args.confidence) : null,
           args.spendUsd ?? existing.spend_usd ?? 0,
           args.verificationRequired ? 1 : 0,
-          JSON.stringify(args.procedureSignals ?? safeJsonParseArray<string>(existing.procedure_signals_json)),
           timestamp,
           queueItemId,
           projectId,
@@ -1572,8 +1529,8 @@ export function createAutomationService({
           insert into automation_queue_items(
             id, project_id, automation_id, run_id, mission_id, position, title, mode, queue_status, trigger_type, summary,
             severity_summary, confidence_json, file_count, spend_usd, verification_required, suggested_actions_json,
-            procedure_signals_json, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+            created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
         `,
         [
           queueItemId,
@@ -1592,7 +1549,6 @@ export function createAutomationService({
           args.spendUsd ?? 0,
           args.verificationRequired ? 1 : 0,
           JSON.stringify([args.rule.outputs.disposition]),
-          JSON.stringify(args.procedureSignals ?? []),
           timestamp,
           timestamp,
         ]
@@ -1612,7 +1568,6 @@ export function createAutomationService({
     rule: AutomationRule;
     trigger: TriggerContext;
     executionLaneId?: string | null;
-    briefing: Awaited<ReturnType<NonNullable<typeof memoryBriefingServiceRef>["buildBriefing"]>> | null;
   }): string => {
     const laneId = args.executionLaneId ?? args.trigger.laneId ?? null;
     const lines: string[] = [
@@ -1646,16 +1601,6 @@ export function createAutomationService({
       lines.push("Publish-capable tools are intentionally withheld for this phase. Produce a proposed outcome and wait for queue acceptance before any external side effects.");
     } else if (args.rule.verification.verifyBeforePublish) {
       lines.push("Do not publish external side effects. This rule is running in dry-run verification mode.");
-    }
-    if (args.briefing) {
-      const l0 = args.briefing.l0.entries
-        .slice(0, 3)
-        .map((memory) => `- ${summarizeMemoryContent(memory.content, memory.category)}`);
-      const procedures = args.briefing.l1.entries
-        .slice(0, 4)
-        .map((memory) => `- ${summarizeMemoryContent(memory.content, memory.category)}`);
-      if (l0.length) lines.push("", "Pinned context:", ...l0);
-      if (procedures.length) lines.push("", "Relevant procedures:", ...procedures);
     }
     return lines.join("\n");
   };
@@ -1990,7 +1935,7 @@ export function createAutomationService({
     const actions = rule.execution?.kind === "built-in"
       ? rule.execution.builtIn?.actions ?? []
       : rule.legacy?.actions ?? [];
-    const confidence = computeConfidence(rule, 0);
+    const confidence = computeConfidence(rule);
     const run = insertRun({
       rule,
       trigger,
@@ -2080,32 +2025,7 @@ export function createAutomationService({
       summary: summarizeLegacyActions(actions),
       confidence_json: JSON.stringify(confidence),
       billing_code: rule.billingCode,
-      linked_procedure_ids_json: JSON.stringify([]),
-      procedure_feedback_json: JSON.stringify([]),
     });
-  };
-
-  const buildBriefing = async (rule: AutomationRule, trigger: TriggerContext) => {
-    if (!rule.includeProjectContext) return null;
-    if (!memoryBriefingServiceRef) return null;
-    try {
-      return await memoryBriefingServiceRef.buildBriefing({
-        projectId,
-        laneId: trigger.laneId,
-        includeAgentMemory: false,
-        taskDescription: `${rule.mode}:${rule.name}`,
-        phaseContext: `automation:${rule.reviewProfile}`,
-        filePatterns: rule.contextSources
-          .filter((source) => source.type === "path-rules" && typeof source.path === "string")
-          .map((source) => source.path!)
-      } as never);
-    } catch (error) {
-      logger.warn("automations.briefing_failed", {
-        automationId: rule.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
   };
 
   /**
@@ -2262,9 +2182,7 @@ export function createAutomationService({
       throw new Error(budgetCheck.reason ?? "Budget cap blocked automation run.");
     }
 
-    const briefing = await buildBriefing(args.rule, args.trigger);
-    const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
-    const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
+    const confidence = computeConfidence(args.rule);
     const existingRunRow = args.existingRunId ? loadRunRow(args.existingRunId) : null;
     const run = existingRunRow
       ? toRun(existingRunRow)
@@ -2273,7 +2191,6 @@ export function createAutomationService({
           trigger: args.trigger,
           actionsTotal: 1,
           confidence,
-          linkedProcedureIds,
           summary: args.rule.prompt?.trim() || `${args.rule.name} agent session dispatched`,
           ingressEventId: args.trigger.ingressEventId ?? null,
         });
@@ -2293,7 +2210,7 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: args.rule.id, runId: run.id });
       throw new Error(message);
     }
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
 
     const actionId = insertAction(run.id, 0, "agent-session");
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: false });
@@ -2337,7 +2254,6 @@ export function createAutomationService({
         status: "running",
         summary: args.rule.execution?.session?.title?.trim() || args.rule.prompt?.trim() || `${args.rule.name} automation chat started`,
         confidence_json: JSON.stringify(confidence),
-        linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
       });
 
       const result = await agentChatServiceRef.runSessionTurn({
@@ -2420,8 +2336,6 @@ export function createAutomationService({
       summary: args.rule.prompt?.trim() || `${args.rule.name} completed`,
       confidence_json: JSON.stringify(confidence),
       billing_code: args.rule.billingCode,
-      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
-      procedure_feedback_json: JSON.stringify([]),
     });
   };
 
@@ -2437,9 +2351,7 @@ export function createAutomationService({
     if (!missionServiceRef || !aiOrchestratorServiceRef) {
       throw new Error("Mission automation services are unavailable");
     }
-    const briefing = await buildBriefing(args.rule, args.trigger);
-    const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
-    const confidence = computeConfidence(args.rule, linkedProcedureIds.length);
+    const confidence = computeConfidence(args.rule);
     const permissionConfig = buildPermissionConfig(args.rule, { publishPhase: Boolean(args.publishPhase) });
     const budgetScope = AUTOMATION_SCOPE;
     const { budgetProvider } = resolveAutomationModelDescriptor(args.rule);
@@ -2461,7 +2373,6 @@ export function createAutomationService({
           actionsTotal: 1,
           queueStatus: "pending-review",
           confidence,
-          linkedProcedureIds,
           summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
           queueItemId: args.existingQueueItemId ?? null,
           ingressEventId: args.trigger.ingressEventId ?? null,
@@ -2476,7 +2387,7 @@ export function createAutomationService({
       emit({ type: "runs-updated", automationId: args.rule.id, runId: earlyRun.id });
       throw error;
     }
-    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId, briefing });
+    const prompt = buildMissionPrompt({ rule: args.rule, trigger: args.trigger, executionLaneId: laneId });
     const mission = missionServiceRef.create({
       title: `${args.rule.name} · ${args.rule.mode}`,
       prompt,
@@ -2503,8 +2414,6 @@ export function createAutomationService({
         toolPalette: args.rule.toolPalette,
         allowedTools: computeAllowedToolList(args.rule, { publishPhase: Boolean(args.publishPhase) }),
         contextSources: args.rule.contextSources,
-        memory: args.rule.memory,
-        usedProcedureIds: linkedProcedureIds,
         confidence,
         publishPhase: Boolean(args.publishPhase),
       },
@@ -2529,7 +2438,6 @@ export function createAutomationService({
         queue_status: "pending-review",
         summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
         confidence_json: JSON.stringify(confidence),
-        linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
         verification_required: requiresPublishGate(args.rule) && !args.publishPhase ? 1 : 0,
         billing_code: args.rule.billingCode,
       });
@@ -2561,7 +2469,6 @@ export function createAutomationService({
       confidence,
       spendUsd: 0,
       verificationRequired: requiresPublishGate(args.rule) && !args.publishPhase,
-      procedureSignals: linkedProcedureIds.map((id) => `Using learned procedure ${id}`),
     });
     updateRun(run.id, { queue_item_id: queueItemId });
 
@@ -2612,15 +2519,11 @@ export function createAutomationService({
       summary: args.rule.prompt?.trim() || `${args.rule.mode} automation dispatched`,
       confidence_json: JSON.stringify(confidence),
       billing_code: args.rule.billingCode,
-      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
-      procedure_feedback_json: JSON.stringify([]),
     });
   };
 
   const simulateDryRun = async (rule: AutomationRule, trigger: TriggerContext): Promise<AutomationRun> => {
-    const briefing = await buildBriefing(rule, trigger);
-    const linkedProcedureIds = briefing?.usedProcedureIds ?? [];
-    const confidence = computeConfidence(rule, linkedProcedureIds.length);
+    const confidence = computeConfidence(rule);
     const summary = `${rule.prompt?.trim() || rule.name} (dry run)`;
     const run = insertRun({
       rule,
@@ -2629,7 +2532,6 @@ export function createAutomationService({
       queueStatus: "completed-clean",
       actionsTotal: 1,
       confidence,
-      linkedProcedureIds,
       summary,
       ingressEventId: trigger.ingressEventId ?? null,
     });
@@ -2647,7 +2549,6 @@ export function createAutomationService({
       error_message: null,
       summary,
       confidence_json: JSON.stringify(confidence),
-      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
     });
     emit({ type: "runs-updated", automationId: rule.id, runId: run.id });
     return toRun(loadRunRow(run.id) ?? {
@@ -2675,8 +2576,6 @@ export function createAutomationService({
       summary,
       confidence_json: JSON.stringify(confidence),
       billing_code: rule.billingCode,
-      linked_procedure_ids_json: JSON.stringify(linkedProcedureIds),
-      procedure_feedback_json: JSON.stringify([]),
     });
   };
 
@@ -2693,7 +2592,7 @@ export function createAutomationService({
         `select
           id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
           executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+          trigger_metadata, summary, confidence_json, billing_code
          from automation_runs
          where project_id = ? and automation_id = ?
          order by started_at desc
@@ -2878,28 +2777,6 @@ export function createAutomationService({
     });
   };
 
-  const persistProcedureFeedback = async (runRow: AutomationRunRow, missionStatus: string, summary: string | null) => {
-    const existing = safeJsonParseArray<AutomationProcedureFeedback>(runRow.procedure_feedback_json);
-    if (existing.length > 0) return existing;
-    const linkedProcedureIds = safeJsonParseArray<string>(runRow.linked_procedure_ids_json);
-    if (!linkedProcedureIds.length) return [];
-    const outcome = missionStatus === "completed" ? "success" : missionStatus === "failed" ? "failure" : "observation";
-    const reason = summary?.trim() || (missionStatus === "completed" ? "Automation mission completed." : "Automation mission ended.");
-    const feedback = linkedProcedureIds.map((procedureId) => ({ procedureId, outcome, reason }));
-    const normalizedFeedback = feedback.map((item) => ({
-      memoryId: item.procedureId,
-      outcome: item.outcome === "failure" ? "failure" as const : "success" as const,
-      reason: item.reason,
-    }));
-    try {
-      proceduralLearningServiceRef?.updateProcedureOutcomes?.(normalizedFeedback);
-    } catch {
-      // ignore
-    }
-    updateRun(runRow.id, { procedure_feedback_json: JSON.stringify(feedback) });
-    return feedback;
-  };
-
   const syncMissionRun = async (missionId: string) => {
     if (!missionServiceRef) return;
     const runRow = db.get<AutomationRunRow>(
@@ -2907,7 +2784,7 @@ export function createAutomationService({
         select
           id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
           executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+          trigger_metadata, summary, confidence_json, billing_code
         from automation_runs
         where project_id = ? and mission_id = ?
         order by started_at desc
@@ -2953,9 +2830,8 @@ export function createAutomationService({
             trigger: { type: runRow.trigger_type as AutomationTriggerType },
             executor: { mode: "automation-bot" },
             reviewProfile: "quick",
-            toolPalette: ["repo", "memory", "mission"],
+            toolPalette: ["repo", "mission"],
             contextSources: [],
-            memory: { mode: "automation-plus-project", ruleScopeKey: runRow.automation_id },
             guardrails: {},
             outputs: { disposition: "comment-only", createArtifact: true },
             verification: { verifyBeforePublish: verificationRequired, mode: "intervention" },
@@ -2971,11 +2847,7 @@ export function createAutomationService({
           confidence: normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)),
           spendUsd: Number(runRow.spend_usd ?? 0),
           verificationRequired,
-          procedureSignals: safeJsonParseArray<string>(runRow.linked_procedure_ids_json).map((id) => `Procedure ${id} used`),
         });
-      }
-      if (mission.status === "completed" || mission.status === "failed" || mission.status === "canceled") {
-        await persistProcedureFeedback(runRow, mission.status, nextSummary);
       }
       emit({ type: "runs-updated", automationId: runRow.automation_id, runId: runRow.id });
     }
@@ -2988,7 +2860,7 @@ export function createAutomationService({
         select
           id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
           executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+          trigger_metadata, summary, confidence_json, billing_code
         from automation_runs
         where project_id = ? and worker_run_id = ?
         order by started_at desc
@@ -3035,9 +2907,8 @@ export function createAutomationService({
           trigger: { type: runRow.trigger_type as AutomationTriggerType },
           executor: { mode: "automation-bot" },
           reviewProfile: "quick",
-          toolPalette: ["repo", "memory", "mission"],
+          toolPalette: ["repo", "mission"],
           contextSources: [],
-          memory: { mode: "automation-plus-project", ruleScopeKey: runRow.automation_id },
           guardrails: {},
           outputs: { disposition: "comment-only", createArtifact: true },
           verification: { verifyBeforePublish: verificationRequired, mode: "intervention" },
@@ -3053,11 +2924,7 @@ export function createAutomationService({
         confidence: normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)),
         spendUsd: Number(runRow.spend_usd ?? 0),
         verificationRequired,
-        procedureSignals: safeJsonParseArray<string>(runRow.linked_procedure_ids_json),
       });
-    }
-    if (workerRun.status === "completed" || workerRun.status === "failed" || workerRun.status === "cancelled") {
-      await persistProcedureFeedback(runRow, workerRun.status === "completed" ? "completed" : "failed", nextSummary);
     }
     emit({ type: "runs-updated", automationId: runRow.automation_id, runId: runRow.id });
   };
@@ -3222,15 +3089,11 @@ export function createAutomationService({
     bindMissionRuntime(args: {
       missionService?: ReturnType<typeof createMissionService>;
       aiOrchestratorService?: ReturnType<typeof createAiOrchestratorService>;
-      memoryBriefingService?: ReturnType<typeof createMemoryBriefingService>;
-      proceduralLearningService?: ReturnType<typeof createProceduralLearningService>;
       budgetCapService?: ReturnType<typeof createBudgetCapService>;
       workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
     }) {
       missionServiceRef = args.missionService ?? missionServiceRef;
       aiOrchestratorServiceRef = args.aiOrchestratorService ?? aiOrchestratorServiceRef;
-      memoryBriefingServiceRef = args.memoryBriefingService ?? memoryBriefingServiceRef;
-      proceduralLearningServiceRef = args.proceduralLearningService ?? proceduralLearningServiceRef;
       budgetCapServiceRef = args.budgetCapService ?? budgetCapServiceRef;
       workerHeartbeatServiceRef = args.workerHeartbeatService ?? workerHeartbeatServiceRef;
     },
@@ -3262,7 +3125,7 @@ export function createAutomationService({
             select
               id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
               executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-              trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+              trigger_metadata, summary, confidence_json, billing_code
             from automation_runs
             where project_id = ? and automation_id = ?
             order by started_at desc
@@ -3367,7 +3230,7 @@ export function createAutomationService({
           select
             id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
             executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-            trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+            trigger_metadata, summary, confidence_json, billing_code
           from automation_runs
           where project_id = ? and automation_id = ?
           order by started_at desc
@@ -3400,7 +3263,7 @@ export function createAutomationService({
           select
             id, automation_id, chat_session_id, mission_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
             executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-            trigger_metadata, summary, confidence_json, billing_code, linked_procedure_ids_json, procedure_feedback_json
+            trigger_metadata, summary, confidence_json, billing_code
           from automation_runs
           where ${clauses.join(" and ")}
           order by started_at desc
@@ -3436,7 +3299,6 @@ export function createAutomationService({
         rule: findRule(refreshed.automation_id),
         chatSession,
         actions: actions.map(toAction),
-        procedureFeedback: safeJsonParseArray<AutomationProcedureFeedback>(refreshed.procedure_feedback_json),
         ingressEvent: (() => { const row = refreshed.ingress_event_id ? loadIngressEventRow(refreshed.ingress_event_id) : null; return row ? toIngressEvent(row) : null; })(),
       };
     },

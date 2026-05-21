@@ -795,17 +795,6 @@ const act11Ai: TourStep = {
   docUrl: docs.settingsGeneral,
 };
 
-const act11Memory: TourStep = {
-  id: "act11.memory",
-  target: '[data-tour="settings.memory"]',
-  title: "Memory",
-  body: "Inspect and prune what the CTO and its workers remember. Pin facts, consolidate episodes, set retention caps.",
-  placement: "right",
-  requires: PROJECT_OPEN_REQUIRES,
-  waitForSelector: '[data-tour="settings.memory"]',
-  docUrl: docs.settingsGeneral,
-};
-
 const act11Templates: TourStep = {
   id: "act11.templates",
   target: '[data-tour="settings.laneTemplates"]',

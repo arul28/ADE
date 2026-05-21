@@ -139,9 +139,9 @@ Press **Escape** or click the **Stop** button to interrupt a running agent. Beha
 
 You can **steer** an in-progress agent by sending a follow-up message before the current turn completes. ADE queues the steer message and delivers it at the next turn boundary. You can also **edit** a previous message to re-run the conversation from that point.
 
-### Memory integration
+### Context integration
 
-Chat sessions can read from and write to ADE's project memory. A **memory guard** prevents writes during tool-heavy turns to avoid noisy memory entries. Memory entries created during a session are promoted to project-level memory at compaction boundaries.
+Chat sessions receive lane, session, artifact, mission, and explicit user context. For product or architecture knowledge, agents inspect the repository directly through ADE tools.
 
 ---
 

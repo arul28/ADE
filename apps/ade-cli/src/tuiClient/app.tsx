@@ -127,7 +127,6 @@ import { SpinTickProvider } from "./spinTick";
 import { buildLinearToolRequest } from "./linearCommands";
 import {
   formatLinearStatus,
-  formatMemorySearch,
   formatPrChecks,
   formatPrComments,
   formatPrReview,
@@ -635,9 +634,7 @@ function formatContextUsage(usage: AgentChatContextUsage | null): string {
       : category.percentage.toFixed(0);
     return `${category.name.padEnd(22)} ${compactNumber(category.tokens).padStart(7)}  ${pct.padStart(5)}%`;
   });
-  const extras: string[] = [];
-  if (usage.memoryFiles?.length) extras.push(`${usage.memoryFiles.length} memory file${usage.memoryFiles.length === 1 ? "" : "s"}`);
-  return [header, usage.model ? `Model: ${usage.model}` : null, "", ...rows, extras.length ? `\n${extras.join(" · ")}` : null]
+  return [header, usage.model ? `Model: ${usage.model}` : null, "", ...rows]
     .filter((line): line is string => line != null)
     .join("\n");
 }
@@ -5839,16 +5836,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       openFeedbackForm();
       return;
     }
-    if (name === "/memory") {
-      const query = args || "project";
-      const result = await conn.tool("memory_search", { query, scope: "project", limit: 10 });
-      setRightPane({ kind: "details", title: "Memory", body: formatMemorySearch(result) });
-      return;
-    }
-    if (name === "/forget") {
-      setRightPane({ kind: "details", title: "Forget", body: "Memory lifecycle controls are available in desktop. Run /open to continue there." });
-      return;
-    }
     if (name === "/chats") {
       const laneSessions = displaySessions.filter((session) => session.laneId === laneId);
       const selectedIndex = Math.max(0, laneSessions.findIndex((session) => session.sessionId === sessionId));
@@ -6051,20 +6038,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       }
       const result = await conn.action("git", "stageAll", { laneId });
       addNotice(`Stage all complete: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
-      return;
-    }
-    if (name === "/remember") {
-      if (!args) {
-        addNotice("Usage: /remember <durable fact>", "error");
-        return;
-      }
-      const result = await conn.tool("memory_add", {
-        content: args,
-        scope: "project",
-        category: "decision",
-        importance: "medium",
-      });
-      addNotice(`Memory saved: ${renderObject(result, 4).replace(/\n/g, " ")}`, "success");
       return;
     }
     if (name.startsWith("/steer")) {

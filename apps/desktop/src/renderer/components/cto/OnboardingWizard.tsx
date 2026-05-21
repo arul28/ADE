@@ -21,7 +21,7 @@ const PERSONALITY_THEME: Record<
 };
 
 const HINTS = [
-  "Memory layers active",
+  "Continuity checks active",
   "Context discovered automatically",
   "Recovery across compaction",
   "Doctrine stays immutable",

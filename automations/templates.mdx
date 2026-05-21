@@ -21,7 +21,7 @@ Templates whose execution surface is a Mission show a **"Coming soon"** chip in 
     **Trigger:** `schedule` — weekdays at 9am.
     **Execution:** Agent session.
 
-    Summarizes repo activity since the last weekday brief — commits, PRs, missions, and risk signals — in an automation-only chat thread. Pulls project memory and procedures as context.
+    Summarizes repo activity since the last weekday brief — commits, PRs, missions, and risk signals — in an automation-only chat thread. Pulls repo state and procedures as context.
   </Card>
   <Card title="PR Review Session" icon="code-pull-request">
     **Trigger:** `git.pr_opened` on `main`.
@@ -86,9 +86,8 @@ Every template produces a rule with these fields:
 | Executor mode | Always `automation-bot` for templates |
 | Prompt | Instruction given to the agent (for agent-session and mission kinds) |
 | Model config | Model ID and thinking level |
-| Tool palette | ADE CLI domains the agent can use (repo, git, github, linear, memory, mission, tests) |
-| Context sources | What context is seeded (project-memory, procedures, lane packs) |
-| Memory mode | `project` or `automation-plus-project` |
+| Tool palette | ADE CLI domains the agent can use (repo, git, github, linear, mission, tests) |
+| Context sources | What context is seeded (repo state, procedures, lane packs) |
 | Guardrails | Max duration, confidence threshold, review gates |
 | Outputs | Where results land (see below) |
 | Review profile | `quick` or `full` |

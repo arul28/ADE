@@ -11,7 +11,6 @@ import type {
   AgentStatus,
   AdapterType,
   AgentConfigRevision,
-  AgentCoreMemory,
   AgentSessionLogEntry,
   HeartbeatPolicy,
   WorkerAgentRun,
@@ -291,7 +290,6 @@ export function WorkerEditorPanel({
 
 export function WorkerDetailPanel({
   worker,
-  coreMemory,
   sessionLogs,
   runs,
   revisions,
@@ -304,10 +302,8 @@ export function WorkerDetailPanel({
   onEdit,
   onRemove,
   onRollbackRevision,
-  onSaveCoreMemory,
 }: {
   worker: AgentIdentity;
-  coreMemory: AgentCoreMemory | null;
   sessionLogs: AgentSessionLogEntry[];
   runs: WorkerAgentRun[];
   revisions: AgentConfigRevision[];
@@ -320,10 +316,8 @@ export function WorkerDetailPanel({
   onEdit: () => void;
   onRemove: () => void;
   onRollbackRevision: (id: string) => void;
-  onSaveCoreMemory: (patch: Record<string, unknown>) => Promise<void>;
 }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [memoryEditing, setMemoryEditing] = useState(false);
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-4 gap-4">
@@ -386,36 +380,6 @@ export function WorkerDetailPanel({
             <WorkerActivityFeed runs={runs} sessions={sessionLogs} />
           </div>
         </div>
-
-        {/* Core memory */}
-        {coreMemory && (
-          <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card" data-testid="worker-ops-panel">
-            <PaneHeader
-              title="Worker Memory"
-              right={
-                <Button variant="ghost" size="sm" className="!h-5 !px-1.5" onClick={() => setMemoryEditing(!memoryEditing)} data-testid="worker-core-memory-edit-btn">
-                  <PencilSimple size={10} />
-                </Button>
-              }
-            />
-            <div className="p-3">
-              <div className="font-sans text-[10px] text-muted-fg leading-relaxed" data-testid="worker-core-memory-view">
-                {coreMemory.projectSummary || "No summary yet."}
-              </div>
-              {[
-                { items: coreMemory.criticalConventions, label: "Conventions" },
-                { items: coreMemory.activeFocus, label: "Focus" },
-                { items: coreMemory.userPreferences, label: "Prefs" },
-                { items: coreMemory.notes, label: "Notes" },
-              ].filter(({ items }) => items.length > 0).map(({ items, label }) => (
-                <div key={label} className="mt-1">
-                  <span className="font-sans text-[9px] text-muted-fg/40">{label}: </span>
-                  <span className="font-sans text-[9px] text-muted-fg/60">{items.join(", ")}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* Revisions */}
         <div className="border border-border/10 bg-card/60 backdrop-blur-sm shadow-card" data-testid="revision-panel">

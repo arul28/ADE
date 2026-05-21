@@ -899,7 +899,6 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
         percentage: 0,
         gridRows: [],
         model: "",
-        memoryFiles: [],
       };
     }),
     rewindFiles: vi.fn(async (userMessageId: string, options?: { dryRun?: boolean }) => {
@@ -1224,7 +1223,6 @@ function createService(overrides: Record<string, unknown> = {}) {
   const service = createAgentChatService({
     projectRoot: tmpRoot,
     transcriptsDir,
-    projectId: "test-project",
     laneService,
     sessionService,
     projectConfigService,
@@ -2572,166 +2570,6 @@ describe("createAgentChatService", () => {
     });
   });
 
-  describe("auto memory orientation", () => {
-    it("skips memory search for casual turns", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "thanks",
-      });
-
-      expect(memoryService.search).not.toHaveBeenCalled();
-      expect(onEvent).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-          }),
-        }),
-      );
-    });
-
-    it("skips memory search for obvious test-message pings", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "this is a test message",
-      });
-
-      expect(memoryService.search).not.toHaveBeenCalled();
-      expect(onEvent).not.toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-          }),
-        }),
-      );
-    });
-
-    it("checks memory and emits a memory notice for coding turns", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 3, outputTokens: 2 } };
-        })(),
-      } as any);
-
-      const memoryService = {
-        search: vi.fn(async ({ scope }: { scope?: string }) => (scope === "project"
-          ? [{
-              id: "memory-project-1",
-              scope: "project",
-              tier: 2,
-              pinned: false,
-              category: "decision",
-              content: "Decision: always run focused tests before full Electron builds.",
-              importance: "high",
-              confidence: 1,
-              compositeScore: 0.91,
-              createdAt: "2026-03-01T10:00:00.000Z",
-            }]
-          : [])),
-      } as any;
-      const onEvent = vi.fn();
-      const { service } = createService({
-        memoryService,
-        onEvent,
-        computerUseArtifactBrokerService: {
-          getBackendStatus: vi.fn(() => ({
-            backends: [],
-            localFallback: {
-              available: false,
-              detail: "disabled",
-              supportedKinds: [],
-            },
-          })),
-        } as any,
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
-      });
-
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Please fix the failing desktop tests and update the renderer.",
-      });
-
-      expect(memoryService.search).toHaveBeenCalledTimes(2);
-      expect(onEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: expect.objectContaining({
-            type: "system_notice",
-            noticeKind: "memory",
-            message: expect.stringContaining("Checked memory"),
-          }),
-        }),
-      );
-    });
-  });
-
   describe("lane launch directives", () => {
     it("injects the selected lane worktree into the first opencode user turn only", async () => {
       vi.mocked(streamText).mockImplementation(() => ({
@@ -3685,10 +3523,6 @@ describe("createAgentChatService", () => {
     });
   });
 
-  // --------------------------------------------------------------------------
-  // compaction flush (issue #153): no visible flush message; PreCompact hook
-  // --------------------------------------------------------------------------
-
   describe("compaction flush", () => {
     it("emits context_compact without a user_message carrying the flush prompt", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
@@ -3874,46 +3708,6 @@ describe("createAgentChatService", () => {
       } finally {
         vi.useRealTimers();
       }
-    });
-
-    it("registers a PreCompact hook on non-lightweight Claude sessions", async () => {
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn(),
-        stream: vi.fn(async function* () {
-          return;
-        }),
-        close: vi.fn(),
-        sessionId: "sdk-session-precompact",
-      } as any);
-
-      const { service } = createService();
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-      });
-
-      await vi.waitFor(() => {
-        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
-      });
-
-      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
-        hooks?: Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<any>> }>>;
-      } | undefined;
-      const matchers = opts?.hooks?.PreCompact;
-      expect(matchers).toBeDefined();
-      expect(matchers!.length).toBeGreaterThan(0);
-      const callback = matchers![0].hooks[0];
-      const result = await callback(
-        { hook_event_name: "PreCompact", trigger: "auto", custom_instructions: null } as any,
-        undefined as any,
-        { signal: new AbortController().signal } as any,
-      );
-      expect(result).toMatchObject({ continue: true });
-      expect(typeof (result as { systemMessage?: string }).systemMessage).toBe("string");
-      expect((result as { systemMessage: string }).systemMessage).toContain(
-        "Before context compaction runs",
-      );
     });
 
     it("trims oversized PostToolUse outputs before they return to Claude", async () => {
@@ -5005,7 +4799,6 @@ describe("createAgentChatService", () => {
         percentage: 20,
         gridRows: [],
         model: "claude-sonnet",
-        memoryFiles: [],
       }));
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         ...makeDefaultClaudeSession(),
@@ -10091,10 +9884,7 @@ describe("createAgentChatService", () => {
     });
 
     it("handles Codex /plan prompts inline and sends the next app-server turn in plan mode", async () => {
-      const memoryService = {
-        search: vi.fn(async () => []),
-      } as any;
-      const { service } = createService({ memoryService });
+      const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -10129,10 +9919,6 @@ describe("createAgentChatService", () => {
       expect(params?.approvalPolicy).toBe("on-request");
       expect(params?.sandboxPolicy?.type).toBe("readOnly");
       expect(params?.collaborationMode?.mode).toBe("plan");
-      expect(memoryService.search).toHaveBeenCalled();
-      const memoryQueries = memoryService.search.mock.calls.map(([payload]: [Record<string, unknown>]) => String(payload.query ?? ""));
-      expect(memoryQueries.every((query: string) => !query.startsWith("/plan"))).toBe(true);
-      expect(memoryQueries[0]).toContain("Please plan the renderer refactor");
     });
 
     it("sends fast service tier for supported Codex models when enabled", async () => {

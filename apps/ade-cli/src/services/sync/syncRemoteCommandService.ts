@@ -29,7 +29,6 @@ import type {
   AttachLaneArgs,
   ClosePrArgs,
   CancelQueueAutomationArgs,
-  CtoCoreMemory,
   CtoIdentity,
   CtoTriggerAgentWakeupArgs,
   CreateChildLaneArgs,
@@ -2321,11 +2320,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const monthKey = asTrimmedString(payload.monthKey);
     return workerBudgetService.getBudgetSnapshot(monthKey ? { monthKey } : {});
   });
-  register("cto.getAgentCoreMemory", { viewerAllowed: true }, async (payload) => {
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const agentId = requireString(payload.agentId, "cto.getAgentCoreMemory requires agentId.");
-    return workerAgentService.getCoreMemory(agentId);
-  });
   register("cto.listAgentRuns", { viewerAllowed: true }, async (payload) => {
     const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
     const agentId = requireString(payload.agentId, "cto.listAgentRuns requires agentId.");
@@ -2405,11 +2399,6 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
     return ctoStateService.updateIdentity(patch);
-  });
-  register("cto.updateCoreMemory", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoCoreMemory>) : {};
-    return ctoStateService.updateCoreMemory(patch);
   });
   register("cto.removeAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
     const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");

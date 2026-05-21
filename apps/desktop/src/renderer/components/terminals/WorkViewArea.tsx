@@ -1412,6 +1412,7 @@ export function WorkViewArea({
     profile: LaunchProfile;
     title?: string;
     startupCommand?: string;
+    startupDelayMs?: number;
     command?: string;
     args?: string[];
     env?: Record<string, string>;

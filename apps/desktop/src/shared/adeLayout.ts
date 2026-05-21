@@ -20,7 +20,6 @@ export type AdeLayoutPaths = {
   workflowsDir: string;
   linearWorkflowsDir: string;
   contextDir: string;
-  memoryDir: string;
   historyDir: string;
   reflectionsDir: string;
   skillsDir: string;
@@ -31,7 +30,6 @@ export type AdeLayoutPaths = {
   worktreesDir: string;
   secretsDir: string;
   dbPath: string;
-  embeddingsPath: string;
   socketPath: string;
   apiKeysPath: string;
   legacyApiKeysPath: string;
@@ -62,13 +60,11 @@ export const ADE_LAYOUT_DEFINITIONS: AdePathEntryDefinition[] = [
   { relativePath: "project-icons", kind: "tracked", pathType: "directory", notes: ["Imported project icons are tracked when a shared icon override points at them."] },
   { relativePath: "agents", kind: "ignored", pathType: "directory" },
   { relativePath: "context", kind: "ignored", pathType: "directory" },
-  { relativePath: "memory", kind: "ignored", pathType: "directory" },
   { relativePath: "history", kind: "ignored", pathType: "directory" },
   { relativePath: "reflections", kind: "ignored", pathType: "directory" },
   { relativePath: "local.yaml", kind: "ignored", pathType: "file" },
   { relativePath: "local.secret.yaml", kind: "ignored", pathType: "file" },
   { relativePath: "ade.db", kind: "ignored", pathType: "file" },
-  { relativePath: "embeddings.db", kind: "ignored", pathType: "file" },
   { relativePath: "ade.sock", kind: "ignored", pathType: "file" },
   { relativePath: "artifacts", kind: "ignored", pathType: "directory" },
   { relativePath: "transcripts", kind: "ignored", pathType: "directory" },
@@ -103,7 +99,6 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     workflowsDir: path.join(adeDir, "workflows"),
     linearWorkflowsDir: path.join(adeDir, "workflows", "linear"),
     contextDir: path.join(adeDir, "context"),
-    memoryDir: path.join(adeDir, "memory"),
     historyDir: path.join(adeDir, "history"),
     reflectionsDir: path.join(adeDir, "reflections"),
     skillsDir: path.join(adeDir, "skills"),
@@ -114,7 +109,6 @@ export function resolveAdeLayout(projectRoot: string): AdeLayoutPaths {
     worktreesDir,
     secretsDir,
     dbPath: path.join(adeDir, "ade.db"),
-    embeddingsPath: path.join(adeDir, "embeddings.db"),
     socketPath: resolveAdeRuntimeIpcPath(projectRoot),
     apiKeysPath: path.join(secretsDir, "api-keys.v1.bin"),
     legacyApiKeysPath: path.join(secretsDir, "api-keys.json"),

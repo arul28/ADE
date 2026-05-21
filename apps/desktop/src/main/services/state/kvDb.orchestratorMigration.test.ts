@@ -266,7 +266,6 @@ describe("kvDb orchestrator schema bootstrap", () => {
         "first_seen_run_id",
         "last_seen_retrospective_id",
         "last_seen_run_id",
-        "promoted_memory_id",
         "created_at",
         "updated_at"
       ])

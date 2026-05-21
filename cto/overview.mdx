@@ -6,7 +6,7 @@ icon: "crown"
 
 ## What is the CTO Agent?
 
-The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent — always running in the background watching commits, monitoring lane status, tracking PR progress, and accumulating project understanding over time. Its system prompt includes a baked-in **Memory Protocol** (search before acting, save findings immediately), a **Daily Context** routine (check recent decisions and worker activity at each activation), and a **Decision Framework** (act autonomously when safe, escalate when risky). These protocols survive compaction.
+The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI agent — always running in the background watching commits, monitoring lane status, tracking PR progress, and coordinating worker agents. Its system prompt includes a **Daily Context** routine (check recent decisions and worker activity at each activation) and a **Decision Framework** (act autonomously when safe, escalate when risky). These protocols survive compaction.
 
 <CardGroup cols={2}>
   <Card title="Always-On Awareness" icon="eye">
@@ -21,8 +21,8 @@ The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI age
   <Card title="PR Convergence" icon="arrows-spin">
     Drives PRs to merge readiness autonomously — starts convergence rounds, monitors CI and review comments, and manages the full resolution loop via five dedicated operator tools.
   </Card>
-  <Card title="Deep Memory" icon="brain">
-    Maintains multi-scope persistent memory across `project`, `identity`, `daily-log`, `run`, and `runtime-thread` scopes. The CTO remembers what happened yesterday.
+  <Card title="Project Awareness" icon="diagram-project">
+    Uses current lane, PR, Linear, mission, and repository context to make delegation decisions.
   </Card>
 </CardGroup>
 
@@ -36,7 +36,7 @@ Understanding how the CTO differs from the agents you spawn manually (in chat se
 |--|---------------|---------------------------|
 | **Lifecycle** | Always on; persistent across sessions | Ephemeral; lives for one task or session |
 | **Scope** | Entire project | Specific lane, task, or mission |
-| **Memory** | Accumulates over weeks/months | Within the current session or run |
+| **Context** | Project, lane, PR, Linear, and mission state | Current session or assigned lane |
 | **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
 | **Authority** | Can spawn lanes, create missions, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
 | **Linear access** | Full bidirectional sync (owner) | Read-only via ADE CLI tools, if granted |
@@ -71,9 +71,6 @@ The CTO coordinates workers: it assigns tasks, monitors their output, routes the
 <CardGroup cols={2}>
   <Card title="Setting Up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
     Walk through onboarding, heartbeat configuration, and verifying the CTO is active.
-  </Card>
-  <Card title="CTO Memory" icon="brain" href="/cto/memory">
-    Understand multi-scope persistent memory, memory tiers, and the memory review surface.
   </Card>
   <Card title="Linear Integration" icon="arrow-right-arrow-left" href="/cto/linear">
     Connect Linear for bidirectional issue sync, status updates, and intelligent triage.

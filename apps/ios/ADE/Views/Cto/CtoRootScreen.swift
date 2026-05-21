@@ -121,7 +121,7 @@ struct CtoRootScreen: View {
 
 /// Routes surfaced by the CTO NavigationStack. `.cto` and `.worker` drill into
 /// the shared chat destination; `.workerDetail` drills into the worker
-/// dashboard (status, runs, memory, revisions).
+/// dashboard (status, runs, revisions).
 enum CtoSessionRoute: Hashable {
   case cto
   case worker(agentId: String, displayName: String)

@@ -82,8 +82,6 @@ import {
   resolveCliSpawnInvocation,
   terminateProcessTree,
 } from "../shared/processExecution";
-import type { EpisodicSummaryService } from "../memory/episodicSummaryService";
-import { DEFAULT_FLUSH_PROMPT } from "../memory/compactionFlushPrompt";
 import type {
   AgentChatApprovalDecision,
   AgentChatArchiveArgs,
@@ -227,7 +225,6 @@ import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots"
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { stripAnsi } from "../../utils/ansiStrip";
-import type { createMemoryService, Memory } from "../memory/memoryService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
@@ -321,7 +318,6 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
-import type { TurnMemoryPolicyState } from "../ai/tools/memoryTools";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -585,7 +581,6 @@ type ClaudeRuntime = {
   pendingSessionReset?: boolean;
   /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
   pendingSessionResetClearSdkSessionId?: boolean;
-  turnMemoryPolicyState: TurnMemoryPolicyState | null;
   /** Tool names the user has approved for the session via "Allow for Session". */
   approvalOverrides: Set<string>;
   /** SDK tool_use IDs resolved by canUseTool (e.g. answered AskUserQuestion). */
@@ -646,7 +641,6 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/ide", description: "Manage IDE integrations and show status.", source: "sdk" },
   { name: "/init", description: "Initialize project with a CLAUDE.md guide.", source: "sdk" },
   { name: "/logout", description: "Sign out from Anthropic.", source: "sdk" },
-  { name: "/memory", description: "Edit CLAUDE.md memory files and memory settings.", source: "sdk" },
   { name: "/model", description: "Select or change the AI model.", source: "sdk", argumentHint: "[model]" },
   { name: "/output-style", description: "List or select the active Claude output style.", source: "sdk", argumentHint: "[style]" },
   { name: "/permissions", description: "Manage allow, ask, and deny rules for tool permissions.", source: "sdk" },
@@ -4303,10 +4297,7 @@ export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
   transcriptsDir: string;
-  projectId?: string;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
-  episodicSummaryService?: EpisodicSummaryService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
@@ -4344,10 +4335,7 @@ export function createAgentChatService(args: {
   const {
     projectRoot,
     transcriptsDir,
-    projectId,
-    memoryService,
     fileService,
-    episodicSummaryService,
     ctoStateService,
     workerAgentService,
     workerHeartbeatService,
@@ -4505,41 +4493,6 @@ export function createAgentChatService(args: {
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
-  const AUTO_MEMORY_CATEGORY_ALLOWLIST = new Set([
-    "fact",
-    "preference",
-    "pattern",
-    "decision",
-    "gotcha",
-    "convention",
-    "procedure",
-  ]);
-
-  type AutoMemoryTurnClassification = "none" | "soft" | "required";
-
-  type AutoMemoryTurnTelemetry = {
-    searched: boolean;
-    projectHits: number;
-    agentHits: number;
-    totalHits: number;
-    injectedCount: number;
-    includedProcedure: boolean;
-  };
-
-  type AutoMemoryTurnPlan = {
-    classification: AutoMemoryTurnClassification;
-    contextText: string;
-    telemetry: AutoMemoryTurnTelemetry;
-  };
-
-  const EMPTY_MEMORY_TELEMETRY: AutoMemoryTurnTelemetry = {
-    searched: false,
-    projectHits: 0,
-    agentHits: 0,
-    totalHits: 0,
-    injectedCount: 0,
-    includedProcedure: false,
-  };
 
   const ensureSubagentSnapshotMap = (sessionId: string): Map<string, AgentChatSubagentSnapshot> => {
     let collection = subagentStates.get(sessionId);
@@ -4548,158 +4501,6 @@ export function createAgentChatService(args: {
       subagentStates.set(sessionId, collection);
     }
     return collection;
-  };
-
-  const compactMemorySnippet = (value: string, maxChars = 260): string => {
-    const normalized = value.replace(/\s+/g, " ").trim();
-    if (normalized.length <= maxChars) return normalized;
-    return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
-  };
-
-  const AUTO_MEMORY_REQUIRED_RE = /\b(?:fix|debug|investigat(?:e|ing|ion)|implement|refactor|patch|edit|write|add|remove|rename|update|change|test(?:s|ing)?|failing|error|exception|stack trace|crash|bug|diff|pull request|regression|build|compile|lint|typecheck)\b/i;
-  const AUTO_MEMORY_SOFT_RE = /\b(?:explain|why|how|walk through|summari[sz]e|context|overview|review|plan|brainstorm|design|architecture|tradeoff|decision|pattern|convention|gotcha)\b/i;
-  const AUTO_MEMORY_META_RE = /^(?:hi|hello|hey|thanks|thank you|ok(?:ay)?|cool|sounds good|nice|what model are you|who are you|are you there|can you help)\b/i;
-  const AUTO_MEMORY_FILE_PATH_RE = /(?:^|\s)(?:\/|\.{1,2}\/|[A-Za-z]:\\|[A-Za-z0-9_.-]+\/)[^\s]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|py|go|rs|java|rb|sh)\b/i;
-  const CLAUDE_MUTATING_TOOL_RE = /\b(?:bash|write|edit|multiedit|notebookedit)\b/;
-  const CHAT_MEMORY_GUARD_MESSAGE = "Search memory before mutating files or running mutating commands for this turn.";
-  const CLAUDE_MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
-  const AUTO_MEMORY_TEST_MESSAGE_RE = /^(?:this is\s+)?(?:just\s+)?(?:a\s+)?test message[.!?]*$|^(?:just\s+)?testing[.!?]*$/i;
-
-  const classifyAutoMemoryTurn = (
-    promptText: string,
-    attachmentCount = 0,
-  ): AutoMemoryTurnClassification => {
-    const trimmed = promptText.trim();
-    if (trimmed.length < 12) return "none";
-    if (trimmed.startsWith("/")) return "none";
-    if (AUTO_MEMORY_TEST_MESSAGE_RE.test(trimmed)) return "none";
-    if (/^before context compaction runs\b/i.test(trimmed)) return "none";
-    if (/^review this conversation and persist\b/i.test(trimmed)) return "none";
-    if (attachmentCount > 0) return "required";
-    if (/```/.test(trimmed) || AUTO_MEMORY_FILE_PATH_RE.test(trimmed)) return "required";
-    if (AUTO_MEMORY_REQUIRED_RE.test(trimmed)) return "required";
-    if (AUTO_MEMORY_SOFT_RE.test(trimmed)) return "soft";
-    if (AUTO_MEMORY_META_RE.test(trimmed) && trimmed.length <= 80) return "none";
-    return "none";
-  };
-
-  const selectAutoMemoryEntries = (
-    memories: Memory[],
-    maxEntries = 4,
-  ): Memory[] => {
-    const seen = new Set<string>();
-    return memories
-      .filter((memory) => AUTO_MEMORY_CATEGORY_ALLOWLIST.has(String(memory.category ?? "").trim()))
-      .filter((memory) => {
-        if (seen.has(memory.id)) return false;
-        seen.add(memory.id);
-        return true;
-      })
-      .sort((left, right) => {
-        if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
-        if (left.tier !== right.tier) return left.tier - right.tier;
-        return right.compositeScore - left.compositeScore;
-      })
-      .slice(0, maxEntries);
-  };
-
-  const buildAutoMemorySystemNotice = (plan: AutoMemoryTurnPlan): {
-    message: string;
-    detail: string;
-  } | null => {
-    if (!plan.telemetry.searched) return null;
-    const message = `Checked memory: ${plan.telemetry.totalHits} hit${plan.telemetry.totalHits === 1 ? "" : "s"}, injected ${plan.telemetry.injectedCount} relevant entr${plan.telemetry.injectedCount === 1 ? "y" : "ies"}`;
-    const detail = [
-      `Policy: ${plan.classification}`,
-      `Project hits: ${plan.telemetry.projectHits}`,
-      `Agent hits: ${plan.telemetry.agentHits}`,
-      ...(plan.telemetry.includedProcedure ? ["Included procedure memory in the injected set."] : []),
-    ].join("\n");
-    return { message, detail };
-  };
-
-  const buildAutoMemoryTurnPlan = async (
-    managed: ManagedChatSession,
-    promptText: string,
-    attachments: AgentChatFileRef[] = [],
-  ): Promise<AutoMemoryTurnPlan> => {
-    const classification = classifyAutoMemoryTurn(promptText, attachments.length);
-    if (!memoryService || !projectId) {
-      return { classification: "none", contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
-    }
-    if (isLightweightSession(managed.session) || classification === "none") {
-      return { classification, contextText: "", telemetry: EMPTY_MEMORY_TELEMETRY };
-    }
-
-    const query = promptText.trim().slice(0, 300);
-    const agentScopeOwnerId = managed.session.identityKey ?? managed.session.id;
-
-    const [projectHits, agentHits] = await Promise.all([
-      memoryService.search({
-        projectId,
-        query,
-        scope: "project",
-        status: "promoted",
-        tiers: [1, 2],
-        limit: 12,
-      }).catch(() => []),
-      memoryService.search({
-        projectId,
-        query,
-        scope: "agent",
-        scopeOwnerId: agentScopeOwnerId,
-        status: "promoted",
-        tiers: [1, 2],
-        limit: 6,
-      }).catch(() => []),
-    ]);
-
-    const allQualifying = selectAutoMemoryEntries([...projectHits, ...agentHits], 32);
-    const selected = allQualifying.slice(0, 4);
-    const contextText = selected.length === 0
-      ? ""
-      : [
-          "Relevant ADE memory for this turn (use it when helpful; current code and files win if they disagree):",
-          ...selected.map((memory) => `- [${memory.scope}/${memory.category}] ${compactMemorySnippet(memory.content, 180)}`),
-        ].join("\n");
-
-    return {
-      classification,
-      contextText,
-      telemetry: {
-        searched: true,
-        projectHits: projectHits.length,
-        agentHits: agentHits.length,
-        totalHits: allQualifying.length,
-        injectedCount: selected.length,
-        includedProcedure: selected.some((memory) => memory.category === "procedure"),
-      },
-    };
-  };
-
-  const bashInputLikelyMutates = (input: Record<string, unknown>): boolean => {
-    let command = "";
-    if (typeof input.command === "string") {
-      command = input.command;
-    } else if (typeof input.cmd === "string") {
-      command = input.cmd;
-    }
-    return CLAUDE_MUTATING_BASH_RE.test(command) || /(?:>|>>|tee|cp\s|mv\s|write|edit)/.test(command);
-  };
-
-  const normalizeToolNameForPolicy = (toolName: string): string =>
-    toolName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-
-  const isMemorySearchToolName = (toolName: string): boolean => {
-    const normalized = normalizeToolNameForPolicy(toolName);
-    return normalized.includes("memory_search") || normalized.includes("memorysearch");
-  };
-
-  const isClaudeMutatingToolCall = (toolName: string, input: Record<string, unknown>): boolean => {
-    const normalized = normalizeToolNameForPolicy(toolName);
-    if (!CLAUDE_MUTATING_TOOL_RE.test(normalized)) return false;
-    if (normalized.includes("bash")) return bashInputLikelyMutates(input);
-    return true;
   };
 
   const CLAUDE_READ_ONLY_TOOLS = new Set([
@@ -5143,19 +4944,6 @@ export function createAgentChatService(args: {
         behavior: "allow",
         updatedInput,
       };
-    }
-
-    // ── Memory orientation guard ──
-    const state = runtime.turnMemoryPolicyState;
-    if (isMemorySearchToolName(toolName) && state) {
-      state.explicitSearchPerformed = true;
-      state.orientationSatisfied = true;
-      return { behavior: "allow", updatedInput: input };
-    }
-    if (state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed) {
-      if (isClaudeMutatingToolCall(toolName, input)) {
-        return { behavior: "deny", message: CHAT_MEMORY_GUARD_MESSAGE };
-      }
     }
 
     // ── Tool permission prompts ──
@@ -8502,13 +8290,6 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error)
         });
       }
-      episodicSummaryService?.enqueueSessionSummary({
-        sessionId: managed.session.id,
-        role: "cto",
-        summary: explicitSummary || fallbackSummary || "CTO session ended.",
-        startedAt: managed.ctoSessionStartedAt ?? managed.session.createdAt,
-        endedAt,
-      });
     }
     const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
     if (workerAgentId && workerAgentService) {
@@ -8525,13 +8306,6 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error)
         });
       }
-      episodicSummaryService?.enqueueSessionSummary({
-        sessionId: managed.session.id,
-        role: "worker",
-        summary: explicitSummary || fallbackSummary || "Worker session ended.",
-        startedAt: managed.session.createdAt,
-        endedAt,
-      });
     }
 
     const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
@@ -9055,11 +8829,6 @@ export function createAgentChatService(args: {
     }
 
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
-    const autoMemoryPlan = suppressTurnContext
-      ? null
-      : await buildAutoMemoryTurnPlan(managed, effectivePromptText, attachments);
-    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
-
     const input: Array<Record<string, unknown>> = [];
 
     const reconstructionContext = suppressTurnContext ? "" : managed.pendingReconstructionContext?.trim() ?? "";
@@ -9074,23 +8843,6 @@ export function createAgentChatService(args: {
       });
       managed.pendingReconstructionContext = null;
     }
-    if (autoMemoryPlan?.contextText.length) {
-      input.push({
-        type: "text",
-        text: autoMemoryPlan.contextText,
-        text_elements: [],
-      });
-    }
-
-    if (autoMemoryNotice) {
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "memory",
-        message: autoMemoryNotice.message,
-        detail: autoMemoryNotice.detail,
-      });
-    }
-
     const { codexPolicy } = resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
     const requestedCollaborationMode = resolveRequestedCodexCollaborationMode(managed.session);
@@ -9508,25 +9260,6 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const autoMemoryPlan = providerSlashCommand
-        ? null
-        : await buildAutoMemoryTurnPlan(managed, userText, attachments);
-      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
-      runtime.turnMemoryPolicyState = {
-        classification: autoMemoryPlan?.classification ?? "none",
-        orientationSatisfied: autoMemoryPlan?.telemetry.searched ?? true,
-        explicitSearchPerformed: false,
-      };
-      if (autoMemoryNotice) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "memory",
-          message: autoMemoryNotice.message,
-          detail: autoMemoryNotice.detail,
-          turnId,
-        });
-      }
-
       const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
@@ -9537,7 +9270,6 @@ export function createAgentChatService(args: {
                   reconstructionContext,
                 ].join("\n")
               : null,
-            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
             args.promptText,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
@@ -9675,18 +9407,9 @@ export function createAgentChatService(args: {
             preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
             turnId,
           });
-          // Re-inject identity context after compaction so the CTO doesn't lose
-          // its persona, core memory, or memory protocol instructions.
+          // Re-inject identity context after compaction so identity-backed
+          // sessions keep their role and current operating instructions.
           if (managed.session.identityKey) {
-            if (managed.session.identityKey === "cto" && ctoStateService) {
-              ctoStateService.appendContinuityCheckpoint({
-                reason: "compaction",
-                entries: managed.recentConversationEntries.map((entry) => ({
-                  role: entry.role,
-                  text: entry.text,
-                })),
-              });
-            }
             void maybeRefreshIdentityContinuitySummary(managed, "compaction");
             refreshReconstructionContext(managed);
           }
@@ -10407,7 +10130,6 @@ export function createAgentChatService(args: {
       // Note: query is NOT closed here — it stays alive for the next turn.
       runtime.busy = false;
       runtime.activeTurnId = null;
-      runtime.turnMemoryPolicyState = null;
       markSessionIdleWithFreshCache(managed);
       reportProviderRuntimeReady("claude");
 
@@ -10460,7 +10182,6 @@ export function createAgentChatService(args: {
       runtime.resumeIdleWatchdog = null;
       runtime.busy = false;
       runtime.activeTurnId = null;
-      runtime.turnMemoryPolicyState = null;
       const effectiveError = timeoutError ?? error;
       const finalToolStatus: "completed" | "failed" | "interrupted" =
         runtime.interrupted || isAbortRelatedError(effectiveError)
@@ -10694,12 +10415,6 @@ export function createAgentChatService(args: {
       `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
       "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
       "",
-      "## ADE Memory",
-      "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
-      "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
-      "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
-      "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
-      "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
       ...slashCommandsSection,
       "",
       buildAdeGuidanceForLane(managed.laneWorktreePath),
@@ -10846,19 +10561,6 @@ export function createAgentChatService(args: {
     },
   ): Promise<string> => {
     const providerSlashCommand = args.providerSlashCommand === true;
-    const autoMemoryPlan = providerSlashCommand
-      ? null
-      : await buildAutoMemoryTurnPlan(managed, args.userText, args.attachments);
-    const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
-    if (autoMemoryNotice) {
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "memory",
-        message: autoMemoryNotice.message,
-        detail: autoMemoryNotice.detail,
-      });
-    }
-
     const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
     if (reconstructionContext.length) {
       managed.pendingReconstructionContext = null;
@@ -10881,7 +10583,6 @@ export function createAgentChatService(args: {
             reconstructionContext,
           ].join("\n")
         : null,
-      autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
       attachmentText,
       args.promptText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
@@ -11164,20 +10865,6 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const autoMemoryPlan = providerSlashCommand
-        ? null
-        : await buildAutoMemoryTurnPlan(managed, userText, attachments);
-      const autoMemoryNotice = autoMemoryPlan ? buildAutoMemorySystemNotice(autoMemoryPlan) : null;
-      if (autoMemoryNotice) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "memory",
-          message: autoMemoryNotice.message,
-          detail: autoMemoryNotice.detail,
-          turnId,
-        });
-      }
-
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
@@ -11187,7 +10874,6 @@ export function createAgentChatService(args: {
             managed.pendingReconstructionContext?.trim().length
               ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
               : null,
-            autoMemoryPlan?.contextText.length ? autoMemoryPlan.contextText : null,
             `${args.promptText}${attachmentHint}`,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
 
@@ -14220,16 +13906,6 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
   ): NonNullable<ClaudeSDKOptions["hooks"]> => ({
-    PreCompact: [
-      {
-        hooks: [
-          async () => ({
-            continue: true,
-            systemMessage: DEFAULT_FLUSH_PROMPT,
-          }),
-        ],
-      },
-    ],
     SubagentStart: [
       {
         hooks: [
@@ -14487,12 +14163,6 @@ export function createAgentChatService(args: {
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
           "Read, edit, and run commands only inside that worktree. Do not switch to project root, another lane, or another repo unless ADE explicitly relaunches you there.",
           "",
-          "## ADE Memory",
-          "Use the ADE CLI (`ade memory search`, `ade memory add`, `ade memory pin`) when you need project memory from a terminal-capable session.",
-          "**Search first:** Before starting non-trivial work, search memory for relevant conventions, past decisions, or known pitfalls when the CLI is available.",
-          "**Write sparingly and well:** Only save knowledge a developer joining this project would find useful on their first day. Each memory should be a single actionable insight.",
-          "GOOD memories: \"Convention: always use snake_case for DB columns\", \"Decision: chose Postgres over Mongo for ACID transactions\", \"Pitfall: CI silently skips tests if file doesn't match *.test.ts\"",
-          "DO NOT save: file paths, raw error messages without lessons, task progress updates, information derivable from git log or the code itself, obvious patterns already visible in the codebase.",
           ...slashCommandsSection,
           "",
           buildAdeGuidanceForLane(managed.laneWorktreePath),
@@ -15066,7 +14736,6 @@ export function createAgentChatService(args: {
       approvals: new Map<string, PendingClaudeApproval>(),
       interrupted: false,
       interruptEventsEmitted: false,
-      turnMemoryPolicyState: null,
       approvalOverrides: new Set<string>(persisted?.approvalOverrides ?? []),
       resolvedToolUseIds: new Set<string>(),
       rateLimitWarningEmitted: managed.claudeRateLimitWarningEmitted,
@@ -17194,18 +16863,6 @@ export function createAgentChatService(args: {
 
     let shouldDeliverQueuedSteer = false;
     try {
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, userText, args.attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
-      if (autoMemoryNotice) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "memory",
-          message: autoMemoryNotice.message,
-          detail: autoMemoryNotice.detail,
-          turnId,
-        });
-      }
-
       let composed = args.promptText;
       const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
       if (reconstructionContext.length) {
@@ -17216,9 +16873,6 @@ export function createAgentChatService(args: {
           composed,
         ].join("\n");
         managed.pendingReconstructionContext = null;
-      }
-      if (autoMemoryPlan.contextText.length) {
-        composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
       const modeDirective = buildCursorSdkModeDirective(policy);
@@ -18304,18 +17958,6 @@ export function createAgentChatService(args: {
     const turnStartedAt = Date.now();
     let shouldDeliverQueuedSteer = false;
     try {
-      const autoMemoryPlan = await buildAutoMemoryTurnPlan(managed, userText, args.attachments);
-      const autoMemoryNotice = buildAutoMemorySystemNotice(autoMemoryPlan);
-      if (autoMemoryNotice) {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "memory",
-          message: autoMemoryNotice.message,
-          detail: autoMemoryNotice.detail,
-          turnId,
-        });
-      }
-
       let composed = args.promptText;
       const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
       if (reconstructionContext.length) {
@@ -18327,10 +17969,6 @@ export function createAgentChatService(args: {
         ].join("\n");
         managed.pendingReconstructionContext = null;
       }
-      if (autoMemoryPlan.contextText.length) {
-        composed = `${autoMemoryPlan.contextText}\n\n${composed}`;
-      }
-
       if (runtime.interrupted) {
         managed.session.status = "idle";
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
@@ -22018,13 +21656,6 @@ export function createAgentChatService(args: {
           ? (totalTokens / maxTokens) * 100
           : 0,
       ...(typeof usage.model === "string" && usage.model.trim().length ? { model: usage.model.trim() } : {}),
-      memoryFiles: (Array.isArray(usage.memoryFiles) ? usage.memoryFiles : [])
-        .map((file) => ({
-          path: file.path,
-          ...(typeof file.type === "string" && file.type.trim().length ? { type: file.type.trim() } : {}),
-          tokens: Number.isFinite(file.tokens) ? Math.max(0, file.tokens) : 0,
-        }))
-        .filter((file) => typeof file.path === "string" && file.path.trim().length > 0),
     };
   };
 

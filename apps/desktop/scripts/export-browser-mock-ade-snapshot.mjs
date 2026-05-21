@@ -1134,12 +1134,8 @@ function getCtoState(projectId) {
   const identityRow = hasTable("cto_identity_state")
     ? getRow("select payload_json from cto_identity_state where project_id = ? order by updated_at desc limit 1", [projectId])
     : null;
-  const coreRow = hasTable("cto_core_memory_state")
-    ? getRow("select payload_json from cto_core_memory_state where project_id = ? order by updated_at desc limit 1", [projectId])
-    : null;
   return {
     identity: safeJson(identityRow?.payload_json, null),
-    coreMemory: safeJson(coreRow?.payload_json, null),
     recentSessions: [],
   };
 }

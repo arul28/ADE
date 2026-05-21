@@ -160,9 +160,6 @@ coordinator tools) are stripped from the list.
 Per-session rate limits (tracked in `SessionState`):
 
 - `askUserRateLimit` -- caps `ask_user` tool calls.
-- `memoryAddRateLimit` -- caps `memory_add` calls.
-- `memorySearchRateLimit` -- caps `memory_search` calls.
-
 Each uses a sliding-window counter (maxCalls, windowMs). Exceeded
 calls return a structured error with retry-after guidance.
 
@@ -285,7 +282,7 @@ worker launches, and inline Work-tab preambles stay aligned.
   etc. are arrays of timestamps; old entries are trimmed at the
   next rate-limit check. Very bursty sessions can transiently carry
   thousands of timestamps. Consider ring buffers if this becomes a
-  memory issue.
+  footprint issue.
 - **CLI detection uses `which` which ignores shell aliases.** Users
   who rely on shell aliases for their CLI install paths see the tool
   as "not installed". Either point `TOOL_SPECS[i].command` at the

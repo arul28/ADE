@@ -2,7 +2,7 @@
 
 The wizard that turns a freshly-opened project into something usable.
 Covers stack detection, AI provider setup, optional integrations, and
-semantic search setup.
+project setup.
 
 The canonical backend is
 `apps/desktop/src/main/services/onboarding/onboardingService.ts`. The
@@ -12,7 +12,7 @@ wizard UI is
 
 ## Wizard steps
 
-`STEP_ORDER = ["tools", "ai", "helpers", "github", "embeddings", "linear"]`.
+`STEP_ORDER = ["tools", "ai", "helpers", "github", "linear"]`.
 
 | Step | Heading | Subtitle | Purpose |
 |---|---|---|---|
@@ -20,7 +20,6 @@ wizard UI is
 | `ai` | Runtime providers | "Set up the four ADE runtime providers: Claude, Codex, Cursor use their native CLIs. OpenCode powers API-backed and local model chats (LM Studio, Ollama)." | Provider CLI detection, model listing. |
 | `helpers` | Background helpers | "Lightweight helpers that run in the background while you work. Optional and changeable later." | Non-blocking helper opt-ins. |
 | `github` | GitHub Integration | "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." | GitHub PAT setup. |
-| `embeddings` | Semantic Search | "A small local model that enables meaning-based memory search instead of just keyword matching." | Local embeddings opt-in. |
 | `linear` | Linear Integration | "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." | Optional Linear connection. |
 
 All steps are visited in order but none *block* completion — the user
@@ -105,7 +104,7 @@ The page is stateful and reacts to:
 - `window.ade.onboarding.getStatus()` on mount
 - `window.ade.ai.getStatus()` for `availableModelIds`
 
-Step-to-section embedding:
+Step-to-section mapping:
 
 | Step | Embedded section |
 |---|---|
@@ -113,7 +112,6 @@ Step-to-section embedding:
 | `ai` | `ProvidersSection` + `AiFeaturesSection` |
 | `helpers` | inline helper cards |
 | `github` | `GitHubSection` |
-| `embeddings` | `EmbeddingsSection` |
 | `linear` | `LinearSection` |
 ### Completion
 
@@ -129,15 +127,12 @@ leaving the onboarding banner available via a re-entry from Settings.
 
 Onboarding follows a small rule set:
 
-- Do not block on optional integrations. GitHub, Linear, and embeddings
-  are all skippable.
+- Do not block on optional integrations. GitHub and Linear are skippable.
 - Keep setup responsive. Model detection, CLI probes, and lane
   detection run concurrently where possible.
 - Show the fastest path first. For Linear that means personal API
   keys rather than OAuth, with OAuth available but secondary.
-- Defer heavy work to the feature surface that owns it. If the user
-  wants deep memory setup, they use Settings > Memory, not
-  onboarding.
+- Defer heavy work to the feature surface that owns it.
 
 ## Gotchas
 

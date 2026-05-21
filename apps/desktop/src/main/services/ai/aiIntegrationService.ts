@@ -63,7 +63,6 @@ import {
   listStoredProviders,
   storeApiKey as storeStoredApiKey,
 } from "./apiKeyStore";
-import type { createMemoryService } from "../memory/memoryService";
 import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
@@ -84,7 +83,6 @@ export type AiTaskType =
   | "review"
   | "conflict_resolution"
   | "commit_message"
-  | "memory_consolidation"
   | "narrative"
   | "pr_description"
   | "terminal_summary"
@@ -102,7 +100,6 @@ export type AiFeatureKey =
   | "commit_messages"
   | "pr_descriptions"
   | "terminal_summaries"
-  | "memory_consolidation"
   | "mission_planning"
   | "orchestrator"
   | "initial_context";
@@ -176,7 +173,6 @@ export type ExecuteAiTaskArgs = {
   runId?: string;
   stepId?: string;
   attemptId?: string;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
 };
 
 export type ExecuteAiTaskResult = {
@@ -201,7 +197,6 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   commit_messages: false,
   pr_descriptions: true,
   terminal_summaries: true,
-  memory_consolidation: true,
   mission_planning: true,
   orchestrator: true,
   initial_context: true,
@@ -230,10 +225,6 @@ const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
   commit_message: {
     modelId: "anthropic/claude-haiku-4-5",
     timeoutMs: 20_000
-  },
-  memory_consolidation: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 45_000
   },
   narrative: {
     modelId: "anthropic/claude-haiku-4-5",

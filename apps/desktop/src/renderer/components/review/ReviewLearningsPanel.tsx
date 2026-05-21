@@ -193,7 +193,7 @@ export function ReviewLearningsPanel({
               <EmptyState
                 icon={Shield}
                 title="No suppressions yet"
-                description="Use the Suppress action on noisy findings to teach the engine. Suppressions persist across runs and are matched semantically via embeddings."
+                description="Use the Suppress action on noisy findings to teach the engine. Suppressions persist across runs and are matched by title and scope."
               />
             ) : (
               <div className="space-y-1.5">

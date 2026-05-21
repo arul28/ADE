@@ -27,7 +27,6 @@ export * from "./packs";
 export * from "./agents";
 export * from "./budget";
 export * from "./usage";
-export * from "./memory";
 export * from "./projectState";
 export * from "./sync";
 export * from "./devTools";

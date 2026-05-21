@@ -25,8 +25,6 @@ const MISSION_CONTROL_TOOL_NAMES = new Set([
   "list_workers",
   "mark_step_complete",
   "mark_step_failed",
-  "memory_add",
-  "memory_search",
   "message_worker",
   "provision_lane",
   "read_file",

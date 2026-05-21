@@ -122,6 +122,7 @@ export type PtyCreateArgs = {
   tracked?: boolean;
   toolType?: TerminalToolType | null;
   startupCommand?: string;
+  startupDelayMs?: number;
   command?: string;
   args?: string[];
   env?: Record<string, string>;

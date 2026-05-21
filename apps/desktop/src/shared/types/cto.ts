@@ -32,23 +32,7 @@ export type CtoIdentity = {
     modelId?: ModelId;
     reasoningEffort?: string | null;
   };
-  memoryPolicy: {
-    autoCompact: boolean;
-    compactionThreshold: number;
-    preCompactionFlush: boolean;
-    temporalDecayHalfLifeDays: number;
-  };
   updatedAt: string;
-};
-
-export type CtoCoreMemory = {
-  version: number;
-  updatedAt: string;
-  projectSummary: string;
-  criticalConventions: string[];
-  userPreferences: string[];
-  activeFocus: string[];
-  notes: string[];
 };
 
 export type CtoSessionLogEntry = {
@@ -78,7 +62,6 @@ export type CtoSubordinateActivityEntry = {
 
 export type CtoSnapshot = {
   identity: CtoIdentity;
-  coreMemory: CtoCoreMemory;
   recentSessions: CtoSessionLogEntry[];
   recentSubordinateActivity: CtoSubordinateActivityEntry[];
 };
@@ -96,10 +79,6 @@ export type CtoUpdateIdentityArgs = {
   patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
 };
 
-export type CtoUpdateCoreMemoryArgs = {
-  patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
-};
-
 export type CtoListSessionLogsArgs = {
   limit?: number;
 };
@@ -113,7 +92,7 @@ export type CtoOnboardingState = {
 };
 
 export type CtoSystemPromptPreviewSection = {
-  id: "doctrine" | "personality" | "memory" | "knowledge" | "capabilities";
+  id: "doctrine" | "personality" | "continuity" | "knowledge" | "capabilities";
   title: string;
   content: string;
 };
@@ -271,6 +250,4 @@ export type CtoRunProjectScanArgs = Record<string, never>;
 
 export type CtoRunProjectScanResult = {
   detection: OnboardingDetectionResult | null;
-  coreMemoryPatch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>;
-  createdMemoryIds: string[];
 };

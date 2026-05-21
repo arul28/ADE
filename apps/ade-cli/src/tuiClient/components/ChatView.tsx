@@ -42,7 +42,7 @@ const BLANK_ROW_TEXT = " ";
 type RenderedChatRow = {
   id: string;
   text: string;
-  tone: RenderedChatLine["tone"] | "indicator" | "work" | "memory" | "plan" | "footer";
+  tone: RenderedChatLine["tone"] | "indicator" | "work" | "plan" | "footer";
   color?: string;
   dim?: boolean;
   bold?: boolean;
@@ -583,7 +583,6 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
 // ─────────────────────────────────────────────────────────────────────────────
 
 const LINK_COLOR = theme.color.info;
-const MEMORY_COLOR = theme.color.tool;
 const WORK_STATUS_COLOR: Record<WorkToolStatus, string> = {
   running: theme.color.violet,
   ok: theme.color.running,
@@ -829,19 +828,6 @@ function runtimeActivityRows(
   return out;
 }
 
-function memoryRows(block: Extract<AggregatedBlock, { kind: "memory" }>, brailleFrame: string): RenderedChatRow[] {
-  const text = block.live
-    ? `· memory ${brailleFrame}`
-    : `· memory${typeof block.hitCount === "number" ? ` · ${block.hitCount} hit${block.hitCount === 1 ? "" : "s"}` : ""}`;
-  return [{
-    id: block.id,
-    tone: "memory",
-    text,
-    color: MEMORY_COLOR,
-    rail: null,
-  }];
-}
-
 function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>, brailleFrame: string): RenderedChatRow[] {
   const preTokens = typeof block.preTokens === "number" ? ` · before ${block.preTokens.toLocaleString()} tokens` : "";
   const text = block.live
@@ -1017,8 +1003,6 @@ function rowsForBlock(
       return filesChangedGroupRows(block, width, spinFrame);
     case "runtime-activity":
       return runtimeActivityRows(block, spinFrame);
-    case "memory":
-      return memoryRows(block, brailleFrame);
     case "compaction":
       return compactionRows(block, brailleFrame);
     case "queued-steer":

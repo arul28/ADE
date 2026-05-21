@@ -23,7 +23,6 @@ struct WorkSlashCommandsSheet: View {
         Command(id: "/compact", title: "/compact", description: "Summarize the transcript so far."),
         Command(id: "/plan", title: "/plan", description: "Ask the assistant to draft a plan."),
         Command(id: "/review", title: "/review", description: "Review the current diff."),
-        Command(id: "/memory", title: "/memory", description: "Open Claude's memory surface."),
       ]
     case "codex":
       return [

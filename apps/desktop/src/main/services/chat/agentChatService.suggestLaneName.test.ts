@@ -416,7 +416,6 @@ function createService(options: { titleGenerationEnabled?: boolean; titleModelId
   const service = createAgentChatService({
     projectRoot: tmpRoot,
     transcriptsDir,
-    projectId: "test-project",
     laneService,
     sessionService,
     projectConfigService,

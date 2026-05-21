@@ -1,6 +1,5 @@
 import {
   ArrowSquareOut,
-  Brain,
   ChatCircle,
   CheckCircle,
   Checks,
@@ -71,10 +70,6 @@ const TOOL_META: Record<string, ToolMeta> = {
   writeFile: { label: "Write", icon: Note, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "write", sourceTone: "success", getTarget: a => String(a.file_path ?? a.path ?? "") || null },
   bash: { label: "Shell", icon: Terminal, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "exec", sourceTone: "warning", getTarget: a => String(a.command ?? "") || null },
   askUser: { label: "Ask User", icon: ChatCircle, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent", getTarget: a => String(a.question ?? "") || null },
-  memorySearch: { label: "Memory", icon: Brain, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent", getTarget: a => String(a.query ?? "") || null },
-  memoryAdd: { label: "Memory Add", icon: Brain, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent" },
-  memoryPin: { label: "Memory Pin", icon: Brain, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent" },
-  memoryUpdateCore: { label: "Core Memory", icon: Brain, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent" },
   spawn_worker: { label: "Spawn", icon: Robot, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.name ?? a.workerId ?? "") || null },
   request_specialist: { label: "Specialist", icon: User, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.role ?? a.name ?? "") || null },
   delegate_to_subagent: { label: "Delegate", icon: User, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.name ?? a.parentWorkerId ?? "") || null },

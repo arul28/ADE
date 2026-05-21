@@ -322,20 +322,19 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
 
 1. `sessionProfile: "persistent_identity"` drives a distinct
    `ChatSurfaceProfile` in the UI.
-2. Core memory is reconstructed from `ctoStateService` on session start
-   and re-injected via `buildReconstructionContext()`.
-3. The CTO system prompt includes the immutable CTO doctrine, memory
-   operating model, environment knowledge, and active personality
-   overlay (`CtoPersonalityPreset`). See `ctoStateService.ts`.
-4. Extra tooling: CTO sessions receive `ctoOperatorTools`, Linear
-   tools (if connected), and `memoryUpdateCore`.
+2. Identity and recent context are reconstructed from `ctoStateService`
+   on session start and re-injected via `buildReconstructionContext()`.
+3. The CTO system prompt includes the immutable CTO doctrine,
+   environment knowledge, and active personality overlay
+   (`CtoPersonalityPreset`). See `ctoStateService.ts`.
+4. Extra tooling: CTO sessions receive `ctoOperatorTools` and Linear
+   tools when connected.
 5. Guarded permission defaults: Claude defaults to `"default"` (ask
    before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
    is only applied when explicitly requested.
 
 Worker sessions (`identityKey: "agent:<id>"`) follow a similar pattern
-through `AgentCoreMemory` (same five fields) and the
-`workerAgentService`.
+through `workerAgentService`.
 
 ## Fragile and tricky wiring
 

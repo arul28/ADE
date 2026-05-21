@@ -12,7 +12,6 @@ Caveats that follow from "runtime owns missions":
 
 - Worker provider availability follows the runtime host. A remote Linux runtime cannot launch a worker that requires the macOS-only iOS Simulator; that worker has to run on a Mac runtime.
 - Mission artifacts (including computer-use proof) write to the runtime host's project artifacts directory. Remote runs store proof on the remote machine.
-- Memory and embedding-backed retrieval are disabled on remote bindings (the static remote build does not bundle `onnxruntime-node`); mission preflight knowledge-sync degrades to lexical fallbacks for remote-hosted runs.
 
 ## Source file map
 
@@ -175,21 +174,16 @@ The `CreateMissionDialog` prewarms phase profiles and AI model availability. It 
 
 Heavy sections (budget, team runtime, permissions, computer-use controls) mount after the dialog settles. `MissionSettingsDialog` only mounts when open; the host unmounts closed dialog content rather than leaving heavy hidden trees.
 
-## Mission preflight and knowledge sync
+## Mission preflight
 
 Preflight (`missionPreflightService.ts`) checks the current project and runtime state before launch, including:
 
 - lane-claim ownership — blocks launches when the selected lane is archived, rebasing, already owned by another live mission, or already recorded as a result lane.
-- knowledge-sync freshness (`HumanWorkDigestService`) — warn when human-authored code changed since the last digest.
 - computer-use readiness (required proof kinds for the selected phase profile, available backends).
 - mission policy (execution, finalization, computer-use, budget caps) and phase structural ordering.
 - budget estimates (`MissionPreflightBudgetEstimate`).
 
 Preflight warnings surface in the launch dialog but do not block launch unless they are hard-blocking (missing required proof, missing model credentials, no lane selected).
-
-## Mission-scoped memory
-
-Workers write discoveries to the `mission` scope via `memoryAdd` during execution. On mission success, high-value mission memories are promoted to the `project` scope. Mission detail does not have its own memory browsing surface — all memory browsing lives in Settings > Memory.
 
 ## Cross-links
 

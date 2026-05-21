@@ -10,9 +10,7 @@ import { createGrepSearchTool } from "./grepSearch";
 import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
-import { createMemoryTools, type MemoryWriteEvent, type TurnMemoryPolicyState } from "./memoryTools";
-import type { createMemoryService } from "../../memory/memoryService";
-import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig, CtoCoreMemory } from "../../../../shared/types";
+import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
@@ -61,18 +59,6 @@ export type TodoToolItem = Extract<AgentChatEvent, { type: "todo_update" }>["ite
 
 export interface UniversalToolSetOptions {
   permissionMode: PermissionMode;
-  memoryService?: ReturnType<typeof createMemoryService>;
-  projectId?: string;
-  runId?: string;
-  stepId?: string;
-  agentScopeOwnerId?: string;
-  turnMemoryPolicyState?: TurnMemoryPolicyState;
-  onMemoryWriteEvent?: (event: MemoryWriteEvent) => void;
-  /** Optional CTO core-memory updater for fallback/unified runtimes. */
-  onMemoryUpdateCore?: (patch: Partial<Omit<CtoCoreMemory, "version" | "updatedAt">>) => {
-    version: number;
-    updatedAt: string;
-  };
   /** Callback invoked when askUser tool is called; must return the user's response */
   onAskUser?: (input: AskUserToolInput) => Promise<string | AskUserToolResult>;
   /** Optional callback for TodoWrite/TodoRead session state in interactive chat sessions. */
@@ -177,8 +163,6 @@ const WRITE_COMMAND_RE = /(?:>|>>|\btee\b|\bcp\s|\bmv\s|\brm\s|\bwrite\b|\bedit\
 const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
 const MUTATING_CMD_RE = /\b(?:copy|xcopy|robocopy|move|del|erase|rd|rmdir|md|mkdir|ren|rename)\b|>>?|tee\b/i;
 
-const MEMORY_GUARD_REASON = "Search memory before mutating files or running mutating commands for this turn.";
-
 type PathAccessMode = "read" | "write" | "unknown";
 type PathReference = {
   raw: string;
@@ -253,10 +237,6 @@ const POWERSHELL_MUTATION_KIND_BY_COMMAND = new Map<string, PowerShellMutationKi
   ["move-itemproperty", "provider-item"],
   ["clear-itemproperty", "provider-item"],
 ]);
-
-function requiresTurnMemoryGuard(state?: TurnMemoryPolicyState): boolean {
-  return !!state && state.classification === "required" && !state.orientationSatisfied && !state.explicitSearchPerformed;
-}
 
 export function tokenizePowerShellCommand(command: string): string[] {
   const tokens: string[] = [];
@@ -1292,7 +1272,6 @@ function createBashTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
-  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -1310,14 +1289,6 @@ function createBashTool(
     }),
     ...approvalProp(mode, "bash", Boolean(onApprovalRequest)),
     execute: async ({ command, timeout }) => {
-      if (requiresTurnMemoryGuard(turnMemoryPolicyState) && bashCommandLikelyMutates(command)) {
-        return {
-          stdout: "",
-          stderr: `EXECUTION DENIED: ${MEMORY_GUARD_REASON}`,
-          exitCode: 126,
-        };
-      }
-
       const approval = await maybeRequestApproval({
         mode,
         category: "bash",
@@ -1413,7 +1384,6 @@ function createWriteFileTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
-  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -1425,13 +1395,6 @@ function createWriteFileTool(
     }),
     ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, content }) => {
-      if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
-        return {
-          success: false,
-          message: `Execution denied: ${MEMORY_GUARD_REASON}`,
-        };
-      }
-
       const approval = await maybeRequestApproval({
         mode,
         category: "write",
@@ -1475,7 +1438,6 @@ function createEditFileTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
-  turnMemoryPolicyState?: TurnMemoryPolicyState,
 ) {
   return tool({
     description:
@@ -1493,13 +1455,6 @@ function createEditFileTool(
     }),
     ...approvalProp(mode, "write", Boolean(onApprovalRequest)),
     execute: async ({ file_path, old_string, new_string, replace_all }) => {
-      if (requiresTurnMemoryGuard(turnMemoryPolicyState)) {
-        return {
-          success: false,
-          message: `Execution denied: ${MEMORY_GUARD_REASON}`,
-        };
-      }
-
       const approval = await maybeRequestApproval({
         mode,
         category: "write",
@@ -2657,37 +2612,6 @@ function createExitPlanModeTool(
   });
 }
 
-function createMemoryUpdateCoreTool(
-  onMemoryUpdateCore: NonNullable<UniversalToolSetOptions["onMemoryUpdateCore"]>
-) {
-  return tool({
-    description:
-      "Update identity core memory (Tier-1) when the standing CTO brief changes: project summary, conventions, user preferences, active focus, or persistent notes. Do not use this for one-off discoveries; save those with memoryAdd instead.",
-    inputSchema: z.object({
-      projectSummary: z.string().optional(),
-      criticalConventions: z.array(z.string()).optional(),
-      userPreferences: z.array(z.string()).optional(),
-      activeFocus: z.array(z.string()).optional(),
-      notes: z.array(z.string()).optional(),
-    }),
-    execute: async (patch) => {
-      const hasAnyValue = Object.values(patch).some((value) => value !== undefined);
-      if (!hasAnyValue) {
-        return {
-          updated: false,
-          error: "At least one core-memory field is required.",
-        };
-      }
-      const next = onMemoryUpdateCore(patch);
-      return {
-        updated: true,
-        version: next.version,
-        updatedAt: next.updatedAt,
-      };
-    },
-  });
-}
-
 // ── Public factory ──────────────────────────────────────────────────
 
 export function createUniversalToolSet(
@@ -2696,16 +2620,8 @@ export function createUniversalToolSet(
 ): Record<string, Tool> {
   const {
     permissionMode,
-    memoryService,
-    projectId,
-    runId,
-    stepId,
-    agentScopeOwnerId,
-    turnMemoryPolicyState,
-    onMemoryWriteEvent,
     onAskUser,
     onApprovalRequest,
-    onMemoryUpdateCore,
     onTodoUpdate,
     getTodoItems,
     sandboxConfig,
@@ -2745,42 +2661,19 @@ export function createUniversalToolSet(
       permissionMode,
       effectiveSandboxConfig,
       onApprovalRequest,
-      turnMemoryPolicyState,
     );
     tools.writeFile = createWriteFileTool(
       cwd,
       permissionMode,
       effectiveSandboxConfig,
       onApprovalRequest,
-      turnMemoryPolicyState,
     );
     tools.bash = createBashTool(
       cwd,
       permissionMode,
       effectiveSandboxConfig,
       onApprovalRequest,
-      turnMemoryPolicyState,
     );
-  }
-
-  // Conditionally add memory tools
-  if (memoryService && projectId) {
-    const memTools = createMemoryTools(memoryService, projectId, {
-      runId,
-      stepId,
-      agentScopeOwnerId,
-      turnMemoryPolicyState,
-      onMemoryWriteEvent,
-    });
-    if (permissionMode === "plan") {
-      tools.memorySearch = memTools.memorySearch;
-    } else {
-      Object.assign(tools, memTools);
-    }
-  }
-
-  if (onMemoryUpdateCore && permissionMode !== "plan") {
-    tools.memoryUpdateCore = createMemoryUpdateCoreTool(onMemoryUpdateCore);
   }
 
   return tools;

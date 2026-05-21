@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentIdentity,
   AgentSessionLogEntry,
-  AgentCoreMemory,
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
   WorkerTaskSessionPayload,
@@ -17,9 +16,7 @@ import type { WorkerAdapterRuntimeService } from "./workerAdapterRuntimeService"
 import type { WorkerAgentService } from "./workerAgentService";
 import type { WorkerBudgetService } from "./workerBudgetService";
 import type { WorkerTaskSessionService } from "./workerTaskSessionService";
-import type { createMemoryService } from "../memory/memoryService";
 import type { createCtoStateService } from "./ctoStateService";
-import type { MemoryBriefingService } from "../memory/memoryBriefingService";
 
 const RUN_STATUSES = new Set<WorkerAgentRunStatus>([
   "queued",
@@ -48,8 +45,6 @@ type WorkerHeartbeatServiceArgs = {
   workerAdapterRuntimeService: WorkerAdapterRuntimeService;
   workerTaskSessionService: WorkerTaskSessionService;
   workerBudgetService?: WorkerBudgetService | null;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
-  memoryBriefingService?: MemoryBriefingService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   logger?: Logger | null;
   staleLockMs?: number;
@@ -390,52 +385,6 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     return false;
   };
 
-  const buildProjectMemoryHighlights = async (run: WorkerRunRow, taskSession: ReturnType<WorkerTaskSessionService["ensureTaskSession"]> | null): Promise<string[]> => {
-    if (args.memoryBriefingService) {
-      try {
-        const context = safeJsonParse<Record<string, unknown>>(run.context_json, {});
-        const filePatterns = Array.isArray(context.filePatterns)
-          ? context.filePatterns.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-          : [];
-        const briefing = await args.memoryBriefingService.buildBriefing({
-          projectId: args.projectId,
-          agentId: typeof context.agentId === "string" ? context.agentId : undefined,
-          includeAgentMemory: true,
-          taskDescription: typeof context.prompt === "string" ? context.prompt : run.task_key ?? run.issue_key ?? run.wakeup_reason,
-          phaseContext: taskSession?.taskKey ?? null,
-          filePatterns,
-          mode: "heartbeat",
-        });
-        return [...briefing.l0.entries, ...briefing.l1.entries]
-          .map((memory) => {
-            const category = String(memory.category ?? "fact").trim() || "fact";
-            const content = String(memory.content ?? "").replace(/\s+/g, " ").trim();
-            if (!content.length) return "";
-            return `[${category}] ${clipText(content, 220)}`;
-          })
-          .filter((entry): entry is string => entry.length > 0)
-          .slice(0, 8);
-      } catch {
-        // fall through to legacy highlight builder
-      }
-    }
-    if (!args.memoryService) return [];
-    try {
-      return args.memoryService
-        .getMemoryBudget(args.projectId, "standard", { includeCandidates: true })
-        .map((memory) => {
-          const category = String(memory.category ?? "fact").trim() || "fact";
-          const content = String(memory.content ?? "").replace(/\s+/g, " ").trim();
-          if (!content.length) return "";
-          return `[${category}] ${clipText(content, 220)}`;
-        })
-        .filter((entry): entry is string => entry.length > 0)
-        .slice(0, 8);
-    } catch {
-      return [];
-    }
-  };
-
   const buildPrompt = async (
     agent: AgentIdentity,
     run: WorkerRunRow,
@@ -459,14 +408,6 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
       sections.push([
         "System context (worker reconstruction, do not echo verbatim):",
         reconstruction,
-      ].join("\n"));
-    }
-
-    const projectMemories = await buildProjectMemoryHighlights(run, taskSession);
-    if (projectMemories.length > 0) {
-      sections.push([
-        "Project memory highlights:",
-        ...projectMemories.map((entry) => `- ${entry}`),
       ].join("\n"));
     }
 
@@ -901,17 +842,6 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     return rows.map(rowToRun);
   };
 
-  const getAgentCoreMemory = (agentId: string): AgentCoreMemory => {
-    return args.workerAgentService.getCoreMemory(agentId);
-  };
-
-  const updateAgentCoreMemory = (
-    agentId: string,
-    patch: Partial<Omit<AgentCoreMemory, "version" | "updatedAt">>
-  ): AgentCoreMemory => {
-    return args.workerAgentService.updateCoreMemory(agentId, patch);
-  };
-
   const listAgentSessionLogs = (agentId: string, limit = 40): AgentSessionLogEntry[] => {
     return args.workerAgentService.listSessionLogs(agentId, limit);
   };
@@ -959,8 +889,6 @@ export function createWorkerHeartbeatService(args: WorkerHeartbeatServiceArgs) {
     syncFromConfig,
     triggerWakeup,
     listRuns,
-    getAgentCoreMemory,
-    updateAgentCoreMemory,
     listAgentSessionLogs,
     reapOrphansOnStartup,
     dispose,

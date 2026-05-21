@@ -9,10 +9,8 @@ import type {
   AgentBudgetSnapshot,
   AgentChatSession,
   AgentConfigRevision,
-  AgentCoreMemory,
   AgentIdentity,
   AgentSessionLogEntry,
-  CtoCoreMemory,
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
@@ -82,7 +80,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [error, setError] = useState<string | null>(null);
 
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
-  const [coreMemory, setCoreMemory] = useState<CtoCoreMemory | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
 
   useEffect(() => {
@@ -105,7 +102,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [revisions, setRevisions] = useState<AgentConfigRevision[]>([]);
   const [budgetSnapshot, setBudgetSnapshot] = useState<AgentBudgetSnapshot | null>(null);
-  const [workerCoreMemory, setWorkerCoreMemory] = useState<AgentCoreMemory | null>(null);
   const [workerSessionLogs, setWorkerSessionLogs] = useState<AgentSessionLogEntry[]>([]);
   const [workerRuns, setWorkerRuns] = useState<WorkerAgentRun[]>([]);
   const [workerOpsError, setWorkerOpsError] = useState<string | null>(null);
@@ -156,7 +152,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         window.ade.cto.getOnboardingState(),
       ]);
       setCtoIdentity(snapshot.identity);
-      setCoreMemory(snapshot.coreMemory);
       setOnboardingState(obState);
       if (!obState.completedAt && !obState.completedSteps.includes("identity") && !obState.dismissedAt) {
         setShowOnboarding(true);
@@ -169,7 +164,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     try {
       const snapshot = await window.ade.cto.getState({ recentLimit: 20 });
       setCtoIdentity(snapshot.identity);
-      setCoreMemory(snapshot.coreMemory);
       setSessionLogs(snapshot.recentSessions);
       ctoHistoryLoadedRef.current = true;
     } catch {
@@ -251,23 +245,22 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     if (!active) return;
     if (!window.ade?.cto || !selectedAgentId) {
-      setWorkerCoreMemory(null); setWorkerSessionLogs([]); setWorkerRuns([]);
+      setWorkerSessionLogs([]); setWorkerRuns([]);
       setWorkerOpsError(null); setWorkerWakeStatus(null); setWorkerWakeError(null);
       return;
     }
     if (activeTab !== "team") return;
     let cancelled = false;
     void Promise.all([
-      window.ade.cto.getAgentCoreMemory({ agentId: selectedAgentId }),
       window.ade.cto.listAgentSessionLogs({ agentId: selectedAgentId, limit: 20 }),
       window.ade.cto.listAgentRuns({ agentId: selectedAgentId, limit: 20 }),
-    ]).then(([memory, sessions, runs]) => {
+    ]).then(([sessions, runs]) => {
       if (cancelled) return;
-      setWorkerCoreMemory(memory); setWorkerSessionLogs(sessions); setWorkerRuns(runs); setWorkerOpsError(null);
+      setWorkerSessionLogs(sessions); setWorkerRuns(runs); setWorkerOpsError(null);
     }).catch((err) => {
       if (cancelled) return;
       setWorkerOpsError(err instanceof Error ? err.message : "Failed to load.");
-      setWorkerCoreMemory(null); setWorkerSessionLogs([]); setWorkerRuns([]);
+      setWorkerSessionLogs([]); setWorkerRuns([]);
     });
     return () => { cancelled = true; };
   }, [active, activeTab, selectedAgentId]);
@@ -339,19 +332,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     }
     return next;
   }, [needsOnboarding, primaryLaneId, selectedAgentId, showOnboarding]);
-
-  const handleSaveCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
-    if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
-    const snapshot = await window.ade.cto.updateCoreMemory({ patch });
-    setCoreMemory(snapshot.coreMemory);
-    await refreshPersistentCtoSession();
-  }, [refreshPersistentCtoSession]);
-
-  const handleSaveWorkerCoreMemory = useCallback(async (patch: Record<string, unknown>) => {
-    if (!window.ade?.cto || !selectedAgentId) throw new Error("Select a worker first.");
-    const updated = await window.ade.cto.updateAgentCoreMemory({ agentId: selectedAgentId, patch });
-    setWorkerCoreMemory(updated);
-  }, [selectedAgentId]);
 
   const handleSaveCtoIdentity = useCallback(async (patch: Record<string, unknown>) => {
     if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
@@ -545,17 +525,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     modelSwitchPolicy: selectedWorker ? "same-family-after-launch" : "any-after-launch",
     title: selectedWorker ? selectedWorker.name : ctoDisplayName,
     subtitle: selectedWorker
-      ? "Persistent employee session with durable memory and same-family model switching."
-      : summarizeText(
-          coreMemory?.projectSummary,
-          "Your persistent CTO identity for this project. ADE restores continuity across compaction and fresh session resumes.",
-        ),
+      ? "Persistent employee session with same-family model switching."
+      : "Your persistent CTO identity for this project. ADE restores continuity across compaction and fresh session resumes.",
     accentColor: selectedWorker ? "#60A5FA" : "#22D3EE",
     chips: [],
     showMcpStatus: false,
     assistantLabel: selectedWorker ? selectedWorker.name : ctoDisplayName,
     messagePlaceholder: selectedWorker ? `Message ${selectedWorker.name}...` : "Message the CTO...",
-  }), [coreMemory?.projectSummary, ctoDisplayName, selectedWorker]);
+  }), [ctoDisplayName, selectedWorker]);
 
   const sidebarCtoModelInfo = useMemo(
     () => (
@@ -711,7 +688,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                   <div className="space-y-2">
                     <div className="text-sm font-medium text-fg/70">Connecting the persistent session…</div>
                     <div className="text-[12px] leading-6 text-muted-fg/40">
-                      Rehydrating identity, memory, and recent continuity.
+                      Rehydrating identity, core continuity, and recent activity.
                     </div>
                   </div>
                 </div>
@@ -763,7 +740,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                   </div>
                   <div className="text-base font-semibold text-fg">No workers yet</div>
                   <div className="text-xs text-muted-fg/50 mt-1.5 text-center max-w-[36ch]">
-                    Hire workers to delegate tasks. Each worker gets its own chat session, memory, and model.
+                    Hire workers to delegate tasks. Each worker gets its own chat session, core continuity, and model.
                   </div>
                   <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
                     Hire Worker
@@ -775,7 +752,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                     <div className="space-y-4" data-testid="team-overview">
                       <div className="flex items-center justify-between">
                         <div className="text-sm font-semibold text-fg">Team</div>
-                        <SmartTooltip content={{ label: "Hire Worker", description: "Create a new worker from a template. Each worker gets its own chat session, memory, and model." }}>
+                        <SmartTooltip content={{ label: "Hire Worker", description: "Create a new worker from a template. Each worker gets its own chat session, core continuity, and model." }}>
                           <Button variant="outline" size="sm" onClick={handleHireWorker}>
                             Hire Worker
                           </Button>
@@ -840,7 +817,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                       </button>
                     <WorkerDetailPanel
                       worker={selectedWorker}
-                      coreMemory={workerCoreMemory}
                       sessionLogs={workerSessionLogs}
                       runs={workerRuns}
                       revisions={revisions}
@@ -853,7 +829,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
                       onEdit={handleEditWorker}
                       onRemove={() => void removeWorker(selectedWorker.id)}
                       onRollbackRevision={(id) => void rollbackRevision(id)}
-                      onSaveCoreMemory={handleSaveWorkerCoreMemory}
                     />
                     </div>
                   )}
@@ -874,10 +849,8 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             <div data-tour="cto.settingsPanel" className="h-full min-h-0">
               <CtoSettingsPanel
                 identity={ctoIdentity}
-                coreMemory={coreMemory}
                 sessionLogs={sessionLogs}
                 onSaveIdentity={handleSaveCtoIdentity}
-                onSaveCoreMemory={handleSaveCoreMemory}
                 onResetOnboarding={handleResetOnboarding}
               />
             </div>

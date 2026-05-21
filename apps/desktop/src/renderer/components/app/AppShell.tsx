@@ -1178,7 +1178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 setLaneInspectorTab(laneId, "context");
                 window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&inspectorTab=context`;
               }}
-              title="Open lane memory"
+              title="Open lane context"
             >
               Details
             </Button>

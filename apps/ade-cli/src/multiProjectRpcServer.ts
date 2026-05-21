@@ -46,9 +46,6 @@ export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
   projectRegistry?: ProjectRegistry;
   scopeRegistry?: ProjectScopeRegistry;
-  runtimeCapabilities?: {
-    memory?: boolean;
-  };
   disposeScopesOnDispose?: boolean;
   onShutdown?: (() => void) | null;
 };
@@ -249,9 +246,7 @@ export function createMultiProjectRpcRequestHandler(
   };
   const scopeRegistry =
     options.scopeRegistry ??
-    new ProjectScopeRegistry(projectRegistry, {
-      runtimeCapabilities: options.runtimeCapabilities,
-    });
+    new ProjectScopeRegistry(projectRegistry);
   const removeScopeDisposeListener =
     typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onDispose ===
     "function"

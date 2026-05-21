@@ -325,7 +325,7 @@ no longer written back — once a project is loaded, writes go to the
 
 Full schema lives in `AutomationRule` (see `config.ts` around line
 749). Key slots: `trigger`, `actions`, `execution` (agent session /
-mission / built-in), `executor`, `contextSources`, `memory`,
+mission / built-in), `executor`, `contextSources`,
 `guardrails`, `outputs`, `verification`. Triggers cover session end,
 git events, file changes, lane lifecycle, Linear webhooks, GitHub
 webhooks, and schedules.

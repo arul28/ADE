@@ -76,6 +76,13 @@ const { SerializeAddon } = xtermSerializeModule;
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
+const MAX_STARTUP_COMMAND_DELAY_MS = 1000;
+
+function normalizeStartupCommandDelayMs(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.min(MAX_STARTUP_COMMAND_DELAY_MS, Math.floor(value)))
+    : 0;
+}
 
 export type NodePtySpawnHelperExecutableResult =
   | { status: "skipped"; reason: "non_darwin" | "unsupported_arch" | "package_root_unresolved" }
@@ -2820,20 +2827,30 @@ export function createPtyService({
       // direct launch fell back to shell, startupCommand keeps compatibility
       // with CLIs that are only available through shell startup files.
       if (startupCommand && !launchedDirectCommand && selectedShell) {
-        try {
-          pty.write(`${startupCommand}\r`);
-          setRuntimeState(sessionId, "running");
-          scheduleIdleTransition(sessionId);
-        } catch (err) {
-          logger.warn("pty.startup_command_failed", {
-            ptyId,
-            sessionId,
-            cwd,
-            toolType: toolTypeHint,
-            envShell: process.env.SHELL ?? "",
-            envPath: process.env.PATH ?? "",
-            err: String(err),
-          });
+        const writeStartupCommand = () => {
+          if (entry.disposed) return;
+          try {
+            pty.write(`${startupCommand}\r`);
+            setRuntimeState(sessionId, "running");
+            scheduleIdleTransition(sessionId);
+          } catch (err) {
+            logger.warn("pty.startup_command_failed", {
+              ptyId,
+              sessionId,
+              cwd,
+              toolType: toolTypeHint,
+              envShell: process.env.SHELL ?? "",
+              envPath: process.env.PATH ?? "",
+              err: String(err),
+            });
+          }
+        };
+        const startupDelayMs = normalizeStartupCommandDelayMs(args.startupDelayMs);
+        if (startupDelayMs > 0) {
+          const startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
+          startupTimer.unref?.();
+        } else {
+          writeStartupCommand();
         }
       }
 

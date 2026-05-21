@@ -497,8 +497,8 @@ payload.
 ## Command routing and execution isolation
 
 Controllers never run agent processes. CTO heartbeats, worker
-activations, mission orchestration, and the embedding worker are
-host-exclusive (host = the daemon).
+activations, and mission orchestration are host-exclusive
+(host = the daemon).
 
 Two categories of controller write:
 
@@ -608,9 +608,6 @@ project scope split.
 - **CRR retrofit strips non-PK UNIQUE constraints.** Upserts on
   synced tables must target the primary key only. Use explicit
   select-then-update for non-PK merge cases.
-- **FTS indexes don't sync.** `unified_memories_fts` is local-only
-  and is rebuilt after applying remote changes that touched
-  `unified_memories`.
 - **Bootstrap token must match on every connection.** A changed token
   invalidates all existing connections until paired devices are
   re-provisioned.

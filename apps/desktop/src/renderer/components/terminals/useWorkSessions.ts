@@ -63,6 +63,33 @@ function upsertSessionByStartedAt(
   return [session, ...sessions.filter((entry) => entry.id !== session.id)].sort(compareSessionsByStartedAtDesc);
 }
 
+function mergePendingOptimisticSession(
+  persisted: TerminalSessionSummary,
+  optimistic: TerminalSessionSummary,
+): { session: TerminalSessionSummary; keepPending: boolean } {
+  const optimisticPtyId = optimistic.ptyId?.trim() || null;
+  if (!optimisticPtyId) return { session: persisted, keepPending: false };
+
+  if (persisted.status !== "running") {
+    return { session: persisted, keepPending: false };
+  }
+
+  const persistedPtyId = persisted.ptyId?.trim() || null;
+  if (persistedPtyId === optimisticPtyId) {
+    return { session: persisted, keepPending: false };
+  }
+
+  return {
+    session: {
+      ...persisted,
+      ptyId: optimisticPtyId,
+      toolType: persisted.toolType ?? optimistic.toolType,
+      runtimeState: persisted.runtimeState ?? optimistic.runtimeState,
+    },
+    keepPending: true,
+  };
+}
+
 export type WorkTabGroup = {
   id: string;
   label: string;
@@ -747,18 +774,27 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const pending = pendingOptimisticSessionsRef.current;
       if (pending.size > 0) {
         const now = Date.now();
-        const seen = new Set(rows.map((session) => session.id));
+        const rowIndexById = new Map(rows.map((session, index) => [session.id, index] as const));
         for (const [sessionId, entry] of [...pending.entries()]) {
-          if (seen.has(sessionId)) {
-            pending.delete(sessionId);
+          const expired = now - entry.createdAtMs > OPTIMISTIC_PTY_SESSION_TTL_MS;
+          const existingIndex = rowIndexById.get(sessionId);
+          if (existingIndex != null) {
+            const persisted = rows[existingIndex];
+            if (expired || !persisted) {
+              pending.delete(sessionId);
+              continue;
+            }
+            const merged = mergePendingOptimisticSession(persisted, entry.session);
+            rows[existingIndex] = merged.session;
+            if (!merged.keepPending) pending.delete(sessionId);
             continue;
           }
-          if (now - entry.createdAtMs > OPTIMISTIC_PTY_SESSION_TTL_MS) {
+          if (expired) {
             pending.delete(sessionId);
             continue;
           }
           rows.push(entry.session);
-          seen.add(sessionId);
+          rowIndexById.set(sessionId, rows.length - 1);
         }
         rows.sort(compareSessionsByStartedAtDesc);
       }
@@ -1246,6 +1282,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       tracked?: boolean;
       title?: string;
       startupCommand?: string;
+      startupDelayMs?: number;
       command?: string;
       args?: string[];
       env?: Record<string, string>;
@@ -1268,6 +1305,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         title: args.title ?? LAUNCH_PROFILE_TITLE[args.profile],
         tracked: args.tracked ?? true,
         toolType: LAUNCH_PROFILE_TOOL_TYPE[args.profile],
+        ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
         ...launchFields,
       });
       const startedAt = new Date().toISOString();

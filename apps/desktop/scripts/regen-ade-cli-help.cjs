@@ -28,7 +28,6 @@ const SUBCOMMANDS = [
   "ios-sim",
   "app-control",
   "browser",
-  "memory",
   "settings",
   "update",
   "actions",

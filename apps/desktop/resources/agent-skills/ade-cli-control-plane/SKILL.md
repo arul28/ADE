@@ -1,13 +1,13 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when an agent needs to inspect or operate ADE itself through the `ade` CLI, including lanes, chats, actions, memory, proof, runtime/socket state, or help/flag discovery.
+description: Use this skill when an agent needs to inspect or operate ADE itself through the `ade` CLI, including lanes, chats, actions, proof, runtime/socket state, or help/flag discovery.
 ---
 
 # ADE CLI control plane
 
 ## Core rule
 
-Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, missions, PR metadata, memory, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, macOS VM, settings, usage, updates, or service actions.
+Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, missions, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, macOS VM, settings, usage, updates, or service actions.
 
 ## First checks
 
@@ -37,4 +37,3 @@ If `command -v ade` fails:
 3. In an ADE source checkout, after confirming it exists, use `node apps/ade-cli/dist/cli.cjs ...`.
 
 The normal reason to skip ADE CLI is that it is truly unreachable after these fallbacks.
-

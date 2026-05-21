@@ -506,9 +506,9 @@ function buildCoordinatorProjectContextSection(projectContext: CoordinatorProjec
       lines.push(`- ${docPath}`);
     }
   }
-  if (Array.isArray(projectContext.projectKnowledge) && projectContext.projectKnowledge.length > 0) {
-    lines.push("Project memory highlights:");
-    for (const entry of projectContext.projectKnowledge.slice(0, 12)) {
+  if (Array.isArray(projectContext.projectHints) && projectContext.projectHints.length > 0) {
+    lines.push("Project context hints:");
+    for (const entry of projectContext.projectHints.slice(0, 12)) {
       lines.push(`- ${entry}`);
     }
   }
@@ -637,7 +637,7 @@ export function buildCoordinatorPromptInspector(args: {
       sourceKind: "live_effective_prompt",
       editable: false,
       text: projectSection,
-      description: "Project-root, docs, memory highlights, and file-structure context given to the coordinator.",
+      description: "Project-root, docs, planner hints, and file-structure context given to the coordinator.",
     });
   }
 

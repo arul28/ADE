@@ -475,8 +475,6 @@ function createMockWorkerAgentService() {
     removeAgent: vi.fn(),
     listOrgTree: vi.fn().mockReturnValue([]),
     getChainOfCommand: vi.fn().mockReturnValue([]),
-    getCoreMemory: vi.fn(),
-    updateCoreMemory: vi.fn(),
     listSessionLogs: vi.fn().mockReturnValue([]),
     appendSessionLog: vi.fn(),
     buildReconstructionContext: vi.fn().mockReturnValue(""),
@@ -2614,26 +2612,6 @@ describe("createSyncRemoteCommandService", () => {
         agentId: "worker-live",
         status: "running",
       });
-    });
-
-    it("cto.getAgentCoreMemory reads from workerAgentService so headless heartbeat stubs still work", async () => {
-      const memory = {
-        version: 3,
-        updatedAt: "2026-04-01T00:00:00.000Z",
-        projectSummary: "Mobile worker fixture.",
-        criticalConventions: ["Drive the real Simulator"],
-        userPreferences: [],
-        activeFocus: ["CTO detail"],
-        notes: [],
-      };
-      workerAgentService.getCoreMemory.mockReturnValueOnce(memory);
-
-      const result = await service.execute(makePayload("cto.getAgentCoreMemory", {
-        agentId: "worker-42",
-      }));
-
-      expect(result).toEqual(memory);
-      expect(workerAgentService.getCoreMemory).toHaveBeenCalledWith("worker-42");
     });
 
     it("cto.removeAgent removes the worker through the mobile sync command surface", async () => {

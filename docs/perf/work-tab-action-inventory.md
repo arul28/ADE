@@ -161,7 +161,6 @@ Coverage states:
 | work.chat.open-pr-browser | Open PR URL in ADE browser | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.disclosure | Toggle message disclosure/details | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.full-prompt | Toggle full prompt details | measured | `AgentChatMessageList.tsx` |
-| work.chat.message.thought-memory | Toggle thought/memory detail cards | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.tool-show-all | Show all/collapse tool result items | measured | `AgentChatMessageList.tsx` |
 | work.chat.message.minimap | Jump via chat minimap | measured | `AgentChatMessageList.tsx` |
 | work.chat.inline-question.tab | Switch inline question tabs | measured | `AgentChatMessageList.tsx` |
@@ -1565,7 +1564,7 @@ Commands:
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "opens cloud PR links|copies assistant message text"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "copies assistant code blocks"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "shows and collapses long grouped tool results"
-npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "keeps compact display text|renders memory system notices|makes workspace markdown links|pages through inline questions"
+npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "keeps compact display text|makes workspace markdown links|pages through inline questions"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "renders Work suggestions from tool results"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatMessageList.test.tsx -t "jump-to-latest|user message minimap"
 npm --prefix apps/desktop run test -- src/renderer/components/chat/AgentChatPane.submit.test.tsx -t "moves the most recently selected work chat tab to the top|opens the chat terminal drawer|reveals rapid CLI-created terminals"
@@ -1592,9 +1591,6 @@ Rows promoted to `measured`:
 - `work.chat.message.full-prompt`: the compact-display test rendered a user
   message with `displayText`, clicked `Full prompt`, and verified the complete
   prompt text appeared.
-- `work.chat.message.thought-memory`: the memory notice test rendered the
-  compact `Memory` disclosure, verified the detailed memory text was hidden,
-  clicked it, and verified the detail appeared.
 - `work.chat.message.tool-show-all`: the long grouped tool-result test rendered
   the reachable `ChatWorkLogBlock` path, opened `Tool calls`, opened the tool
   row, clicked `show all`, verified the long result tail appeared, then clicked

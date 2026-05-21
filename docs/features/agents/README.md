@@ -1,423 +1,238 @@
 # Agents
 
-ADE does not ship a standalone "agents hub" page; instead, agent
-behavior is delivered through three runtime surfaces: the **CTO**
-(persistent identity inside the CTO tab), **worker agents** (named
-employees with their own identity and adapters), and **regular chat
-sessions** (ephemeral agents bound to a lane). This feature folder
-documents the agent identity model, persona system, and the tool
-registry / ADE CLI integration that all three share.
+ADE does not ship a standalone agents hub page. Agent behavior is
+delivered through three runtime surfaces: the CTO, worker agents, and
+regular lane-bound chat sessions. This feature folder documents identity,
+persona overlays, capability modes, and the ADE CLI tool bridge shared by
+those surfaces.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, core memory, session logs, subordinate activity, immutable doctrine, personality overlays. The CTO's everything. |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker identity and core memory CRUD; validates `adapterType` against the three-entry allowlist (`claude-local`, `codex-local`, `process`). Persists `agent_identities` rows and `.ade/agents/<slug>/` files. |
-| `apps/desktop/src/main/services/cto/workerHeartbeatService.ts` | Heartbeat scheduling for workers (wake-on-demand + periodic intervals). |
-| `apps/desktop/src/main/services/cto/workerBudgetService.ts` | Monthly budget tracking (`budgetMonthlyCents`, `spentMonthlyCents`). |
-| `apps/desktop/src/main/services/cto/flowPolicyService.ts` | Worker flow policies (guardrails, approval requirements). |
-| `apps/desktop/src/main/services/cto/workerAdapterRuntimeService.ts` | Adapter lifecycle for the three supported worker adapter types. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools (spawnChat, mission control, worker management, Linear dispatch). |
-| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools (Claude Code, Codex, Cursor, Aider, Continue) on PATH. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, subordinate activity, daily logs, immutable doctrine, personality overlays, and system-prompt preview. |
+| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker identity CRUD, adapter config validation, slug generation, secret policy enforcement, revisions, session context, and `.ade/agents/<slug>/` files. |
+| `apps/desktop/src/main/services/cto/workerHeartbeatService.ts` | Heartbeat scheduling for workers. |
+| `apps/desktop/src/main/services/cto/workerBudgetService.ts` | Monthly budget tracking. |
+| `apps/desktop/src/main/services/cto/flowPolicyService.ts` | Worker flow policies. |
+| `apps/desktop/src/main/services/cto/workerAdapterRuntimeService.ts` | Adapter lifecycle for supported worker adapter types. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only tools for chat spawning, mission control, worker management, and Linear dispatch. |
+| `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH. |
 | `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. Includes the `ade ios-sim` (alias `ade ios`, `ade simulator`) family — see [iOS Simulator feature](../ios-simulator/README.md), the `ade --socket app-control ...` driver for live Electron apps, and the `ade --socket browser ...` driver for the in-app browser (`browser panel`, `browser open <url> [--no-panel]`, `browser new-tab --background`, `browser switch`, `browser close`, plus selection / inspect commands). `ade chat create --provider codex --model <id> --fast` opts a new Codex session into the fast service tier; `ade shell start --lane <id> --chat-session <chatId>` (or `ADE_CHAT_SESSION_ID` from the env) attaches a tracked shell to an existing chat so `ade --socket terminal read --chat-session "$ADE_CHAT_SESSION_ID" --text` resolves to it. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC: registers actions, handles JSON-RPC, applies session-identity-based filtering, builds lane-scoped ADE guidance / `ADE_AGENT_SKILLS_DIRS` for worker CLI launches, and returns GitHub + ADE PR URLs from PR creation tools when available. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. Owns the install-target path resolution and the optional shell-rc PATH append. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, naming the bundled ADE skills, using socket-backed live surfaces, registering proof, and cleaning up started processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, CTO/mission workers, and mobile-started runtime work. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments: lane/current-working-directory ancestors, user homes, inherited `ADE_AGENT_SKILLS_DIRS`, packaged ADE resources, and source fallbacks across `.claude`, `.agents`, `.ade`, and `.codex` skill directories. |
-| `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). |
-| `apps/desktop/src/shared/types/agents.ts` | `AgentIdentity`, `AgentCoreMemory`, `AgentRole`, `AdapterType`, adapter configs. |
-| `apps/desktop/src/shared/types/cto.ts` | `CtoIdentity`, `CtoCoreMemory`, `CtoCapabilityMode`, `CtoPersonalityPreset`. |
+| `apps/desktop/src/shared/ctoPersonalityPresets.ts` | CTO personality overlays. |
+| `apps/desktop/src/shared/types/agents.ts` | Worker identity, role, adapter, and runtime types. |
+| `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, personality, onboarding, and prompt-preview types. |
 
-## Three agent surfaces
+## Agent surfaces
 
-### 1. CTO
+### CTO
 
-One persistent identity per project. Carries a structured `CtoIdentity`
-document (name, persona, personality preset, communication style,
-constraints, model preferences, memory policy) and a small structured
-`CtoCoreMemory` document (project summary, critical conventions, user
-preferences, active focus, notes).
+One persistent project-level identity. The CTO carries a structured
+`CtoIdentity` document: name, persona, personality preset, communication
+style, constraints, model preferences, onboarding state, and optional
+system-prompt extension.
 
-See [identity-and-personas](identity-and-personas.md) for the full
-identity flow; see [tool-registration](tool-registration.md) for the
-tool palette (universal + workflow + CTO operator + Linear, plus
-`memoryUpdateCore`).
-
-### 2. Workers (employees)
+### Workers
 
 Zero-or-more named agent identities per project, stored as
-`agent_identities` rows plus `.ade/agents/<slug>/*` files. Each worker
-has its own role (`engineer`, `qa`, `designer`, `devops`, `researcher`,
-`general`), adapter type, runtime policy, heartbeat schedule, budget,
-and core memory.
+`agent_identities` rows plus `.ade/agents/<slug>/` files. Each worker has
+a role (`engineer`, `qa`, `designer`, `devops`, `researcher`, `general`),
+adapter type, runtime policy, heartbeat schedule, budget, Linear mapping,
+and optional persona fields.
 
-Workers are activated either on-demand (chat session) or on a
-scheduled heartbeat; when active they receive a memory briefing
-assembled from project, agent, and mission memories.
+### Regular chat agents
 
-### 3. Regular chat agents
-
-Ephemeral sessions bound to a lane. No identity document, no persistent
-core memory -- the session state lives in the chat transcript and
-resumes across restarts but has no long-term persona. The CTO and
-workers are just identity sessions layered on top of the same chat
-runtime.
+Ephemeral sessions bound to a lane. They have no persistent identity
+document; the session state lives in the transcript and resumes across
+restarts.
 
 ## Agent CLI install / auth from chat
 
-When a chat session targets a provider whose CLI (Claude, Codex,
-Cursor, Droid) is missing or not authenticated on the active runtime,
-the chat surfaces an inline **AgentCliAuthCard**
-(`apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx`).
-The card carries an `AgentCliAuthCardInfo` payload built by the chat
-service via `classifyAgentCliError` from
-`apps/ade-cli/src/services/agentRegistry.ts` — the same registry the
-runtime uses to recognise "binary not on PATH" vs "needs login"
-patterns from a CLI's stderr.
+When a chat targets a provider whose CLI is missing or unauthenticated on
+the active runtime, the chat surfaces an inline `AgentCliAuthCard`. The
+card is built by `classifyAgentCliError` from
+`apps/ade-cli/src/services/agentRegistry.ts` and gives the user a
+tracked terminal action for install or login.
 
-The card renders two action rows: an Install row when the CLI is
-missing, and an Authenticate row in either case. Each row has:
+The important invariant is runtime locality: a desktop window bound to a
+remote `ade serve` daemon launches the install/auth command on that
+remote machine, not locally.
 
-- A copy-to-clipboard chip for the canonical install / auth command
-  (e.g. `claude /login`, `codex login`, `cursor-agent login`).
-- A **Run** button that opens a tracked PTY in the active lane
-  (`window.ade.pty.create`) with `startupCommand` set to that command
-  and `tracked: true` so the new terminal lands in the chat's
-  terminal drawer.
-
-The crucial property is that the install/login command runs in the
-**active runtime** — the runtime the chat session is bound to. A
-desktop window bound to a remote `ade serve` daemon launches the
-install/auth in a PTY on that remote machine, not locally. So a user
-pairing with a remote runtime sets up `claude` / `codex` / `cursor` on
-the remote host without leaving the chat or SSHing in.
-
-The card also shows the runtime name (when known) in its body copy
-("Authenticate the CLI on `darwin-mini`, then retry the chat.") so the
-operator can see which machine the install will land on before
-clicking Run.
-
-## Agent identity (CTO)
+## Identity shapes
 
 ```ts
 type CtoIdentity = {
   name: string;
   version: number;
-  persona: string;                          // freeform persona text
-  personality?: CtoPersonalityPreset;       // strategic | professional | hands_on | casual | minimal | custom
-  customPersonality?: string;               // used when personality = "custom"
-  communicationStyle?: {
-    verbosity: "concise" | "detailed" | "adaptive";
-    proactivity: "reactive" | "balanced" | "proactive";
-    escalationThreshold: "low" | "medium" | "high";
-  };
+  persona: string;
+  personality?: CtoPersonalityPreset;
+  customPersonality?: string;
+  communicationStyle?: CtoCommunicationStyle;
   constraints?: string[];
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
-  modelPreferences: {
-    provider: string;
-    model: string;
-    modelId?: ModelId;
-    reasoningEffort?: string | null;
-  };
-  memoryPolicy: {
-    autoCompact: boolean;
-    compactionThreshold: number;
-    preCompactionFlush: boolean;
-    temporalDecayHalfLifeDays: number;
-  };
+  modelPreferences: CtoModelPreferences;
   updatedAt: string;
 };
-```
 
-And the separate core memory document:
-
-```ts
-type CtoCoreMemory = {
-  version: number;
-  updatedAt: string;
-  projectSummary: string;
-  criticalConventions: string[];
-  userPreferences: string[];
-  activeFocus: string[];
-  notes: string[];
-};
-```
-
-Persisted in two places:
-
-1. SQLite: `cto_identity_state` / `cto_core_memory_state` tables
-   (one row per project; versioned, JSON payload).
-2. Filesystem: `.ade/cto/identity.json` / `.ade/cto/core-memory.json`
-   (written atomically via `writeTextAtomic`).
-
-Reconciliation on startup prefers whichever has the higher `version`;
-version-based reconciliation handles the case where the JSON file is
-edited externally.
-
-## Worker identity
-
-```ts
 type AgentIdentity = {
   id: string;
   name: string;
   slug: string;
-  role: "cto" | "engineer" | "qa" | "designer" | "devops" | "researcher" | "general";
+  role: AgentRole;
   title?: string;
   reportsTo: string | null;
   capabilities: string[];
-  status: "idle" | "active" | "paused" | "running";
-  adapterType: "claude-local" | "codex-local" | "process";
-  adapterConfig: AgentAdapterConfig;        // adapter-specific
-  runtimeConfig: {
-    heartbeat?: HeartbeatPolicy;
-    maxConcurrentRuns?: number;
-  };
-  linearIdentity?: AgentLinearIdentity;     // optional Linear user mapping
+  status: AgentStatus;
+  adapterType: AdapterType;
+  adapterConfig: AgentAdapterConfig;
+  runtimeConfig: AgentRuntimeConfig;
+  linearIdentity?: AgentLinearIdentity;
   personality?: string;
   communicationStyle?: string;
   constraints?: string[];
   systemPromptExtension?: string;
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
-  lastHeartbeatAt?: string;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
 };
-
-type AgentCoreMemory = {
-  version: number;
-  updatedAt: string;
-  projectSummary: string;
-  criticalConventions: string[];
-  userPreferences: string[];
-  activeFocus: string[];
-  notes: string[];                          // same shape as CtoCoreMemory
-};
 ```
-
-Persisted at:
-
-- SQLite: `agent_identities` table.
-- Filesystem: `.ade/agents/<slug>/identity.json`,
-  `.ade/agents/<slug>/core-memory.json`,
-  `.ade/agents/<slug>/daily/<YYYY-MM-DD>.md` (daily logs),
-  `.ade/agents/<slug>/MEMORY.md` (long-term brief, auto-generated).
 
 ## Adapter types
 
-Workers dispatch through one of three adapter types — there are no
-others, and `apps/desktop/src/shared/types/agents.ts` types
-`AdapterType` as exactly `"claude-local" | "codex-local" | "process"`:
+Workers dispatch through one of three adapter types. The type definition
+is exactly `"claude-local" | "codex-local" | "process"`.
 
-| Adapter | Config | Purpose |
-|---|---|---|
-| `claude-local` | `ClaudeLocalAdapterConfig` (model, cwd, cliArgs, instructions, timeout) | Spawns `claude` CLI locally. |
-| `codex-local` | `CodexLocalAdapterConfig` (model, cwd, cliArgs, reasoningEffort, timeout) | Spawns `codex` CLI locally. |
-| `process` | `ProcessAdapterConfig` (command, args, cwd, env, timeout, shell) | Generic managed subprocess; the catch-all for wrapping anything that isn't `claude` / `codex`. |
-
-The worker service forwards the correct adapter config to the
-orchestrator when the worker is activated.
+| Adapter | Purpose |
+|---|---|
+| `claude-local` | Spawns `claude` locally. |
+| `codex-local` | Spawns `codex` locally. |
+| `process` | Generic managed subprocess wrapper. |
 
 ## Capability modes
 
-`CtoCapabilityMode` (also applies to workers via `capabilityMode` on
-session logs):
+`CtoCapabilityMode` is persisted per identity session log:
 
-- `full_tooling` -- the session connects to the ADE CLI over the
-  ADE CLI/action bridge and has full action access.
-- `fallback` -- the ADE CLI/action bridge is unavailable; the session
-  gets only its adapter's built-in tool set.
-
-`capabilityMode` is persisted per session log so history shows which
-mode the agent actually ran in.
+- `full_tooling` — the session connected to the ADE CLI/action bridge.
+- `fallback` — the bridge was unavailable and the adapter used its own
+  built-in tool set.
 
 ## Tool access tiers
 
-Each agent type gets a distinct tool palette. The full breakdown is in
-[tool-registration](tool-registration.md); summary:
-
 | Tier | CTO | Worker | Regular chat | Coordinator |
 |---|:-:|:-:|:-:|:-:|
-| Universal (read, write, bash, memory, web, todo) | yes | yes | yes | yes |
+| Universal (read, write, bash, web, todo) | yes | yes | yes | yes |
 | Workflow (createLane, createPR, captureScreenshot, reportCompletion, PR issue resolution) | yes | no | yes | no |
 | CTO operator (spawnChat, missions, worker management, Linear) | yes | no | no | no |
 | Coordinator (spawn_worker, skip_step, complete_mission, etc.) | no | no | no | yes |
 | Linear tools | yes (when connected) | no | no | no |
-| `memoryUpdateCore` | yes | yes | no | no |
 
-Standalone chat sessions (sessions without mission/run/step/attempt
-context) additionally get `spawn_agent` and all coordinator tools
-hidden from both tool listing and tool execution, enforced at the ADE CLI
-server boundary. See [tool-registration](tool-registration.md#standalone-chat-restrictions).
+Standalone chat sessions connected through ADE CLI with no
+mission/run/step/attempt context have coordinator tools hidden from tool
+listing and execution at the ADE CLI server boundary.
 
-## System prompt composition
+## Prompt composition
 
-All three surfaces use the same system-prompt builder
-(`buildCodingAgentSystemPrompt` in
-`apps/desktop/src/main/services/ai/tools/systemPrompt.ts`) with
-different inputs:
+All three surfaces use `buildCodingAgentSystemPrompt` with different
+identity/context prefixes:
 
-- **CTO:** `systemPrompt.ts` output is prefixed by the
-  `IMMUTABLE_CTO_DOCTRINE`, `CTO_MEMORY_OPERATING_MODEL`, and
-  `CTO_ENVIRONMENT_KNOWLEDGE` blocks from `ctoStateService.ts`, plus
-  the active personality overlay and user-defined persona /
-  `systemPromptExtension`.
-- **Worker:** similar structure, but with `AgentCoreMemory` reconstructed
-  into the context and the worker's persona + constraints + system
-  prompt extension.
-- **Regular chat:** no identity prefix; just lane context, memory
-  tools guidance, workflow tools guidance, and permission-mode
-  framing.
-
-The prompt branches on which tool names are present (see [Chat Tool
-System](../chat/tool-system.md#system-prompt-composition)) so renaming
-a tool silently changes the prompt.
+- **CTO:** immutable CTO doctrine, active personality overlay, persona,
+  environment knowledge, recent session context, subordinate activity,
+  and user-defined prompt extension.
+- **Worker:** worker identity, role, adapter/runtime constraints, recent
+  worker session context, and user-defined prompt extension.
+- **Regular chat:** lane context, workflow tool guidance, and
+  permission-mode framing.
 
 ## Heartbeat and activation
 
-`workerHeartbeatService.ts` schedules worker activations:
-
-- `HeartbeatPolicy.enabled` gates scheduling entirely.
-- `intervalSec` controls periodic wake-up.
-- `wakeOnDemand` allows the CTO or Linear dispatcher to activate the
-  worker outside the schedule.
-- `activeHours` restricts heartbeats to a time window (with timezone).
-
-When a worker activates, the runtime:
-
-1. Assembles a memory briefing (`memoryBriefingService.ts`).
-2. Resolves the adapter config.
-3. Dispatches through the orchestrator or spawns a chat session (via
-   the CTO's `spawnChat` tool) depending on the activation kind.
-4. Records a `worker_agents` runtime row and an `AgentSessionLogEntry`.
+`workerHeartbeatService.ts` schedules worker activations. The runtime
+resolves the worker identity, adapter config, and current lane/project
+context, then dispatches through the orchestrator or spawns a chat
+session via the CTO's `spawnChat` tool.
 
 ## Session logs
 
-Both CTO and workers maintain append-only session logs:
-
-- CTO: `cto_session_logs` table.
-- Workers: `worker_agent_runs` (runtime rows) and session log entries
-  persisted under `.ade/agents/<slug>/`.
-
-Each entry carries: session id, summary, started/ended timestamps,
-provider, model id, capability mode, and a previous-hash pointer
-(`prevHash`) so integrity of the log can be verified. The log integrity
-service (`projects/logIntegrityService.ts`) computes and verifies these
-hashes.
+CTO and workers maintain append-only session logs. Each entry carries
+session id, summary, started/ended timestamps, provider, model id,
+capability mode, and a previous-hash pointer (`prevHash`) so
+`logIntegrityService.ts` can verify the chain.
 
 ## Subordinate activity feed
 
 CTO sessions include a `CtoSubordinateActivityEntry` feed surfaced in
-the CTO surface. Entries record chat turns and worker runs with:
-
-- `agentId`, `agentName`
-- `activityType`: `chat_turn` or `worker_run`
-- `summary`, `sessionId`, `taskKey`, `issueKey`
-
-This feed is the CTO's awareness of what workers have been doing; the
-CTO can proactively check it at the start of each session via the
-`Daily Context` protocol.
+the CTO UI. Entries record worker chat turns and worker runs with the
+agent id/name, activity type, summary, session id, task key, and issue
+key.
 
 ## Daily logs
 
-The CTO writes append-only daily logs at
-`.ade/cto/daily/<YYYY-MM-DD>.md`. Workers have their own at
-`.ade/agents/<slug>/daily/<YYYY-MM-DD>.md`. Daily logs are included in
-the continuity context for the current day, providing within-day
-session-to-session continuity without the full history weight.
+The CTO writes append-only daily logs at `.ade/cto/daily/<YYYY-MM-DD>.md`.
+Workers have their own daily logs under `.ade/agents/<slug>/daily/`.
+These files provide within-day session continuity without loading full
+transcripts.
 
 ## IPC surface
-
-Defined in `apps/desktop/src/shared/ipc.ts` (search `ade.cto.*` and
-`ade.workers.*`). Handlers in `registerIpc.ts`.
 
 Representative channels:
 
 | Channel | Purpose |
 |---|---|
-| `ade.cto.getState` | Fetch `CtoSnapshot` (identity + core memory + recent sessions + subordinate activity). |
+| `ade.cto.getState` | Fetch CTO identity, recent sessions, and subordinate activity. |
 | `ade.cto.updateIdentity` | Patch identity fields. |
-| `ade.cto.updateCoreMemory` | Patch core memory fields. |
 | `ade.cto.ensureSession` | Create or fetch the CTO's persistent chat session. |
-| `ade.cto.appendSessionLog` | Append to the session log (internal; called by agentChatService on completion). |
-| `ade.cto.getSystemPromptPreview` | Generate a preview of the CTO's system prompt for the UI. |
+| `ade.cto.appendSessionLog` | Append to the CTO session log. |
+| `ade.cto.getSystemPromptPreview` | Generate a preview for the UI. |
 | `ade.workers.list` | List worker identities. |
 | `ade.workers.upsert` | Create or update a worker. |
 | `ade.workers.remove` | Soft-delete a worker. |
-| `ade.workers.getCoreMemory` | Fetch a worker's core memory. |
-| `ade.workers.updateCoreMemory` | Patch a worker's core memory. |
 | `ade.workers.triggerWakeup` | Force a worker heartbeat. |
-| `ade.workers.heartbeatStatus` | Current heartbeat schedule + last fire. |
-| `ade.workers.getBudget` | Monthly budget + spend. |
+| `ade.workers.heartbeatStatus` | Current heartbeat schedule and last fire. |
+| `ade.workers.getBudget` | Monthly budget and spend. |
 
 ## Fragile and tricky wiring
 
-- **Core memory version reconciliation.** On startup,
-  `reconcileCoreMemoryOnStartup()` compares the SQLite `version` to the
-  filesystem `version` and picks the newer. Concurrent edits (user
-  editing the JSON file while ADE is running) can create version
-  inversions; the reconciler writes the loser back to sync but loses
-  the other side's changes. Always edit through the UI or the
-  `updateCoreMemory` IPC when possible.
 - **Post-compaction identity re-injection.** CTO and worker identity
-  sessions re-inject `buildReconstructionContext()` after chat context
-  compaction; missing this path loses the persona mid-session. The
-  wiring lives in `agentChatService.ts` and relies on an explicit
-  `refreshReconstructionContext()` call from the compaction handler.
+  sessions call `refreshReconstructionContext()` after chat context
+  compaction. Missing this path loses the persona mid-session.
 - **Subordinate activity ordering.** `appendCtoSubordinateActivity`
-  prepends to the feed and caps at N entries. Rapid concurrent writes
-  can race; writes go through `ctoStateService` which serialises via
-  the db layer.
+  prepends to the feed and caps at N entries. Writes go through
+  `ctoStateService`, but callers should still sort by `createdAt` when
+  strict chronology matters.
 - **Personality preset lookup.** `getCtoPersonalityPreset()` falls back
-  to the first preset (`strategic`) on unknown input. Removing or
-  renaming a preset id would silently remap existing CTO identities
-  to the default. Keep preset ids stable.
+  to the first preset (`strategic`) on unknown input. Keep preset ids
+  stable.
 - **Worker slug uniqueness.** `slugify(input)` can collide; the service
-  guarantees uniqueness by appending `-2`, `-3`, etc. when the slug
-  already exists. Renaming a worker does not move its filesystem
-  directory.
+  appends `-2`, `-3`, etc. when needed. Renaming a worker does not move
+  its filesystem directory.
 - **Adapter config secret policy.** `assertEnvRefSecretPolicy` rejects
   raw secrets embedded in adapter configs, forcing `${env:VAR_NAME}`
-  references. Bypassing this check (e.g., via direct SQL writes)
-  allows secrets to leak into transcripts.
-- **Daily log integrity hashes.** Each session log entry carries
-  `prevHash` linking back to the previous entry. Manually deleting a
-  row from the table breaks the chain; `logIntegrityService` will
-  detect the break on next verification but won't rebuild the chain.
-- **Adapter type ↔ capability mode.** `claude-local` and `codex-local`
-  can run in `full_tooling` mode only when the ADE CLI socket server is
-  running; if the socket fails, workers silently fall back to
-  `fallback` mode. Surface this via capability mode in the session
-  log entry.
-- **Standalone-chat tool filtering at ADE CLI boundary.** The filter is
-  applied in `apps/ade-cli/src/adeRpcServer.ts` based on the
-  `initialize` payload's identity. A client that omits identity
-  falls back to `external` role with minimal tool access; a client
-  that forges a mission id could theoretically get elevated access,
-  so the socket is local-only and the proxy cannot be externally
-  reached.
+  references.
+- **Daily log integrity hashes.** Session log entries carry `prevHash`.
+  Manual row deletion breaks the chain and is detected by
+  `logIntegrityService`.
+- **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is
+  applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize
+  payload's identity.
 
 ## Detail docs
 
-- [Identity and Personas](identity-and-personas.md) -- how CTO and
-  worker identity is stored, reconciled, and injected into sessions,
-  including the personality preset system and immutable doctrine.
+- [Identity and Personas](identity-and-personas.md) -- identity storage,
+  reconstruction, personality presets, and immutable doctrine.
 - [Tool Registration](tool-registration.md) -- ADE CLI integration,
-  bundled proxy, tool registry, role-based filtering, capability
-  mode fallback.
+  action registration, role-based filtering, and capability fallback.
 
 ## Related docs
 
-- [Chat README](../chat/README.md) -- session lifecycle, identity
+- [Chat README](../chat/README.md) -- session lifecycle and identity
   session filtering.
-- [Chat Agent Routing](../chat/agent-routing.md) -- provider and
-  model selection for agents.
-- [Memory README](../memory/README.md) -- memory briefing, core
-  memory, and scope rules.
-- [Chat Tool System](../chat/tool-system.md) -- details of universal,
-  workflow, and coordinator tiers.
-</content>
-</invoke>
+- [Chat Agent Routing](../chat/agent-routing.md) -- provider and model
+  selection for agents.
+- [Chat Tool System](../chat/tool-system.md) -- universal, workflow, and
+  coordinator tool details.

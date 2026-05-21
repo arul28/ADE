@@ -5,7 +5,6 @@ import type {
 } from "./orchestratorService";
 import type { OrchestratorWorkerRole, OrchestratorStep, OrchestratorExecutorKind, TerminalToolType, TeamRuntimeConfig } from "../../../shared/types";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
-import type { createMemoryService } from "../memory/memoryService";
 import { DEFAULT_CONTEXT_VIEW_POLICIES, SLASH_COMMAND_TRANSLATIONS } from "./orchestratorConstants";
 
 // ─────────────────────────────────────────────────────
@@ -146,10 +145,7 @@ export function buildFullPrompt(
   args: OrchestratorExecutorStartArgs,
   _executorKind?: OrchestratorExecutorKind,
   opts?: {
-    memoryService?: ReturnType<typeof createMemoryService>;
-    projectId?: string;
     workerRuntime?: "tracked_session" | "managed_chat" | "in_process";
-    memoryBriefing?: OrchestratorExecutorStartArgs["memoryBriefing"];
   }
 ): {
   prompt: string;
@@ -523,67 +519,6 @@ export function buildFullPrompt(
     systemParts.push(`Context from upstream steps:\n${handoffSummaries.map((s) => `- ${s}`).join("\n")}`);
   }
 
-  // Shared team knowledge projected from mission memory
-  const memoryService = opts?.memoryService;
-  const briefing = opts?.memoryBriefing ?? args.memoryBriefing ?? null;
-  const sharedFacts = briefing?.sharedFacts ?? [];
-  if (sharedFacts.length > 0) {
-    systemParts.push(
-      [
-        "## Shared Team Knowledge",
-        "Facts discovered by other agents in this run:",
-        ...sharedFacts.map((fact) => `- [${fact.factType}] ${fact.content}`)
-      ].join("\n")
-    );
-  }
-
-  // Project memories (high importance only, above minimum relevance threshold)
-  const MIN_MEMORY_SCORE = 0.3;
-  const memProjectId = opts?.projectId;
-  if (briefing) {
-    const missionEntries = Array.isArray(briefing.mission?.entries) ? briefing.mission.entries : [];
-    const projectL0Entries = Array.isArray(briefing.l0?.entries) ? briefing.l0.entries : [];
-    const projectL1Entries = Array.isArray(briefing.l1?.entries) ? briefing.l1.entries : [];
-    const agentEntries = Array.isArray(briefing.l2?.entries) ? briefing.l2.entries : [];
-    if (missionEntries.length > 0) {
-      systemParts.push(
-        [
-          "## Mission Memory",
-          ...missionEntries.map((mem) => `- [${mem.category}] ${mem.content}`)
-        ].join("\n")
-      );
-    }
-    const projectKnowledge = [...projectL0Entries, ...projectL1Entries]
-      .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index);
-    if (projectKnowledge.length > 0) {
-      systemParts.push(
-        [
-          "## Project Knowledge",
-          ...projectKnowledge.map((mem) => `- [${mem.category}] ${mem.content}`)
-        ].join("\n")
-      );
-    }
-    if (agentEntries.length > 0) {
-      systemParts.push(
-        [
-          "## Agent Memory",
-          ...agentEntries.map((mem) => `- [${mem.category}] ${mem.content}`)
-        ].join("\n")
-      );
-    }
-  } else if (memoryService && memProjectId) {
-    const projectMemories = memoryService.getMemoryBudget(memProjectId, "lite");
-    const promoted = projectMemories.filter((m) => m.importance === "high" && m.compositeScore >= MIN_MEMORY_SCORE);
-    if (promoted.length > 0) {
-      systemParts.push(
-        [
-          "## Project Knowledge",
-          ...promoted.map((mem) => `- [${mem.category}] ${mem.content}`)
-        ].join("\n")
-      );
-    }
-  }
-
   // Advisory dependency note
   if (step.joinPolicy === "advisory" && step.dependencyStepIds.length > 0) {
     systemParts.push(
@@ -709,8 +644,7 @@ export function buildFullPrompt(
           "- You can send messages to other teammates via the coordinator",
           "- You can report progress, blockers, and discoveries",
           "- Focus on your claimed task — the coordinator manages task distribution",
-          "- When your task is done, report completion and the coordinator will assign more work or finalize the run",
-          "- If you discover something relevant to other tasks, write it with memory_add so it is preserved in project memories and shared facts"
+          "- When your task is done, report completion and the coordinator will assign more work or finalize the run"
         ].join("\n")
       );
     } else if (teamRuntime?.enabled) {
@@ -802,10 +736,8 @@ export function buildFullPrompt(
         `- Mission: "${missionGoal.slice(0, 200)}"`,
         `- Your step: "${step.metadata?.stepKey ?? step.stepKey}" (${step.title})`,
         `- Files you own: ${claimScopes || "none"}`,
-        `- Shared facts count: ${sharedFacts.length}`,
         `- Run progress: ${completedSteps}/${totalSteps} steps complete`,
-        "When your context is summarized/compacted, preserve this section and any important discoveries.",
-        "Before compaction, write important discoveries using memoryAdd so they are preserved in project memories and shared facts."
+        "When your context is summarized/compacted, preserve this section and any important discoveries."
       ].join("\n")
     );
   }
@@ -903,11 +835,7 @@ export function createBaseOrchestratorAdapter(config: BaseAdapterConfig): Orches
         }
 
         // 1-2. Build full prompt (shared logic, executor-aware)
-        const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, executorKind, {
-          memoryService: args.memoryService as ReturnType<typeof createMemoryService> | undefined,
-          projectId: args.memoryProjectId,
-          memoryBriefing: args.memoryBriefing,
-        });
+        const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, executorKind);
 
         // 3. Determine model (strict cutover: modelId is required)
         const model = typeof step.metadata?.modelId === "string" ? step.metadata.modelId.trim() : "";

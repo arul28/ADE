@@ -151,7 +151,6 @@
             "pages": [
               "cto/overview",
               "cto/setup",
-              "cto/memory",
               "cto/linear",
               "cto/workers",
               "guides/cto-linear-workflow"

@@ -11,7 +11,6 @@ struct CtoSettingsScreen: View {
   @State private var errorMessage: String?
   @State private var syncNotice: String?
   @State private var showingIdentityEditor = false
-  @State private var showingBriefEditor = false
   @State private var showingMachineOnlySheet = false
   @State private var machineOnlyTitle: String = ""
 
@@ -39,7 +38,6 @@ struct CtoSettingsScreen: View {
 
         if let snapshot {
           identitySection(snapshot)
-          coreMemorySection(snapshot)
         }
 
         heartbeatSection
@@ -64,11 +62,6 @@ struct CtoSettingsScreen: View {
         self.snapshot = updated
       }
     }
-    .sheet(isPresented: $showingBriefEditor) {
-      CtoBriefEditor(snapshot: snapshot) { updated in
-        self.snapshot = updated
-      }
-    }
     .sheet(isPresented: $showingMachineOnlySheet) {
       MachineOnlySheet(title: machineOnlyTitle)
         .presentationDetents([.fraction(0.3), .medium])
@@ -86,41 +79,6 @@ struct CtoSettingsScreen: View {
         onEdit: { showingIdentityEditor = true }
       )
     }
-  }
-
-  // MARK: - Core memory
-
-  @ViewBuilder
-  private func coreMemorySection(_ snapshot: CtoSnapshot) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Core memory")
-      VStack(spacing: 0) {
-        MemoryRow(
-          label: "Project summary",
-          sub: projectSummarySubtitle(snapshot.coreMemory)
-        ) { showingBriefEditor = true }
-        Sep()
-        MemoryRow(
-          label: "Conventions",
-          sub: "\(snapshot.coreMemory.criticalConventions.count) convention\(snapshot.coreMemory.criticalConventions.count == 1 ? "" : "s")"
-        ) { showingBriefEditor = true }
-        Sep()
-        MemoryRow(
-          label: "Preferences",
-          sub: "\(snapshot.coreMemory.userPreferences.count) preference\(snapshot.coreMemory.userPreferences.count == 1 ? "" : "s")"
-        ) { showingBriefEditor = true }
-        Sep()
-        MemoryRow(
-          label: "Focus & notes",
-          sub: "\(snapshot.coreMemory.activeFocus.count + snapshot.coreMemory.notes.count) entries"
-        ) { showingBriefEditor = true }
-      }
-      .adeListCard(padding: 0)
-    }
-  }
-
-  private func projectSummarySubtitle(_ memory: CtoCoreMemory) -> String {
-    memory.projectSummary.isEmpty ? "empty" : "captured"
   }
 
   // MARK: - Heartbeat (read-only placeholders)
@@ -307,11 +265,6 @@ struct CtoSettingsScreen: View {
         Sep()
         RowItem(label: "Re-scan project", value: "") {
           machineOnlyTitle = "Re-scan project"
-          showingMachineOnlySheet = true
-        }
-        Sep()
-        RowItem(label: "Reset memory", value: "", danger: true) {
-          machineOnlyTitle = "Reset memory"
           showingMachineOnlySheet = true
         }
       }
@@ -515,50 +468,6 @@ enum CtoPresetSummary {
     default:
       return "Pragmatic senior engineer who holds the mental model so workers don't have to."
     }
-  }
-}
-
-// MARK: - Memory row
-
-private struct MemoryRow: View {
-  let label: String
-  let sub: String
-  let onTap: () -> Void
-
-  var body: some View {
-    Button(action: onTap) {
-      HStack(spacing: 10) {
-        ZStack {
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(ADEColor.purpleAccent.opacity(0.12))
-          RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .stroke(ADEColor.purpleAccent.opacity(0.24), lineWidth: 0.5)
-          Image(systemName: "brain.head.profile")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.purpleAccent)
-        }
-        .frame(width: 26, height: 26)
-
-        VStack(alignment: .leading, spacing: 1) {
-          Text(label)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(sub)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 11)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
   }
 }
 

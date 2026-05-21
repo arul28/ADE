@@ -59,7 +59,6 @@ import type {
   ProxyStatus,
   RebaseResolutionStartArgs,
   AiFeatureKey,
-  MemoryHealthStats,
   AiSettingsStatus,
   CtoRunProjectScanResult,
   CtoLinearQuickView,
@@ -67,7 +66,6 @@ import type {
   LinearConnectionStatus,
   LinearRouteDecision,
   NormalizedLinearIssue,
-  OnboardingDetectionResult,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
@@ -79,7 +77,7 @@ import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
 import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
-import { getErrorMessage, isRecord, nowIso, toMemoryEntryDto } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
@@ -98,7 +96,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "orchestrator",
   "orchestrator_core",
   "mission_budget",
-  "memory",
   "cto_state",
   "worker_agent",
   "session",
@@ -605,12 +602,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "previewSystemPrompt",
     "resetOnboarding",
     "runProjectScan",
-    "updateCoreMemory",
     "updateIdentity",
   ],
   worker_agent: [
     "clearAgentTaskSession",
-    "getCoreMemory",
     "getBudgetSnapshot",
     "listAgents",
     "listAgentRevisions",
@@ -622,40 +617,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "saveAgent",
     "setAgentStatus",
     "triggerWakeup",
-    "updateCoreMemory",
-  ],
-  memory: [
-    "add",
-    "addMemory",
-    "addSharedFact",
-    "archive",
-    "archiveMemory",
-    "downloadEmbeddingModel",
-    "exportProcedureSkill",
-    "getBudget",
-    "getCandidateMemories",
-    "getCandidates",
-    "getHealthStats",
-    "getKnowledgeSyncStatus",
-    "getProcedureDetail",
-    "healthStats",
-    "list",
-    "listIndexedSkills",
-    "listMemories",
-    "listMissionEntries",
-    "listProcedures",
-    "pin",
-    "pinMemory",
-    "promote",
-    "promoteMemory",
-    "promoteMissionEntry",
-    "reindexSkills",
-    "runConsolidation",
-    "runSweep",
-    "search",
-    "searchMemories",
-    "syncKnowledge",
-    "writeMemory",
   ],
   session: ["deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "list", "start"],
@@ -1087,31 +1048,6 @@ async function resolvePrimaryLaneId(runtime: AdeRuntime): Promise<string> {
   return primary.id;
 }
 
-function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial<{
-  projectSummary: string;
-  criticalConventions: string[];
-  activeFocus: string[];
-  notes: string[];
-}> {
-  if (!result) return {};
-  const projectTypes = result.projectTypes.filter((entry) => entry.trim().length > 0);
-  const signalFiles = result.indicators
-    .slice(0, 4)
-    .map((indicator) => indicator.file.trim())
-    .filter((entry) => entry.length > 0);
-  const workflowPaths = result.suggestedWorkflows
-    .slice(0, 4)
-    .map((workflow) => workflow.path.trim())
-    .filter((entry) => entry.length > 0);
-
-  return {
-    projectSummary: `Detected ${projectTypes.join(", ") || "project"} setup from ${signalFiles.join(", ") || "repository signals"}.`,
-    criticalConventions: projectTypes.map((type) => `${type} conventions`),
-    activeFocus: projectTypes.length > 0 ? [`stabilize ${projectTypes[0]} workflows`] : [],
-    notes: workflowPaths.length > 0 ? workflowPaths.map((workflow) => `Detected workflow: ${workflow}`) : [],
-  };
-}
-
 function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
   const ctoStateService = runtime.ctoStateService;
   if (!ctoStateService) return null;
@@ -1119,43 +1055,7 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     ...(ctoStateService as unknown as OpaqueService),
     runProjectScan: async (): Promise<CtoRunProjectScanResult> => {
       const detection = await runtime.onboardingService?.detectDefaults().catch(() => null) ?? null;
-      const summary = summarizeProjectScan(detection);
-      const coreMemoryPatch = {
-        projectSummary: summary.projectSummary ?? "",
-        criticalConventions: summary.criticalConventions ?? [],
-        activeFocus: summary.activeFocus ?? [],
-        notes: summary.notes ?? [],
-      };
-
-      ctoStateService.updateCoreMemory(coreMemoryPatch);
-
-      const createdMemoryIds: string[] = [];
-      if (runtime.memoryService) {
-        if (coreMemoryPatch.projectSummary) {
-          createdMemoryIds.push(
-            runtime.memoryService.addMemory({
-              projectId: runtime.projectId,
-              scope: "project",
-              category: "fact",
-              content: coreMemoryPatch.projectSummary,
-              importance: "high",
-            }).id,
-          );
-        }
-        for (const convention of coreMemoryPatch.criticalConventions) {
-          createdMemoryIds.push(
-            runtime.memoryService.addMemory({
-              projectId: runtime.projectId,
-              scope: "project",
-              category: "convention",
-              content: convention,
-              importance: "medium",
-            }).id,
-          );
-        }
-      }
-
-      return { detection, coreMemoryPatch, createdMemoryIds };
+      return { detection };
     },
   };
 }
@@ -1246,512 +1146,6 @@ function buildWorkerAgentDomainService(runtime: AdeRuntime): OpaqueService | nul
         requireNonEmptyString(args?.agentId, "agentId"),
         args?.limit ?? 40,
       ),
-  };
-}
-
-type MemoryWriteScope = "user" | "project" | "lane" | "mission";
-type MemoryScope = "project" | "agent" | "mission";
-
-type MemoryRuntimeExtraService =
-  | "missionMemoryLifecycleService"
-  | "proceduralLearningService"
-  | "skillRegistryService"
-  | "humanWorkDigestService"
-  | "embeddingService"
-  | "embeddingWorkerService"
-  | "memoryLifecycleService"
-  | "batchConsolidationService";
-
-type MemoryHealthCountRow = {
-  scope: string | null;
-  tier: number | null;
-  status: string | null;
-  count: number | null;
-};
-
-type MemorySweepLogRow = {
-  sweep_id: string;
-  project_id: string;
-  trigger_reason: string | null;
-  started_at: string;
-  completed_at: string;
-  entries_decayed: number | null;
-  entries_demoted: number | null;
-  entries_promoted: number | null;
-  entries_archived: number | null;
-  entries_orphaned: number | null;
-  duration_ms: number | null;
-};
-
-type MemoryConsolidationLogRow = {
-  consolidation_id: string;
-  project_id: string;
-  trigger_reason: string | null;
-  started_at: string;
-  completed_at: string;
-  clusters_found: number | null;
-  entries_merged: number | null;
-  entries_created: number | null;
-  tokens_used: number | null;
-  duration_ms: number | null;
-};
-
-const MEMORY_HEALTH_SCOPES = ["project", "agent", "mission"] as const;
-const MEMORY_HEALTH_LIMITS: Record<(typeof MEMORY_HEALTH_SCOPES)[number], number> = {
-  project: 2000,
-  agent: 500,
-  mission: 200,
-};
-
-function normalizeMemoryWriteScope(rawScope: unknown): MemoryWriteScope | undefined {
-  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
-  if (trimmed === "agent") return "user";
-  if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
-  return undefined;
-}
-
-function normalizeMemoryScope(rawScope: unknown): MemoryScope | undefined {
-  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
-  if (trimmed === "project") return "project";
-  if (trimmed === "agent" || trimmed === "user") return "agent";
-  if (trimmed === "mission" || trimmed === "lane") return "mission";
-  return undefined;
-}
-
-function normalizeMemoryHealthScope(rawScope: unknown): (typeof MEMORY_HEALTH_SCOPES)[number] | null {
-  const scope = normalizeMemoryScope(rawScope);
-  return scope ?? null;
-}
-
-function getMemoryExtraService(runtime: AdeRuntime, key: MemoryRuntimeExtraService): OpaqueService | null {
-  return toService((runtime as unknown as Record<MemoryRuntimeExtraService, unknown>)[key]);
-}
-
-function createEmptyRuntimeMemoryHealthStats(): MemoryHealthStats {
-  const model: MemoryHealthStats["embeddings"]["model"] = {
-    modelId: "Xenova/all-MiniLM-L6-v2",
-    state: "idle",
-    activity: "idle",
-    installState: "missing",
-    cacheDir: null,
-    installPath: null,
-    progress: null,
-    loaded: null,
-    total: null,
-    file: null,
-    error: null,
-  };
-
-  return {
-    scopes: MEMORY_HEALTH_SCOPES.map((scope) => ({
-      scope,
-      current: 0,
-      max: MEMORY_HEALTH_LIMITS[scope],
-      counts: {
-        tier1: 0,
-        tier2: 0,
-        tier3: 0,
-        archived: 0,
-      },
-    })),
-    lastSweep: null,
-    lastConsolidation: null,
-    embeddings: {
-      entriesEmbedded: 0,
-      entriesTotal: 0,
-      queueDepth: 0,
-      processing: false,
-      lastBatchProcessedAt: null,
-      cacheEntries: 0,
-      cacheHits: 0,
-      cacheMisses: 0,
-      cacheHitRate: 0,
-      model,
-    },
-  };
-}
-
-function numberOrZero(value: unknown): number {
-  const next = Number(value ?? 0);
-  return Number.isFinite(next) ? next : 0;
-}
-
-function getRuntimeMemoryHealthStats(runtime: AdeRuntime): MemoryHealthStats {
-  const stats = createEmptyRuntimeMemoryHealthStats();
-  const scopes = new Map(stats.scopes.map((entry) => [entry.scope, entry] as const));
-
-  const rows = runtime.db.all<MemoryHealthCountRow>(
-    `
-      SELECT scope, tier, status, COUNT(*) AS count
-      FROM unified_memories
-      WHERE project_id = ?
-      GROUP BY scope, tier, status
-    `,
-    [runtime.projectId],
-  );
-
-  for (const row of rows) {
-    const scope = normalizeMemoryHealthScope(row.scope);
-    if (!scope) continue;
-    const target = scopes.get(scope);
-    if (!target) continue;
-    const count = numberOrZero(row.count);
-    if (count <= 0) continue;
-
-    if (String(row.status ?? "").trim() === "archived") {
-      target.counts.archived += count;
-      continue;
-    }
-
-    const tier = Number(row.tier ?? 0);
-    if (tier === 1) target.counts.tier1 += count;
-    else if (tier === 2) target.counts.tier2 += count;
-    else target.counts.tier3 += count;
-  }
-
-  for (const scope of stats.scopes) {
-    scope.current = scope.counts.tier1 + scope.counts.tier2 + scope.counts.tier3;
-  }
-
-  const embeddingService = getMemoryExtraService(runtime, "embeddingService");
-  const embeddingWorkerService = getMemoryExtraService(runtime, "embeddingWorkerService");
-  const getEmbeddingStatus = embeddingService?.getStatus;
-  const getEmbeddingWorkerStatus = embeddingWorkerService?.getStatus;
-  const embeddingStatus = typeof getEmbeddingStatus === "function"
-    ? asActionRecord(getEmbeddingStatus.call(embeddingService))
-    : {};
-  const embeddingWorkerStatus = typeof getEmbeddingWorkerStatus === "function"
-    ? asActionRecord(getEmbeddingWorkerStatus.call(embeddingWorkerService))
-    : {};
-  const embeddedCountRow = runtime.db.get<{ count: number | null }>(
-    `
-      SELECT COUNT(*) AS count
-      FROM unified_memories m
-      WHERE m.project_id = ?
-        AND m.status != 'archived'
-        AND EXISTS (
-          SELECT 1
-          FROM unified_memory_embeddings e
-          WHERE e.memory_id = m.id
-        )
-    `,
-    [runtime.projectId],
-  );
-  const entriesEmbedded = numberOrZero(embeddedCountRow?.count);
-  const entriesTotal = stats.scopes.reduce((total, scope) => total + scope.current, 0);
-  const cacheHits = numberOrZero(embeddingStatus.cacheHits);
-  const cacheMisses = numberOrZero(embeddingStatus.cacheMisses);
-  const cacheTotal = cacheHits + cacheMisses;
-
-  stats.embeddings = {
-    entriesEmbedded,
-    entriesTotal,
-    queueDepth: numberOrZero(embeddingWorkerStatus.queueDepth),
-    processing: embeddingWorkerStatus.processing === true,
-    lastBatchProcessedAt: typeof embeddingWorkerStatus.lastProcessedAt === "string"
-      ? embeddingWorkerStatus.lastProcessedAt
-      : null,
-    cacheEntries: numberOrZero(embeddingStatus.cacheEntries),
-    cacheHits,
-    cacheMisses,
-    cacheHitRate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
-    model: {
-      modelId: typeof embeddingStatus.modelId === "string" ? embeddingStatus.modelId : "Xenova/all-MiniLM-L6-v2",
-      state: typeof embeddingStatus.state === "string" ? embeddingStatus.state as never : "idle",
-      activity: typeof embeddingStatus.activity === "string" ? embeddingStatus.activity as never : "idle",
-      installState: typeof embeddingStatus.installState === "string" ? embeddingStatus.installState as never : "missing",
-      cacheDir: typeof embeddingStatus.cacheDir === "string" ? embeddingStatus.cacheDir : null,
-      installPath: typeof embeddingStatus.installPath === "string" ? embeddingStatus.installPath : null,
-      progress: typeof embeddingStatus.progress === "number" ? embeddingStatus.progress : null,
-      loaded: typeof embeddingStatus.loaded === "number" ? embeddingStatus.loaded : null,
-      total: typeof embeddingStatus.total === "number" ? embeddingStatus.total : null,
-      file: typeof embeddingStatus.file === "string" ? embeddingStatus.file : null,
-      error: typeof embeddingStatus.error === "string" ? embeddingStatus.error : null,
-    },
-  };
-
-  const lastSweep = runtime.db.get<MemorySweepLogRow>(
-    `
-      SELECT sweep_id, project_id, trigger_reason, started_at, completed_at,
-             entries_decayed, entries_demoted, entries_promoted, entries_archived,
-             entries_orphaned, duration_ms
-      FROM memory_sweep_log
-      WHERE project_id = ?
-      ORDER BY completed_at DESC
-      LIMIT 1
-    `,
-    [runtime.projectId],
-  );
-  if (lastSweep) {
-    stats.lastSweep = {
-      sweepId: lastSweep.sweep_id,
-      projectId: lastSweep.project_id,
-      reason: lastSweep.trigger_reason === "startup" ? "startup" : "manual",
-      startedAt: lastSweep.started_at,
-      completedAt: lastSweep.completed_at,
-      entriesDecayed: numberOrZero(lastSweep.entries_decayed),
-      entriesDemoted: numberOrZero(lastSweep.entries_demoted),
-      entriesPromoted: numberOrZero(lastSweep.entries_promoted),
-      entriesArchived: numberOrZero(lastSweep.entries_archived),
-      entriesOrphaned: numberOrZero(lastSweep.entries_orphaned),
-      durationMs: numberOrZero(lastSweep.duration_ms),
-    };
-  }
-
-  const lastConsolidation = runtime.db.get<MemoryConsolidationLogRow>(
-    `
-      SELECT consolidation_id, project_id, trigger_reason, started_at, completed_at,
-             clusters_found, entries_merged, entries_created, tokens_used, duration_ms
-      FROM memory_consolidation_log
-      WHERE project_id = ?
-      ORDER BY completed_at DESC
-      LIMIT 1
-    `,
-    [runtime.projectId],
-  );
-  if (lastConsolidation) {
-    stats.lastConsolidation = {
-      consolidationId: lastConsolidation.consolidation_id,
-      projectId: lastConsolidation.project_id,
-      reason: lastConsolidation.trigger_reason === "auto" ? "auto" : "manual",
-      startedAt: lastConsolidation.started_at,
-      completedAt: lastConsolidation.completed_at,
-      clustersFound: numberOrZero(lastConsolidation.clusters_found),
-      entriesMerged: numberOrZero(lastConsolidation.entries_merged),
-      entriesCreated: numberOrZero(lastConsolidation.entries_created),
-      tokensUsed: numberOrZero(lastConsolidation.tokens_used),
-      durationMs: numberOrZero(lastConsolidation.duration_ms),
-    };
-  }
-
-  return stats;
-}
-
-function buildMemoryDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const memoryService = runtime.memoryService;
-  if (!memoryService || runtime.capabilities?.memory === false) return null;
-
-  return {
-    ...(memoryService as unknown as OpaqueService),
-    add: (args?: unknown) => {
-      const record = asActionRecord(args);
-      const projectId = typeof record.projectId === "string" && record.projectId.trim()
-        ? record.projectId.trim()
-        : runtime.projectId;
-      const scope = normalizeMemoryWriteScope(record.scope) ?? "project";
-      const content = typeof record.content === "string" ? record.content.trim() : "";
-      if (!content) {
-        throw new Error("memory.add requires non-empty content.");
-      }
-      const category = typeof record.category === "string" && record.category.trim()
-        ? record.category.trim()
-        : "";
-      if (!category) {
-        throw new Error("memory.add requires category.");
-      }
-      const importance = record.importance === "low" || record.importance === "medium" || record.importance === "high"
-        ? record.importance
-        : "medium";
-      const sourceRunId = typeof record.sourceRunId === "string" && record.sourceRunId.trim()
-        ? record.sourceRunId.trim()
-        : undefined;
-      const scopeOwnerIdRaw = typeof record.scopeOwnerId === "string" ? record.scopeOwnerId.trim() : "";
-      const scopeOwnerId = scopeOwnerIdRaw || (scope === "mission" && sourceRunId ? sourceRunId : undefined);
-      return memoryService.addMemory({
-        projectId,
-        scope,
-        ...(scopeOwnerId ? { scopeOwnerId } : {}),
-        category: category as never,
-        content,
-        importance,
-        ...(sourceRunId ? { sourceRunId } : {}),
-      });
-    },
-    pin: (args?: { id?: string }) => {
-      memoryService.pinMemory(requireNonEmptyString(args?.id, "id"));
-    },
-    getBudget: (args?: unknown) => {
-      const record = asActionRecord(args);
-      const projectId = typeof record.projectId === "string" && record.projectId.trim()
-        ? record.projectId.trim()
-        : runtime.projectId;
-      const level = record.level === "lite" || record.level === "standard" || record.level === "deep"
-        ? record.level
-        : "standard";
-      const scope = normalizeMemoryScope(record.scope);
-      const scopeOwnerId = typeof record.scopeOwnerId === "string" && record.scopeOwnerId.trim()
-        ? record.scopeOwnerId.trim()
-        : undefined;
-      return memoryService.getMemoryBudget(projectId, level, {
-        ...(scope ? { scope } : {}),
-        ...(scopeOwnerId ? { scopeOwnerId } : {}),
-      }).map((memory) => toMemoryEntryDto(memory));
-    },
-    getCandidates: (args?: { projectId?: string; limit?: number }) => {
-      const projectId = typeof args?.projectId === "string" && args.projectId.trim()
-        ? args.projectId.trim()
-        : runtime.projectId;
-      return memoryService.getCandidateMemories(projectId, args?.limit ?? 20)
-        .map((memory) => toMemoryEntryDto(memory));
-    },
-    promote: (args?: { id?: string }) => {
-      memoryService.promoteMemory(requireNonEmptyString(args?.id, "id"));
-    },
-    promoteMissionEntry: async (args?: { id?: string; missionId?: string; runId?: string | null }) => {
-      const service = getMemoryExtraService(runtime, "missionMemoryLifecycleService");
-      const promoteMissionMemoryEntry = service?.promoteMissionMemoryEntry;
-      if (typeof promoteMissionMemoryEntry !== "function") return null;
-      const result = await promoteMissionMemoryEntry.call(service, {
-        memoryId: requireNonEmptyString(args?.id, "id"),
-        missionId: requireNonEmptyString(args?.missionId, "missionId"),
-        ...(args?.runId ? { runId: args.runId } : {}),
-      });
-      return result ? toMemoryEntryDto(result as { embedded?: boolean }) : null;
-    },
-    archive: (args?: { id?: string }) => {
-      memoryService.archiveMemory(requireNonEmptyString(args?.id, "id"));
-    },
-    search: async (args?: unknown) => {
-      const record = asActionRecord(args);
-      const query = typeof record.query === "string" ? record.query : "";
-      const projectId = typeof record.projectId === "string" && record.projectId.trim()
-        ? record.projectId.trim()
-        : runtime.projectId;
-      const scope = normalizeMemoryScope(record.scope);
-      const scopeOwnerId = typeof record.scopeOwnerId === "string" && record.scopeOwnerId.trim()
-        ? record.scopeOwnerId.trim()
-        : undefined;
-      const status = record.status === "all"
-        ? (["promoted", "candidate", "archived"] as const)
-        : record.status === "promoted" || record.status === "candidate" || record.status === "archived"
-          ? record.status
-          : "promoted";
-      const memories = await memoryService.searchMemories(
-        query,
-        projectId,
-        scope,
-        typeof record.limit === "number" ? record.limit : 10,
-        status,
-        scopeOwnerId,
-        record.mode === "lexical" ? "lexical" : "hybrid",
-      );
-      return memories.map((memory) => toMemoryEntryDto(memory));
-    },
-    list: (args?: unknown) => {
-      const record = asActionRecord(args);
-      const scope = normalizeMemoryScope(record.scope);
-      const status = record.status === "all"
-        ? (["promoted", "candidate", "archived"] as const)
-        : record.status === "candidate" || record.status === "promoted" || record.status === "archived"
-          ? record.status
-          : undefined;
-      const tier = record.tier === 1 || record.tier === 2 || record.tier === 3 ? record.tier : undefined;
-      const tiers = tier ? [tier] as const : undefined;
-
-      return memoryService.listMemories({
-        projectId: runtime.projectId,
-        ...(scope ? { scope } : {}),
-        ...(status ? { status } : {}),
-        ...(tiers ? { tiers } : {}),
-        limit: Math.max(1, Math.min(200, Math.floor(typeof record.limit === "number" ? record.limit : 100))),
-      }).map((memory) => toMemoryEntryDto(memory));
-    },
-    listMissionEntries: (args?: { missionId?: string; runId?: string | null; status?: string }) => {
-      const service = getMemoryExtraService(runtime, "missionMemoryLifecycleService");
-      const listMissionEntries = service?.listMissionEntries;
-      if (typeof listMissionEntries !== "function") return [];
-      const status = args?.status ?? "all";
-      return (listMissionEntries.call(service, {
-        projectId: runtime.projectId,
-        missionId: requireNonEmptyString(args?.missionId, "missionId"),
-        runId: args?.runId,
-        status,
-      }) as Array<{ embedded?: boolean }>).map((memory) => toMemoryEntryDto(memory));
-    },
-    listProcedures: (args?: unknown) => {
-      const service = getMemoryExtraService(runtime, "proceduralLearningService");
-      const listProcedures = service?.listProcedures;
-      return typeof listProcedures === "function" ? listProcedures.call(service, asActionRecord(args)) : [];
-    },
-    getProcedureDetail: (args?: { id?: string }) => {
-      const service = getMemoryExtraService(runtime, "proceduralLearningService");
-      const getProcedureDetail = service?.getProcedureDetail;
-      return typeof getProcedureDetail === "function"
-        ? getProcedureDetail.call(service, requireNonEmptyString(args?.id, "id"))
-        : null;
-    },
-    exportProcedureSkill: (args?: unknown) => {
-      const service = getMemoryExtraService(runtime, "skillRegistryService");
-      const exportProcedureSkill = service?.exportProcedureSkill;
-      return typeof exportProcedureSkill === "function"
-        ? exportProcedureSkill.call(service, asActionRecord(args))
-        : null;
-    },
-    listIndexedSkills: () => {
-      const service = getMemoryExtraService(runtime, "skillRegistryService");
-      const listIndexedSkills = service?.listIndexedSkills;
-      return typeof listIndexedSkills === "function" ? listIndexedSkills.call(service) : [];
-    },
-    reindexSkills: (args?: unknown) => {
-      const service = getMemoryExtraService(runtime, "skillRegistryService");
-      const reindexSkills = service?.reindexSkills;
-      return typeof reindexSkills === "function" ? reindexSkills.call(service, asActionRecord(args)) : [];
-    },
-    syncKnowledge: () => {
-      const service = getMemoryExtraService(runtime, "humanWorkDigestService");
-      const syncKnowledge = service?.syncKnowledge;
-      return typeof syncKnowledge === "function" ? syncKnowledge.call(service) : null;
-    },
-    getKnowledgeSyncStatus: () => {
-      const service = getMemoryExtraService(runtime, "humanWorkDigestService");
-      const getKnowledgeSyncStatus = service?.getKnowledgeSyncStatus;
-      return typeof getKnowledgeSyncStatus === "function"
-        ? getKnowledgeSyncStatus.call(service)
-        : {
-            syncing: false,
-            lastSeenHeadSha: null,
-            currentHeadSha: null,
-            diverged: false,
-            lastDigestAt: null,
-            lastDigestMemoryId: null,
-            lastError: null,
-          };
-    },
-    getHealthStats: () => getRuntimeMemoryHealthStats(runtime),
-    healthStats: () => getRuntimeMemoryHealthStats(runtime),
-    downloadEmbeddingModel: async () => {
-      const service = requireService(getMemoryExtraService(runtime, "embeddingService"), "Embedding service is not available.");
-      const preload = service.preload;
-      if (typeof preload !== "function") {
-        throw new Error("Embedding service is not available.");
-      }
-      const getStatus = service.getStatus;
-      const status = typeof getStatus === "function" ? asActionRecord(getStatus.call(service)) : {};
-      const localFilesOnly = status.installState === "installed" && status.state !== "unavailable";
-      if (!localFilesOnly && status.installState !== "missing" && typeof service.clearCache === "function") {
-        await service.clearCache.call(service);
-      }
-      void Promise.resolve(preload.call(service, { forceRetry: true, localFilesOnly })).catch(() => {
-        // Health polling will surface the unavailable state.
-      });
-      return getRuntimeMemoryHealthStats(runtime);
-    },
-    runSweep: () => {
-      const service = getMemoryExtraService(runtime, "memoryLifecycleService");
-      const runSweep = service?.runSweep;
-      if (typeof runSweep !== "function") {
-        throw new Error("Memory lifecycle service is not available.");
-      }
-      return runSweep.call(service, { reason: "manual" });
-    },
-    runConsolidation: () => {
-      const service = getMemoryExtraService(runtime, "batchConsolidationService");
-      const runConsolidation = service?.runConsolidation;
-      if (typeof runConsolidation !== "function") {
-        throw new Error("Batch consolidation service is not available.");
-      }
-      return runConsolidation.call(service, { reason: "manual" });
-    },
   };
 }
 
@@ -2540,7 +1934,6 @@ const AI_SETTINGS_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context",
@@ -3629,7 +3022,6 @@ export function getAdeActionDomainServices(
     orchestrator: toService(buildAiOrchestratorDomainService(runtime)),
     orchestrator_core: toService(buildOrchestratorCoreDomainService(runtime)),
     mission_budget: toService(runtime.missionBudgetService),
-    memory: toService(buildMemoryDomainService(runtime)),
     cto_state: toService(buildCtoStateDomainService(runtime)),
     worker_agent: toService(buildWorkerAgentDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),

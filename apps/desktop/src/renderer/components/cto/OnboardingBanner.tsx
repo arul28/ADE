@@ -36,7 +36,7 @@ export function OnboardingBanner({
           <div className="min-w-0">
             <div className="text-xs font-semibold text-fg/82">CTO setup is still in progress</div>
             <div className="mt-0.5 text-[11px] leading-5 text-muted-fg/40">
-              Pick a personality overlay for the persistent CTO. ADE handles project context and memory automatically.
+              Pick a personality overlay for the persistent CTO. ADE carries project context automatically.
             </div>
           </div>
         </div>

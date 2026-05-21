@@ -99,7 +99,7 @@ Project Budget (global cap)
 
 1. Open **CTO > Chat**.
 2. Type: _"Please review PR #142 and give me a summary of the changes, any concerns, and whether it's safe to merge."_
-3. The CTO reads the PR diff (via the GitHub integration ADE CLI tool), cross-references it against its project memory, checks for conflicts with active lanes, and returns a structured review with: summary, concerns, risk level, and a recommendation.
+3. The CTO reads the PR diff (via the GitHub integration ADE CLI tool), checks it against current repository context, checks for conflicts with active lanes, and returns a structured review with: summary, concerns, risk level, and a recommendation.
 
 The CTO's review is informed by accumulated project knowledge — it will note if a change contradicts an architectural decision made last month, or if a test is missing for a pattern it has seen cause regressions before.
 
@@ -117,7 +117,7 @@ You can ask the CTO for a narrative summary of recent activity at any time:
 
 _"Summarize what changed in the project since yesterday morning. What's blocked? What shipped? What's at risk?"_
 
-The CTO draws from its `daily-log` memory, recent checkpoint history, and PR status to produce a structured summary. This is also generated automatically as part of each heartbeat cycle and stored in the daily log.
+The CTO draws from recent checkpoint history, lane state, and PR status to produce a structured summary. This can also be generated automatically as part of each heartbeat cycle.
 
 ### Routing an incoming request via Automations
 
@@ -153,10 +153,6 @@ cto:
       - pr_opened
       - lane_blocked
       - linear_issue_assigned
-  memory:
-    project_retention_days: 90
-    daily_log_retention_days: 90
-    auto_promote_threshold: 0.8         # confidence to auto-promote to core
   workers:
     default_budget_tokens: 20000
     default_tool_palette: standard      # standard | minimal | full
@@ -199,13 +195,7 @@ cto:
     - **Rate limited** — Linear has API rate limits; the CTO backs off automatically and retries. The sync status shows the next retry time.
   </Accordion>
   <Accordion title="CTO gives outdated or wrong architectural advice" icon="rotate">
-    The CTO's project knowledge is built from the initial scan and updated incrementally via heartbeats. If the architecture has changed significantly, you can trigger a full re-scan:
-
-    1. Go to **CTO > Memory > Project Knowledge**
-    2. Click **Re-scan Project**
-    3. The CTO re-reads the repository structure, architecture docs, and recent history, and updates its Core memory
-
-    You can also manually edit or delete individual memory entries that are incorrect.
+    The CTO relies on current repository evidence and configured project context. If the architecture has changed significantly, update the source docs or ask the CTO to re-read the relevant files before delegating.
   </Accordion>
   <Accordion title="Worker is stuck and not completing its task" icon="person-circle-question">
     If a worker has been `active` for an unusually long time without producing checkpoints, it may be stuck in a loop or waiting for a tool response. From **CTO > Team**, select the worker and click **Inspect**. This opens the worker's live terminal output so you can see exactly what it is doing. You can then:

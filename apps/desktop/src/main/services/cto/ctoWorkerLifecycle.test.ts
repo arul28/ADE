@@ -96,9 +96,6 @@ describe("workerHeartbeatService (file group)", () => {
 
   async function createFixture(options: {
     runtimeRun?: ReturnType<typeof vi.fn>;
-    memoryService?: {
-      getMemoryBudget: ReturnType<typeof vi.fn>;
-    };
     ctoStateService?: {
       appendSubordinateActivity: ReturnType<typeof vi.fn>;
     };
@@ -152,7 +149,6 @@ describe("workerHeartbeatService (file group)", () => {
       workerTaskSessionService,
       workerAdapterRuntimeService: runtimeAdapter as any,
       workerBudgetService: { recordCostEvent } as any,
-      memoryService: options.memoryService as any,
       ctoStateService: options.ctoStateService as any,
       logger: createLogger(),
       autoStart: options.autoStart ?? false,
@@ -331,7 +327,7 @@ describe("workerHeartbeatService (file group)", () => {
       await fixture.dispose();
     });
 
-    it("injects worker reconstruction, task session, and project memory into runtime prompts", async () => {
+    it("injects worker reconstruction and task session into runtime prompts", async () => {
       const runtimeRun = vi.fn(async () => ({
         ok: true,
         adapterType: "codex-local",
@@ -339,26 +335,17 @@ describe("workerHeartbeatService (file group)", () => {
         outputText: "looked good",
         usage: null,
       }));
-      const memoryService = {
-        getMemoryBudget: vi.fn(() => ([
-          {
-            category: "pattern",
-            content: "Reuse the issue lock before starting a second worker on the same issue.",
-          },
-        ])),
-      };
-      const fixture = await createFixture({ runtimeRun, memoryService });
-      const worker = fixture.createWorker({ name: "Memory Rich Worker" });
-      fixture.workerAgentService.updateCoreMemory(worker.id, {
-        projectSummary: "Owns worker-side issue triage and escalation.",
-        criticalConventions: ["Prefer HEARTBEAT_OK when there is no actionable work."],
-        activeFocus: ["Issue triage"],
+      const fixture = await createFixture({ runtimeRun });
+      const worker = fixture.createWorker({
+        name: "Issue Triage Worker",
+        role: "engineer",
+        capabilities: ["issue triage", "escalation"],
       });
 
       await fixture.heartbeat.triggerWakeup({
         agentId: worker.id,
         reason: "manual",
-        taskKey: "task:memory-rich",
+        taskKey: "task:triage",
         issueKey: "ISSUE-900",
         prompt: "Inspect the issue queue and decide whether escalation is needed.",
         context: { queue: "bugs", severity: "high" },
@@ -368,16 +355,14 @@ describe("workerHeartbeatService (file group)", () => {
       const firstCall = (runtimeRun.mock.calls as Array<any[]>)[0]?.[0] as { prompt?: string } | undefined;
       const prompt = String(firstCall?.prompt ?? "");
       expect(prompt).toContain("System context (worker reconstruction, do not echo verbatim):");
-      expect(prompt).toContain("Owns worker-side issue triage and escalation.");
-      expect(prompt).toContain("Project memory highlights:");
-      expect(prompt).toContain("Reuse the issue lock before starting a second worker on the same issue.");
+      expect(prompt).toContain("Issue Triage Worker");
       expect(prompt).toContain("Task session state:");
-      expect(prompt).toContain("task:memory-rich");
+      expect(prompt).toContain("task:triage");
       expect(prompt).toContain("Current wakeup request:");
       await fixture.dispose();
     });
 
-    it("appends worker session logs after escalated runs so reconstruction memory compounds", async () => {
+    it("appends worker session logs after escalated runs so reconstruction context compounds", async () => {
       const runtimeRun = vi.fn(async () => ({
         ok: true,
         adapterType: "codex-local",

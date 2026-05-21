@@ -6,13 +6,10 @@ import type {
   ReviewSuppression,
   ReviewSuppressionScope,
 } from "../../../shared/types";
-import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import { nowIso, safeJsonParse } from "../shared/utils";
-import type { EmbeddingService } from "../memory/embeddingService";
+import { nowIso } from "../shared/utils";
 
 const TITLE_SIM_THRESHOLD = 0.55;
-const EMBEDDING_SIM_THRESHOLD = 0.78;
 const PATH_GLOB_CACHE_MAX = 256;
 const PATH_GLOB_CACHE = new Map<string, RegExp>();
 
@@ -82,20 +79,6 @@ function tokenize(value: string): Set<string> {
   return new Set(tokens);
 }
 
-function cosine(a: number[] | null, b: number[] | null): number {
-  if (!a || !b || a.length === 0 || a.length !== b.length) return 0;
-  let dot = 0;
-  let an = 0;
-  let bn = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    dot += a[i]! * b[i]!;
-    an += a[i]! * a[i]!;
-    bn += b[i]! * b[i]!;
-  }
-  if (an === 0 || bn === 0) return 0;
-  return dot / (Math.sqrt(an) * Math.sqrt(bn));
-}
-
 function pathMatchesScope(
   candidatePath: string | null,
   scope: ReviewSuppressionScope,
@@ -123,7 +106,6 @@ type ReviewSuppressionRow = {
   severity: string | null;
   reason: string | null;
   note: string | null;
-  embedding_json: string | null;
   source_finding_id: string | null;
   hit_count: number;
   created_at: string;
@@ -141,7 +123,6 @@ function mapRow(row: ReviewSuppressionRow): ReviewSuppression {
     severity: (row.severity as ReviewSuppression["severity"]) ?? null,
     reason: (row.reason as ReviewDismissReason | null) ?? null,
     note: row.note,
-    embedding: safeJsonParse<number[] | null>(row.embedding_json, null),
     sourceFindingId: row.source_finding_id,
     hitCount: Number(row.hit_count ?? 0),
     createdAt: row.created_at,
@@ -153,28 +134,11 @@ export type ReviewSuppressionService = ReturnType<typeof createReviewSuppression
 
 export function createReviewSuppressionService({
   db,
-  logger,
   projectId,
-  embeddingService,
 }: {
   db: AdeDb;
-  logger: Logger;
   projectId: string;
-  embeddingService?: Pick<EmbeddingService, "embed"> | null;
 }) {
-  async function tryEmbed(text: string): Promise<number[] | null> {
-    if (!embeddingService || !text.trim()) return null;
-    try {
-      const vector = await embeddingService.embed(text);
-      return Array.from(vector);
-    } catch (error) {
-      logger.warn("review.suppression.embed_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  }
-
   async function create(args: {
     scope: ReviewSuppressionScope;
     title: string;
@@ -185,10 +149,7 @@ export function createReviewSuppressionService({
     reason?: ReviewDismissReason | null;
     note?: string | null;
     sourceFindingId?: string | null;
-    seedText?: string | null;
   }): Promise<ReviewSuppression> {
-    const embeddingText = args.seedText ?? args.title;
-    const embedding = await tryEmbed(embeddingText);
     const row: ReviewSuppression = {
       id: `rsup_${randomUUID()}`,
       scope: args.scope,
@@ -199,7 +160,6 @@ export function createReviewSuppressionService({
       severity: args.severity ?? null,
       reason: args.reason ?? null,
       note: args.note ?? null,
-      embedding,
       sourceFindingId: args.sourceFindingId ?? null,
       hitCount: 0,
       createdAt: nowIso(),
@@ -208,9 +168,9 @@ export function createReviewSuppressionService({
     db.run(
       `insert into review_suppressions (
         id, project_id, scope, repo_key, path_pattern, title, title_norm,
-        finding_class, severity, reason, note, embedding_json, source_finding_id,
+        finding_class, severity, reason, note, source_finding_id,
         hit_count, created_at, last_matched_at
-      ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         row.id,
         projectId,
@@ -223,7 +183,6 @@ export function createReviewSuppressionService({
         row.severity,
         row.reason,
         row.note,
-        embedding ? JSON.stringify(embedding) : null,
         row.sourceFindingId,
         0,
         row.createdAt,
@@ -278,8 +237,6 @@ export function createReviewSuppressionService({
     );
     if (rows.length === 0) return null;
 
-    const findingText = `${args.finding.title} ${args.finding.body}`.trim();
-    const candidateEmbedding = await tryEmbed(findingText);
     const findingTokens = tokenize(args.finding.title);
 
     let best: { row: ReviewSuppression; similarity: number } | null = null;
@@ -293,27 +250,11 @@ export function createReviewSuppressionService({
         continue;
       }
 
-      // Score each candidate against its strongest signal:
-      // - if both sides have embeddings, trust cosine with the embedding bar
-      // - otherwise fall back to Jaccard-over-title-tokens with a lower bar
-      // Previously we mixed the two (jaccard could overwrite cosine but then
-      // get compared to the embedding threshold), which rejected real
-      // title-matches when embeddings happened to be weak.
-      const haveBothEmbeddings = Boolean(candidateEmbedding && suppression.embedding);
-      const cosineScore = haveBothEmbeddings
-        ? cosine(candidateEmbedding, suppression.embedding)
-        : 0;
-      if (haveBothEmbeddings && cosineScore >= EMBEDDING_SIM_THRESHOLD) {
-        const score = cosineScore;
-        if (!best || score > best.similarity) best = { row: suppression, similarity: score };
-        continue;
-      }
       const titleScore = jaccard(findingTokens, tokenize(suppression.title));
       if (titleScore < TITLE_SIM_THRESHOLD) continue;
-      const score = Math.max(cosineScore, titleScore);
 
-      if (!best || score > best.similarity) {
-        best = { row: suppression, similarity: score };
+      if (!best || titleScore > best.similarity) {
+        best = { row: suppression, similarity: titleScore };
       }
     }
 

@@ -1,12 +1,12 @@
 # Workers (Team)
 
-Workers are named agent identities that ADE can wake for delegated work. The CTO owns the team; workers execute inside lanes with their own budgets, heartbeats, and core memory. Workers are distinct from mission-run workers (which are transient and role-based) — a Team worker is a stable, configurable identity.
+Workers are named agent identities that ADE can wake for delegated work. The CTO owns the team; workers execute inside lanes with their own budgets and heartbeats. Workers are distinct from mission-run workers (which are transient and role-based) — a Team worker is a stable, configurable identity.
 
 ## Source file map
 
 ### Services (apps/desktop/src/main/services/cto/)
 
-- `workerAgentService.ts` — worker identity CRUD, core memory, config revisions, org tree. `createWorkerAgentService(args)` is the entry point. Returns `WorkerAgentService`.
+- `workerAgentService.ts` — worker identity CRUD, config revisions, org tree. `createWorkerAgentService(args)` is the entry point. Returns `WorkerAgentService`.
 - `workerBudgetService.ts` — budget caps and spend tracking per worker and for the CTO org overall. `recordCostEvent`, budget snapshots, monthly rollups.
 - `workerHeartbeatService.ts` — heartbeat policy (interval, pause threshold), liveness reporting, activity feed updates.
 - `workerRevisionService.ts` — config revision history; every identity change lands as a new `AgentConfigRevision`.
@@ -32,8 +32,6 @@ Workers are named agent identities that ADE can wake for delegated work. The CTO
 - `adapterType` (`claude-local` | `codex-local` | `process`).
 - `linearIdentity` (`AgentLinearIdentity` — user ids, display names, aliases).
 - Secret-policy fields pass through `assertEnvRefSecretPolicy`: raw secret-like values are rejected; only `${env:VAR}` references are allowed. Applies recursively to any object/array under an adapter config.
-
-`AgentCoreMemory` — per-worker core memory with the same shape as CTO core memory (`projectSummary`, `criticalConventions`, `userPreferences`, `activeFocus`, `notes`).
 
 `AgentConfigRevision` — a historical snapshot of an identity update. Revisions are append-only; `workerRevisionService` writes one per save.
 
@@ -65,7 +63,7 @@ On save, `window.ade.cto.saveAgent({ agent })` persists through `workerAgentServ
 
 - **List** — table of workers with status, role, recent activity, spend.
 - **Worker editor** — detailed edit surface. Fields: name, role, title, reports-to, capabilities (chip list), Linear identity (user ids + display names + aliases), adapter type, heartbeat policy, runtime config.
-- **Worker detail** — read-only view with core memory, config revisions timeline, recent session logs, recent runs, Linear workflow activity.
+- **Worker detail** — read-only view with config revisions timeline, recent session logs, recent runs, Linear workflow activity.
 
 The heartbeat policy lets the operator toggle "always running" vs idle-on-demand behavior per worker.
 
@@ -114,7 +112,7 @@ The Linear dispatcher uses these to resolve an issue assignee back to an ADE wor
 
 ## Post-compaction identity recovery
 
-Worker sessions undergo the same post-compaction identity re-injection as CTO sessions. The worker's identity, core memory, and the capability manifest are re-injected when the runtime detects compaction. This prevents the worker from drifting into generic-chatbot behavior after long conversations. Implementation lives in `agentChatService` with per-worker context supplied by `workerAgentService.getAgent()`.
+Worker sessions undergo the same post-compaction identity re-injection as CTO sessions. The worker's identity and capability manifest are re-injected when the runtime detects compaction. This prevents the worker from drifting into generic-chatbot behavior after long conversations. Implementation lives in `agentChatService` with per-worker context supplied by `workerAgentService.getAgent()`.
 
 ## Runs
 
@@ -145,7 +143,7 @@ This prevents accidental commit of API keys into worker config revisions.
 ## Cross-links
 
 - `README.md` — CTO overview.
-- `identity-and-memory.md` — worker core memory mirrors CTO core memory schema.
+- `../agents/identity-and-personas.md` — worker identity, reconstruction, and persona rules.
 - `linear-integration.md` — worker runs launched via `worker_run` target type.
 - `onboarding.md` — first-run flow that gates before the team is set up.
 - `../missions/workers.md` — mission-run workers (transient role-based runtime) are a different concept.

@@ -1,6 +1,6 @@
 ---
 title: "Guardrails & Security"
-description: "Secure your automations with tool palette restrictions, memory modes, budget caps, and preflight controls. Covers agent-session, mission, and built-in-task execution."
+description: "Secure your automations with tool palette restrictions, budget caps, and preflight controls. Covers agent-session, mission, and built-in-task execution."
 icon: "shield-check"
 ---
 
@@ -23,30 +23,23 @@ Start with the narrowest palette that can complete the task.
 
 ---
 
-## Memory Modes
+## Context Modes
 
-Control how much context an automation carries between runs.
+Control how much execution state an automation carries between runs.
 
 <Tabs>
   <Tab title="stateless">
     Each execution starts fresh with no history carried forward. This is the default and safest for infrequent, security-sensitive automations.
 
     ```yaml
-    memory: stateless
+    context: stateless
     ```
   </Tab>
   <Tab title="stateful">
     Automation state is retained per rule for this execution family. Useful for watchlists or recurring hygiene tasks.
 
     ```yaml
-    memory: stateful
-    ```
-  </Tab>
-  <Tab title="project">
-    Reads and writes from the shared project memory pool, aligned with the CTO and mission ecosystem.
-
-    ```yaml
-    memory: project
+    context: stateful
     ```
   </Tab>
 </Tabs>

@@ -47,7 +47,6 @@ import { readMissionStateDocument, updateMissionStateDocument } from "./missionS
 import { escapeRegExp, resolvePathWithinRoot } from "../shared/utils";
 import { normalizeAgentRuntimeFlags } from "./teamRuntimeConfig";
 import { registerTeamMember } from "./teamRuntimeState";
-import type { createMemoryService } from "../memory/memoryService";
 import {
   classifyWorkerExecutionPath,
   resolveModelDescriptor,
@@ -185,8 +184,6 @@ export const COORDINATOR_TOOL_NAMES = [
   "read_mission_status",
   "read_mission_state",
   "update_mission_state",
-  "memory_search",
-  "memory_add",
   "revise_plan",
   "update_tool_profiles",
   "transfer_lane",
@@ -827,7 +824,6 @@ function parseValidationFinding(value: unknown): ValidationResultReport["finding
 export function createCoordinatorToolSet(deps: {
   orchestratorService: ReturnType<typeof createOrchestratorService>;
   missionService: ReturnType<typeof createMissionService>;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
   getMissionBudgetStatus?: () => Promise<MissionBudgetSnapshot | null>;
   runId: string;
   missionId: string;
@@ -861,7 +857,6 @@ export function createCoordinatorToolSet(deps: {
   const projectId = typeof deps.projectId === "string" && deps.projectId.trim().length > 0
     ? deps.projectId.trim()
     : null;
-  const memoryService = deps.memoryService ?? null;
   const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0
     ? deps.missionLaneId.trim()
     : null;
@@ -1014,28 +1009,6 @@ export function createCoordinatorToolSet(deps: {
     const title = typeof mission?.title === "string" ? mission.title.trim() : "";
     if (title.length > 0) return title;
     return `Mission ${missionId}`;
-  }
-
-  function mapMemoryCategoryToFactType(category: "fact" | "convention" | "pattern" | "decision" | "gotcha" | "preference") {
-    switch (category) {
-      case "pattern":
-        return "api_pattern" as const;
-      case "gotcha":
-        return "gotcha" as const;
-      case "convention":
-      case "preference":
-        return "config" as const;
-      default:
-        return "architectural" as const;
-    }
-  }
-
-  function resolveMemoryScopeOwnerId(scope: "project" | "agent" | "mission", explicit?: string | null): string | undefined {
-    const trimmed = typeof explicit === "string" ? explicit.trim() : "";
-    if (trimmed.length > 0) return trimmed;
-    if (scope === "agent") return `coordinator:${runId}`;
-    if (scope === "mission") return missionId;
-    return undefined;
   }
 
   async function deliverToWorkerSession(
@@ -4871,136 +4844,6 @@ export function createCoordinatorToolSet(deps: {
     },
   });
 
-  const memory_search = defineCoordinatorTool({
-    description:
-      "Search project memory BEFORE starting work that might repeat past mistakes. Use at mission start for orientation, before architectural decisions, before writing worker briefs on unfamiliar subsystems, and when you hit unexpected behavior that might be a known gotcha. Do NOT search for things discoverable via get_project_context, read_file, search_files, or git history.",
-    inputSchema: z.object({
-      query: z.string().describe("Search query for relevant memory"),
-      scope: z.enum(["project", "agent", "mission"]).optional().describe("Optional scope filter"),
-      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
-      limit: z.number().int().min(1).max(20).optional().default(5).describe("Maximum number of memory hits to return"),
-    }),
-    execute: async ({ query, scope, scopeOwnerId, limit }) => {
-      try {
-        if (!memoryService || !projectId) {
-          return { ok: false, error: "Project memory is not configured for this coordinator." };
-        }
-        const effectiveLimit = limit ?? 5;
-        const memories = scope === "mission"
-          ? await memoryService.searchAcrossScopeOwners({
-              projectId,
-              query,
-              scope: "mission",
-              scopeOwnerIds: [missionId, runId, scopeOwnerId ?? null],
-              limit: effectiveLimit,
-            })
-          : await memoryService.search({
-              projectId,
-              query,
-              ...(scope ? { scope } : {}),
-              ...(scope ? { scopeOwnerId: resolveMemoryScopeOwnerId(scope, scopeOwnerId) ?? null } : {}),
-              limit: effectiveLimit,
-            });
-        return {
-          ok: true,
-          memories: memories.map((memory) => ({
-            id: memory.id,
-            scope: memory.scope,
-            scopeOwnerId: memory.scopeOwnerId,
-            status: memory.status,
-            category: memory.category,
-            content: memory.content,
-            importance: memory.importance,
-            confidence: memory.confidence,
-            pinned: memory.pinned,
-            sourceRunId: memory.sourceRunId,
-            createdAt: memory.createdAt,
-          })),
-          count: memories.length,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error("coordinator.memory_search.error", { error: msg });
-        return { ok: false, error: msg };
-      }
-    },
-  });
-
-  const memory_add = defineCoordinatorTool({
-    description: `Persist a durable insight to project memory. Quality bar: "Would a developer joining this project find this useful on their first day?" If not, do not save it.
-
-GOOD memories (save these):
-- "Convention: always use snake_case for database columns — the ORM breaks with camelCase"
-- "Decision: chose PostgreSQL over MongoDB because we need ACID transactions for payment processing"
-- "Pitfall: the CI pipeline silently skips tests if the test file doesn't match *.test.ts pattern"
-- "Pattern: all API routes must call validateSession() before accessing req.user — middleware doesn't cover /internal/* paths"
-
-BAD memories (never save these):
-- File paths, doc paths, or directory listings (derivable from the project)
-- Raw error messages or stack traces without a lesson learned
-- Task/mission progress, status updates, or session metadata
-- Things findable via git log, git blame, or reading existing code
-- Obvious patterns already visible in the codebase
-
-Format: Lead with the concrete rule or fact, then brief context for WHY. One actionable insight per memory.`,
-    inputSchema: z.object({
-      content: z.string().describe("A single actionable insight — lead with the rule/fact, then brief WHY"),
-      category: z.enum(["fact", "convention", "pattern", "decision", "gotcha", "preference"]).describe("Memory category"),
-      scope: z.enum(["project", "agent", "mission"]).optional().default("project").describe("Where to store the memory"),
-      scopeOwnerId: z.string().optional().describe("Optional explicit owner id for agent/mission scope"),
-      importance: z.enum(["low", "medium", "high"]).optional().default("medium").describe("Memory importance"),
-      pin: z.boolean().optional().default(false).describe("Pin this memory into Tier-1 context"),
-      writeMode: z.enum(["default", "strict"]).optional().default("default").describe("Write gate strictness"),
-    }),
-    execute: async ({ content, category, scope, scopeOwnerId, importance, pin, writeMode }) => {
-      try {
-        if (!memoryService || !projectId) {
-          return { ok: false, error: "Project memory is not configured for this coordinator." };
-        }
-        const effectiveScope = scope ?? "project";
-        const effectiveImportance = importance ?? "medium";
-        const effectivePin = pin ?? false;
-        const effectiveWriteMode = writeMode ?? "default";
-        const result = memoryService.writeMemory({
-          projectId,
-          scope: effectiveScope,
-          scopeOwnerId: resolveMemoryScopeOwnerId(effectiveScope, scopeOwnerId),
-          tier: effectivePin ? 1 : 2,
-          category,
-          content,
-          importance: effectiveImportance,
-          pinned: effectivePin,
-          status: "promoted",
-          confidence: 1,
-          sourceType: "system",
-          sourceRunId: runId,
-          sourceId: `coordinator:${runId}`,
-          writeGateMode: effectiveWriteMode,
-        });
-
-        if (!result.accepted || !result.memory) {
-          return {
-            ok: false,
-            error: result.reason ?? "Project memory write was rejected.",
-          };
-        }
-
-        return {
-          ok: true,
-          saved: true,
-          id: result.memory.id,
-          tier: result.memory.tier,
-          deduped: result.deduped === true,
-          mergedIntoId: result.mergedIntoId ?? null,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.error("coordinator.memory_add.error", { error: msg });
-        return { ok: false, error: msg };
-      }
-    },
-  });
-
   const revise_plan = defineCoordinatorTool({
     description:
       "Revise mission plan by partially or fully replacing steps. Replaced steps are marked superseded (not deleted).",
@@ -7831,8 +7674,6 @@ Format: Lead with the concrete rule or fact, then brief context for WHY. One act
     read_mission_status,
     read_mission_state,
     update_mission_state,
-    memory_search,
-    memory_add,
     revise_plan,
     update_tool_profiles,
     transfer_lane,

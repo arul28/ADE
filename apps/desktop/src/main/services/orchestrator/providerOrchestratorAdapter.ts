@@ -739,10 +739,7 @@ export function createProviderOrchestratorAdapter(options?: {
       const readOnlyExecution = args.step.metadata?.readOnlyExecution === true || requiresPlanApproval;
       const effectivePermissionConfig = forceReadOnlyPermissionConfig(args.permissionConfig, readOnlyExecution);
       const { prompt, filePatterns, steeringDirectiveCount } = buildFullPrompt(args, "opencode", {
-        memoryService: args.memoryService as any,
-        projectId: args.memoryProjectId,
         workerRuntime: "managed_chat",
-        memoryBriefing: args.memoryBriefing,
       });
       const provider = resolveProviderGroupForModel(descriptor);
       const model = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;

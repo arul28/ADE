@@ -15,8 +15,8 @@ Two related but distinct flows:
 
 The runtime no longer assumes first-run setup must hydrate every
 service. Project open favors a cheap first pass; secondary hydration
-(full lane status, provider modes, semantic indexing) happens after
-the app is interactive.
+(full lane status and provider modes) happens after the app is
+interactive.
 
 ## Where state lives
 
@@ -87,8 +87,6 @@ Renderer — onboarding:
   "re-run setup" flow. ~610 lines.
 - `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
   — dev tool detection (git, gh).
-- `apps/desktop/src/renderer/components/onboarding/EmbeddingsSection.tsx`
-  — local embedding model setup.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
   tours on route change, renders `DidYouKnow`, and pops the
@@ -160,8 +158,8 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  Workspace, AI, Mobile Push, Integrations, Memory, and Lane Templates.
-  Onboarding / Help / Tours route deep links land in
+  Workspace, AI, Mobile Push, Integrations, Lane Templates,
+  and Usage. Onboarding / Help / Tours route deep links land in
   General (`TAB_ALIASES`); tutorial replay and tour entry points live
   under the Help menu in the top bar, not as a Settings tab. The
   legacy `OnboardingSection` was removed — its surface lives in the
@@ -194,8 +192,6 @@ Renderer — settings:
   — GitHub, Linear, and computer-use backend readiness. The old
   dedicated `ComputerUseSection.tsx` was removed; its content folded
   in here.
-- `apps/desktop/src/renderer/components/settings/MemoryHealthTab.tsx`
-  — memory system overview and browser.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
@@ -371,7 +367,7 @@ wizard:
 1. **Identity** — name, provider/model preference, persona. System
    prompt preview is generated live, debounced.
 2. **Project context** — seed from repo-detected defaults or existing
-   CTO memory; user can edit summary, conventions, focus areas.
+   CTO core continuity; user can edit summary, conventions, focus areas.
 3. **Integrations** — Linear is optional. Primary action finishes
    onboarding with or without Linear. Fastest path is a personal API
    key; OAuth is available but not the default recommendation.
@@ -389,7 +385,6 @@ changing rather than which service backs it:
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics, and AI feature flags. The same status surface is exposed through ADE actions for `ade code` model setup. |
 | Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
-| Memory | `MemoryHealthTab.tsx` | Memory health, browser, embedding health |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 
 > Live provider usage and automation guardrails moved out of Settings. They are now in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`).
@@ -410,7 +405,6 @@ the consolidation that collapsed many top-level tabs into sub-sections.
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| Memory system | `AdeDb` | see memory feature |
 | GitHub/Linear credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
 
 ## AI mode and provider behavior
@@ -435,8 +429,7 @@ Onboarding and settings follow a simple rule:
 - keep setup responsive
 - show the fastest path first
 - defer advanced or heavy configuration to the feature surface that
-  owns it (e.g. memory browser is in the Memory tab, not sprayed
-  across multiple places)
+  owns it
 
 ## Gotchas
 

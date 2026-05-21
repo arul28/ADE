@@ -157,8 +157,8 @@ describe("chatTranscriptRows", () => {
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "tool_call",
-          tool: "memory_search",
-          args: { query: "stash", title: "memory_search", kind: "other" },
+          tool: "git_status",
+          args: { porcelain: true, title: "git_status", kind: "other" },
           itemId: "tool-1",
           turnId: "turn-1",
         },
@@ -182,8 +182,8 @@ describe("chatTranscriptRows", () => {
     if (rows[0]!.event.type !== "work_log_entry") {
       throw new Error("Expected a work log entry");
     }
-    expect(rows[0]!.event.entry.toolName).toBe("memory_search");
-    expect(rows[0]!.event.entry.label).toBe("memory_search");
+    expect(rows[0]!.event.entry.toolName).toBe("git_status");
+    expect(rows[0]!.event.entry.label).toBe("git_status");
     expect(rows[0]!.event.entry.status).toBe("completed");
   });
 

@@ -19,6 +19,5 @@ await rebuild({
   buildPath: appDir,
   electronVersion,
   force: true,
-  onlyModules: ["node-pty", "onnxruntime-node"],
+  onlyModules: ["node-pty"],
 });
-

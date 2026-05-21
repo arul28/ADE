@@ -540,14 +540,6 @@ describe("createUniversalToolSet", () => {
     expect(tools.askUser).toBeDefined();
   });
 
-  it("does not include memory tools when memoryService is not provided", () => {
-    const cwd = makeTmpDir("ade-tools-nomem-");
-    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
-
-    expect(tools.memorySearch).toBeUndefined();
-    expect(tools.memoryAdd).toBeUndefined();
-  });
-
   it("finds routing files with repo-aware filesystem heuristics", async () => {
     const cwd = createFrontendFixtureRepo();
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
@@ -703,23 +695,6 @@ describe("createUniversalToolSet", () => {
       { id: "todo-1", content: "Inspect the nav bar", status: "completed" },
       { id: "todo-2", content: "Add the blank test page", status: "in_progress" },
     ]);
-  });
-
-  it("includes memoryUpdateCore tool when onMemoryUpdateCore is provided", () => {
-    const cwd = makeTmpDir("ade-tools-memcore-");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      onMemoryUpdateCore: () => ({ version: 1, updatedAt: new Date().toISOString() }),
-    });
-
-    expect(tools.memoryUpdateCore).toBeDefined();
-  });
-
-  it("does not include memoryUpdateCore tool when onMemoryUpdateCore is not provided", () => {
-    const cwd = makeTmpDir("ade-tools-nomemcore-");
-    const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
-
-    expect(tools.memoryUpdateCore).toBeUndefined();
   });
 
   // ── Sandbox enforcement ─────────────────────────────────────────
@@ -982,153 +957,6 @@ describe("createUniversalToolSet", () => {
     expect(result.message).toContain("outside allowed roots");
     expect(fs.readFileSync(outsideFile, "utf-8")).toBe("outside\n");
   });
-  // ── Memory guard ────────────────────────────────────────────────
-
-  it("blocks mutating tools on required turns until memory orientation is satisfied", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-guard-");
-    const targetPath = path.join(cwd, "blocked.txt");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.writeFile as any).execute({
-      file_path: targetPath,
-      content: "blocked",
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.message).toContain("Search memory before mutating files");
-    expect(fs.existsSync(targetPath)).toBe(false);
-  });
-
-  it("blocks editFile on required turns until memory orientation is satisfied", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-guard-edit-");
-    const filePath = path.join(cwd, "edit-target.txt");
-    fs.writeFileSync(filePath, "original\n", "utf-8");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.editFile as any).execute({
-      file_path: filePath,
-      old_string: "original",
-      new_string: "modified",
-    });
-
-    expect(result.success).toBe(false);
-    expect(result.message).toContain("Search memory before mutating files");
-    expect(fs.readFileSync(filePath, "utf-8")).toBe("original\n");
-  });
-
-  it("blocks mutating bash commands on required turns", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-guard-bash-");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.bash as any).execute({
-      command: "rm -rf ./some-dir",
-      timeout: 5_000,
-    });
-
-    expect(result.exitCode).toBe(126);
-    expect(result.stderr).toContain("EXECUTION DENIED");
-  });
-
-  it("blocks mutating PowerShell commands on required turns", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-guard-powershell-");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.bash as any).execute({
-      command: 'powershell.exe -Command "Set-Content -Path .\\blocked.txt -Value hi"',
-      timeout: 5_000,
-    });
-
-    expect(result.exitCode).toBe(126);
-    expect(result.stderr).toContain("EXECUTION DENIED");
-  });
-
-  it("does not block read-only bash commands on required turns", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-readonly-");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.bash as any).execute({
-      command: "pwd",
-      timeout: 5_000,
-    });
-
-    expect(result.stderr).not.toContain("EXECUTION DENIED");
-  });
-
-  it("allows mutating tools once memory orientation is satisfied", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-satisfied-");
-    const targetPath = path.join(cwd, "allowed.txt");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "required",
-        orientationSatisfied: true,
-        explicitSearchPerformed: true,
-      },
-    });
-
-    const result = await (tools.writeFile as any).execute({
-      file_path: targetPath,
-      content: "allowed write",
-    });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("does not block when classification is casual", async () => {
-    const cwd = makeTmpDir("ade-tools-memory-casual-");
-    const targetPath = path.join(cwd, "casual.txt");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      turnMemoryPolicyState: {
-        classification: "none",
-        orientationSatisfied: false,
-        explicitSearchPerformed: false,
-      },
-    });
-
-    const result = await (tools.writeFile as any).execute({
-      file_path: targetPath,
-      content: "casual write",
-    });
-
-    expect(result.success).toBe(true);
-  });
-
   // ── Permission modes ────────────────────────────────────────────
 
   it("does not expose write or bash tools in plan mode", async () => {
@@ -1340,21 +1168,6 @@ describe("createUniversalToolSet", () => {
     expect(result.message).toContain("Please add more tests first");
   });
 
-  it("keeps memory search but hides memory mutations in plan mode", () => {
-    const cwd = makeTmpDir("ade-tools-plan-memory-");
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "plan",
-      memoryService: {} as any,
-      projectId: "project-1",
-      onMemoryUpdateCore: () => ({ version: 1, updatedAt: new Date().toISOString() }),
-    });
-
-    expect(tools.memorySearch).toBeDefined();
-    expect(tools.memoryAdd).toBeUndefined();
-    expect(tools.memoryPin).toBeUndefined();
-    expect(tools.memoryUpdateCore).toBeUndefined();
-  });
-
   it("fails closed when the plan approval bridge throws", async () => {
     const cwd = makeTmpDir("ade-tools-exitplan-error-");
     const tools = createUniversalToolSet(cwd, {
@@ -1368,49 +1181,6 @@ describe("createUniversalToolSet", () => {
 
     expect(result.approved).toBe(false);
     expect(result.message).toContain("bridge disconnected");
-  });
-
-  // ── memoryUpdateCore tool ───────────────────────────────────────
-
-  it("invokes onMemoryUpdateCore with patch and returns result", async () => {
-    const cwd = makeTmpDir("ade-tools-memcore-exec-");
-    const onMemoryUpdateCore = vi.fn().mockReturnValue({
-      version: 2,
-      updatedAt: "2026-03-26T00:00:00.000Z",
-    });
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      onMemoryUpdateCore,
-    });
-
-    const result = await (tools.memoryUpdateCore as any).execute({
-      projectSummary: "An ADE desktop application.",
-      activeFocus: ["Release 9 stabilization"],
-    });
-
-    expect(onMemoryUpdateCore).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectSummary: "An ADE desktop application.",
-        activeFocus: ["Release 9 stabilization"],
-      }),
-    );
-    expect(result.updated).toBe(true);
-    expect(result.version).toBe(2);
-  });
-
-  it("returns error from memoryUpdateCore when no fields are provided", async () => {
-    const cwd = makeTmpDir("ade-tools-memcore-empty-");
-    const onMemoryUpdateCore = vi.fn();
-    const tools = createUniversalToolSet(cwd, {
-      permissionMode: "full-auto",
-      onMemoryUpdateCore,
-    });
-
-    const result = await (tools.memoryUpdateCore as any).execute({});
-
-    expect(result.updated).toBe(false);
-    expect(result.error).toContain("At least one core-memory field");
-    expect(onMemoryUpdateCore).not.toHaveBeenCalled();
   });
 
   // ── bash tool ───────────────────────────────────────────────────

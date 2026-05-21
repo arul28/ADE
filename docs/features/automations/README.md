@@ -24,7 +24,7 @@ These services are loaded by the runtime daemon's project scope (and by the desk
 
 ### ADE Actions registry
 
-- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `memory`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
+- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
 
 ### Renderer
 
@@ -57,11 +57,10 @@ Each `AutomationRule` carries:
   - `{ kind: "mission", targetLaneId?, mission? }` — launches the full mission runtime.
   - `{ kind: "agent-session", targetLaneId?, session? }` — launches a scoped AI chat thread, recorded as an automation-only chat. `session` carries optional `title`, `reasoningEffort`, and `codexFastMode` (boolean); `codexFastMode` is forwarded to the chat service only when the resolved provider is Codex and the model supports fast mode, so it is safe to set on a rule that may later switch models.
   - `{ kind: "built-in", targetLaneId?, builtIn: { actions: [...] } }` — runs ADE-native deterministic actions (`AutomationAction[]`).
-- `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs and memory).
+- `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs).
 - `reviewProfile` — `quick` | `incremental` | `full` | `security` | `release-risk` | `cross-repo-contract`. Drives confidence base and output expectations.
-- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `memory`, `mission`).
-- `contextSources` — e.g. project memory, procedures, recent PRs.
-- `memory.mode` — how memory scopes apply. `"automation-plus-project"` is the default: rule-scoped memory plus shared project memory.
+- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `mission`).
+- `contextSources` — e.g. recent PRs or configured project context sources.
 - `guardrails` — `confidenceThreshold`, `maxDurationMin`, `requireHuman`, path/lane allowlists (see `guardrails.md`).
 - `outputs.disposition` — `comment-only` | `open-task` | `open-lane` | `prepare-patch` | `open-pr-draft`.
 - `verification` — `verifyBeforePublish` + `mode` (e.g. `intervention` for human approval).
@@ -89,8 +88,6 @@ Best for lightweight autonomous text-work: reviews, audits, short summaries, sta
 - Appears in Automations > History as a thread.
 - Minimal orchestration overhead — no planner, no run-graph, no worker pool.
 
-Agent sessions carry a memory mode of `automation-plus-project` by default so the rule has its own rule-scoped memory while still reading from project memory.
-
 ### mission
 
 Best for code-affecting or multi-step tasks.
@@ -110,7 +107,7 @@ Best for deterministic ADE operations.
 - No separate mission thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
 
-The `ade-action` action type dispatches directly into a main-process domain service through the ADE Actions registry (`apps/desktop/src/main/services/adeActions/registry.ts`). `RunAdeActionConfig` points at a `domain` + `action` on the allowlist (e.g. `pr.addComment`, `linear_sync.runSyncNow`, `memory.searchMemories`, `issue.close`), with `args` that may embed `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time, or an explicit `resolvers` map for the same. This gives built-in rules typed access to ADE services without writing a shell command or a bespoke tool.
+The `ade-action` action type dispatches directly into a main-process domain service through the ADE Actions registry (`apps/desktop/src/main/services/adeActions/registry.ts`). `RunAdeActionConfig` points at a `domain` + `action` on the allowlist (e.g. `pr.addComment`, `linear_sync.runSyncNow`, `issue.close`), with `args` that may embed `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time, or an explicit `resolvers` map for the same. This gives built-in rules typed access to ADE services without writing a shell command or a bespoke tool.
 
 ## Cron scheduling
 
@@ -164,10 +161,8 @@ Automations route outputs based on `outputs.disposition`:
 
 `createArtifact: true` produces a `MissionArtifact` even for non-mission runs so the evidence is indexable. `notificationChannel` lets a rule override the default channel.
 
-## Memory and budget policy
+## Budget policy
 
-- `memory.mode` controls scope: `automation-plus-project` (default), `automation-only`, `project-only`.
-- `memory.ruleScopeKey` defaults to the rule id.
 - Budget caps come from the header Usage popup → Automation guardrails (shared with Missions). Rule-level caps via `guardrails.maxDurationMin` prevent runaway runs.
 - Usage telemetry respects `billingCode` so operators can slice spend per rule.
 

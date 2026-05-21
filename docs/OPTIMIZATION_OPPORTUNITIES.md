@@ -93,7 +93,7 @@ Ground rules used to compile this list:
 - **Estimated gain**: 10–30 ms per call.
 
 ### 12. Audit event-listener cleanup
-- **Where**: `apps/desktop/src/renderer/components/ui/SmartTooltip.tsx:78`, `components/settings/memory/MemoryHealthTab.tsx:367`, others.
+- **Where**: `apps/desktop/src/renderer/components/ui/SmartTooltip.tsx:78`, renderer panels with `.on()` subscriptions, others.
 - **Issue**: Empty-deps cleanup effects may skip listener removal on unmount.
 - **Fix**: Explicit remove for every `.on()`; track via `Set` if needed.
 - **Risk**: Low.
@@ -131,14 +131,7 @@ Ground rules used to compile this list:
 - **Risk**: Low.
 - **Estimated gain**: 50–150 ms bundle parse.
 
-### 17. Bound unbounded `Map` caches
-- **Where**: `main/services/memory/memoryService.ts`, `embeddingService.ts` (26 `new Map()` instances).
-- **Issue**: No eviction; possible unbounded growth.
-- **Fix**: LRU or TTL on caches > 1000 entries.
-- **Risk**: Medium (don't over-invalidate).
-- **Estimated gain**: Prevents 100–500 MB bloat over 24 h.
-
-### 18. Coalesce duplicate IPC invokes
+### 17. Coalesce duplicate IPC invokes
 - **Where**: `ProcessService.ts:~712` (`Promise.all(ordered.map(id => startByDefinition(...)))`).
 - **Issue**: Parallel IPC without deduplication of identical calls.
 - **Fix**: Request-coalescing dispatcher.
@@ -165,7 +158,7 @@ Ground rules used to compile this list:
 
 - Startup: 1–3 s faster project-open.
 - Interactions: 200–800 ms faster on heavy pages (missions, PRs, graph).
-- Memory: 50–200 MB smaller footprint over long sessions.
+- Process footprint: 50–200 MB smaller over long sessions.
 
 ## Highest ROI (pick these first)
 

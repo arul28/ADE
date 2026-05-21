@@ -152,6 +152,7 @@ const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const WORK_CLI_STARTUP_DELAY_MS = 180;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const chatToolbarActionBase =
@@ -1742,6 +1743,7 @@ export function AgentChatPane({
     profile: LaunchProfile;
     title?: string;
     startupCommand?: string;
+    startupDelayMs?: number;
     command?: string;
     args?: string[];
     env?: Record<string, string>;
@@ -5540,8 +5542,7 @@ export function AgentChatPane({
           profile: provider,
           title: workCliTitleFromPrompt(text || finalDisplayText || finalText, LAUNCH_PROFILE_TITLE[provider]),
           startupCommand: launch.startupCommand,
-          ...(launch.command !== undefined ? { command: launch.command } : {}),
-          args: launch.args,
+          startupDelayMs: WORK_CLI_STARTUP_DELAY_MS,
           ...(launch.env ? { env: launch.env } : {}),
           tracked: true,
         });

@@ -88,7 +88,6 @@ const MIRROR_SYNC_EXCLUDES = [
   "/.ade/local.yaml",
   "/.ade/local.secret.yaml",
   "/.ade/ade.db*",
-  "/.ade/embeddings.db*",
   "/.ade/ade.sock",
   "/.ade/secrets/***",
   "/.ade/cache/***",
@@ -97,13 +96,10 @@ const MIRROR_SYNC_EXCLUDES = [
   "/.ade/worktrees/***",
   "/.ade/agents/***",
   "/.ade/cto/CURRENT.md",
-  "/.ade/cto/MEMORY.md",
-  "/.ade/cto/core-memory.json",
   "/.ade/cto/daily/***",
   "/.ade/cto/sessions.jsonl",
   "/.ade/cto/subordinate-activity.jsonl",
   "/.ade/context/***",
-  "/.ade/memory/***",
   "/.ade/history/***",
   "/.ade/reflections/***",
   "/.git/***",
@@ -337,7 +333,6 @@ function isIgnoredMirrorSyncPath(value: string | Buffer | null | undefined): boo
     ".ade/agents",
     ".ade/cto/daily",
     ".ade/context",
-    ".ade/memory",
     ".ade/history",
     ".ade/reflections",
     ".git",
@@ -348,11 +343,7 @@ function isIgnoredMirrorSyncPath(value: string | Buffer | null | undefined): boo
     || relative === ".ade/ade.sock"
     || relative === ".ade/ade.db"
     || relative.startsWith(".ade/ade.db")
-    || relative === ".ade/embeddings.db"
-    || relative.startsWith(".ade/embeddings.db")
     || relative === ".ade/cto/CURRENT.md"
-    || relative === ".ade/cto/MEMORY.md"
-    || relative === ".ade/cto/core-memory.json"
     || relative === ".ade/cto/sessions.jsonl"
     || relative === ".ade/cto/subordinate-activity.jsonl";
 }

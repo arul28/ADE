@@ -4,7 +4,6 @@ allowBuilds:
   electron-winstaller: true
   esbuild: true
   node-pty: true
-  onnxruntime-node: true
   protobufjs: true
   sharp: true
   sqlite3: true

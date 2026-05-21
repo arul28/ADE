@@ -21,17 +21,6 @@ function createTestDeps(args: {
   }) => Promise<CoordinatorWorkerDeliveryStatus>;
   projectRoot?: string;
   workspaceRoot?: string;
-  memoryService?: {
-    search: (opts: Record<string, unknown>) => Promise<any[]>;
-    searchAcrossScopeOwners?: (opts: Record<string, unknown>) => Promise<any[]>;
-    writeMemory: (opts: Record<string, unknown>) => {
-      accepted: boolean;
-      reason?: string;
-      deduped?: boolean;
-      mergedIntoId?: string;
-      memory?: { id: string; tier: number };
-    };
-  };
 }) {
   const orchestratorService = {
     getRunGraph: vi.fn(() => args.graph),
@@ -55,7 +44,6 @@ function createTestDeps(args: {
   const tools = createCoordinatorToolSet({
     orchestratorService,
     missionService: {} as any,
-    memoryService: args.memoryService as any,
     projectId: "project-1",
     runId: "run-1",
     missionId: "mission-1",
@@ -171,87 +159,6 @@ describe("planning question policy", () => {
     ], { runId: "run-1" });
 
     expect(resolved).toBe(true);
-  });
-});
-
-describe("coordinator memory tools", () => {
-  it("memory_search queries project memory with mission scope defaults", async () => {
-    const memoryService = {
-      search: vi.fn(async () => ([
-      ])),
-      searchAcrossScopeOwners: vi.fn(async () => ([
-        {
-          id: "memory-1",
-          scope: "project",
-          scopeOwnerId: null,
-          status: "promoted",
-          category: "pattern",
-          content: "Use the lane resolver before creating integration PRs.",
-          importance: "high",
-          confidence: 0.9,
-          pinned: false,
-          sourceRunId: "run-old",
-          createdAt: "2026-03-01T00:00:00.000Z",
-        },
-      ])),
-      writeMemory: vi.fn(),
-    };
-    const { tools } = createTestDeps({
-      graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
-      memoryService,
-    });
-
-    const result = await (tools.memory_search as any).execute({
-      query: "integration PR lane",
-      scope: "mission",
-    });
-
-    expect(memoryService.searchAcrossScopeOwners).toHaveBeenCalledWith(expect.objectContaining({
-      projectId: "project-1",
-      query: "integration PR lane",
-      scope: "mission",
-      scopeOwnerIds: ["mission-1", "run-1", null],
-      limit: 5,
-    }));
-    expect(result.ok).toBe(true);
-    expect(result.count).toBe(1);
-    expect(result.memories[0]?.id).toBe("memory-1");
-  });
-
-  it("memory_add writes durable memory and shares it with the active run", async () => {
-    const memoryService = {
-      search: vi.fn(),
-      writeMemory: vi.fn(() => ({
-        accepted: true,
-        deduped: false,
-        memory: { id: "memory-2", tier: 2 },
-      })),
-    };
-    const { tools } = createTestDeps({
-      graph: { run: { id: "run-1", metadata: {} }, steps: [], attempts: [] },
-      memoryService,
-    });
-
-    const result = await (tools.memory_add as any).execute({
-      content: "The conflict resolver expects a lane id fallback from mission metadata.",
-      category: "gotcha",
-      scope: "project",
-      importance: "high",
-      pin: false,
-      writeMode: "default",
-    });
-
-    expect(memoryService.writeMemory).toHaveBeenCalledWith(expect.objectContaining({
-      projectId: "project-1",
-      scope: "project",
-      category: "gotcha",
-      sourceRunId: "run-1",
-      sourceType: "system",
-      sourceId: "coordinator:run-1",
-    }));
-    expect(result.ok).toBe(true);
-    expect(result.saved).toBe(true);
-    expect(result.id).toBe("memory-2");
   });
 });
 

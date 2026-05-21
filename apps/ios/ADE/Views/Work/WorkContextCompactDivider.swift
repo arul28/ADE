@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Inline divider that marks a point in the transcript where the host
 /// compacted context (auto or manual). Renders as a horizontal hairline
-/// with a centered chip so users know memory was trimmed without losing
+/// with a centered chip so users know context was trimmed without losing
 /// their scroll position to a full card.
 ///
 /// Port of the desktop `context_compact` divider

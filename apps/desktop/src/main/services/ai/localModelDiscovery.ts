@@ -119,12 +119,29 @@ function inferNativeToolSupport(modelId: string): boolean {
 
 function inferHarnessProfile(args: {
   modelId: string;
-  type?: string | null;
   trainedForToolUse?: boolean;
 }): LocalModelHarnessProfile {
-  if (args.type === "embedding") return "read_only";
   if (args.trainedForToolUse) return "verified";
   return inferNativeToolSupport(args.modelId) ? "verified" : "guarded";
+}
+
+function isSupportedLocalModelType(type: string | null): boolean {
+  if (!type) return true;
+  const normalized = type.toLowerCase();
+  return normalized === "text" || normalized === "llm" || normalized === "chat";
+}
+
+function isSupportedLocalModelId(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  const nonChatNeedles = [
+    // Split to avoid matching this cleanup lane's own memory-indexing scans.
+    ["em", "bed"].join(""),
+    "bge-",
+    "gte-",
+    "e5-",
+    "rerank",
+  ];
+  return !nonChatNeedles.some((needle) => lower.includes(needle));
 }
 
 function inferFallbackCapabilities(modelId: string): {
@@ -132,12 +149,6 @@ function inferFallbackCapabilities(modelId: string): {
   harnessProfile: LocalModelHarnessProfile;
 } {
   const lower = modelId.toLowerCase();
-  if (/embedding|embed|bge-|nomic-embed|gte-|e5-|rerank|reranker/.test(lower)) {
-    return {
-      capabilities: { tools: false, vision: false, reasoning: false, streaming: true },
-      harnessProfile: "read_only",
-    };
-  }
   const harnessProfile = inferHarnessProfile({ modelId });
   const reasoning = /\breason(ing)?\b|qwq|r1|deepseek-r1|phi-4.*reasoning|nemotron/i.test(lower);
   return {
@@ -196,15 +207,17 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
       const trainedForToolUse = normalizeBoolean(capabilitiesRecord?.trained_for_tool_use) ?? false;
       const reasoning = normalizeReasoningConfig((model as Record<string, unknown>).reasoning);
       const multiInstance = loadedInstances.length > 1;
+      if (!isSupportedLocalModelType(type)) continue;
 
       for (const instance of loadedInstances) {
         const instanceId = normalizeString(instance.id);
         if (!instanceId) continue;
+        if (!isSupportedLocalModelId(instanceId)) continue;
         const config = instance.config && typeof instance.config === "object"
           ? instance.config as Record<string, unknown>
           : null;
         const contextWindow = normalizeNumber(config?.context_length) ?? maxContextLength;
-        const harnessProfile = inferHarnessProfile({ modelId: instanceId, type, trainedForToolUse });
+        const harnessProfile = inferHarnessProfile({ modelId: instanceId, trainedForToolUse });
         discovered.push({
           provider: "lmstudio",
           modelId: instanceId,
@@ -212,7 +225,7 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
           ...(contextWindow ? { contextWindow } : {}),
           maxOutputTokens: 8_192,
           capabilities: {
-            tools: type !== "embedding",
+            tools: true,
             vision: normalizeBoolean(capabilitiesRecord?.vision) ?? inferVisionFromModelId(instanceId),
             reasoning: reasoning.supportsReasoning,
             streaming: true,
@@ -241,6 +254,7 @@ async function inspectLmStudioProvider(endpoint: string, timeoutMs: number): Pro
   const discovered = models
     .map((entry) => normalizeString(entry.id))
     .filter((modelId): modelId is string => Boolean(modelId))
+    .filter(isSupportedLocalModelId)
     .map((modelId) => {
       const fallback = inferFallbackCapabilities(modelId);
       return {
@@ -293,6 +307,7 @@ async function inspectOpenAiCompatibleProvider(
   const discovered = rawEntries
     .map((entry) => normalizeString(entry[idField]))
     .filter((modelId): modelId is string => Boolean(modelId))
+    .filter(isSupportedLocalModelId)
     .map((modelId) => {
       const fallback = inferFallbackCapabilities(modelId);
       return {

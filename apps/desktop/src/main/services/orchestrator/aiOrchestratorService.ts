@@ -118,14 +118,11 @@ import type { createPrService } from "../prs/prService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import type { HumanWorkDigestService } from "../memory/humanWorkDigestService";
-import type { MissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
 import type { MissionBudgetService } from "./missionBudgetService";
 import {
   buildComputerUseOwnerSnapshot,
   getComputerUseArtifactKinds,
 } from "../computerUse/controlPlane";
-import { createMemoryService } from "../memory/memoryService";
 import {
   CoordinatorAgent,
   type CoordinatorAvailableProvider,
@@ -308,7 +305,6 @@ function buildInterventionResolverPrompt(args: {
 
 type MissionLaunchFailureStage =
   | "run_created"
-  | "memory_init"
   | "lane_create"
   | "coordinator_start"
   | "run_activate";
@@ -819,8 +815,6 @@ export function createAiOrchestratorService(args: {
   conflictService?: ReturnType<typeof createConflictService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   missionBudgetService?: MissionBudgetService | null;
-  humanWorkDigestService?: HumanWorkDigestService | null;
-  missionMemoryLifecycleService?: MissionMemoryLifecycleService | null;
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   projectRoot?: string;
   onThreadEvent?: (event: OrchestratorThreadEvent) => void;
@@ -838,8 +832,6 @@ export function createAiOrchestratorService(args: {
     aiIntegrationService,
     prService,
     missionBudgetService,
-    humanWorkDigestService,
-    missionMemoryLifecycleService,
     computerUseArtifactBrokerService,
     projectRoot,
     onThreadEvent,
@@ -847,7 +839,6 @@ export function createAiOrchestratorService(args: {
     hookCommandRunner = runOrchestratorHookCommand
   } = args;
   let agentChatService = initialAgentChatService ?? null;
-  const plannerMemoryService = createMemoryService(db);
   const syncLocks = new Set<string>();
   const syncInFlight = new Map<string, Promise<void>>();
   const workerStates = new Map<string, OrchestratorWorkerState>();
@@ -2212,7 +2203,6 @@ export function createAiOrchestratorService(args: {
         aiIntegrationService: aiIntegrationService ?? null,
         agentChatService: agentChatService ?? null,
         coordinatorReasoningEffort: thinkingLevelToReasoningEffort(modelConfig.thinkingLevel),
-        memoryService: plannerMemoryService,
         projectConfigService: projectConfigService ?? null,
         getMissionBudgetStatus: missionBudgetService
           ? async () => {
@@ -5253,45 +5243,12 @@ Check all worker statuses and continue managing the mission from here. Read work
       appendChatMessage,
     });
 
-  const resolveMissionProjectId = (missionId: string): string => {
-    const row = db.get<{ project_id: string | null }>(
-      `select project_id from missions where id = ? limit 1`,
-      [missionId]
-    );
-    return row?.project_id ? String(row.project_id).trim() : "";
-  };
-
-  // persistDiscoveredDocPathsToMemory removed — doc paths are available via
-  // the context system and writing them as facts created near-duplicate entries
-  // on every mission run.
-
-  const buildProjectMemoryHighlights = (missionId: string): string[] => {
-    const missionProjectId = resolveMissionProjectId(missionId);
-    if (!missionProjectId.length) return [];
-    try {
-      return plannerMemoryService
-        .getMemoryBudget(missionProjectId, "standard", { includeCandidates: true })
-        .map((memory) => {
-          const category = String(memory.category ?? "fact").trim() || "fact";
-          const content = String(memory.content ?? "").replace(/\s+/g, " ").trim();
-          if (!content.length) return "";
-          return `[${category}] ${content.length > 240 ? `${content.slice(0, 237).trimEnd()}...` : content}`;
-        })
-        .filter(Boolean)
-        .slice(0, 12);
-    } catch {
-      return [];
-    }
-  };
-
   const MISSION_LAUNCH_FAILURE_REASON_CODE = "mission_launch_failed";
 
   const describeMissionLaunchStage = (stage: MissionLaunchFailureStage): string => {
     switch (stage) {
       case "run_created":
         return "run initialization";
-      case "memory_init":
-        return "mission memory initialization";
       case "lane_create":
         return "mission lane creation";
       case "coordinator_start":
@@ -7381,7 +7338,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }
         }
 
-        // Clean up mission-keyed in-memory maps when mission reaches a terminal state.
+        // Clean up mission-keyed runtime maps when mission reaches a terminal state.
         const missionTerminal =
           nextMissionStatus === "completed" ||
           nextMissionStatus === "failed" ||
@@ -7512,11 +7469,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       availableProviders,
       phases,
     } = gatherCoordinatorContext(missionId, args);
-    const missionProjectId = resolveMissionProjectId(missionId);
-    const knowledgeStatus = await humanWorkDigestService?.getKnowledgeSyncStatus?.().catch(() => null) ?? null;
-    if (knowledgeStatus?.diverged) {
-      await humanWorkDigestService?.syncKnowledge?.();
-    }
     const sortedPhases = [...phases].sort((a, b) => a.position - b.position);
     const effectivePhases = sortedPhases;
     const initialPhase = effectivePhases[0] ?? null;
@@ -7611,16 +7563,6 @@ Check all worker statuses and continue managing the mission from here. Read work
         state: "booting",
         message: "I’m online and getting the run ready.",
       });
-
-      startupStage = "memory_init";
-      if (missionMemoryLifecycleService && missionProjectId.length > 0) {
-        missionMemoryLifecycleService.startMission({
-          projectId: missionProjectId,
-          missionId,
-          runId: startedRunId,
-          initialDecision: initialMission.prompt ?? initialMission.title,
-        });
-      }
 
       startupStage = "lane_create";
       const missionLaneId = await ensureMissionLaneForRun({
@@ -7820,9 +7762,8 @@ Check all worker statuses and continue managing the mission from here. Read work
       return hints;
     })();
 
-    // Discover project docs (paths used for context only, not persisted to memory)
     const projectDocsContext = discoverProjectDocs();
-    const projectMemoryHighlights = [...plannerSummaryHints, ...buildProjectMemoryHighlights(missionId)].slice(0, 12);
+    const projectContextHints = plannerSummaryHints.slice(0, 12);
 
     // Build a shallow file tree for coordinator context
     let fileTree: string | undefined;
@@ -7846,7 +7787,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       projectRoot ? {
         projectRoot,
         projectDocPaths: projectDocsContext.found ? projectDocsContext.paths : undefined,
-        projectKnowledge: projectMemoryHighlights.length > 0 ? projectMemoryHighlights : undefined,
+        projectHints: projectContextHints.length > 0 ? projectContextHints : undefined,
         fileTree,
       } : undefined;
 
@@ -8513,7 +8454,6 @@ Check all worker statuses and continue managing the mission from here. Read work
       return true;
     };
 
-    // Store in memory for active use by AI decision points
     const existing = activeSteeringDirectives.get(missionId) ?? loadSteeringDirectivesFromMetadata(missionId);
     existing.push(directive);
     activeSteeringDirectives.set(missionId, existing.slice(-MAX_PERSISTED_STEERING_DIRECTIVES));

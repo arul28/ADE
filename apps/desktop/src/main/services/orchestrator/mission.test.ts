@@ -83,7 +83,6 @@ async function createLifecycleFixture(initialStatus: string = "in_progress") {
     } as any,
     projectConfigService: null as any,
     aiIntegrationService: null as any,
-    memoryService: null as any,
   });
 
   const missionService = createMissionService({ db, projectId });

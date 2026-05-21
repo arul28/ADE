@@ -34,7 +34,6 @@ docs/
     ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # dispatch, sync, workflow presets
-    ├── memory/                            # storage, compaction, embeddings
     ├── missions/                          # orchestration, validation gates, workers
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard

@@ -457,8 +457,6 @@ import type {
   AiConfig,
   AiSettingsStatus,
   OpenCodeRuntimeSnapshot,
-  MemoryHealthScope,
-  MemoryHealthStats,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -475,7 +473,6 @@ import type {
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
-  CtoUpdateCoreMemoryArgs,
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
@@ -534,7 +531,6 @@ import type {
   GetActiveAgentsArgs,
   ActiveAgentInfo,
   AgentIdentity,
-  AgentCoreMemory,
   AgentSessionLogEntry,
   AgentConfigRevision,
   AgentBudgetSnapshot,
@@ -551,8 +547,6 @@ import type {
   CtoTriggerAgentWakeupArgs,
   CtoTriggerAgentWakeupResult,
   CtoListAgentRunsArgs,
-  CtoGetAgentCoreMemoryArgs,
-  CtoUpdateAgentCoreMemoryArgs,
   CtoListAgentSessionLogsArgs,
   CtoListAgentTaskSessionsArgs,
   CtoClearAgentTaskSessionArgs,
@@ -686,17 +680,6 @@ import type { createMissionBudgetService } from "../orchestrator/missionBudgetSe
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
-import type { createMemoryService } from "../memory/memoryService";
-import type { createBatchConsolidationService } from "../memory/batchConsolidationService";
-import type { createMemoryLifecycleService } from "../memory/memoryLifecycleService";
-import type { createMemoryBriefingService } from "../memory/memoryBriefingService";
-import type { createMissionMemoryLifecycleService } from "../memory/missionMemoryLifecycleService";
-import type { createEpisodicSummaryService } from "../memory/episodicSummaryService";
-import type { createHumanWorkDigestService } from "../memory/humanWorkDigestService";
-import type { createProceduralLearningService } from "../memory/proceduralLearningService";
-import type { createSkillRegistryService } from "../memory/skillRegistryService";
-import type { createEmbeddingService } from "../memory/embeddingService";
-import type { createEmbeddingWorkerService } from "../memory/embeddingWorkerService";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
 import type { createWorkerRevisionService } from "../cto/workerRevisionService";
@@ -726,7 +709,7 @@ import type { AdeProjectService } from "../projects/adeProjectService";
 import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
-import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot, toMemoryEntryDto } from "../shared/utils";
+import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import {
@@ -801,17 +784,6 @@ export type AppContext = {
   processService: ReturnType<typeof createProcessService>;
   testService: ReturnType<typeof createTestService>;
   sessionDeltaService?: SessionDeltaService | null;
-  memoryService?: ReturnType<typeof createMemoryService> | null;
-  batchConsolidationService?: ReturnType<typeof createBatchConsolidationService> | null;
-  memoryLifecycleService?: ReturnType<typeof createMemoryLifecycleService> | null;
-  memoryBriefingService?: ReturnType<typeof createMemoryBriefingService> | null;
-  missionMemoryLifecycleService?: ReturnType<typeof createMissionMemoryLifecycleService> | null;
-  episodicSummaryService?: ReturnType<typeof createEpisodicSummaryService> | null;
-  humanWorkDigestService?: ReturnType<typeof createHumanWorkDigestService> | null;
-  proceduralLearningService?: ReturnType<typeof createProceduralLearningService> | null;
-  skillRegistryService?: ReturnType<typeof createSkillRegistryService> | null;
-  embeddingService?: ReturnType<typeof createEmbeddingService> | null;
-  embeddingWorkerService?: ReturnType<typeof createEmbeddingWorkerService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   adeProjectService?: AdeProjectService | null;
@@ -868,7 +840,6 @@ const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "memory_consolidation",
   "mission_planning",
   "orchestrator",
   "initial_context"
@@ -1147,259 +1118,6 @@ function compactRunGraphForTransport(graph: OrchestratorRunGraph): OrchestratorR
   };
 }
 
-type MemoryWriteScope = "user" | "project" | "lane" | "mission";
-type MemoryScope = "project" | "agent" | "mission";
-
-type MemoryHealthCountRow = {
-  scope: string | null;
-  tier: number | null;
-  status: string | null;
-  count: number | null;
-};
-
-type MemorySweepLogRow = {
-  sweep_id: string;
-  project_id: string;
-  trigger_reason: string | null;
-  started_at: string;
-  completed_at: string;
-  entries_decayed: number | null;
-  entries_demoted: number | null;
-  entries_promoted: number | null;
-  entries_archived: number | null;
-  entries_orphaned: number | null;
-  duration_ms: number | null;
-};
-
-type MemoryConsolidationLogRow = {
-  consolidation_id: string;
-  project_id: string;
-  trigger_reason: string | null;
-  started_at: string;
-  completed_at: string;
-  clusters_found: number | null;
-  entries_merged: number | null;
-  entries_created: number | null;
-  tokens_used: number | null;
-  duration_ms: number | null;
-};
-
-const MEMORY_HEALTH_SCOPES = ["project", "agent", "mission"] as const;
-const MEMORY_HEALTH_LIMITS: Record<MemoryHealthScope, number> = {
-  project: 2000,
-  agent: 500,
-  mission: 200,
-};
-
-function normalizeMemoryWriteScope(rawScope: string): MemoryWriteScope | undefined {
-  const trimmed = rawScope.trim();
-  if (trimmed === "agent") return "user";
-  if (trimmed === "user" || trimmed === "project" || trimmed === "lane" || trimmed === "mission") return trimmed;
-  return undefined;
-}
-
-function normalizeMemoryScope(rawScope: unknown): MemoryScope | undefined {
-  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
-  if (trimmed === "project") return "project";
-  if (trimmed === "agent" || trimmed === "user") return "agent";
-  if (trimmed === "mission" || trimmed === "lane") return "mission";
-  return undefined;
-}
-function normalizeMemoryHealthScope(rawScope: unknown): MemoryHealthScope | null {
-  const trimmed = typeof rawScope === "string" ? rawScope.trim() : "";
-  if (trimmed === "project") return "project";
-  if (trimmed === "agent" || trimmed === "user") return "agent";
-  if (trimmed === "mission" || trimmed === "lane") return "mission";
-  return null;
-}
-
-type MemoryHealthModelStatus = MemoryHealthStats["embeddings"]["model"];
-
-function createEmptyMemoryHealthStats(): MemoryHealthStats {
-  const model: MemoryHealthModelStatus = {
-    modelId: "Xenova/all-MiniLM-L6-v2",
-    state: "idle",
-    activity: "idle",
-    installState: "missing",
-    cacheDir: null,
-    installPath: null,
-    progress: null,
-    loaded: null,
-    total: null,
-    file: null,
-    error: null,
-  };
-
-  return {
-    scopes: MEMORY_HEALTH_SCOPES.map((scope) => ({
-      scope,
-      current: 0,
-      max: MEMORY_HEALTH_LIMITS[scope],
-      counts: {
-        tier1: 0,
-        tier2: 0,
-        tier3: 0,
-        archived: 0,
-      },
-    })),
-    lastSweep: null,
-    lastConsolidation: null,
-    embeddings: {
-      entriesEmbedded: 0,
-      entriesTotal: 0,
-      queueDepth: 0,
-      processing: false,
-      lastBatchProcessedAt: null,
-      cacheEntries: 0,
-      cacheHits: 0,
-      cacheMisses: 0,
-      cacheHitRate: 0,
-      model,
-    },
-  };
-}
-
-function getMemoryHealthStats(ctx: AppContext) {
-  const stats = createEmptyMemoryHealthStats();
-  const scopes = new Map(stats.scopes.map((entry) => [entry.scope, entry] as const));
-
-  const rows = ctx.db.all<MemoryHealthCountRow>(
-    `
-      SELECT scope, tier, status, COUNT(*) AS count
-      FROM unified_memories
-      WHERE project_id = ?
-      GROUP BY scope, tier, status
-    `,
-    [ctx.projectId],
-  );
-
-  for (const row of rows) {
-    const scope = normalizeMemoryHealthScope(row.scope);
-    if (!scope) continue;
-    const target = scopes.get(scope);
-    if (!target) continue;
-    const count = Number(row.count ?? 0);
-    if (!Number.isFinite(count) || count <= 0) continue;
-
-    if (String(row.status ?? "").trim() === "archived") {
-      target.counts.archived += count;
-      continue;
-    }
-
-    const tier = Number(row.tier ?? 0);
-    if (tier === 1) target.counts.tier1 += count;
-    else if (tier === 2) target.counts.tier2 += count;
-    else target.counts.tier3 += count;
-  }
-
-  for (const scope of stats.scopes) {
-    scope.current = scope.counts.tier1 + scope.counts.tier2 + scope.counts.tier3;
-  }
-
-  const embeddingStatus = ctx.embeddingService?.getStatus();
-  const embeddingWorkerStatus = ctx.embeddingWorkerService?.getStatus();
-  const embeddedCountRow = ctx.db.get<{ count: number | null }>(
-    `
-      SELECT COUNT(*) AS count
-      FROM unified_memories m
-      WHERE m.project_id = ?
-        AND m.status != 'archived'
-        AND EXISTS (
-          SELECT 1
-          FROM unified_memory_embeddings e
-          WHERE e.memory_id = m.id
-        )
-    `,
-    [ctx.projectId],
-  );
-  const entriesEmbedded = Number(embeddedCountRow?.count ?? 0);
-  const entriesTotal = stats.scopes.reduce((total, scope) => total + scope.current, 0);
-  const cacheHits = Number(embeddingStatus?.cacheHits ?? 0);
-  const cacheMisses = Number(embeddingStatus?.cacheMisses ?? 0);
-  const cacheTotal = cacheHits + cacheMisses;
-
-  stats.embeddings = {
-    entriesEmbedded: Number.isFinite(entriesEmbedded) ? entriesEmbedded : 0,
-    entriesTotal,
-    queueDepth: Number(embeddingWorkerStatus?.queueDepth ?? 0),
-    processing: embeddingWorkerStatus?.processing === true,
-    lastBatchProcessedAt: embeddingWorkerStatus?.lastProcessedAt ?? null,
-    cacheEntries: Number(embeddingStatus?.cacheEntries ?? 0),
-    cacheHits,
-    cacheMisses,
-    cacheHitRate: cacheTotal > 0 ? cacheHits / cacheTotal : 0,
-    model: {
-      modelId: embeddingStatus?.modelId ?? "Xenova/all-MiniLM-L6-v2",
-      state: embeddingStatus?.state ?? "idle",
-      activity: embeddingStatus?.activity ?? "idle",
-      installState: embeddingStatus?.installState ?? "missing",
-      cacheDir: embeddingStatus?.cacheDir ?? null,
-      installPath: embeddingStatus?.installPath ?? null,
-      progress: embeddingStatus?.progress ?? null,
-      loaded: embeddingStatus?.loaded ?? null,
-      total: embeddingStatus?.total ?? null,
-      file: embeddingStatus?.file ?? null,
-      error: embeddingStatus?.error ?? null,
-    },
-  };
-
-  const lastSweep = ctx.db.get<MemorySweepLogRow>(
-    `
-      SELECT sweep_id, project_id, trigger_reason, started_at, completed_at,
-             entries_decayed, entries_demoted, entries_promoted, entries_archived,
-             entries_orphaned, duration_ms
-      FROM memory_sweep_log
-      WHERE project_id = ?
-      ORDER BY completed_at DESC
-      LIMIT 1
-    `,
-    [ctx.projectId],
-  );
-  if (lastSweep) {
-    stats.lastSweep = {
-      sweepId: lastSweep.sweep_id,
-      projectId: lastSweep.project_id,
-      reason: lastSweep.trigger_reason === "startup" ? "startup" : "manual",
-      startedAt: lastSweep.started_at,
-      completedAt: lastSweep.completed_at,
-      entriesDecayed: Number(lastSweep.entries_decayed ?? 0),
-      entriesDemoted: Number(lastSweep.entries_demoted ?? 0),
-      entriesPromoted: Number(lastSweep.entries_promoted ?? 0),
-      entriesArchived: Number(lastSweep.entries_archived ?? 0),
-      entriesOrphaned: Number(lastSweep.entries_orphaned ?? 0),
-      durationMs: Number(lastSweep.duration_ms ?? 0),
-    };
-  }
-
-  const lastConsolidation = ctx.db.get<MemoryConsolidationLogRow>(
-    `
-      SELECT consolidation_id, project_id, trigger_reason, started_at, completed_at,
-             clusters_found, entries_merged, entries_created, tokens_used, duration_ms
-      FROM memory_consolidation_log
-      WHERE project_id = ?
-      ORDER BY completed_at DESC
-      LIMIT 1
-    `,
-    [ctx.projectId],
-  );
-  if (lastConsolidation) {
-    stats.lastConsolidation = {
-      consolidationId: lastConsolidation.consolidation_id,
-      projectId: lastConsolidation.project_id,
-      reason: lastConsolidation.trigger_reason === "auto" ? "auto" : "manual",
-      startedAt: lastConsolidation.started_at,
-      completedAt: lastConsolidation.completed_at,
-      clustersFound: Number(lastConsolidation.clusters_found ?? 0),
-      entriesMerged: Number(lastConsolidation.entries_merged ?? 0),
-      entriesCreated: Number(lastConsolidation.entries_created ?? 0),
-      tokensUsed: Number(lastConsolidation.tokens_used ?? 0),
-      durationMs: Number(lastConsolidation.duration_ms ?? 0),
-    };
-  }
-
-  return stats;
-}
-
 /**
  * Strict resolver for identity-pinned sessions (CTO + worker agents). Requires
  * an actual primary lane and never slips a foreign lane through via a
@@ -1569,32 +1287,6 @@ function formatLinearConnectionMessage(
   }
   return trimmed || null;
 }
-
-function summarizeProjectScan(result: OnboardingDetectionResult | null): Partial<{
-  projectSummary: string;
-  criticalConventions: string[];
-  activeFocus: string[];
-  notes: string[];
-}> {
-  if (!result) return {};
-  const projectTypes = result.projectTypes.filter((entry) => entry.trim().length > 0);
-  const signalFiles = result.indicators
-    .slice(0, 4)
-    .map((indicator) => indicator.file.trim())
-    .filter((entry) => entry.length > 0);
-  const workflowPaths = result.suggestedWorkflows
-    .slice(0, 4)
-    .map((workflow) => workflow.path.trim())
-    .filter((entry) => entry.length > 0);
-
-  return {
-    projectSummary: `Detected ${projectTypes.join(", ") || "project"} setup from ${signalFiles.join(", ") || "repository signals"}.`,
-    criticalConventions: projectTypes.map((type) => `${type} conventions`),
-    activeFocus: projectTypes.length > 0 ? [`stabilize ${projectTypes[0]} workflows`] : [],
-    notes: workflowPaths.length > 0 ? workflowPaths.map((workflow) => `Detected workflow: ${workflow}`) : [],
-  };
-}
-
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
@@ -9650,280 +9342,6 @@ export function registerIpc({
     return ctx.projectConfigService.confirmTrust(arg);
   });
 
-  // ── Memory service IPC ──────────────────────────────────────────────
-
-  ipcMain.handle(
-    IPC.memoryAdd,
-    async (
-      _event,
-      arg: {
-        projectId?: string;
-        scope?: "user" | "project" | "lane" | "mission" | "agent";
-        scopeOwnerId?: string;
-        category: "fact" | "preference" | "pattern" | "decision" | "gotcha" | "convention";
-        content: string;
-        importance?: "low" | "medium" | "high";
-        sourceRunId?: string;
-      }
-    ) => {
-      const ctx = getCtx();
-      if (!ctx.memoryService) return null;
-      const pid = arg?.projectId ?? ctx.projectId;
-      const scope = normalizeMemoryWriteScope(typeof arg?.scope === "string" ? arg.scope : "") ?? "project";
-      const content = typeof arg?.content === "string" ? arg.content.trim() : "";
-      if (!content) {
-        throw new Error("memory.add requires non-empty content.");
-      }
-      const category = arg?.category;
-      if (!category) {
-        throw new Error("memory.add requires category.");
-      }
-      const importance = arg?.importance === "low" || arg?.importance === "medium" || arg?.importance === "high"
-        ? arg.importance
-        : "medium";
-      const scopeOwnerIdRaw = typeof arg?.scopeOwnerId === "string" ? arg.scopeOwnerId.trim() : "";
-      const scopeOwnerId =
-        scopeOwnerIdRaw.length > 0
-          ? scopeOwnerIdRaw
-          : scope === "mission" && typeof arg?.sourceRunId === "string" && arg.sourceRunId.trim().length > 0
-            ? arg.sourceRunId.trim()
-            : undefined;
-      return ctx.memoryService.addMemory({
-        projectId: pid,
-        scope,
-        ...(scopeOwnerId ? { scopeOwnerId } : {}),
-        category,
-        content,
-        importance,
-        ...(arg?.sourceRunId ? { sourceRunId: arg.sourceRunId } : {}),
-      });
-    }
-  );
-
-  ipcMain.handle(IPC.memoryPin, async (_event, arg: { id: string }) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return;
-    ctx.memoryService.pinMemory(arg.id);
-  });
-
-  ipcMain.handle(IPC.memoryUpdateCore, async (_event, arg: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) {
-      throw new Error("CTO state service is not available.");
-    }
-    return ctx.ctoStateService.updateCoreMemory(arg.patch ?? {});
-  });
-
-  ipcMain.handle(IPC.memoryGetBudget, async (_event, arg: { projectId?: string; level?: string; scope?: "user" | "project" | "lane" | "mission" | "agent"; scopeOwnerId?: string }) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return [];
-    const pid = arg?.projectId ?? ctx.projectId;
-    const level = (arg?.level === "lite" || arg?.level === "standard" || arg?.level === "deep") ? arg.level : "standard";
-    const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "");
-    const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
-      ? arg.scopeOwnerId.trim()
-      : undefined;
-    return ctx.memoryService.getMemoryBudget(pid, level, {
-      ...(scope ? { scope } : {}),
-      ...(scopeOwnerId ? { scopeOwnerId } : {})
-    });
-  });
-
-  ipcMain.handle(IPC.memoryGetCandidates, async (_event, arg: { projectId?: string; limit?: number }) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return [];
-    const pid = arg?.projectId ?? ctx.projectId;
-    return ctx.memoryService.getCandidateMemories(pid, arg?.limit ?? 20);
-  });
-
-  ipcMain.handle(IPC.memoryPromote, async (_event, arg: { id: string }) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return;
-    ctx.memoryService.promoteMemory(arg.id);
-  });
-
-  ipcMain.handle(IPC.memoryArchive, async (_event, arg: { id: string }) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return;
-    ctx.memoryService.archiveMemory(arg.id);
-  });
-
-  ipcMain.handle(IPC.memoryPromoteMissionEntry, async (_event, arg: { id: string; missionId: string; runId?: string | null }) => {
-    const ctx = getCtx();
-    if (!ctx.missionMemoryLifecycleService) return null;
-    return ctx.missionMemoryLifecycleService.promoteMissionMemoryEntry({
-      memoryId: arg.id,
-      missionId: arg.missionId,
-    });
-  });
-
-  ipcMain.handle(
-    IPC.memoryList,
-    async (
-      _event,
-      arg: {
-        scope?: "project" | "agent" | "mission";
-        tier?: 1 | 2 | 3;
-        status?: "candidate" | "promoted" | "archived" | "all";
-        limit?: number;
-      } = {},
-    ) => {
-      const ctx = getCtx();
-      if (!ctx.memoryService) return [];
-      const scope = normalizeMemoryScope(arg.scope);
-      const status = arg.status === "all"
-        ? (["promoted", "candidate", "archived"] as const)
-        : arg.status === "candidate" || arg.status === "promoted" || arg.status === "archived"
-          ? arg.status
-          : undefined;
-      const tiers = arg.tier === 1 || arg.tier === 2 || arg.tier === 3 ? [arg.tier] : undefined;
-
-      return ctx.memoryService.listMemories({
-        projectId: ctx.projectId,
-        ...(scope ? { scope } : {}),
-        ...(status ? { status } : {}),
-        ...(tiers ? { tiers } : {}),
-        limit: Math.max(1, Math.min(200, Math.floor(arg.limit ?? 100))),
-      }).map((memory) => toMemoryEntryDto(memory));
-    },
-  );
-
-  ipcMain.handle(IPC.memoryListMissionEntries, async (_event, arg: { missionId: string; runId?: string | null; status?: "candidate" | "promoted" | "archived" | "all" }) => {
-    const ctx = getCtx();
-    if (!ctx.missionMemoryLifecycleService) return [];
-    return ctx.missionMemoryLifecycleService.listMissionEntries({
-      projectId: ctx.projectId,
-      missionId: arg.missionId,
-      runId: arg.runId,
-      status: arg.status ?? "all",
-    }).map((memory) => toMemoryEntryDto(memory));
-  });
-
-  ipcMain.handle(IPC.memoryListProcedures, async (_event, arg: { status?: "candidate" | "promoted" | "archived" | "all"; scope?: "project" | "mission" | "agent"; query?: string } = {}) => {
-    const ctx = getCtx();
-    return ctx.proceduralLearningService?.listProcedures(arg) ?? [];
-  });
-
-  ipcMain.handle(IPC.memoryGetProcedureDetail, async (_event, arg: { id: string }) => {
-    const ctx = getCtx();
-    return ctx.proceduralLearningService?.getProcedureDetail(arg.id) ?? null;
-  });
-
-  ipcMain.handle(IPC.memoryExportProcedureSkill, async (_event, arg: { id: string; name?: string | null }) => {
-    const ctx = getCtx();
-    return ctx.skillRegistryService?.exportProcedureSkill(arg) ?? null;
-  });
-
-  ipcMain.handle(IPC.memoryListIndexedSkills, async () => {
-    const ctx = getCtx();
-    return ctx.skillRegistryService?.listIndexedSkills() ?? [];
-  });
-
-  ipcMain.handle(IPC.memoryReindexSkills, async (_event, arg: { paths?: string[] } = {}) => {
-    const ctx = getCtx();
-    return ctx.skillRegistryService?.reindexSkills(arg) ?? [];
-  });
-
-  ipcMain.handle(IPC.memorySyncKnowledge, async () => {
-    const ctx = getCtx();
-    return ctx.humanWorkDigestService?.syncKnowledge() ?? null;
-  });
-
-  ipcMain.handle(IPC.memoryGetKnowledgeSyncStatus, async () => {
-    const ctx = getCtx();
-    return ctx.humanWorkDigestService?.getKnowledgeSyncStatus() ?? {
-      syncing: false,
-      lastSeenHeadSha: null,
-      currentHeadSha: null,
-      diverged: false,
-      lastDigestAt: null,
-      lastDigestMemoryId: null,
-      lastError: null,
-    };
-  });
-
-  ipcMain.handle(
-    IPC.memorySearch,
-    async (
-      _event,
-      arg: {
-        query: string;
-        projectId?: string;
-        scope?: "user" | "project" | "lane" | "mission" | "agent";
-        scopeOwnerId?: string;
-        limit?: number;
-        mode?: "lexical" | "hybrid";
-        status?: "promoted" | "candidate" | "archived" | "all";
-      }
-    ) => {
-    const ctx = getCtx();
-    if (!ctx.memoryService) return [];
-    const pid = arg?.projectId ?? ctx.projectId;
-    const scope = normalizeMemoryScope(typeof arg?.scope === "string" ? arg.scope : "");
-    const scopeOwnerId = typeof arg?.scopeOwnerId === "string" && arg.scopeOwnerId.trim().length > 0
-      ? arg.scopeOwnerId.trim()
-      : undefined;
-    const status = arg?.status === "all"
-      ? (["promoted", "candidate", "archived"] as const)
-      : (arg?.status === "promoted" || arg?.status === "candidate" || arg?.status === "archived")
-        ? arg.status
-        : "promoted";
-    return ctx.memoryService.searchMemories(
-      arg.query,
-      pid,
-      scope,
-      arg?.limit ?? 10,
-      status,
-      scopeOwnerId,
-      arg?.mode === "lexical" ? "lexical" : "hybrid",
-    );
-    }
-  );
-
-  ipcMain.handle(IPC.memoryHealthStats, async () => {
-    const ctx = getCtx();
-    return getMemoryHealthStats(ctx);
-  });
-
-  ipcMain.handle(IPC.memoryDownloadEmbeddingModel, async () => {
-    const ctx = getCtx();
-    if (!ctx.embeddingService?.preload) {
-      throw new Error("Embedding service is not available.");
-    }
-    const embeddingStatus = ctx.embeddingService.getStatus();
-    const localFilesOnly = embeddingStatus.installState === "installed" && embeddingStatus.state !== "unavailable";
-    // When we're about to attempt a remote download and stale/corrupted files
-    // exist on disk, clear them first so transformers.js re-downloads fresh
-    // files instead of reloading the same broken artifacts from its FS cache.
-    if (!localFilesOnly && embeddingStatus.installState !== "missing") {
-      ctx.logger.info("memory.embedding.clearing_cache_for_repair", {
-        installState: embeddingStatus.installState,
-        state: embeddingStatus.state,
-      });
-      await ctx.embeddingService.clearCache();
-    }
-    void ctx.embeddingService.preload({ forceRetry: true, localFilesOnly }).catch(() => {
-      // Health polling will pick up the unavailable state; the click itself should remain responsive.
-    });
-    return getMemoryHealthStats(ctx);
-  });
-
-  ipcMain.handle(IPC.memoryRunSweep, async () => {
-    const ctx = getCtx();
-    if (!ctx.memoryLifecycleService) {
-      throw new Error("Memory lifecycle service is not available.");
-    }
-    return ctx.memoryLifecycleService.runSweep({ reason: "manual" });
-  });
-
-  ipcMain.handle(IPC.memoryRunConsolidation, async () => {
-    const ctx = getCtx();
-    if (!ctx.batchConsolidationService) {
-      throw new Error("Batch consolidation service is not available.");
-    }
-    return ctx.batchConsolidationService.runConsolidation({ reason: "manual" });
-  });
-
   // ── CTO state IPC ─────────────────────────────────────────────────
 
   ipcMain.handle(IPC.ctoGetState, async (_event, arg: CtoGetStateArgs = {}): Promise<CtoSnapshot> => {
@@ -9947,14 +9365,6 @@ export function registerIpc({
       reasoningEffort: arg.reasoningEffort ?? null,
       permissionMode: "full-auto",
     });
-  });
-
-  ipcMain.handle(IPC.ctoUpdateCoreMemory, async (_event, arg: CtoUpdateCoreMemoryArgs): Promise<CtoSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.ctoStateService) {
-      throw new Error("CTO state service is not available.");
-    }
-    return ctx.ctoStateService.updateCoreMemory(arg.patch ?? {});
   });
 
   ipcMain.handle(IPC.ctoListSessionLogs, async (_event, arg: CtoListSessionLogsArgs = {}): Promise<CtoSessionLogEntry[]> => {
@@ -10043,18 +9453,6 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
     return ctx.workerHeartbeatService.listRuns(arg);
-  });
-
-  ipcMain.handle(IPC.ctoGetAgentCoreMemory, async (_event, arg: CtoGetAgentCoreMemoryArgs): Promise<AgentCoreMemory> => {
-    const ctx = getCtx();
-    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
-    return ctx.workerHeartbeatService.getAgentCoreMemory(arg.agentId);
-  });
-
-  ipcMain.handle(IPC.ctoUpdateAgentCoreMemory, async (_event, arg: CtoUpdateAgentCoreMemoryArgs): Promise<AgentCoreMemory> => {
-    const ctx = getCtx();
-    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
-    return ctx.workerHeartbeatService.updateAgentCoreMemory(arg.agentId, arg.patch ?? {});
   });
 
   ipcMain.handle(IPC.ctoListAgentSessionLogs, async (_event, arg: CtoListAgentSessionLogsArgs): Promise<AgentSessionLogEntry[]> => {
@@ -10379,49 +9777,7 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoRunProjectScan, async (): Promise<CtoRunProjectScanResult> => {
     const ctx = getCtx();
     const detection = await ctx.onboardingService.detectDefaults().catch(() => null);
-    const summary = summarizeProjectScan(detection);
-    const coreMemoryPatch = {
-      projectSummary: summary.projectSummary ?? "",
-      criticalConventions: summary.criticalConventions ?? [],
-      activeFocus: summary.activeFocus ?? [],
-      notes: summary.notes ?? [],
-    };
-
-    if (ctx.ctoStateService) {
-      ctx.ctoStateService.updateCoreMemory(coreMemoryPatch);
-    }
-
-    const createdMemoryIds: string[] = [];
-    if (ctx.memoryService) {
-      if (coreMemoryPatch.projectSummary) {
-        createdMemoryIds.push(
-          ctx.memoryService.addMemory({
-            projectId: ctx.projectId,
-            scope: "project",
-            category: "fact",
-            content: coreMemoryPatch.projectSummary,
-            importance: "high",
-          }).id
-        );
-      }
-      for (const convention of coreMemoryPatch.criticalConventions) {
-        createdMemoryIds.push(
-          ctx.memoryService.addMemory({
-            projectId: ctx.projectId,
-            scope: "project",
-            category: "convention",
-            content: convention,
-            importance: "medium",
-          }).id
-        );
-      }
-    }
-
-    return {
-      detection,
-      coreMemoryPatch,
-      createdMemoryIds,
-    };
+    return { detection };
   });
 
   ipcMain.handle(IPC.updateCheckForUpdates, () => {

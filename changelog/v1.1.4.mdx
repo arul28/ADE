@@ -3,16 +3,16 @@ title: "v1.1.4"
 description: "Release notes for ADE v1.1.4 — April 24, 2026"
 ---
 
-v1.1.4 lands the new review engine: a multi-pass pipeline with adjudicated findings, embedding-backed suppression memory, tool-signal evidence, inline diff excerpts, and a Learnings tab tracking quality over time. PR detail picks up convergence rails on both desktop and iOS, the onboarding tour is rewritten, and the terminals surface gets a session-archive overhaul. Chat fixes a long-standing doubled-bubble bug across both Claude and Codex runtimes, scroll-anchoring is reworked, and assistant thoughts collapse cleanly. Windows release validation is hardened against the hangs that broke v1.1.3, and the release pipeline now expects mac + Windows assets in lockstep. iOS lands the desktop-side parity (review schema, archive semantics, CSI fixes), simplifies the lane filter menu, and ships in TestFlight build 6.
+v1.1.4 lands the new review engine: a multi-pass pipeline with adjudicated findings, suppression rules, tool-signal evidence, inline diff excerpts, and a Learnings tab tracking quality over time. PR detail picks up convergence rails on both desktop and iOS, the onboarding tour is rewritten, and the terminals surface gets a session-archive overhaul. Chat fixes a long-standing doubled-bubble bug across both Claude and Codex runtimes, scroll-anchoring is reworked, and assistant thoughts collapse cleanly. Windows release validation is hardened against the hangs that broke v1.1.3, and the release pipeline now expects mac + Windows assets in lockstep. iOS lands the desktop-side parity (review schema, archive semantics, CSI fixes), simplifies the lane filter menu, and ships in TestFlight build 6.
 
 ---
 
 ## Review
 
-The review engine moves from a single-pass diff scan to a multi-pass pipeline with persistent quality memory.
+The review engine moves from a single-pass diff scan to a multi-pass pipeline with persistent quality rules.
 
 - **Multi-pass pipeline.** Three passes — `diff-risk`, `cross-file-impact`, `checks-and-tests` — each with their own rule overlay via `reviewRuleRegistry`. Findings are deduplicated and then adjudicated with a confidence score; `reviewContextBuilder` assembles a structured prompt per pass instead of pasting a single mega-context.
-- **Suppression memory (ADE-27).** A new `review_suppressions` table plus `reviewSuppressionService` embeds suppressed finding titles via the existing embedding service and KNN-matches future candidates (cosine with Jaccard fallback). Scope tiers: `repo`, `path` (glob), `global`. Pre-publish filter skips matched findings and tags them with scope + similarity; suppress without a path falls back to `repo` so we never insert a never-matchable rule. The path-glob cache is capped at 256 entries with FIFO eviction.
+- **Suppression rules (ADE-27).** A new `review_suppressions` table plus `reviewSuppressionService` matches future candidates against saved suppressions. Scope tiers: `repo`, `path` (glob), `global`. Pre-publish filter skips matched findings and tags them with scope + similarity; suppress without a path falls back to `repo` so we never insert a never-matchable rule. The path-glob cache is capped at 256 entries with FIFO eviction.
 - **Tool-backed evidence (ADE-26).** `reviewToolEvidence` promotes CI checks, test runs, and session failures from the validation context into first-class `tool_signal` Evidence entries, capped at three per finding and gated on title/body token overlap so unrelated check failures stop attaching to every finding.
 - **Inline diff excerpts.** `reviewDiffContext` builds a highlighted ±8 line window around the anchored line from the materialized patch, with add/del tinting and a focus-line border. When the anchor falls outside every hunk, the first hunk renders unsliced rather than leaving just a hunk header on screen.
 - **Finding-class chips.** `intent_drift`, `incomplete_rollout`, and `late_stage_regression` chips with explanatory tooltips and distinct tones; `finding_class`, `originating_passes`, and adjudication metadata are now schema fields.
@@ -66,7 +66,7 @@ v1.1.3's Windows release job hung for 1h26m on `validate:win:release`. v1.1.4 ha
 
 - **Packaged-runtime smoke exits cleanly.** `packagedRuntimeSmoke.ts` calls `process.exit(0)` on main success rather than relying on the event loop emptying — node-pty / conpty and the Claude SDK can leave handles open on Windows.
 - **Validator timeouts.** `validate-win-artifacts.mjs` adds a 3-minute default timeout to `runCommand`, SIGKILL on expiry, with captured stdout/stderr in the rejection. Hangs in any validator-spawned child (`ade.cmd` wrapper, installer shim, plain-node fallback) now fail fast instead of sitting until the 6-hour job timeout.
-- **CI `build-win` job.** New self-contained job on `windows-latest` runs the same `dist:win` pipeline as `release-core.yml` (minus the upload step). Self-contained because Windows `node_modules` carry platform-specific native binaries (`node-pty`, `cr-sqlite`, `onnxruntime-node`) that can't share the Linux install archive. Wired into the `ci-pass` gate so a broken Windows pipeline blocks merge.
+- **CI `build-win` job.** New self-contained job on `windows-latest` runs the same `dist:win` pipeline as `release-core.yml` (minus the upload step). Self-contained because Windows `node_modules` carry platform-specific native binaries (`node-pty`, `cr-sqlite`) that can't share the Linux install archive. Wired into the `ci-pass` gate so a broken Windows pipeline blocks merge.
 - **Vercel preview build skip.** Skipped when `apps/web` is unchanged, so desktop / CLI PRs don't burn the Vercel free tier.
 
 ---
