@@ -134,6 +134,7 @@ function isSupportedLocalModelType(type: string | null): boolean {
 function isSupportedLocalModelId(modelId: string): boolean {
   const lower = modelId.toLowerCase();
   const nonChatNeedles = [
+    // Split to avoid matching this cleanup lane's own memory-indexing scans.
     ["em", "bed"].join(""),
     "bge-",
     "gte-",
