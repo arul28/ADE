@@ -1930,14 +1930,14 @@ export function TopBar() {
       <button
         type="button"
         className={cn(
-          "ade-shell-control inline-flex h-[20px] w-[20px] items-center justify-center",
+          "ade-shell-control inline-flex h-[24px] w-[24px] items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150",
         )}
         onClick={() => setFeedbackOpen(true)}
         title="Report bug or suggest feature"
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
-        <ChatCircleDots size={12} weight="regular" />
+        <ChatCircleDots size={16} weight="regular" />
       </button>
       </div>
       {/* /actions group */}

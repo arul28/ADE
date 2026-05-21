@@ -100,15 +100,7 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
     params.set("type", "linear-issue");
     if (linearIssue) params.set("issue", linearIssue);
     if (branch) params.set("branch", branch);
-    const url = `https://ade.app/open?${params.toString()}`;
-    const result = openUrlViaOs(url);
-    if (result.failed) {
-      return {
-        output: `Could not invoke OS opener for ${url}: ${result.message}\n`,
-        exitCode: 1,
-      };
-    }
-    return { output: `Opened ${url}\n`, exitCode: 0 };
+    return openAndReport(`https://ade.app/open?${params.toString()}`);
   }
 
   // URL form.
@@ -117,24 +109,19 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
     throw new CliDeeplinkUsageError("ade open <url>  (or --linear-issue / --branch)");
   }
   const parsed = parseDeeplink(url);
-  if (!parsed.ok) {
-    // Allow unknown_type URLs (like the linear-issue form above) to still pass
-    // through to the OS opener — the landing page / desktop can decide what
-    // to do.
-    if (parsed.error.kind === "unknown_type" && /^https?:\/\/ade\.app\/open\b/i.test(url)) {
-      const result = openUrlViaOs(url);
-      if (result.failed) {
-        return {
-          output: `Could not invoke OS opener for ${url}: ${result.message}\n`,
-          exitCode: 1,
-        };
-      }
-      return { output: `Opened ${url}\n`, exitCode: 0 };
-    }
-    throw new CliDeeplinkUsageError(
-      `Invalid deeplink: ${(parsed.error as { kind: string; reason?: string }).reason ?? parsed.error.kind}`,
-    );
+  if (parsed.ok) return openAndReport(url);
+  // Allow unknown_type URLs (like the linear-issue form above) to still pass
+  // through to the OS opener — the landing page / desktop can decide what
+  // to do.
+  if (parsed.error.kind === "unknown_type" && /^https?:\/\/ade\.app\/open\b/i.test(url)) {
+    return openAndReport(url);
   }
+  throw new CliDeeplinkUsageError(
+    `Invalid deeplink: ${(parsed.error as { kind: string; reason?: string }).reason ?? parsed.error.kind}`,
+  );
+}
+
+function openAndReport(url: string): DeeplinkCliResult {
   const result = openUrlViaOs(url);
   if (result.failed) {
     return {
@@ -187,16 +174,15 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     valued: ["pr", "branch"],
   });
   const positional = flags.positional;
-  const useAdeForm = flags.booleans.has("ade");
+  const form = flags.booleans.has("ade") ? "ade" : "https";
   const skipClipboard = flags.booleans.has("no-clipboard");
+  const emit = (target: DeeplinkTarget): DeeplinkCliResult =>
+    finishLink(buildDeeplink(target, { form }), skipClipboard);
 
   // `ade link <url>` — accept a deeplink and re-emit it in the chosen form.
   if (positional.length === 1) {
     const parsed = parseDeeplink(positional[0]);
-    if (parsed.ok) {
-      const out = buildDeeplink(parsed.target, { form: useAdeForm ? "ade" : "https" });
-      return finishLink(out, skipClipboard);
-    }
+    if (parsed.ok) return emit(parsed.target);
   }
 
   const verb = positional[0];
@@ -205,9 +191,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     if (!laneId) {
       throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
     }
-    const target: DeeplinkTarget = { kind: "lane", laneId };
-    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
-    return finishLink(url, skipClipboard);
+    return emit({ kind: "lane", laneId });
   }
   if (verb === "branch") {
     const repo = positional[1];
@@ -217,20 +201,12 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
         "ade link branch <owner/repo> <branch> [--pr <number>]",
       );
     }
-    const [repoOwner, repoName] = repo.split("/");
-    if (!repoOwner || !repoName) {
-      throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
-    }
+    const { repoOwner, repoName } = parseRepoSlug(repo);
     const prNumberRaw = flags.valued.get("pr");
-    const prNumber = prNumberRaw ? Number(prNumberRaw) : undefined;
-    if (prNumberRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
-      throw new CliDeeplinkUsageError("--pr must be a positive integer");
-    }
-    const target: DeeplinkTarget = prNumber != null
+    const prNumber = prNumberRaw != null ? parsePositiveInteger(prNumberRaw, "--pr") : undefined;
+    return emit(prNumber != null
       ? { kind: "branch", repoOwner, repoName, branch, prNumber }
-      : { kind: "branch", repoOwner, repoName, branch };
-    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
-    return finishLink(url, skipClipboard);
+      : { kind: "branch", repoOwner, repoName, branch });
   }
   if (verb === "pr") {
     const repo = positional[1];
@@ -238,17 +214,9 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     if (!repo || !numberRaw) {
       throw new CliDeeplinkUsageError("ade link pr <owner/repo> <number>");
     }
-    const [repoOwner, repoName] = repo.split("/");
-    if (!repoOwner || !repoName) {
-      throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
-    }
-    const prNumber = Number(numberRaw);
-    if (!Number.isInteger(prNumber) || prNumber < 1) {
-      throw new CliDeeplinkUsageError("PR number must be a positive integer");
-    }
-    const target: DeeplinkTarget = { kind: "pr", repoOwner, repoName, prNumber };
-    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
-    return finishLink(url, skipClipboard);
+    const { repoOwner, repoName } = parseRepoSlug(repo);
+    const prNumber = parsePositiveInteger(numberRaw, "PR number");
+    return emit({ kind: "pr", repoOwner, repoName, prNumber });
   }
   if (verb === "linear-issue") {
     const issueIdentifier = positional[1];
@@ -256,14 +224,28 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
       throw new CliDeeplinkUsageError("ade link linear-issue <ADE-123> [--branch <branch>]");
     }
     const branchHint = flags.valued.get("branch");
-    const target: DeeplinkTarget = branchHint
+    return emit(branchHint
       ? { kind: "linear-issue", issueIdentifier, branch: branchHint }
-      : { kind: "linear-issue", issueIdentifier };
-    const url = buildDeeplink(target, { form: useAdeForm ? "ade" : "https" });
-    return finishLink(url, skipClipboard);
+      : { kind: "linear-issue", issueIdentifier });
   }
 
   throw new CliDeeplinkUsageError(HELP_LINK);
+}
+
+function parseRepoSlug(repo: string): { repoOwner: string; repoName: string } {
+  const [repoOwner, repoName] = repo.split("/");
+  if (!repoOwner || !repoName) {
+    throw new CliDeeplinkUsageError("Repo must be in 'owner/repo' form");
+  }
+  return { repoOwner, repoName };
+}
+
+function parsePositiveInteger(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new CliDeeplinkUsageError(`${label} must be a positive integer`);
+  }
+  return parsed;
 }
 
 function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
@@ -361,13 +343,10 @@ export function runLinearInstall(args: string[], opts: { home?: string; argv0?: 
 
 function resolveAdeBinaryPath(): string {
   // When invoked via the bundled binary, argv[0] is the absolute path. When
-  // run via node, argv[0] is node — fall back to a `which`-like resolution.
+  // run via node, argv[0] is node — fall back to bare `ade` and hope it's on
+  // PATH (the Linear coding-tool spawner inherits the user's PATH).
   const argv0 = process.argv[0] ?? "";
-  if (argv0 && /\b(ade|node)\b/.test(argv0)) {
-    if (/\bade\b/.test(argv0)) return argv0;
-  }
-  // Last-resort: hope `ade` is on PATH.
-  return "ade";
+  return /\bade\b/.test(argv0) ? argv0 : "ade";
 }
 
 // ---------------------------------------------------------------------------

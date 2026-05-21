@@ -2,14 +2,14 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, House, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, GitBranch, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
 import { useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
 import { PaneTilingLayout } from "../ui/PaneTilingLayout";
 import { useDockLayout } from "../ui/DockLayoutState";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, conflictDotColor, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
 import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
@@ -48,7 +48,6 @@ import {
   laneMatchesFilter,
   isMissionLaneHiddenByDefault,
   isMissionResultLane,
-  chipLabel,
   LANES_TILING_TREE,
   LANES_TILING_WORK_FOCUS_TREE,
   LANES_TILING_LAYOUT_VERSION,
@@ -68,7 +67,6 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
   BranchPullRequest,
-  ConflictChip,
   DeleteLaneArgs,
   GitCommitSummary,
   GitHubPrListItem,
@@ -221,6 +219,13 @@ export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null |
   return progress?.overallStatus === "running"
     || progress?.overallStatus === "completed"
     || progress?.overallStatus === "completed_with_warnings";
+}
+
+export function buildLaneSplitColumnsKey(args: {
+  laneTilingLayoutSuffix: string;
+  gridResetKey: number;
+}): string {
+  return `lanes-split-columns:${args.laneTilingLayoutSuffix}:${args.gridResetKey}`;
 }
 
 function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
@@ -390,8 +395,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const setDeleteProgressByLaneId = useAppStore((s) => s.setLaneDeleteProgressByLaneId);
   const laneDeleteWarningMessagesRef = useRef<Map<string, string>>(new Map());
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
-  const [conflictChipsByLane, setConflictChipsByLane] = useState<Record<string, ConflictChip[]>>({});
-  const chipTimersRef = useRef<Map<string, number>>(new Map());
   const lanePrTagsRequestRef = useRef(0);
   const laneGithubPrTagsRequestRef = useRef(0);
   const hasActiveLaneRuntimeRef = useRef(false);
@@ -802,37 +805,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [appStore]);
 
-  const pushConflictChips = useCallback((chips: ConflictChip[]) => {
-    if (chips.length === 0) return;
-    setConflictChipsByLane((prev) => {
-      const next: Record<string, ConflictChip[]> = { ...prev };
-      for (const chip of chips) {
-        const laneList = next[chip.laneId] ? [...next[chip.laneId]!] : [];
-        laneList.unshift(chip);
-        next[chip.laneId] = laneList.slice(0, 3);
-      }
-      return next;
-    });
-    for (const chip of chips) {
-      const key = `${chip.laneId}:${chip.peerId ?? "base"}:${chip.kind}`;
-      const existing = chipTimersRef.current.get(key);
-      if (existing) window.clearTimeout(existing);
-      const now = Date.now();
-      const timer = window.setTimeout(() => {
-        setConflictChipsByLane((prev) => {
-          const laneChips = prev[chip.laneId] ?? [];
-          const filtered = laneChips.filter((entry) => {
-            return !(entry.kind === chip.kind && entry.peerId === chip.peerId && entry.overlapCount === chip.overlapCount);
-          });
-          if (filtered.length === laneChips.length) return prev;
-          return { ...prev, [chip.laneId]: filtered };
-        });
-        chipTimersRef.current.delete(key);
-      }, Math.max(8_000, 12_000 - (Date.now() - now)));
-      chipTimersRef.current.set(key, timer);
-    }
-  }, []);
-
   const scheduleLaneDeleteRefresh = useCallback(() => {
     if (laneDeleteRefreshTimerRef.current != null) return;
     laneDeleteRefreshTimerRef.current = window.setTimeout(() => {
@@ -925,30 +897,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
     return unsubscribe;
   }, [active, clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
-
-  useEffect(() => {
-    if (!active) return;
-    const unsubscribe = window.ade.conflicts.onEvent((event) => {
-      if (event.type !== "prediction-complete") return;
-      // Only refresh conflict statuses — avoid a full refreshLanes() which fires
-      // five parallel queries via buildLaneListSnapshots.
-      void window.ade.conflicts.getBatchAssessment().then((assessment) => {
-        const conflictByLaneId = new Map(
-          assessment.lanes.map((entry) => [entry.laneId, entry] as const),
-        );
-        const prev = appStore.getState().laneSnapshots;
-        const next = prev.map((snapshot) => {
-          const updated = conflictByLaneId.get(snapshot.lane.id) ?? null;
-          return updated !== snapshot.conflictStatus
-            ? { ...snapshot, conflictStatus: updated }
-            : snapshot;
-        });
-        appStore.setState({ laneSnapshots: next });
-      }).catch((err) => { console.error("getBatchAssessment failed:", err); });
-      pushConflictChips(event.chips);
-    });
-    return unsubscribe;
-  }, [active, appStore, pushConflictChips]);
 
   useEffect(() => {
     if (!active) return;
@@ -1107,8 +1055,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     const pendingLaneDeleteRefreshIds = pendingLaneDeleteRefreshIdsRef.current;
     return () => {
-      for (const timer of chipTimersRef.current.values()) window.clearTimeout(timer);
-      chipTimersRef.current.clear();
       if (laneDeleteRefreshTimerRef.current != null) {
         window.clearTimeout(laneDeleteRefreshTimerRef.current);
         laneDeleteRefreshTimerRef.current = null;
@@ -3404,8 +3350,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             </button>
           </SmartTooltip>
         ) : null}
-        <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.textMuted, textTransform: "uppercase", whiteSpace: "nowrap" }}>
-          {filteredLanes.length}/{sortedLanes.length} LANES
+        <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.textMuted, whiteSpace: "nowrap" }}>
+          {sortedLanes.length} lane{sortedLanes.length === 1 ? "" : "s"}
         </span>
       </div>
 
@@ -3424,8 +3370,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           const isPinned = pinnedLaneIds.has(lane.id);
           const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
           const laneSnapshot = laneSnapshotByLaneId.get(lane.id) ?? null;
-          const conflictStatus = laneSnapshot?.conflictStatus ?? null;
-          const chips = conflictChipsByLane[lane.id] ?? [];
           const laneRuntime = laneRuntimeById.get(lane.id) ?? {
             bucket: "none",
             runningCount: 0,
@@ -3554,12 +3498,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   </button>
                 ) : null}
               </span>
-              {/* Primary: house icon; non-primary: conflict status dot */}
-              {isPrimary ? (
-                <House size={12} className="shrink-0" style={{ color: COLORS.accent }} />
-              ) : (
-                <span className="shrink-0" style={{ width: 10, height: 10, borderRadius: "50%", background: conflictDotColor(conflictStatus?.status) }} />
-              )}
               {/* Terminal attention state */}
               {!isDeleting && (laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input") ? (
                 <span
@@ -3694,14 +3632,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
                 </span>
               ) : null}
-              {!isDeleting && chips.slice(0, 1).map((chip, chipIndex) => (
-                <span
-                  key={`${chip.kind}:${chip.peerId ?? "base"}:${chipIndex}`}
-                  style={inlineBadge(chip.kind === "high-risk" ? COLORS.danger : COLORS.warning, { fontSize: 9 })}
-                >
-                  {chipLabel(chip.kind)}
-                </span>
-              ))}
               {/* Pin toggle — appears on hover */}
               {!isDeleting && !isPrimary ? (
                 <button
@@ -3836,7 +3766,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         />
       ) : (
         <Group
-          key={`lanes-split-columns:${visibleLaneIds.join(",")}:${gridResetKey}`}
+          key={buildLaneSplitColumnsKey({ laneTilingLayoutSuffix, gridResetKey })}
           id="lanes-split-columns"
           orientation="horizontal"
           resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}

@@ -822,10 +822,21 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
+// Only Stable claims `ade://` as the default handler. Beta and Alpha still
+// install the single-instance lock + `open-url` listeners (so a manual
+// `duti` binding still works), but they don't ask the OS to make them the
+// default on boot. Source builds opt in via `ADE_REGISTER_DEEPLINK_HANDLER=1`,
+// which is the dev-test workaround on a machine with Stable also installed.
+const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+const deeplinkClaimAsDefault =
+  process.env.ADE_REGISTER_DEEPLINK_HANDLER === "1" ||
+  (app.isPackaged && deeplinkChannel === null);
+
 // Register the user-facing `ade://` deeplink scheme + single-instance lock so a
 // second `open ade://...` invocation reuses the running window. Dispatch to the
 // focused window's renderer via the existing IPC.appNavigate channel.
 registerAdeProtocolHandler({
+  claimAsDefault: deeplinkClaimAsDefault,
   dispatch: (request) => {
     const focusable =
       BrowserWindow.getFocusedWindow() ??
@@ -1475,6 +1486,14 @@ app.whenReady().then(async () => {
     };
 
     try {
+      if (ctx.laneService?.hasRunningDelete?.()) {
+        return true;
+      }
+    } catch (error) {
+      return keepAliveOnProbeFailure("lane_deletes", error);
+    }
+
+    try {
       if (ctx.sessionService?.list({ status: "running", limit: 1 }).length > 0) {
         return true;
       }
@@ -1948,15 +1967,9 @@ app.whenReady().then(async () => {
         // Resolve repo lazily so cards posted to Linear carry the cross-machine
         // ADE deeplink (https://ade.app/open?type=branch&...). If the project
         // has no GitHub remote, fall back to the legacy hash-anchor URL.
-        const resolveRepo = async (): Promise<{ owner: string; name: string } | null> => {
-          try {
-            return await githubService.getRepoOrThrow();
-          } catch {
-            return null;
-          }
-        };
-        void resolveRepo().then((repo) =>
-          publishLinearLaneCard({
+        void githubService.getRepoOrThrow()
+          .catch(() => null)
+          .then((repo) => publishLinearLaneCard({
             issueTracker: tracker,
             lane,
             issue,
@@ -1966,15 +1979,15 @@ app.whenReady().then(async () => {
             repoName: repo?.name ?? null,
             postInitialComment: true,
             log: (event, fields) => logger.warn(event, fields),
-          }),
-        ).catch((error) => {
-          logger.warn("linear.lane_card_publish_failed", {
-            laneId: lane.id,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
+          }))
+          .catch((error) => {
+            logger.warn("linear.lane_card_publish_failed", {
+              laneId: lane.id,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        });
       },
       teardownDeps: laneTeardownDeps,
       logger,
@@ -5682,6 +5695,49 @@ app.whenReady().then(async () => {
     return true;
   };
 
+  const getRunningLaneDeleteLabels = (): string[] => {
+    const labels: string[] = [];
+    for (const ctx of projectContexts.values()) {
+      try {
+        if (!ctx.laneService?.hasRunningDelete?.()) continue;
+        labels.push(ctx.project?.displayName ?? ctx.project?.rootPath ?? "Unknown project");
+      } catch (error) {
+        ctx.logger.warn("lane_delete.quit_probe_failed", {
+          projectRoot: ctx.project?.rootPath ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        labels.push(ctx.project?.displayName ?? ctx.project?.rootPath ?? "Unknown project");
+      }
+    }
+    return Array.from(new Set(labels));
+  };
+
+  const confirmNoRunningLaneDeleteForQuit = (ownerWindow?: BrowserWindow | null): boolean => {
+    const runningDeletes = getRunningLaneDeleteLabels();
+    if (runningDeletes.length === 0) return true;
+    const detail =
+      runningDeletes.length === 1
+        ? `${runningDeletes[0]} is deleting a lane. Wait for deletion to finish before quitting ADE.`
+        : `These projects are deleting lanes: ${runningDeletes.join(", ")}. Wait for deletion to finish before quitting ADE.`;
+    const dialogOptions = {
+      type: "warning" as const,
+      buttons: ["Keep ADE open"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: "Lane delete in progress",
+      message: "ADE cannot quit while a lane is being deleted.",
+      detail,
+    };
+    const parentWindow =
+      ownerWindow && !ownerWindow.isDestroyed()
+        ? ownerWindow
+        : BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    if (parentWindow) dialog.showMessageBoxSync(parentWindow, dialogOptions);
+    else dialog.showMessageBoxSync(dialogOptions);
+    return false;
+  };
+
   const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>
     showWindowCloseWarning(ownerWindow, {
       buttons: ["Keep ADE open", "Quit ADE"],
@@ -5722,6 +5778,7 @@ app.whenReady().then(async () => {
       closeWindowWithoutPrompt(win);
       return;
     }
+    if (!confirmNoRunningLaneDeleteForQuit(win)) return;
     if (!confirmQuitWarning(win)) return;
     requestAppShutdown({ reason: "window_close", exitCode: 0 });
   };
@@ -6072,6 +6129,7 @@ app.whenReady().then(async () => {
     if (shutdownFinalized) return;
     event.preventDefault();
     if (shutdownRequested) return;
+    if (!confirmNoRunningLaneDeleteForQuit()) return;
     if (!confirmQuitWarning()) return;
     requestAppShutdown({ reason: "before_quit", exitCode: 0 });
   });

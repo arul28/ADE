@@ -15488,7 +15488,7 @@ export function createAgentChatService(args: {
       transcriptPath,
       toolType: toolTypeFromProvider(effectiveProvider),
       resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
-      ...(processRegistry ? { ownerPid: processRegistry.pid } : {}),
+      ownerPid: processRegistry?.pid ?? null,
     });
     if (normalizedTitle.length > 0) {
       sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });

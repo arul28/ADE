@@ -8,7 +8,6 @@
 
 import { buildDeeplink } from "./deeplinks";
 
-const MARKER_OPEN = "<!-- ade:link v=1";
 const MARKER_OPEN_RE = /<!--\s*ade:link\s+v=\d+[^>]*-->/i;
 const MARKER_CLOSE = "<!-- /ade:link -->";
 const MARKER_CLOSE_RE = /<!--\s*\/ade:link\s*-->/i;
@@ -78,9 +77,13 @@ export function ensureAdeDeeplinkFooter(
   if (openIdx >= 0) {
     const closeMatch = MARKER_CLOSE_RE.exec(safeBody.slice(openIdx));
     if (closeMatch) {
-      const before = safeBody.slice(0, openIdx);
+      const before = safeBody.slice(0, openIdx).trimEnd();
       const after = safeBody.slice(openIdx + closeMatch.index + closeMatch[0].length);
-      return `${before.trimEnd()}\n\n${block}${after.startsWith("\n") ? after : (after ? `\n${after}` : "")}`.trimEnd() + "\n";
+      let tail: string;
+      if (!after) tail = "";
+      else if (after.startsWith("\n")) tail = after;
+      else tail = `\n${after}`;
+      return `${before}\n\n${block}${tail}`.trimEnd() + "\n";
     }
   }
   const trimmed = safeBody.trimEnd();

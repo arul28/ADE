@@ -409,7 +409,7 @@ function ToolCallRow({
           {kindSlug}
         </span>
         {argText ? (
-          <span className="min-w-0 truncate font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40">{argText}</span>
+          <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{argText}</span>
         ) : null}
       </button>
       {open && navigationSuggestions.length > 0 && onNavigateSuggestion ? (
@@ -501,7 +501,7 @@ function ToolCallsPanel({
               {latestSlug}
             </span>
             {latestArg ? (
-              <span className="min-w-0 flex-1 truncate font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/38">{latestArg}</span>
+              <span className="min-w-0 flex-1 truncate font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.55] text-fg/88">{latestArg}</span>
             ) : null}
           </span>
         )}

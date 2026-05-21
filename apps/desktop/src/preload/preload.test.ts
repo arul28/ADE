@@ -174,7 +174,7 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.reviewEvent, listener);
   });
 
-  it("routes review.startRun through a bound local runtime without dropping unlimited budgets", async () => {
+  it("routes review.startRun through a bound local runtime without dropping config fields", async () => {
     const binding = {
       kind: "local",
       key: "local:/repo",
@@ -189,15 +189,6 @@ describe("preload OAuth bridge", () => {
         dirtyOnly: false,
         modelId: "openai/gpt-5.4",
         reasoningEffort: "medium",
-        budgets: {
-          unlimited: true,
-          maxFiles: Number.MAX_SAFE_INTEGER,
-          maxDiffChars: Number.MAX_SAFE_INTEGER,
-          maxPromptChars: Number.MAX_SAFE_INTEGER,
-          maxFindings: Number.MAX_SAFE_INTEGER,
-          maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
-          maxPublishedFindings: Number.MAX_SAFE_INTEGER,
-        },
         publishBehavior: "local_only",
       },
     };

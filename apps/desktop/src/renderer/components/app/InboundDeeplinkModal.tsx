@@ -10,9 +10,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import type {
-  CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
-  CreateLaneFromPrBranchResult,
   LaneSummary,
 } from "../../../shared/types";
 
@@ -29,19 +27,6 @@ export type InboundDeeplinkModalProps = {
   onLaneOpened: (laneId: string) => void;
   lanes: LaneSummary[];
 };
-
-type ApiShape = {
-  preflightCreateLaneFromPrBranch?: (
-    args: CreateLaneFromPrBranchArgs,
-  ) => Promise<CreateLaneFromPrBranchPreflightResult>;
-  createLaneFromPrBranch?: (
-    args: CreateLaneFromPrBranchArgs,
-  ) => Promise<CreateLaneFromPrBranchResult>;
-};
-
-function getPrsApi(): ApiShape {
-  return (window.ade as unknown as { prs?: ApiShape }).prs ?? {};
-}
 
 function formatActionError(err: unknown): string {
   if (err instanceof Error) return err.message;
@@ -96,15 +81,15 @@ export function InboundDeeplinkModal({
       return;
     }
     let cancelled = false;
-    const api = getPrsApi();
-    if (!api.preflightCreateLaneFromPrBranch) {
+    const prsApi = window.ade?.prs;
+    if (!prsApi?.preflightCreateLaneFromPrBranch) {
       setError("Inbound deeplinks are not available in this build.");
       return;
     }
     setLoading(true);
     setError(null);
     setPreflight(null);
-    void api
+    void prsApi
       .preflightCreateLaneFromPrBranch({
         repoOwner: target.repoOwner,
         repoName: target.repoName,
@@ -152,14 +137,14 @@ export function InboundDeeplinkModal({
     if (!target.prNumber) return;
     setBusy(true);
     setError(null);
-    const api = getPrsApi();
-    if (!api.createLaneFromPrBranch) {
+    const prsApi = window.ade?.prs;
+    if (!prsApi?.createLaneFromPrBranch) {
       setError("Inbound deeplinks are not available in this build.");
       setBusy(false);
       return;
     }
     try {
-      const result = await api.createLaneFromPrBranch({
+      const result = await prsApi.createLaneFromPrBranch({
         repoOwner: target.repoOwner,
         repoName: target.repoName,
         githubPrNumber: target.prNumber,

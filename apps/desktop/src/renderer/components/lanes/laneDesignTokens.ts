@@ -85,7 +85,7 @@ export function inlineBadge(color: string, overrides?: CSSProperties): CSSProper
  */
 export function laneSurfaceTint(
   color: string | null | undefined,
-  strength: "soft" | "default" = "default",
+  strength: "soft" | "default" | "pastel" = "default",
   alpha?: number,
 ): {
   background: string;
@@ -102,6 +102,14 @@ export function laneSurfaceTint(
     };
   }
   const c = String(color).trim();
+  if (strength === "pastel") {
+    return {
+      background: `color-mix(in srgb, ${c} 8%, rgba(255, 255, 255, 0.035))`,
+      border: `1px solid color-mix(in srgb, ${c} 14%, rgba(255, 255, 255, 0.05))`,
+      borderLeftAccent: `2px solid color-mix(in srgb, ${c} 40%, transparent)`,
+      text: `color-mix(in srgb, ${c} 52%, var(--color-muted-fg))`,
+    };
+  }
   const p = alpha != null && Number.isFinite(alpha)
     ? Math.max(0, Math.min(100, Math.round(alpha * 100)))
     : strength === "soft" ? 10 : 16;
@@ -234,20 +242,5 @@ export function formatTimestamp(iso: string): string {
     });
   } catch {
     return iso;
-  }
-}
-
-export function conflictDotColor(status: string | undefined): string {
-  switch (status) {
-    case "conflict-active":
-      return COLORS.danger;
-    case "conflict-predicted":
-      return COLORS.warning;
-    case "behind-base":
-      return COLORS.warning;
-    case "merge-ready":
-      return COLORS.success;
-    default:
-      return COLORS.textMuted;
   }
 }

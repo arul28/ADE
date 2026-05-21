@@ -164,12 +164,9 @@ export async function publishLinearLaneCard(args: {
       repoOwner: args.repoOwner ?? null,
       repoName: args.repoName ?? null,
     });
-    const createComment = (args.issueTracker as IssueTracker & {
-      createComment?: (issueId: string, body: string) => Promise<unknown>;
-    }).createComment;
-    if (body && typeof createComment === "function") {
+    if (body) {
       try {
-        await createComment(args.issue.id, body);
+        await args.issueTracker.createComment(args.issue.id, body);
       } catch (error) {
         args.log?.("linear.lane_initial_comment_failed", {
           issueId: args.issue.id,

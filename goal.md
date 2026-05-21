@@ -1,378 +1,804 @@
-# Goal: Cross-process ownership for ADE sessions
+# Goal: ADE TUI — Universal Click + Multi-Chat Middle Pane
 
-You are picking this up mid-investigation. The previous agent traced two related bugs to a single root cause and started landing the fix. This document is the complete plan — finish it end-to-end. Worktree is `/Users/admin/Projects/ADE/.ade/worktrees/deeplinks-d52aa89e/`. Do not switch repos or lanes.
-
----
-
-## 1. The bugs the user is hitting
-
-Two user-visible symptoms, same underlying cause:
-
-### Symptom A — "frozen snapshot after PTY resume"
-
-User opens the Work tab on a CLI session whose status is `stopped`/`ended`, types a message, hits send. The PTY actually resumes in the main process (visible in the TUI, and the OS-level `claude --session-id ...` process is alive in `ps aux`), but the desktop renderer stays on `ClosedCliSessionSurface` showing a frozen pre-resume snapshot. The composer placeholder reads "Type to continue this Claude Code session..." and never flips to a live `TerminalView`.
-
-### Symptom B — "session randomly appears as Stopped while it's still running"
-
-User has the ADE desktop app and `ade code` (TUI) both open on the same lane. A Claude Code session is running fine. Without any user action, the desktop view randomly switches to `ClosedCliSessionSurface` ("Stopped", "Ended <timestamp>", "Type to continue this Claude Code session…"). The TUI still shows the session alive and producing output. The OS-level `claude --session-id <id>` process is still alive. Only the desktop's DB row says the session ended.
-
-The user has also seen this hit Codex CLI sessions and Cursor CLI sessions, not just Claude Code.
+You are implementing two interlocking TUI features for the ADE CLI. Read this whole brief before touching code. Worktree is `/Users/admin/Projects/ADE/.ade/worktrees/deeplinks-d52aa89e/`. Do not switch lanes.
 
 ---
 
-## 2. Root cause — single-owner assumption in a multi-process world
+## Why we're doing this
 
-ADE runs the same project across **multiple OS processes simultaneously**, all opening the same `.ade/ade.db` SQLite file:
+The ADE TUI today gives you one chat at a time in the middle pane. Power users running agents across multiple lanes constantly want to watch two, three, or six chats stream in parallel — currently they tile multiple TUI instances side by side, which is wasteful and forces them to manage N copies of the same drawer + right pane.
 
-- The desktop app (electron) — executes `cli.cjs serve --socket ~/.ade-beta/sock/ade.sock` as its main; it IS both the GUI and an `ade serve` daemon.
-- A separate per-lane `ade serve` daemon (e.g. `/tmp/ade-runtime-lane-<lane>.sock`).
-- The TUI's embedded runtime when `ade code` is invoked — `apps/ade-cli/src/bootstrap.ts` calls `createPtyService` (imported from `apps/desktop/src/main/services/pty/ptyService.ts`) inside the TUI's own process.
-- Mobile is a remote client of one of the above.
+The other long-standing irritation: mouse support is partial. The drawer, chat text selection, and a handful of right-pane targets accept clicks; most things (model picker, approval prompts, slash/mention palettes, lane-details actions, lane-delete form, prompt-history nav) don't. Add multi-chat without expanding click coverage and the new feature is unusable for mouse-driven users.
 
-I verified live with `ps aux`, `lsof`, and `sqlite3` queries (see §10 for the exact commands you can re-run). The DB has rows for `claude` CLI sessions marked `status='disposed'` while the corresponding `claude --session-id <id>` OS process is still in the process table. Different process, different ptyService map, different opinion about who's alive.
-
-The DB schema has **no concept of which OS process owns which row**. Every process treats `terminal_sessions` as if it were the sole owner:
-
-1. **`sessionService.reconcileStaleRunningSessions`** (`apps/desktop/src/main/services/sessions/sessionService.ts:483`) blindly disposes every `status='running'` row at process startup. Desktop main calls it at `apps/desktop/src/main/main.ts:1939`. TUI bootstrap calls it at `apps/ade-cli/src/bootstrap.ts:450`. When `ade code` starts while the desktop has a live PTY, the TUI's reconcile silently marks the desktop's session disposed.
-
-2. **`ptyService.dispose({ptyId, sessionId})`** (`apps/desktop/src/main/services/pty/ptyService.ts:3497`) has an "orphan" branch: if `ptyId` doesn't match any entry in the calling process's PTY map but `sessionId` does match a DB row, it calls `sessionService.end(..., status='disposed')` to "clean up." Callers from the renderer (`ChatTerminalDrawer.tsx:387-392`, `useWorkSessions.ts:1221`) trigger this on tab unmount / drawer teardown / stop button. If the PTY lives in another process, the "orphan dispose" fires against a perfectly live session.
-
-3. **`closeEntry`** (`apps/desktop/src/main/services/pty/ptyService.ts:2080`) is fine — it only runs when the calling process's own `pty.onExit` fires. It is in-process by definition. Don't touch it for ownership reasons.
-
-I tried two stopgap fixes earlier in this lane:
-
-1. `sessionService.reopen`/`reattach` now emit `emitChanged({reason: "meta-updated"})` so the renderer learns about resume immediately (was silent — sessions/sessionService.ts:725, 745).
-2. `reconcileStaleRunningSessions` got an `activityThresholdMs` (default 5 min) so rows whose `last_output_at` is recent are skipped (sessions/sessionService.ts:483).
-3. `TerminalsPage.handleContinueCliSession` optimistically upserts the new session snapshot returned by `pty.sendToSession` (terminals/TerminalsPage.tsx:371).
-4. `useWorkSessions` exposes `upsertSessionSnapshot` (terminals/useWorkSessions.ts:790).
-
-These help but are heuristics. They do not fix Symptom B in general — `last_output_at` is session-level activity and is flaky for idle sessions. The dispose path still fires across processes with no guard. Replace the `activityThresholdMs` guard with a proper ownership check (see §3, §5). Keep the optimistic upsert and the `emitChanged` additions — they're good independent of the ownership work.
+Ship them together:
+1. **Universal click** — every keyboard handler gets a matching mouse hit-test, with hover-highlight so users can see what's clickable before committing.
+2. **Multi-chat middle pane** — middle splits into 1–6 chat tiles in fixed grids; chats can be from any lane; focus drives prompt routing and right-pane context.
 
 ---
 
-## 3. Architecture finding that surprised me — agent chats already do this right
+## TL;DR feature spec
 
-While investigating, I expected to find that the TUI and desktop each ran their own `agentChatService` and never converged. They don't. The user proved it: started a `claude-chat` in the TUI, watched it appear live and in-sync in the desktop in the same lane. The mechanism:
+**Universal click**
+- Add hit-testing for every existing keyboard action across drawer, right pane, palettes, prompt area, and overlays.
+- Build a `HitTestRegistry` so components register their bounds + handlers declaratively; future components opt in for free.
+- Enable terminal mouse mode 1003 (any-event) so we receive `move` events and can highlight whatever's under the cursor.
 
-- `ade serve` is a JSON-RPC daemon (`apps/ade-cli/src/adeRpcServer.ts`). It hosts the runtime services (agentChatService, sessionService, etc.).
-- The desktop app embeds and connects to it through `localRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`) and `runtimeRpcClient`.
-- The TUI client (`apps/ade-cli/src/tuiClient/connection.ts:335 spawnDaemon`, `:356 connectAttachedSocket`) auto-connects to an existing daemon or spawns one detached (`spawn(... detached: true, stdio: "ignore")`), then makes RPC calls.
-- The daemon owns the SDK agent-chat session. It pushes events out via `runtimeEvents.subscribe` (`apps/ade-cli/src/adeRpcServer.ts:7254` and surrounding) to every connected client. Desktop and TUI both subscribe and render the same event stream.
-- The renderer preload (`apps/desktop/src/preload/preload.ts`) has a helper `callProjectRuntimeActionIfBound("chat", "sendMessage", ...)` that tries the daemon first and falls back to local IPC if no daemon is bound. This is why chats sync.
+**Multi-chat middle pane**
+- Middle pane state: `multiView = { tiles: Array<{ sessionId, laneId }>, focusedIndex: number } | null`.
+- Up to 6 tiles. Hardcoded layouts: 1=full, 2=2 cols, 3=3 cols, 4=2×2, 5=2-top/3-bot, 6=3×2.
+- Chats can come from any lane (cross-lane mixing). State is global to the TUI and **ephemeral** — never persisted across restart.
+- Add flow: shortcut while chat pane focused → enter "add-mode" (sidebar focused, non-sidebar regions dimmed, banner overlay) → arrow-nav across all lanes' chats → `Enter` adds, `Esc` cancels.
+- Remove flow: shortcut or click `×` in tile header. Dropping below 2 tiles exits multi-view entirely.
+- No duplicate chats — adding an already-open chat refocuses the existing tile.
+- Focused tile is the source of truth: bottom prompt routes to it; right pane / status / sidebar lane highlight follow it.
+- Concurrent streaming: every open tile streams events live whether focused or not.
 
-**This is exactly the "stage 2" architecture you want for CLI PTYs.** It already exists for chats. It does not exist for raw PTYs — each process still spawns and owns its own PTYs locally. That's the asymmetry that makes Symptom B uniquely a CLI/PTY problem.
-
-So the work splits cleanly into:
-
-- **Tier 1** — add process-level ownership tracking and gate dispose/reconcile on it. Stops the immediate bleeding for *every* row type (CLI and chat).
-- **Tier 2** — move PTY ownership into the daemon, the same way agent chats already work. Makes CLI sessions truly cross-surface live.
-
-The user wants both. Do both.
-
----
-
-## 4. What I already changed in this worktree
-
-Don't redo these — finish on top of them. All in `/Users/admin/Projects/ADE/.ade/worktrees/deeplinks-d52aa89e/`. Verify with `git diff` before continuing.
-
-Schema:
-- `apps/desktop/src/main/services/state/kvDb.ts` — added `owner_pid INTEGER` column on `terminal_sessions`, added `runtime_processes` table, indexes. (See the diff for exact migration ALTERs.)
-
-New service (skeleton, **not wired anywhere yet**):
-- `apps/desktop/src/main/services/runtime/processRegistryService.ts` — `createProcessRegistryService({db, logger, pid?, role, projectRoot?, heartbeatIntervalMs?, livenessWindowMs?})` with `start/heartbeat/stop/listLivePids/isPidLive/listAllProcesses/pruneStale`. Heartbeats default 5s; liveness window default 15s. **This file already exists. Read it before extending.**
-
-Earlier-lane fixes that should stay:
-- `sessionService.reopen/reattach` now emit `emitChanged({reason: "meta-updated"})` — `apps/desktop/src/main/services/sessions/sessionService.ts:725-742, 745-765`.
-- `sessionService.reconcileStaleRunningSessions` got `activityThresholdMs` heuristic (`apps/desktop/src/main/services/sessions/sessionService.ts:483`). **Tier 1 replaces this heuristic with proper ownership — see §5.4.**
-- `TerminalsPage.handleContinueCliSession` does optimistic `work.upsertSessionSnapshot(result.session)` (`apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx:371`).
-- `useWorkSessions` exposes `upsertSessionSnapshot` (`apps/desktop/src/renderer/components/terminals/useWorkSessions.ts:790`).
-- Two new sessionService tests for the activity-threshold guard. **Update them when you replace the heuristic with ownership.**
+**Extras (locked picks)**
+- `×` affordance in each tile header for mouse-driven removal.
+- Status-bar grid mini-map (e.g. `▣▢ / ▢▢`).
+- Per-tile prompt history recall (up/down only cycles the focused tile's prompts).
+- Drag a sidebar chat onto the middle pane to add (bypasses add-mode).
 
 ---
 
-## 5. Tier 1 — ownership + heartbeat + gated mutations
+## Current architecture you must understand first
 
-### 5.1 Schema (DONE in §4)
+The TUI is **Ink v5.2.1** (React for terminal). Entry point: `apps/ade-cli/src/tuiClient/cli.tsx`. Top-level component: `AdeCodeApp` in `apps/ade-cli/src/tuiClient/app.tsx`. That single file is ~8000 lines and owns the entire app's state, focus, mouse parsing, and layout. The rest of `tuiClient/` is split into focused components and helpers.
 
-`terminal_sessions.owner_pid INTEGER NULL` + `runtime_processes(pid PRIMARY KEY, role TEXT, project_root TEXT, started_at TEXT, last_seen TEXT)` + the two indexes. Migrations are idempotent ALTER/CREATE-IF-NOT-EXISTS — safe to re-run on existing DBs. Verify the columns exist with:
+### Layout (read `app.tsx` lines ~7626–7800)
+
+Root is `<Box flexDirection="column" height={rows}>`:
 
 ```
-sqlite3 /path/to/.ade/ade.db "pragma table_info(terminal_sessions);"
-sqlite3 /path/to/.ade/ade.db "pragma table_info(runtime_processes);"
+┌────────────────────────────────────────────────────────┐
+│ <Header />                                  fixed 1-2  │
+├────────────────────────────────────────────────────────┤
+│ {goal-banner conditional}                   0 or 1     │
+├──────────┬──────────────────────────────┬──────────────┤
+│ Drawer   │ (middle: <ChatView />)       │  RightPane   │
+│ 32 cols  │ flexGrow:1                    │ 30–42 cols   │
+│ (left)   │                              │              │
+│          │                              │              │
+├──────────┴──────────────────────────────┴──────────────┤
+│ <Box borderStyle="round"> prompt input </Box>          │
+├────────────────────────────────────────────────────────┤
+│ <ModelStatus /> <FooterControls />          fixed 1-2  │
+└────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 ProcessRegistry service (DONE skeleton, needs wiring)
+Constants in `app.tsx` ~1508–1511: `DRAWER_PANE_WIDTH = 32`, right pane is computed `30–42`, middle gets the remainder (`min 24`).
 
-File: `apps/desktop/src/main/services/runtime/processRegistryService.ts`. API is fixed — extend tests around it, don't reshape unless you find a bug.
+The chat row budget (~line 2514):
+```ts
+const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - statusRows - goalBannerRows);
+```
+You'll need to subdivide this budget across grid rows when multi-view is active.
 
-**Roles:** `"desktop-main" | "ade-serve-daemon" | "tui-runtime"`.
-
-**Wiring (NOT YET DONE — do this):**
-
-1. **Desktop main** — instantiate in `apps/desktop/src/main/main.ts`, in the project context init (near where `sessionService` is created, around line 1935 today). Role `"desktop-main"`. Project root = the current project root. Call `start()` immediately. Tear it down on context close. **Critical:** the desktop's main process and the `ade serve --socket /Users/admin/.ade-beta/sock/ade.sock` it runs are *the same OS process* (PID 53089 in my investigation — see §10). One heartbeat row, not two.
-
-2. **TUI runtime bootstrap** — `apps/ade-cli/src/bootstrap.ts` around line 446 where `sessionService` is created. Role `"tui-runtime"`. `start()` before the reconcile call.
-
-3. **`ade serve` daemon** — if `cli.cjs serve` is launched as a standalone daemon (the lane runtime daemon, e.g. PID 88995 in my investigation), it goes through the same `bootstrap.ts` path, so the wiring above covers it. But verify: trace `apps/ade-cli/src/cli.ts` line 10201 (`Promise.all([import("./bootstrap"), import("./adeRpcServer")])`) and confirm `createAdeRuntime` is what `serve` ends up calling. If yes, single wiring suffices. If not, wire `serve` separately.
-
-4. **Stop on exit** — wire `processRegistry.stop()` to `process.on('beforeExit', ...)` and to the desktop's `before-quit` electron event. Best-effort; if the process crashes the row will simply go stale and reconcile cleans it up. Don't block exit on this.
-
-### 5.3 `sessionService` — accept and read `owner_pid`
-
-File: `apps/desktop/src/main/services/sessions/sessionService.ts`.
-
-- `create({...})` (line 657 today) — add `ownerPid?: number | null` to the args type. Persist into the new column. Default `null` if not provided (legacy callers).
-- `mapRow` and `SESSION_COLUMNS` — add `owner_pid as ownerPid`. Surface `ownerPid` on `TerminalSessionSummary` and `TerminalSessionDetail` (types live in `apps/desktop/src/shared/types/sessions.ts`).
-- `reattach(args)` (line 745) — add optional `ownerPid` arg. When provided, set `owner_pid = ?` in the UPDATE. Reattach is the resume path; the new owner is whoever called `ptyService.create` (see §5.5).
-- `clearOwnerPid(sessionId)` — new method, sets `owner_pid = null`. Used by tier 2 when the daemon takes over a previously-local session.
-- `setOwnerPid(sessionId, pid)` — new method. Used by tests and migration helpers.
-
-### 5.4 `sessionService.reconcileStaleRunningSessions` — gate on ownership
-
-Replace the `activityThresholdMs` guard with a proper ownership check. Signature:
+### Focus / pane state (read `app.tsx` ~1733–1776)
 
 ```ts
-reconcileStaleRunningSessions({
-  endedAt?: string;
-  status?: TerminalSessionStatus;
-  excludeToolTypes?: string[];
-  liveOwnerPids: Set<number>;   // NEW — caller passes this in
-}): number
+type PaneFocus = "chat" | "drawer" | "details";
+const [activePane, setActivePane] = useState<PaneFocus>("chat");
+const activePaneRef = useRef<PaneFocus>("chat");
 ```
 
-Semantics:
+The single `useInput` handler (~line 3400+) branches on `activePane` to dispatch keystrokes. **You will extend `PaneFocus` with `"addMode"`** and add `multiView.focusedIndex` for tile focus (the chat pane itself owns the sub-focus).
 
-- A row is "stale" iff `status='running'` AND (`owner_pid IS NULL` OR `owner_pid NOT IN (liveOwnerPids)`).
-- The `owner_pid IS NULL` branch catches pre-migration rows (always treated as orphan — they came from before ownership existed).
-- Build the SQL with a parameterized `NOT IN (?,?,?...)` clause, with care for the empty-set case (use `NOT IN (-1)` sentinel to keep SQL valid).
-- Emit `emitChanged({reason: "meta-updated"})` for each disposed sessionId so renderers refresh.
+### Mouse (read `app.tsx` `parseTerminalMouseInput` + hit-test helpers ~1557–1620)
 
-Callers (`main.ts:1939`, `bootstrap.ts:450`) become:
+The custom parser handles SGR (`\x1b[<…M/m`), X10, and RXVT escape sequences. It's enabled at startup by writing mode-enable sequences to stdout. Today's modes used:
+- `\x1b[?1000h` — basic click tracking
+- `\x1b[?1002h` — drag tracking
+- `\x1b[?1006h` — SGR extended (for x/y > 223)
+
+**You will add `\x1b[?1003h`** (any-event tracking, i.e. mouse-move without buttons) and disable it cleanly on exit. Reference: <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking>.
+
+The current hit-test pattern is a family of per-pane helpers with hardcoded Y offsets, e.g.:
 
 ```ts
-processRegistry.start();
-const reconciledSessions = sessionService.reconcileStaleRunningSessions({
-  status: "disposed",
-  liveOwnerPids: processRegistry.listLivePids(),
-  // bootstrap.ts also passes its existing excludeToolTypes
+// app.tsx ~1557
+export function laneDetailsActionIndexForMouseLine(y, actionCount) {
+  if (y == null || actionCount <= 0) return null;
+  const firstActionLine = 18;
+  const index = y - firstActionLine;
+  return index >= 0 && index < actionCount ? index : null;
+}
+```
+
+This pattern repeats in `formFieldIndexForMouseLine`, `setupPaneRowIndexForMouseLine`, `subagentIndexForPaneLine`. **You will replace these with a unified registry (see Feature 1 below).** Don't delete the old helpers in one go — migrate component by component; once a component is on the registry, delete its old helper.
+
+### Chat model (read `apps/desktop/src/shared/types/chat.ts` ~725–773)
+
+A chat is an `AgentChatSession`:
+```ts
+type AgentChatSession = {
+  id: string;             // session ID (unique per chat)
+  laneId: string;         // lane it belongs to
+  provider: "claude" | "codex" | "cursor" | "droid" | "opencode";
+  model: string;
+  status: "active" | "idle" | "ended";
+  sessionProfile?: …;
+  permissionMode?: …;
+  interactionMode?: …;
+  // …
+};
+```
+
+### Single-source streaming today (read `app.tsx` ~580, ~1190)
+
+```ts
+const [streaming, setStreaming] = useState(false);   // GLOBAL flag — must die
+…
+connection.onChatEvent((envelope) => {
+  if (envelope.sessionId !== activeSessionIdRef.current) {
+    refreshState({ hydrateHistory: false });          // silently drop the event UI-side
+    return;
+  }
+  if (event.type === "status" && event.turnStatus === "started") setStreaming(true);
+  …
 });
 ```
 
-**Delete** `activityThresholdMs` and the two tests that exercised it. Add the new tests in §5.7.
+This is the single biggest blocker for multi-chat. Two changes:
+1. `streaming: boolean` → `streamingBySessionId: Record<string, boolean>` (or a `Map`).
+2. The early-return filter widens from `=== activeSessionIdRef.current` to `openSessionIds.has(envelope.sessionId)`, where `openSessionIds` is `multiView ? new Set(tiles.map(t=>t.sessionId)) : new Set([activeSessionIdRef.current])`.
 
-### 5.5 `ptyService` — write owner_pid on every spawn, gate dispose on ownership
-
-File: `apps/desktop/src/main/services/pty/ptyService.ts`.
-
-- Constructor takes a new option `processRegistry: ProcessRegistryService` (or just `ownerPid: () => number` if you want the minimal coupling — the registry is the source of truth either way).
-- `create(args)` (line 2392) — when calling `sessionService.create(...)` (line ~2485), pass `ownerPid: registry.pid`.
-- `create(args)` — when the resume branch calls `sessionService.reattach(...)` (line 2654), pass `ownerPid: registry.pid`. The resuming process becomes the new owner. **Watch out:** there's another reattach call at line 2436 (live-attached-entry branch) for the rare case where a live PTY is found for an existingSession. That branch should also write `ownerPid: registry.pid`.
-- `dispose({ptyId, sessionId})` (line 3497) — **the orphan branch is the dangerous one.** Right now if `ptyId` is unknown but `sessionId` resolves, it disposes the row unconditionally. New behavior: if `session.ownerPid != null && session.ownerPid !== registry.pid && registry.isPidLive(session.ownerPid)`, **skip the dispose** and emit a `warn` log (`pty.dispose_skipped_owned_by_peer`). Return the existing PtyCreateResult shape (caller already handles missing PTY). The "PTY in our map" branch (line 3534 onwards) is fine — if we have the entry, we own it by definition.
-- `closeEntry` (line 2080) — no change. It only fires from `pty.onExit` in our process, so by definition we own the row. Leave it alone.
-
-### 5.6 `agentChatService` — write owner_pid on chat row creation
-
-File: `apps/desktop/src/main/services/chat/agentChatService.ts`. The chat rows are also `terminal_sessions` (toolType `claude-chat`, `codex-chat`, etc.).
-
-- Wherever `sessionService.create({...})` is called from `createSession` / `ensureIdentitySession`, pass `ownerPid: registry.pid`.
-- `resumeSession` (line 19584 today) and `endSession` (line 8489) — no ownership flip needed for the in-process case (we own it because the runtime is in this process). But: in the multi-daemon world the user has, a chat row created by daemon A may get a `resumeSession` call from daemon B. **Tier 2 fixes this properly by routing to whichever process owns the row.** For tier 1, do an ownership guard in `resumeSession`: if the row's `owner_pid` is a live peer pid (not us), throw `Error("Chat session is owned by another ADE process; cannot resume from here.")`. The renderer should fall back to using the existing daemon RPC path (`callProjectRuntimeActionIfBound`).
-
-### 5.7 Tests
-
-Add to `apps/desktop/src/main/services/sessions/sessionService.test.ts`:
-
-1. `create` with `ownerPid` persists and `get(id)` returns it on `ownerPid`.
-2. `reconcileStaleRunningSessions` with a `liveOwnerPids = {12345}` set leaves rows with `owner_pid=12345` alone, sweeps rows with `owner_pid=99999`, sweeps rows with `owner_pid=null` (legacy).
-3. `reattach` sets `owner_pid` to the new owner.
-
-New test file `apps/desktop/src/main/services/runtime/processRegistryService.test.ts`:
-
-1. `start` inserts a row.
-2. `heartbeat` advances `last_seen`.
-3. `listLivePids` includes own pid even before first heartbeat.
-4. `listLivePids` excludes a peer pid whose `last_seen` is older than the liveness window.
-5. `isPidLive` matches the listLivePids predicate.
-6. `pruneStale` deletes peer rows older than 10x liveness window, keeps own.
-7. `stop` removes own row.
-
-Add to `apps/desktop/src/main/services/pty/ptyService.test.ts`:
-
-1. `dispose({ptyId: "missing", sessionId})` against a row owned by a live peer is a no-op (does not call `sessionService.end`); emits the warn log.
-2. `dispose({ptyId: "missing", sessionId})` against a row owned by us OR a dead peer DOES call `sessionService.end`.
-3. `create` writes `owner_pid` on the row.
-
-### 5.8 Edge cases for tier 1
-
-- **Same OS process opens DB twice (sqlite WAL etc.).** Not an issue here — process pid is unique per OS process.
-- **Pid reuse after a crash.** A new ADE process happens to grab the same pid as a dead one. The dead one's `runtime_processes` row will have a stale `last_seen` — `listLivePids` won't include it. As soon as `processRegistry.start()` writes the new row, the pid maps to the live process. The narrow race: between the new process starting and writing its first row, a sibling could mistake the stale row's pid (now the new pid) for "still dead." Acceptable; reconcile is best-effort and the new owner will heartbeat within seconds.
-- **DB in `journal_mode=delete` (current state).** Confirmed live via `sqlite3 .../ade.db "pragma journal_mode;"` → `delete`. Concurrent writers serialize via SQLite's reserved/exclusive lock. WAL would be better for concurrent readers + writers; that's a separate task. For tier 1, the heartbeat write contention is bounded (one row per process, 5s cadence) and SQLite's `busy_timeout` handles brief stalls.
-- **Long-running processes that pause heartbeats during sync GC.** Liveness window is 3x heartbeat interval (15s default) to absorb single missed beats. Tune if you see false positives.
-- **Mobile / sync workers.** They also open the DB. Decide their role: probably `"sync-worker"` and treat like any other process. Don't let them dispose anything they didn't create — gate on owner_pid as elsewhere.
-- **Stale `runtime_processes` rows after a hard crash.** `pruneStale` cleans them up; call it from each `processRegistry.start()` once at boot.
-- **`ChatTerminalDrawer.tsx:387-392` `disposeTabsOnUnmount`** — this is the renderer calling `pty.dispose` from a React effect cleanup. The renderer doesn't know the owner. The main-process `dispose` now refuses to dispose rows it doesn't own, so this is safe even when the renderer unmounts a tab whose backing PTY lives in a daemon. Same goes for `useWorkSessions.stopRuntime` and the chat drawer's "session deleted" branch.
-
----
-
-## 6. Tier 2 — daemon owns PTYs
-
-Tier 1 makes everything safe. Tier 2 makes it *interactive across surfaces*. The pattern already exists for chats. Mirror it for PTYs.
-
-### 6.1 Add PTY RPC methods to `adeRpcServer`
-
-File: `apps/ade-cli/src/adeRpcServer.ts`. Open the file, find where `sync.*` and `modelPicker.*` methods are dispatched (around line 7763, 7826), and add a similar `pty.*` block.
-
-Methods needed (mirror `ptyService` interface):
-
-- `pty.create` → wraps `ptyService.create(args)` and returns `PtyCreateResult` + the new session row.
-- `pty.write` → wraps `ptyService.write({ptyId, data})`.
-- `pty.resize` → wraps `ptyService.resize({ptyId, cols, rows})`.
-- `pty.dispose` → wraps `ptyService.dispose({ptyId, sessionId})`.
-- `pty.sendToSession` → wraps `ptyService.sendToSession(args)`. This is the critical one for the "resume an ended CLI session" flow.
-- `pty.list` → returns `service.enrichSessions(...)` snapshot.
-
-The daemon already has an `eventBuffer`. Add a new event category `"pty"` (alongside `"runtime"`, `"mission"`, etc.) and push every `broadcastData`/`broadcastExit` event into it:
+### ChatView (read `apps/ade-cli/src/tuiClient/components/ChatView.tsx`)
 
 ```ts
-const ptyService = createPtyService({
-  ...,
-  broadcastData: (event) => {
-    runtime.eventBuffer.push({ timestamp: nowIso(), category: "pty", payload: { type: "pty_data", event } });
-  },
-  broadcastExit: (event) => {
-    runtime.eventBuffer.push({ timestamp: nowIso(), category: "pty", payload: { type: "pty_exit", event } });
-  },
-});
+function ChatView({
+  events, activeSession, streaming, interrupted,
+  expandedLineIds, maxRows, scrollOffsetRows, selection,
+  width, laneName, projectName, provider, notices, …
+})
 ```
 
-Clients subscribe via the existing `runtimeEvents.subscribe` mechanism with `category: "pty"` and get the live stream.
+No local state for messages — fully driven from parent. **You will extend the props with `focused?: boolean` (for tile-level focus rendering) and `onRemove?: () => void` (for the `×` affordance).** Internal logic computes `RenderedChatRow` from aggregated blocks (`aggregateChatBlocks()` in `aggregate.ts`).
 
-### 6.2 Route the desktop's PTY calls through the daemon
-
-File: `apps/desktop/src/preload/preload.ts`. Look at how `chat.send` works (around line 5173). The pattern:
+### Submit / prompt routing (read `app.tsx` `submitPrompt` ~4050)
 
 ```ts
-const runtime = await callProjectRuntimeActionIfBound<void>("chat", "sendMessage", { args });
-if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
+async function submitPrompt(value: string) {
+  // ...validate, parse slash commands, extract attachments
+  const sessionId = activeSessionIdRef.current;     // <-- this line is the only routing
+  await sendChatMessage(conn, sessionId, text, attachments);
+  setStreaming(true);
+  await refreshState();
+}
 ```
 
-Add the same pattern for every `pty.*` method exposed on `window.ade.pty`. When the daemon is bound, route through it. Otherwise fall back to local IPC (the existing behavior).
+In multi-view, replace the `sessionId` line with:
+```ts
+const sessionId = multiView
+  ? multiView.tiles[multiView.focusedIndex].sessionId
+  : activeSessionIdRef.current;
+```
 
-The IPC handlers in `apps/desktop/src/main/services/ipc/registerIpc.ts` (lines 7572-7589 for pty methods) stay as the local fallback — they call `ctx.ptyService` directly. The desktop-main `ptyService` becomes a legacy fallback that only fires when the daemon isn't reachable.
+### Persistence (read `apps/ade-cli/src/tuiClient/state.ts`)
 
-### 6.3 Renderer subscribes to daemon PTY events
+`~/.ade/ade-code-state.json` stores `lastChatByLane` and `lastChatByProjectLane` (per-lane last-active session). Debounced 500ms saves via `saveAdeCodeProjectState()`.
 
-`TerminalView` currently reads PTY data via `window.ade.pty.onData(...)` which fans out from the local main process. Add a parallel subscription to the daemon's `runtimeEvents.subscribe({category: "pty"})` stream. The preload already has `subscribeAgentChatEvents` doing exactly this pattern (preload.ts:2366) — clone it for PTY events.
-
-### 6.4 TUI gets the same byte stream
-
-`apps/ade-cli/src/tuiClient/connection.ts:448 subscribeRuntimeEvents` already supports arbitrary categories. The TUI can subscribe to `category: "pty"` the moment it has an Ink terminal renderer to display the bytes. **Building that Ink terminal widget is out of scope for tier 2** — leave a TODO, ship tier 2 with the wire ready.
-
-### 6.5 Mobile and remote runtimes
-
-`apps/desktop/src/main/services/remoteRuntime/` already brokers chat events to/from a remote daemon via SSH. The PTY event category needs the same forwarding. Audit `remoteConnectionPool.ts` and add the new category to its allowed list.
-
-### 6.6 Migrate `ChatTerminalDrawer` and `WorkViewArea` to be daemon-aware
-
-These components hold direct `window.ade.pty.*` calls. Audit:
-
-- `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` — `WorkCliContinuationComposer` and `ClosedCliSessionSurface` invoke `onContinue` which threads through to `pty.sendToSession`. The preload-level routing in §6.2 covers this transparently.
-- `apps/desktop/src/renderer/components/chat/ChatTerminalDrawer.tsx` — calls `pty.dispose` on unmount and on session-deleted events. The daemon-side `pty.dispose` (already ownership-gated from tier 1) will no-op cross-process correctly.
-
-### 6.7 Tests
-
-Integration test in `apps/ade-cli/src/adeRpcServer.test.ts`: a client subscribes to `category: "pty"`, calls `pty.create`, then receives `pty_data` notifications when the PTY produces output.
-
-Integration test for the desktop preload routing: when `callProjectRuntimeActionIfBound` is bound, `pty.sendToSession` does NOT hit the local IPC handler.
+**Do not** add `multiView` here. Multi-view is in-memory only.
 
 ---
 
-## 7. Acceptance criteria
+## Feature 1: Universal click — detailed design
 
-Run these by hand at the end. None of them require the user.
+### Step 1: Hit-test registry
 
-1. **Concurrent boot, no false dispose.** Start the desktop. Start `ade code` on the same project. Confirm no rows flip to `disposed` purely from the TUI boot. (`sqlite3 .../ade.db "select id, tool_type, status, owner_pid from terminal_sessions where status='running';"` before/after.)
-2. **Crash-resilient cleanup.** Start a CLI session in the desktop. `kill -9` the desktop process. Wait > liveness window. Open desktop again. The row is now `disposed` (the new desktop's reconcile sees the dead owner_pid). No live PTYs were killed — verify the runaway claude/codex processes are still in `ps aux` and will be reaped by the OS / a follow-up cleanup pass.
-3. **Cross-surface live CLI rendering (tier 2).** Start `claude` from the desktop's Work tab. Open `ade code` in another terminal on the same lane. The TUI sees the same byte stream live (or at minimum receives pty events on `category: "pty"` — the Ink renderer is out of scope but the wire test confirms data is flowing).
-4. **Mobile sees what desktop sees** when sync is configured — same `category: "pty"` events forwarded over the remote runtime transport.
-5. **Symptom A regression test** — resume an ended CLI session from `ClosedCliSessionSurface`, observe the surface swap to live `TerminalView` immediately (already fixed by `upsertSessionSnapshot` + `reattach` emitChanged from §4; still works).
-6. **Symptom B regression test** — start a Claude Code CLI in the desktop, immediately open `ade code` on the same lane. Confirm the desktop's view stays as live `TerminalView`. Confirm the `terminal_sessions` row keeps `status='running'` and `owner_pid` matches the desktop's pid.
+Create `apps/ade-cli/src/tuiClient/hitTestRegistry.ts`:
+
+```ts
+export type HitRect = { x: number; y: number; w: number; h: number };
+
+export type HitTarget = {
+  id: string;                 // stable id for the click target
+  rect: HitRect;              // absolute terminal coordinates (1-based)
+  onClick?: (ev: MouseEvent) => void;
+  onHover?: (hovered: boolean) => void;
+  zIndex?: number;            // higher wins on overlap (default 0)
+};
+
+export interface HitTestRegistry {
+  register(target: HitTarget): void;
+  unregister(id: string): void;
+  hitTest(x: number, y: number): HitTarget | null;     // for clicks
+  hoverTest(x: number, y: number): HitTarget | null;   // same lookup, used for hover state
+  clear(): void;
+}
+
+// Backed by a flat array; linear scan is plenty fast (<500 targets, called per mouse event ≤ 60Hz).
+export function createHitTestRegistry(): HitTestRegistry { … }
+```
+
+Wire one registry instance into `app.tsx` via a React context (`HitTestProvider`). Components grab the registry through a `useHitTest()` hook and call `register` in a `useEffect` (cleanup unregisters). Use `useLayoutEffect` if you find render-order races between mouse event and registration.
+
+Inside `app.tsx`'s `parseTerminalMouseInput` consumer:
+```ts
+case "click": {
+  const target = registry.hitTest(mouse.x, mouse.y);
+  if (target?.onClick) target.onClick(mouse);
+  break;
+}
+case "move": {
+  const target = registry.hoverTest(mouse.x, mouse.y);
+  if (target?.id !== currentHoveredId) {
+    currentHovered?.onHover?.(false);
+    target?.onHover?.(true);
+    currentHoveredId = target?.id ?? null;
+    setHoveredId(currentHoveredId);    // triggers re-render so highlight updates
+  }
+  break;
+}
+```
+
+### Step 2: Enable mode 1003 (mouse move)
+
+In the mouse-enable block in `app.tsx`:
+```ts
+process.stdout.write("\x1b[?1003h");   // any-event tracking (includes mouse-move)
+```
+And on shutdown:
+```ts
+process.stdout.write("\x1b[?1003l");
+```
+
+Note: mode 1003 generates events for *every* cursor movement, which can be heavy. Throttle the hover-test path with `requestAnimationFrame`-equivalent (e.g. setImmediate-based coalescing) if profiling shows it dominating render cost.
+
+### Step 3: Hover styling
+
+Components decide their own hover render. Standard pattern:
+```tsx
+const [hovered, setHovered] = useState(false);
+useHitTest({ id, rect, onClick, onHover: setHovered });
+return <Box backgroundColor={hovered ? "blueBright" : undefined}>…</Box>;
+```
+
+Use Ink's `Box backgroundColor` or `Text inverse` for the highlight — pick whichever reads better with the existing palette. Keep it subtle; the hover is meant to teach, not strobe.
+
+### Step 4: Migrate components (full parity list)
+
+Convert each of these to register hit-test rects and call their existing keyboard action on click. Source columns reference where the keyboard handler lives today.
+
+| Pane              | Component / handler                                  | File:line (approx)            |
+|-------------------|------------------------------------------------------|-------------------------------|
+| Right pane        | Model picker rows + tab rail + favorite toggle (`f`) | `app.tsx` 7878–7937           |
+| Right pane        | Model picker search (`/`)                            | `app.tsx` 7940–7970           |
+| Right pane        | Lane-details actions (`Return`, t-toggle file tree)  | `app.tsx` 7979–8044           |
+| Right pane        | List pane rows + scroll                              | `app.tsx` 8048–8056           |
+| Right pane        | Lane-delete form radio (`1/2/3`, space/`f`)          | `app.tsx` 7750–7765           |
+| Overlay           | Approval prompt accept/decline (`a`/`d`)             | `app.tsx` 7732–7735           |
+| Overlay           | Mention palette nav + insert (up/down/Tab/Enter)     | `app.tsx` 8118–8142           |
+| Overlay           | Slash palette nav + insert                           | `app.tsx` 8118–8142           |
+| Bottom prompt     | Prompt-history recall (k/j or up/down in vim mode)   | `app.tsx` 7597–7603           |
+| Bottom prompt     | Prompt submit (vim normal mode)                      | `app.tsx` 7605–7608           |
+| Footer            | Status-line clickable model swap, etc.               | `ModelStatus`, `FooterControls` |
+| Header            | Project / lane / chat title clickable to open palette| `Header` component            |
+
+For each: the keyboard handler stays; clicks dispatch the same intent. After migration, delete the old `*IndexForMouseLine` helpers (~`app.tsx` 1557–1620).
+
+### Step 5: Don't break what works
+
+Things already mouse-wired (don't touch their behavior, just port them to the registry on the way through):
+
+| Target                                        | File:line               |
+|-----------------------------------------------|-------------------------|
+| Drawer lanes/chats select                     | `app.tsx` 7096–7131     |
+| Chat transcript text select (click/drag/release) | `app.tsx` 7181–7225  |
+| Chat scroll wheel                              | `app.tsx` 7239–7245    |
+| Prompt focus click                            | `app.tsx` 7083–7094     |
+| Lane detail action click (existing partial)   | `app.tsx` 7141–7144     |
+| Form field click                              | `app.tsx` 7156–7170     |
+| Subagent transcript list click                | `app.tsx` 7175–7176     |
 
 ---
 
-## 8. Out of scope / follow-ups (do not do as part of this work)
+## Feature 2: Multi-chat middle pane — detailed design
 
-- Build the Ink terminal widget so TUI can render raw PTY bytes for Codex CLI etc. (Tier 2 makes the data available; rendering is a UI task.)
-- Move the DB to `journal_mode=wal` for true concurrent readers/writers. Worthwhile but separate.
-- Replace the renderer's `disposeTabsOnUnmount` pattern with explicit user intent. The ownership gate makes it safe enough.
-- Make the daemon survive desktop crashes when desktop spawned it (currently child of init thanks to `detached: true`, but verify `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts:824 spawnRuntime` does the same).
+### Step 1: State
+
+In `app.tsx`:
+```ts
+type MultiViewTile = { sessionId: string; laneId: string };
+type MultiViewState = { tiles: MultiViewTile[]; focusedIndex: number };
+
+const [multiView, setMultiView] = useState<MultiViewState | null>(null);
+const multiViewRef = useRef<MultiViewState | null>(null);
+useEffect(() => { multiViewRef.current = multiView; }, [multiView]);
+
+// Per-tile transient state
+const [streamingBySessionId, setStreamingBySessionId] = useState<Record<string, boolean>>({});
+const [scrollBySessionId, setScrollBySessionId] = useState<Record<string, number>>({});
+const [selectionBySessionId, setSelectionBySessionId] = useState<Record<string, ChatTextSelection | null>>({});
+const [promptHistoryBySessionId, setPromptHistoryBySessionId] = useState<Record<string, string[]>>({});
+
+// Add-mode
+const [addMode, setAddMode] = useState<{ cursorLaneId: string; cursorChatId: string | null } | null>(null);
+```
+
+### Step 2: Streaming refactor
+
+Replace every reference to global `streaming` with `streamingBySessionId[sessionId]`. The places that set `setStreaming(true/false)` (in `submitPrompt`, `onChatEvent`) update the record instead:
+```ts
+setStreamingBySessionId(prev => ({ ...prev, [sessionId]: true }));
+```
+
+Widen the event subscription filter:
+```ts
+const openSessionIds = multiView
+  ? new Set(multiView.tiles.map(t => t.sessionId))
+  : new Set([activeSessionIdRef.current]);
+
+if (!openSessionIds.has(envelope.sessionId)) {
+  refreshState({ hydrateHistory: false });
+  return;
+}
+```
+
+### Step 3: Layout math
+
+Create `apps/ade-cli/src/tuiClient/multiChatLayout.ts`:
+
+```ts
+export type TileRect = { x: number; y: number; w: number; h: number };
+
+const PATTERNS: Record<number, ReadonlyArray<{ row: number; col: number; rowSpan: number; colSpan: number; rows: number; cols: number }>> = {
+  1: [{ row: 0, col: 0, rowSpan: 1, colSpan: 1, rows: 1, cols: 1 }],
+  2: [
+    { row: 0, col: 0, rowSpan: 1, colSpan: 1, rows: 1, cols: 2 },
+    { row: 0, col: 1, rowSpan: 1, colSpan: 1, rows: 1, cols: 2 },
+  ],
+  3: [
+    { row: 0, col: 0, rowSpan: 1, colSpan: 1, rows: 1, cols: 3 },
+    { row: 0, col: 1, rowSpan: 1, colSpan: 1, rows: 1, cols: 3 },
+    { row: 0, col: 2, rowSpan: 1, colSpan: 1, rows: 1, cols: 3 },
+  ],
+  4: [ /* 2x2 */
+    { row: 0, col: 0, rowSpan: 1, colSpan: 1, rows: 2, cols: 2 },
+    { row: 0, col: 1, rowSpan: 1, colSpan: 1, rows: 2, cols: 2 },
+    { row: 1, col: 0, rowSpan: 1, colSpan: 1, rows: 2, cols: 2 },
+    { row: 1, col: 1, rowSpan: 1, colSpan: 1, rows: 2, cols: 2 },
+  ],
+  5: [ /* 2 top, 3 bottom — row 0 has 2 cells over a 6-col virtual grid (each spans 3); row 1 has 3 cells (each spans 2) */
+    { row: 0, col: 0, rowSpan: 1, colSpan: 3, rows: 2, cols: 6 },
+    { row: 0, col: 3, rowSpan: 1, colSpan: 3, rows: 2, cols: 6 },
+    { row: 1, col: 0, rowSpan: 1, colSpan: 2, rows: 2, cols: 6 },
+    { row: 1, col: 2, rowSpan: 1, colSpan: 2, rows: 2, cols: 6 },
+    { row: 1, col: 4, rowSpan: 1, colSpan: 2, rows: 2, cols: 6 },
+  ],
+  6: [ /* 3x2 */
+    { row: 0, col: 0, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+    { row: 0, col: 1, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+    { row: 0, col: 2, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+    { row: 1, col: 0, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+    { row: 1, col: 1, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+    { row: 1, col: 2, rowSpan: 1, colSpan: 1, rows: 2, cols: 3 },
+  ],
+};
+
+export function computeTileRects(n: 1|2|3|4|5|6, width: number, height: number): TileRect[] {
+  const pat = PATTERNS[n];
+  const colW = Math.floor(width / pat[0].cols);
+  const rowH = Math.floor(height / pat[0].rows);
+  return pat.map(p => ({
+    x: p.col * colW,
+    y: p.row * rowH,
+    w: p.colSpan * colW,
+    h: p.rowSpan * rowH,
+  }));
+}
+```
+
+Edge cases:
+- If `width < 2 * MIN_TILE_W` for an n>=2 layout, refuse to render the grid and surface a notice in the status line ("terminal too narrow for multi-view"). Suggest `MIN_TILE_W = 30`, `MIN_TILE_H = 8` — tune by feel.
+- Round-down division leaves a few unused cells at the right/bottom edge. That's fine; the parent `<Box>` clips.
+
+### Step 4: `MultiChatGrid` component
+
+Create `apps/ade-cli/src/tuiClient/components/MultiChatGrid.tsx`:
+
+```tsx
+type Props = {
+  tiles: MultiViewTile[];
+  focusedIndex: number;
+  width: number;
+  height: number;
+  eventsBySessionId: Record<string, AgentChatEventEnvelope[]>;
+  sessionBySessionId: Record<string, AgentChatSessionSummary>;
+  streamingBySessionId: Record<string, boolean>;
+  scrollBySessionId: Record<string, number>;
+  selectionBySessionId: Record<string, ChatTextSelection | null>;
+  onFocusTile: (index: number) => void;
+  onRemoveTile: (index: number) => void;
+};
+
+export function MultiChatGrid(props: Props) {
+  const rects = useMemo(() =>
+    computeTileRects(props.tiles.length as 1|2|3|4|5|6, props.width, props.height),
+    [props.tiles.length, props.width, props.height]);
+
+  return (
+    <Box position="relative" width={props.width} height={props.height}>
+      {props.tiles.map((t, i) => {
+        const rect = rects[i];
+        const isFocused = i === props.focusedIndex;
+        return (
+          <Box
+            key={t.sessionId}
+            position="absolute"
+            marginLeft={rect.x}
+            marginTop={rect.y}
+            width={rect.w}
+            height={rect.h}
+          >
+            <ChatView
+              events={props.eventsBySessionId[t.sessionId] ?? []}
+              activeSession={props.sessionBySessionId[t.sessionId]}
+              streaming={!!props.streamingBySessionId[t.sessionId]}
+              scrollOffsetRows={props.scrollBySessionId[t.sessionId] ?? 0}
+              selection={props.selectionBySessionId[t.sessionId] ?? null}
+              width={rect.w}
+              maxRows={rect.h}
+              focused={isFocused}
+              onRemove={() => props.onRemoveTile(i)}
+              // … other passthrough props
+            />
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+```
+
+Note: Ink supports `position="absolute"` via Yoga's positioning model; verify with a quick smoke test before relying on it. If it doesn't, render tiles in normal flow with computed line padding (the chat-row-budget pattern already does this).
+
+### Step 5: Per-tile prompt history
+
+```ts
+// when submitting
+setPromptHistoryBySessionId(prev => ({
+  ...prev,
+  [sessionId]: [...(prev[sessionId] ?? []).slice(-99), text],   // cap at 100
+}));
+
+// when up-arrow recalls
+const history = promptHistoryBySessionId[focusedSessionId] ?? [];
+```
+
+### Step 6: Add-mode
+
+State machine:
+```
+normal ──(Ctrl+A, only when activePane === "chat")──> addMode
+addMode ──(Esc)──> normal (no changes)
+addMode ──(Enter on highlighted chat)──> normal + multiView updated
+```
+
+Render: when `addMode` is set, the layout wraps every non-drawer region in a `<Box>` that applies dim styling (Ink's `<Text dimColor>` on all descendants, or a custom `<Dim>` wrapper). Insert a top banner row:
+```
+ Pick a chat to add  ·  ↵ Add  ·  Esc Cancel
+```
+
+The drawer renders normally but with a separate cursor state (`addMode.cursorLaneId / cursorChatId`) so navigation in add-mode does NOT touch `activeLaneId` / `activeSessionId`. Reuse the existing drawer rendering function — just thread the alternate cursor in.
+
+Add behavior:
+```ts
+function addTileToGrid(sessionId: string, laneId: string) {
+  setMultiView(prev => {
+    // If chat is already in grid, refocus its tile, no-op the add.
+    if (prev) {
+      const existingIdx = prev.tiles.findIndex(t => t.sessionId === sessionId);
+      if (existingIdx >= 0) return { ...prev, focusedIndex: existingIdx };
+      if (prev.tiles.length >= 6) return prev;  // cap
+      return {
+        tiles: [...prev.tiles, { sessionId, laneId }],
+        focusedIndex: prev.tiles.length,        // focus the newly added tile
+      };
+    }
+    // Bootstrapping into multi-view: include the currently-active chat as tile 0
+    return {
+      tiles: [
+        { sessionId: activeSessionIdRef.current, laneId: activeLaneIdRef.current },
+        { sessionId, laneId },
+      ],
+      focusedIndex: 1,
+    };
+  });
+}
+```
+
+### Step 7: Remove
+
+```ts
+function removeTile(index: number) {
+  setMultiView(prev => {
+    if (!prev) return prev;
+    const tiles = prev.tiles.filter((_, i) => i !== index);
+    if (tiles.length < 2) {
+      // Exit multi-view; surviving tile (if any) becomes the active chat in single mode
+      if (tiles[0]) {
+        selectActiveLaneId(tiles[0].laneId);
+        selectActiveSessionId(tiles[0].sessionId);
+      }
+      return null;
+    }
+    const focusedIndex = Math.min(prev.focusedIndex, tiles.length - 1);
+    return { tiles, focusedIndex };
+  });
+}
+```
+
+### Step 8: Focus follows tile
+
+When `multiView` is set and `multiView.focusedIndex` changes, sync the rest of the TUI:
+```ts
+useEffect(() => {
+  if (!multiView) return;
+  const tile = multiView.tiles[multiView.focusedIndex];
+  if (!tile) return;
+  if (tile.laneId !== activeLaneIdRef.current) selectActiveLaneId(tile.laneId);
+  if (tile.sessionId !== activeSessionIdRef.current) selectActiveSessionId(tile.sessionId);
+}, [multiView]);
+```
+
+This makes the right pane, status bar, and sidebar lane highlight all reflect the focused tile's lane automatically — they already read from `activeLaneId` / `activeSessionId`.
+
+### Step 9: Drag-to-add
+
+In the drawer chat row component, register a `onDragStart` via the registry (extend `HitTarget` with optional `onDragStart`/`onDrop`). When mouse-drag begins on a chat row and ends inside the middle pane bounds, invoke `addTileToGrid(sessionId, laneId)`. Mouse mode 1002 (drag) is already enabled — coordinates flow through the parser as `drag` events.
+
+### Step 10: Keybindings
+
+Pick free chords. Suggested:
+- `Ctrl+G` — toggle add-mode (only fires when `activePane === "chat"`)
+- `Ctrl+W` — remove focused tile
+- `Tab` — cycle focused tile within multi-view (existing `Tab` cycles panes; bind it to tile-cycle when in chat pane *and* multi-view is active; otherwise current behavior)
+- Mouse: click anywhere inside a tile = focus that tile; click on the `×` = remove
+
+Document these in the footer and in `FooterControls` rendering.
 
 ---
 
-## 9. Working notes for the next agent
+## UI specification (depth)
 
-- **Worktree:** `/Users/admin/Projects/ADE/.ade/worktrees/deeplinks-d52aa89e/`. Stay in it. Don't switch to project root.
-- **Git diff to inspect before starting:** there are pre-existing changes from other in-flight work in this lane (e.g. `agentChatService.ts` hook-noise removal, `chatTranscriptRows.ts` tweaks). Run `git diff --stat` to see what's untouched-by-me vs touched. Don't revert anyone else's changes.
-- **Branch:** `ade/deeplinks-d52aa89e`. Don't push or open a PR until acceptance criteria pass.
-- **Test sharding** — the test suite is large. Always run scoped (`npx vitest run src/main/services/sessions/sessionService.test.ts` etc.). Full-suite invocations OOM.
-- **Type-check:** `npm run typecheck` from `apps/desktop/` and from `apps/ade-cli/`. Both must be green.
-- **Lint:** `npm run lint` from `apps/desktop/`. Run only after typecheck.
-- **Don't touch normal ADE chats.** The user has been explicit that agent chats already work and any UI changes to `AgentChatPane.tsx` will be rejected unless they're strictly ownership-related. The chat path already has cross-surface sync via the daemon (§3). Don't try to "improve" it.
+### Tile chrome
+
+Single-line header at the top of each tile:
+
+```
+┌ lane-slug / chat-title ●─────────────── ×┐
+```
+
+- Leading `┌` corner from Ink's border.
+- `lane-slug` truncated with ellipsis if needed to keep `chat-title` visible.
+- ` / ` separator.
+- `chat-title` (the session's display name) truncated as needed.
+- Trailing space + `●` when `streaming === true`, otherwise space.
+- Right-aligned `×` (1 cell) when `onRemove` is provided. Register this single cell as a separate hit target so click works precisely.
+
+### Focused tile vs unfocused
+
+- **Unfocused tile**: `borderStyle="round"` (Ink built-in), header text default color.
+- **Focused tile**: `borderStyle="double"`, header text in cyan (`<Text color="cyan">…</Text>`).
+- Content (message body) is **not dimmed** on unfocused tiles — keep them fully readable so background streaming is visible at a glance.
+
+### Six grid layouts (wireframes)
+
+Imagine the middle pane is ~80 cols wide × ~24 rows tall. Borders are illustrative; real rendering uses Ink's box borders.
+
+**N=1 — full:**
+```
+┌─ lane-a / chat-1 ●────────────────────────────────────────────────────────┐
+│                                                                            │
+│ (full chat body)                                                           │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────── ×┘
+```
+
+**N=2 — 2 cols:**
+```
+┌─ lane-a/chat-1 ●─────────────┐ ╔ lane-b/chat-2 ●═════════════════╗
+│                              │ ║                                  ║
+│ left chat                    │ ║ right chat (focused)            ║
+│                              │ ║                                  ║
+└──────────────────────────── ×┘ ╚══════════════════════════════ ×╝
+```
+
+**N=3 — 3 cols:**
+```
+┌ lane-a/c1 ●────┐ ┌ lane-b/c2 ●────┐ ╔ lane-c/c3 ●════════╗
+│                │ │                │ ║                     ║
+│                │ │                │ ║ focused            ║
+└────────────── ×┘ └────────────── ×┘ ╚════════════════ ×╝
+```
+
+**N=4 — 2×2:**
+```
+┌ lane-a/c1 ●────────────────┐ ╔ lane-b/c2 ●═══════════════╗
+│                            │ ║ (focused)                  ║
+└────────────────────────── ×┘ ╚═════════════════════════ ×╝
+┌ lane-c/c3 ●────────────────┐ ┌ lane-a/c4 ●────────────────┐
+│                            │ │                            │
+└────────────────────────── ×┘ └────────────────────────── ×┘
+```
+
+**N=5 — 2 top + 3 bottom:**
+```
+┌ lane-a/c1 ●────────────────────────┐ ┌ lane-b/c2 ●───────────────────────┐
+│                                    │ │                                   │
+│                                    │ │                                   │
+└────────────────────────────────── ×┘ └─────────────────────────────────×┘
+┌ lane-c/c3 ●──────┐ ╔ lane-d/c4 ●═════╗ ┌ lane-e/c5 ●──────┐
+│                  │ ║ (focused)        ║ │                  │
+└──────────────── ×┘ ╚═══════════════ ×╝ └──────────────── ×┘
+```
+
+**N=6 — 3×2:**
+```
+┌ lane-a/c1 ●─────┐ ┌ lane-b/c2 ●─────┐ ╔ lane-c/c3 ●═══════╗
+│                 │ │                 │ ║ focused           ║
+└─────────────── ×┘ └─────────────── ×┘ ╚═══════════════ ×╝
+┌ lane-d/c4 ●─────┐ ┌ lane-e/c5 ●─────┐ ┌ lane-f/c6 ●───────┐
+│                 │ │                 │ │                   │
+└─────────────── ×┘ └─────────────── ×┘ └───────────────── ×┘
+```
+
+### Add-mode
+
+Full app view with dim overlay everywhere except the drawer:
+
+```
+ Pick a chat to add  ·  ↵ Add  ·  Esc Cancel
+┌──────────────┐ ┌── (dim middle) ─────────────┐ ┌(dim right)┐
+│ lane-foo     │ │ existing tile contents      │ │           │
+│   chat-1 ▸   │ │ (still visible, just dim)   │ │           │
+│   chat-2     │ │                             │ │           │
+│ lane-bar     │ │                             │ │           │
+│   chat-3     │ │                             │ │           │
+│   chat-4     │ └─────────────────────────────┘ └───────────┘
+│ lane-baz     │ ┌── (dim prompt) ──────────────────────────┐
+│   chat-5     │ │                                          │
+└──────────────┘ └──────────────────────────────────────────┘
+```
+
+- Banner uses default colors (not dimmed) — it's the only bright thing besides the sidebar so the eye lands on it.
+- The `▸` marker indicates the add-mode cursor (separate from the underlying active-chat highlight).
+- Pressing arrow keys moves `▸` across lanes and chats freely. `Enter` adds. `Esc` exits.
+
+### Status-bar grid mini-map
+
+Append to the footer status row, after model name:
+
+- N=1: `▣`
+- N=2: `▣▢` or `▢▣` depending on focus
+- N=3: `▣▢▢` etc.
+- N=4: `▣▢ / ▢▢` (rows separated by ` / `)
+- N=5: `▣▢ / ▢▢▢`
+- N=6: `▣▢▢ / ▢▢▢`
+
+Use `▣` for focused tile, `▢` for unfocused. Render in plain Unicode; no color needed.
+
+### Hover affordance (universal click)
+
+When `hoveredId` matches a registered target, the target renders with a subtle highlight. Pick **one** of these and apply consistently:
+
+- Option A: `<Box backgroundColor="blackBright">` wrapping the target.
+- Option B: `<Text inverse>` on the target's text.
+
+Recommendation: Option A for multi-cell targets (rows, buttons, tabs), Option B for inline single-line affordances (the `×`, palette items). Keep the effect very subtle — this is a confirmation, not a beacon.
 
 ---
 
-## 10. Investigation log — commands you can re-run to verify
+## Edge cases to handle
 
-These are the queries that proved the diagnosis. Re-run them to confirm the state matches what's described above.
-
-Find live ADE processes and which sockets they own:
-
-```sh
-ps aux | grep -E "ade.*serve|ade-runtime|claude " | grep -v grep
-ls -la /tmp/ade-runtime-*.sock /Users/admin/.ade*/sock/*.sock
-lsof /Users/admin/.ade-beta/sock/ade.sock
-lsof /tmp/ade-runtime-lane-*.sock
-```
-
-Confirm multiple ADE processes share the same project DB:
-
-```sh
-lsof /Users/admin/Projects/ADE/.ade/ade.db
-```
-
-(I saw five processes with the same inode open: desktop electron, ADE Beta main, two TUI lane runtimes, and a dev runtime.)
-
-DB state — running sessions vs OS-level claude processes:
-
-```sh
-sqlite3 /Users/admin/Projects/ADE/.ade/ade.db \
-  "select id, lane_id, tool_type, status, started_at, ended_at, last_output_at, pty_id from terminal_sessions where status in ('running','disposed') order by started_at desc limit 30;"
-```
-
-Cross-reference any `claude` row marked `disposed` against `ps aux | grep "claude --session-id <that id>"`. If the OS process is alive and the row is disposed, you've reproduced Symptom B.
-
-DB journal mode (informational — tier 1 doesn't require WAL):
-
-```sh
-sqlite3 /Users/admin/Projects/ADE/.ade/ade.db "pragma journal_mode;"
-```
+- **Terminal too narrow** for the chosen grid (e.g. N=6 but `width < 90`). Refuse to render the grid; show a notice in the status line ("Multi-view: terminal too narrow, displaying focused tile only") and render only the focused tile full-width until the terminal grows.
+- **Tile session ends** (chat marked `status: "ended"`). Keep the tile visible (with greyed header), don't auto-remove. Let the user decide via `×`.
+- **Lane deleted** while one of its sessions is in the grid. Treat similarly to ended — keep the tile, badge it with `(lane removed)` in the header.
+- **Drag-to-add when grid is already at 6**: ignore the drop, flash a 1s status-line notice ("Multi-view full (max 6)").
+- **Active session changes** outside multi-view (e.g. user clicks a sidebar chat in single-chat mode). Single-chat behavior preserved exactly.
+- **Add-mode while terminal resizes**: cancel add-mode, return to normal layout, do not lose existing multi-view tiles.
+- **Mouse mode 1003 not supported** by the user's terminal (rare but possible — older `tmux` versions, some SSH client wrappers). Detection is hard; if hover events never arrive, the feature degrades gracefully — clicks still work, just no hover. Acceptable.
+- **High event volume** with 6 concurrent streams: confirm event aggregation in `aggregateChatBlocks` doesn't lock the render thread. Add a small throttle if needed (coalesce per-session re-renders to ~30 Hz).
 
 ---
 
-## 11. Why this is the right fix
+## Files to create / modify
 
-Three things have to be true for the user's bugs to recur. Each tier eliminates one.
+### Create
 
-- The DB has no concept of "who owns this row." → Tier 1 (`owner_pid` + heartbeat).
-- Multiple processes mutate the same row believing they're the sole owner. → Tier 1 (dispose/reconcile gated on ownership).
-- Surfaces other than the spawner can't see live output for raw PTY sessions, so the user thinks the session "ended" when really only their view stopped updating. → Tier 2 (daemon owns PTYs, every surface subscribes to the byte stream).
+- `apps/ade-cli/src/tuiClient/hitTestRegistry.ts` — registry implementation + React context + `useHitTest` hook.
+- `apps/ade-cli/src/tuiClient/multiChatLayout.ts` — `computeTileRects` + PATTERNS table.
+- `apps/ade-cli/src/tuiClient/components/MultiChatGrid.tsx` — grid wrapper rendering N `<ChatView>` instances.
+- `apps/ade-cli/src/tuiClient/components/AddChatMode.tsx` — banner + dim wrapper + alt-cursor drawer rendering.
+- `apps/ade-cli/src/tuiClient/components/GridMiniMap.tsx` — small footer component.
+- Test files alongside each.
 
-The user's "running for a while and finally responded" anecdote is consistent with this: the agent chat (`claude-chat`) was healthy throughout because it goes through the daemon's chat path. The CLI row (`claude` tool type) had its `owner_pid`-less ancestor stomped at some point — likely by a `dispose` from a renderer effect or a reconcile pass from a sibling process — leaving the OS-level `claude` process orphaned in the DB sense but alive in reality. Tier 1 + Tier 2 together make this configuration impossible.
+### Modify
 
-The alternative fixes considered and rejected:
+- `apps/ade-cli/src/tuiClient/app.tsx` — the bulk of the work:
+  - Add new state (multiView, addMode, streamingBySessionId, scrollBySessionId, selectionBySessionId, promptHistoryBySessionId).
+  - Replace `streaming` references throughout.
+  - Widen `onChatEvent` filter to `openSessionIds`.
+  - Branch middle-pane render: `multiView ? <MultiChatGrid …/> : <ChatView …/>`.
+  - Extend `useInput` to handle add-mode keys (Esc, Enter, arrows) and multi-view keys (Ctrl+G, Ctrl+W, Tab for tile cycle).
+  - Update `submitPrompt` to route by focused tile.
+  - Enable/disable mouse mode 1003.
+  - Migrate each existing `*IndexForMouseLine` helper to component-level registry registration.
+  - Add `useEffect` syncing focused-tile → active lane/session.
+- `apps/ade-cli/src/tuiClient/components/ChatView.tsx` — add `focused?: boolean` + `onRemove?: () => void` props; render double-border + cyan header + clickable `×` accordingly.
+- `apps/ade-cli/src/tuiClient/state.ts` — **no changes** (multiView intentionally ephemeral).
 
-- **`last_output_at` heuristic only.** Already in place from §4. Doesn't help idle sessions; doesn't help dispose path. Acceptable as belt-and-suspenders, not as the primary mechanism.
-- **`process.kill(pid, 0)` instead of a registry table.** Works on the local machine. Falls over for sync / remote-runtime scenarios where the owner is on another host. The registry table generalizes.
-- **Lazy verification on interaction (skip reconcile entirely).** Discussed with the user. UI would briefly show stale "running" rows for crashed sessions; user explicitly rejected this UX.
-- **Move the DB to WAL mode.** Helps contention but doesn't change the ownership semantics. Worth doing eventually; orthogonal.
+---
 
-The right fix is the registry-backed ownership model + daemon-owned PTYs because both are *consistent with how chats already work in this codebase*. Tier 2 isn't introducing a new pattern, it's extending the one that demonstrably already works to the missing case.
+## Verification plan
+
+End-to-end (run the TUI in this worktree):
+
+1. **Universal click smoke test**
+   - Open model picker → click rows, tabs, favorite star → confirm parity with keyboard.
+   - Trigger approval prompt → click accept/decline.
+   - Open slash and mention palettes → click items.
+   - Open lane-delete form → click radio options and force toggle.
+   - Move mouse around → hover-highlight follows pointer.
+
+2. **Multi-chat lifecycle**
+   - From single chat, press `Ctrl+G` → add-mode banner appears, non-sidebar regions dim.
+   - Arrow into another lane → confirm underlying active lane stays put.
+   - Press Enter on a chat → grid switches to 2-col with new tile focused, right pane updates to new tile's lane.
+   - Add 3rd, 4th, 5th, 6th → confirm layouts match wireframes.
+   - Press `Ctrl+G` while 6 tiles open and try to add → confirm cap (no add, notice).
+   - Click `×` on a tile → confirm removal + grid reshapes.
+   - Remove down to 2 tiles → confirm remaining tile becomes single-chat mode (multiView cleared).
+
+3. **Cross-lane focus sync**
+   - 2 tiles from 2 lanes → click between them → confirm right pane, status bar, sidebar lane highlight all follow focused tile.
+   - Switch lanes via sidebar → confirm multi-view persists.
+
+4. **Concurrent streaming**
+   - Open 3 tiles → send a long prompt in each (focus, submit, focus next, submit, focus next, submit).
+   - Confirm all three stream simultaneously with ● indicators; non-focused tiles continue rendering events.
+
+5. **Per-tile history**
+   - Send 3 prompts to tile A, 2 prompts to tile B.
+   - Focus A → up-arrow cycles only A's. Focus B → up-arrow cycles only B's.
+
+6. **Drag-to-add**
+   - Click-drag a sidebar chat row into the middle → confirm it adds without add-mode.
+
+7. **Persistence (negative)**
+   - Open 4 tiles → kill TUI → relaunch → confirm app starts in single-chat mode.
+
+Unit tests:
+
+- `hitTestRegistry.test.ts` — register/unregister, overlapping rects (higher `zIndex` wins), out-of-bounds returns null.
+- `multiChatLayout.test.ts` — for each n ∈ [1,6], rects tile the area without overlap, respect minimums, total area ≤ input area.
+- `streamingBySessionId.test.ts` — events for non-focused sessions still update the per-session record.
+- `addMode.test.ts` — keyboard navigation does not mutate `activeSessionId` / `activeLaneId`; Enter calls `addTileToGrid` with the cursor target.
+
+Manual perf: with 6 tiles streaming, keystroke latency in the bottom prompt stays under ~16ms.
+
+---
+
+## Docs / references to read before starting
+
+- **Ink (terminal React)**: <https://github.com/vadimdemedes/ink#readme> — especially the section on `Box`, `Text`, `useInput`, `useStdout`, and the `position`/`marginLeft`/`marginTop` props (Yoga layout).
+- **XTerm mouse tracking modes**: <https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Mouse-Tracking> — for mode 1003 (any-event tracking), SGR encoding, and how to disable cleanly.
+- **Yoga layout reference**: <https://yogalayout.dev/> — Ink's underlying layout engine; relevant if you opt for `position="absolute"` in `MultiChatGrid`.
+- **Existing ADE patterns to study before coding**:
+  - `apps/ade-cli/src/tuiClient/app.tsx` — read `parseTerminalMouseInput`, `submitPrompt`, `onChatEvent`, the `useInput` block, and the layout `<Box>` tree (~7626–7800).
+  - `apps/ade-cli/src/tuiClient/components/ChatView.tsx` — full component, especially the event-aggregation and row-rendering paths.
+  - `apps/ade-cli/src/tuiClient/state.ts` — to know what NOT to touch for persistence.
+  - `apps/desktop/src/shared/types/chat.ts` lines 725–773 — the `AgentChatSession` type and friends.
+- **Existing hit-test helpers** (to be deleted post-migration): `laneDetailsActionIndexForMouseLine`, `formFieldIndexForMouseLine`, `setupPaneRowIndexForMouseLine`, `subagentIndexForPaneLine` in `app.tsx` ~1557–1620.
+
+---
+
+## Out of scope (do not do)
+
+- **Persistence of multi-view across restart** — explicitly ephemeral.
+- **Broadcasting one prompt to multiple tiles** — single-tile routing only.
+- **Per-tile prompt input** — keep the one bottom prompt; routing changes are enough.
+- **Tile rearranging / drag-to-swap** — tiles render in insertion order; not negotiable for v1.
+- **Number-key tile focus, middle-click remove, hover gutter arrow, streaming flash on non-focused tile** — not selected from the extras menu.
+- **Touching the desktop or web apps** — TUI-only change.

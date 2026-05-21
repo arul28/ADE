@@ -179,6 +179,44 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(chatModeFrame).not.toContain("next lane");
   });
 
+  it("makes split add mode obvious in the drawer chrome", () => {
+    const sessions: AgentChatSessionSummary[] = [
+      {
+        sessionId: "chat-1",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        title: "First chat",
+        status: "idle",
+        startedAt: "2026-05-12T11:30:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:31:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      },
+    ];
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "Feature", "feature/chat-nav", "2026-05-12T11:55:00.000Z")]}
+        sessions={sessions}
+        activeLaneId="lane-1"
+        activeSessionId="chat-1"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={0}
+        panelHeight={30}
+        mode="chats"
+        focused
+        addMode
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("PICK CHAT");
+    expect(frame).toContain("select chat in left pane");
+    expect(frame).toContain("↵/click");
+  });
+
   it("does not offer a new chat action for a missing lane worktree", () => {
     const frame = stripAnsi(render(
       <Drawer

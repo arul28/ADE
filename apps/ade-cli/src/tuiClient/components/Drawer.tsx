@@ -121,6 +121,7 @@ export function Drawer({
   selectedChatIndex,
   panelHeight,
   focused = false,
+  addMode = false,
   density = "full",
   mode = "lanes",
   prByLaneId = {},
@@ -138,6 +139,7 @@ export function Drawer({
   selectedChatIndex: number;
   panelHeight?: number;
   focused?: boolean;
+  addMode?: boolean;
   density?: DrawerDensity;
   mode?: DrawerMode;
   prByLaneId?: Record<string, DrawerPrSummary>;
@@ -162,7 +164,11 @@ export function Drawer({
   const width = density === "mini"
     ? DRAWER_WIDTH_MINI
     : Math.max(DRAWER_WIDTH_FULL, Math.min(DRAWER_WIDTH_MAX, Math.floor(requestedWidth ?? DRAWER_WIDTH_FULL)));
-  const borderColor = focused ? theme.color.violet : theme.color.border;
+  const emphasisColor = addMode ? theme.color.attention2 : theme.color.violet;
+  let borderColor: string;
+  if (addMode) borderColor = emphasisColor;
+  else if (focused) borderColor = theme.color.violet;
+  else borderColor = theme.color.border;
 
   if (density === "mini") {
     return (
@@ -189,8 +195,8 @@ export function Drawer({
   return (
     <Box width={width} flexDirection="column" borderStyle="single" borderColor={borderColor}>
       <Box paddingX={1} flexShrink={0}>
-        <Text bold color={theme.color.violet}>
-          LANES · {loading && lanes.length === 0 ? "…" : lanes.length}
+        <Text bold color={emphasisColor}>
+          {addMode ? "PICK CHAT" : `LANES · ${loading && lanes.length === 0 ? "…" : lanes.length}`}
         </Text>
       </Box>
 
@@ -255,6 +261,19 @@ export function Drawer({
           <>
             <Text> </Text>
             <Text> </Text>
+          </>
+        ) : addMode ? (
+          <>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={emphasisColor}>↑↓</Text>
+              {" select chat in left pane"}
+            </Text>
+            <Text color={theme.color.t4} wrap="truncate-end">
+              <Text color={emphasisColor}>↵/click</Text>
+              {" add · "}
+              <Text color={emphasisColor}>esc</Text>
+              {" cancel"}
+            </Text>
           </>
         ) : mode === "chats" ? (
           <>

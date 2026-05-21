@@ -24,9 +24,10 @@ function parseQuery(search: string): OpenTarget {
     const repo = params.get("repo") ?? "";
     const branch = params.get("branch") ?? "";
     if (repo && branch) {
-      const prRaw = params.get("pr");
-      const pr = prRaw ? Number(prRaw) : undefined;
-      return Number.isInteger(pr) && pr! > 0 ? { kind: "branch", repo, branch, pr } : { kind: "branch", repo, branch };
+      const pr = Number(params.get("pr") ?? "");
+      return Number.isInteger(pr) && pr > 0
+        ? { kind: "branch", repo, branch, pr }
+        : { kind: "branch", repo, branch };
     }
   }
   if (type === "pr") {

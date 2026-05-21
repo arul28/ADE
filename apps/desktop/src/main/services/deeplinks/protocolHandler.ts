@@ -1,4 +1,3 @@
-import path from "node:path";
 import { app, BrowserWindow } from "electron";
 
 import {
@@ -18,6 +17,13 @@ export type DeeplinkDispatcher = (
   request: AppNavigationRequest,
 ) => Promise<void> | void;
 
+const ADE_OPEN_HTTPS_RE = /^https?:\/\/ade\.app\/open\b/i;
+
+function isAdeDeeplinkArg(arg: unknown): arg is string {
+  if (typeof arg !== "string") return false;
+  return arg.startsWith(`${ADE_DEEPLINK_SCHEME}://`) || ADE_OPEN_HTTPS_RE.test(arg);
+}
+
 /**
  * Register ADE as the OS handler for `ade://` URLs and wire up the
  * single-instance lock so a second `open ade://...` invocation reuses the
@@ -31,20 +37,56 @@ export function registerAdeProtocolHandler(options: {
   dispatch: DeeplinkDispatcher;
   /** Optional structured log hook. */
   log?: (event: string, fields: Record<string, unknown>) => void;
+  /**
+   * When true, ask the OS to make this app the default `ade://` handler. When
+   * false the single-instance lock and `open-url` / `second-instance`
+   * listeners are still installed so the app can dispatch deeplinks delivered
+   * to it (e.g. via `duti` or a manual user binding), but it won't try to
+   * claim the scheme on boot. Defaults to false — callers decide based on
+   * channel.
+   */
+  claimAsDefault?: boolean;
 }): void {
   const { dispatch } = options;
   const log = options.log ?? (() => {});
+  const claimAsDefault = options.claimAsDefault === true;
 
   // Register URL scheme. The argv variant is required on Windows/Linux so the
-  // OS spawn picks up the URL on cold-start.
-  if (process.defaultApp) {
-    if (process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(ADE_DEEPLINK_SCHEME, process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
+  // OS spawn picks up the URL on cold-start. Beta/Alpha channels (and dev
+  // builds by default) skip this so they don't fight Stable for the binding
+  // on machines where multiple channels are installed.
+  if (claimAsDefault) {
+    if (process.defaultApp) {
+      // Dev mode: we're running as `electron <flags> <app-path> <more-flags>`.
+      // To make `open ade://...` re-launch the SAME dev process we must pass
+      // all original argv to the OS-spawned process, not just `argv[1]` (which
+      // in practice is usually a flag like `--remote-debugging-port=9222`,
+      // not the app path — so passing only that gives you the bare Electron
+      // splash screen instead of ADE). Strip any deeplink URLs that may
+      // already be in argv (cold-start) so they don't get re-issued.
+      const respawnArgs = process.argv
+        .slice(1)
+        .filter((arg): arg is string => typeof arg === "string" && !isAdeDeeplinkArg(arg));
+      // npm exec / the dev launcher already pass an absolute path for the
+      // app entry, so pass argv through unchanged — applying path.resolve to
+      // non-flag args turns flag VALUES (e.g. `YES` after
+      // `-ApplePersistenceIgnoreState`) into bogus paths.
+      app.setAsDefaultProtocolClient(
+        ADE_DEEPLINK_SCHEME,
+        process.execPath,
+        respawnArgs,
+      );
+      log("deeplink.scheme_claimed", {
+        scheme: ADE_DEEPLINK_SCHEME,
+        mode: "dev",
+        respawnArgs,
+      });
+    } else {
+      app.setAsDefaultProtocolClient(ADE_DEEPLINK_SCHEME);
+      log("deeplink.scheme_claimed", { scheme: ADE_DEEPLINK_SCHEME, mode: "packaged" });
     }
   } else {
-    app.setAsDefaultProtocolClient(ADE_DEEPLINK_SCHEME);
+    log("deeplink.scheme_skipped", { scheme: ADE_DEEPLINK_SCHEME });
   }
 
   // Single-instance lock: a second invocation routes through `second-instance`
@@ -90,25 +132,13 @@ export function registerAdeProtocolHandler(options: {
       focusable.focus();
     }
     for (const arg of argv) {
-      if (typeof arg !== "string") continue;
-      if (
-        arg.startsWith(`${ADE_DEEPLINK_SCHEME}://`) ||
-        /^https?:\/\/ade\.app\/open\b/i.test(arg)
-      ) {
-        consume(arg, "second-instance");
-      }
+      if (isAdeDeeplinkArg(arg)) consume(arg, "second-instance");
     }
   });
 
   // Pick up any URL embedded in this process's own argv (Windows cold-start).
   for (const arg of process.argv.slice(1)) {
-    if (typeof arg !== "string") continue;
-    if (
-      arg.startsWith(`${ADE_DEEPLINK_SCHEME}://`) ||
-      /^https?:\/\/ade\.app\/open\b/i.test(arg)
-    ) {
-      pendingUrls.push(arg);
-    }
+    if (isAdeDeeplinkArg(arg)) pendingUrls.push(arg);
   }
 
   // Flush buffer once the app is ready. Use `whenReady()` rather than

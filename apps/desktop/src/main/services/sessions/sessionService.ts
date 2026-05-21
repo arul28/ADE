@@ -508,19 +508,13 @@ export function createSessionService({ db }: { db: AdeDb }) {
       const exclusionSql = normalizedExcludedToolTypes.length
         ? ` and (tool_type is null or tool_type not in (${normalizedExcludedToolTypes.map(() => "?").join(", ")}))`
         : "";
-      const normalizedLiveOwnerPids = liveOwnerPids
+      const ownerParams = liveOwnerPids
         ? Array.from(liveOwnerPids)
             .map((pid) => normalizeOwnerPid(pid))
             .filter((pid): pid is number => pid != null)
-        : null;
-      const ownerParams = normalizedLiveOwnerPids && normalizedLiveOwnerPids.length
-        ? normalizedLiveOwnerPids
         : [];
-      const ownerPlaceholders = ownerParams.map(() => "?").join(", ");
-      const ownerGuardSql = normalizedLiveOwnerPids
-        ? ownerParams.length
-          ? ` and (owner_pid is null or owner_pid not in (${ownerPlaceholders}))`
-          : " and owner_pid is null"
+      const ownerGuardSql = ownerParams.length
+        ? ` and (owner_pid is null or owner_pid not in (${ownerParams.map(() => "?").join(", ")}))`
         : " and owner_pid is null";
       const whereSql = `status = 'running'${exclusionSql}${ownerGuardSql}`;
       const params = [...normalizedExcludedToolTypes, ...ownerParams];
@@ -786,10 +780,6 @@ export function createSessionService({ db }: { db: AdeDb }) {
       if (!trimmed) return;
       db.run("update terminal_sessions set owner_pid = ? where id = ?", [normalizeOwnerPid(ownerPid), trimmed]);
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-    },
-
-    clearOwnerPid(sessionId: string): void {
-      this.setOwnerPid(sessionId, null);
     },
 
     setHeadShaStart(sessionId: string, sha: string): void {

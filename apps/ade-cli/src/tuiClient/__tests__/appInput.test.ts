@@ -9,7 +9,6 @@ import {
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
   footerControlsForAvailability,
-  formFieldIndexForMouseLine,
   formFieldUsesPromptInput,
   isChatSessionAnimating,
   isPromptLineBackspace,
@@ -28,14 +27,12 @@ import {
   parseTerminalMouseInput,
   promptDisplayRows,
   promptHitLine,
-  laneDetailsActionIndexForMouseLine,
   modelPickerSurfaceForSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
   resolveChatWrapWidth,
   resolveTerminalPaneWidth,
-  setupPaneRowIndexForMouseLine,
   splitTerminalControlInput,
   subagentSnapshotsFromEvents,
 } from "../app";
@@ -123,6 +120,14 @@ describe("parseTerminalMouseInput", () => {
       kind: "release",
       x: 7,
       y: 8,
+    });
+  });
+
+  it("parses any-event pointer moves for hover hit-testing", () => {
+    expect(parseTerminalMouseInput("[<35;9;10M")).toEqual({
+      kind: "move",
+      x: 9,
+      y: 10,
     });
   });
 
@@ -318,30 +323,6 @@ describe("drawer mouse hit testing", () => {
     });
   });
 
-  it("maps lane details action lines to selectable action indexes", () => {
-    expect(laneDetailsActionIndexForMouseLine(18, 8)).toBe(0);
-    expect(laneDetailsActionIndexForMouseLine(25, 8)).toBe(7);
-    expect(laneDetailsActionIndexForMouseLine(26, 8)).toBeNull();
-  });
-
-  it("maps setup pane rows including selected detail lines", () => {
-    expect(setupPaneRowIndexForMouseLine({ y: 6, rowCount: 4, selectedIndex: 2, hasLaneLabel: false })).toBe(0);
-    expect(setupPaneRowIndexForMouseLine({ y: 7, rowCount: 4, selectedIndex: 2, hasLaneLabel: false })).toBe(1);
-    expect(setupPaneRowIndexForMouseLine({ y: 8, rowCount: 4, selectedIndex: 2, hasLaneLabel: false })).toBe(2);
-    expect(setupPaneRowIndexForMouseLine({ y: 9, rowCount: 4, selectedIndex: 2, hasLaneLabel: false })).toBe(2);
-    expect(setupPaneRowIndexForMouseLine({ y: 10, rowCount: 4, selectedIndex: 2, hasLaneLabel: false })).toBe(3);
-    expect(setupPaneRowIndexForMouseLine({ y: 7, rowCount: 4, selectedIndex: 0, hasLaneLabel: true })).toBe(0);
-  });
-
-  it("maps form pane rows to their field indexes", () => {
-    expect(formFieldIndexForMouseLine({ y: 5, fieldCount: 2, command: "new-lane" })).toBe(0);
-    expect(formFieldIndexForMouseLine({ y: 6, fieldCount: 2, command: "new-lane" })).toBe(1);
-    expect(formFieldIndexForMouseLine({ y: 9, fieldCount: 4, command: "lane-delete" })).toBe(0);
-    expect(formFieldIndexForMouseLine({ y: 13, fieldCount: 4, command: "lane-delete" })).toBe(2);
-    expect(formFieldIndexForMouseLine({ y: 16, fieldCount: 4, command: "lane-delete" })).toBe(1);
-    expect(formFieldIndexForMouseLine({ y: 19, fieldCount: 4, command: "lane-delete" })).toBe(3);
-    expect(formFieldIndexForMouseLine({ y: 21, fieldCount: 4, command: "lane-delete" })).toBeNull();
-  });
 });
 
 describe("prompt mouse hit testing", () => {

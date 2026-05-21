@@ -2499,7 +2499,7 @@ export function createPtyService({
           resumeCommand: initialResumeCommand,
           resumeMetadata: initialResumeMetadata,
           chatSessionId,
-          ...(ownerPid != null ? { ownerPid } : {}),
+          ownerPid,
         });
         setRuntimeState(sessionId, "running");
 

@@ -332,29 +332,28 @@ function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
   return "info";
 }
 
+// Activity events that mirror the real tool/command/file events the transcript
+// already renders. Suppress them in the TUI so the same fragment doesn't appear
+// twice (once as Runtime, once as Tool calls). Matches desktop suppression.
+const SUPPRESSED_RUNTIME_ACTIVITIES = new Set([
+  "thinking",
+  "working",
+  "tool_calling",
+  "searching",
+  "reading",
+  "running_command",
+  "editing_file",
+  "web_searching",
+]);
+
 function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
   if (event.type === "activity") {
     const activity = event.activity;
-    const detail = compactActivityDetail(event.detail);
-    // The desktop transcript intentionally hides activity events because they are
-    // a live status shadow of the real tool/command/file events. Showing them in
-    // the TUI makes the same transcript fragment into Runtime + Tool calls pairs.
-    if (
-      activity === "thinking"
-      || activity === "working"
-      || activity === "tool_calling"
-      || activity === "searching"
-      || activity === "reading"
-      || activity === "running_command"
-      || activity === "editing_file"
-      || activity === "web_searching"
-    ) {
-      return null;
-    }
+    if (SUPPRESSED_RUNTIME_ACTIVITIES.has(activity)) return null;
     return {
       id,
       label: activity.replace(/_/g, " "),
-      detail,
+      detail: compactActivityDetail(event.detail),
       status: "running",
     };
   }

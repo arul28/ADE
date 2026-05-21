@@ -2,6 +2,7 @@ import React from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowsClockwise,
+  ArrowRight,
   CaretDown,
   ClockCounterClockwise,
   GitBranch,
@@ -52,6 +53,12 @@ import type {
 } from "./reviewTypes";
 import { buildReviewSearch, readReviewRunId } from "./reviewRouteState";
 
+const REVIEW_CARD_SURFACE = "rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)]/75";
+const REVIEW_INSET_SURFACE = "rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/45";
+const REVIEW_TOGGLE_ACTIVE = "bg-sky-500/15 text-[#F5FAFF] ring-1 ring-sky-400/30";
+const REVIEW_LIST_ACTIVE = "border-sky-400/28 bg-sky-500/[0.08]";
+const REVIEW_INPUT_FOCUS = "focus:border-sky-400/45";
+
 const REVIEW_TILING_TREE: PaneSplit = {
   type: "split",
   direction: "horizontal",
@@ -71,13 +78,6 @@ type LaunchDraft = {
   modelId: string;
   reasoningEffort: string;
   codexFastMode: boolean;
-  budgetMode: "bounded" | "unlimited";
-  maxFiles: number;
-  maxDiffChars: number;
-  maxPromptChars: number;
-  maxFindings: number;
-  maxFindingsPerPass: number;
-  maxPublishedFindings: number;
 };
 
 const DEFAULT_REVIEW_LAUNCH_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4";
@@ -116,6 +116,24 @@ function formatTime(value: string | null | undefined): string {
   const ts = Date.parse(value);
   if (Number.isNaN(ts)) return value;
   return new Date(ts).toLocaleString();
+}
+
+function formatRunTimingFooter(run: Pick<NormalizedRun, "startedAt" | "endedAt" | "status">): string {
+  const startedLabel = `Started ${formatTime(run.startedAt)}`;
+  if (run.endedAt) {
+    return `${startedLabel} · Completed ${formatTime(run.endedAt)}`;
+  }
+  if (run.status === "running" || run.status === "queued") {
+    return `${startedLabel} · In progress`;
+  }
+  return startedLabel;
+}
+
+function formatRunSummaryFooter(run: Pick<NormalizedRun, "id" | "startedAt" | "endedAt" | "status">): string {
+  const timingFooter = formatRunTimingFooter(run);
+  const runId = run.id.trim();
+  if (!runId) return timingFooter;
+  return `Run ${runId} · ${timingFooter}`;
 }
 
 function formatRelativeTime(value: string | null | undefined): string {
@@ -209,10 +227,6 @@ function readArtifactMetaCount(artifact: ReviewArtifact, keys: string[]): number
   }
 
   return null;
-}
-
-function formatBudgetValue(budgets: ReviewRunConfig["budgets"], value: number | undefined): string | number {
-  return budgets.unlimited ? "No limit" : value ?? "default";
 }
 
 function toContextArtifactLabel(artifactType: string): string {
@@ -324,9 +338,120 @@ function branchDisplayName(ref: string | null | undefined): string | null {
   return normalized.length ? normalized : null;
 }
 
+function ScopeBranchNode({
+  label,
+  caption,
+  emphasized = false,
+}: {
+  label: string;
+  caption: string;
+  emphasized?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "min-w-0 flex-1 rounded-lg border px-3 py-2.5",
+        emphasized
+          ? "border-teal-400/25 bg-teal-500/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+          : "border-white/[0.08] bg-[var(--color-muted)]/40",
+      )}
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <GitBranch size={12} weight="bold" className={emphasized ? "shrink-0 text-teal-400" : "shrink-0 text-[#8FA1B8]"} />
+        <span className="truncate font-mono text-[11px] font-semibold text-[#F5FAFF]">{label}</span>
+      </div>
+      <div className="mt-0.5 truncate text-[10px] text-[#94A3B8]">{caption}</div>
+    </div>
+  );
+}
+
+function ReviewLaunchScopeVisual({
+  targetMode,
+  compareKind,
+  title,
+  description,
+  laneName,
+  compareLaneName,
+  baseRefLabel,
+  branchRefLabel,
+  baseCommitLabel,
+  headCommitLabel,
+}: {
+  targetMode: ReviewTargetMode;
+  compareKind: LaunchDraft["compareKind"];
+  title: string;
+  description: string;
+  laneName: string;
+  compareLaneName: string | null;
+  baseRefLabel: string;
+  branchRefLabel: string;
+  baseCommitLabel: string | null;
+  headCommitLabel: string | null;
+}) {
+  let leftNode = { label: branchRefLabel, caption: laneName, emphasized: true };
+  let rightNode = { label: baseRefLabel, caption: "Base ref", emphasized: false };
+  const connectorLabel = "vs.";
+
+  if (targetMode === "lane_diff" && compareKind === "lane") {
+    leftNode = {
+      label: branchRefLabel,
+      caption: laneName,
+      emphasized: true,
+    };
+    rightNode = {
+      label: compareLaneName ?? "Comparison lane",
+      caption: "Compare against",
+      emphasized: false,
+    };
+  } else if (targetMode === "commit_range") {
+    leftNode = {
+      label: headCommitLabel ?? "Later commit",
+      caption: "Included head",
+      emphasized: true,
+    };
+    rightNode = {
+      label: baseCommitLabel ?? "Earlier commit",
+      caption: "Excluded base",
+      emphasized: false,
+    };
+  } else if (targetMode === "working_tree") {
+    leftNode = {
+      label: "Working tree",
+      caption: "Staged + unstaged + untracked",
+      emphasized: true,
+    };
+    rightNode = {
+      label: "HEAD commit",
+      caption: "Checked-out tip",
+      emphasized: false,
+    };
+  }
+
+  return (
+    <div className={cn(REVIEW_INSET_SURFACE, "p-3")}>
+      <div className="flex items-stretch gap-2">
+        <ScopeBranchNode label={leftNode.label} caption={leftNode.caption} emphasized={leftNode.emphasized} />
+        <div className="flex shrink-0 flex-col items-center justify-center gap-1 px-0.5 pt-3">
+          <div className="flex items-center gap-0.5">
+            <div className="h-px w-3 bg-white/[0.08]" />
+            <ArrowRight size={12} weight="bold" className="text-sky-400" />
+            <div className="h-px w-3 bg-white/[0.08]" />
+          </div>
+          <span className="font-mono text-[8px] font-bold tracking-[0.14em] text-sky-400/75">
+            {connectorLabel}
+          </span>
+        </div>
+        <ScopeBranchNode label={rightNode.label} caption={rightNode.caption} emphasized={rightNode.emphasized} />
+      </div>
+      <div className="mt-3 text-sm font-semibold text-[#F5FAFF]">{title}</div>
+      <div className="mt-1 text-[11px] leading-relaxed text-[#C5D2E6]">{description}</div>
+    </div>
+  );
+}
+
 function MetaCard({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-black/15 p-3">
+    <div className={cn(REVIEW_INSET_SURFACE, "p-3")}>
       <div className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</div>
       <div className="mt-1 break-all text-xs text-[#F5FAFF]">{value}</div>
     </div>
@@ -345,11 +470,11 @@ function SectionCard({
   action?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
+    <section className={cn(REVIEW_CARD_SURFACE, "p-4")}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03]">
-            <Icon size={15} weight="bold" className="text-[#A78BFA]" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-sky-500/[0.06]">
+            <Icon size={15} weight="bold" className="text-sky-400" />
           </div>
           <div>
             <div className="text-sm font-semibold text-[#F5FAFF]">{title}</div>
@@ -467,6 +592,101 @@ function formatCompareTargetDescription(run: NormalizedRun): string {
   return "Comparing against the local configured base. Fetch or pull first when you want latest remote changes included.";
 }
 
+function resolveRunCompareKind(config: ReviewRunConfig): LaunchDraft["compareKind"] {
+  return config.compareAgainst.kind === "lane" ? "lane" : "default_branch";
+}
+
+function buildRunScopeCopy(
+  run: Pick<NormalizedRun, "target" | "targetLabel" | "compareTarget" | "config">,
+  lane: LaneSummary | null,
+  compareLane: LaneSummary | null,
+  defaultBranchLabel: string,
+): { title: string; description: string } {
+  const laneLabel = laneDisplayName(lane);
+  const branchRefLabel = branchDisplayName(lane?.branchRef) ?? laneLabel;
+  const baseLabel = branchDisplayName(lane?.baseRef) ?? defaultBranchLabel;
+  const laneIsPrimary = lane?.laneType === "primary";
+  const defaultCompareLabel = laneIsPrimary ? `local origin/${baseLabel}` : `local ${baseLabel}`;
+  const compareKind = resolveRunCompareKind(run.config);
+  const selectionLabel = toSelectionModeLabel(run.config.selectionMode);
+
+  if (run.target.mode === "lane_diff") {
+    if (compareKind === "lane") {
+      const compareLaneLabel = compareLane
+        ? laneDisplayName(compareLane)
+        : run.compareTarget?.label ?? "Comparison lane";
+      return {
+        title: run.targetLabel?.trim() || `${laneLabel} against ${compareLaneLabel}`,
+        description: `Reviewed how ${laneLabel} differs from ${compareLaneLabel}. Selection: ${selectionLabel}.`,
+      };
+    }
+    if (run.targetLabel?.trim()) {
+      return {
+        title: run.targetLabel.trim(),
+        description: `${formatCompareTargetDescription(run)} Selection: ${selectionLabel}.`,
+      };
+    }
+    return {
+      title: laneIsPrimary
+        ? `${laneLabel}: local ${branchRefLabel} vs ${defaultCompareLabel}`
+        : `${laneLabel}: branch changes vs ${defaultCompareLabel}`,
+      description: `${formatCompareTargetDescription(run)} Selection: ${selectionLabel}.`,
+    };
+  }
+  if (run.target.mode === "commit_range") {
+    const baseShort = run.target.baseCommit.slice(0, 7);
+    const headShort = run.target.headCommit.slice(0, 7);
+    return {
+      title: run.targetLabel?.trim() || `${laneLabel}: commit range ${baseShort}..${headShort}`,
+      description: `Reviewed commits after ${baseShort} through ${headShort}. The base commit is excluded; the head commit is included. Selection: ${selectionLabel}.`,
+    };
+  }
+  if (run.target.mode === "working_tree") {
+    return {
+      title: run.targetLabel?.trim() || `${laneLabel}: uncommitted changes`,
+      description: `${formatCompareTargetDescription(run)} Selection: ${selectionLabel}.`,
+    };
+  }
+  return {
+    title: run.targetLabel?.trim() || describeRunTarget(run),
+    description: `${formatCompareTargetDescription(run) || "Pull request review."} Selection: ${selectionLabel}.`,
+  };
+}
+
+function buildRunScopeVisualProps(
+  run: NormalizedRun,
+  lane: LaneSummary | null,
+  compareLane: LaneSummary | null,
+  defaultBranchLabel: string,
+): React.ComponentProps<typeof ReviewLaunchScopeVisual> {
+  const compareKind = resolveRunCompareKind(run.config);
+  const scopeCopy = buildRunScopeCopy(run, lane, compareLane, defaultBranchLabel);
+  const laneLabel = laneDisplayName(lane);
+  const branchRefLabel = branchDisplayName(lane?.branchRef) ?? laneLabel;
+  const baseLabel = branchDisplayName(lane?.baseRef) ?? defaultBranchLabel;
+  const laneIsPrimary = lane?.laneType === "primary";
+  const defaultCompareLabel = laneIsPrimary ? `local origin/${baseLabel}` : `local ${baseLabel}`;
+  const resolvedCompareLabel = run.compareTarget?.label
+    ?? branchDisplayName(run.compareTarget?.branchRef)
+    ?? branchDisplayName(run.compareTarget?.ref)
+    ?? null;
+
+  return {
+    targetMode: run.target.mode,
+    compareKind,
+    title: scopeCopy.title,
+    description: scopeCopy.description,
+    laneName: laneLabel,
+    compareLaneName: compareKind === "lane"
+      ? (compareLane ? laneDisplayName(compareLane) : run.compareTarget?.label ?? null)
+      : null,
+    baseRefLabel: resolvedCompareLabel ?? defaultCompareLabel,
+    branchRefLabel,
+    baseCommitLabel: run.target.mode === "commit_range" ? run.target.baseCommit.slice(0, 7) : null,
+    headCommitLabel: run.target.mode === "commit_range" ? run.target.headCommit.slice(0, 7) : null,
+  };
+}
+
 function isLaunchDraftComplete(draft: LaunchDraft): boolean {
   if (!draft.laneId.trim()) return false;
   if (draft.targetMode === "lane_diff" && draft.compareKind === "lane" && !draft.compareLaneId.trim()) return false;
@@ -546,7 +766,7 @@ function CommitSelectField({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           disabled={disabled}
-          className="h-10 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 focus:border-[#A78BFA55]"
+          className={cn("h-10 w-full appearance-none rounded-xl border border-white/[0.08] bg-[var(--color-muted)]/55 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60", REVIEW_INPUT_FOCUS)}
         >
           <option value="">{disabled ? "Not enough commits" : `Choose ${label.toLowerCase()}...`}</option>
           {options.map((commit) => (
@@ -559,7 +779,7 @@ function CommitSelectField({
       </div>
       <div className="text-[11px] text-[#94A3B8]">{helper}</div>
       {selectedCommit ? (
-        <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3">
+        <div className={cn(REVIEW_INSET_SURFACE, "p-3")}>
           <div className="flex flex-wrap items-center gap-2">
             <Chip className="text-[9px]">{selectedCommit.shortSha}</Chip>
             <Chip className="text-[9px]">{formatRelativeTime(selectedCommit.authoredAt)}</Chip>
@@ -577,25 +797,6 @@ function buildTargetConfig(
   targetMode: ReviewTargetMode,
   draft: LaunchDraft,
 ): { target: ReviewTarget; config: ReviewRunConfig } {
-  const budgets: ReviewRunConfig["budgets"] = draft.budgetMode === "unlimited"
-    ? {
-        unlimited: true,
-        maxFiles: Number.MAX_SAFE_INTEGER,
-        maxDiffChars: Number.MAX_SAFE_INTEGER,
-        maxPromptChars: Number.MAX_SAFE_INTEGER,
-        maxFindings: Number.MAX_SAFE_INTEGER,
-        maxFindingsPerPass: Number.MAX_SAFE_INTEGER,
-        maxPublishedFindings: Number.MAX_SAFE_INTEGER,
-      }
-    : {
-        maxFiles: draft.maxFiles,
-        maxDiffChars: draft.maxDiffChars,
-        maxPromptChars: draft.maxPromptChars,
-        maxFindings: draft.maxFindings,
-        maxFindingsPerPass: draft.maxFindingsPerPass,
-        maxPublishedFindings: draft.maxPublishedFindings,
-      };
-
   if (targetMode === "lane_diff") {
     const compareAgainst: ReviewRunConfig["compareAgainst"] = draft.compareKind === "lane"
       ? { kind: "lane", laneId: draft.compareLaneId || draft.laneId }
@@ -609,7 +810,6 @@ function buildTargetConfig(
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
         codexFastMode: draft.codexFastMode,
-        budgets,
         publishBehavior: "local_only",
       },
     };
@@ -625,7 +825,6 @@ function buildTargetConfig(
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
         codexFastMode: draft.codexFastMode,
-        budgets,
         publishBehavior: "local_only",
       },
     };
@@ -640,7 +839,6 @@ function buildTargetConfig(
       modelId: draft.modelId.trim(),
       reasoningEffort: draft.reasoningEffort.trim() || null,
       codexFastMode: draft.codexFastMode,
-      budgets,
       publishBehavior: "local_only",
     },
   };
@@ -679,13 +877,6 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     modelId: DEFAULT_REVIEW_LAUNCH_MODEL_ID,
     reasoningEffort: DEFAULT_REVIEW_REASONING_EFFORT,
     codexFastMode: false,
-    budgetMode: "bounded",
-    maxFiles: 25,
-    maxDiffChars: 120_000,
-    maxPromptChars: 60_000,
-    maxFindings: 8,
-    maxFindingsPerPass: 6,
-    maxPublishedFindings: 6,
   }));
   const recommendedModelHydratedRef = React.useRef(false);
 
@@ -702,6 +893,19 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     () => (selectedRun ? laneById.get(selectedRun.laneId) ?? null : null),
     [laneById, selectedRun],
   );
+  const selectedRunCompareLane = React.useMemo(() => {
+    if (!selectedRun || selectedRun.config.compareAgainst.kind !== "lane") return null;
+    return laneById.get(selectedRun.config.compareAgainst.laneId) ?? null;
+  }, [laneById, selectedRun]);
+  const selectedRunScopeVisual = React.useMemo(() => {
+    if (!selectedRun) return null;
+    return buildRunScopeVisualProps(
+      selectedRun,
+      selectedRunLane,
+      selectedRunCompareLane,
+      launchContext?.defaultBranchName?.trim() || "default branch",
+    );
+  }, [launchContext?.defaultBranchName, selectedRun, selectedRunCompareLane, selectedRunLane]);
   const selectedPassArtifacts = React.useMemo(
     () => selectedDetail?.artifacts?.filter((artifact) => artifact.artifactType === "pass_findings") ?? [],
     [selectedDetail?.artifacts],
@@ -792,7 +996,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [selectedRunId]);
 
-  const loadDetail = React.useCallback(async (runId: string | null) => {
+  const loadDetail = React.useCallback(async (runId: string | null, options?: { clearError?: boolean }) => {
     if (!runId) {
       setDetail(null);
       return;
@@ -801,7 +1005,9 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     try {
       const next = await getReviewRunDetail(runId);
       setDetail(next ? normalizeDetail(next) : null);
-      setError(null);
+      if (options?.clearError !== false) {
+        setError(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -907,7 +1113,6 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const defaultCompareOptionLabel = selectedLaneIsPrimary
     ? `Compare with origin/${selectedLaneBaseLabel}`
     : `Compare with ${selectedLaneBaseLabel}`;
-  const defaultCompareChipLabel = `Comparing against ${selectedLaneDefaultCompareLabel}`;
   const selectedLaneCommits = React.useMemo(
     () => orderLaunchCommits(launchContext?.recentCommitsByLane?.[launchDraft.laneId] ?? []),
     [launchContext?.recentCommitsByLane, launchDraft.laneId],
@@ -997,8 +1202,6 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     selectedLaneDefaultCompareLabel,
     selectedLaneIsPrimary,
   ]);
-  const activeRuns = runs.filter((run) => run.status === "running" || run.status === "queued").length;
-  const totalFindings = runs.reduce((sum, run) => sum + (run.findingCount ?? 0), 0);
   const launchReady = isLaunchDraftComplete(launchDraft) && !launchValidationMessage;
 
   const handleSelectRun = React.useCallback((runId: string) => {
@@ -1140,6 +1343,20 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   const [showSuppressed, setShowSuppressed] = React.useState(false);
   const [feedbackError, setFeedbackError] = React.useState<string | null>(null);
   const [cancelInFlight, setCancelInFlight] = React.useState(false);
+  const [refreshingTab, setRefreshingTab] = React.useState(false);
+
+  const refreshReviewTab = React.useCallback(async () => {
+    setRefreshingTab(true);
+    try {
+      await Promise.all([
+        refreshLaunchContext(),
+        refreshRuns(),
+        selectedRunId ? loadDetail(selectedRunId, { clearError: false }) : Promise.resolve(),
+      ]);
+    } finally {
+      setRefreshingTab(false);
+    }
+  }, [loadDetail, refreshLaunchContext, refreshRuns, selectedRunId]);
 
   const handleFindingAction = React.useCallback(async (req: FindingActionRequest) => {
     setFeedbackError(null);
@@ -1202,7 +1419,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
   }, [loadDetail, refreshRuns, selectedRunId]);
 
   const launchPane = (
-    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden bg-[var(--color-surface-recessed)]/35 px-1 pt-1">
       <SectionCard
         title="Launch review"
         icon={Sparkle}
@@ -1215,10 +1432,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       >
         <div className="grid gap-3">
           <label className="grid gap-1.5">
-            <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Lane</span>
+            <span className="font-mono text-[11px] font-medium tracking-[0.02em] text-[#8FA1B8]">Lane to review</span>
             <div className="relative">
               <select
-                className="h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors focus:border-[#A78BFA55]"
+                className={cn("h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-[var(--color-muted)]/55 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors", REVIEW_INPUT_FOCUS)}
                 value={launchDraft.laneId}
                 onChange={(e) => updateDraft("laneId", e.target.value)}
               >
@@ -1232,7 +1449,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
 
           <label className="grid gap-1.5">
             <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Target mode</span>
-            <div className="grid grid-cols-3 gap-1 rounded-xl border border-white/[0.08] bg-black/15 p-1">
+            <div className={cn("grid grid-cols-3 gap-1 p-1", REVIEW_INSET_SURFACE)}>
               {([
                 ["lane_diff", "Lane diff"],
                 ["commit_range", "Commit range"],
@@ -1245,7 +1462,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     type="button"
                     className={cn(
                       "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
-                      active ? "bg-[#A78BFA1A] text-[#F5FAFF] ring-1 ring-[#A78BFA33]" : "text-[#94A3B8] hover:text-[#F5FAFF]"
+                      active ? REVIEW_TOGGLE_ACTIVE : "text-[#94A3B8] hover:text-[#F5FAFF]"
                     )}
                     onClick={() => updateDraft("targetMode", mode)}
                   >
@@ -1256,29 +1473,11 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             </div>
           </label>
 
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Chip className="text-[9px]">{toTargetModeLabel(launchDraft.targetMode)}</Chip>
-              {launchDraft.targetMode === "lane_diff" ? (
-                <Chip className="text-[9px]">
-                  {launchDraft.compareKind === "lane" ? "Lane to lane" : defaultCompareChipLabel}
-                </Chip>
-              ) : null}
-            </div>
-            <div className="mt-2 text-sm font-semibold text-[#F5FAFF]">{launchScope.title}</div>
-            <div className="mt-1 text-[11px] text-[#C5D2E6]">{launchScope.description}</div>
-          </div>
-
           {launchDraft.targetMode === "lane_diff" ? (
-            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-              <div className="text-[11px] text-[#C5D2E6]">
-                {selectedLaneIsPrimary
-                  ? `ADE compares your local primary branch to ${selectedLaneDefaultCompareLabel}. It uses refs already in this checkout, so fetch or pull first when you want latest remote changes included.`
-                  : `ADE compares this lane's branch to ${selectedLaneDefaultCompareLabel}. Pull remote changes into that local base first when you want them included.`}
-              </div>
+            <div className={cn("grid gap-2 p-3", REVIEW_INSET_SURFACE)}>
               <label className="grid gap-1.5">
                 <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Compare against</span>
-                <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-black/15 p-1">
+                <div className={cn("grid grid-cols-2 gap-1 p-1", REVIEW_INSET_SURFACE)}>
                   {(["default_branch", "lane"] as const).map((kind) => {
                     const active = launchDraft.compareKind === kind;
                     return (
@@ -1287,7 +1486,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         type="button"
                         className={cn(
                           "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
-                          active ? "bg-[#A78BFA1A] text-[#F5FAFF] ring-1 ring-[#A78BFA33]" : "text-[#94A3B8] hover:text-[#F5FAFF]"
+                          active ? REVIEW_TOGGLE_ACTIVE : "text-[#94A3B8] hover:text-[#F5FAFF]"
                         )}
                         onClick={() => updateDraft("compareKind", kind)}
                       >
@@ -1302,7 +1501,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                   <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Compare lane</span>
                   <div className="relative">
                     <select
-                      className="h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-black/20 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors focus:border-[#A78BFA55]"
+                      className={cn("h-9 w-full appearance-none rounded-xl border border-white/[0.08] bg-[var(--color-muted)]/55 px-3 pr-8 text-sm text-[#F5FAFF] outline-none transition-colors", REVIEW_INPUT_FOCUS)}
                       value={launchDraft.compareLaneId}
                       onChange={(e) => updateDraft("compareLaneId", e.target.value)}
                     >
@@ -1318,8 +1517,21 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             </div>
           ) : null}
 
+          <ReviewLaunchScopeVisual
+            targetMode={launchDraft.targetMode}
+            compareKind={launchDraft.compareKind}
+            title={launchScope.title}
+            description={launchScope.description}
+            laneName={laneDisplayName(selectedLane)}
+            compareLaneName={selectedCompareLane ? laneDisplayName(selectedCompareLane) : null}
+            baseRefLabel={selectedLaneDefaultCompareLabel}
+            branchRefLabel={selectedLaneBranchLabel ?? laneDisplayName(selectedLane)}
+            baseCommitLabel={selectedBaseCommit?.shortSha ?? null}
+            headCommitLabel={selectedHeadCommit?.shortSha ?? null}
+          />
+
           {launchDraft.targetMode === "commit_range" ? (
-            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
               <div className="text-[11px] text-[#C5D2E6]">
                 Review only part of this lane's history. Commit lists are ordered from earlier to later so you can pick the start and end of the range without typing raw SHAs.
               </div>
@@ -1355,7 +1567,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           ) : null}
 
           {launchDraft.targetMode === "working_tree" ? (
-            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+            <div className="grid gap-2 rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
               <div className="text-[11px] text-[#C5D2E6]">
                 Review the current staged, unstaged, and untracked changes in the selected lane. This mode compares the working tree against the lane's current HEAD commit. It does not compare against another lane.
               </div>
@@ -1373,118 +1585,9 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
               onCodexFastModeChange={(value) => updateDraft("codexFastMode", value)}
               disabled={launching}
             />
-            <Chip className="w-fit text-[9px]">Read-only</Chip>
-            <div className="text-[11px] text-[#94A3B8]">
-              Can inspect files and run read-only analysis. Cannot edit files.
-            </div>
-          </div>
-
-          <details className="rounded-xl border border-white/[0.06] bg-white/[0.03]">
-            <summary className="cursor-pointer list-none px-3 py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-[#F5FAFF]">Advanced review budgets</div>
-                  <div className="mt-1 text-[11px] text-[#94A3B8]">
-                    These limits keep runs bounded. Most reviews can keep the defaults.
-                  </div>
-                </div>
-                <Chip className="text-[9px]">{launchDraft.budgetMode === "unlimited" ? "no limits" : "advanced"}</Chip>
-              </div>
-            </summary>
-            <div className="grid gap-3 px-3 pb-3">
-              <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-black/15 p-1">
-                {(["bounded", "unlimited"] as const).map((mode) => {
-                  const active = launchDraft.budgetMode === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={cn(
-                        "rounded-lg px-2 py-2 text-[11px] font-semibold transition-colors",
-                        active ? "bg-[#A78BFA1A] text-[#F5FAFF] ring-1 ring-[#A78BFA33]" : "text-[#94A3B8] hover:text-[#F5FAFF]"
-                      )}
-                      onClick={() => updateDraft("budgetMode", mode)}
-                    >
-                      {mode === "bounded" ? "Use limits" : "No limits"}
-                    </button>
-                  );
-                })}
-              </div>
-              {launchDraft.budgetMode === "unlimited" ? (
-                <div className="rounded-xl border border-white/[0.06] bg-black/15 p-3 text-[11px] text-[#C5D2E6]">
-                  No ADE budget limits will be applied to files, diff text, prompt text, findings, or publication count for this run.
-                </div>
-              ) : (
-                <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Files</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={launchDraft.maxFiles}
-                      onChange={(e) => updateDraft("maxFiles", Number(e.target.value) || 1)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Diff chars</span>
-                    <input
-                      type="number"
-                      min={1024}
-                      step={1024}
-                      value={launchDraft.maxDiffChars}
-                      onChange={(e) => updateDraft("maxDiffChars", Number(e.target.value) || 1024)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Prompt chars</span>
-                    <input
-                      type="number"
-                      min={1024}
-                      step={1024}
-                      value={launchDraft.maxPromptChars}
-                      onChange={(e) => updateDraft("maxPromptChars", Number(e.target.value) || 1024)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Findings</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={launchDraft.maxFindings}
-                      onChange={(e) => updateDraft("maxFindings", Number(e.target.value) || 1)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Per pass</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={launchDraft.maxFindingsPerPass}
-                      onChange={(e) => updateDraft("maxFindingsPerPass", Number(e.target.value) || 1)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                  <label className="grid gap-1.5">
-                    <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Published</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={launchDraft.maxPublishedFindings}
-                      onChange={(e) => updateDraft("maxPublishedFindings", Number(e.target.value) || 1)}
-                      className="h-9 rounded-xl border border-white/[0.08] bg-black/20 px-3 text-sm text-[#F5FAFF] outline-none focus:border-[#A78BFA55]"
-                    />
-                  </label>
-                </div>
-              )}
-            </div>
-          </details>
-
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-[11px] text-[#94A3B8]">
-            Every review run is saved locally. Use the list below as the run picker, then inspect the selected run's findings, context, and transcript in the right pane.
+            <p className="text-[13px] text-[#C5D2E6]">
+              This is read only and the model can only read and inspect files.
+            </p>
           </div>
         </div>
       </SectionCard>
@@ -1493,16 +1596,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
         title="Review runs"
         icon={ClockCounterClockwise}
         action={(
-          <div className="flex items-center gap-1.5">
-            <Button size="sm" variant="ghost" onClick={() => setShowLearnings((prev) => !prev)}>
-              <GitBranch size={12} />
-              {showLearnings ? "Hide learnings" : "Learnings"}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => void refreshRuns()} disabled={loadingRuns}>
-              <ArrowsClockwise size={12} weight="regular" className={cn(loadingRuns && "animate-spin")} />
-              Refresh
-            </Button>
-          </div>
+          <Button size="sm" variant="ghost" onClick={() => setShowLearnings((prev) => !prev)}>
+            <GitBranch size={12} />
+            {showLearnings ? "Hide learnings" : "Learnings"}
+          </Button>
         )}
       >
         <div className="space-y-2">
@@ -1510,7 +1607,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             Pick a saved run here to inspect it on the right.
           </div>
           {runs.length === 0 ? (
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+            <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
               No review runs yet in this workspace. New runs will show up here and open on the right.
             </div>
           ) : runs.map((run) => {
@@ -1523,7 +1620,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 onClick={() => handleSelectRun(run.id)}
                 className={cn(
                   "w-full rounded-xl border p-3 text-left transition-colors",
-                  active ? "border-[#A78BFA33] bg-[#A78BFA10]" : "border-white/[0.06] bg-white/[0.03] hover:bg-white/[0.05]"
+                  active ? REVIEW_LIST_ACTIVE : "border-white/[0.06] bg-[var(--color-muted)]/35 hover:bg-[var(--color-muted)]/50"
                 )}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -1557,10 +1654,14 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
       <ReviewLearningsPanel onClose={() => setShowLearnings(false)} />
     </div>
   ) : (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--color-bg)]">
       {selectedRun ? (
         <div className="flex h-full min-h-0 flex-col gap-4 overflow-y-auto px-5 py-5">
-          <section className="rounded-2xl border border-white/[0.08] bg-black/15 p-4">
+          <SectionCard title="Review scope" icon={GitBranch}>
+            {selectedRunScopeVisual ? <ReviewLaunchScopeVisual {...selectedRunScopeVisual} /> : null}
+          </SectionCard>
+
+          <section className={cn(REVIEW_CARD_SURFACE, "p-4")}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -1581,6 +1682,21 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 {selectedRun.errorMessage ? (
                   <div className="mt-2 text-sm text-red-200">{selectedRun.errorMessage}</div>
                 ) : null}
+                <div className="mt-3 font-mono text-[10px] text-[#94A3B8]">
+                  {formatRunSummaryFooter(selectedRun)}
+                </div>
+                <div className="mt-4 grid gap-1.5 border-t border-white/[0.06] pt-3">
+                  <span className="font-mono text-[9px] uppercase tracking-[1px] text-[#8FA1B8]">Model and reasoning</span>
+                  <ReviewLaunchModelControls
+                    modelId={selectedRun.config.modelId}
+                    reasoningEffort={selectedRun.config.reasoningEffort ?? DEFAULT_REVIEW_REASONING_EFFORT}
+                    codexFastMode={selectedRun.config.codexFastMode ?? false}
+                    onModelChange={() => undefined}
+                    onReasoningEffortChange={() => undefined}
+                    onCodexFastModeChange={() => undefined}
+                    disabled
+                  />
+                </div>
               </div>
               <Button size="sm" variant="outline" onClick={() => void handleRerun(selectedRun)} disabled={launching}>
                 <ArrowClockwise size={12} weight="regular" />
@@ -1589,44 +1705,8 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             </div>
           </section>
 
-          <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <MetaCard label="Run id" value={selectedRun.id} />
-            <MetaCard label="Lane" value={selectedRunLane?.name ?? selectedRun.laneId} />
-            <MetaCard label="Started" value={formatTime(selectedRun.startedAt)} />
-            <MetaCard label="Completed" value={formatTime(selectedRun.endedAt)} />
-            <MetaCard label="Model" value={selectedRun.config.modelId} />
-            <MetaCard label="Reasoning" value={selectedRun.config.reasoningEffort ?? "default"} />
-            <MetaCard label="Fast mode" value={selectedRun.config.codexFastMode ? "on" : "off"} />
-            <MetaCard label="Publish" value={selectedRun.config.publishBehavior === "auto_publish" ? "Auto-publish enabled" : "Local only"} />
-          </section>
-
-          <SectionCard title="Launch setup" icon={GitBranch}>
-            <div className="grid gap-3 md:grid-cols-2">
-              <MetaCard label="Target mode" value={toTargetModeLabel(selectedRun.target.mode)} />
-              <MetaCard label="Review target" value={describeRunTarget(selectedRun)} />
-              <MetaCard label="Selection mode" value={toSelectionModeLabel(selectedRun.config.selectionMode)} />
-              <MetaCard
-                label="Comparison"
-                value={formatCompareTargetDescription(selectedRun)}
-              />
-            </div>
-            <details className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.03]">
-              <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#94A3B8]">
-                Run limits
-              </summary>
-              <div className="grid gap-3 px-3 pb-3 md:grid-cols-2 xl:grid-cols-3">
-                <MetaCard label="File budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFiles)} />
-                <MetaCard label="Diff budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxDiffChars)} />
-                <MetaCard label="Prompt budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxPromptChars)} />
-                <MetaCard label="Finding budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFindings)} />
-                <MetaCard label="Per-pass budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxFindingsPerPass ?? selectedRun.config.budgets.maxFindings)} />
-                <MetaCard label="Publish budget" value={formatBudgetValue(selectedRun.config.budgets, selectedRun.config.budgets.maxPublishedFindings ?? selectedRun.config.budgets.maxFindings)} />
-              </div>
-            </details>
-          </SectionCard>
-
           {selectedContextArtifacts.length > 0 ? (
-            <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+            <details className={REVIEW_CARD_SURFACE}>
               <summary className="cursor-pointer list-none px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1640,7 +1720,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 {selectedDetail?.reviewerRuns.length ? (
                   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
                     {selectedDetail.reviewerRuns.map((reviewer) => (
-                      <article key={reviewer.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                      <article key={reviewer.id} className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className={cn("text-[9px]", toReviewStatusTone(reviewer.status as ReviewRunStatus))}>{reviewer.status}</Chip>
                           <Chip className="text-[9px]">{toPassLabel(reviewer.reviewerKey)}</Chip>
@@ -1694,7 +1774,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                             ].filter((value): value is string => Boolean(value));
 
                     return (
-                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">{toContextArtifactLabel(artifactType)}</Chip>
                           {countValue !== null ? <Chip className="text-[9px]">{countValue} items</Chip> : null}
@@ -1713,18 +1793,18 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                           <MetaCard label="Mime type" value={artifact.mimeType} />
                         </div>
                         {artifact.contentText || artifact.metadata ? (
-                          <details className="mt-3 rounded-lg border border-white/[0.06] bg-black/15">
+                          <details className={cn("mt-3", REVIEW_INSET_SURFACE)}>
                             <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-semibold text-[#C5D2E6]">
                               Debug payload
                             </summary>
                             <div className="grid gap-2 px-3 pb-3">
                               {artifact.contentText ? (
-                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-[var(--color-surface-recessed)]/80 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
                                   {artifact.contentText}
                                 </pre>
                               ) : null}
                               {artifact.metadata ? (
-                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
+                                <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-[var(--color-surface-recessed)]/80 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
                                   {JSON.stringify(artifact.metadata, null, 2)}
                                 </pre>
                               ) : null}
@@ -1742,7 +1822,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           ) : null}
 
           {(selectedPassArtifacts.length > 0 || selectedAdjudicationArtifact || selectedMergedArtifact) ? (
-            <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+            <details className={REVIEW_CARD_SURFACE}>
               <summary className="cursor-pointer list-none px-4 py-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1756,13 +1836,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 {selectedPassArtifacts.length > 0 ? (
                   <div className="grid gap-3 md:grid-cols-3">
                     {selectedPassArtifacts.map((artifact) => (
-                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                      <article key={artifact.id} className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">{toPassLabel(readArtifactMetaString(artifact, "passKey") ?? artifact.title)}</Chip>
                           <Chip className="text-[9px]">{readArtifactMetaNumber(artifact, "keptCount") ?? 0} used</Chip>
-                          {(readArtifactMetaNumber(artifact, "budgetTrimmedCount") ?? 0) > 0 ? (
-                            <Chip className="text-[9px]">filtered {readArtifactMetaNumber(artifact, "budgetTrimmedCount")}</Chip>
-                          ) : null}
                         </div>
                         <div className="mt-2 text-xs text-[#C5D2E6]">
                           {readArtifactMetaString(artifact, "summary") ?? "No summary recorded for this pass."}
@@ -1779,19 +1856,19 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 {(selectedAdjudicationArtifact || selectedMergedArtifact) ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     {selectedAdjudicationArtifact ? (
-                      <article className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                      <article className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">Adjudication</Chip>
                           <Chip className="text-[9px]">accepted {readArtifactMetaNumber(selectedAdjudicationArtifact, "acceptedCount") ?? 0}</Chip>
                           <Chip className="text-[9px]">rejected {readArtifactMetaNumber(selectedAdjudicationArtifact, "rejectedCount") ?? 0}</Chip>
                         </div>
                         <div className="mt-2 text-xs text-[#C5D2E6]">
-                          Merged overlaps, filtered low-signal candidates, and applied the explicit run/publication budgets before findings became final.
+                          Merged overlaps and filtered low-signal candidates before findings became final.
                         </div>
                       </article>
                     ) : null}
                     {selectedMergedArtifact ? (
-                      <article className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                      <article className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                         <div className="flex flex-wrap items-center gap-2">
                           <Chip className="text-[9px]">Final result</Chip>
                           <Chip className="text-[9px]">findings {readArtifactMetaNumber(selectedMergedArtifact, "findingCount") ?? 0}</Chip>
@@ -1814,7 +1891,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             <SectionCard title="Publication" icon={ArrowSquareOut}>
               <div className="space-y-2">
                 {selectedDetail.publications.map((publication) => (
-                  <article key={publication.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                  <article key={publication.id} className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Chip className="text-[9px]">{publication.destination.kind}</Chip>
                       <Chip className={cn("text-[9px]", publication.status === "published" ? "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-300" : "border-red-400/20 bg-red-400/[0.08] text-red-300")}>
@@ -1835,7 +1912,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                     {publication.errorMessage ? (
                       <div className="mt-3 text-sm text-red-200">{publication.errorMessage}</div>
                     ) : null}
-                    <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
+                    <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-[var(--color-surface-recessed)]/80 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">
                       {publication.summaryBody}
                     </pre>
                   </article>
@@ -1910,7 +1987,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                               type="checkbox"
                               checked={showSuppressed}
                               onChange={(e) => setShowSuppressed(e.target.checked)}
-                              className="h-3 w-3 accent-violet-400"
+                              className="h-3 w-3 accent-sky-400"
                             />
                             Show {suppressedCount} filtered
                           </label>
@@ -1946,7 +2023,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         onOpenInEditor={finding.filePath ? handleOpenFindingInEditor : undefined}
                       />
                     )) : rawFindings.length > 0 ? (
-                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+                      <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
                         No findings match the current filters. {!showSuppressed && suppressedCount > 0 ? (
                           <button
                             type="button"
@@ -1964,7 +2041,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                         description="The review passes found nothing actionable in this diff. That could mean the diff was clean or the target was too small to review."
                       />
                     ) : (
-                      <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+                      <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
                         Findings will appear here once the review completes.
                       </div>
                     )}
@@ -1974,7 +2051,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             })()}
           </SectionCard>
 
-          <details className="rounded-2xl border border-white/[0.08] bg-black/15">
+          <details className={REVIEW_CARD_SURFACE}>
             <summary className="cursor-pointer list-none px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1986,21 +2063,21 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
             </summary>
             <div className="space-y-2 px-4 pb-4">
               {selectedDetail?.artifacts?.length ? selectedDetail.artifacts.map((artifact) => (
-                <div key={artifact.id} className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+                <div key={artifact.id} className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Chip className="text-[9px]">{toContextArtifactLabel(String(artifact.artifactType))}</Chip>
                     <div className="text-sm font-semibold text-[#F5FAFF]">{artifact.title}</div>
                     <span className="text-[11px] text-[#94A3B8]">{artifact.mimeType}</span>
                   </div>
-                  {artifact.contentText ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">{artifact.contentText}</pre> : null}
+                  {artifact.contentText ? <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-[var(--color-surface-recessed)]/80 p-3 font-mono text-[11px] leading-relaxed text-[#D8E3F2]">{artifact.contentText}</pre> : null}
                   {artifact.metadata ? (
-                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-black/20 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
+                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.06] bg-[var(--color-surface-recessed)]/80 p-3 font-mono text-[11px] leading-relaxed text-[#B7C4D7]">
                       {JSON.stringify(artifact.metadata, null, 2)}
                     </pre>
                   ) : null}
                 </div>
               )) : (
-                <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+                <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
                   No artifacts were captured for this run.
                 </div>
               )}
@@ -2009,7 +2086,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
 
           <SectionCard title="Review agent transcript" icon={Sparkle}>
             {selectedDetail?.chatSession ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                 <div>
                   <div className="text-sm font-semibold text-[#F5FAFF]">Review agent transcript available</div>
                   <div className="mt-1 text-xs text-[#94A3B8]">
@@ -2026,7 +2103,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 </Button>
               </div>
             ) : selectedReviewerTranscripts.length > 0 ? (
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+              <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-[#F5FAFF]">Specialist reviewer transcripts available</div>
@@ -2052,7 +2129,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                 </div>
               </div>
             ) : (
-              <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 text-xs text-[#94A3B8]">
+              <div className="rounded-xl border border-white/[0.06] bg-[var(--color-muted)]/40 p-3 text-xs text-[#94A3B8]">
                 No transcript session was linked to this run.
               </div>
             )}
@@ -2074,38 +2151,23 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     launch: {
       title: "Launch and saved runs",
       icon: Sparkle,
-      bodyClassName: "flex flex-col min-h-0",
+      bodyClassName: "flex flex-col min-h-0 bg-[var(--color-surface-recessed)]/20",
       children: launchPane,
     },
     detail: {
       title: "Selected run",
       icon: MagnifyingGlass,
-      bodyClassName: "flex flex-col min-h-0",
+      bodyClassName: "flex flex-col min-h-0 bg-[var(--color-bg)]",
       children: detailPane,
     },
   };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg text-fg">
-      <div
-        className="flex h-16 shrink-0 items-center gap-4 px-6"
-        style={{
-          background: "linear-gradient(180deg, rgba(167,139,250,0.06) 0%, rgba(167,139,250,0.01) 100%)",
-          borderBottom: "1px solid rgba(167,139,250,0.10)",
-        }}
-      >
+      <div className="flex h-16 shrink-0 items-center gap-4 border-b border-[var(--color-border)] bg-[var(--color-surface)]/90 px-6">
         <div className="flex items-center gap-3">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(139,92,246,0.08) 100%)",
-              border: "1px solid rgba(167,139,250,0.15)",
-            }}
-          >
-            <Sparkle size={16} weight="bold" className="text-[#A78BFA]" />
+          <div className="flex h-[30px] w-[30px] items-center justify-center rounded-lg border border-sky-400/20 bg-sky-500/10">
+            <MagnifyingGlass size={16} weight="regular" className="text-sky-400" />
           </div>
           <div>
             <div className="text-[15px] font-bold tracking-tight text-[#FAFAFA]">Review</div>
@@ -2113,22 +2175,9 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <Chip className="text-[9px]">{runs.length} runs</Chip>
-          <Chip className="text-[9px]">{activeRuns} active</Chip>
-          <Chip className="text-[9px]">{totalFindings} findings</Chip>
-          <Chip className="text-[9px]">{selectedLane ? selectedLane.name : "No lane selected"}</Chip>
-          <Chip className="text-[9px]">{launchContext?.defaultBranchName ?? "default branch"}</Chip>
-          {loadingLaunch ? <Chip className="text-[9px]">loading context</Chip> : null}
-        </div>
-
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="ghost" onClick={() => void refreshLaunchContext()}>
-            <ArrowsClockwise size={12} weight="regular" className={cn(loadingLaunch && "animate-spin")} />
-            Refresh context
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => void refreshRuns()}>
-            <ArrowsClockwise size={12} weight="regular" />
+          <Button size="sm" variant="outline" onClick={() => void refreshReviewTab()} disabled={refreshingTab}>
+            <ArrowsClockwise size={12} weight="regular" className={cn(refreshingTab && "animate-spin")} />
             Refresh runs
           </Button>
         </div>

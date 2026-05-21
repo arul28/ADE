@@ -3460,25 +3460,6 @@ export function AgentChatComposer({
           <div className="ml-auto flex max-w-full shrink-0 items-center gap-0.5 sm:gap-1">
             <SmartTooltip
               content={{
-                label: "Attach from project",
-                description: parallelChatMode
-                  ? attachBlockedReason ?? "Search the project for files to send to every parallel lane."
-                  : "Search the project for files or images to attach to this message.",
-                shortcut: "@",
-              }}
-            >
-              <button
-                type="button"
-                className="inline-flex h-8 min-w-8 max-w-full items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-                disabled={!canAttach}
-                onClick={() => canAttach && setAttachmentPickerOpen((o) => !o)}
-                aria-label="Open attachment picker"
-              >
-                @
-              </button>
-            </SmartTooltip>
-            <SmartTooltip
-              content={{
                 label: "Upload file",
                 description: parallelChatMode
                   ? attachBlockedReason ?? "Upload files from disk and send them to every parallel lane."
@@ -3526,32 +3507,6 @@ export function AgentChatComposer({
                     {contextAttachmentCount}
                   </span>
                 ) : null}
-              </button>
-            </SmartTooltip>
-            <SmartTooltip content={{ label: "Commands", description: "Open the slash-command picker for this chat.", shortcut: "/" }}>
-              <button
-                type="button"
-                className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg px-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-                disabled={composerInputLocked}
-                onClick={() => {
-                  if (composerInputLocked) return;
-                  const richEl = richEditorRef.current;
-                  const el = textareaRef.current;
-                  const currentDraft = useRichComposer ? serializeRichEditor() : el?.value ?? "";
-                  if (!currentDraft.length) onDraftChange("/");
-                  if (useRichComposer && !currentDraft.length) setRichEditorText("/");
-                  setCommandMenuTrigger({
-                    type: "slash",
-                    query: currentDraft.startsWith("/") ? currentDraft.slice(1).match(/^[^\s/]*/)?.[0] ?? "" : "",
-                    cursorIndex: 0,
-                  });
-                  const anchor = getCommandMenuAnchor(useRichComposer ? richEl : el);
-                  if (anchor) setCommandMenuAnchor(anchor);
-                  (useRichComposer ? richEl : el)?.focus();
-                }}
-                aria-label="Open command picker"
-              >
-                /
               </button>
             </SmartTooltip>
 

@@ -106,6 +106,25 @@ describe("ChatView", () => {
     expect(frame).toContain("cmds");
   });
 
+  it("uses a compact empty state inside multi-chat tiles", () => {
+    const result = render(
+      <ChatView
+        events={[]}
+        notices={[]}
+        activeSession={session}
+        projectName="ADE"
+        laneName="Primary"
+        maxRows={10}
+        width={44}
+        focused
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("No transcript yet.");
+    expect(frame).not.toContain("AGENTIC DEVELOPMENT ENVIRONMENT");
+  });
+
   it("does not invite chat input when the selected lane worktree is missing", () => {
     const result = render(
       <ChatView

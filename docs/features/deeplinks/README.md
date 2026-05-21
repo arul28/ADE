@@ -203,6 +203,29 @@ is first created, the footer initially carries the branch link only;
 once the PR number is known, a follow-up patch re-renders the block
 with the PR link included.
 
+## Channel handling
+
+Only the **Stable** channel claims `ade://` as the OS-default handler.
+Beta and Alpha builds still install the single-instance lock and the
+`open-url` / `second-instance` listeners (so a manual `duti` binding
+still routes deeplinks to them), but they skip
+`app.setAsDefaultProtocolClient` so they don't fight Stable for the
+binding on machines where multiple channels are installed.
+
+Source builds default to the same skip behavior. To make a source dev
+build claim the binding for testing, set
+`ADE_REGISTER_DEEPLINK_HANDLER=1` in its environment before launch:
+
+```bash
+ADE_REGISTER_DEEPLINK_HANDLER=1 npm run dev
+```
+
+This is the supported workaround for testing deeplinks against a dev
+build when Stable / Beta / Alpha are also installed. The gate lives in
+`apps/desktop/src/main/main.ts` (channel detection + env override) and
+the registration mechanics live in `protocolHandler.ts` behind the
+`claimAsDefault` option.
+
 ## Gotchas
 
 - **Register the protocol handler before `app.whenReady()`.** Otherwise

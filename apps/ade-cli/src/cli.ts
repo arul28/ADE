@@ -910,6 +910,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Keys:
     ctrl-o        Open or focus lanes and chats
     ctrl-p        Open or focus details
+    ctrl-g        Split chat: add another chat tile
+    ctrl-w        Split chat: close focused tile
+    tab           Split chat: cycle focused tile
     shift-tab     Cycle pane focus
     esc           Return or cancel the active pane
     ?             Help when it is the first prompt character

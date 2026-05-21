@@ -7601,6 +7601,16 @@ async function readResource(runtime: AdeRuntime, uri: string): Promise<Record<st
   throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported resource URI: ${uri}`);
 }
 
+const APP_NAVIGATE_SUPPORTED_KINDS = new Set([
+  "work",
+  "chat",
+  "lane",
+  "pr",
+  "route",
+  "branch",
+  "linear-issue",
+]);
+
 export function createAdeRpcRequestHandler(args: {
   runtime: AdeRuntime;
   serverVersion: string;
@@ -7923,15 +7933,7 @@ export function createAdeRpcRequestHandler(args: {
       if (!kind) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate requires target.kind.");
       }
-      if (
-        kind !== "work" &&
-        kind !== "chat" &&
-        kind !== "lane" &&
-        kind !== "pr" &&
-        kind !== "route" &&
-        kind !== "branch" &&
-        kind !== "linear-issue"
-      ) {
+      if (!APP_NAVIGATE_SUPPORTED_KINDS.has(kind)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Unsupported app navigation target kind: ${kind}.`);
       }
       if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
@@ -7940,17 +7942,16 @@ export function createAdeRpcRequestHandler(args: {
       if (kind === "route" && !asOptionalTrimmedString(target.route)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
       }
-      if (kind === "branch") {
-        if (
-          !asOptionalTrimmedString(target.repoOwner) ||
-          !asOptionalTrimmedString(target.repoName) ||
-          !asOptionalTrimmedString(target.branch)
-        ) {
-          throw new JsonRpcError(
-            JsonRpcErrorCode.invalidParams,
-            "app/navigate target 'branch' requires repoOwner, repoName, and branch.",
-          );
-        }
+      if (
+        kind === "branch"
+        && (!asOptionalTrimmedString(target.repoOwner)
+          || !asOptionalTrimmedString(target.repoName)
+          || !asOptionalTrimmedString(target.branch))
+      ) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "app/navigate target 'branch' requires repoOwner, repoName, and branch.",
+        );
       }
       if (kind === "linear-issue" && !asOptionalTrimmedString(target.issueIdentifier)) {
         throw new JsonRpcError(

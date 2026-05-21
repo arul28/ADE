@@ -15,12 +15,10 @@
  * is served as a flat static asset and won't loop back into this function.
  */
 
-type Vercel = {
-  query: Record<string, string | string[] | undefined>;
-};
+type VercelQuery = Record<string, string | string[] | undefined>;
 
 type VercelReq = {
-  query: Vercel["query"];
+  query: VercelQuery;
   url?: string;
   headers: Record<string, string | string[] | undefined>;
 };
@@ -72,7 +70,7 @@ function pickQuery(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
-function parseTarget(query: Vercel["query"]): OpenTarget {
+function parseTarget(query: VercelQuery): OpenTarget {
   const type = pickQuery(query.type).toLowerCase();
   if (type === "lane") {
     const laneId = pickQuery(query.id);
@@ -82,9 +80,8 @@ function parseTarget(query: Vercel["query"]): OpenTarget {
     const repo = pickQuery(query.repo);
     const branch = pickQuery(query.branch);
     if (repo && branch) {
-      const prRaw = pickQuery(query.pr);
-      const pr = prRaw ? Number(prRaw) : undefined;
-      return Number.isInteger(pr) && pr! > 0
+      const pr = Number(pickQuery(query.pr));
+      return Number.isInteger(pr) && pr > 0
         ? { kind: "branch", repo, branch, pr }
         : { kind: "branch", repo, branch };
     }
@@ -217,7 +214,8 @@ async function loadShellFromSelf(req: VercelReq): Promise<string | null> {
 
 export default async function handler(req: VercelReq, res: VercelRes): Promise<void> {
   const target = parseTarget(req.query);
-  const search = (req.url ?? "").includes("?") ? `?${(req.url ?? "").split("?")[1]}` : "";
+  const queryIdx = (req.url ?? "").indexOf("?");
+  const search = queryIdx >= 0 ? (req.url ?? "").slice(queryIdx) : "";
   const canonical = `https://ade.app/open${search}`;
   const { title, description } = describe(target);
 

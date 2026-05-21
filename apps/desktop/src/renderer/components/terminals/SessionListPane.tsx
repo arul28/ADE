@@ -71,50 +71,57 @@ function StickyGroupHeader({
   const isLane = variant === "lane";
   const branchText = subLabel?.trim() ?? "";
   const showBranchCluster = branchText.length > 0;
-  const laneTint = laneSurfaceTint(accentColor, isLane ? "default" : "soft");
+  const laneTint = laneSurfaceTint(accentColor, isLane ? "pastel" : "soft");
+  const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
-    <div className="mt-0.5 first:mt-0">
+    <div className={cn(isLane ? "mb-2" : "mt-0.5 first:mt-0")}>
       <button
         type="button"
         className={cn(
-          "sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          "sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          isLane ? "gap-2 rounded-lg px-3 py-3" : "gap-1.5 rounded-md px-2 py-1.5",
           laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
-          isLane ? "px-2.5 py-2" : "px-2 py-1.5",
         )}
         style={{
           background: laneTint.background,
+          border: isLane
+            ? laneTint.border ?? "1px solid rgba(255, 255, 255, 0.08)"
+            : undefined,
           borderBottom: isLane ? undefined : "1px solid rgba(255, 255, 255, 0.04)",
+          boxShadow: isLane
+            ? "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)"
+            : undefined,
         }}
         onClick={onToggleCollapsed}
         onContextMenu={onContextMenu}
         data-section-id={sectionId}
       >
         {isLane ? (
-          <div className="flex w-full min-w-0 items-center gap-1.5">
+          <div className="flex w-full min-w-0 items-center gap-2">
             {collapsed ? (
-              <CaretRight size={12} className="shrink-0 text-muted-fg/30" />
+              <CaretRight size={14} className="shrink-0 text-muted-fg/35" />
             ) : (
-              <CaretDown size={12} className="shrink-0 text-muted-fg/30" />
+              <CaretDown size={14} className="shrink-0 text-muted-fg/35" />
             )}
             {icon}
             <span
-              className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight text-fg/90"
-              style={accentColor ? { color: accentColor } : undefined}
+              className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-snug text-fg/90"
+              style={laneLabelColor ? { color: laneLabelColor } : undefined}
             >
               {label}
             </span>
             {showBranchCluster ? (
               <div
-                className="flex min-w-0 max-w-[min(50%,12rem)] shrink items-center gap-1"
+                className="flex min-w-0 max-w-[min(50%,12rem)] shrink items-center gap-1.5"
                 style={{ color: "var(--color-muted-fg)" }}
               >
-                <GitBranch size={10} weight="regular" className="shrink-0 opacity-60" aria-hidden />
-                <span className="truncate text-[10px] font-medium leading-tight text-muted-fg/75" title={branchText}>
+                <GitBranch size={12} weight="regular" className="shrink-0 opacity-60" aria-hidden />
+                <span className="truncate text-[12px] font-medium leading-snug text-muted-fg/75" title={branchText}>
                   {branchText}
                 </span>
               </div>
             ) : null}
-            <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
+            <span className="shrink-0 rounded-full bg-white/[0.08] px-2 py-0.5 text-[11px] font-semibold text-muted-fg/60">
               {count}
             </span>
           </div>
@@ -142,7 +149,7 @@ function StickyGroupHeader({
         <div
           className={cn(
             "space-y-px pb-0.5",
-            isLane && "pl-2",
+            isLane && "mt-1.5 pl-3",
           )}
         >
           {children}
@@ -474,18 +481,19 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
 
   const byLaneList = (
-    <div className="px-1.5 pb-2">
+    <div className="space-y-1 px-2 pb-3">
       {orderedLanes.map((lane) => {
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
         const collapsed = workCollapsedLaneIds.includes(lane.id);
         const total = list.length;
         const laneAccent = lane.color ?? null;
+        const laneHeaderTint = laneSurfaceTint(laneAccent, "pastel");
         const laneIcon = (
           <span
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-            style={{ color: laneAccent ?? "var(--color-muted-fg)" }}
+            className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+            style={{ color: laneHeaderTint.text ?? laneAccent ?? "var(--color-muted-fg)" }}
           >
-            {lane.icon ? iconGlyph(lane.icon) : <Terminal size={12} weight="regular" />}
+            {lane.icon ? iconGlyph(lane.icon) : <Terminal size={14} weight="regular" />}
           </span>
         );
         return (
@@ -514,7 +522,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           <StickyGroupHeader
             key={laneId}
             sectionId={laneId}
-            icon={<GitBranch size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
+            icon={<GitBranch size={14} weight="regular" className="h-4 w-4 shrink-0 text-muted-fg/55" />}
             label={label}
             variant="lane"
             count={list.length}
@@ -745,7 +753,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* Session list */}
       <div
-        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-1"
+        className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pt-2"
         data-tour="work.crossLaneSwitch"
       >
         {!hasAnySessions ? (

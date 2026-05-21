@@ -324,6 +324,7 @@
 .tab-tint-automations { --tab-tint-rgb: 249, 115, 22; }
 .tab-tint-missions { --tab-tint-rgb: 59, 130, 246; }
 .tab-tint-settings { --tab-tint-rgb: 113, 113, 122; }
+.tab-tint-review { --tab-tint-rgb: 56, 189, 248; }
 
 /* ═══════════════════════════════════════════════════════════
    Base Styles
@@ -2140,6 +2141,24 @@ button:active, [role="button"]:active {
   animation: ade-particle-drift 30s ease-in-out infinite;
 }
 
+/* Review — inspection / findings (sky #38bdf8) */
+.ade-tab-bg-review {
+  background:
+    linear-gradient(135deg,
+      rgba(56, 189, 248, 0.03) 0%,
+      transparent 35%),
+    radial-gradient(ellipse 80% 60% at 12% 88%, rgba(20, 184, 166, 0.025) 0%, transparent 55%);
+}
+
+.ade-tab-bg-review::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 50% 40% at 88% 18%, rgba(56, 189, 248, 0.04) 0%, transparent 70%);
+  opacity: 0.85;
+}
+
 /* 8. PRs — Launch Pad / Upward Purple Flow (purple #A78BFA) */
 .ade-tab-bg-prs {
   background:
@@ -2491,8 +2510,8 @@ button:active, [role="button"]:active {
 }
 
 .ade-chat-message-card-user {
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%);
+  background: var(--chat-user-bubble-gradient,
+    linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));
   border-color: color-mix(in srgb, var(--chat-accent) 26%, rgba(255, 255, 255, 0.14));
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.12),
