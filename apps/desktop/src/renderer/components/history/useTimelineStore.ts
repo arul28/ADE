@@ -3,8 +3,10 @@ import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
 import type { OperationRecord } from "../../../shared/types";
+import type { GitCommitSummary } from "../../../shared/types";
 import type {
   ColumnConfig,
+  HistorySurface,
   LaneVisibility,
   TimelineEvent,
   TimelineFilters,
@@ -125,6 +127,10 @@ export type TimelineStore = {
   error: string | null;
 
   // ── View state ──────────────────────────────────────────────
+  surface: HistorySurface;
+  focusLaneId: string | null;
+  selectedCommitSha: string | null;
+  selectedCommit: GitCommitSummary | null;
   viewMode: ViewMode;
   selectedEventId: string | null;
   hoveredLaneId: string | null;
@@ -143,6 +149,10 @@ export type TimelineStore = {
   uniqueCategories: EventCategory[];
 
   // ── Actions ─────────────────────────────────────────────────
+  setSurface: (surface: HistorySurface) => void;
+  setFocusLaneId: (laneId: string | null) => void;
+  setSelectedCommitSha: (sha: string | null) => void;
+  setSelectedCommit: (commit: GitCommitSummary | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setSelectedEventId: (id: string | null) => void;
   setHoveredLaneId: (id: string | null) => void;
@@ -233,6 +243,10 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     wipNodes: [],
     loading: false,
     error: null,
+    surface: "commits",
+    focusLaneId: null,
+    selectedCommitSha: null,
+    selectedCommit: null,
     viewMode: "graph",
     selectedEventId: null,
     hoveredLaneId: null,
@@ -244,6 +258,14 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     uniqueCategories: [],
 
     // ── View actions ────────────────────────────────────────
+    setSurface: (surface) => set({ surface }),
+    setFocusLaneId: (laneId) => set({ focusLaneId: laneId }),
+    setSelectedCommitSha: (sha) => set({ selectedCommitSha: sha }),
+    setSelectedCommit: (commit) =>
+      set({
+        selectedCommit: commit,
+        selectedCommitSha: commit?.sha ?? null,
+      }),
     setViewMode: (mode) => set({ viewMode: mode }),
     setSelectedEventId: (id) => set({ selectedEventId: id }),
     setHoveredLaneId: (id) => set({ hoveredLaneId: id }),

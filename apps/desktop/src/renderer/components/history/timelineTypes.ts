@@ -1,6 +1,9 @@
 import type { OperationRecord } from "../../../shared/types";
 import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
+// ── History surface (activity timeline vs git commit graph) ───────
+export type HistorySurface = "activity" | "commits";
+
 // ── View Modes ───────────────────────────────────────────────────
 export type ViewMode = "graph" | "list" | "compact";
 

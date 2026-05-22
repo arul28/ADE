@@ -8,7 +8,11 @@ import {
   X,
   Circle,
   Funnel,
+  GitBranch,
+  Clock,
 } from "@phosphor-icons/react";
+import { useAppStore } from "../../state/appStore";
+import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -54,8 +58,18 @@ const SCOPE_OPTIONS: { value: ScopeLevel; label: string; tip: string }[] = [
 
 /* ── Component ──────────────────────────────────────────────── */
 
+const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.ElementType }[] = [
+  { value: "commits", label: "Commits", Icon: GitBranch },
+  { value: "activity", label: "Activity", Icon: Clock },
+];
+
 export function TimelineToolbar() {
+  const lanes = useAppStore((s) => s.lanes ?? []);
   /* ── Store ─────────────────────────────────────────────────── */
+  const surface = useTimelineStore((s) => s.surface);
+  const setSurface = useTimelineStore((s) => s.setSurface);
+  const focusLaneId = useTimelineStore((s) => s.focusLaneId);
+  const setFocusLaneId = useTimelineStore((s) => s.setFocusLaneId);
   const viewMode = useTimelineStore((s) => s.viewMode);
   const setViewMode = useTimelineStore((s) => s.setViewMode);
   const filters = useTimelineStore((s) => s.filters);
@@ -113,9 +127,48 @@ export function TimelineToolbar() {
   const hasSolo = visibility.soloedLaneIds.size > 0;
 
   /* ── Render ────────────────────────────────────────────────── */
+  const showActivityControls = surface === "activity";
+
   return (
     <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
+      {/* ── Row 0: Surface + lane (commits) ──────────────────── */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5">
+          {SURFACE_OPTIONS.map(({ value, label, Icon }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setSurface(value)}
+              className={cn(
+                "flex h-7 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
+                surface === value
+                  ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                  : "border-transparent text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
+              )}
+            >
+              <Icon size={12} weight={surface === value ? "fill" : "regular"} />
+              {label}
+            </button>
+          ))}
+        </div>
+        {surface === "commits" ? (
+          <select
+            value={focusLaneId ?? ""}
+            onChange={(e) => setFocusLaneId(e.target.value || null)}
+            className="h-7 max-w-[220px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
+          >
+            <option value="">Select lane…</option>
+            {lanes.map((lane) => (
+              <option key={lane.id} value={lane.id}>
+                {lane.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+
       {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
+      {showActivityControls ? (
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
         <div className="flex items-center gap-0.5">
@@ -197,8 +250,10 @@ export function TimelineToolbar() {
           <GearSix size={14} />
         </button>
       </div>
+      ) : null}
 
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
+      {showActivityControls ? (
       <div className="flex flex-wrap items-center gap-1.5" data-tour="history.filter">
         {/* Section label */}
         <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
@@ -354,6 +409,7 @@ export function TimelineToolbar() {
           </Button>
         )}
       </div>
+      ) : null}
     </div>
   );
 }

@@ -74,12 +74,14 @@ type EventDetailPanelProps = {
   event: TimelineEvent | null;
   onClose: () => void;
   onNavigateToLane?: (laneId: string) => void;
+  navigate?: (path: string) => void;
 };
 
 export function EventDetailPanel({
   event,
   onClose,
   onNavigateToLane,
+  navigate,
 }: EventDetailPanelProps) {
   const [metadataExpanded, setMetadataExpanded] = useState(false);
 
@@ -98,6 +100,7 @@ export function EventDetailPanel({
             event={event}
             onClose={onClose}
             onNavigateToLane={onNavigateToLane}
+            navigate={navigate}
             metadataExpanded={metadataExpanded}
             setMetadataExpanded={setMetadataExpanded}
           />
@@ -113,12 +116,14 @@ function PanelContent({
   event,
   onClose,
   onNavigateToLane,
+  navigate,
   metadataExpanded,
   setMetadataExpanded,
 }: {
   event: TimelineEvent;
   onClose: () => void;
   onNavigateToLane?: (laneId: string) => void;
+  navigate?: (path: string) => void;
   metadataExpanded: boolean;
   setMetadataExpanded: (v: boolean) => void;
 }) {
@@ -328,6 +333,50 @@ function PanelContent({
 
       {/* ── Action buttons ────────────────────────────────────── */}
       <div className="mt-auto flex flex-wrap items-center gap-2 p-3 pt-4">
+        {event.postHeadSha && event.laneId && navigate ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              navigate(
+                `/history?surface=commits&laneId=${encodeURIComponent(event.laneId!)}&commitSha=${encodeURIComponent(event.postHeadSha!)}`,
+              )
+            }
+          >
+            <span className="inline-flex items-center gap-1">
+              <GitBranch size={10} weight="bold" />
+              View commit
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "pr" && navigate ? (
+          <Button variant="outline" size="sm" onClick={() => navigate("/prs")}>
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open PRs
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "mission" && navigate ? (
+          <Button variant="outline" size="sm" onClick={() => navigate("/missions")}>
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open missions
+            </span>
+          </Button>
+        ) : null}
+        {event.category === "session" && event.laneId && navigate ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(`/work?laneId=${encodeURIComponent(event.laneId!)}`)}
+          >
+            <span className="inline-flex items-center gap-1">
+              <ArrowSquareOut size={10} weight="bold" />
+              Open work
+            </span>
+          </Button>
+        ) : null}
         {event.laneId && onNavigateToLane && (
           <Button
             variant="outline"

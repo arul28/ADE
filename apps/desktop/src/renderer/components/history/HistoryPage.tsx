@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useCallback, useRef } from "react";
+import React, { Suspense, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -11,6 +11,7 @@ import {
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimelineListView } from "./TimelineListView";
 import { TimelineCompactView } from "./TimelineCompactView";
+import { CommitHistoryView } from "./CommitHistoryView";
 import {
   TimelineStoreProvider,
   createTimelineStore,
@@ -18,6 +19,7 @@ import {
   type TimelineStoreApi,
 } from "./useTimelineStore";
 import type { TimelineEvent } from "./timelineTypes";
+import type { GitCommitSummary } from "../../../shared/types";
 
 const TimelineGraph = React.lazy(async () => {
   const mod = await import("./TimelineGraph");
@@ -29,7 +31,11 @@ const EventDetailPanel = React.lazy(async () => {
   return { default: mod.EventDetailPanel };
 });
 
-// ── Tiling layout tree (same split pattern as before) ────────────
+const CommitDetailPanel = React.lazy(async () => {
+  const mod = await import("./CommitDetailPanel");
+  return { default: mod.CommitDetailPanel };
+});
+
 const HISTORY_TILING_TREE: PaneSplit = {
   type: "split",
   direction: "horizontal",
@@ -55,30 +61,59 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // ── Store state ─────────────────────────────────────────────
   const events = useTimelineStore((s) => s.events);
+  const rawEvents = useTimelineStore((s) => s.rawEvents);
   const wipNodes = useTimelineStore((s) => s.wipNodes);
   const viewMode = useTimelineStore((s) => s.viewMode);
+  const surface = useTimelineStore((s) => s.surface);
+  const focusLaneId = useTimelineStore((s) => s.focusLaneId);
+  const selectedCommitSha = useTimelineStore((s) => s.selectedCommitSha);
+  const selectedCommit = useTimelineStore((s) => s.selectedCommit);
   const selectedEventId = useTimelineStore((s) => s.selectedEventId);
   const hoveredLaneId = useTimelineStore((s) => s.hoveredLaneId);
   const loading = useTimelineStore((s) => s.loading);
   const error = useTimelineStore((s) => s.error);
   const fetchEvents = useTimelineStore((s) => s.fetchEvents);
   const setSelectedEventId = useTimelineStore((s) => s.setSelectedEventId);
+  const setSelectedCommit = useTimelineStore((s) => s.setSelectedCommit);
+  const setSelectedCommitSha = useTimelineStore((s) => s.setSelectedCommitSha);
+  const setFocusLaneId = useTimelineStore((s) => s.setFocusLaneId);
+  const setSurface = useTimelineStore((s) => s.setSurface);
   const setHoveredLaneId = useTimelineStore((s) => s.setHoveredLaneId);
 
-  // ── App-level state (lanes) ─────────────────────────────────
   const lanes = useAppStore((s) => s.lanes ?? []);
+  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
-  // ── Initial fetch & auto-refresh ───────────────────────────
+  // Default focus lane from URL, active lane, or first lane
   useEffect(() => {
     if (!active) return;
+    const laneFromUrl = searchParams.get("laneId");
+    if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
+      if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
+      return;
+    }
+    if (focusLaneId && lanes.some((l) => l.id === focusLaneId)) return;
+    const fallback =
+      (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null) ??
+      lanes[0]?.id ??
+      null;
+    if (fallback) setFocusLaneId(fallback);
+  }, [active, lanes, selectedLaneId, focusLaneId, searchParams, setFocusLaneId]);
+
+  const surfaceFromUrl = searchParams.get("surface");
+  useEffect(() => {
+    if (surfaceFromUrl === "activity" || surfaceFromUrl === "commits") {
+      setSurface(surfaceFromUrl);
+    }
+  }, [surfaceFromUrl, setSurface]);
+
+  useEffect(() => {
+    if (!active || surface !== "activity") return;
     void fetchEvents();
-  }, [active, fetchEvents]);
+  }, [active, surface, fetchEvents]);
 
-  // Auto-refresh while operations are actively running, but keep it quiet.
   useEffect(() => {
-    if (!active) return;
+    if (!active || surface !== "activity") return;
     const hasRunning = events.some((e) => e.status === "running");
     if (!hasRunning) return;
     const refresh = () => {
@@ -95,10 +130,10 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [active, events, fetchEvents]);
+  }, [active, surface, events, fetchEvents]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || surface !== "activity") return;
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
       void fetchEvents({ silent: true });
@@ -109,35 +144,66 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [active, fetchEvents]);
+  }, [active, surface, fetchEvents]);
 
-  // ── URL sync: read selectedEventId from search params ──────
   useEffect(() => {
     const eventId = searchParams.get("eventId");
     if (eventId && eventId !== selectedEventId) {
       setSelectedEventId(eventId);
+      setSurface("activity");
     }
-  }, [searchParams, selectedEventId, setSelectedEventId]);
+    const commitSha = searchParams.get("commitSha");
+    if (commitSha && commitSha !== selectedCommitSha && !selectedCommit) {
+      setSelectedCommitSha(commitSha);
+      setSurface("commits");
+    }
+  }, [
+    searchParams,
+    selectedEventId,
+    selectedCommitSha,
+    setSelectedEventId,
+    setSelectedCommit,
+    setSurface,
+  ]);
 
-  // ── Handlers ───────────────────────────────────────────────
   const handleSelectEvent = useCallback(
     (id: string) => {
       setSelectedEventId(id);
+      setSelectedCommit(null);
       setSearchParams((prev) => {
         prev.set("eventId", id);
+        prev.delete("commitSha");
+        prev.set("surface", "activity");
         return prev;
       });
     },
-    [setSelectedEventId, setSearchParams],
+    [setSelectedEventId, setSelectedCommit, setSearchParams],
+  );
+
+  const handleSelectCommit = useCallback(
+    (commit: GitCommitSummary) => {
+      setSelectedCommit(commit);
+      setSelectedEventId(null);
+      setSearchParams((prev) => {
+        prev.set("commitSha", commit.sha);
+        prev.delete("eventId");
+        prev.set("surface", "commits");
+        if (focusLaneId) prev.set("laneId", focusLaneId);
+        return prev;
+      });
+    },
+    [setSelectedCommit, setSelectedEventId, setSearchParams, focusLaneId],
   );
 
   const handleCloseDetail = useCallback(() => {
     setSelectedEventId(null);
+    setSelectedCommit(null);
     setSearchParams((prev) => {
       prev.delete("eventId");
+      prev.delete("commitSha");
       return prev;
     });
-  }, [setSelectedEventId, setSearchParams]);
+  }, [setSelectedEventId, setSelectedCommit, setSearchParams]);
 
   const handleNavigateToLane = useCallback(
     (laneId: string) => {
@@ -146,12 +212,27 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     [navigate],
   );
 
-  // ── Selected event object ──────────────────────────────────
   const selectedEvent: TimelineEvent | null = selectedEventId
     ? (events.find((e) => e.id === selectedEventId) ?? null)
     : null;
 
-  // ── Lane data for graph ────────────────────────────────────
+  const relatedEventsForCommit = useMemo(() => {
+    if (!selectedCommitSha) return [];
+    return rawEvents
+      .filter(
+        (op) =>
+          op.preHeadSha === selectedCommitSha ||
+          op.postHeadSha === selectedCommitSha,
+      )
+      .map((op) => {
+        const found = events.find((e) => e.id === op.id);
+        return found;
+      })
+      .filter((e): e is TimelineEvent => e != null);
+  }, [selectedCommitSha, rawEvents, events]);
+
+  const focusLane = lanes.find((l) => l.id === focusLaneId) ?? null;
+
   const laneData = lanes.map((l) => ({
     id: l.id,
     name: l.name,
@@ -164,10 +245,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     </div>
   );
 
-  // ── Timeline content (switches by view mode) ──────────────
   let timelineBody: React.ReactNode;
 
-  if (loading && events.length === 0) {
+  if (surface === "commits") {
+    timelineBody = (
+      <CommitHistoryView
+        laneId={focusLaneId}
+        laneName={focusLane?.name ?? null}
+        selectedSha={selectedCommitSha}
+        onSelectCommit={handleSelectCommit}
+        active={active}
+        refreshToken={events.length}
+      />
+    );
+  } else if (loading && events.length === 0) {
     timelineBody = (
       <EmptyState
         icon={Clock}
@@ -225,42 +316,57 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
   }
 
-  // ── Pane configs for PaneTilingLayout ──────────────────────
+  const detailTitle = surface === "commits" ? "Commit" : "Event Detail";
+  const detailBody =
+    surface === "commits" ? (
+      <Suspense fallback={panelFallback}>
+        <CommitDetailPanel
+          laneId={focusLaneId}
+          commit={selectedCommit}
+          relatedEvents={relatedEventsForCommit}
+          onClose={handleCloseDetail}
+          onNavigateToLane={handleNavigateToLane}
+          navigate={(path) => navigate(path)}
+        />
+      </Suspense>
+    ) : (
+      <Suspense fallback={panelFallback}>
+        <EventDetailPanel
+          event={selectedEvent}
+          onClose={handleCloseDetail}
+          onNavigateToLane={handleNavigateToLane}
+          navigate={(path) => navigate(path)}
+        />
+      </Suspense>
+    );
+
   const paneConfigs: Record<string, PaneConfig> = {
     timeline: {
-      title: "Timeline",
+      title: surface === "commits" ? "Commit graph" : "Timeline",
       icon: Clock,
       bodyClassName: "flex flex-col",
       children: (
-        <div className="flex flex-col flex-1 min-h-0">
+        <div className="flex min-h-0 flex-1 flex-col">
           <TimelineToolbar />
           {timelineBody}
         </div>
       ),
     },
     detail: {
-      title: "Event Detail",
+      title: detailTitle,
       icon: Clock,
       bodyClassName: "flex flex-col",
-      children: (
-        <Suspense fallback={panelFallback}>
-          <EventDetailPanel
-            event={selectedEvent}
-            onClose={handleCloseDetail}
-            onNavigateToLane={handleNavigateToLane}
-          />
-        </Suspense>
-      ),
+      children: detailBody,
     },
   };
 
   return (
     <div className="flex h-full min-w-0 flex-col bg-bg">
       <PaneTilingLayout
-        layoutId="history:tiling:v2"
+        layoutId="history:tiling:v3"
         tree={HISTORY_TILING_TREE}
         panes={paneConfigs}
-        className="flex-1 min-h-0"
+        className="min-h-0 flex-1"
       />
     </div>
   );

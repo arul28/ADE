@@ -701,7 +701,7 @@ export function createGitOperationsService({
 
     async listRecentCommits(args: { laneId: string; limit?: number }): Promise<GitCommitSummary[]> {
       const laneId = args.laneId.trim();
-      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(200, Math.floor(args.limit))) : 30;
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 30;
       return readLaneCached(`recent-commits:${laneId}:${limit}`, 2_000, async () => {
         const lane = laneService.getLaneBaseAndBranch(laneId);
         let out: string;
