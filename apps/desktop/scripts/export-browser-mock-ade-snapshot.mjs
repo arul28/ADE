@@ -546,10 +546,24 @@ function rowToPr(row) {
   };
 }
 
+function normalizeEscapedMarkdownNewlines(text) {
+  if (typeof text !== "string" || !text.includes("\\")) return text;
+  return text
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, "\t");
+}
+
 function normalizePrSnapshot(row) {
+  const detail = safeJson(row.detail_json, null);
+  const normalizedDetail =
+    detail && typeof detail.body === "string"
+      ? { ...detail, body: normalizeEscapedMarkdownNewlines(detail.body) }
+      : detail;
   return {
     prId: String(row.pr_id),
-    detail: safeJson(row.detail_json, null),
+    detail: normalizedDetail,
     status: safeJson(row.status_json, null),
     checks: safeJson(row.checks_json, []),
     reviews: safeJson(row.reviews_json, []),
@@ -779,9 +793,29 @@ function buildRebaseNeeds({ lanes, prs, projectId }) {
     .filter(Boolean);
 }
 
-function buildGithubSnapshot({ prs, lanes, mergeContexts, integrationWorkflows }) {
+function isBotAuthor(author) {
+  if (!author || typeof author !== "string") return false;
+  const normalized = author.toLowerCase();
+  return (
+    normalized.endsWith("[bot]") ||
+    normalized.endsWith("-bot") ||
+    normalized === "dependabot" ||
+    normalized.includes("dependabot")
+  );
+}
+
+function buildGithubSnapshot({
+  prs,
+  lanes,
+  mergeContexts,
+  integrationWorkflows,
+  prSnapshots = [],
+}) {
   const workflowByPr = new Map(
     integrationWorkflows.filter((workflow) => workflow.linkedPrId).map((workflow) => [workflow.linkedPrId, workflow]),
+  );
+  const snapshotByPrId = new Map(
+    prSnapshots.map((snapshot) => [String(snapshot.prId), snapshot]),
   );
   return {
     repo: prs[0] ? { owner: prs[0].repoOwner, name: prs[0].repoName } : null,
@@ -791,6 +825,12 @@ function buildGithubSnapshot({ prs, lanes, mergeContexts, integrationWorkflows }
       const ctx = mergeContexts[pr.id] ?? null;
       const workflow = workflowByPr.get(pr.id) ?? null;
       const lane = lanes.find((candidate) => candidate.id === pr.laneId);
+      const snapshot = snapshotByPrId.get(pr.id) ?? null;
+      const detail = snapshot?.detail ?? null;
+      const author =
+        typeof detail?.author?.login === "string" ? detail.author.login : null;
+      const labels = Array.isArray(detail?.labels) ? detail.labels : [];
+      const comments = Array.isArray(snapshot?.comments) ? snapshot.comments : [];
       return {
         id: pr.id,
         scope: "repo",
@@ -803,7 +843,7 @@ function buildGithubSnapshot({ prs, lanes, mergeContexts, integrationWorkflows }
         isDraft: pr.state === "draft",
         baseBranch: pr.baseBranch,
         headBranch: pr.headBranch,
-        author: null,
+        author,
         createdAt: pr.createdAt,
         updatedAt: pr.updatedAt,
         linkedPrId: pr.id,
@@ -813,6 +853,9 @@ function buildGithubSnapshot({ prs, lanes, mergeContexts, integrationWorkflows }
         adeKind: workflow ? "integration" : (ctx?.groupType ?? "single"),
         workflowDisplayState: workflow?.workflowDisplayState ?? null,
         cleanupState: workflow?.cleanupState ?? null,
+        labels,
+        isBot: isBotAuthor(author),
+        commentCount: comments.length,
       };
     }),
     externalPullRequests: [],
@@ -1324,7 +1367,13 @@ const integrationWorkflows = maybeAll(
 
 const mergeContexts = buildMergeContexts(prs, lanes, projectId);
 const rebaseNeeds = buildRebaseNeeds({ lanes, prs, projectId });
-const githubSnapshot = buildGithubSnapshot({ prs, lanes, mergeContexts, integrationWorkflows });
+const githubSnapshot = buildGithubSnapshot({
+  prs,
+  lanes,
+  mergeContexts,
+  integrationWorkflows,
+  prSnapshots,
+});
 const missions = buildMissionSummaries(projectId);
 const operations = buildOperations(projectId);
 const sessions = buildSessions(projectId);

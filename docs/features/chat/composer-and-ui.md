@@ -101,7 +101,12 @@ and a footer that contains the composer.
   `source: "lane_link"` and pins it inside the dialog so the user
   can see what's already linked. The dialog also exposes a deep
   link to Settings > Integrations > Linear when the workspace
-  isn't connected.
+  isn't connected. When a turn is dispatched, `agentChatService`
+  records every attached Linear issue back onto the lane through
+  `laneService.linkLinearIssues({ role: "worked", source:
+  "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
+  so the issue appears in the next PR body's "Linked Linear issues"
+  block — see [features/linear-integration/README.md](../linear-integration/README.md).
 - **File attach picker** opened with the `@` key. Runs a debounced
   `ade.agentChat.fileSearch` and discards stale results.
 - **Slash commands.** Local commands (`/clear`, `/login`) are available

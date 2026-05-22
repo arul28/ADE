@@ -2258,6 +2258,106 @@ const MOCK_INTEGRATION_WORKFLOWS: any[] = USE_ADE_DB_SNAPSHOT
     : []
   : BUILTIN_MOCK_INTEGRATION_WORKFLOWS;
 
+function isBotGitHubAuthor(author: unknown): boolean {
+  if (typeof author !== "string" || !author.trim()) return false;
+  const normalized = author.toLowerCase();
+  return (
+    normalized.endsWith("[bot]") ||
+    normalized.endsWith("-bot") ||
+    normalized.includes("dependabot")
+  );
+}
+
+function normalizeGitHubPrListItem(item: any): any {
+  return {
+    ...item,
+    labels: Array.isArray(item?.labels) ? item.labels : [],
+    isBot: typeof item?.isBot === "boolean" ? item.isBot : isBotGitHubAuthor(item?.author),
+    commentCount:
+      typeof item?.commentCount === "number"
+        ? item.commentCount
+        : Number(item?.commentCount ?? 0),
+  };
+}
+
+function normalizeGitHubSnapshot(snapshot: any): any {
+  if (!snapshot || typeof snapshot !== "object") return snapshot;
+  return {
+    ...snapshot,
+    repoPullRequests: Array.isArray(snapshot.repoPullRequests)
+      ? snapshot.repoPullRequests.map(normalizeGitHubPrListItem)
+      : [],
+    externalPullRequests: Array.isArray(snapshot.externalPullRequests)
+      ? snapshot.externalPullRequests.map(normalizeGitHubPrListItem)
+      : [],
+  };
+}
+
+function buildEmptyIssueInventorySnapshot(prId: string): any {
+  const runtime = createDefaultConvergenceRuntime(prId);
+  return {
+    prId,
+    items: [],
+    convergence: {
+      currentRound: 0,
+      maxRounds: 5,
+      issuesPerRound: [],
+      totalNew: 0,
+      totalFixed: 0,
+      totalDismissed: 0,
+      totalEscalated: 0,
+      totalSentToAgent: 0,
+      isConverging: false,
+      canAutoAdvance: false,
+    },
+    runtime,
+  };
+}
+
+const MOCK_ISSUE_INVENTORY_BY_PR = new Map<string, any>();
+
+function getIssueInventorySnapshot(prId: string): any {
+  const stored = MOCK_ISSUE_INVENTORY_BY_PR.get(prId);
+  if (stored) return stored;
+  const empty = buildEmptyIssueInventorySnapshot(prId);
+  MOCK_ISSUE_INVENTORY_BY_PR.set(prId, empty);
+  return empty;
+}
+
+function buildCreateLaneFromPrPreflight(args: any): any {
+  const repoOwner = String(args?.repoOwner ?? "mock");
+  const repoName = String(args?.repoName ?? "repo");
+  const githubPrNumber = Number(args?.githubPrNumber ?? 0);
+  const headBranch = args?.headBranch ?? null;
+  const title = String(args?.title ?? `PR #${githubPrNumber}`);
+  const targetLaneName =
+    typeof headBranch === "string" && headBranch.trim()
+      ? headBranch.replace(/^[^/]+\//, "")
+      : `pr-${githubPrNumber}`;
+  return {
+    repoOwner,
+    repoName,
+    githubPrNumber,
+    githubUrl: String(
+      args?.githubUrl ??
+        `https://github.com/${repoOwner}/${repoName}/pull/${githubPrNumber}`,
+    ),
+    title,
+    headBranch,
+    headSha: null,
+    headRepoOwner: repoOwner,
+    headRepoName: repoName,
+    remoteBranch: headBranch,
+    importBranchRef: headBranch,
+    targetLaneName,
+    baseBranch: args?.baseBranch ?? "main",
+    canCreate: true,
+    status: "ready",
+    blockingConflict: null,
+    blockingConflicts: [],
+  };
+}
+
 const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   repo: { owner: "acme", name: "ade" },
   viewerLogin: "mock-user",
@@ -2345,10 +2445,11 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   ],
 };
 
-const MOCK_GITHUB_SNAPSHOT: any =
+const MOCK_GITHUB_SNAPSHOT: any = normalizeGitHubSnapshot(
   USE_ADE_DB_SNAPSHOT && ADE_DB_SNAPSHOT?.githubSnapshot
     ? ADE_DB_SNAPSHOT.githubSnapshot
-    : BUILTIN_MOCK_GITHUB_SNAPSHOT;
+    : BUILTIN_MOCK_GITHUB_SNAPSHOT,
+);
 
 // ═══════════════════════════════════════════════════════════════
 // Wire it up
@@ -4964,6 +5065,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         connected: false,
       }),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
+      listRepoAutolinks: resolved([]),
+      createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?type=pr&repo=arul28%2FADE&number=<num>", isAlphanumeric: false }),
       listRepoLabels: resolved([]),
       listRepoCollaborators: resolved([]),
       onStatusChanged: noop,
@@ -4975,9 +5078,82 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       linkToLane: resolvedArg(
         USE_ADE_DB_SNAPSHOT ? null : (NORMAL_PRS[0] ?? null),
       ),
+      preflightCreateLaneFromPrBranch: async (args: any) => ({
+        preflight: buildCreateLaneFromPrPreflight(args),
+        lane: null,
+        pr: null,
+      }),
+      createLaneFromPrBranch: async (args: any) => {
+        const preflight = buildCreateLaneFromPrPreflight(args);
+        const lane = {
+          id: `mock-lane-from-pr-${preflight.githubPrNumber}`,
+          name: preflight.targetLaneName,
+          laneType: "feature",
+          baseRef: preflight.baseBranch ?? "main",
+          branchRef: preflight.headBranch,
+          worktreePath: `${MOCK_PROJECT.rootPath}/.ade/worktrees/mock-${preflight.githubPrNumber}`,
+          attachedRootPath: null,
+          isEditProtected: false,
+          parentLaneId: null,
+          color: null,
+          icon: null,
+          tags: [],
+          folder: null,
+          missionId: null,
+          laneRole: null,
+          status: {
+            dirty: false,
+            ahead: 0,
+            behind: 0,
+            remoteBehind: -1,
+            rebaseInProgress: false,
+          },
+          createdAt: now,
+          archivedAt: null,
+        };
+        const pr =
+          ALL_PRS.find(
+            (entry: any) =>
+              entry.githubPrNumber === preflight.githubPrNumber &&
+              entry.repoOwner === preflight.repoOwner &&
+              entry.repoName === preflight.repoName,
+          ) ??
+          ({
+            id: `mock-pr-${preflight.githubPrNumber}`,
+            laneId: lane.id,
+            projectId: MOCK_PROJECT.id,
+            repoOwner: preflight.repoOwner,
+            repoName: preflight.repoName,
+            githubPrNumber: preflight.githubPrNumber,
+            githubUrl: preflight.githubUrl,
+            githubNodeId: null,
+            title: preflight.title,
+            state: "open",
+            baseBranch: preflight.baseBranch ?? "main",
+            headBranch: preflight.headBranch ?? "",
+            checksStatus: "none",
+            reviewStatus: "none",
+            additions: 0,
+            deletions: 0,
+            lastSyncedAt: now,
+            createdAt: now,
+            updatedAt: now,
+            creationStrategy: "pr_target",
+          } as any);
+        return { preflight, lane, pr };
+      },
       getForLane: async (laneId: string) =>
         ALL_PRS.find((pr: any) => pr.laneId === laneId) ?? null,
       listAll: resolved(ALL_PRS),
+      listOpenForRepo: async () =>
+        MOCK_GITHUB_SNAPSHOT.repoPullRequests
+          .filter((item: any) => item.linkedPrId == null)
+          .map((item: any) => ({
+            branch: item.headBranch,
+            prNumber: item.githubPrNumber,
+            title: item.title,
+            url: item.githubUrl,
+          })),
       refresh: resolved(ALL_PRS),
       getStatus: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.status ??
@@ -5106,7 +5282,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ]),
         ),
       listWithConflicts: resolved(ALL_PRS),
-      listSnapshots: async () => [],
+      listSnapshots: async (args?: { prId?: string }) => {
+        let snapshots = ADE_DB_PR_SNAPSHOTS;
+        const prId = args?.prId?.trim();
+        if (prId) {
+          snapshots = snapshots.filter((snapshot) => snapshot.prId === prId);
+        }
+        return snapshots;
+      },
       getGitHubSnapshot: resolvedArg(MOCK_GITHUB_SNAPSHOT),
       listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
       aiResolutionStart: async () => ({
@@ -5249,6 +5432,40 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       getFiles: async (prId: string) =>
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.files ?? [],
+      getCommits: async (prId: string) =>
+        ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.commits ?? [],
+      getDeployments: resolvedArg([]),
+      getAiSummary: resolvedArg(null),
+      regenerateAiSummary: resolvedArg(null),
+      postReviewComment: resolvedArg({
+        id: "mock-review-comment",
+        author: "you",
+        body: "",
+        url: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      setReviewThreadResolved: resolvedArg(undefined),
+      reactToComment: resolvedArg(undefined),
+      launchIssueResolutionFromThread: resolvedArg({
+        sessionId: "mock-thread-resolution-session",
+        laneId: "lane-dashboard",
+        href: "/work?laneId=lane-dashboard&sessionId=mock-thread-resolution-session",
+      }),
+      cleanupBranch: resolvedArg({ deleted: false, reason: "browser-mock" }),
+      reorderQueuePrs: resolvedArg(undefined),
+      aiResolutionGetSession: resolvedArg(null),
+      issueInventorySync: async (prId: string) => getIssueInventorySnapshot(prId),
+      issueInventoryGet: async (prId: string) => getIssueInventorySnapshot(prId),
+      issueInventoryGetNew: async (_prId: string) => [],
+      issueInventoryMarkFixed: resolvedArg2(undefined),
+      issueInventoryMarkDismissed: resolvedArg2(undefined),
+      issueInventoryMarkEscalated: resolvedArg2(undefined),
+      issueInventoryGetConvergence: async (prId: string) =>
+        getIssueInventorySnapshot(prId).convergence,
+      issueInventoryReset: async (prId: string) => {
+        MOCK_ISSUE_INVENTORY_BY_PR.set(prId, buildEmptyIssueInventorySnapshot(prId));
+      },
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({

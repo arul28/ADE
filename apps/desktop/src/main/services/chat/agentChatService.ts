@@ -4489,6 +4489,36 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+
+  const recordLinearIssueContextForLane = (
+    managed: ManagedChatSession,
+    contextAttachments: AgentChatContextAttachment[],
+  ): void => {
+    if (!managed.session.laneId || contextAttachments.length === 0) return;
+    const issues = contextAttachments
+      .filter((attachment) => attachment.type === "linear_issue")
+      .map((attachment) => attachment.issue);
+    if (!issues.length) return;
+    try {
+      laneService.linkLinearIssues({
+        laneId: managed.session.laneId,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: false,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.linear_issue_context_link_failed", {
+        sessionId: managed.session.id,
+        laneId: managed.session.laneId,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
@@ -18173,6 +18203,8 @@ export function createAgentChatService(args: {
       optimisticDroidTurnStart,
       optimisticCodexTurnStart,
     } = prepared;
+
+    recordLinearIssueContextForLane(managed, contextAttachments);
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {

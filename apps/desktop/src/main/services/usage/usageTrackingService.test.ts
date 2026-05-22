@@ -34,6 +34,7 @@ const {
   parseCodexRateLimitWindows,
   calculatePacingByProvider,
   detectThresholdCrossings,
+  normalizeResetAtKey,
   pollCodexViaCliRpc,
   resolveTokenPrice,
 } = _testing;
@@ -499,12 +500,23 @@ describe("detectThresholdCrossings", () => {
     expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
   });
 
-  it("fires every threshold that has been crossed at once on a cold start", () => {
-    const { events } = detectThresholdCrossings(
+  it("fires only the highest crossed threshold on a cold start", () => {
+    const { events, nextState } = detectThresholdCrossings(
       [makeWindow("claude", 80)],
       {},
     );
-    expect(events.map((e) => e.threshold)).toEqual([25, 50, 75]);
+    expect(events.map((e) => e.threshold)).toEqual([75]);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50, 75]);
+  });
+
+  it("fires the next highest threshold when usage increases later in the cycle", () => {
+    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [makeWindow("claude", 80)],
+      prev,
+    );
+    expect(events.map((e) => e.threshold)).toEqual([75]);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50, 75]);
   });
 
   it("does not refire thresholds already recorded for the same cycle", () => {
@@ -525,6 +537,24 @@ describe("detectThresholdCrossings", () => {
     );
     expect(events.map((e) => e.threshold)).toEqual([25]);
     expect(nextState.claude?.firedThresholds).toEqual([25]);
+  });
+
+  it("treats reset timestamps as the same cycle when only the string format differs", () => {
+    const prev = { claude: { resetsAt: weeklyReset, firedThresholds: [25, 50] } };
+    const { events, nextState } = detectThresholdCrossings(
+      [makeWindow("claude", 60, "2099-05-15T07:00:00Z")],
+      prev,
+    );
+    expect(events).toEqual([]);
+    expect(nextState.claude?.firedThresholds).toEqual([25, 50]);
+  });
+});
+
+describe("normalizeResetAtKey", () => {
+  it("normalizes equivalent ISO timestamps to the same key", () => {
+    expect(normalizeResetAtKey("2099-05-15T07:00:00.000Z")).toBe(
+      normalizeResetAtKey("2099-05-15T07:00:00Z"),
+    );
   });
 });
 

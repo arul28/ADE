@@ -1,17 +1,13 @@
 import React from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize from "rehype-sanitize";
 import {
-  GitBranch, GitMerge, GitCommit, GithubLogo, CheckCircle, XCircle, Circle,
-  CircleNotch, Sparkle, ArrowRight, Eye, ChatText, Code,
-  PencilSimple, X, Check, ArrowsClockwise, Warning, Play, Rocket, Tag,
-  CaretDown, CaretRight, UserCircle, DotsThreeVertical, Robot, Stack as Layers,
+  GitBranch, GithubLogo, CheckCircle, XCircle, Circle,
+  CircleNotch, Sparkle, ArrowRight, Eye, Code,
+  PencilSimple, X, Check, ArrowsClockwise, Play,
+  CaretDown, CaretRight, Stack as Layers,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
-  PrFile, PrCommit, PrActionRun, PrActivityEvent, AiReviewSummary, PrReviewThread,
+  PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
   LaneSummary, MergeMethod, LandResult,
   FilePatch,
   IssueInventorySnapshot,
@@ -26,20 +22,25 @@ import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/P
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
+import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { defaultPrIssueResolutionScope, getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
-import { getPrChecksBadge, getPrReviewsBadge, getPrStateBadge, InlinePrBadge, PrCiRunningIndicator } from "../shared/prVisuals";
+import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrConvergencePanel } from "../shared/PrConvergencePanel";
 import type { IssueInventoryItem as PanelIssueItem, ConvergenceStatus as PanelConvergence, AutoConvergeWaitState } from "../shared/PrConvergencePanel";
-import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
-import { formatTimeAgo, formatTimestampFull } from "../shared/prFormatters";
-import { describePrTargetDiff } from "../shared/laneBranchTargets";
 import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { usePrs } from "../state/PrsContext";
 import { modifierKeyLabel } from "../../../lib/platform";
+import {
+  buildUnifiedChecks,
+  findUnifiedCheckId,
+  formatCheckDuration,
+  unifiedChecksToPrChecks,
+} from "../shared/prUnifiedChecks";
+import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -87,215 +88,7 @@ function writeStoredDetailTab(prId: string, tab: DetailTab): void {
   }
 }
 
-// ---- Avatar component ----
-function Avatar({ user, size = 20 }: { user: { login: string; avatarUrl?: string | null }; size?: number }) {
-  return user.avatarUrl ? (
-    <img src={user.avatarUrl} alt={user.login} width={size} height={size} style={{ borderRadius: "50%", border: `1.5px solid ${COLORS.accentBorder}`, boxShadow: `0 0 0 1px ${COLORS.pageBg}` }} />
-  ) : (
-    <UserCircle size={size} weight="fill" style={{ color: COLORS.accent, opacity: 0.7 }} />
-  );
-}
-
-function MarkdownBody({ markdown }: { markdown: string }) {
-  // Strip HTML comments (e.g. <!-- coderabbit:... -->) before rendering
-  const cleaned = markdown.replace(/<!--[\s\S]*?-->/g, "").trim();
-  if (!cleaned) return null;
-
-  return (
-    <div style={{ fontSize: 13, lineHeight: 1.7, color: COLORS.textSecondary, fontFamily: SANS_FONT, wordBreak: "break-word", overflowWrap: "break-word" }}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw, rehypeSanitize]}
-        components={{
-          p: ({ children }) => <p style={{ margin: "0 0 10px", whiteSpace: "pre-wrap", fontFamily: SANS_FONT }}>{children}</p>,
-          ul: ({ children }) => <ul style={{ margin: "0 0 10px", paddingLeft: 20 }}>{children}</ul>,
-          ol: ({ children }) => <ol style={{ margin: "0 0 10px", paddingLeft: 20 }}>{children}</ol>,
-          li: ({ children }) => <li style={{ marginBottom: 4, fontFamily: SANS_FONT }}>{children}</li>,
-          h1: ({ children }) => <h1 style={{ fontSize: 18, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, margin: "16px 0 8px", paddingBottom: 6, borderBottom: `1px solid ${COLORS.border}` }}>{children}</h1>,
-          h2: ({ children }) => <h2 style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, margin: "14px 0 6px", paddingBottom: 4, borderBottom: `1px solid ${COLORS.border}` }}>{children}</h2>,
-          h3: ({ children }) => <h3 style={{ fontSize: 14, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, margin: "12px 0 4px" }}>{children}</h3>,
-          h4: ({ children }) => <h4 style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, margin: "10px 0 4px" }}>{children}</h4>,
-          h5: ({ children }) => <h5 style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary, margin: "8px 0 4px" }}>{children}</h5>,
-          h6: ({ children }) => <h6 style={{ fontSize: 11, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textMuted, margin: "8px 0 4px" }}>{children}</h6>,
-          blockquote: ({ children }) => (
-            <blockquote style={{
-              margin: "8px 0",
-              padding: "4px 14px",
-              borderLeft: `3px solid color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-              color: COLORS.textMuted,
-              fontStyle: "italic",
-            }}>
-              {children}
-            </blockquote>
-          ),
-          hr: () => <hr style={{ border: "none", borderTop: `1px solid ${COLORS.border}`, margin: "12px 0" }} />,
-          pre: ({ children }) => (
-            <pre style={{
-              overflow: "auto",
-              margin: "10px 0",
-              padding: 12,
-              border: `1px solid ${COLORS.border}`,
-              background: COLORS.recessedBg,
-              borderRadius: 8,
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              lineHeight: 1.6,
-              color: COLORS.textSecondary,
-            }}>
-              {children}
-            </pre>
-          ),
-          code: ({ className, children }) => {
-            const text = String(children ?? "");
-            const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
-            return isBlock ? (
-              <code style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{children}</code>
-            ) : (
-              <code style={{
-                padding: "2px 5px",
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.recessedBg,
-                borderRadius: 4,
-                fontFamily: MONO_FONT,
-                fontSize: 11,
-                color: COLORS.accent,
-              }}>
-                {children}
-              </code>
-            );
-          },
-          a: ({ children, href }) => (
-            <a
-              href="#"
-              onClick={(e) => { e.preventDefault(); if (href) void window.ade.app.openExternal(href); }}
-              style={{ color: COLORS.accent, textDecoration: "underline", cursor: "pointer" }}
-            >
-              {children}
-            </a>
-          ),
-          img: ({ src, alt }) => (
-            <img
-              src={src}
-              alt={alt ?? ""}
-              style={{ maxWidth: "100%", height: "auto", borderRadius: 6, margin: "6px 0", border: `1px solid ${COLORS.border}` }}
-              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-            />
-          ),
-          table: ({ children }) => (
-            <div style={{ overflowX: "auto", margin: "10px 0" }}>
-              <table style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-              }}>
-                {children}
-              </table>
-            </div>
-          ),
-          thead: ({ children }) => (
-            <thead style={{ background: COLORS.recessedBg }}>{children}</thead>
-          ),
-          th: ({ children }) => (
-            <th style={{
-              padding: "6px 10px",
-              textAlign: "left",
-              fontWeight: 600,
-              color: COLORS.textPrimary,
-              borderBottom: `1px solid ${COLORS.border}`,
-              fontSize: 11,
-            }}>
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td style={{
-              padding: "6px 10px",
-              borderBottom: `1px solid ${COLORS.borderMuted}`,
-              color: COLORS.textSecondary,
-              fontSize: 12,
-            }}>
-              {children}
-            </td>
-          ),
-          details: ({ children }) => (
-            <details style={{
-              margin: "8px 0",
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 8,
-              overflow: "hidden",
-            }}>
-              {children}
-            </details>
-          ),
-          summary: ({ children }) => (
-            <summary style={{
-              padding: "8px 12px",
-              cursor: "pointer",
-              fontWeight: 600,
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              color: COLORS.textPrimary,
-              background: COLORS.recessedBg,
-              borderBottom: `1px solid ${COLORS.border}`,
-              listStyle: "none",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-            }}>
-              <CaretRight size={11} style={{ color: COLORS.textMuted }} />
-              {children}
-            </summary>
-          ),
-          strong: ({ children }) => <strong style={{ fontWeight: 600, color: COLORS.textPrimary }}>{children}</strong>,
-          em: ({ children }) => <em style={{ fontStyle: "italic" }}>{children}</em>,
-          del: ({ children }) => <del style={{ textDecoration: "line-through", opacity: 0.7 }}>{children}</del>,
-          input: ({ type, checked, disabled }) => {
-            if (type === "checkbox") {
-              return (
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  disabled={disabled}
-                  readOnly
-                  style={{ marginRight: 6, accentColor: COLORS.accent, verticalAlign: "middle" }}
-                />
-              );
-            }
-            return null;
-          },
-        }}
-      >
-        {cleaned}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-// ---- Check status icon ----
-function CheckIcon({ check }: { check: PrCheck }) {
-  if (check.status === "completed") {
-    if (check.conclusion === "success") return <CheckCircle size={16} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />;
-    if (check.conclusion === "failure") return <XCircle size={16} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />;
-    return <Circle size={16} weight="regular" style={{ color: COLORS.textMuted }} />;
-  }
-  if (check.status === "in_progress") return <CircleNotch size={16} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />;
-  return <Circle size={16} weight="regular" style={{ color: COLORS.textMuted }} />;
-}
-
 // ---- Shared activity event helpers for the overview thread ----
-function activityEventColor(ev: PrActivityEvent): string {
-  if (ev.type === "comment") return ev.metadata?.source === "review" ? COLORS.warning : COLORS.info;
-  if (ev.type === "review") return COLORS.accent;
-  if (ev.type === "state_change") return COLORS.success;
-  if (ev.type === "deployment") return COLORS.success;
-  if (ev.type === "force_push") return COLORS.warning;
-  if (ev.type === "commit") return COLORS.accent;
-  if (ev.type === "ci_run") return COLORS.warning;
-  if (ev.type === "label") return COLORS.info;
-  return COLORS.textMuted;
-}
-
 function stableActivityIdPart(value: string | number | null | undefined): string {
   return encodeURIComponent(String(value ?? "none"));
 }
@@ -370,37 +163,6 @@ function buildActivityFromLoadedDetail(
   return events.sort((a, b) => Date.parse(b.timestamp || "0") - Date.parse(a.timestamp || "0"));
 }
 
-function activityEventLabel(ev: PrActivityEvent): string {
-  if (ev.type === "comment") return ev.metadata?.source === "review" ? "review comment" : "comment";
-  if (ev.type === "review") return "review";
-  if (ev.type === "state_change") return "state change";
-  if (ev.type === "deployment") return "deployed";
-  if (ev.type === "force_push") return "force push";
-  if (ev.type === "commit") return "commit";
-  if (ev.type === "ci_run") return "CI";
-  if (ev.type === "label") return "label";
-  if (ev.type === "review_request") return "review request";
-  return String(ev.type).replace(/_/g, " ");
-}
-
-function ActivityEventIcon({ event, withGlow }: { event: PrActivityEvent; withGlow?: boolean }) {
-  const col = activityEventColor(event);
-  const s = withGlow
-    ? { color: col, filter: `drop-shadow(0 0 3px ${col}40)` }
-    : { color: col, flexShrink: 0 as const };
-
-  if (event.type === "comment") return <ChatText size={12} weight="fill" style={s} />;
-  if (event.type === "review") return <Check size={12} weight="bold" style={s} />;
-  if (event.type === "state_change") return <GitMerge size={12} weight="fill" style={s} />;
-  if (event.type === "deployment") return <Rocket size={12} weight="fill" style={s} />;
-  if (event.type === "force_push") return <ArrowsClockwise size={12} weight="bold" style={s} />;
-  if (event.type === "commit") return <GitCommit size={12} weight="bold" style={s} />;
-  if (event.type === "ci_run") return <Play size={12} weight="fill" style={s} />;
-  if (event.type === "label") return <Tag size={12} weight="fill" style={s} />;
-  if (event.type === "review_request") return <Eye size={12} weight="fill" style={s} />;
-  return <Circle size={10} weight="fill" style={s} />;
-}
-
 const FILE_STATUS_COLORS: Record<string, string> = {
   added: COLORS.success,
   removed: COLORS.danger,
@@ -422,79 +184,6 @@ const FILE_STATUS_LABELS: Record<string, string> = {
 
 function fileStatusLabel(status: string): string {
   return FILE_STATUS_LABELS[status] ?? "?";
-}
-
-type ChecksSummary = {
-  passing: number;
-  failing: number;
-  pending: number;
-  total: number;
-  allChecksPassed: boolean;
-  someChecksFailing: boolean;
-  checksRunning: boolean;
-};
-
-type CheckSummaryItem = Pick<PrCheck, "status" | "conclusion">;
-
-function summarizeChecks(checks: CheckSummaryItem[]): ChecksSummary {
-  const passing = checks.filter((check) => check.conclusion === "success" || check.conclusion === "neutral" || check.conclusion === "skipped").length;
-  const failing = checks.filter((check) => check.conclusion === "failure" || check.conclusion === "cancelled").length;
-  const pending = checks.filter((check) => check.status !== "completed" && !check.conclusion).length;
-  return {
-    passing,
-    failing,
-    pending,
-    total: checks.length,
-    allChecksPassed: checks.length > 0 && failing === 0 && pending === 0,
-    someChecksFailing: failing > 0,
-    checksRunning: pending > 0,
-  };
-}
-
-function getChecksRowVisuals(summary: ChecksSummary): { color: string; title: string; description: string } {
-  const { passing, pending, total, allChecksPassed, someChecksFailing, checksRunning } = summary;
-
-  if (allChecksPassed) {
-    return {
-      color: COLORS.success,
-      title: "All checks have passed",
-      description: `${passing} successful check${passing !== 1 ? "s" : ""}`,
-    };
-  }
-  if (someChecksFailing) {
-    return {
-      color: COLORS.danger,
-      title: "Some checks failing",
-      description: checksRunning
-        ? `${passing}/${total} checks passing, ${pending} still running`
-        : `${passing}/${total} checks passing`,
-    };
-  }
-  if (total === 0) {
-    return {
-      color: COLORS.textMuted,
-      title: "No checks",
-      description: "No status checks are required",
-    };
-  }
-  return {
-    color: COLORS.warning,
-    title: "Checks in progress",
-    description: `${pending} check${pending !== 1 ? "s" : ""} pending`,
-  };
-}
-
-function getChecksRowIcon(summary: ChecksSummary): React.ReactNode {
-  if (summary.allChecksPassed) {
-    return <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />;
-  }
-  if (summary.someChecksFailing) {
-    return <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />;
-  }
-  if (summary.total === 0) {
-    return <CheckCircle size={18} weight="fill" style={{ color: COLORS.textMuted }} />;
-  }
-  return <CircleNotch size={18} className="animate-spin" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />;
 }
 
 // ---- Props ----
@@ -557,7 +246,6 @@ export function PrDetailPane({
     setResolverModel,
     setResolverReasoningLevel,
     setResolverPermissionMode,
-    prsTimelineRailsEnabled,
     dismissedAiSummaries,
     timelineFiltersByPrId,
     detailAiSummary,
@@ -573,6 +261,7 @@ export function PrDetailPane({
   const [activeTab, setActiveTabState] = React.useState<DetailTab>(
     () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
+  const [focusedCheckId, setFocusedCheckId] = React.useState<string | null>(null);
   const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? null);
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? []);
   const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? []);
@@ -599,6 +288,16 @@ export function PrDetailPane({
     writeStoredDetailTab(pr.id, tab);
     onDetailTabChange?.(tab);
   }, [onDetailTabChange, pr.id]);
+
+  const handleOpenChecksTab = React.useCallback(() => {
+    setActiveTab("checks");
+  }, [setActiveTab]);
+
+  const handleSelectCheckFromRail = React.useCallback((check: PrCheck) => {
+    const unifiedId = findUnifiedCheckId(check, checks, actionRuns);
+    setFocusedCheckId(unifiedId);
+    setActiveTab("checks");
+  }, [actionRuns, checks, setActiveTab]);
 
   React.useEffect(() => {
     const next = normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id));
@@ -673,7 +372,6 @@ export function PrDetailPane({
   // Page-level keyboard shortcuts scoped to the Timeline+Rails overview.
   // Only attach listeners when the flag is on AND the overview tab is active.
   React.useEffect(() => {
-    if (!prsTimelineRailsEnabled) return;
     const CHORD_WINDOW_MS = 800;
     const chordPalettes: Record<string, PaletteKind> = { c: "commit", t: "thread", f: "file" };
     let lastKey = "";
@@ -721,9 +419,7 @@ export function PrDetailPane({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [prsTimelineRailsEnabled, activeTab]);
-  const [aiSummary, setAiSummary] = React.useState<AiReviewSummary | null>(null);
-  const [aiSummaryBusy, setAiSummaryBusy] = React.useState(false);
+  }, [activeTab]);
   const [showIssueResolverModal, setShowIssueResolverModal] = React.useState(false);
   const [issueResolverBusy, setIssueResolverBusy] = React.useState(false);
   const [issueResolverCopyBusy, setIssueResolverCopyBusy] = React.useState(false);
@@ -858,16 +554,11 @@ export function PrDetailPane({
   const [commentDraft, setCommentDraft] = React.useState("");
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [titleDraft, setTitleDraft] = React.useState("");
-  const [editingBody, setEditingBody] = React.useState(false);
-  const [bodyDraft, setBodyDraft] = React.useState("");
   const [labelInput, setLabelInput] = React.useState("");
   const [showLabelEditor, setShowLabelEditor] = React.useState(false);
   const [reviewerInput, setReviewerInput] = React.useState("");
   const [showReviewerEditor, setShowReviewerEditor] = React.useState(false);
-  const [showReviewModal, setShowReviewModal] = React.useState(false);
-  const [reviewBody, setReviewBody] = React.useState("");
-  const [reviewEvent, setReviewEvent] = React.useState<"APPROVE" | "REQUEST_CHANGES" | "COMMENT">("APPROVE");
-  // expandedRun state removed — the unified ChecksTab manages its own expand state
+  const [manageLaneOpen, setManageLaneOpen] = React.useState(false);
   const [expandedFile, setExpandedFile] = React.useState<string | null>(null);
   const detailLoadSeqRef = React.useRef(0);
   const detailStatusRefreshKeyRef = React.useRef<string | null>(null);
@@ -988,10 +679,8 @@ export function PrDetailPane({
     behindCountRef.current = 0;
     autoConvergeAdditionalRef.current = "";
     setEditingTitle(false);
-    setEditingBody(false);
     setShowLabelEditor(false);
     setShowReviewerEditor(false);
-    setShowReviewModal(false);
     setActivity([]);
     activityFetchKeyRef.current = null;
     liveDetailLoadedForPrRef.current = null;
@@ -1138,14 +827,23 @@ export function PrDetailPane({
   };
 
   // ---- Actions ----
-  const handleMerge = (method: MergeMethod) => {
+  const handleMerge = (method: MergeMethod, options?: { bypassRules?: boolean }) => {
     setActionResult(null);
     return runAction(async () => {
-      const res = await window.ade.prs.land({ prId: pr.id, method });
+      const res = await window.ade.prs.land({ prId: pr.id, method, bypassRules: options?.bypassRules });
       setActionResult(res);
       await onRefresh();
     });
   };
+
+  const handleDeleteBranch = () => runAction(async () => {
+    await window.ade.prs.cleanupBranch({
+      prId: pr.id,
+      deleteLocalBranch: true,
+      deleteRemoteBranch: true,
+    });
+    await onRefresh();
+  });
 
   const handleAddComment = async () => {
     if (!commentDraft.trim()) return;
@@ -1174,13 +872,6 @@ export function PrDetailPane({
     });
   };
 
-  const handleUpdateBody = () => runAction(async () => {
-    await window.ade.prs.updateBody({ prId: pr.id, body: bodyDraft });
-    setEditingBody(false);
-    await onRefresh();
-    await loadDetail({ forceLive: true });
-  });
-
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels });
     setShowLabelEditor(false);
@@ -1194,10 +885,8 @@ export function PrDetailPane({
     await loadDetail({ forceLive: true });
   });
 
-  const handleSubmitReview = () => runAction(async () => {
-    await window.ade.prs.submitReview({ prId: pr.id, event: reviewEvent, body: reviewBody || undefined });
-    setShowReviewModal(false);
-    setReviewBody("");
+  const handleSubmitReview = (event: PrReviewEvent, body: string) => runAction(async () => {
+    await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined });
     await onRefresh();
   });
 
@@ -1217,20 +906,14 @@ export function PrDetailPane({
     await loadDetail({ forceLive: true });
   });
 
-  const handleAiSummary = async () => {
-    setAiSummaryBusy(true);
-    try {
-      const summary = await window.ade.prs.aiReviewSummary({ prId: pr.id });
-      setAiSummary(summary);
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally { setAiSummaryBusy(false); }
-  };
-
   const laneForPr = React.useMemo(
     () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
     [lanes, pr.laneId],
   );
+  const handleOpenManageLane = React.useCallback(() => {
+    if (!laneForPr) return;
+    setManageLaneOpen(true);
+  }, [laneForPr]);
   const matchingRebaseItemId = React.useMemo(() => {
     const need = findMatchingRebaseNeed({
       rebaseNeeds,
@@ -2324,23 +2007,6 @@ export function PrDetailPane({
 
   const localBehindCount = laneForPr?.status?.behind ?? 0;
 
-  const sc = getPrStateBadge(pr.state);
-  const resolvedChecksStatus = React.useMemo<PrChecksStatus>(() => {
-    if (status?.checksStatus) return status.checksStatus;
-    if (checks.length === 0) return pr.checksStatus;
-    if (checks.some((check) => check.status === "queued" || check.status === "in_progress")) return "pending";
-    if (checks.some((check) => check.conclusion === "failure" || check.conclusion === "cancelled")) return "failing";
-    if (checks.some((check) => check.status === "completed")) return "passing";
-    return pr.checksStatus;
-  }, [checks, pr.checksStatus, status?.checksStatus]);
-  const resolvedReviewStatus = React.useMemo<PrReviewStatus>(() => {
-    if (status?.reviewStatus) return status.reviewStatus;
-    if (reviews.some((review) => review.state === "changes_requested")) return "changes_requested";
-    if (reviews.some((review) => review.state === "approved")) return "approved";
-    return pr.reviewStatus;
-  }, [pr.reviewStatus, reviews, status?.reviewStatus]);
-  const cc = getPrChecksBadge(resolvedChecksStatus);
-  const rc = getPrReviewsBadge(resolvedReviewStatus);
   const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
     overview: COLORS.accent,
     convergence: COLORS.accent,
@@ -2355,17 +2021,10 @@ export function PrDetailPane({
   // shows the same unified view as the CI / Checks tab.  Raw check-runs
   // from getChecks() can be empty when all CI data comes through the
   // Actions workflow-runs API.
-  const unifiedConvergenceChecks: PrCheck[] = React.useMemo(() => {
-    const unified = buildUnifiedChecks(convergenceChecks, actionRuns);
-    return unified.map((c): PrCheck => ({
-      name: c.displayName,
-      status: (c.status === "queued" || c.status === "in_progress" || c.status === "completed") ? c.status : "completed",
-      conclusion: (c.conclusion === "success" || c.conclusion === "failure" || c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled") ? c.conclusion : null,
-      detailsUrl: c.detailsUrl,
-      startedAt: null,
-      completedAt: null,
-    }));
-  }, [convergenceChecks, actionRuns]);
+  const unifiedConvergenceChecks: PrCheck[] = React.useMemo(
+    () => unifiedChecksToPrChecks(convergenceChecks, actionRuns),
+    [convergenceChecks, actionRuns],
+  );
 
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
@@ -2374,7 +2033,7 @@ export function PrDetailPane({
     { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
   ];
 
-  const overviewRailsActive = activeTab === "overview" && prsTimelineRailsEnabled;
+  const overviewRailsActive = activeTab === "overview";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.pageBg }}>
@@ -2431,11 +2090,6 @@ export function PrDetailPane({
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>{pr.baseBranch}</span>
               </span>
             </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-            <InlinePrBadge {...sc} />
-            <InlinePrBadge {...cc} />
-            <InlinePrBadge {...rc} />
           </div>
         </div>
 
@@ -2550,7 +2204,7 @@ export function PrDetailPane({
 
       {/* ===== TAB CONTENT ===== */}
       <div style={{ flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
-        {activeTab === "overview" && prsTimelineRailsEnabled && (
+        {activeTab === "overview" && (
           <TimelineRailsOverview
             ref={timelineRailsRef}
             pr={pr}
@@ -2576,71 +2230,34 @@ export function PrDetailPane({
             actionBusy={actionBusy}
             onAddComment={handleAddComment}
             deepLink={deepLinkState}
-            actionSlot={(
-              <PrOverviewActionPanel
-                pr={pr}
-                detail={detail}
-                status={status}
-                checks={checks}
-                actionRuns={actionRuns}
-                reviews={reviews}
-                actionBusy={actionBusy}
-                aiSummaryBusy={aiSummaryBusy}
-                mergeMethod={mergeMethod}
-                showLabelEditor={showLabelEditor}
-                setShowLabelEditor={setShowLabelEditor}
-                labelInput={labelInput}
-                setLabelInput={setLabelInput}
-                showReviewerEditor={showReviewerEditor}
-                setShowReviewerEditor={setShowReviewerEditor}
-                reviewerInput={reviewerInput}
-                setReviewerInput={setReviewerInput}
-                showReviewModal={showReviewModal}
-                setShowReviewModal={setShowReviewModal}
-                reviewBody={reviewBody}
-                setReviewBody={setReviewBody}
-                reviewEvent={reviewEvent}
-                setReviewEvent={setReviewEvent}
-                onMerge={handleMerge}
-                onAiSummary={handleAiSummary}
-                onSetLabels={handleSetLabels}
-                onRequestReviewers={handleRequestReviewers}
-                onSubmitReview={handleSubmitReview}
-                onClose={handleClosePr}
-                onReopen={handleReopenPr}
-              />
-            )}
-          />
-        )}
-        {activeTab === "overview" && !prsTimelineRailsEnabled && (
-          <OverviewTab
-            pr={pr} detail={detail} status={status} checks={checks} actionRuns={actionRuns} reviews={reviews} comments={comments}
-            detailBusy={detailBusy} aiSummary={aiSummary} aiSummaryBusy={aiSummaryBusy}
-            actionBusy={actionBusy} mergeMethod={mergeMethod}
-            commentDraft={commentDraft} setCommentDraft={setCommentDraft}
-            editingBody={editingBody} setEditingBody={setEditingBody}
-            bodyDraft={bodyDraft} setBodyDraft={setBodyDraft}
-            showLabelEditor={showLabelEditor} setShowLabelEditor={setShowLabelEditor}
-            labelInput={labelInput} setLabelInput={setLabelInput}
-            showReviewerEditor={showReviewerEditor} setShowReviewerEditor={setShowReviewerEditor}
-            reviewerInput={reviewerInput} setReviewerInput={setReviewerInput}
-            showReviewModal={showReviewModal} setShowReviewModal={setShowReviewModal}
-            reviewBody={reviewBody} setReviewBody={setReviewBody}
-            reviewEvent={reviewEvent} setReviewEvent={setReviewEvent}
-            onMerge={handleMerge} onAddComment={handleAddComment}
-            onUpdateBody={handleUpdateBody}
-            onSetLabels={handleSetLabels} onRequestReviewers={handleRequestReviewers}
+            onSelectCheck={handleSelectCheckFromRail}
+            onOpenChecksTab={handleOpenChecksTab}
+            mergeMethod={mergeMethod}
+            showReviewerEditor={showReviewerEditor}
+            setShowReviewerEditor={setShowReviewerEditor}
+            reviewerInput={reviewerInput}
+            setReviewerInput={setReviewerInput}
+            showLabelEditor={showLabelEditor}
+            setShowLabelEditor={setShowLabelEditor}
+            labelInput={labelInput}
+            setLabelInput={setLabelInput}
+            onMerge={handleMerge}
+            onRequestReviewers={handleRequestReviewers}
+            onSetLabels={handleSetLabels}
+            onDeleteBranch={handleDeleteBranch}
+            deleteBranchBusy={actionBusy}
+            lane={laneForPr}
+            onOpenManageLane={handleOpenManageLane}
+            onClose={handleClosePr}
+            onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
-            onClose={handleClosePr} onReopen={handleReopenPr}
-            onAiSummary={handleAiSummary}
-            onNavigate={onNavigate}
-            onOpenRebaseTab={onOpenRebaseTab}
-            matchingRebaseItemId={matchingRebaseItemId}
-            localBehindCount={localBehindCount}
-            activity={visibleActivity}
-            lanes={lanes}
           />
         )}
+        <PrManageLaneDialogHost
+          open={manageLaneOpen}
+          onOpenChange={setManageLaneOpen}
+          lane={laneForPr}
+        />
         {activeTab === "convergence" && (
           // tour anchor — closest viable: PrConvergencePanel surfaces the rebase/conflict simulation UI.
           <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
@@ -2740,6 +2357,8 @@ export function PrDetailPane({
             onRerunChecks={handleRerunChecks}
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
+            focusedCheckId={focusedCheckId}
+            onFocusedCheckConsumed={() => setFocusedCheckId(null)}
           />
           </div>
         )}
@@ -2772,1350 +2391,6 @@ export function PrDetailPane({
         onLaunch={handleLaunchIssueResolver}
         onCopyPrompt={handleCopyIssueResolverPrompt}
       />
-    </div>
-  );
-}
-
-// ================================================================
-// OVERVIEW TAB
-// ================================================================
-
-const BOT_NAMES = new Set([
-  "github-actions", "vercel", "mintlify", "coderabbitai",
-  "copilot", "dependabot", "renovate", "codecov", "netlify",
-]);
-
-function isBot(author: string): boolean {
-  return author.endsWith("[bot]") || BOT_NAMES.has(author);
-}
-
-function CommentAvatar({ author, avatarUrl, size = 24 }: { author: string; avatarUrl?: string | null; size?: number }) {
-  // Prefer the actual avatar URL from the API; fall back to constructing one from the login
-  // For bot users like "coderabbitai[bot]", strip the [bot] suffix to get the correct avatar
-  const cleanLogin = author.replace(/\[bot\]$/, "");
-  const url = avatarUrl || `https://avatars.githubusercontent.com/${encodeURIComponent(cleanLogin)}?size=${size * 2}`;
-  return (
-    <div style={{ position: "relative", flexShrink: 0 }}>
-      <img
-        src={url}
-        alt={author}
-        width={size}
-        height={size}
-        style={{ borderRadius: "50%", border: `1.5px solid ${COLORS.accentBorder}`, boxShadow: `0 0 0 1px ${COLORS.pageBg}`, display: "block" }}
-        onError={(e) => {
-          (e.target as HTMLImageElement).style.display = "none";
-          (e.target as HTMLImageElement).nextElementSibling?.setAttribute("style", "display:flex");
-        }}
-      />
-      <div style={{ display: "none", width: size, height: size, borderRadius: "50%", background: "color-mix(in srgb, var(--color-accent) 20%, transparent)", alignItems: "center", justifyContent: "center" }}>
-        <UserCircle size={size} weight="fill" style={{ color: COLORS.accent, opacity: 0.7 }} />
-      </div>
-      {isBot(author) && (
-        <div style={{
-          position: "absolute", bottom: -2, right: -2,
-          width: 14, height: 14, borderRadius: "50%",
-          background: COLORS.cardBgSolid, border: `1.5px solid ${COLORS.border}`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <Robot size={8} weight="fill" style={{ color: COLORS.textMuted }} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Comment menu dropdown ----
-function CommentMenu({ url }: { url: string | null }) {
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  if (!url) return null;
-
-  return (
-    <div ref={ref} style={{ position: "relative", marginLeft: "auto", flexShrink: 0 }}>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        style={{
-          background: "none", border: "none", cursor: "pointer", padding: 4,
-          color: COLORS.textDim, borderRadius: 6, display: "flex", alignItems: "center",
-          transition: "color 100ms ease",
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; e.currentTarget.style.background = COLORS.hoverBg; }}
-        onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; e.currentTarget.style.background = "none"; }}
-      >
-        <DotsThreeVertical size={16} weight="bold" />
-      </button>
-      {open && (
-        <div
-          className="ade-liquid-glass-menu"
-          style={{
-            position: "absolute", top: "100%", right: 0, marginTop: 4,
-            padding: 4, minWidth: 160, zIndex: 20,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => { void window.ade.app.openExternal(url); setOpen(false); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%",
-              padding: "8px 12px", background: "none", border: "none", cursor: "pointer",
-              fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, borderRadius: 6,
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; e.currentTarget.style.color = COLORS.textPrimary; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            <GithubLogo size={14} /> Open on GitHub
-          </button>
-          <button
-            type="button"
-            onClick={() => { void navigator.clipboard.writeText(url); setOpen(false); }}
-            style={{
-              display: "flex", alignItems: "center", gap: 8, width: "100%",
-              padding: "8px 12px", background: "none", border: "none", cursor: "pointer",
-              fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, borderRadius: 6,
-              textAlign: "left",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; e.currentTarget.style.color = COLORS.textPrimary; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = COLORS.textSecondary; }}
-          >
-            <Code size={14} /> Copy link
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Merge readiness status row ----
-function MergeStatusRow({ color, icon, title, titleAccessory, description, children, expandable, expanded, onToggle }: {
-  color: string;
-  icon: React.ReactNode;
-  title: string;
-  titleAccessory?: React.ReactNode;
-  description: string;
-  children?: React.ReactNode;
-  expandable?: boolean;
-  expanded?: boolean;
-  onToggle?: () => void;
-}) {
-  const content = (
-    <div style={{
-      display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px",
-      borderLeft: `3px solid ${color}`,
-      background: `${color}06`,
-      borderBottom: `1px solid ${COLORS.border}`,
-      cursor: expandable ? "pointer" : "default",
-      transition: "background 100ms ease",
-    }}>
-      <div style={{ flexShrink: 0, marginTop: 1 }}>{icon}</div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{title}</span>
-          {titleAccessory}
-          {expandable && (
-            expanded ? <CaretDown size={12} style={{ color: COLORS.textMuted }} /> : <CaretRight size={12} style={{ color: COLORS.textMuted }} />
-          )}
-        </div>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginTop: 2, display: "block" }}>{description}</span>
-      </div>
-    </div>
-  );
-
-  return expandable ? (
-    <div>
-      {/* biome-ignore lint: onClick on wrapper */}
-      <div onClick={onToggle} onKeyDown={(e) => { if (e.key === "Enter") onToggle?.(); }} role="button" tabIndex={0}>
-        {content}
-      </div>
-      {expanded && children && (
-        <div style={{ borderLeft: `3px solid ${color}`, background: `${color}04`, borderBottom: `1px solid ${COLORS.border}` }}>
-          {children}
-        </div>
-      )}
-    </div>
-  ) : (
-    <div>{content}</div>
-  );
-}
-
-type OverviewTabProps = {
-  pr: PrWithConflicts;
-  detail: PrDetail | null;
-  status: PrStatus | null;
-  checks: PrCheck[];
-  actionRuns: PrActionRun[];
-  reviews: PrReview[];
-  comments: PrComment[];
-  detailBusy: boolean;
-  aiSummary: AiReviewSummary | null;
-  aiSummaryBusy: boolean;
-  actionBusy: boolean;
-  mergeMethod: MergeMethod;
-  commentDraft: string;
-  setCommentDraft: (v: string) => void;
-  editingBody: boolean;
-  setEditingBody: (v: boolean) => void;
-  bodyDraft: string;
-  setBodyDraft: (v: string) => void;
-  showLabelEditor: boolean;
-  setShowLabelEditor: (v: boolean) => void;
-  labelInput: string;
-  setLabelInput: (v: string) => void;
-  showReviewerEditor: boolean;
-  setShowReviewerEditor: (v: boolean) => void;
-  reviewerInput: string;
-  setReviewerInput: (v: string) => void;
-  showReviewModal: boolean;
-  setShowReviewModal: (v: boolean) => void;
-  reviewBody: string;
-  setReviewBody: (v: string) => void;
-  reviewEvent: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
-  setReviewEvent: (v: "APPROVE" | "REQUEST_CHANGES" | "COMMENT") => void;
-  onMerge: (method: MergeMethod) => void;
-  onAddComment: () => void;
-  onUpdateBody: () => void;
-  onSetLabels: (labels: string[]) => void;
-  onRequestReviewers: (reviewers: string[]) => void;
-  onSubmitReview: () => void;
-  onClose: () => void;
-  onReopen: () => void;
-  onAiSummary: () => void;
-  onNavigate: (path: string) => void;
-  onOpenRebaseTab?: (laneId?: string) => void;
-  matchingRebaseItemId: string | null;
-  localBehindCount: number;
-  activity: PrActivityEvent[];
-  lanes: LaneSummary[];
-};
-
-type PrReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
-
-type PrOverviewActionPanelProps = {
-  pr: PrWithConflicts;
-  detail: PrDetail | null;
-  status: PrStatus | null;
-  checks: PrCheck[];
-  actionRuns: PrActionRun[];
-  reviews: PrReview[];
-  actionBusy: boolean;
-  aiSummaryBusy: boolean;
-  mergeMethod: MergeMethod;
-  showLabelEditor: boolean;
-  setShowLabelEditor: (value: boolean) => void;
-  labelInput: string;
-  setLabelInput: (value: string) => void;
-  showReviewerEditor: boolean;
-  setShowReviewerEditor: (value: boolean) => void;
-  reviewerInput: string;
-  setReviewerInput: (value: string) => void;
-  showReviewModal: boolean;
-  setShowReviewModal: (value: boolean) => void;
-  reviewBody: string;
-  setReviewBody: (value: string) => void;
-  reviewEvent: PrReviewEvent;
-  setReviewEvent: (value: PrReviewEvent) => void;
-  onMerge: (method: MergeMethod) => void;
-  onAiSummary: () => void;
-  onSetLabels: (labels: string[]) => void;
-  onRequestReviewers: (reviewers: string[]) => void;
-  onSubmitReview: () => void;
-  onClose: () => void;
-  onReopen: () => void;
-};
-
-function PrOverviewActionPanel(props: PrOverviewActionPanelProps) {
-  const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(props.mergeMethod);
-  const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
-  const allChecks = React.useMemo(() => buildUnifiedChecks(props.checks, props.actionRuns), [props.checks, props.actionRuns]);
-  const checksSummary = summarizeChecks(allChecks);
-  const { someChecksFailing, checksRunning } = checksSummary;
-  const reviewStatus = props.pr.reviewStatus;
-  const canMerge = Boolean(props.status?.isMergeable) && !props.status?.mergeConflicts && props.pr.state === "open";
-  const canAttemptBlockedMerge = Boolean(props.status) && !props.status?.isMergeable && !props.status?.mergeConflicts && props.pr.state === "open";
-  const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
-  const mergeActionEnabled = canMerge || isBypassMerge;
-  const hasCheckWarnings = someChecksFailing || checksRunning;
-  const hasReviewWarnings = reviewStatus === "changes_requested" || reviewStatus === "requested";
-  const hasMergeWarnings = canMerge && (hasCheckWarnings || hasReviewWarnings);
-  const mergeActionLabel = props.actionBusy
-    ? (isBypassMerge ? "Attempting merge..." : "Merging...")
-    : hasMergeWarnings
-      ? (someChecksFailing ? "Merge (checks failing)" : checksRunning ? "Merge (checks pending)" : "Merge (review pending)")
-      : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
-  const mergeAccentColor = canMerge
-    ? (hasMergeWarnings ? COLORS.warning : COLORS.success)
-    : isBypassMerge ? COLORS.warning : null;
-  const mergeActionBackground = mergeAccentColor
-    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge && !hasMergeWarnings ? "#16a34a" : "#d97706"} 100%)`
-    : COLORS.recessedBg;
-
-  React.useEffect(() => {
-    setLocalMergeMethod(props.mergeMethod);
-  }, [props.mergeMethod]);
-
-  React.useEffect(() => {
-    if (!canAttemptBlockedMerge) setAllowBlockedMerge(false);
-  }, [canAttemptBlockedMerge]);
-
-  const requestReviewers = () => {
-    const reviewers = props.reviewerInput.split(",").map((value) => value.trim()).filter(Boolean);
-    if (reviewers.length) props.onRequestReviewers(reviewers);
-  };
-  const setLabels = () => {
-    const labels = props.labelInput.split(",").map((value) => value.trim()).filter(Boolean);
-    if (labels.length) props.onSetLabels(labels);
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <div style={{ ...cardStyle({ padding: 12 }), display: "flex", flexDirection: "column", gap: 8 }}>
-        <span style={{ ...LABEL_STYLE, fontSize: 11, color: COLORS.textSecondary }}>PR actions</span>
-        <button
-          type="button"
-          onClick={props.onAiSummary}
-          disabled={props.aiSummaryBusy}
-          style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)", width: "100%", justifyContent: "center" })}
-        >
-          <Sparkle size={13} weight="fill" />
-          {props.aiSummaryBusy ? "Analyzing..." : "AI Review"}
-        </button>
-        <button
-          type="button"
-          onClick={() => props.setShowReviewModal(true)}
-          style={outlineButton({ height: 30, padding: "0 10px", width: "100%", justifyContent: "center" })}
-        >
-          <Check size={13} weight="bold" /> Submit Review
-        </button>
-
-        {(props.pr.state === "open" || props.pr.state === "draft") ? (
-          <>
-            <div style={{ display: "flex", alignItems: "center", gap: 2, background: COLORS.recessedBg, borderRadius: 8, padding: 3, border: `1px solid ${COLORS.border}` }}>
-              {(["squash", "merge", "rebase"] as const).map((method) => (
-                <button
-                  key={method}
-                  type="button"
-                  onClick={() => setLocalMergeMethod(method)}
-                  style={{
-                    flex: 1,
-                    height: 28,
-                    border: "none",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    fontFamily: SANS_FONT,
-                    fontSize: 11,
-                    fontWeight: localMergeMethod === method ? 600 : 400,
-                    color: localMergeMethod === method ? COLORS.textPrimary : COLORS.textMuted,
-                    background: localMergeMethod === method ? "color-mix(in srgb, var(--color-accent) 10%, transparent)" : "transparent",
-                  }}
-                >
-                  {method === "squash" ? "Squash" : method === "merge" ? "Merge" : "Rebase"}
-                </button>
-              ))}
-            </div>
-            {canAttemptBlockedMerge ? (
-              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.45, color: COLORS.textMuted }}>
-                <input
-                  type="checkbox"
-                  checked={allowBlockedMerge}
-                  disabled={props.actionBusy}
-                  onChange={(event) => setAllowBlockedMerge(event.target.checked)}
-                  style={{ marginTop: 2, accentColor: COLORS.warning }}
-                />
-                Attempt merge anyway if GitHub allows bypass rules
-              </label>
-            ) : null}
-            <button
-              type="button"
-              disabled={props.actionBusy || !mergeActionEnabled}
-              onClick={() => props.onMerge(localMergeMethod)}
-              style={{
-                ...primaryButton({
-                  background: mergeActionBackground,
-                  borderColor: mergeAccentColor ?? COLORS.border,
-                  opacity: props.actionBusy || !mergeActionEnabled ? 0.5 : 1,
-                  height: 34,
-                  padding: "0 12px",
-                  width: "100%",
-                  justifyContent: "center",
-                }),
-                color: mergeActionEnabled ? "#fff" : COLORS.textMuted,
-              }}
-            >
-              <GitMerge size={14} weight="bold" />
-              {mergeActionLabel}
-            </button>
-            {props.pr.state === "open" ? (
-              <button
-                type="button"
-                disabled={props.actionBusy}
-                onClick={props.onClose}
-                style={dangerButton({ height: 30, opacity: props.actionBusy ? 0.4 : 1, padding: "0 10px", width: "100%", justifyContent: "center" })}
-              >
-                <XCircle size={13} /> Close
-              </button>
-            ) : null}
-          </>
-        ) : props.pr.state === "closed" ? (
-          <button type="button" disabled={props.actionBusy} onClick={props.onReopen} style={outlineButton({ color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)", height: 30, width: "100%", justifyContent: "center" })}>
-            <ArrowsClockwise size={13} /> Reopen PR
-          </button>
-        ) : null}
-      </div>
-
-      <div style={cardStyle({ padding: 12 })}>
-        <SidebarSection title="Reviewers" onEdit={() => props.setShowReviewerEditor(!props.showReviewerEditor)}>
-          {props.detail?.requestedReviewers?.length ? (
-            props.detail.requestedReviewers.map((reviewer) => (
-              <div key={reviewer.login} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-                <Avatar user={reviewer} size={22} />
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, fontWeight: 500 }}>{reviewer.login}</span>
-              </div>
-            ))
-          ) : (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
-          )}
-          {props.showReviewerEditor ? (
-            <div style={{ marginTop: 8 }}>
-              <input
-                value={props.reviewerInput}
-                onChange={(event) => props.setReviewerInput(event.target.value)}
-                placeholder="username1, username2"
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") requestReviewers();
-                }}
-                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
-              />
-            </div>
-          ) : null}
-        </SidebarSection>
-      </div>
-
-      <div style={cardStyle({ padding: 12 })}>
-        <SidebarSection title="Labels" onEdit={() => props.setShowLabelEditor(!props.showLabelEditor)}>
-          {props.detail?.labels?.length ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {props.detail.labels.map((label) => (
-                <span key={label.name} style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "3px 10px",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  fontFamily: SANS_FONT,
-                  color: `#${label.color}`,
-                  background: `#${label.color}18`,
-                  border: `1px solid #${label.color}35`,
-                  borderRadius: 12,
-                }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: `#${label.color}`, marginRight: 6, flexShrink: 0 }} />
-                  {label.name}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
-          )}
-          {props.showLabelEditor ? (
-            <div style={{ marginTop: 8 }}>
-              <input
-                value={props.labelInput}
-                onChange={(event) => props.setLabelInput(event.target.value)}
-                placeholder="bug, enhancement"
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") setLabels();
-                }}
-                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
-              />
-            </div>
-          ) : null}
-        </SidebarSection>
-      </div>
-
-      <PrReviewSubmitModal
-        open={props.showReviewModal}
-        actionBusy={props.actionBusy}
-        reviewBody={props.reviewBody}
-        setReviewBody={props.setReviewBody}
-        reviewEvent={props.reviewEvent}
-        setReviewEvent={props.setReviewEvent}
-        onCancel={() => props.setShowReviewModal(false)}
-        onSubmit={props.onSubmitReview}
-      />
-    </div>
-  );
-}
-
-function PrReviewSubmitModal({
-  open,
-  actionBusy,
-  reviewBody,
-  setReviewBody,
-  reviewEvent,
-  setReviewEvent,
-  onCancel,
-  onSubmit,
-}: {
-  open: boolean;
-  actionBusy: boolean;
-  reviewBody: string;
-  setReviewBody: (value: string) => void;
-  reviewEvent: PrReviewEvent;
-  setReviewEvent: (value: PrReviewEvent) => void;
-  onCancel: () => void;
-  onSubmit: () => void;
-}) {
-  if (!open) return null;
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-      <div style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 24, width: 500, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-          <span style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600, color: COLORS.textPrimary }}>Submit Review</span>
-          <button type="button" onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted, padding: 4 }}><X size={16} /></button>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-          {(["APPROVE", "REQUEST_CHANGES", "COMMENT"] as const).map((event) => {
-            const isSelected = reviewEvent === event;
-            const eventColor = event === "APPROVE" ? COLORS.success : event === "REQUEST_CHANGES" ? COLORS.warning : COLORS.info;
-            return (
-              <button key={event} type="button" onClick={() => setReviewEvent(event)} style={{
-                ...outlineButton(),
-                flex: 1,
-                height: 36,
-                background: isSelected ? `${eventColor}18` : "transparent",
-                borderColor: isSelected ? `${eventColor}60` : COLORS.border,
-                color: isSelected ? eventColor : COLORS.textSecondary,
-                boxShadow: isSelected ? `0 0 12px ${eventColor}15` : "none",
-              }}>
-                {event === "APPROVE" && <CheckCircle size={14} weight={isSelected ? "fill" : "regular"} />}
-                {event === "REQUEST_CHANGES" && <Warning size={14} weight={isSelected ? "fill" : "regular"} />}
-                {event === "COMMENT" && <ChatText size={14} weight={isSelected ? "fill" : "regular"} />}
-                {event === "APPROVE" ? "Approve" : event === "REQUEST_CHANGES" ? "Request Changes" : "Comment"}
-              </button>
-            );
-          })}
-        </div>
-        <textarea
-          value={reviewBody}
-          onChange={(event) => setReviewBody(event.target.value)}
-          placeholder="Leave a review comment (optional for approve)..."
-          style={{
-            width: "100%",
-            minHeight: 120,
-            resize: "vertical",
-            padding: 14,
-            fontFamily: SANS_FONT,
-            fontSize: 13,
-            color: COLORS.textPrimary,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.border}`,
-            borderRadius: 10,
-            outline: "none",
-          }}
-        />
-        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 8 }}>
-          <button type="button" onClick={onCancel} style={outlineButton({ height: 36 })}>Cancel</button>
-          <button type="button" onClick={onSubmit} disabled={actionBusy} style={{
-            ...primaryButton({
-              background: reviewEvent === "APPROVE" ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)` : reviewEvent === "REQUEST_CHANGES" ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)` : `linear-gradient(135deg, ${COLORS.accent} 0%, #7c3aed 100%)`,
-              height: 36,
-              boxShadow:
-                reviewEvent === "APPROVE"
-                  ? "0 2px 12px color-mix(in srgb, var(--color-success) 19%, transparent)"
-                  : reviewEvent === "REQUEST_CHANGES"
-                    ? "0 2px 12px color-mix(in srgb, var(--color-warning) 19%, transparent)"
-                    : "0 2px 12px color-mix(in srgb, var(--color-accent) 19%, transparent)",
-            }),
-            color: "#fff",
-          }}>
-            {actionBusy ? "Submitting..." : `Submit ${reviewEvent === "APPROVE" ? "Approval" : reviewEvent === "REQUEST_CHANGES" ? "Changes Request" : "Comment"}`}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function OverviewTab(props: OverviewTabProps) {
-  const { pr, detail, status, checks, actionRuns, reviews, comments, aiSummary, aiSummaryBusy, actionBusy, mergeMethod, activity, lanes } = props;
-  const [checksExpanded, setChecksExpanded] = React.useState(false);
-  const [localMergeMethod, setLocalMergeMethod] = React.useState<MergeMethod>(mergeMethod);
-  const [allowBlockedMerge, setAllowBlockedMerge] = React.useState(false);
-  const laneForPr = React.useMemo(
-    () => lanes.find((lane) => lane.id === pr.laneId && !lane.archivedAt) ?? null,
-    [lanes, pr.laneId],
-  );
-
-  React.useEffect(() => {
-    setLocalMergeMethod(mergeMethod);
-  }, [mergeMethod]);
-
-  // Reset bypass opt-in when the selected PR changes
-  React.useEffect(() => {
-    setAllowBlockedMerge(false);
-  }, [pr.id]);
-
-  // Sort comments chronologically (oldest first, like GitHub)
-  const sortedComments = React.useMemo(
-    () => [...comments].sort((a, b) => {
-      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      return ta - tb;
-    }),
-    [comments],
-  );
-
-  // Unified checks: merge check-runs API data with action-runs API data so that
-  // merge readiness, stats sidebar, and convergence panel all reflect the same reality.
-  const allChecks: PrCheck[] = React.useMemo(() => {
-    const unified = buildUnifiedChecks(checks, actionRuns);
-    return unified.map((c): PrCheck => ({
-      name: c.displayName,
-      status: (c.status === "queued" || c.status === "in_progress" || c.status === "completed") ? c.status : "completed",
-      conclusion: (c.conclusion === "success" || c.conclusion === "failure" || c.conclusion === "neutral" || c.conclusion === "skipped" || c.conclusion === "cancelled") ? c.conclusion : null,
-      detailsUrl: c.detailsUrl,
-      startedAt: null,
-      completedAt: null,
-    }));
-  }, [checks, actionRuns]);
-
-  // Checks summary — uses unified checks (check-runs + action-runs)
-  const checksSummary = summarizeChecks(allChecks);
-  const { someChecksFailing, checksRunning } = checksSummary;
-  const checksRowVisuals = getChecksRowVisuals(checksSummary);
-
-  // Review status from pr
-  const reviewStatus = pr.reviewStatus;
-
-  // Merge readiness
-  const canMerge = Boolean(status?.isMergeable) && !status?.mergeConflicts && pr.state === "open";
-  const canAttemptBlockedMerge = Boolean(status) && !status?.isMergeable && !status?.mergeConflicts && pr.state === "open";
-  const isBypassMerge = allowBlockedMerge && canAttemptBlockedMerge;
-  const mergeActionEnabled = canMerge || isBypassMerge;
-
-  // Determine if there are warnings that should visually downgrade the merge button
-  // even when GitHub says the PR is technically mergeable.
-  const hasCheckWarnings = someChecksFailing || checksRunning;
-  const hasReviewWarnings = reviewStatus === "changes_requested" || reviewStatus === "requested";
-  const hasMergeWarnings = canMerge && (hasCheckWarnings || hasReviewWarnings);
-
-  const mergeActionLabel = actionBusy
-    ? (isBypassMerge ? "Attempting merge..." : "Merging...")
-    : hasMergeWarnings
-      ? (someChecksFailing ? "Merge (checks failing)" : checksRunning ? "Merge (checks pending)" : "Merge (review pending)")
-      : (isBypassMerge ? "Attempt merge anyway" : "Merge pull request");
-  // Derive merge button styling from the merge/bypass state in one place:
-  const mergeAccentColor = canMerge
-    ? (hasMergeWarnings ? COLORS.warning : COLORS.success)
-    : isBypassMerge ? COLORS.warning : null;
-  const mergeActionBackground = mergeAccentColor
-    ? `linear-gradient(135deg, ${mergeAccentColor} 0%, ${canMerge && !hasMergeWarnings ? "#16a34a" : "#d97706"} 100%)`
-    : COLORS.recessedBg;
-  const mergeActionBorderColor = mergeAccentColor ?? COLORS.border;
-  const mergeActionShadow = mergeAccentColor
-    ? `0 2px 16px ${mergeAccentColor}${canMerge && !hasMergeWarnings ? "40" : "35"}, 0 0 0 1px ${mergeAccentColor}${canMerge && !hasMergeWarnings ? "30" : "25"}`
-    : "none";
-
-  // Auto-expand checks list when failures are detected so the user
-  // immediately sees which checks failed.
-  React.useEffect(() => {
-    if (someChecksFailing) setChecksExpanded(true);
-  }, [someChecksFailing]);
-
-  React.useEffect(() => {
-    if (!canAttemptBlockedMerge) {
-      setAllowBlockedMerge(false);
-    }
-  }, [canAttemptBlockedMerge]);
-
-  return (
-    <div style={{ display: "flex", gap: 0, height: "100%" }}>
-      {/* Main content */}
-      <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-
-        {/* ---- Lane cleanup banner (shown when PR is merged/closed and lane still exists) ---- */}
-        <PrLaneCleanupBanner pr={pr} lane={laneForPr} actionBusy={actionBusy} onNavigate={props.onNavigate} />
-
-        {/* ---- Merge Status Bar ---- */}
-        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-            <StatusSignal label="Mergeable" value={status?.isMergeable ? "YES" : status ? "NO" : "---"} color={status?.isMergeable ? COLORS.success : status ? COLORS.danger : COLORS.textMuted} glow={status?.isMergeable === true} />
-            <div style={{ width: 1, alignSelf: "stretch", background: COLORS.border }} />
-            <StatusSignal label="Conflicts" value={status?.mergeConflicts ? "YES" : status ? "NO" : "---"} color={status?.mergeConflicts ? COLORS.danger : status ? COLORS.success : COLORS.textMuted} glow={status?.mergeConflicts === false} />
-            <div style={{ width: 1, alignSelf: "stretch", background: COLORS.border }} />
-            <StatusSignal label="Behind" value={String(status?.behindBaseBy ?? 0)} color={(status?.behindBaseBy ?? 0) > 0 ? COLORS.warning : COLORS.textPrimary} />
-            <div style={{ width: 1, alignSelf: "stretch", background: COLORS.border }} />
-            <StatusSignal label="Additions" value={`+${pr.additions}`} color={COLORS.success} />
-            <div style={{ width: 1, alignSelf: "stretch", background: COLORS.border }} />
-            <StatusSignal label="Deletions" value={`-${pr.deletions}`} color={COLORS.danger} />
-          </div>
-        </div>
-
-        {(() => {
-          const targetDiffMessage = describePrTargetDiff({
-            lane: laneForPr,
-            lanes,
-            targetBranch: pr.baseBranch,
-          });
-          if (!targetDiffMessage || pr.state !== "open") return null;
-          return (
-            <div style={{
-              ...cardStyle({ padding: 0, overflow: "hidden" }),
-              flexShrink: 0,
-              borderColor: "color-mix(in srgb, var(--color-info) 30%, transparent)",
-              background: `linear-gradient(135deg, color-mix(in srgb, var(--color-info) 8%, transparent) 0%, transparent 60%)`,
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                <Warning size={18} weight="fill" style={{ color: COLORS.info, flexShrink: 0, filter: `drop-shadow(0 0 4px color-mix(in srgb, var(--color-info) 40%, transparent))` }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                    PR target differs from lane base
-                  </span>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
-                    {targetDiffMessage}
-                  </span>
-                </div>
-                {props.onOpenRebaseTab && props.matchingRebaseItemId && (
-                  <button
-                    type="button"
-                    onClick={() => props.onOpenRebaseTab?.(props.matchingRebaseItemId ?? undefined)}
-                    style={outlineButton({
-                      height: 30, padding: "0 14px",
-                      color: COLORS.info,
-                      borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)",
-                    })}
-                  >
-                    <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* ---- Rebase Banner (when PR is behind base branch — checks both GitHub API and local lane status) ---- */}
-        {(() => {
-          const ghBehind = status?.behindBaseBy ?? 0;
-          const effectiveBehind = Math.max(ghBehind, props.localBehindCount);
-          const hasConflicts = status?.mergeConflicts ?? false;
-          if (effectiveBehind <= 0 || pr.state !== "open") return null;
-          return (
-            <div style={{
-              ...cardStyle({ padding: 0, overflow: "hidden" }),
-              flexShrink: 0,
-              borderColor: hasConflicts ? "color-mix(in srgb, var(--color-error) 30%, transparent)" : "color-mix(in srgb, var(--color-warning) 30%, transparent)",
-              background: hasConflicts
-                ? "linear-gradient(135deg, color-mix(in srgb, var(--color-error) 8%, transparent) 0%, transparent 60%)"
-                : "linear-gradient(135deg, color-mix(in srgb, var(--color-warning) 8%, transparent) 0%, transparent 60%)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px" }}>
-                <Warning
-                  size={18}
-                  weight="fill"
-                  style={{
-                    color: hasConflicts ? COLORS.danger : COLORS.warning,
-                    flexShrink: 0,
-                    filter: hasConflicts
-                      ? "drop-shadow(0 0 4px color-mix(in srgb, var(--color-error) 25%, transparent))"
-                      : "drop-shadow(0 0 4px color-mix(in srgb, var(--color-warning) 25%, transparent))",
-                  }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                    {hasConflicts
-                      ? `${effectiveBehind} commit${effectiveBehind !== 1 ? "s" : ""} behind ${pr.baseBranch} with conflicts`
-                      : `${effectiveBehind} commit${effectiveBehind !== 1 ? "s" : ""} behind ${pr.baseBranch}`}
-                  </span>
-                  <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginLeft: 8 }}>
-                    {hasConflicts ? "Rebase required to resolve conflicts" : "Rebase recommended before merging"}
-                  </span>
-                </div>
-                {props.onOpenRebaseTab && props.matchingRebaseItemId && (
-                  <button
-                    type="button"
-                    onClick={() => props.onOpenRebaseTab?.(props.matchingRebaseItemId ?? undefined)}
-                    style={outlineButton({
-                      height: 30, padding: "0 14px",
-                      color: hasConflicts ? COLORS.danger : COLORS.warning,
-                      borderColor: hasConflicts ? "color-mix(in srgb, var(--color-error) 40%, transparent)" : "color-mix(in srgb, var(--color-warning) 40%, transparent)",
-                    })}
-                  >
-                    <ArrowsClockwise size={13} weight="bold" /> View Rebase Details
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* ---- AI Review Summary ---- */}
-        {aiSummary && (
-          <div style={{ ...cardStyle(), borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)", background: `linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 8%, transparent) 0%, transparent 60%)` }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
-              <Sparkle size={16} weight="fill" style={{ color: COLORS.accent, filter: "drop-shadow(0 0 6px rgba(167,139,250,0.5))" }} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.accent }}>AI Review Summary</span>
-              <span style={inlineBadge(
-                aiSummary.mergeReadiness === "ready" ? COLORS.success : aiSummary.mergeReadiness === "needs_work" ? COLORS.warning : COLORS.danger,
-              )}>
-                {aiSummary.mergeReadiness === "ready" ? "Ready to merge" : aiSummary.mergeReadiness === "needs_work" ? "Needs work" : "Blocked"}
-              </span>
-            </div>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.7, marginBottom: 14 }}>
-              {aiSummary.summary}
-            </div>
-            {aiSummary.potentialIssues.length > 0 && (
-              <div style={{ marginBottom: 12, padding: 12, background: "color-mix(in srgb, var(--color-warning) 8%, transparent)", borderRadius: 10, border: "1px solid color-mix(in srgb, var(--color-warning) 15%, transparent)" }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.warning, marginBottom: 8, display: "block" }}>Potential Issues</span>
-                {aiSummary.potentialIssues.map((issue, i) => (
-                  <div key={i} style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, padding: "4px 0", display: "flex", gap: 8, lineHeight: 1.5 }}>
-                    <Warning size={13} style={{ color: COLORS.warning, flexShrink: 0, marginTop: 2 }} />
-                    {issue}
-                  </div>
-                ))}
-              </div>
-            )}
-            {aiSummary.recommendations.length > 0 && (
-              <div style={{ padding: 12, background: "color-mix(in srgb, var(--color-info) 8%, transparent)", borderRadius: 10, border: "1px solid color-mix(in srgb, var(--color-info) 15%, transparent)" }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.info, marginBottom: 8, display: "block" }}>Recommendations</span>
-                {aiSummary.recommendations.map((rec, i) => (
-                  <div key={i} style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, padding: "4px 0", display: "flex", gap: 8, lineHeight: 1.5 }}>
-                    <CheckCircle size={13} style={{ color: COLORS.info, flexShrink: 0, marginTop: 2 }} />
-                    {rec}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ---- Activity & Comments Section ---- */}
-        <div style={cardStyle()}>
-          <span style={{ ...LABEL_STYLE, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary, marginBottom: 14, display: "block" }}>
-            Activity ({activity.length > 0 ? activity.length : comments.length})
-          </span>
-          {(() => {
-            // Use the full activity timeline if available, else fall back to comments.
-            const timeline = activity.length > 0
-              ? [...activity].sort((a, b) => {
-                  const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
-                  const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-                  return ta - tb;
-                })
-              : sortedComments.map((c) => ({
-                  id: c.id, type: "comment" as const, author: c.author,
-                  avatarUrl: c.authorAvatarUrl, body: c.body,
-                  timestamp: c.createdAt ?? "", metadata: { source: c.source, path: c.path, line: c.line, url: c.url },
-                }));
-
-            if (timeline.length === 0) {
-              return <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, marginBottom: 14, padding: "8px 0" }}>No activity yet</div>;
-            }
-
-            return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-                {timeline.map((ev) => {
-                  const col = activityEventColor(ev);
-                  const isComment = ev.type === "comment";
-                  const supportsRichBody = isComment || ev.type === "review";
-                  const isReviewComment = isComment && ev.metadata?.source === "review";
-                  const authorIsBot = isBot(ev.author);
-
-                  return (
-                    <div key={ev.id} style={{
-                      padding: isComment ? "14px 14px 12px" : "10px 14px",
-                      borderRadius: 10,
-                      background: isReviewComment
-                        ? "rgba(245,158,11,0.04)"
-                        : isComment
-                          ? "rgba(255,245,235,0.03)"
-                          : `${col}06`,
-                      border: `1px solid ${isReviewComment ? "rgba(245,158,11,0.12)" : isComment ? "rgba(255,255,255,0.06)" : `${col}18`}`,
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: isComment && ev.body ? 8 : 0 }}>
-                        {ev.avatarUrl ? (
-                          <CommentAvatar author={ev.author} avatarUrl={ev.avatarUrl} size={isComment ? 24 : 20} />
-                        ) : (
-                          <div style={{ width: isComment ? 24 : 20, height: isComment ? 24 : 20, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <ActivityEventIcon event={ev} />
-                          </div>
-                        )}
-                        <span style={{ fontFamily: SANS_FONT, fontSize: isComment ? 13 : 12, fontWeight: 600, color: COLORS.textPrimary }}>{ev.author}</span>
-                        {authorIsBot && (
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 9, fontWeight: 700, color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-muted-fg) 18%, transparent)", padding: "1px 5px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>bot</span>
-                        )}
-                        <span style={inlineBadge(col, { padding: "1px 8px", fontSize: 10 })}>
-                          {activityEventLabel(ev)}
-                        </span>
-                        {isComment && typeof ev.metadata?.path === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                            {String(ev.metadata.path)}{typeof ev.metadata?.line === "number" ? `:${ev.metadata.line}` : ""}
-                          </span>
-                        )}
-                        {ev.type === "deployment" && typeof ev.metadata?.environment === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                            {String(ev.metadata.environment)}
-                          </span>
-                        )}
-                        {ev.type === "commit" && typeof ev.metadata?.shortSha === "string" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.accent, background: "color-mix(in srgb, var(--color-accent) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                            {String(ev.metadata.shortSha)}
-                          </span>
-                        )}
-                        {ev.type === "force_push" && (
-                          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 14%, transparent)", padding: "2px 8px", borderRadius: 6 }}>
-                            {typeof ev.metadata?.beforeSha === "string" ? `${String(ev.metadata.beforeSha).slice(0, 7)} → ${String(ev.metadata?.afterSha ?? "").slice(0, 7)}` : "branch updated"}
-                          </span>
-                        )}
-                        <span style={{ marginLeft: "auto", fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted, flexShrink: 0 }}>{formatTimeAgo(ev.timestamp)}</span>
-                        {isComment && typeof ev.metadata?.url === "string" && (
-                          <CommentMenu url={String(ev.metadata.url)} />
-                        )}
-                      </div>
-                      {supportsRichBody && ev.body ? (
-                        <div style={{ paddingLeft: 32 }}>
-                          <MarkdownBody markdown={ev.body} />
-                        </div>
-                      ) : ev.body ? (
-                        <div style={{ paddingLeft: isComment ? 32 : 28, marginTop: 4 }}>
-                          <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>{ev.body}</span>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-          {/* Add comment */}
-          <div style={{ position: "relative" }}>
-            <textarea
-              value={props.commentDraft}
-              onChange={(e) => props.setCommentDraft(e.target.value)}
-              placeholder={`Leave a comment... Supports Markdown. ${modifierKeyLabel}+Enter to submit.`}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void props.onAddComment(); }}
-              style={{
-                width: "100%", minHeight: 80, resize: "vertical", padding: "14px 14px 36px",
-                fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary,
-                background: "rgba(255,255,255,0.02)", border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
-                transition: "border-color 150ms ease",
-              }}
-              onFocus={(e) => { e.currentTarget.style.borderColor = "color-mix(in srgb, var(--color-accent) 50%, transparent)"; }}
-              onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.border; }}
-            />
-            {!props.commentDraft && (
-              <div style={{ position: "absolute", bottom: 10, left: 14, display: "flex", gap: 10, pointerEvents: "none" }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>**bold**</span>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>_italic_</span>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>`code`</span>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim }}>[link](url)</span>
-              </div>
-            )}
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
-            <button type="button" onClick={() => void props.onAddComment()} disabled={actionBusy || !props.commentDraft.trim()} style={{
-              ...primaryButton({
-                height: 34, padding: "0 20px", fontSize: 13, fontWeight: 600,
-                opacity: actionBusy || !props.commentDraft.trim() ? 0.4 : 1,
-                boxShadow: actionBusy || !props.commentDraft.trim() ? "none" : `0 2px 8px color-mix(in srgb, var(--color-accent) 30%, transparent)`,
-              }),
-            }}>
-              <ChatText size={14} weight="fill" /> Comment
-            </button>
-          </div>
-        </div>
-
-        {/* ---- Merge Readiness Section ---- */}
-        <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: canMerge && !hasMergeWarnings ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : someChecksFailing ? "color-mix(in srgb, var(--color-error) 20%, transparent)" : hasMergeWarnings ? "color-mix(in srgb, var(--color-warning) 20%, transparent)" : COLORS.border }}>
-          <div style={{ padding: "12px 16px", borderBottom: `1px solid ${COLORS.border}`, display: "flex", alignItems: "center", gap: 8 }}>
-            <GitMerge size={16} weight="bold" style={{ color: canMerge && !hasMergeWarnings ? COLORS.success : hasMergeWarnings ? COLORS.warning : COLORS.textMuted }} />
-            <span style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 700, color: COLORS.textPrimary }}>Merge Readiness</span>
-          </div>
-
-          {/* Review status */}
-          <MergeStatusRow
-            color={reviewStatus === "approved" ? COLORS.success : reviewStatus === "changes_requested" ? COLORS.danger : COLORS.warning}
-            icon={
-              reviewStatus === "approved"
-                ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />
-                : reviewStatus === "changes_requested"
-                  ? <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />
-                  : <Warning size={18} weight="fill" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
-            }
-            title={
-              reviewStatus === "approved" ? "Approved"
-                : reviewStatus === "changes_requested" ? "Changes requested"
-                  : "Review required"
-            }
-            description={
-              reviewStatus === "approved" ? "Review has been approved"
-                : reviewStatus === "changes_requested" ? "Changes are requested by reviewers"
-                  : "At least 1 approving review is required"
-            }
-          />
-
-          {/* Checks status */}
-          <MergeStatusRow
-            color={checksRowVisuals.color}
-            icon={getChecksRowIcon(checksSummary)}
-            title={checksRowVisuals.title}
-            titleAccessory={checksRunning && checksSummary.total > 0 ? <PrCiRunningIndicator showLabel label="running" /> : undefined}
-            description={checksRowVisuals.description}
-            expandable={allChecks.length > 0}
-            expanded={checksExpanded}
-            onToggle={() => setChecksExpanded(!checksExpanded)}
-          >
-            <div style={{ padding: "4px 0" }}>
-              {allChecks.map((check, idx) => {
-                const checkColor = check.conclusion === "success" ? COLORS.success : check.conclusion === "failure" ? COLORS.danger : check.status === "in_progress" ? COLORS.warning : check.conclusion === "skipped" || check.conclusion === "neutral" ? COLORS.textDim : COLORS.textMuted;
-                return (
-                  <div key={`${check.name}-${idx}`} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "8px 16px",
-                    borderBottom: idx < allChecks.length - 1 ? `1px solid ${COLORS.borderMuted}` : "none",
-                  }}>
-                    <CheckIcon check={check} />
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, flex: 1 }}>{check.name}</span>
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 10, fontWeight: 600, color: checkColor, textTransform: "uppercase", letterSpacing: "0.3px" }}>
-                      {check.conclusion ?? check.status}
-                    </span>
-                    {check.detailsUrl && (
-                      <button
-                        type="button"
-                        onClick={() => void window.ade.app.openExternal(check.detailsUrl!)}
-                        style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textDim, padding: 2 }}
-                      >
-                        <GithubLogo size={12} />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </MergeStatusRow>
-
-          {/* Merge conflicts / mergeable status */}
-          <MergeStatusRow
-            color={status?.isMergeable && !status?.mergeConflicts ? COLORS.success : status?.mergeConflicts ? COLORS.danger : COLORS.warning}
-            icon={
-              status?.isMergeable && !status?.mergeConflicts
-                ? <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, filter: "drop-shadow(0 0 4px rgba(34,197,94,0.4))" }} />
-                : status?.mergeConflicts
-                  ? <XCircle size={18} weight="fill" style={{ color: COLORS.danger, filter: "drop-shadow(0 0 4px rgba(239,68,68,0.4))" }} />
-                  : <Warning size={18} weight="fill" style={{ color: COLORS.warning, filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }} />
-            }
-            title={
-              status?.isMergeable && !status?.mergeConflicts ? "Ready to merge"
-                : status?.mergeConflicts ? "Merge conflicts"
-                  : status ? "Merging is blocked" : "Checking merge status..."
-            }
-            description={
-              status?.isMergeable && !status?.mergeConflicts ? "This branch has no conflicts with the base branch"
-                : status?.mergeConflicts ? "This branch has conflicts that must be resolved"
-                  : status && !status.isMergeable ? "Required conditions have not been met. If GitHub offers bypass rules for your account, you can still attempt the merge below."
-                    : "Waiting for merge status check"
-            }
-          />
-
-          {/* Merge action area */}
-          {(pr.state === "open" || pr.state === "draft") && (
-            <div
-              style={{
-                padding: "16px",
-                borderTop: `1px solid ${COLORS.border}`,
-                background: canMerge && !hasMergeWarnings ? "color-mix(in srgb, var(--color-success) 6%, transparent)" : (isBypassMerge || hasMergeWarnings) ? "color-mix(in srgb, var(--color-warning) 6%, transparent)" : "transparent",
-              }}
-            >
-              {/* Merge method selector */}
-              <div style={{ display: "flex", alignItems: "center", gap: 2, marginBottom: 14, background: COLORS.recessedBg, borderRadius: 8, padding: 3, border: `1px solid ${COLORS.border}` }}>
-                {(["squash", "merge", "rebase"] as const).map((m) => {
-                  const isActive = localMergeMethod === m;
-                  return (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => setLocalMergeMethod(m)}
-                      style={{
-                        flex: 1, height: 30, border: "none", borderRadius: 6, cursor: "pointer",
-                        fontFamily: SANS_FONT, fontSize: 12, fontWeight: isActive ? 600 : 400,
-                        color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                        background: isActive
-                          ? (mergeAccentColor
-                            ? `color-mix(in srgb, ${mergeAccentColor} 9%, transparent)`
-                            : "color-mix(in srgb, var(--color-success) 9%, transparent)")
-                          : "transparent",
-                        boxShadow: isActive
-                          ? (mergeAccentColor
-                            ? `0 0 0 1px color-mix(in srgb, ${mergeAccentColor} 19%, transparent)`
-                            : "0 0 0 1px color-mix(in srgb, var(--color-success) 19%, transparent)")
-                          : "none",
-                        transition: "all 120ms ease",
-                        textTransform: "capitalize",
-                      }}
-                    >
-                      {m === "squash" ? "Squash and merge" : m === "merge" ? "Create merge commit" : "Rebase and merge"}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {canAttemptBlockedMerge && (
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 10,
-                    marginBottom: 14,
-                    padding: 12,
-                    borderRadius: 10,
-                    border: "1px solid color-mix(in srgb, var(--color-warning) 24%, transparent)",
-                    background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
-                    cursor: actionBusy ? "default" : "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={allowBlockedMerge}
-                    disabled={actionBusy}
-                    onChange={(event) => setAllowBlockedMerge(event.target.checked)}
-                    style={{ marginTop: 2, accentColor: COLORS.warning }}
-                  />
-                  <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-                      Attempt merge anyway if GitHub allows bypass rules
-                    </span>
-                    <span style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.55, color: COLORS.textMuted }}>
-                      ADE will still ask GitHub to merge this PR. If your account is allowed to bypass the current requirements, the merge can succeed even while this panel still shows the PR as blocked.
-                    </span>
-                  </span>
-                </label>
-              )}
-
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <button
-                  type="button"
-                  disabled={actionBusy || !mergeActionEnabled}
-                  onClick={() => void props.onMerge(localMergeMethod)}
-                  style={{
-                    ...primaryButton({
-                      background: mergeActionBackground,
-                      borderColor: mergeActionBorderColor,
-                      opacity: actionBusy || !mergeActionEnabled ? 0.5 : 1,
-                      height: 40,
-                      padding: "0 24px",
-                      fontSize: 14,
-                      fontWeight: 700,
-                      boxShadow: mergeActionEnabled && !actionBusy ? mergeActionShadow : "none",
-                    }),
-                    color: mergeActionEnabled ? "#fff" : COLORS.textMuted,
-                    flex: 1,
-                  }}
-                >
-                  <GitMerge size={16} weight="bold" />
-                  {mergeActionLabel}
-                </button>
-
-                {pr.state === "open" && (
-                  <button type="button" data-tour="prs.closeBtn" disabled={actionBusy} onClick={() => void props.onClose()} style={dangerButton({ height: 40, opacity: actionBusy ? 0.4 : 1, padding: "0 16px" })}>
-                    <XCircle size={14} /> Close
-                  </button>
-                )}
-              </div>
-
-              {pr.state === "open" && (
-                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 12 }}>
-                  <button type="button" onClick={() => props.onNavigate(`/lanes?laneId=${encodeURIComponent(pr.laneId)}`)} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}>
-                    View lane
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          {pr.state === "closed" && (
-            <div style={{ padding: "16px", borderTop: `1px solid ${COLORS.border}` }}>
-              <button type="button" disabled={actionBusy} onClick={() => void props.onReopen()} style={outlineButton({ color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)", height: 36 })}>
-                <ArrowsClockwise size={14} /> Reopen PR
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ---- Right Sidebar ---- */}
-      <div style={{ width: 250, borderLeft: `1px solid ${COLORS.border}`, overflow: "auto", padding: 18, flexShrink: 0, display: "flex", flexDirection: "column", gap: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.02) 0%, transparent 40%)` }}>
-        {/* Quick actions */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingBottom: 14, marginBottom: 2, borderBottom: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={props.onAiSummary} disabled={aiSummaryBusy} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)", width: "100%", justifyContent: "center" })}>
-            <Sparkle size={13} weight="fill" />
-            {aiSummaryBusy ? "Analyzing..." : "AI Review"}
-          </button>
-          <button type="button" onClick={() => props.setShowReviewModal(true)} style={outlineButton({ height: 30, padding: "0 10px", width: "100%", justifyContent: "center" })}>
-            <Check size={13} weight="bold" /> Submit Review
-          </button>
-        </div>
-        {/* Reviewers */}
-        <SidebarSection title="Reviewers" onEdit={() => props.setShowReviewerEditor(!props.showReviewerEditor)}>
-          {detail?.requestedReviewers?.length ? (
-            detail.requestedReviewers.map((r) => (
-              <div key={r.login} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-                <Avatar user={r} size={22} />
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, fontWeight: 500 }}>{r.login}</span>
-              </div>
-            ))
-          ) : (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
-          )}
-          {props.showReviewerEditor && (
-            <div style={{ marginTop: 8 }}>
-              <input
-                value={props.reviewerInput}
-                onChange={(e) => props.setReviewerInput(e.target.value)}
-                placeholder="username1, username2"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const reviewers = props.reviewerInput.split(",").map(s => s.trim()).filter(Boolean);
-                    if (reviewers.length) void props.onRequestReviewers(reviewers);
-                  }
-                }}
-                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
-              />
-            </div>
-          )}
-        </SidebarSection>
-
-        {/* Labels */}
-        <SidebarSection title="Labels" onEdit={() => props.setShowLabelEditor(!props.showLabelEditor)}>
-          {detail?.labels?.length ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {detail.labels.map((l) => (
-                <span key={l.name} style={{
-                  display: "inline-flex", alignItems: "center", padding: "3px 10px",
-                  fontSize: 11, fontWeight: 600, fontFamily: SANS_FONT,
-                  color: `#${l.color}`,
-                  background: `#${l.color}18`,
-                  border: `1px solid #${l.color}35`,
-                  borderRadius: 12,
-                  boxShadow: `0 0 8px #${l.color}10`,
-                }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: `#${l.color}`, marginRight: 6, flexShrink: 0 }} />
-                  {l.name}
-                </span>
-              ))}
-            </div>
-          ) : (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>None</span>
-          )}
-          {props.showLabelEditor && (
-            <div style={{ marginTop: 8 }}>
-              <input
-                value={props.labelInput}
-                onChange={(e) => props.setLabelInput(e.target.value)}
-                placeholder="bug, enhancement"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const labels = props.labelInput.split(",").map(s => s.trim()).filter(Boolean);
-                    if (labels.length) void props.onSetLabels(labels);
-                  }
-                }}
-                style={{ width: "100%", height: 26, padding: "0 8px", fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, outline: "none" }}
-              />
-            </div>
-          )}
-        </SidebarSection>
-
-        {/* Author */}
-        <SidebarSection title="Author">
-          {detail?.author ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <Avatar user={detail.author} size={24} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary, fontWeight: 500 }}>{detail.author.login}</span>
-            </div>
-          ) : (
-            <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>---</span>
-          )}
-        </SidebarSection>
-
-        {/* Quick Stats */}
-        <SidebarSection title="Stats">
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <StatRow label="Created" value={formatTimestampFull(pr.createdAt)} />
-            <StatRow label="Updated" value={formatTimestampFull(pr.updatedAt)} />
-            <StatRow label="Checks" value={`${allChecks.filter(c => c.conclusion === "success" || c.conclusion === "neutral" || c.conclusion === "skipped").length}/${allChecks.length} passing`} />
-            <StatRow label="Reviews" value={`${reviews.filter(r => r.state === "approved").length} approved`} />
-            <StatRow label="Additions" value={`+${pr.additions}`} />
-            <StatRow label="Deletions" value={`-${pr.deletions}`} />
-          </div>
-        </SidebarSection>
-      </div>
-
-      {/* ---- Review Modal ---- */}
-      {props.showReviewModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
-          <div style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 24, width: 500, maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600, color: COLORS.textPrimary }}>Submit Review</span>
-              <button type="button" onClick={() => props.setShowReviewModal(false)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted, padding: 4 }}><X size={16} /></button>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-              {(["APPROVE", "REQUEST_CHANGES", "COMMENT"] as const).map((ev) => {
-                const isSelected = props.reviewEvent === ev;
-                const evColor = ev === "APPROVE" ? COLORS.success : ev === "REQUEST_CHANGES" ? COLORS.warning : COLORS.info;
-                return (
-                  <button key={ev} type="button" onClick={() => props.setReviewEvent(ev)} style={{
-                    ...outlineButton(),
-                    flex: 1, height: 36,
-                    background: isSelected ? `${evColor}18` : "transparent",
-                    borderColor: isSelected ? `${evColor}60` : COLORS.border,
-                    color: isSelected ? evColor : COLORS.textSecondary,
-                    boxShadow: isSelected ? `0 0 12px ${evColor}15` : "none",
-                  }}>
-                    {ev === "APPROVE" && <CheckCircle size={14} weight={isSelected ? "fill" : "regular"} />}
-                    {ev === "REQUEST_CHANGES" && <Warning size={14} weight={isSelected ? "fill" : "regular"} />}
-                    {ev === "COMMENT" && <ChatText size={14} weight={isSelected ? "fill" : "regular"} />}
-                    {ev === "APPROVE" ? "Approve" : ev === "REQUEST_CHANGES" ? "Request Changes" : "Comment"}
-                  </button>
-                );
-              })}
-            </div>
-            <textarea
-              value={props.reviewBody}
-              onChange={(e) => props.setReviewBody(e.target.value)}
-              placeholder="Leave a review comment (optional for approve)..."
-              style={{
-                width: "100%", minHeight: 120, resize: "vertical", padding: 14,
-                fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary,
-                background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 10, outline: "none",
-              }}
-            />
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14, gap: 8 }}>
-              <button type="button" onClick={() => props.setShowReviewModal(false)} style={outlineButton({ height: 36 })}>Cancel</button>
-              <button type="button" onClick={() => void props.onSubmitReview()} disabled={actionBusy} style={{
-                ...primaryButton({
-                  background: props.reviewEvent === "APPROVE" ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)` : props.reviewEvent === "REQUEST_CHANGES" ? `linear-gradient(135deg, ${COLORS.warning} 0%, #d97706 100%)` : `linear-gradient(135deg, ${COLORS.accent} 0%, #7c3aed 100%)`,
-                  height: 36,
-                  boxShadow:
-                    props.reviewEvent === "APPROVE"
-                      ? "0 2px 12px color-mix(in srgb, var(--color-success) 19%, transparent)"
-                      : props.reviewEvent === "REQUEST_CHANGES"
-                        ? "0 2px 12px color-mix(in srgb, var(--color-warning) 19%, transparent)"
-                        : "0 2px 12px color-mix(in srgb, var(--color-accent) 19%, transparent)",
-                }),
-                color: "#fff",
-              }}>
-                {actionBusy ? "Submitting..." : `Submit ${props.reviewEvent === "APPROVE" ? "Approval" : props.reviewEvent === "REQUEST_CHANGES" ? "Changes Request" : "Comment"}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -4224,172 +2499,60 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
 // CHECKS TAB
 // ================================================================
 
-type UnifiedCheckItem = {
-  id: string;
-  name: string;
-  displayName: string;
-  status: "queued" | "in_progress" | "completed";
-  conclusion: "success" | "failure" | "neutral" | "skipped" | "cancelled" | null;
-  duration: number | null; // seconds
-  detailsUrl: string | null;
-  source: "actions_job" | "check";
-  // Actions job details
-  steps?: Array<{ number: number; name: string; status: string; conclusion: string | null }>;
-  workflowName?: string;
-};
-
-function normalizeCheckName(value: string): string {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function normalizeCheckComposite(workflowName: string, jobName: string): string {
-  return `${normalizeCheckName(workflowName)}/${normalizeCheckName(jobName)}`;
-}
-
-function extractActionsJobId(detailsUrl: string | null | undefined): string | null {
-  const match = (detailsUrl ?? "").match(/\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/);
-  return match?.[1] ?? null;
-}
-
-function isActionsRunUrl(detailsUrl: string | null | undefined): boolean {
-  return /\/actions\/runs\/\d+(?:[/?#]|\/|$)/.test(detailsUrl ?? "");
-}
-
-function buildActionsJobDetailsUrl(runUrl: string, jobId: number): string | null {
-  const trimmed = runUrl.trim();
-  if (!trimmed) return null;
-  if (jobId > 0 && /\/actions\/runs\/\d+(?:[/?#]|$)/.test(trimmed)) {
-    return `${trimmed.replace(/\/$/, "")}/job/${jobId}`;
-  }
-  return trimmed;
-}
-
-function buildUnifiedChecks(checks: PrCheck[], actionRuns: PrActionRun[]): UnifiedCheckItem[] {
-  const items: UnifiedCheckItem[] = [];
-  const coveredNames = new Set<string>();
-  const coveredActionJobIds = new Set<string>();
-
-  // Collapse reruns: for each workflow name, keep only the newest run
-  // (multiple runs with the same name are reruns of the same workflow)
-  const latestRunByWorkflow = new Map<string, PrActionRun>();
-  for (const run of actionRuns) {
-    const existing = latestRunByWorkflow.get(run.name);
-    if (!existing || new Date(run.createdAt).getTime() > new Date(existing.createdAt).getTime()) {
-      latestRunByWorkflow.set(run.name, run);
-    }
-  }
-  const dedupedRuns = Array.from(latestRunByWorkflow.values());
-
-  const actionJobNameCounts = new Map<string, number>();
-  for (const run of dedupedRuns) {
-    for (const job of run.jobs) {
-      const normalizedName = normalizeCheckName(job.name);
-      if (!normalizedName) continue;
-      actionJobNameCounts.set(normalizedName, (actionJobNameCounts.get(normalizedName) ?? 0) + 1);
-    }
-  }
-  const uniqueActionJobNames = new Set(
-    Array.from(actionJobNameCounts.entries())
-      .filter(([, count]) => count === 1)
-      .map(([name]) => name),
-  );
-
-  // First: add all jobs from the latest action runs (these have the most detail)
-  for (const run of dedupedRuns) {
-    for (const job of run.jobs) {
-      // Build the canonical name to match against checks API
-      const canonicalName = `${run.name} / ${job.name}`;
-      coveredNames.add(normalizeCheckName(canonicalName));
-      // Use composite key to avoid collisions across workflows (e.g. two workflows both having a "build" job)
-      coveredNames.add(normalizeCheckComposite(run.name, job.name));
-      if (job.id > 0) coveredActionJobIds.add(String(job.id));
-
-      const duration = job.startedAt && job.completedAt
-        ? Math.round((new Date(job.completedAt).getTime() - new Date(job.startedAt).getTime()) / 1000)
-        : null;
-      const detailsUrl = buildActionsJobDetailsUrl(run.htmlUrl, job.id);
-
-      items.push({
-        id: `job-${job.id}`,
-        name: canonicalName,
-        displayName: canonicalName,
-        status: job.status,
-        conclusion: job.conclusion,
-        duration,
-        detailsUrl,
-        source: "actions_job",
-        steps: job.steps,
-        workflowName: run.name,
-      });
-    }
-  }
-
-  // Second: add checks that aren't covered by action run jobs (third-party checks)
-  for (const check of checks) {
-    const lowerName = normalizeCheckName(check.name);
-    const actionsJobId = extractActionsJobId(check.detailsUrl);
-    if (actionsJobId && coveredActionJobIds.has(actionsJobId)) continue;
-    // Skip if this check is already covered by an action run job
-    if (coveredNames.has(lowerName)) continue;
-    // GitHub Actions check-runs often expose only the job name, while the
-    // workflow-runs API gives us "{workflow} / {job}". When the job name is
-    // unique, treat the check-run as the same Actions job instead of adding it
-    // as a second CI item.
-    if (isActionsRunUrl(check.detailsUrl) && uniqueActionJobNames.has(lowerName)) continue;
-    // Also check if the check name matches "{workflow} / {job}" pattern
-    const slashIdx = check.name.indexOf("/");
-    if (slashIdx > 0) {
-      const workflowPart = check.name.slice(0, slashIdx).trim();
-      const jobPart = check.name.slice(slashIdx + 1).trim();
-      // Use composite key to match against workflow/job keys stored above
-      if (coveredNames.has(normalizeCheckComposite(workflowPart, jobPart))) continue;
-    }
-
-    const duration = check.startedAt && check.completedAt
-      ? Math.round((new Date(check.completedAt).getTime() - new Date(check.startedAt).getTime()) / 1000)
-      : null;
-
-    items.push({
-      id: `check-${check.name}`,
-      name: check.name,
-      displayName: check.name,
-      status: check.status,
-      conclusion: check.conclusion,
-      duration,
-      detailsUrl: check.detailsUrl,
-      source: "check",
-    });
-  }
-
-  // Sort: failures first, then in-progress, then by name
-  items.sort((a, b) => {
-    const aPriority = a.conclusion === "failure" ? 0 : a.status !== "completed" ? 1 : 2;
-    const bPriority = b.conclusion === "failure" ? 0 : b.status !== "completed" ? 1 : 2;
-    if (aPriority !== bPriority) return aPriority - bPriority;
-    return a.name.localeCompare(b.name);
-  });
-
-  return items;
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-}
-
-function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueResolverAction, onOpenIssueResolver }: {
+function ChecksTab({
+  checks,
+  actionRuns,
+  actionBusy,
+  onRerunChecks,
+  showIssueResolverAction,
+  onOpenIssueResolver,
+  focusedCheckId,
+  onFocusedCheckConsumed,
+}: {
   checks: PrCheck[];
   actionRuns: PrActionRun[];
   actionBusy: boolean;
   onRerunChecks: () => void;
   showIssueResolverAction: boolean;
   onOpenIssueResolver: () => void;
+  focusedCheckId?: string | null;
+  onFocusedCheckConsumed?: () => void;
 }) {
   const [expandedItems, setExpandedItems] = React.useState<Set<string>>(new Set());
+  const [highlightedCheckId, setHighlightedCheckId] = React.useState<string | null>(null);
+  const checkCardRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
 
   const unifiedChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+
+  React.useEffect(() => {
+    if (!focusedCheckId) return;
+    const target = unifiedChecks.find((item) => item.id === focusedCheckId);
+    if (!target) {
+      onFocusedCheckConsumed?.();
+      return;
+    }
+
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      next.add(focusedCheckId);
+      return next;
+    });
+    setHighlightedCheckId(focusedCheckId);
+
+    const frame = window.requestAnimationFrame(() => {
+      checkCardRefs.current.get(focusedCheckId)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      onFocusedCheckConsumed?.();
+    });
+
+    const highlightTimer = window.setTimeout(() => {
+      setHighlightedCheckId((current) => (current === focusedCheckId ? null : current));
+    }, 2400);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(highlightTimer);
+    };
+  }, [focusedCheckId, onFocusedCheckConsumed, unifiedChecks]);
 
   const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
   const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
@@ -4471,8 +2634,23 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
               : item.status === "queued" ? "QUEUED"
               : "PENDING";
 
+            const isHighlighted = highlightedCheckId === item.id;
             return (
-              <div key={item.id} style={cardStyle({ padding: 0, overflow: "hidden" })}>
+              <div
+                key={item.id}
+                ref={(node) => {
+                  if (node) checkCardRefs.current.set(item.id, node);
+                  else checkCardRefs.current.delete(item.id);
+                }}
+                data-testid="pr-checks-tab-item"
+                data-check-id={item.id}
+                style={cardStyle({
+                  padding: 0,
+                  overflow: "hidden",
+                  borderColor: isHighlighted ? COLORS.accent : undefined,
+                  boxShadow: isHighlighted ? `0 0 0 1px color-mix(in srgb, ${COLORS.accent} 45%, transparent)` : undefined,
+                })}
+              >
                 <div
                   role={hasSteps ? "button" : undefined}
                   tabIndex={hasSteps ? 0 : undefined}
@@ -4481,7 +2659,11 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "space-between",
                     padding: "10px 16px",
-                    background: item.conclusion === "failure" ? "color-mix(in srgb, var(--color-error) 6%, transparent)" : "transparent",
+                    background: item.conclusion === "failure"
+                      ? "color-mix(in srgb, var(--color-error) 6%, transparent)"
+                      : isHighlighted
+                        ? `color-mix(in srgb, ${COLORS.accent} 8%, transparent)`
+                        : "transparent",
                     cursor: hasSteps ? "pointer" : "default",
                     transition: "background 100ms ease",
                   }}
@@ -4508,7 +2690,7 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
                     {item.duration != null && (
                       <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textMuted }}>
-                        {formatDuration(item.duration)}
+                        {formatCheckDuration(item.duration)}
                       </span>
                     )}
                     <span style={{
@@ -4560,49 +2742,3 @@ function ChecksTab({ checks, actionRuns, actionBusy, onRerunChecks, showIssueRes
   );
 }
 
-// ================================================================
-// SHARED COMPONENTS
-// ================================================================
-
-function StatusSignal({ label, value, color, glow }: { label: string; value: string; color: string; glow?: boolean }) {
-  return (
-    <div style={{
-      flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, padding: "12px 8px",
-      background: glow ? `${color}08` : "transparent",
-      transition: "background 200ms ease",
-    }}>
-      <span style={{ ...LABEL_STYLE, fontSize: 10, letterSpacing: "0.02em" }}>{label}</span>
-      <span style={{
-        fontFamily: MONO_FONT, fontSize: 15, fontWeight: 700, color,
-        textShadow: glow ? `0 0 10px ${color}50` : "none",
-      }}>{value}</span>
-    </div>
-  );
-}
-
-function SidebarSection({ title, children, onEdit }: { title: string; children: React.ReactNode; onEdit?: () => void }) {
-  return (
-    <div style={{ padding: "14px 0", borderBottom: `1px solid ${COLORS.border}` }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textMuted, letterSpacing: "0.02em" }}>{title}</span>
-        {onEdit && (
-          <button type="button" onClick={onEdit} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textDim, padding: 2, opacity: 0.7 }}>
-            <PencilSimple size={12} />
-          </button>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function StatRow({ label, value }: { label: string; value: string }) {
-  const colorMap: Record<string, string> = { "Checks": COLORS.success, "Reviews": COLORS.accent };
-  const accentColor = colorMap[label];
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "3px 0" }}>
-      <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{label}</span>
-      <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: accentColor ?? COLORS.textPrimary, textAlign: "right", fontWeight: accentColor ? 600 : 400 }}>{value}</span>
-    </div>
-  );
-}

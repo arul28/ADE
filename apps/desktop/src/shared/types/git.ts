@@ -236,6 +236,13 @@ export type GitUserIdentity = {
   email: string;
 };
 
+export type GitHubAutolink = {
+  id: number;
+  keyPrefix: string;
+  urlTemplate: string;
+  isAlphanumeric: boolean;
+};
+
 export type GitGetUserIdentityArgs = {
   laneId: string;
 };

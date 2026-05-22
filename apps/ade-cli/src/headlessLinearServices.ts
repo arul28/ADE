@@ -133,6 +133,12 @@ export type HeadlessGitHubService = {
   }) => Promise<{ data: T; response: Response | null }>;
   setToken: (token: string) => void;
   clearToken: () => void;
+  listRepoAutolinks: (owner: string, name: string) => Promise<unknown[]>;
+  createRepoAutolink: (
+    owner: string,
+    name: string,
+    args: { keyPrefix: string; urlTemplate: string; isAlphanumeric?: boolean },
+  ) => Promise<unknown>;
   listRepoLabels: (owner: string, name: string) => Promise<unknown[]>;
   listRepoCollaborators: (owner: string, name: string) => Promise<unknown[]>;
   publishCurrentProject: (args: {
@@ -603,6 +609,18 @@ export function createHeadlessGitHubService(
     return out;
   };
 
+  const normalizeAutolink = (raw: unknown) => {
+    const record = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? raw as Record<string, unknown>
+      : {};
+    return {
+      id: typeof record.id === "number" && Number.isFinite(record.id) ? record.id : 0,
+      keyPrefix: asString(record.key_prefix) || asString(record.keyPrefix),
+      urlTemplate: asString(record.url_template) || asString(record.urlTemplate),
+      isAlphanumeric: Boolean(record.is_alphanumeric ?? record.isAlphanumeric),
+    };
+  };
+
   const createRepository = async (args: {
     name: string;
     description?: string;
@@ -820,6 +838,25 @@ export function createHeadlessGitHubService(
         path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/labels`,
         query: { per_page: 100 },
       });
+    },
+    async listRepoAutolinks(owner, name) {
+      const rows = await apiRequestAllPages({
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+        query: { per_page: 100 },
+      });
+      return rows.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
+    },
+    async createRepoAutolink(owner, name, args) {
+      const { data } = await apiRequest({
+        method: "POST",
+        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+        body: {
+          key_prefix: args.keyPrefix,
+          url_template: args.urlTemplate,
+          is_alphanumeric: args.isAlphanumeric === true,
+        },
+      });
+      return normalizeAutolink(data);
     },
     async listRepoCollaborators(owner, name) {
       return apiRequestAllPages({

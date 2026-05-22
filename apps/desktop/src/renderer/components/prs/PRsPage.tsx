@@ -1,5 +1,5 @@
 import React from "react";
-import { GitPullRequest, Plus } from "@phosphor-icons/react";
+import { GitPullRequest, GithubLogo, Plus } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
@@ -7,8 +7,10 @@ import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
 import { useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
-import { GitHubTab } from "./tabs/GitHubTab";
+import { GitHubTab, type GitHubHeaderChromeState } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
+import { GitHubRepoSyncBar } from "./shared/GitHubRepoSyncBar";
+import { GitHubPrSearchInput } from "./shared/GitHubPrSearchInput";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
 import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
 import {
@@ -130,6 +132,7 @@ function PRsPageInner() {
   const consumedCreateRouteKeyRef = React.useRef<string | null>(null);
   const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
   const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
+  const [githubHeaderChrome, setGithubHeaderChrome] = React.useState<GitHubHeaderChromeState | null>(null);
   const lastRouteLocationKeyRef = React.useRef<string | null>(null);
   const [selectedDetailTab, setSelectedDetailTab] = React.useState<PrDetailRouteTab | null>(() => {
     try {
@@ -286,6 +289,12 @@ function PRsPageInner() {
 
   const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
+  React.useEffect(() => {
+    if (activeMode !== "github") {
+      setGithubHeaderChrome(null);
+    }
+  }, [activeMode]);
+
   if (error) {
     return <EmptyState title="PRs" description={`Failed to load PRs: ${error}`} />;
   }
@@ -336,29 +345,29 @@ function PRsPageInner() {
     <div className="flex h-full min-w-0 flex-col" style={{ background: "#0F0D14" }}>
       {/* Header bar with subtle gradient */}
       <div
-        className="flex h-16 shrink-0 items-center gap-6 px-6"
+        className="flex h-12 shrink-0 items-center gap-4 px-5"
         style={{
           background: "linear-gradient(180deg, rgba(167,139,250,0.06) 0%, rgba(167,139,250,0.01) 100%)",
           borderBottom: "1px solid rgba(167,139,250,0.10)",
         }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
           <div
             className="flex items-center justify-center"
             style={{
-              width: 30,
-              height: 30,
-              borderRadius: 8,
+              width: 26,
+              height: 26,
+              borderRadius: 7,
               background: "linear-gradient(135deg, rgba(167,139,250,0.18) 0%, rgba(139,92,246,0.08) 100%)",
               border: "1px solid rgba(167,139,250,0.15)",
             }}
           >
-            <GitPullRequest size={16} weight="bold" className="text-[#A78BFA]" />
+            <GitPullRequest size={14} weight="bold" className="text-[#A78BFA]" />
           </div>
           <span
             style={{
               fontFamily: SANS_FONT,
-              fontSize: 15,
+              fontSize: 14,
               fontWeight: 700,
               letterSpacing: "-0.3px",
               color: "#FAFAFA",
@@ -366,27 +375,15 @@ function PRsPageInner() {
           >
             Pull Requests
           </span>
-          <span
-            className="rounded-full px-2.5 py-0.5"
-            style={{
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-              fontWeight: 600,
-              color: "#A78BFA",
-              background: "linear-gradient(135deg, rgba(167,139,250,0.14) 0%, rgba(139,92,246,0.08) 100%)",
-              border: "1px solid rgba(167,139,250,0.18)",
-            }}
-          >
-            {prs.length} linked
-          </span>
         </div>
 
         <div role="tablist" aria-label="PR surfaces" className="flex items-center gap-1">
           {([
-            { id: "github", label: "GitHub" },
+            { id: "github", label: "GitHub", icon: GithubLogo },
             { id: "workflows", label: "Workflows" },
-          ] as Array<{ id: SurfaceMode; label: string }>).map((surface) => {
+          ] as Array<{ id: SurfaceMode; label: string; icon?: React.ElementType }>).map((surface) => {
             const active = activeMode === surface.id;
+            const Icon = surface.icon;
             return (
               <button
                 key={surface.id}
@@ -394,14 +391,14 @@ function PRsPageInner() {
                 role="tab"
                 aria-selected={active}
                 className={cn(
-                  "relative flex items-center gap-2 rounded-lg px-4 py-2 transition-all duration-200",
+                  "relative flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-all duration-200",
                   active
                     ? "text-[#FAFAFA]"
                     : "text-[#71717A] hover:text-[#A1A1AA]"
                 )}
                 style={{
                   fontFamily: SANS_FONT,
-                  fontSize: 13,
+                  fontSize: 12,
                   fontWeight: active ? 600 : 500,
                   ...(active
                     ? {
@@ -422,24 +419,41 @@ function PRsPageInner() {
                   }
                 }}
               >
+                {Icon ? <Icon size={14} weight={active ? "fill" : "regular"} /> : null}
                 <span>{surface.label}</span>
               </button>
             );
           })}
         </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        {activeMode === "github" && githubHeaderChrome ? (
+          <GitHubPrSearchInput
+            value={githubHeaderChrome.searchQuery}
+            onChange={githubHeaderChrome.onSearchQueryChange}
+            compact
+          />
+        ) : null}
+
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          {activeMode === "github" && githubHeaderChrome?.repoLabel ? (
+            <GitHubRepoSyncBar
+              repoLabel={githubHeaderChrome.repoLabel}
+              syncing={githubHeaderChrome.syncing}
+              onSync={githubHeaderChrome.onSync}
+              compact
+            />
+          ) : null}
           <button
             type="button"
             data-tour="prs.createBtn"
             onClick={() => openCreatePr()}
             className="flex items-center gap-2 active:scale-[0.97]"
             style={{
-              height: 34,
-              padding: "0 16px",
-              borderRadius: 10,
+              height: 30,
+              padding: "0 14px",
+              borderRadius: 9,
               fontFamily: SANS_FONT,
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: 600,
               color: "#fff",
               background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
@@ -465,6 +479,8 @@ function PRsPageInner() {
             selectedDetailTab={selectedDetailTab}
             onDetailTabChange={setSelectedDetailTab}
             onRefreshAll={handleRefresh}
+            relocateHeaderChrome
+            onHeaderChromeChange={setGithubHeaderChrome}
             onOpenRebaseTab={(laneId) => {
               if (laneId) setSelectedRebaseItemId(laneId);
               setActiveTab("rebase");

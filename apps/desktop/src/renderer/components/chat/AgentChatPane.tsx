@@ -72,13 +72,14 @@ import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { AgentChatMessageList } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
-import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
   getChatSessionLocalTouchTimestampForEvent,
@@ -120,7 +121,7 @@ import {
 } from "../terminals/cliLaunch";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
-import { getAgentChatModelsCached, getAiStatusCached, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
+import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
 import {
@@ -1343,13 +1344,13 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "dr
   if (provider === "cursor") {
     const fullId = normalized.startsWith("cursor/") ? normalized : `cursor/${normalized}`;
     const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^cursor\//, ""), "cursor");
-    if (dynamic && dynamic.family === "cursor" && dynamic.isCliWrapped) return dynamic.id;
+    if (dynamic && dynamic.family === "cursor") return dynamic.id;
     return null;
   }
   if (provider === "droid") {
     const fullId = normalized.startsWith("droid/") ? normalized : `droid/${normalized}`;
     const dynamic = getModelById(fullId) ?? resolveModelDescriptorForProvider(normalized.replace(/^droid\//, ""), "droid");
-    if (dynamic && dynamic.family === "factory" && dynamic.isCliWrapped) return dynamic.id;
+    if (dynamic && dynamic.family === "factory") return dynamic.id;
     return null;
   }
   const family = provider === "codex" ? "openai" : "anthropic";
@@ -1826,6 +1827,7 @@ export function AgentChatPane({
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
   const [modelId, setModelId] = useState<string>("");
+  const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [codexFastMode, setCodexFastMode] = useState(false);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
@@ -2962,13 +2964,20 @@ export function AgentChatPane({
   // Keep all configured models selectable, and always include the active session model.
   // All models are available regardless of surface — the runtime handles provider transitions.
   const effectiveAvailableModelIds = useMemo(() => {
-    return filterChatModelIdsForSession({
+    const base = filterChatModelIdsForSession({
       availableModelIds,
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
       policy: modelSwitchPolicy,
     });
-  }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length]);
+    const catalog = getSharedRuntimeCatalog();
+    if (!catalog) return base;
+    const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
+    if (!runtimeIds.length) return base;
+    const merged = new Set(base);
+    for (const id of runtimeIds) merged.add(id);
+    return [...merged];
+  }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],
@@ -3133,7 +3142,7 @@ export function AgentChatPane({
     awaitingInput: selectedSessionAwaitingInput,
   });
 
-  const refreshAvailableModels = useCallback(async () => {
+  const refreshAvailableModels = useCallback(async (options?: { force?: boolean }) => {
     ++availableModelsRefreshSeqRef.current;
     const selectedModelProvider = modelId.trim()
       ? resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId))
@@ -3144,9 +3153,13 @@ export function AgentChatPane({
         selectedSession?.provider === "opencode"
         || selectedModelProvider === "opencode"
       );
+    if (options?.force === true) {
+      invalidateAiDiscoveryCache(projectRoot);
+    }
     try {
       const status = await getAiStatusCached({
         projectRoot,
+        force: options?.force === true,
         ...(shouldRefreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
       });
       setAiStatus(status);
@@ -3699,6 +3712,8 @@ export function AgentChatPane({
     // If the user hasn't picked a model yet, don't auto-select one.
     if (!modelId) return;
     if (availableModelIds.includes(modelId)) return;
+    // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
+    if (isKnownSelectableChatModelId(modelId) || resolveModelDescriptorWithRuntimeCatalog(modelId)) return;
     if (selectedSessionModelId) {
       setModelId(selectedSessionModelId);
       return;
@@ -4868,10 +4883,22 @@ export function AgentChatPane({
   }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, modelId, refreshLanesStore]);
 
   const launchDraftChat = useCallback(async (mode: "foreground" | "background") => {
-    if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) return;
-    if (selectedSessionId || workDraftKind !== "chat" || !modelId) return;
+    if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) {
+      if (submitInFlightRef.current) {
+        setError("Still sending the previous message. Wait a moment and try again.");
+      }
+      return;
+    }
+    if (selectedSessionId || workDraftKind !== "chat") return;
+    if (!modelId) {
+      setError("Select a model first");
+      return;
+    }
     const snapshot = buildDraftLaunchSnapshotForCurrentState();
-    if (!snapshot) return;
+    if (!snapshot) {
+      setError("Add a message before sending.");
+      return;
+    }
 
     submitInFlightRef.current = true;
     if (mode === "background") setBackgroundLaunchBusy(true);
@@ -4879,13 +4906,6 @@ export function AgentChatPane({
     setPromptSuggestion(null);
     setError(null);
     setBackgroundLaunchNotice(null);
-    setDraft("");
-    setAttachments([]);
-    setContextAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-    setMacosVmContextItems([]);
     draftSelectionLockedRef.current = mode === "background";
 
     let targetLane: { laneId: string; laneName: string } | null = null;
@@ -4895,6 +4915,13 @@ export function AgentChatPane({
       targetLane = await resolveDraftLaunchLane(snapshot);
       const prepared = await prepareDraftLaunchForSend(snapshot, targetLane.laneId);
       createdSession = await createSessionForLane(targetLane.laneId, { select: false });
+      setDraft((current) => (current === snapshot.draft ? "" : current));
+      setAttachments([]);
+      setContextAttachments([]);
+      setIosElementContextItems([]);
+      setAppControlContextItems([]);
+      setBuiltInBrowserContextItems([]);
+      setMacosVmContextItems([]);
       touchSession(createdSession.id);
       await window.ade.agentChat.send({
         sessionId: createdSession.id,
@@ -4907,7 +4934,10 @@ export function AgentChatPane({
         interactionMode: createdSession.provider === "claude" ? interactionMode : null,
         ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
       });
-      notifySessionCreated(createdSession, { activate: false, source: "draft-launch" });
+      notifySessionCreated(createdSession, {
+        activate: false,
+        source: "draft-launch",
+      });
       invalidateSessionListCache();
       if (targetLane.laneId === laneId) {
         void refreshSessions().catch(() => {});
@@ -5112,7 +5142,12 @@ export function AgentChatPane({
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const submit = useCallback(async () => {
-    if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) return;
+    if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) {
+      if (submitInFlightRef.current) {
+        setError("Still sending the previous message. Wait a moment and try again.");
+      }
+      return;
+    }
     if (selectedSessionId) {
       const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
       const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
@@ -5338,11 +5373,34 @@ export function AgentChatPane({
     }
 
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      if (!modelId) {
+        setError("Select a model first");
+        return;
+      }
       await launchDraftChat("foreground");
       return;
     }
 
-    if (!modelId) return;
+    if (
+      forceDraft
+      && embeddedWorkLayout
+      && workDraftKind === "chat"
+      && selectedSessionId == null
+      && !lockSessionId
+      && !draftLaunchTargetIsAutoCreate
+    ) {
+      if (!modelId) {
+        setError("Select a model first");
+        return;
+      }
+      await launchDraftChat("foreground");
+      return;
+    }
+
+    if (!modelId) {
+      setError("Select a model first");
+      return;
+    }
     const text = draft.trim();
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
@@ -5433,14 +5491,17 @@ export function AgentChatPane({
     const draftSnapshot = draft;
     const attachmentsSnapshot = attachments;
     const isLiteralSlashCommand = isProviderSlashCommandInput(text);
+    const deferComposerClear = selectedSessionId == null;
 
     submitInFlightRef.current = true;
     setBusy(true);
     setError(null);
-    setDraft("");
-    draftsPerSessionRef.current.delete(selectedSessionId);
-    setAttachments([]);
-    setContextAttachments([]);
+    if (!deferComposerClear) {
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      setAttachments([]);
+      setContextAttachments([]);
+    }
 
     // Show the optimistic bubble immediately when we already have a session.
     // Awaiting the macOS VM IPC and any session-create roundtrip before this
@@ -5581,6 +5642,13 @@ export function AgentChatPane({
       }
       if (!sessionId) {
         throw new Error("Unable to create chat session.");
+      }
+
+      if (deferComposerClear) {
+        setDraft("");
+        draftsPerSessionRef.current.delete(sessionId);
+        setAttachments([]);
+        setContextAttachments([]);
       }
 
       touchSession(sessionId);
@@ -6845,6 +6913,9 @@ export function AgentChatPane({
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
             providerAuthStatus={modelPickerProviderAuthStatus}
+            onRuntimeCatalogRefreshed={() => {
+              setRuntimeCatalogVersion((version) => version + 1);
+            }}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
             codexTokenUsage={selectedCodexTokenUsage}
@@ -6905,7 +6976,12 @@ export function AgentChatPane({
             onOpenAiSettings={openAiProvidersSettings}
             onOpenLinearSettings={openLinearSettings}
             onModelChange={(nextModelId) => {
-              if (selectedSessionModelId && effectiveAvailableModelIds.length && !effectiveAvailableModelIds.includes(nextModelId)) {
+              const modelAllowed =
+                !effectiveAvailableModelIds.length
+                || effectiveAvailableModelIds.includes(nextModelId)
+                || isKnownSelectableChatModelId(nextModelId)
+                || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId));
+              if (selectedSessionModelId && !modelAllowed) {
                 return;
               }
               if (isPersistentIdentitySurface && sessionMutationKind) {
@@ -6994,6 +7070,7 @@ export function AgentChatPane({
             onSubmit={() => {
               void submit();
             }}
+            onSubmitBlocked={(message) => setError(message)}
             onSubmitInBackground={showDraftLaunchControls ? () => {
               void launchDraftChat("background");
             } : undefined}

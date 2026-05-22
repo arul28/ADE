@@ -39,6 +39,7 @@ export type ModelPickerProps = {
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: () => void;
+  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   fastModeActive?: boolean;
   onFastModeToggle?: (next: boolean) => void;
   fastModeSupported?: boolean;
@@ -58,6 +59,7 @@ export const ModelPicker = memo(function ModelPicker({
   models,
   providerAuthStatus,
   onOpenSignIn,
+  onRuntimeCatalogRefreshed,
   fastModeActive = false,
   onFastModeToggle,
   fastModeSupported,
@@ -146,10 +148,11 @@ export const ModelPicker = memo(function ModelPicker({
           }
         } finally {
           setRefreshingProvider((current) => current === refreshProvider ? null : current);
+          onRuntimeCatalogRefreshed?.(refreshProvider);
         }
       })();
     }
-  }, [loadRuntimeCatalog]);
+  }, [loadRuntimeCatalog, onRuntimeCatalogRefreshed]);
 
   const catalogModels = useMemo(
     () => descriptorsFromAgentChatModelCatalog(runtimeCatalog, filter),
@@ -178,9 +181,9 @@ export const ModelPicker = memo(function ModelPicker({
   }, [value, recents, modelList]);
 
   const selectedModel = useMemo<ModelDescriptor | undefined>(() => {
-    if (!effectiveValue) return undefined;
-    return resolveModelDescriptorWithRuntimeCatalog(effectiveValue) ?? createUnknownModelPlaceholder(effectiveValue);
-  }, [effectiveValue]);
+    if (!value) return undefined;
+    return resolveModelDescriptorWithRuntimeCatalog(value) ?? createUnknownModelPlaceholder(value);
+  }, [value]);
 
   const availableSet = useMemo(() => {
     const ids = runtimeCatalog ? catalogModels.availableModelIds : availableModelIds;
@@ -238,7 +241,7 @@ export const ModelPicker = memo(function ModelPicker({
         <Popover.Trigger asChild>
           <ModelPickerTrigger
             model={selectedModel}
-            value={effectiveValue}
+            value={value}
             compact={compact}
             disabled={disabled}
             open={open}
@@ -301,7 +304,7 @@ const ModelPickerTrigger = memo(
       { model, value, compact, disabled, open, className, ...rest },
       ref,
     ) {
-      const label = model?.displayName ?? value ?? "Select model";
+      const label = model?.displayName ?? (value.trim() || "Select model");
       return (
         <button
           {...rest}

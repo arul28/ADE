@@ -763,6 +763,70 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.lanesList, {});
   });
 
+  it("falls back chat create to in-process IPC when local runtime callAction times out", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const created = { id: "chat-1", laneId: "lane-1", provider: "cursor", model: "composer-2.5-fast", modelId: "cursor/composer-2.5-fast" };
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain === "chat" && request.action === "createSession") {
+          throw new Error(
+            "Error invoking remote method 'ade.localRuntime.callAction': Error: IPC handler for 'ade.localRuntime.callAction' timed out after 30000ms (callId=286)",
+          );
+        }
+      }
+      if (channel === IPC.agentChatCreate) return created;
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.create({
+      laneId: "lane-1",
+      provider: "cursor",
+      model: "composer-2.5-fast",
+      modelId: "cursor/composer-2.5-fast",
+    })).resolves.toEqual(created);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: {
+        domain: "chat",
+        action: "createSession",
+        args: expect.objectContaining({ laneId: "lane-1" }),
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.agentChatCreate, expect.objectContaining({
+      laneId: "lane-1",
+      provider: "cursor",
+    }));
+  });
+
   it("falls back to in-process IPC when the local runtime does not expose a new action yet", async () => {
     const binding = {
       kind: "local",
@@ -2266,6 +2330,8 @@ describe("preload OAuth bridge", () => {
     };
     const labels = [{ name: "bug", color: "d73a4a" }];
     const collaborators = [{ login: "octocat", avatarUrl: "https://example.test/octocat.png" }];
+    const autolinks = [{ id: 1, keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>", isAlphanumeric: false }];
+    const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?number=<num>", isAlphanumeric: false };
     const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
@@ -2282,6 +2348,24 @@ describe("preload OAuth bridge", () => {
             domain: "github",
             action: "listRepoCollaborators",
             result: collaborators,
+            statusHints: {},
+          };
+        }
+        if (request?.action === "listRepoAutolinks") {
+          return {
+            ok: true,
+            domain: "github",
+            action: "listRepoAutolinks",
+            result: autolinks,
+            statusHints: {},
+          };
+        }
+        if (request?.action === "createRepoAutolink") {
+          return {
+            ok: true,
+            domain: "github",
+            action: "createRepoAutolink",
+            result: createdAutolink,
             statusHints: {},
           };
         }
@@ -2319,6 +2403,14 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.github.listRepoLabels({ owner: "acme", name: "repo" })).resolves.toEqual(labels);
     await expect(bridge.github.listRepoCollaborators({ owner: "acme", name: "repo" })).resolves.toEqual(collaborators);
+    await expect(bridge.github.listRepoAutolinks({ owner: "acme", name: "repo" })).resolves.toEqual(autolinks);
+    await expect(bridge.github.createRepoAutolink({
+      owner: "acme",
+      name: "repo",
+      keyPrefix: "ADEPR-",
+      urlTemplate: "https://ade.app/open?number=<num>",
+      isAlphanumeric: false,
+    })).resolves.toEqual(createdAutolink);
     await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -2344,12 +2436,38 @@ describe("preload OAuth bridge", () => {
       projectId: "project-1",
       request: {
         domain: "github",
+        action: "listRepoAutolinks",
+        args: { owner: "acme", name: "repo" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "github",
+        action: "createRepoAutolink",
+        args: {
+          owner: "acme",
+          name: "repo",
+          keyPrefix: "ADEPR-",
+          urlTemplate: "https://ade.app/open?number=<num>",
+          isAlphanumeric: false,
+        },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "github",
         action: "getRemoteStatus",
         args: { forceRefresh: true },
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoLabels, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoCollaborators, { owner: "acme", name: "repo" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoAutolinks, { owner: "acme", name: "repo" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubCreateRepoAutolink, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetRemoteStatus, expect.anything());
   });
 

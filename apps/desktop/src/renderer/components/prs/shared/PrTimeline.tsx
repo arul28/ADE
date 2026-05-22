@@ -1,6 +1,5 @@
 import {
   forwardRef,
-  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -8,7 +7,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -16,12 +14,14 @@ import {
   ChatCircle,
   CheckCircle,
   GitCommit,
+  GitPullRequest,
   Package,
   Tag,
   GitMerge,
   Robot,
   WarningCircle,
   Clock,
+  ArrowRight,
 } from "@phosphor-icons/react";
 
 import type {
@@ -31,7 +31,7 @@ import type {
   PrReview,
   PrReviewThread,
 } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReviewThreadCard } from "./PrReviewThreadCard";
@@ -48,8 +48,8 @@ export type PrTimelineFilters = {
 };
 
 export const DEFAULT_PR_TIMELINE_FILTERS: PrTimelineFilters = {
-  showResolved: false,
-  showOutdated: false,
+  showResolved: true,
+  showOutdated: true,
   onlyMine: false,
   onlyBots: false,
 };
@@ -97,6 +97,8 @@ export function applyTimelineFilters(
   viewerLogin: string | null,
 ): PrTimelineEvent[] {
   return events.filter((event) => {
+    if (event.type === "check_update") return false;
+    if (event.type === "pr_opened") return true;
     if (event.type === "review_thread") {
       if (!filters.showResolved && event.isResolved) return false;
       if (!filters.showOutdated && event.isOutdated) return false;
@@ -183,9 +185,9 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     repoName,
     viewerLogin,
     filters,
-    onFiltersChange,
+    onFiltersChange: _onFiltersChange,
     summary,
-    onRegenerateSummary,
+    onRegenerateSummary: _onRegenerateSummary,
     onDismissSummary,
     onVisibleEventChange,
   },
@@ -334,8 +336,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
       className="flex h-full w-full min-h-0 flex-col"
       style={{ background: COLORS.pageBg }}
     >
-      <FilterToolbar filters={filters} onChange={onFiltersChange} />
-
       {summary ? (
         <div
           className="shrink-0 px-3 pt-3"
@@ -346,7 +346,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             summary={summary}
             onDismiss={onDismissSummary ? () => onDismissSummary() : undefined}
           />
-          {onRegenerateSummary ? <span className="hidden" /> : null}
         </div>
       ) : null}
 
@@ -392,111 +391,6 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
 });
 
 export default PrTimeline;
-
-/* ══════════════════ Filter toolbar ══════════════════ */
-
-const FILTER_BUTTONS: Array<{
-  key: "all" | "unresolved" | "mine" | "bots" | "outdated";
-  label: string;
-}> = [
-  { key: "all", label: "All" },
-  { key: "unresolved", label: "Unresolved" },
-  { key: "mine", label: "Mine" },
-  { key: "bots", label: "Bots only" },
-  { key: "outdated", label: "Show outdated" },
-];
-
-function isAllSelected(filters: PrTimelineFilters): boolean {
-  return (
-    filters.showResolved &&
-    filters.showOutdated &&
-    !filters.onlyMine &&
-    !filters.onlyBots
-  );
-}
-
-function FilterToolbar({
-  filters,
-  onChange,
-}: {
-  filters: PrTimelineFilters;
-  onChange: (next: PrTimelineFilters) => void;
-}) {
-  const isActive = useCallback(
-    (key: (typeof FILTER_BUTTONS)[number]["key"]): boolean => {
-      if (key === "all") return isAllSelected(filters);
-      if (key === "unresolved") return !filters.showResolved;
-      if (key === "mine") return filters.onlyMine;
-      if (key === "bots") return filters.onlyBots;
-      return filters.showOutdated;
-    },
-    [filters],
-  );
-
-  const toggle = useCallback(
-    (key: (typeof FILTER_BUTTONS)[number]["key"]) => {
-      if (key === "all") {
-        onChange({
-          showResolved: true,
-          showOutdated: true,
-          onlyMine: false,
-          onlyBots: false,
-        });
-        return;
-      }
-      if (key === "unresolved") {
-        onChange({ ...filters, showResolved: !filters.showResolved });
-        return;
-      }
-      if (key === "mine") {
-        onChange({ ...filters, onlyMine: !filters.onlyMine });
-        return;
-      }
-      if (key === "bots") {
-        onChange({ ...filters, onlyBots: !filters.onlyBots });
-        return;
-      }
-      onChange({ ...filters, showOutdated: !filters.showOutdated });
-    },
-    [filters, onChange],
-  );
-
-  return (
-    <div
-      className="flex shrink-0 items-center gap-1 px-3"
-      style={{ borderBottom: `1px solid ${COLORS.border}`, height: 38 }}
-      data-testid="pr-timeline-filter-toolbar"
-    >
-      {FILTER_BUTTONS.map((btn) => {
-        const active = isActive(btn.key);
-        const style: CSSProperties = active
-          ? {
-              background: COLORS.accentSubtle,
-              border: `1px solid ${COLORS.accentBorder}`,
-              color: COLORS.accent,
-            }
-          : {
-              background: "transparent",
-              border: `1px solid ${COLORS.border}`,
-              color: COLORS.textMuted,
-            };
-        return (
-          <button
-            key={btn.key}
-            type="button"
-            onClick={() => toggle(btn.key)}
-            className="h-6 px-2 text-[11px] font-medium transition-colors"
-            style={style}
-            aria-pressed={active}
-            data-filter-key={btn.key}
-          >
-            {btn.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 /* ══════════════════ Timeline row ══════════════════ */
 
@@ -607,6 +501,8 @@ function TimelineRowContent({
   onFocus,
 }: TimelineRowContentProps) {
   switch (event.type) {
+    case "pr_opened":
+      return <PrOpenedBanner event={event} />;
     case "description":
       return (
         <Card icon={<ChatCircle size={12} weight="fill" />} author={event.author} ts={event.timestamp}>
@@ -746,6 +642,133 @@ function TimelineRowContent({
   }
 }
 
+function PrOpenedBanner({
+  event,
+}: {
+  event: Extract<PrTimelineEvent, { type: "pr_opened" }>;
+}) {
+  const openedColor = COLORS.success;
+  return (
+    <div
+      data-testid="pr-timeline-opened-banner"
+      style={{
+        position: "relative",
+        overflow: "hidden",
+        borderRadius: 10,
+        border: `1px solid color-mix(in srgb, ${openedColor} 32%, ${COLORS.border})`,
+        background: `linear-gradient(135deg, color-mix(in srgb, ${openedColor} 16%, ${COLORS.pageBg}) 0%, color-mix(in srgb, ${COLORS.accent} 12%, ${COLORS.pageBg}) 52%, ${COLORS.cardBg} 100%)`,
+        boxShadow: `0 1px 0 color-mix(in srgb, ${openedColor} 18%, transparent) inset`,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: "0 auto 0 0",
+          width: 4,
+          background: `linear-gradient(180deg, ${openedColor}, ${COLORS.accent})`,
+        }}
+      />
+      <div style={{ padding: "14px 16px 14px 18px" }}>
+        <div className="flex items-start gap-3">
+          <span
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 9,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              background: `color-mix(in srgb, ${openedColor} 18%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${openedColor} 34%, transparent)`,
+              color: openedColor,
+            }}
+          >
+            <GitPullRequest size={18} weight="fill" />
+          </span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span style={inlineBadge(openedColor, { fontSize: 10, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" })}>
+                Pull request opened
+              </span>
+              {event.isDraft ? (
+                <span style={inlineBadge(COLORS.warning, { fontSize: 10, fontWeight: 600 })}>
+                  Draft
+                </span>
+              ) : null}
+              <span
+                className="ml-auto text-[10px]"
+                style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+              >
+                {relativeWhen(event.timestamp)}
+              </span>
+            </div>
+            <div
+              className="mt-2 text-[15px] font-semibold leading-[1.35]"
+              style={{ color: COLORS.textPrimary }}
+            >
+              {event.title}
+            </div>
+            <div
+              className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]"
+              style={{ color: COLORS.textSecondary }}
+            >
+              <span style={{ fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                #{event.githubPrNumber}
+              </span>
+              {event.author ? (
+                <span>
+                  opened by{" "}
+                  <strong style={{ color: COLORS.textPrimary }}>@{event.author}</strong>
+                </span>
+              ) : null}
+              <span style={{ color: COLORS.textMuted }}>
+                {event.repoOwner}/{event.repoName}
+              </span>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <BranchChip label={event.headBranch} accent />
+              <ArrowRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+              <BranchChip label={event.baseBranch} />
+              {event.additions > 0 || event.deletions > 0 ? (
+                <span className="ml-1 text-[11px]" style={{ fontFamily: MONO_FONT }}>
+                  <span style={{ color: COLORS.success }}>+{event.additions}</span>
+                  {" "}
+                  <span style={{ color: COLORS.danger }}>-{event.deletions}</span>
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BranchChip({ label, accent = false }: { label: string; accent?: boolean }) {
+  const color = accent ? COLORS.accent : COLORS.textSecondary;
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "3px 8px",
+        borderRadius: 6,
+        fontSize: 11,
+        fontFamily: MONO_FONT,
+        color,
+        background: accent
+          ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)`
+          : COLORS.recessedBg,
+        border: `1px solid ${accent ? COLORS.accentBorder : COLORS.border}`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 function CommitDivider({
   event,
   focused,
@@ -759,33 +782,33 @@ function CommitDivider({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        padding: "12px 14px",
-        background: focused ? COLORS.accentSubtle : "rgba(255,255,255,0.025)",
-        borderTop: `2px solid ${focused ? COLORS.accent : COLORS.border}`,
-        borderBottom: `1px solid ${COLORS.border}`,
-        boxShadow: focused ? `0 0 0 1px ${COLORS.accentBorder} inset` : "none",
+        gap: 10,
+        padding: "8px 12px",
+        background: focused ? COLORS.accentSubtle : COLORS.recessedBg,
+        borderTop: `1px solid ${focused ? COLORS.accentBorder : COLORS.borderMuted}`,
+        borderBottom: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: 6,
       }}
     >
       <span
         style={{
-          width: 28,
-          height: 28,
-          borderRadius: 7,
+          width: 22,
+          height: 22,
+          borderRadius: 6,
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
-          background: focused ? COLORS.accentSubtle : COLORS.recessedBg,
-          border: `1px solid ${focused ? COLORS.accentBorder : COLORS.border}`,
+          background: focused ? COLORS.accentSubtle : "transparent",
+          border: `1px solid ${focused ? COLORS.accentBorder : COLORS.borderMuted}`,
           color: focused ? COLORS.accent : COLORS.textMuted,
           flexShrink: 0,
         }}
       >
-        <GitCommit size={14} weight="bold" />
+        <GitCommit size={12} weight="bold" />
       </span>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="flex items-center gap-2">
-          <span style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: 700 }}>
+          <span style={{ color: COLORS.textPrimary, fontSize: 12, fontWeight: 600 }}>
             {event.subject || "Commit"}
           </span>
           {event.forcePushed ? (
@@ -794,7 +817,7 @@ function CommitDivider({
             </span>
           ) : null}
         </div>
-        <div className="mt-1 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
+        <div className="mt-0.5 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
           <span>{event.shortSha}</span>
           <span>by {event.author ?? "unknown"}</span>
         </div>
@@ -821,8 +844,10 @@ function Card({
     <div
       className="flex flex-col gap-1.5 px-3 py-2.5"
       style={{
-        background: COLORS.cardBg,
-        border: `1px solid ${COLORS.border}`,
+        background: `color-mix(in srgb, ${COLORS.accent} 6%, ${COLORS.cardBg})`,
+        border: `1px solid ${COLORS.accentBorder}`,
+        borderRadius: 8,
+        boxShadow: `0 1px 2px color-mix(in srgb, ${COLORS.accent} 8%, transparent)`,
       }}
     >
       <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>

@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, type CSSProperties } from "react";
+import { memo, useRef, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommit } from "@phosphor-icons/react";
 
@@ -15,61 +15,44 @@ export type PrCommitRailCommit = {
   resolvedCount: number;
 };
 
-type CommitFilter = "all" | "mine" | "bots";
-
 export type PrCommitRailProps = {
   commits: PrCommitRailCommit[];
   activeSha: string | null;
-  viewerLogin?: string | null;
   onSelectCommit: (sha: string) => void;
+  layout?: "full" | "pane";
 };
-
-const BOT_SUFFIXES = ["[bot]", "-bot"];
-
-function looksLikeBot(author: string): boolean {
-  const lower = author.toLowerCase();
-  return BOT_SUFFIXES.some((suffix) => lower.endsWith(suffix)) || lower === "github-actions";
-}
-
-function commitMatchesFilter(
-  commit: PrCommitRailCommit,
-  filter: CommitFilter,
-  viewerLogin: string | null | undefined,
-): boolean {
-  if (filter === "all") return true;
-  if (filter === "mine") {
-    if (!viewerLogin) return false;
-    return commit.author.toLowerCase() === viewerLogin.toLowerCase();
-  }
-  return looksLikeBot(commit.author);
-}
 
 const VIRTUALIZE_AT = 50;
 
 export const PrCommitRail = memo(function PrCommitRail({
   commits,
   activeSha,
-  viewerLogin,
   onSelectCommit,
+  layout = "full",
 }: PrCommitRailProps) {
-  const [filter, setFilter] = useState<CommitFilter>("all");
-
-  const filtered = useMemo(
-    () => commits.filter((c) => commitMatchesFilter(c, filter, viewerLogin)),
-    [commits, filter, viewerLogin],
-  );
-
-  const shouldVirtualize = filtered.length > VIRTUALIZE_AT;
+  const shouldVirtualize = commits.length > VIRTUALIZE_AT;
+  const isPane = layout === "pane";
 
   return (
     <div
       data-testid="pr-commit-rail"
-      className="flex h-full w-full flex-col"
-      style={{ background: COLORS.cardBg, borderRight: `1px solid ${COLORS.border}` }}
+      className={`flex w-full flex-col ${isPane ? "min-h-0 flex-1" : "h-full"}`}
+      style={{
+        background: isPane
+          ? `color-mix(in srgb, ${COLORS.accent} 4%, ${COLORS.cardBg})`
+          : COLORS.cardBg,
+        borderRight: isPane ? undefined : `1px solid ${COLORS.border}`,
+      }}
     >
       <div
-        className="flex items-center gap-1 px-2.5"
-        style={{ borderBottom: `1px solid ${COLORS.border}`, height: 36 }}
+        className="flex shrink-0 items-center gap-1 px-2.5"
+        style={{
+          borderBottom: `1px solid ${isPane ? COLORS.accentBorder : COLORS.border}`,
+          height: 36,
+          background: isPane
+            ? `linear-gradient(135deg, color-mix(in srgb, ${COLORS.accent} 10%, transparent) 0%, transparent 100%)`
+            : undefined,
+        }}
       >
         <GitCommit size={12} weight="bold" style={{ color: COLORS.textMuted }} />
         <span
@@ -82,36 +65,27 @@ export const PrCommitRail = memo(function PrCommitRail({
           className="ml-auto text-[10px]"
           style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
         >
-          {filtered.length}
+          {commits.length}
         </span>
       </div>
 
-      <div
-        className="flex items-center gap-0.5 p-1.5"
-        style={{ borderBottom: `1px solid ${COLORS.border}` }}
-      >
-        <FilterPill label="All" value="all" current={filter} onChange={setFilter} />
-        <FilterPill label="Mine" value="mine" current={filter} onChange={setFilter} />
-        <FilterPill label="Bots" value="bots" current={filter} onChange={setFilter} />
-      </div>
-
       <div className="min-h-0 flex-1 overflow-hidden">
-        {filtered.length === 0 ? (
+        {commits.length === 0 ? (
           <div
             className="px-3 py-4 text-[11px]"
             style={{ color: COLORS.textDim }}
           >
-            No commits match this filter.
+            No commits.
           </div>
         ) : shouldVirtualize ? (
           <VirtualizedCommitList
-            commits={filtered}
+            commits={commits}
             activeSha={activeSha}
             onSelectCommit={onSelectCommit}
           />
         ) : (
           <div className="h-full overflow-y-auto">
-            {filtered.map((commit) => (
+            {commits.map((commit) => (
               <CommitRow
                 key={commit.sha}
                 commit={commit}
@@ -125,42 +99,6 @@ export const PrCommitRail = memo(function PrCommitRail({
     </div>
   );
 });
-
-function FilterPill({
-  label,
-  value,
-  current,
-  onChange,
-}: {
-  label: string;
-  value: CommitFilter;
-  current: CommitFilter;
-  onChange: (next: CommitFilter) => void;
-}) {
-  const active = current === value;
-  const style: CSSProperties = active
-    ? {
-        background: COLORS.accentSubtle,
-        border: `1px solid ${COLORS.accentBorder}`,
-        color: COLORS.accent,
-      }
-    : {
-        background: "transparent",
-        border: `1px solid transparent`,
-        color: COLORS.textMuted,
-      };
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(value)}
-      className="h-6 px-2 text-[11px] font-medium transition-colors"
-      style={style}
-      aria-pressed={active}
-    >
-      {label}
-    </button>
-  );
-}
 
 function VirtualizedCommitList({
   commits,
@@ -223,16 +161,11 @@ function CommitRow({
   onSelect: (sha: string) => void;
 }) {
   const unresolved = Math.max(0, commit.threadCount - commit.resolvedCount);
-  const style: CSSProperties = isActive
-    ? {
-        background: COLORS.accentSubtle,
-        borderLeft: `3px solid ${COLORS.accent}`,
-        paddingLeft: 7,
-      }
-    : {
-        borderLeft: "3px solid transparent",
-        paddingLeft: 7,
-      };
+  const style: CSSProperties = {
+    paddingLeft: 7,
+    borderLeft: isActive ? `3px solid ${COLORS.accent}` : "3px solid transparent",
+    background: isActive ? COLORS.accentSubtle : undefined,
+  };
   return (
     <button
       type="button"

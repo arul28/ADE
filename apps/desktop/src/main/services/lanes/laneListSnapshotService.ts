@@ -101,6 +101,7 @@ function sessionStatusBucket(args: {
     }
     return "running";
   }
+  if (isChatToolType(args.toolType)) return "awaiting-input";
   return "ended";
 }
 
@@ -187,12 +188,20 @@ async function enrichSessionsForLaneList(
   const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
   return sessions.map((session) => {
     if (!isChatToolType(session.toolType)) return session;
-    if (session.status !== "running") return session;
     const chat = chatSummaryBySessionId.get(session.id);
     if (!chat) return session;
-    if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+    if (chat.awaitingInput) {
+      return {
+        ...session,
+        runtimeState: "waiting-input" as const,
+        chatIdleSinceAt: null,
+        pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+      };
+    }
     if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-    if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    if (chat.status === "idle" || chat.status === "ended") {
+      return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+    }
     return session;
   });
 }

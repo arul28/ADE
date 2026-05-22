@@ -6,6 +6,7 @@ import {
   deriveConfiguredModelIds,
   deriveConfiguredModelOptions,
   includeSelectedModelOption,
+  isKnownSelectableChatModelId,
 } from "./modelOptions";
 
 // ---------------------------------------------------------------------------
@@ -177,6 +178,28 @@ describe("deriveConfiguredModelIds", () => {
     const ids = deriveConfiguredModelIds(status, {});
     expect(ids).toContain("cursor/auto");
     expect(ids).toContain("cursor/composer-2");
+  });
+
+  it("includes Cursor SDK models when Cursor runtime is available even without api-key auth entry", () => {
+    const status = makeStatus({
+      detectedAuth: [],
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: false,
+        cursor: true,
+        droid: false,
+      },
+      availableModelIds: ["cursor/composer-2.5-fast"],
+    });
+    expect(deriveConfiguredModelIds(status)).toEqual(["cursor/composer-2.5-fast"]);
+  });
+
+  it("recognizes dynamic Cursor SDK ids as selectable chat models", () => {
+    expect(isKnownSelectableChatModelId("cursor/composer-2.5-fast")).toBe(true);
+    expect(isKnownSelectableChatModelId("not-a-model")).toBe(false);
   });
 
   it("skips unauthenticated CLI subscriptions", () => {

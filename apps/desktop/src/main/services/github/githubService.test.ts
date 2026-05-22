@@ -506,6 +506,48 @@ describe("githubService issue-domain helpers", () => {
     expect(lastFetchCall()[0]).toMatch(/page=2/);
   });
 
+  it("lists and creates repository autolinks", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, [{
+        id: 1,
+        key_prefix: "ADE-",
+        url_template: "https://linear.app/acme/issue/ADE-<num>",
+        is_alphanumeric: false,
+      }]))
+      .mockResolvedValueOnce(jsonResponse(201, {
+        id: 2,
+        key_prefix: "ADEPR-",
+        url_template: "https://ade.app/open?number=<num>",
+        is_alphanumeric: false,
+      }));
+    const service = makeService();
+
+    await expect(service.listRepoAutolinks("acme", "ade")).resolves.toEqual([{
+      id: 1,
+      keyPrefix: "ADE-",
+      urlTemplate: "https://linear.app/acme/issue/ADE-<num>",
+      isAlphanumeric: false,
+    }]);
+    await expect(service.createRepoAutolink("acme", "ade", {
+      keyPrefix: "ADEPR-",
+      urlTemplate: "https://ade.app/open?number=<num>",
+      isAlphanumeric: false,
+    })).resolves.toEqual({
+      id: 2,
+      keyPrefix: "ADEPR-",
+      urlTemplate: "https://ade.app/open?number=<num>",
+      isAlphanumeric: false,
+    });
+    expect(mockFetch.mock.calls[0]?.[0]).toMatch(/\/repos\/acme\/ade\/autolinks/);
+    const [, init] = lastFetchCall();
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      key_prefix: "ADEPR-",
+      url_template: "https://ade.app/open?number=<num>",
+      is_alphanumeric: false,
+    });
+  });
+
   it("keeps following cached pagination links when a page returns 304", async () => {
     mockFetch
       .mockResolvedValueOnce(jsonResponse(200, [{ number: 1 }], {

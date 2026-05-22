@@ -6,7 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
-import { sessionStatusBucket, sessionStatusDot } from "../../lib/terminalAttention";
+import { sessionNeedsUserInput, sessionStatusDot } from "../../lib/terminalAttention";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -39,14 +39,13 @@ function insertionTargetLabel(toolType: TerminalSessionSummary["toolType"]): str
 }
 
 function runtimeLabel(session: TerminalSessionSummary): string {
-  const bucket = sessionStatusBucket({
+  if (sessionNeedsUserInput({
     status: session.status,
     lastOutputPreview: session.lastOutputPreview,
     runtimeState: session.runtimeState,
     toolType: session.toolType,
-  });
-  if (bucket === "awaiting-input") return "Awaiting input";
-  if (session.runtimeState === "waiting-input") return "Awaiting input";
+    pendingInputItemId: session.pendingInputItemId,
+  })) return "Awaiting input";
   if (session.runtimeState === "idle") return "Idle";
   if (session.runtimeState === "killed") return "Stopped";
   if (session.exitCode === 130 || session.exitCode === 143) return "Stopped";

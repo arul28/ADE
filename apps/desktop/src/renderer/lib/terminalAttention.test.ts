@@ -3,6 +3,9 @@ import {
   runningSessionNeedsAttention,
   sanitizeTerminalInlineText,
   sessionIndicatorState,
+  sessionNeedsChatTabHighlight,
+  sessionNeedsUserInput,
+  sessionStatusBucket,
   sessionStatusDot,
 } from "./terminalAttention";
 
@@ -64,6 +67,62 @@ describe("terminalAttention", () => {
     ).toBe("running-active");
   });
 
+  describe("sessionNeedsChatTabHighlight", () => {
+    it("does not highlight idle agent chats or any CLI sessions", () => {
+      expect(sessionNeedsChatTabHighlight({
+        runtimeState: "idle",
+        toolType: "claude-chat",
+      })).toBe(false);
+      expect(sessionNeedsChatTabHighlight({
+        runtimeState: "waiting-input",
+        toolType: "claude",
+      })).toBe(false);
+    });
+
+    it("highlights agent chats blocked on approval or questions", () => {
+      expect(sessionNeedsChatTabHighlight({
+        runtimeState: "waiting-input",
+        toolType: "cursor",
+      })).toBe(true);
+      expect(sessionNeedsChatTabHighlight({
+        runtimeState: "idle",
+        toolType: "codex-chat",
+        pendingInputItemId: "approval-1",
+      })).toBe(true);
+    });
+  });
+
+  describe("sessionNeedsUserInput", () => {
+    it("keeps idle agent chats out of CLI-style prompt detection", () => {
+      expect(sessionNeedsUserInput({
+        status: "running",
+        lastOutputPreview: "Completed response",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+      })).toBe(false);
+    });
+
+    it("still detects CLI confirmation prompts for CLI headers", () => {
+      expect(sessionNeedsUserInput({
+        status: "running",
+        lastOutputPreview: "Confirm continue? (y/n)",
+        runtimeState: "running",
+        toolType: "claude",
+      })).toBe(true);
+    });
+  });
+
+  describe("sessionStatusBucket", () => {
+    it("keeps idle ready agent chats in the awaiting-input bucket for dots and filters", () => {
+      expect(sessionStatusBucket({
+        status: "running",
+        lastOutputPreview: "Completed response",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+      })).toBe("awaiting-input");
+    });
+  });
+
   describe("sessionStatusDot", () => {
     it("returns a solid emerald dot for a running active session", () => {
       const dot = sessionStatusDot({
@@ -109,14 +168,26 @@ describe("terminalAttention", () => {
       expect(dot.label).toBe("Idle");
     });
 
-    it("returns a solid red dot for an ended session", () => {
+    it("returns a solid red dot for an ended CLI session", () => {
       const dot = sessionStatusDot({
         status: "completed",
         lastOutputPreview: "Process exited with code 0",
+        toolType: "claude",
       });
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("red");
       expect(dot.label).toBe("Ended");
+    });
+
+    it("returns a ready amber dot for a non-running agent chat session", () => {
+      const dot = sessionStatusDot({
+        status: "completed",
+        lastOutputPreview: "Last response preview",
+        toolType: "claude-chat",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("amber");
+      expect(dot.label).toBe("Ready");
     });
   });
 });

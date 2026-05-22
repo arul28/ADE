@@ -21,6 +21,7 @@ import {
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
@@ -582,6 +583,11 @@ export const PrMarkdown = memo(function PrMarkdown({
     [repoOwner, repoName],
   );
 
+  const markdown = useMemo(
+    () => normalizeEscapedMarkdownNewlines(children),
+    [children],
+  );
+
   return (
     <div
       className={`pr-md-root text-[13px] leading-[1.55] ${dense ? "pr-md-dense" : ""}`}
@@ -592,7 +598,7 @@ export const PrMarkdown = memo(function PrMarkdown({
         rehypePlugins={[rehypeRaw, [rehypeSanitize, PR_SAFE_SCHEMA]]}
         components={components}
       >
-        {children}
+        {markdown}
       </ReactMarkdown>
     </div>
   );

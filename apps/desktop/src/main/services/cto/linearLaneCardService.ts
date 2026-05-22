@@ -132,6 +132,75 @@ export function buildLinearLaneInitialComment(args: {
   return `ADE lane available for this issue — [Open in ADE](${url}) (branch \`${branch}\`).`;
 }
 
+export function buildLinearPrCardAttachment(args: {
+  lane: LaneSummary;
+  issue: LaneLinearIssue;
+  repoOwner: string;
+  repoName: string;
+  prNumber: number;
+  githubUrl: string;
+  linkedAt?: string | null;
+}): IssueTrackerIssueAttachmentInput {
+  const linkedAt = args.linkedAt?.trim() || new Date().toISOString();
+  const branch = args.issue.branchName?.trim() || args.lane.branchRef;
+  const adePrUrl = buildDeeplink(
+    {
+      kind: "pr",
+      repoOwner: args.repoOwner,
+      repoName: args.repoName,
+      prNumber: args.prNumber,
+    },
+    { form: "https" },
+  );
+  const adeLaneUrl = buildDeeplink(
+    {
+      kind: "branch",
+      repoOwner: args.repoOwner,
+      repoName: args.repoName,
+      branch,
+      prNumber: args.prNumber,
+    },
+    { form: "https" },
+  );
+  const repo = `${args.repoOwner}/${args.repoName}`;
+
+  return {
+    issueId: args.issue.id,
+    title: `Open in ADE PR #${args.prNumber}: ${truncate(args.issue.identifier, 40)}`,
+    subtitle: `${truncate(repo, 42)}#${args.prNumber} - linked {linkedAt__since}`,
+    url: adePrUrl,
+    metadata: {
+      title: `ADE PR linked to ${args.issue.identifier}`,
+      laneId: args.lane.id,
+      laneName: args.lane.name,
+      branch,
+      repo,
+      githubPrNumber: args.prNumber,
+      githubUrl: args.githubUrl,
+      adePrUrl,
+      adeLaneUrl,
+      linkedAt,
+      issueIdentifier: args.issue.identifier,
+      attributes: [
+        { name: "Lane", value: args.lane.name },
+        { name: "Branch", value: branch },
+        { name: "GitHub PR", value: `${repo}#${args.prNumber}` },
+        { name: "GitHub URL", value: args.githubUrl },
+        { name: "ADE PR", value: adePrUrl },
+        { name: "ADE lane", value: adeLaneUrl },
+        { name: "Linked at", value: dateLabel(linkedAt) },
+      ],
+      messages: [
+        {
+          subject: "ADE PR linked",
+          body: `ADE linked [GitHub PR ${repo}#${args.prNumber}](${args.githubUrl}) and [ADE PR #${args.prNumber}](${adePrUrl}) to this Linear issue from lane "${args.lane.name}".`,
+          timestamp: linkedAt,
+        },
+      ],
+    },
+  };
+}
+
 export async function publishLinearLaneCard(args: {
   issueTracker: IssueTracker;
   lane: LaneSummary;
@@ -177,4 +246,27 @@ export async function publishLinearLaneCard(args: {
   }
 
   return result;
+}
+
+export async function publishLinearPrCard(args: {
+  issueTracker: IssueTracker;
+  lane: LaneSummary;
+  issue: LaneLinearIssue;
+  repoOwner: string;
+  repoName: string;
+  prNumber: number;
+  githubUrl: string;
+  linkedAt?: string | null;
+}): Promise<{ url: string; id?: string }> {
+  return await args.issueTracker.createIssueAttachment(
+    buildLinearPrCardAttachment({
+      lane: args.lane,
+      issue: args.issue,
+      repoOwner: args.repoOwner,
+      repoName: args.repoName,
+      prNumber: args.prNumber,
+      githubUrl: args.githubUrl,
+      linkedAt: args.linkedAt,
+    }),
+  );
 }

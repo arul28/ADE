@@ -691,6 +691,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getRepoOrThrow",
     "getRemoteStatus",
     "getStatus",
+    "createRepoAutolink",
+    "listRepoAutolinks",
     "listRepoCollaborators",
     "listRepoLabels",
     "publishCurrentProject",
@@ -2678,6 +2680,25 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.listRepoLabels(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoAutolinks(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.listRepoAutolinks(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async createRepoAutolink(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.createRepoAutolink(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        {
+          keyPrefix: requireNonEmptyString(actionArgs.keyPrefix, "keyPrefix"),
+          urlTemplate: requireNonEmptyString(actionArgs.urlTemplate, "urlTemplate"),
+          isAlphanumeric: actionArgs.isAlphanumeric === true,
+        },
       );
     },
     async listRepoCollaborators(args?: unknown) {

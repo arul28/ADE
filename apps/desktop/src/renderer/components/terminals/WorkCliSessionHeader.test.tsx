@@ -21,6 +21,7 @@ vi.mock("../ui/SmartTooltip", async () => {
 vi.mock("../../lib/terminalAttention", () => ({
   sessionStatusDot: vi.fn(() => ({ cls: "ade-status-dot", label: "Running", spinning: false })),
   sessionStatusBucket: vi.fn(() => "running"),
+  sessionNeedsUserInput: vi.fn(() => false),
 }));
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {

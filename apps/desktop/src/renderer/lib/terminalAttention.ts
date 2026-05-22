@@ -98,7 +98,35 @@ export function sessionIndicatorState(args: {
     if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "running-needs-attention";
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
+  // Agent chats do not "end" like PTY sessions — they idle until deleted.
+  if (isChatToolType(args.toolType)) return "running-needs-attention";
   return "ended";
+}
+
+export function sessionNeedsUserInput(args: {
+  status: TerminalSessionStatus;
+  lastOutputPreview: string | null;
+  runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
+  pendingInputItemId?: string | null;
+}): boolean {
+  if (args.runtimeState === "waiting-input") return true;
+  if (args.pendingInputItemId) return true;
+  if (isChatToolType(args.toolType)) return false;
+  if (args.status !== "running") return false;
+  return runningSessionNeedsAttention(args.lastOutputPreview);
+}
+
+/** Yellow Work tab border — agent chats blocked on approval/question only. */
+export function sessionNeedsChatTabHighlight(args: {
+  runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
+  pendingInputItemId?: string | null;
+}): boolean {
+  if (!isChatToolType(args.toolType)) return false;
+  if (args.runtimeState === "waiting-input") return true;
+  if (args.pendingInputItemId) return true;
+  return false;
 }
 
 export function sessionStatusBucket(args: {
@@ -106,6 +134,7 @@ export function sessionStatusBucket(args: {
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
+  pendingInputItemId?: string | null;
 }): SessionStatusBucket {
   const state = sessionIndicatorState(args);
   if (state === "running-active") return "running";
@@ -119,6 +148,7 @@ export function sessionMatchesStatusFilter(
     lastOutputPreview: string | null;
     runtimeState?: TerminalRuntimeState;
     toolType?: TerminalToolType | null;
+    pendingInputItemId?: string | null;
   },
   filter: SessionStatusFilter,
 ): boolean {
@@ -145,12 +175,14 @@ export function sessionStatusDot(session: {
   }
   if (indicator === "running-needs-attention") {
     let label: string;
-    if (session.runtimeState !== "idle") {
+    if (session.runtimeState === "waiting-input") {
       label = "Awaiting input";
     } else if (isChatToolType(session.toolType)) {
       label = "Ready";
-    } else {
+    } else if (session.runtimeState === "idle") {
       label = "Idle";
+    } else {
+      label = "Awaiting input";
     }
     return { cls: "rounded-full bg-amber-300", spinning: false, label };
   }

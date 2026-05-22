@@ -229,6 +229,27 @@ a lane parented to primary would always show zero behind.
   the PR-creation flow in `prService` / `CreatePrModal` (default PR
   title `IDENT: title`, body magic-word `Fixes IDENT` /
   `Refs IDENT`).
+- `linearIssueLinks?: LaneLinearIssueLink[]` — additional Linear
+  issues that have been attached to the lane beyond the primary
+  `linearIssue`. Each link carries `role`
+  (`primary | worked | referenced | inferred`), `source`
+  (`lane_create | lane_link | chat_attach | linear_open_issue |
+  commit | pr_body | manual`), `includeInPr`, `closeOnMerge`, and an
+  optional `evidence` blob (`chatSessionId` / `commitSha` / `prId`).
+  Persisted in the `lane_linear_issue_links` table keyed by
+  `(project_id, lane_id, issue_id)` and hydrated on every
+  `list`/`get` like `linearIssue`. Populated by
+  `laneService.linkLinearIssues({ laneId, issues, role, source,
+  includeInPr, closeOnMerge, evidence })`; the chat service calls
+  this whenever a user attaches a Linear issue through the chat
+  composer (`source: "chat_attach"`, `role: "worked"`) so the next
+  PR body picks the issue up. `prService.applyLinearPrLinkage`
+  combines `linearIssue` and every `linearIssueLinks` entry with
+  `includeInPr === true` into a single "Linked Linear issues"
+  markdown block plus per-issue `Fixes` / `Refs` magic words, so
+  PRs that touch multiple tickets get cross-linked automatically.
+  See [features/linear-integration/README.md](../linear-integration/README.md)
+  for the cross-feature picture.
 
 ## Mission lane roles
 

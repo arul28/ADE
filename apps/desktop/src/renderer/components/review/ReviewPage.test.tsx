@@ -7,21 +7,23 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { ReviewPage } from "./ReviewPage";
 import { useAppStore } from "../../state/appStore";
 
-vi.mock("../ui/PaneTilingLayout", () => ({
-  PaneTilingLayout: ({ panes }: { panes: Record<string, { children: React.ReactNode }> }) => (
-    <div data-testid="mock-pane-layout">
-      {Object.entries(panes).map(([id, pane]) => (
-        <section key={id} data-testid={`pane-${id}`}>
-          {pane.children}
-        </section>
-      ))}
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children }: { children: React.ReactNode }) => <div data-testid="review-layout">{children}</div>,
+  Panel: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement> & { id?: string }) => (
+    <div data-testid={props.id} {...props}>
+      {children}
     </div>
   ),
+  Separator: (props: React.HTMLAttributes<HTMLDivElement>) => <div role="separator" {...props} />,
 }));
 
 function LocationProbe() {
   const location = useLocation();
   return <div data-testid="location-search">{location.search}</div>;
+}
+
+async function openLaunchReviewModal() {
+  fireEvent.click(await screen.findByRole("button", { name: /^launch new review$/i }));
 }
 
 function FilesProbe() {
@@ -583,9 +585,9 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
-    const launchPane = screen.getByTestId("pane-launch");
-    expect(within(launchPane).getByRole("button", { name: /select model/i })).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
+    expect(screen.getByRole("button", { name: /select model/i })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
 
     await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
@@ -610,13 +612,13 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
     expect(
       screen.getByText(/This is read only and the model can only read and inspect files/i),
     ).toBeTruthy();
 
-    const launchPane = screen.getByTestId("pane-launch");
-    const fastModeButton = within(launchPane).getByRole("button", { name: "Fast mode" });
+    const fastModeButton = screen.getByRole("button", { name: "Fast mode" });
     fireEvent.click(fastModeButton);
     expect(fastModeButton.getAttribute("aria-pressed")).toBe("true");
 
@@ -639,7 +641,8 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
 
     await waitFor(() => expect((window.ade.review as any).startRun).toHaveBeenCalled());
@@ -659,7 +662,8 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
 
     expect(screen.getByText("Compare with main")).toBeTruthy();
     expect(screen.getByText(/feature\/review-tab: branch changes vs local main/i)).toBeTruthy();
@@ -701,7 +705,8 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
 
     expect(screen.getByText("Compare with origin/main")).toBeTruthy();
     expect(screen.getByText(/local main vs local origin\/main/i)).toBeTruthy();
@@ -718,7 +723,8 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
     fireEvent.click(screen.getByText("Commit range"));
 
     const baseSelect = screen.getByRole("combobox", { name: /earlier commit \(base\)/i }) as HTMLSelectElement;
@@ -767,7 +773,8 @@ describe("ReviewPage", () => {
       </MemoryRouter>,
     );
 
-    await waitFor(() => expect(screen.getAllByText("Launch review").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^launch new review$/i })).toBeTruthy());
+    await openLaunchReviewModal();
     fireEvent.click(screen.getByText("Commit range"));
 
     const baseSelect = screen.getByRole("combobox", { name: /earlier commit \(base\)/i }) as HTMLSelectElement;

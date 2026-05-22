@@ -28,6 +28,7 @@ import {
   type LaneLinearIssue,
   type MacosVmContextItem,
   type PendingInputRequest,
+  type AgentChatModelCatalogRefreshProvider,
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
@@ -721,6 +722,7 @@ export function AgentChatComposer({
   modelId,
   availableModelIds,
   providerAuthStatus,
+  onRuntimeCatalogRefreshed,
   reasoningEffort,
   codexFastMode = false,
   codexTokenUsage = null,
@@ -760,6 +762,7 @@ export function AgentChatComposer({
   onDraftChange,
   onClearDraft,
   onSubmit,
+  onSubmitBlocked,
   onSubmitInBackground,
   backgroundLaunchBusy = false,
   backgroundLaunchLabel = "Background",
@@ -841,6 +844,7 @@ export function AgentChatComposer({
   modelId: string;
   availableModelIds?: string[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
   codexTokenUsage?: CodexThreadTokenUsage | null;
@@ -880,6 +884,7 @@ export function AgentChatComposer({
   onDraftChange: (value: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
+  onSubmitBlocked?: (message: string) => void;
   onSubmitInBackground?: () => void;
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
@@ -2664,9 +2669,12 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) return;
+    if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
+      if (!busy && !modelId) onSubmitBlocked?.("Select a model first");
+      return;
+    }
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -3411,6 +3419,7 @@ export function AgentChatComposer({
                   {...(availableModelIds ? { availableModelIds } : {})}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   disabled={parallelLaunchBusy}
                   compact
                   fastModeActive={fastModeActive}
@@ -3435,6 +3444,7 @@ export function AgentChatComposer({
                   {...(availableModelIds ? { availableModelIds } : {})}
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+                  {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
                   disabled={modelSelectionLocked}
                   compact
                   fastModeActive={fastModeActive}

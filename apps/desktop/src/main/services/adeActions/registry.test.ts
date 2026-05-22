@@ -807,6 +807,8 @@ describe("runtime GitHub actions", () => {
         clearToken: vi.fn(),
         getRepoOrThrow: vi.fn(),
         detectRepo: vi.fn(),
+        listRepoAutolinks: vi.fn(),
+        createRepoAutolink: vi.fn(),
         listRepoLabels: vi.fn(),
         listRepoCollaborators: vi.fn(),
         publishCurrentProject: vi.fn(),
@@ -818,6 +820,8 @@ describe("runtime GitHub actions", () => {
     expect(listAllowedAdeActionNames("github", githubService)).toContain("detectRepo");
     expect(listAllowedAdeActionNames("github", githubService)).toEqual(expect.arrayContaining([
       "listRepoCollaborators",
+      "listRepoAutolinks",
+      "createRepoAutolink",
       "listRepoLabels",
       "getRemoteStatus",
       "publishCurrentProject",
@@ -827,6 +831,8 @@ describe("runtime GitHub actions", () => {
   it("routes object-shaped GitHub repo picker args to the positional service methods", async () => {
     const listRepoLabels = vi.fn(async () => [{ name: "bug" }]);
     const listRepoCollaborators = vi.fn(async () => [{ login: "octocat" }]);
+    const listRepoAutolinks = vi.fn(async () => [{ keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>" }]);
+    const createRepoAutolink = vi.fn(async () => ({ keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>" }));
     const runtime = {
       githubService: {
         getStatus: vi.fn(),
@@ -836,18 +842,35 @@ describe("runtime GitHub actions", () => {
         detectRepo: vi.fn(),
         listRepoLabels,
         listRepoCollaborators,
+        listRepoAutolinks,
+        createRepoAutolink,
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
     const githubService = getAdeActionDomainServices(runtime).github as {
       listRepoLabels(args?: { owner?: string; name?: string }): Promise<unknown>;
       listRepoCollaborators(args?: { owner?: string; name?: string }): Promise<unknown>;
+      listRepoAutolinks(args?: { owner?: string; name?: string }): Promise<unknown>;
+      createRepoAutolink(args?: { owner?: string; name?: string; keyPrefix?: string; urlTemplate?: string; isAlphanumeric?: boolean }): Promise<unknown>;
     };
 
     await expect(githubService.listRepoLabels({ owner: " acme ", name: " ade " })).resolves.toEqual([{ name: "bug" }]);
     await expect(githubService.listRepoCollaborators({ owner: " acme ", name: " ade " })).resolves.toEqual([{ login: "octocat" }]);
+    await expect(githubService.listRepoAutolinks({ owner: " acme ", name: " ade " })).resolves.toEqual([{ keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>" }]);
+    await expect(githubService.createRepoAutolink({
+      owner: " acme ",
+      name: " ade ",
+      keyPrefix: " ADE- ",
+      urlTemplate: " https://example.test/<num> ",
+    })).resolves.toEqual({ keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>" });
 
     expect(listRepoLabels).toHaveBeenCalledWith("acme", "ade");
     expect(listRepoCollaborators).toHaveBeenCalledWith("acme", "ade");
+    expect(listRepoAutolinks).toHaveBeenCalledWith("acme", "ade");
+    expect(createRepoAutolink).toHaveBeenCalledWith("acme", "ade", {
+      keyPrefix: "ADE-",
+      urlTemplate: "https://example.test/<num>",
+      isAlphanumeric: false,
+    });
   });
 
   it("routes object-shaped publish args to the GitHub service", async () => {

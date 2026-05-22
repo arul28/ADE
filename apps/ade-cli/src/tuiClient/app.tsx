@@ -4255,9 +4255,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       lastUserOpenedPaneRef.current = "model-picker";
 	      void refreshAiSetupStatus().catch(() => undefined);
 	      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
-	      if (provider === "opencode" || provider === "cursor" || provider === "droid" || provider === "lmstudio" || provider === "ollama") {
-	        void refreshModelCatalog({ refreshProvider: provider });
-	      }
 	    },
     [
       loadProviderModels,

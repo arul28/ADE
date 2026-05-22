@@ -1,8 +1,9 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { ChatText } from "@phosphor-icons/react";
 import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
+  LaneSummary,
+  MergeMethod,
   PrActivityEvent,
   PrAiSummary,
   PrCheck,
@@ -16,12 +17,15 @@ import type {
   PrTimelineEvent,
   PrWithConflicts,
 } from "../../../../shared/types";
-import { PrTimeline, DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
-import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
-import { PrStatusRail, type PrStatusRailMergeState } from "../shared/PrStatusRail";
+import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
+import { PrDetailLeftRail } from "../shared/PrDetailLeftRail";
+import type { PrCommitRailCommit } from "../shared/PrCommitRail";
+import { PrDetailRightRail } from "../shared/PrDetailRightRail";
+import { PrCommentComposer } from "../shared/PrCommentComposer";
+import { deriveParticipants } from "../shared/prMergeRailUtils";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
-import { PrCheckLogDrawer } from "../shared/PrCheckLogDrawer";
-import { COLORS, SANS_FONT, primaryButton } from "../../lanes/laneDesignTokens";
+import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
+import { COLORS } from "../../lanes/laneDesignTokens";
 
 export type PrDetailTimelineRailsRef = {
   scrollToEventId: (id: string) => void;
@@ -74,7 +78,27 @@ type Props = {
   actionBusy: boolean;
   onAddComment: () => void;
   deepLink: { eventId: string | null; threadId: string | null; commitSha: string | null };
-  actionSlot?: React.ReactNode;
+  onSelectCheck?: (check: PrCheck) => void;
+  onOpenChecksTab?: () => void;
+  mergeMethod: MergeMethod;
+  showReviewerEditor: boolean;
+  setShowReviewerEditor: (value: boolean) => void;
+  reviewerInput: string;
+  setReviewerInput: (value: string) => void;
+  showLabelEditor: boolean;
+  setShowLabelEditor: (value: boolean) => void;
+  labelInput: string;
+  setLabelInput: (value: string) => void;
+  onMerge: (method: MergeMethod, options?: { bypassRules?: boolean }) => void;
+  onRequestReviewers: (reviewers: string[]) => void;
+  onSetLabels: (labels: string[]) => void;
+  onDeleteBranch?: () => void;
+  deleteBranchBusy?: boolean;
+  lane: LaneSummary | null;
+  onOpenManageLane?: () => void;
+  onClose?: () => void;
+  onReopen?: () => void;
+  onSubmitReview: (event: PrReviewEvent, body: string) => void;
 };
 
 function shortenSha(sha: string): string {
@@ -132,7 +156,24 @@ export function buildTimelineEvents(args: {
 }): PrTimelineEvent[] {
   const events: PrTimelineEvent[] = [];
 
-  // Description as first event.
+  events.push({
+    id: `opened:${args.pr.id}`,
+    type: "pr_opened",
+    timestamp: args.pr.createdAt ?? new Date(0).toISOString(),
+    author: args.detail?.author?.login ?? null,
+    avatarUrl: args.detail?.author?.avatarUrl ?? null,
+    title: args.pr.title,
+    githubPrNumber: args.pr.githubPrNumber,
+    repoOwner: args.pr.repoOwner,
+    repoName: args.pr.repoName,
+    baseBranch: args.pr.baseBranch,
+    headBranch: args.pr.headBranch,
+    isDraft: args.detail?.isDraft ?? args.pr.state === "draft",
+    additions: args.pr.additions,
+    deletions: args.pr.deletions,
+  });
+
+  // Description as first comment-like event.
   if (args.detail?.body) {
     events.push({
       id: `desc:${args.pr.id}`,
@@ -276,21 +317,53 @@ export function buildTimelineEvents(args: {
     });
   }
 
-  // Checks — one event per check (latest state).
-  for (const check of args.checks) {
-    const ts = check.completedAt ?? check.startedAt ?? args.pr.updatedAt ?? new Date(0).toISOString();
-    events.push({
-      id: `check:${check.name}:${ts}`,
-      type: "check_update",
-      timestamp: ts,
-      author: null,
-      avatarUrl: null,
-      checkName: check.name,
-      status: check.status,
-      conclusion: check.conclusion,
-      detailsUrl: check.detailsUrl,
-    });
+  const seenCommentIds = new Set(
+    events
+      .filter((event): event is Extract<PrTimelineEvent, { type: "issue_comment" }> => event.type === "issue_comment")
+      .map((event) => event.commentId),
+  );
+  const seenReviewIds = new Set(
+    events
+      .filter((event): event is Extract<PrTimelineEvent, { type: "review" }> => event.type === "review")
+      .map((event) => event.reviewId),
+  );
+  for (const act of args.activity) {
+    if (act.type === "comment") {
+      const source = readActivityString(act, "source") ?? "issue";
+      if (source !== "issue" || seenCommentIds.has(act.id)) continue;
+      seenCommentIds.add(act.id);
+      events.push({
+        id: `comment:${act.id}`,
+        type: "issue_comment",
+        timestamp: act.timestamp || new Date(0).toISOString(),
+        author: act.author,
+        avatarUrl: act.avatarUrl,
+        commentId: act.id,
+        body: act.body,
+        isBot: isBotLogin(act.author),
+      });
+      continue;
+    }
+    if (act.type === "review") {
+      const reviewId = `${act.author}:${act.timestamp}`;
+      if (seenReviewIds.has(reviewId)) continue;
+      seenReviewIds.add(reviewId);
+      const state = (readActivityString(act, "state") ?? "commented") as PrReview["state"];
+      events.push({
+        id: `activity-review:${act.id}`,
+        type: "review",
+        timestamp: act.timestamp || new Date(0).toISOString(),
+        author: act.author,
+        avatarUrl: act.avatarUrl,
+        reviewId,
+        state,
+        body: act.body,
+        isBot: isBotLogin(act.author),
+      });
+    }
   }
+
+  // Checks live in the left rail and CI / Checks tab — not the overview feed.
 
   // Deployments
   for (const dep of args.deployments) {
@@ -357,33 +430,6 @@ function buildCommitRailCommits(
   return commits;
 }
 
-function deriveMergeState(
-  pr: PrWithConflicts,
-  status: PrStatus | null,
-  reviews: PrReview[],
-  checks: PrCheck[],
-): PrStatusRailMergeState {
-  const approvals = reviews.filter((r) => r.state === "approved").length;
-  const failingChecks = checks.filter((c) => c.status === "completed" && (c.conclusion === "failure" || c.conclusion === "cancelled")).length;
-  const pendingChecks = checks.filter((c) => c.status !== "completed").length;
-  const mergeable: "clean" | "dirty" | "unknown" = status
-    ? status.mergeConflicts
-      ? "dirty"
-      : status.isMergeable
-        ? "clean"
-        : "unknown"
-    : "unknown";
-  return {
-    mergeable,
-    hasConflicts: Boolean(status?.mergeConflicts),
-    approvals,
-    requiredApprovals: null,
-    failingChecks,
-    pendingChecks,
-    githubUrl: pr.githubUrl,
-  };
-}
-
 export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>(
   function PrDetailTimelineRails(props, ref) {
     const {
@@ -410,14 +456,33 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       actionBusy,
       onAddComment,
       deepLink,
-      actionSlot,
+      onSelectCheck,
+      onOpenChecksTab,
+      mergeMethod,
+      showReviewerEditor,
+      setShowReviewerEditor,
+      reviewerInput,
+      setReviewerInput,
+      showLabelEditor,
+      setShowLabelEditor,
+      labelInput,
+      setLabelInput,
+      onMerge,
+      onRequestReviewers,
+      onSetLabels,
+      onDeleteBranch,
+      deleteBranchBusy,
+      lane,
+      onOpenManageLane,
+      onClose,
+      onReopen,
+      onSubmitReview,
     } = props;
 
     const timelineRef = useRef<PrTimelineRef | null>(null);
     const navigate = useNavigate();
     const location = useLocation();
     const [activeCommitSha, setActiveCommitSha] = useState<string | null>(null);
-    const [logDrawerCheck, setLogDrawerCheck] = useState<PrCheck | null>(null);
     const [paletteKind, setPaletteKind] = useState<PaletteKind | null>(null);
 
     const events = useMemo(
@@ -441,9 +506,9 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       [activity, commitSnapshots, reviewThreads],
     );
 
-    const mergeState = useMemo(
-      () => deriveMergeState(pr, status, reviews, checks),
-      [pr, status, reviews, checks],
+    const participants = useMemo(
+      () => deriveParticipants({ detail, reviews, comments }),
+      [detail, reviews, comments],
     );
 
     const handleSelectCommit = useCallback(
@@ -457,10 +522,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       },
       [events],
     );
-
-    const handleOpenLog = useCallback((check: PrCheck) => {
-      setLogDrawerCheck(check);
-    }, []);
 
     const handleOpenExternal = useCallback((url: string) => {
       if (!url) return;
@@ -477,6 +538,14 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         });
       }
     }, []);
+
+    const handleOpenLog = useCallback(
+      (check: PrCheck) => {
+        if (!check.detailsUrl) return;
+        handleOpenExternal(check.detailsUrl);
+      },
+      [handleOpenExternal],
+    );
 
     const paletteCommits = useMemo(
       () => commits.map((c) => ({ sha: c.sha, subject: c.subject, author: c.author })),
@@ -568,103 +637,74 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         data-testid="pr-detail-timeline-rails"
       >
         <div className="min-h-0">
-          <PrCommitRail
+          <PrDetailLeftRail
             commits={commits}
             activeSha={activeCommitSha}
-            viewerLogin={viewerLogin}
             onSelectCommit={handleSelectCommit}
+            checks={checks}
+            onOpenLog={handleOpenLog}
+            onSelectCheck={onSelectCheck}
+            onOpenChecksTab={onOpenChecksTab}
+          />
+        </div>
+
+        <div className="flex min-h-0 flex-col">
+          <div className="min-h-0 flex-1">
+            <PrTimeline
+              ref={timelineRef}
+              events={events}
+              prId={pr.id}
+              laneId={pr.laneId}
+              repoOwner={pr.repoOwner}
+              repoName={pr.repoName}
+              viewerLogin={viewerLogin}
+              filters={filters}
+              onFiltersChange={onFiltersChange}
+              summary={summaryForTimeline}
+              onRegenerateSummary={onRegenerateAiSummary}
+              onDismissSummary={onDismissAiSummary}
+              onVisibleEventChange={handleVisibleEventChange}
+            />
+          </div>
+          <PrCommentComposer
+            value={commentDraft}
+            onChange={setCommentDraft}
+            busy={actionBusy}
+            onSubmit={onAddComment}
           />
         </div>
 
         <div className="min-h-0">
-          <div className="flex h-full min-h-0 flex-col">
-            <div className="min-h-0 flex-1">
-              <PrTimeline
-                ref={timelineRef}
-                events={events}
-                prId={pr.id}
-                laneId={pr.laneId}
-                repoOwner={pr.repoOwner}
-                repoName={pr.repoName}
-                viewerLogin={viewerLogin}
-                filters={filters}
-                onFiltersChange={onFiltersChange}
-                summary={summaryForTimeline}
-                onRegenerateSummary={onRegenerateAiSummary}
-                onDismissSummary={onDismissAiSummary}
-                onVisibleEventChange={handleVisibleEventChange}
-              />
-            </div>
-            <div
-              className="shrink-0 p-3"
-              style={{ borderTop: `1px solid ${COLORS.border}`, background: COLORS.pageBg }}
-            >
-              <textarea
-                value={commentDraft}
-                onChange={(event) => setCommentDraft(event.target.value)}
-                placeholder="Leave a comment"
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
-                  event.preventDefault();
-                  if (actionBusy || !commentDraft.trim()) return;
-                  void onAddComment();
-                }}
-                style={{
-                  width: "100%",
-                  minHeight: 58,
-                  resize: "vertical",
-                  padding: 10,
-                  fontFamily: SANS_FONT,
-                  fontSize: 12,
-                  color: COLORS.textPrimary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.border}`,
-                  borderRadius: 8,
-                }}
-              />
-              <div className="mt-2 flex justify-end">
-                <button
-                  type="button"
-                  disabled={actionBusy || !commentDraft.trim()}
-                  onClick={() => void onAddComment()}
-                  style={primaryButton({ height: 30, opacity: actionBusy || !commentDraft.trim() ? 0.45 : 1 })}
-                >
-                  <ChatText size={13} /> Comment
-                </button>
-              </div>
-            </div>
-          </div>
+          <PrDetailRightRail
+            pr={pr}
+            detail={detail}
+            status={status}
+            checks={checks}
+            reviews={reviews}
+            comments={comments}
+            participants={participants}
+            mergeMethod={mergeMethod}
+            actionBusy={actionBusy}
+            lane={lane}
+            onOpenManageLane={onOpenManageLane}
+            showReviewerEditor={showReviewerEditor}
+            setShowReviewerEditor={setShowReviewerEditor}
+            reviewerInput={reviewerInput}
+            setReviewerInput={setReviewerInput}
+            showLabelEditor={showLabelEditor}
+            setShowLabelEditor={setShowLabelEditor}
+            labelInput={labelInput}
+            setLabelInput={setLabelInput}
+            onMerge={onMerge}
+            onRequestReviewers={onRequestReviewers}
+            onSetLabels={onSetLabels}
+            onDeleteBranch={onDeleteBranch}
+            deleteBranchBusy={deleteBranchBusy}
+            onClose={onClose}
+            onReopen={onReopen}
+            onSubmitReview={onSubmitReview}
+          />
         </div>
-
-        <div className="min-h-0">
-          <div className="flex h-full min-h-0 flex-col">
-            {actionSlot ? (
-              <div
-                className="shrink-0 p-3"
-                data-testid="pr-detail-action-rail-slot"
-                style={{
-                  borderBottom: `1px solid ${COLORS.border}`,
-                  background: COLORS.pageBg,
-                  maxHeight: "min(40%, 340px)",
-                  overflowY: "auto",
-                }}
-              >
-                {actionSlot}
-              </div>
-            ) : null}
-            <div className="min-h-0 flex-1">
-              <PrStatusRail
-                checks={checks}
-                deployments={deployments}
-                mergeState={mergeState}
-                onOpenLog={handleOpenLog}
-                onOpenExternal={handleOpenExternal}
-              />
-            </div>
-          </div>
-        </div>
-
-        <PrCheckLogDrawer check={logDrawerCheck} onClose={() => setLogDrawerCheck(null)} />
 
         <PrCommandPalettes
           open={paletteKind}
@@ -699,5 +739,3 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
     );
   },
 );
-
-export { DEFAULT_PR_TIMELINE_FILTERS };

@@ -167,6 +167,42 @@ function formatUsageResetCountdown(resetsAt: string, nowMs: number): string {
   return `${hours}h until reset`;
 }
 
+const USAGE_ALERT_DISMISS_STORAGE_KEY = "ade:usage-threshold-dismissed";
+
+function usageAlertKey(event: UsageThresholdEvent): string {
+  return `${event.provider}:${event.threshold}:${event.resetsAt}`;
+}
+
+function readDismissedUsageAlerts(): Set<string> {
+  try {
+    const raw = window.sessionStorage.getItem(USAGE_ALERT_DISMISS_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((value): value is string => typeof value === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function persistDismissedUsageAlerts(keys: Set<string>): void {
+  try {
+    window.sessionStorage.setItem(USAGE_ALERT_DISMISS_STORAGE_KEY, JSON.stringify([...keys]));
+  } catch {
+    // sessionStorage can be unavailable in private/test environments.
+  }
+}
+
+function markUsageAlertDismissed(
+  dismissed: Set<string>,
+  event: UsageThresholdEvent,
+): void {
+  for (const threshold of [25, 50, 75, 100] as const) {
+    dismissed.add(`${event.provider}:${threshold}:${event.resetsAt}`);
+  }
+  persistDismissedUsageAlerts(dismissed);
+}
+
 function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
   if (!status.tokenStored) {
     return {
@@ -303,7 +339,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     Array<{ id: string; event: UsageThresholdEvent }>
   >([]);
   const usageToastTimersRef = useRef<Map<string, number>>(new Map());
-  const dismissUsageToast = (id: string) => {
+  const dismissedUsageAlertsRef = useRef(readDismissedUsageAlerts());
+  const dismissUsageToast = (id: string, event?: UsageThresholdEvent) => {
+    if (event) {
+      markUsageAlertDismissed(dismissedUsageAlertsRef.current, event);
+    }
     setUsageThresholdToasts((prev) => prev.filter((t) => t.id !== id));
     const timer = usageToastTimersRef.current.get(id);
     if (timer != null) window.clearTimeout(timer);
@@ -992,11 +1032,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const onThreshold = window.ade?.usage?.onThreshold;
     if (typeof onThreshold !== "function") return;
     const unsub = onThreshold((event) => {
+      const key = usageAlertKey(event);
+      if (dismissedUsageAlertsRef.current.has(key)) return;
+
       const id = globalThis.crypto?.randomUUID
         ? globalThis.crypto.randomUUID()
         : `${Date.now()}-${Math.random()}`;
-      setUsageThresholdToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
-      const timer = window.setTimeout(() => dismissUsageToast(id), 6_000);
+      setUsageThresholdToasts((prev) => {
+        const withoutLowerSameProvider = prev.filter(
+          ({ event: existing }) =>
+            !(existing.provider === event.provider && existing.threshold < event.threshold),
+        );
+        if (withoutLowerSameProvider.some(({ event: existing }) => usageAlertKey(existing) === key)) {
+          return withoutLowerSameProvider;
+        }
+        return [{ id, event }, ...withoutLowerSameProvider].slice(0, 4);
+      });
+      const timer = window.setTimeout(() => dismissUsageToast(id, event), 6_000);
       usageToastTimersRef.current.set(id, timer);
     });
     return () => {
@@ -1461,7 +1513,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           <button
                             type="button"
                             className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                            onClick={() => dismissUsageToast(id)}
+                            onClick={() => dismissUsageToast(id, event)}
                             aria-label="Dismiss usage threshold toast"
                             title="Dismiss"
                           >
@@ -1475,7 +1527,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border/60 px-2.5 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg"
                             onClick={() => {
                               window.dispatchEvent(new CustomEvent(OPEN_USAGE_EVENT));
-                              dismissUsageToast(id);
+                              dismissUsageToast(id, event);
                             }}
                           >
                             Open usage

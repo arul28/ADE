@@ -48,7 +48,7 @@ import { getPermissionOptions, safetyColors, type PermissionOption } from "../sh
 import { WorkStartSurface } from "./WorkStartSurface";
 import { WorkCliSessionHeader } from "./WorkCliSessionHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
-import { sessionStatusBucket, sessionStatusDot } from "../../lib/terminalAttention";
+import { sessionNeedsChatTabHighlight, sessionStatusDot } from "../../lib/terminalAttention";
 import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
@@ -60,12 +60,11 @@ import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
 function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
-  return sessionStatusBucket({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
+  return sessionNeedsChatTabHighlight({
     runtimeState: session.runtimeState,
     toolType: session.toolType,
-  }) === "awaiting-input";
+    pendingInputItemId: session.pendingInputItemId,
+  });
 }
 
 function isRunningPtySession(
