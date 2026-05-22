@@ -4204,6 +4204,101 @@ describe("ADE CLI", () => {
     expect(helpQuota.text).toBe(direct.text);
   });
 
+  it("parses ade history list with operation filters", () => {
+    const plan = buildCliPlan([
+      "history",
+      "list",
+      "--lane",
+      "lane-1",
+      "--kind",
+      "push",
+      "--status",
+      "succeeded",
+      "--limit",
+      "25",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("history list");
+    expect(plan.formatter).toBe("history-list");
+    expect(plan.historyStatusFilter).toBe("succeeded");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "operation",
+        action: "list",
+        args: { laneId: "lane-1", kind: "push", limit: 25 },
+      },
+    });
+  });
+
+  it("parses ade history show by operation id", () => {
+    const plan = buildCliPlan(["history", "show", "--id", "op-1"]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("history show");
+    expect(plan.historyOperationId).toBe("op-1");
+    expect(plan.formatter).toBe("history-show");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "operation", action: "list", args: { limit: 1000 } },
+    });
+  });
+
+  it("parses ade history commits for a lane", () => {
+    const plan = buildCliPlan([
+      "history",
+      "commits",
+      "--lane",
+      "lane-1",
+      "--limit",
+      "12",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("history commits");
+    expect(plan.formatter).toBe("history-commits");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "git",
+        action: "listRecentCommits",
+        args: { laneId: "lane-1", limit: 12 },
+      },
+    });
+  });
+
+  it("parses ade history export to a file", () => {
+    const plan = buildCliPlan([
+      "history",
+      "export",
+      "--lane",
+      "lane-1",
+      "--out",
+      "/tmp/history.json",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.label).toBe("history export");
+    expect(plan.writeResultPath).toBe("/tmp/history.json");
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "operation",
+        action: "list",
+        args: { laneId: "lane-1", limit: 1000 },
+      },
+    });
+  });
+
+  it("shows help for ade history", () => {
+    const plan = buildCliPlan(["history", "--help"]);
+    expect(plan.kind).toBe("help");
+    if (plan.kind !== "help") return;
+    expect(plan.text).toContain("ade history list");
+    expect(plan.text).toContain("ade history export");
+  });
+
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {
     const connection = {
       mode: "headless" as const,
