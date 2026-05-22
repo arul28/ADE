@@ -384,6 +384,7 @@ type PtyEntry = {
   recentOutputTail: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
+  startupTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
 };
@@ -2098,6 +2099,10 @@ export function createPtyService({
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
     }
+    if (entry.startupTimer) {
+      clearTimeout(entry.startupTimer);
+      entry.startupTimer = null;
+    }
     clearToolAutoCloseTimer(ptyId);
     cleanupEntryPaths(entry);
     flushPreview(entry);
@@ -2717,6 +2722,7 @@ export function createPtyService({
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         aiTitleTimer: null,
+        startupTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
       };
@@ -2828,6 +2834,7 @@ export function createPtyService({
       // with CLIs that are only available through shell startup files.
       if (startupCommand && !launchedDirectCommand && selectedShell) {
         const writeStartupCommand = () => {
+          entry.startupTimer = null;
           if (entry.disposed) return;
           try {
             pty.write(`${startupCommand}\r`);
@@ -2847,8 +2854,8 @@ export function createPtyService({
         };
         const startupDelayMs = normalizeStartupCommandDelayMs(args.startupDelayMs);
         if (startupDelayMs > 0) {
-          const startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
-          startupTimer.unref?.();
+          entry.startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
+          entry.startupTimer.unref?.();
         } else {
           writeStartupCommand();
         }
@@ -3586,6 +3593,10 @@ export function createPtyService({
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);
         entry.aiTitleTimer = null;
+      }
+      if (entry.startupTimer) {
+        clearTimeout(entry.startupTimer);
+        entry.startupTimer = null;
       }
       clearToolAutoCloseTimer(ptyId);
       flushQueuedPtyData(entry, { ptyId, sessionId: entry.sessionId });
