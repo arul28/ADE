@@ -5175,11 +5175,12 @@ function buildHistoryPlan(args: string[]): CliPlan {
   }
   if (sub === "export") {
     const outPath = readValue(args, ["--out", "--output"]);
-    const listArgs = collectHistoryListArgs(args, listFilters);
-    listArgs.limit = Math.max(
+    const exportLimit = Math.max(
       1,
       Math.min(1000, readIntOption(args, ["--limit"], 1000) ?? 1000),
     );
+    const listArgs = collectHistoryListArgs(args, listFilters);
+    listArgs.limit = exportLimit;
     return {
       kind: "execute",
       label: "history export",

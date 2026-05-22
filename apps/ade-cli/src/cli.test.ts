@@ -4344,6 +4344,27 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("honors ade history export --limit", () => {
+    const plan = buildCliPlan([
+      "history",
+      "export",
+      "--lane",
+      "lane-1",
+      "--limit",
+      "100",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "operation",
+        action: "list",
+        args: { laneId: "lane-1", limit: 100 },
+      },
+    });
+  });
+
   it("shows help for ade history", () => {
     const plan = buildCliPlan(["history", "--help"]);
     expect(plan.kind).toBe("help");
