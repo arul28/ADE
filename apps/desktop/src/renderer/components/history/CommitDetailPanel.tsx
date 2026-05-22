@@ -67,10 +67,23 @@ export function CommitDetailPanel({
     let cancelled = false;
     void window.ade.git
       .listRecentCommits({ laneId, limit: 500 })
-      .then((rows) => {
+      .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === commit.sha);
-        if (found) setResolvedCommit(found);
+        if (found) {
+          setResolvedCommit(found);
+          return;
+        }
+        if (typeof window.ade.git.getCommit !== "function") return;
+        try {
+          const targeted = await window.ade.git.getCommit({
+            laneId,
+            commitSha: commit.sha,
+          });
+          if (!cancelled && targeted) setResolvedCommit(targeted);
+        } catch {
+          // Best-effort hydration; ignore failures.
+        }
       })
       .catch(() => {});
     return () => {

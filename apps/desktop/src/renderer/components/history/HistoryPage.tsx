@@ -106,12 +106,23 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
     if (surfaceFromUrl === "activity" || surfaceFromUrl === "commits") {
       setSurface(surfaceFromUrl);
+    } else if (surfaceFromUrl != null) {
+      // Strip unrecognized surface values so we fall back to the store default.
+      cleanedParams.delete("surface");
+      cleanedUrl = true;
     }
 
     const laneFromUrl = searchParams.get("laneId");
-    if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
+    const laneIsKnown = laneFromUrl != null && lanes.some((l) => l.id === laneFromUrl);
+    if (laneFromUrl && laneIsKnown) {
       if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
-    } else if (!laneFromUrl) {
+    } else {
+      if (laneFromUrl && !laneIsKnown && lanes.length > 0) {
+        // Lane referenced in URL no longer exists — strip it and the dependent commit hash.
+        cleanedParams.delete("laneId");
+        cleanedParams.delete("commitSha");
+        cleanedUrl = true;
+      }
       if (!focusLaneId || !lanes.some((l) => l.id === focusLaneId)) {
         const fallback =
           (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null) ??
@@ -172,18 +183,24 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active || surface !== "activity") return;
-    const refresh = () => {
+    // Tight polling only refreshes the cheap operations feed; supplemental sources
+    // (missions, CTO, worker runs) refresh on focus/visibility change instead.
+    const tightRefresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchEvents({ silent: true, skipSupplemental: true });
+    };
+    const fullRefresh = () => {
       if (document.visibilityState !== "visible") return;
       void fetchEvents({ silent: true });
     };
     const hasRunning = events.some((e) => e.status === "running");
-    const interval = hasRunning ? setInterval(refresh, 4_000) : undefined;
-    window.addEventListener("focus", refresh);
-    document.addEventListener("visibilitychange", refresh);
+    const interval = hasRunning ? setInterval(tightRefresh, 4_000) : undefined;
+    window.addEventListener("focus", fullRefresh);
+    document.addEventListener("visibilitychange", fullRefresh);
     return () => {
       if (interval) clearInterval(interval);
-      window.removeEventListener("focus", refresh);
-      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", fullRefresh);
+      document.removeEventListener("visibilitychange", fullRefresh);
     };
   }, [active, surface, events, fetchEvents]);
 
@@ -194,10 +211,24 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     let cancelled = false;
     void window.ade.git
       .listRecentCommits({ laneId: focusLaneId, limit: 500 })
-      .then((rows) => {
+      .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
-        if (found) setSelectedCommit(found);
+        if (found) {
+          setSelectedCommit(found);
+          return;
+        }
+        // Outside the loaded window — fall back to a targeted single-commit lookup.
+        if (typeof window.ade.git.getCommit !== "function") return;
+        try {
+          const targeted = await window.ade.git.getCommit({
+            laneId: focusLaneId,
+            commitSha: selectedCommitSha,
+          });
+          if (!cancelled && targeted) setSelectedCommit(targeted);
+        } catch {
+          // Best-effort hydration; ignore failures.
+        }
       })
       .catch(() => {});
     return () => {

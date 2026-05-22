@@ -172,9 +172,17 @@ export function CommitHistoryView({
   const graphHeight = virtualizer.getTotalSize();
   const svgHeight = layout.totalHeight;
   const searchExpanding = Boolean(search.trim()) && loading;
+  const showTopLoadingStripe = loading && commits.length > 0;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {showTopLoadingStripe ? (
+        <div
+          role="progressbar"
+          aria-label="Refreshing commits"
+          className="h-0.5 w-full shrink-0 animate-pulse bg-accent"
+        />
+      ) : null}
       <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
         <input
           type="search"

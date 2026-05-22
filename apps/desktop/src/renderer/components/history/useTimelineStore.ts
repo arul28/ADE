@@ -199,7 +199,13 @@ export type TimelineStore = {
   toggleColumn: (columnId: TimelineColumn) => void;
 
   // Data actions
-  fetchEvents: (opts?: { laneId?: string; kind?: string; limit?: number; silent?: boolean }) => Promise<void>;
+  fetchEvents: (opts?: {
+    laneId?: string;
+    kind?: string;
+    limit?: number;
+    silent?: boolean;
+    skipSupplemental?: boolean;
+  }) => Promise<void>;
   setRawEvents: (events: OperationRecord[]) => void;
 };
 
@@ -379,14 +385,31 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
       }
       try {
         const limit = opts?.limit ?? 500;
+        const skipSupplemental = Boolean(opts?.skipSupplemental) || Boolean(opts?.kind);
         const [raw, supplemental] = await Promise.all([
           window.ade.history.listOperations({
             laneId: opts?.laneId,
             kind: opts?.kind,
             limit,
           }),
-          opts?.kind ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit),
+          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit),
         ]);
+        if (skipSupplemental) {
+          // Merge raw with whatever supplemental records are already in state so we
+          // don't drop them while polling for in-progress operations.
+          const existing = get().rawEvents;
+          const rawIds = new Set(raw.map((r) => r.id));
+          const existingSupplemental = existing.filter((r) => !rawIds.has(r.id));
+          const scopedExisting = opts?.laneId
+            ? existingSupplemental.filter(
+                (record) => record.laneId == null || record.laneId === opts.laneId,
+              )
+            : existingSupplemental;
+          const combined = sortTimelineRecords([...raw, ...scopedExisting]).slice(0, limit);
+          set({ rawEvents: combined, loading: false });
+          refilter();
+          return;
+        }
         const scopedSupplemental = opts?.laneId
           ? supplemental.filter((record) => record.laneId == null || record.laneId === opts.laneId)
           : supplemental;

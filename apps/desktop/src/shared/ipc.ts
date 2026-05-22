@@ -347,6 +347,7 @@ export const IPC = {
   gitListRecentCommits: "ade.git.listRecentCommits",
   gitListCommitFiles: "ade.git.listCommitFiles",
   gitGetCommitMessage: "ade.git.getCommitMessage",
+  gitGetCommit: "ade.git.getCommit",
   gitRevertCommit: "ade.git.revertCommit",
   gitCherryPickCommit: "ade.git.cherryPickCommit",
   gitCreateTag: "ade.git.createTag",

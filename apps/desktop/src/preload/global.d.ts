@@ -1860,6 +1860,10 @@ declare global {
         }) => Promise<GitCommitSummary[]>;
         listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
         getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
+        getCommit: (args: {
+          laneId: string;
+          commitSha: string;
+        }) => Promise<GitCommitSummary | null>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
         createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;

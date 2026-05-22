@@ -118,6 +118,9 @@ function ensureGitTagName(tagName: string): string {
   if (normalized.includes("\0") || normalized.startsWith("-")) {
     throw new Error("Invalid tag name");
   }
+  if (/\s/.test(normalized)) {
+    throw new Error("Invalid tag name");
+  }
   return normalized;
 }
 
@@ -806,6 +809,70 @@ export function createGitOperationsService({
           .filter((entry): entry is GitCommitSummary => entry != null);
 
         return rows;
+      });
+    },
+
+    async getCommit(args: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> {
+      const laneId = args.laneId.trim();
+      const commitSha = args.commitSha.trim();
+      if (!commitSha.length) throw new Error("Commit SHA is required");
+      if (commitSha.includes("\0") || commitSha.startsWith("-") || /\s/.test(commitSha)) {
+        throw new Error("Invalid commit SHA");
+      }
+      return readLaneCached(`commit:${laneId}:${commitSha}`, 2_000, async () => {
+        const lane = laneService.getLaneBaseAndBranch(laneId);
+        let out: string;
+        try {
+          out = await runGitOrThrow(
+            [
+              "log",
+              "-1",
+              "--date=iso-strict",
+              "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s",
+              commitSha,
+            ],
+            { cwd: lane.worktreePath, timeoutMs: 10_000 },
+          );
+        } catch (error) {
+          if (isMissingWorktreeError(error)) throw laneWorktreeMissingError(lane);
+          return null;
+        }
+        const line = out.split("\n").map((l) => l.trim()).find(Boolean);
+        if (!line) return null;
+        const [sha, shortSha, parentsRaw, authorName, authoredAt, subject] = parseDelimited(line);
+        if (!sha || !shortSha) return null;
+        const parents = (parentsRaw ?? "")
+          .split(" ")
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+
+        let pushed = false;
+        const upstreamRes = await runGit(
+          ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+          { cwd: lane.worktreePath, timeoutMs: 10_000 },
+        );
+        if (upstreamRes.exitCode === 0) {
+          const upstream = upstreamRes.stdout.trim();
+          if (upstream.length) {
+            const containsRes = await runGit(
+              ["branch", "-r", "--contains", sha, upstream],
+              { cwd: lane.worktreePath, timeoutMs: 10_000 },
+            );
+            if (containsRes.exitCode === 0 && containsRes.stdout.trim().length) {
+              pushed = true;
+            }
+          }
+        }
+
+        return {
+          sha,
+          shortSha,
+          parents,
+          authorName: authorName ?? "",
+          authoredAt: authoredAt ?? "",
+          subject: subject ?? "",
+          pushed,
+        };
       });
     },
 

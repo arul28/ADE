@@ -6576,6 +6576,18 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitGetCommitMessage, args);
     },
+    getCommit: async (
+      args: { laneId: string; commitSha: string },
+    ): Promise<GitCommitSummary | null> => {
+      const runtime = await callProjectRuntimeActionIfBound<GitCommitSummary | null>(
+        "git",
+        "getCommit",
+        { args },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.gitGetCommit, args);
+    },
     revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(

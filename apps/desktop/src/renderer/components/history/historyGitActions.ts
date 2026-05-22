@@ -62,6 +62,33 @@ const commitActionGroups: Array<{
 
 const COPY_PATCH_FILE_LIMIT = 50;
 
+const COPY_PATCH_CONCURRENCY = 6;
+
+function validateBranchName(name: string): string | null {
+  if (!name.length) return "Branch name is required";
+  if (name.startsWith("-")) return "Branch name cannot start with a dash";
+  if (/\s/.test(name)) return "Branch name cannot contain whitespace";
+  // Invalid git ref characters per git-check-ref-format(1)
+  if (/[~^:?*\[\\]/.test(name)) {
+    return "Branch name has an invalid character (~ ^ : ? * [ \\)";
+  }
+  if (name.includes("..")) return "Branch name cannot contain '..'";
+  if (name.includes("@{")) return "Branch name cannot contain '@{'";
+  if (name.startsWith("/") || name.endsWith("/")) {
+    return "Branch name cannot start or end with '/'";
+  }
+  if (name.endsWith(".") || name.endsWith(".lock")) {
+    return "Branch name cannot end with '.' or '.lock'";
+  }
+  if (name.includes("//")) return "Branch name cannot contain '//'";
+  // Control characters and DEL
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F]/.test(name)) {
+    return "Branch name contains a control character";
+  }
+  return null;
+}
+
 function laneCommitDeepLink(laneId: string, commitSha: string): string {
   const params = new URLSearchParams({
     laneId,
@@ -104,19 +131,35 @@ async function copyCommitPatch(args: {
   }
 
   const selectedFiles = files.slice(0, COPY_PATCH_FILE_LIMIT);
-  const patchResults = await Promise.allSettled(
-    selectedFiles.map(async (path) => {
-      const patch = await window.ade.diff.getFilePatch({
-        laneId: args.laneId,
-        path,
-        mode: "commit",
-        compareRef: args.commit.sha,
-        compareTo: "parent",
-      });
-      const body = patch.patch.trim();
-      return body.length ? body : null;
-    }),
+  const patchResults: PromiseSettledResult<string | null>[] = new Array(selectedFiles.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(COPY_PATCH_CONCURRENCY, selectedFiles.length) },
+    async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= selectedFiles.length) return;
+        const path = selectedFiles[index];
+        try {
+          const patch = await window.ade.diff.getFilePatch({
+            laneId: args.laneId,
+            path,
+            mode: "commit",
+            compareRef: args.commit.sha,
+            compareTo: "parent",
+          });
+          const body = patch.patch.trim();
+          patchResults[index] = { status: "fulfilled", value: body.length ? body : null };
+        } catch (err) {
+          patchResults[index] = {
+            status: "rejected",
+            reason: err,
+          };
+        }
+      }
+    },
   );
+  await Promise.all(workers);
   const patches = patchResults
     .filter((result): result is PromiseFulfilledResult<string> => (
       result.status === "fulfilled" && result.value != null
@@ -279,6 +322,11 @@ export async function runHistoryGitAction(args: {
         const branchName = window.prompt(`Create branch at ${commit.shortSha}`);
         const trimmed = branchName?.trim();
         if (!trimmed) return;
+        const validationError = validateBranchName(trimmed);
+        if (validationError) {
+          onError?.(validationError);
+          return;
+        }
         await window.ade.git.checkoutBranch({
           laneId,
           branchName: trimmed,
@@ -293,6 +341,11 @@ export async function runHistoryGitAction(args: {
         const branchName = window.prompt(`Create lane branch at ${commit.shortSha}`, fallbackBranchName);
         const trimmedBranchName = branchName?.trim();
         if (!trimmedBranchName) return;
+        const branchValidationError = validateBranchName(trimmedBranchName);
+        if (branchValidationError) {
+          onError?.(branchValidationError);
+          return;
+        }
         const laneName = window.prompt("Lane name", trimmedBranchName)?.trim();
         if (!laneName) return;
         const remote = await window.ade.git.getOriginRemote({ laneId });

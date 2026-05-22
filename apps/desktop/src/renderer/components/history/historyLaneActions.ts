@@ -321,7 +321,7 @@ export function groupHistoryLaneActions(actions: HistoryLaneAction[]): HistoryLa
 }
 
 function confirmOrCancel(message: string): boolean {
-  return typeof window.confirm === "function" ? window.confirm(message) : true;
+  return typeof window.confirm === "function" ? window.confirm(message) : false;
 }
 
 function promptOrCancel(message: string, fallback: string): string | null {

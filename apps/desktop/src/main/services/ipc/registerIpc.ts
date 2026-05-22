@@ -7758,6 +7758,14 @@ export function registerIpc({
     return await ctx.gitService.getCommitMessage(arg);
   });
 
+  ipcMain.handle(
+    IPC.gitGetCommit,
+    async (_event, arg: { laneId: string; commitSha: string }): Promise<GitCommitSummary | null> => {
+      const ctx = getCtx();
+      return await ctx.gitService.getCommit(arg);
+    },
+  );
+
   ipcMain.handle(IPC.gitRevertCommit, async (_event, arg: GitRevertArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.revertCommit(arg);
