@@ -4521,6 +4521,8 @@ export function createAgentChatService(args: {
 
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
+  const cursorRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
 
@@ -16768,12 +16770,20 @@ export function createAgentChatService(args: {
       );
     }
 
+    const throwIfCursorSetupInterrupted = (): void => {
+      if (!cursorRuntimeSetupInterruptRequested.get(managed)) return;
+      cursorRuntimeSetupInterruptRequested.delete(managed);
+      throw new Error("Cursor session interrupted.");
+    };
+
     const persisted = readPersistedState(managed.session.id);
     const persistedCursorSdkAgentId =
       persisted?.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
         ? persisted.cursorSdkAgentId ?? null
         : null;
-    let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>>;
+    throwIfCursorSetupInterrupted();
+    let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
+    let released = false;
     try {
       acquired = await acquireCursorSdkConnection({
         poolKey,
@@ -16789,12 +16799,28 @@ export function createAgentChatService(args: {
         logger,
       });
       reportProviderRuntimeReady("cursor");
+      throwIfCursorSetupInterrupted();
+      if (managed.closed) {
+        releaseCursorSdkConnection(poolKey, acquired.generation);
+        released = true;
+        cursorRuntimeSetupInterruptRequested.delete(managed);
+        throw new Error("Cursor session closed during setup.");
+      }
     } catch (error) {
+      if (!released && acquired && managed.runtime?.kind !== "cursor") {
+        releaseCursorSdkConnection(poolKey, acquired.generation);
+      }
+      cursorRuntimeSetupInterruptRequested.delete(managed);
       const errorMessage = readErrorMessage(error);
-      if (isCursorRuntimeAuthError(error)) {
-        reportProviderRuntimeAuthFailure("cursor", CURSOR_RUNTIME_AUTH_ERROR);
-      } else {
-        reportProviderRuntimeFailure("cursor", errorMessage);
+      if (
+        errorMessage !== "Cursor session interrupted."
+        && errorMessage !== "Cursor session closed during setup."
+      ) {
+        if (isCursorRuntimeAuthError(error)) {
+          reportProviderRuntimeAuthFailure("cursor", CURSOR_RUNTIME_AUTH_ERROR);
+        } else {
+          reportProviderRuntimeFailure("cursor", errorMessage);
+        }
       }
       throw error;
     }
@@ -16827,10 +16853,12 @@ export function createAgentChatService(args: {
       activeCloudRunId: null,
       cursorTaskStatusByRunId: new Map(),
     };
+    throwIfCursorSetupInterrupted();
     managed.runtime = rt;
     wireCursorSdkBridgeHandlers(managed, rt);
     syncCursorModeSnapshot(managed, rt);
     persistChatState(managed);
+    cursorRuntimeSetupInterruptRequested.delete(managed);
     logger.info("agent_chat.cursor_transport_selected", {
       sessionId: managed.session.id,
       transport: "sdk",
@@ -19145,6 +19173,13 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
+      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      persistChatState(managed);
+      return;
+    }
+
+    if (managed.session.provider === "cursor") {
+      cursorRuntimeSetupInterruptRequested.set(managed, true);
       cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
       persistChatState(managed);
       return;

@@ -473,6 +473,50 @@ describe("laneService.switchBranch", () => {
     }
   });
 
+  it("rolls back git checkout when the lane DB transaction fails", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-db-fail-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const originalRun = db.run.bind(db);
+    const runSpy = vi.spyOn(db, "run");
+    try {
+      seedProject(db, { projectId: "proj-1", repoRoot });
+      insertLane(db, { id: "lane-main", projectId: "proj-1", name: "Main", laneType: "primary", branchRef: "main", worktreePath: repoRoot });
+      insertLane(db, { id: "lane-a", projectId: "proj-1", name: "A", laneType: "worktree", branchRef: "feature/a", worktreePath: path.join(repoRoot, "a") });
+
+      const checkoutCalls: string[][] = [];
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "checkout") checkoutCalls.push(args);
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+      vi.mocked(runGit).mockImplementation(makeRunGitResponder((args) => {
+        if (args[0] === "show-ref" && args[3] === "refs/heads/feature/b") return { exitCode: 0, stdout: "", stderr: "" };
+        return null;
+      }) as any);
+
+      runSpy.mockImplementation((sql: string, params?: Parameters<typeof originalRun>[1]) => {
+        if (sql === "commit") throw new Error("simulated db failure");
+        return originalRun(sql, params);
+      });
+
+      const service = makeService(db, repoRoot, "proj-1");
+      await expect(service.switchBranch({ laneId: "lane-a", branchName: "feature/b" }))
+        .rejects.toThrow(/simulated db failure/i);
+
+      expect(checkoutCalls.some((cmd) => cmd.includes("feature/b") && !cmd.includes("feature/a"))).toBe(true);
+      expect(checkoutCalls.some((cmd) => cmd.includes("feature/a"))).toBe(true);
+
+      const row = db.get<{ branch_ref: string }>(
+        "select branch_ref from lanes where id = ? and project_id = ?",
+        ["lane-a", "proj-1"],
+      );
+      expect(row?.branch_ref).toBe("feature/a");
+    } finally {
+      runSpy.mockRestore();
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates a new branch via 'checkout -b' when mode='create'", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-create-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

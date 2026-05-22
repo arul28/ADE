@@ -3250,6 +3250,21 @@ export function createLaneService({
         db.run("commit");
       } catch (err) {
         try { db.run("rollback"); } catch { /* swallow rollback failures */ }
+        if (previousBranchRef && previousBranchRef !== targetBranchRef) {
+          try {
+            await runGitOrThrow(
+              ["checkout", "--ignore-other-worktrees", previousBranchRef],
+              { cwd: row.worktree_path, timeoutMs: 60_000 },
+            );
+          } catch (rollbackErr) {
+            logger.warn("laneService.switchBranch_git_rollback_failed", {
+              laneId: row.id,
+              previousBranchRef,
+              targetBranchRef,
+              error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+            });
+          }
+        }
         throw err;
       }
       invalidateLaneListCache();
