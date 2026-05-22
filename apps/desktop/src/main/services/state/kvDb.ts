@@ -984,6 +984,7 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_linear_issue_links_lane on lane_linear_issue_links(project_id, lane_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issue_links(project_id, issue_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_role on lane_linear_issue_links(project_id, role)");
+  db.run("create unique index if not exists uq_lane_linear_issue_links_role on lane_linear_issue_links(project_id, lane_id, issue_id, role)");
 
   db.run(`
     create table if not exists lane_branch_profiles (

@@ -814,6 +814,7 @@ describe("preload OAuth bridge", () => {
     })).resolves.toEqual(created);
 
     expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
       request: {
         domain: "chat",
         action: "createSession",

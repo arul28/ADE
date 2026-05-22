@@ -106,6 +106,8 @@ create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issu
 
 create index if not exists idx_lane_linear_issue_links_role on lane_linear_issue_links(project_id, role);
 
+create unique index if not exists uq_lane_linear_issue_links_role on lane_linear_issue_links(project_id, lane_id, issue_id, role);
+
 create table if not exists lane_branch_profiles (
       id text primary key,
       project_id text not null,

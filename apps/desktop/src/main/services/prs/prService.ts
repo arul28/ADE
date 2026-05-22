@@ -330,6 +330,7 @@ function collectLinearPrIssueReferences(
   for (const link of lane.linearIssueLinks ?? []) {
     if (!link.includeInPr) continue;
     if (primaryIssueId && link.issue.id === primaryIssueId) continue;
+    if (link.role === "primary") continue;
     refs.push({
       issue: link.issue,
       closeOnMerge: link.closeOnMerge,
@@ -3788,7 +3789,13 @@ export function createPrService({
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
     const currentBody = typeof pr?.body === "string" ? pr.body : "";
-    const patchedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, false), {
+    const primaryLink = lane.linearIssue
+      ? (lane.linearIssueLinks ?? []).find(
+          (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
+        )
+      : null;
+    const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
+    const patchedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closePrimaryOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,

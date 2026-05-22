@@ -54,7 +54,26 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   const [bypassRules, setBypassRules] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [showCliInstructions, setShowCliInstructions] = useState(false);
+  const [deleteBranchArmed, setDeleteBranchArmed] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const deleteBranchArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleDeleteBranchClick = useCallback(() => {
+    if (!onDeleteBranch) return;
+    if (deleteBranchArmed) {
+      if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
+      setDeleteBranchArmed(false);
+      onDeleteBranch();
+      return;
+    }
+    setDeleteBranchArmed(true);
+    if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
+    deleteBranchArmTimer.current = setTimeout(() => setDeleteBranchArmed(false), 4000);
+  }, [deleteBranchArmed, onDeleteBranch]);
+
+  useEffect(() => () => {
+    if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
+  }, []);
 
   useEffect(() => {
     setLocalMergeMethod(mergeMethod);
@@ -68,7 +87,7 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   const isMerged = pr.state === "merged";
   const isClosed = pr.state === "closed";
   const isTerminal = isMerged || isClosed;
-  const showBypass = !isMerged && !isClosed && Boolean(status) && !status?.isMergeable && !status?.mergeConflicts;
+  const showBypass = !isMerged && !isClosed && pr.state !== "draft" && Boolean(status) && !status?.isMergeable && !status?.mergeConflicts;
 
   const handleRailClick = useCallback(() => {
     if (!onOpenManageLane || !pr.laneId) return;
@@ -191,18 +210,22 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
               <button
                 type="button"
                 disabled={deleteBranchBusy}
-                onClick={onDeleteBranch}
+                onClick={handleDeleteBranchClick}
                 className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium"
                 style={{
-                  color: COLORS.textPrimary,
+                  color: deleteBranchArmed ? COLORS.danger : COLORS.textPrimary,
                   background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.border}`,
+                  border: `1px solid ${deleteBranchArmed ? COLORS.danger : COLORS.border}`,
                   opacity: deleteBranchBusy ? 0.6 : 1,
                   fontFamily: SANS_FONT,
                 }}
               >
                 <Trash size={12} />
-                {deleteBranchBusy ? "Deleting…" : "Delete branch"}
+                {deleteBranchBusy
+                  ? "Deleting…"
+                  : deleteBranchArmed
+                    ? "Click again to confirm"
+                    : "Delete branch"}
               </button>
             ) : null}
           </div>

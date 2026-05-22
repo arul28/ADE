@@ -281,7 +281,11 @@ export function ManageLaneDialog({
       setDeleteProgress(null);
       return;
     }
-    setActiveTab(tabDefs[0]?.id ?? "archive");
+    // Land users on a non-destructive tab by default. Explicit "delete"/"archive"
+    // intent is handled by the laneActionKind effect below.
+    const preferredOrder: ManageLaneTab[] = ["appearance", "stack", "archive", "delete"];
+    const firstAvailable = preferredOrder.find((id) => tabDefs.some((tab) => tab.id === id));
+    setActiveTab(firstAvailable ?? tabDefs[0]?.id ?? "archive");
   }, [open, singleLane?.id, isBatch, tabDefs]);
 
   // Fetch pre-flight risk for the single-lane case.

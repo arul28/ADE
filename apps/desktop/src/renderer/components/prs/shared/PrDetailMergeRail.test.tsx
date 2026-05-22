@@ -100,7 +100,12 @@ describe("PrDetailMergeRail", () => {
       />,
     );
 
+    // First click arms the destructive action without firing the callback.
     fireEvent.click(screen.getByRole("button", { name: /Delete branch/i }));
+    expect(onDeleteBranch).not.toHaveBeenCalled();
+
+    // Second click on the now-armed button actually deletes.
+    fireEvent.click(screen.getByRole("button", { name: /Click again to confirm/i }));
     expect(onDeleteBranch).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("pr-merge-merged-banner")).toBeTruthy();
   });

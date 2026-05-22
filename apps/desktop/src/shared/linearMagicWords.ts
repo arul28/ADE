@@ -123,8 +123,19 @@ export function ensureLinearPrIssueLinkSection(
   if (bounds) {
     return `${bounds.before}\n\n${block}${joinAfter(bounds.after)}`.trimEnd() + "\n";
   }
-  const trimmed = safeBody.trimEnd();
+  const cleaned = stripOrphanLinearLinkOpener(safeBody);
+  const trimmed = cleaned.trimEnd();
   return trimmed ? `${trimmed}\n\n${block}\n` : `${block}\n`;
+}
+
+function stripOrphanLinearLinkOpener(body: string): string {
+  const openMatch = LINEAR_LINK_SECTION_OPEN_RE.exec(body);
+  if (!openMatch) return body;
+  if (LINEAR_LINK_SECTION_CLOSE_RE.test(body.slice(openMatch.index))) return body;
+  const before = body.slice(0, openMatch.index).trimEnd();
+  let after = body.slice(openMatch.index + openMatch[0].length);
+  after = after.replace(/^[ \t]*\n/, "");
+  return before ? `${before}${after ? `\n${after}` : ""}` : after.replace(/^\n+/, "");
 }
 
 function removeLinearPrIssueLinkSection(body: string): string {

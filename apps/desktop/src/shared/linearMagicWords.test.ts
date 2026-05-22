@@ -67,4 +67,17 @@ describe("linearMagicWords", () => {
     expect(twice).not.toContain("ADE-123");
     expect(twice).toContain("OPS-9");
   });
+
+  it("strips an orphaned linear-links opener before appending a fresh section", () => {
+    const second = issue({ id: "issue-2", identifier: "OPS-9", title: "Update ops hooks" });
+    // PR body where someone hand-edited away the closing comment; the opener
+    // would otherwise stay behind and produce a duplicate fenced section.
+    const corrupted = "Summary\n\n<!-- ade:linear-links v=1 -->\n### Linked Linear issues\n- old stuff\n";
+    const repaired = ensureLinearPrIssueLinkSection(corrupted, [
+      { issue: second, closeOnMerge: false },
+    ]);
+    expect(repaired.match(/<!-- ade:linear-links/g)?.length).toBe(1);
+    expect(repaired.match(/<!-- \/ade:linear-links -->/g)?.length).toBe(1);
+    expect(repaired).toContain("OPS-9");
+  });
 });
