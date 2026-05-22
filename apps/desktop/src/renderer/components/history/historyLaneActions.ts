@@ -47,7 +47,7 @@ export type HistoryLaneActionGroup = {
   actions: HistoryLaneAction[];
 };
 
-const LANE_ACTION_GROUPS: Array<{
+const laneActionGroups: Array<{
   id: string;
   label: string;
   actionIds: HistoryLaneActionId[];
@@ -318,7 +318,7 @@ export function buildHistoryLaneActions(args: {
 
 export function groupHistoryLaneActions(actions: HistoryLaneAction[]): HistoryLaneActionGroup[] {
   const byId = new Map(actions.map((action) => [action.id, action]));
-  return LANE_ACTION_GROUPS
+  return laneActionGroups
     .map((group) => ({
       id: group.id,
       label: group.label,

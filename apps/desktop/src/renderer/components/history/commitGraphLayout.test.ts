@@ -41,7 +41,11 @@ describe("buildCommitGraphLayout", () => {
     const feature = commit("feature", []);
     const layout = buildCommitGraphLayout([merge, main, feature]);
     const mergeEdges = layout.edges.filter((e) => e.fromSha === "m");
+    const mainNode = layout.nodes.find((node) => node.sha === "main");
+    const featureNode = layout.nodes.find((node) => node.sha === "feature");
+
     expect(mergeEdges.length).toBeGreaterThanOrEqual(2);
+    expect(mainNode?.column).not.toBe(featureNode?.column);
   });
 
   it("keeps forked siblings in separate columns until they merge", () => {

@@ -66,7 +66,7 @@ export function CommitDetailPanel({
     if (!laneId || !commit?.sha || (commit.subject && commit.authorName)) return;
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId, limit: 200 })
+      .listRecentCommits({ laneId, limit: 500 })
       .then((rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === commit.sha);

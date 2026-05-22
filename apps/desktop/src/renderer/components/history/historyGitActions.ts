@@ -33,7 +33,7 @@ export type HistoryGitActionGroup = {
   actions: HistoryGitAction[];
 };
 
-const COMMIT_ACTION_GROUPS: Array<{
+const commitActionGroups: Array<{
   id: string;
   label: string;
   actionIds: HistoryGitActionId[];
@@ -231,7 +231,7 @@ export function buildCommitContextActions(args: {
 
 export function groupCommitContextActions(actions: HistoryGitAction[]): HistoryGitActionGroup[] {
   const byId = new Map(actions.map((action) => [action.id, action]));
-  return COMMIT_ACTION_GROUPS
+  return commitActionGroups
     .map((group) => ({
       id: group.id,
       label: group.label,
