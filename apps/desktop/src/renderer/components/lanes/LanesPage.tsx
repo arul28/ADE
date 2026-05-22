@@ -228,6 +228,106 @@ export function buildLaneSplitColumnsKey(args: {
   return `lanes-split-columns:${args.laneTilingLayoutSuffix}:${args.gridResetKey}`;
 }
 
+function LaneLoadingSkeleton() {
+  const tabWidths = [118, 96, 132, 88];
+  const rowWidths = [88, 72, 104, 80, 96];
+  const paneWidths = [76, 92, 68, 84];
+  const skeletonBlock = (width: number | string, height: number, extra?: React.CSSProperties): React.CSSProperties => ({
+    width,
+    height,
+    borderRadius: 6,
+    background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
+    border: `1px solid ${COLORS.borderMuted}`,
+    ...extra,
+  });
+
+  return (
+    <div
+      data-testid="lanes-loading-skeleton"
+      aria-label="Loading lanes"
+      className="flex min-h-0 flex-1 flex-col"
+      style={{ background: COLORS.pageBg }}
+    >
+      <div
+        className="flex h-11 shrink-0 items-center gap-2 overflow-hidden px-3"
+        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}
+      >
+        {tabWidths.map((width, index) => (
+          <div
+            key={`lane-loading-tab-${index}`}
+            className="animate-pulse"
+            style={skeletonBlock(width, 24, { borderRadius: 7 })}
+          />
+        ))}
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(190px,280px)_minmax(0,1fr)]">
+        <div
+          className="min-h-0 overflow-hidden p-3"
+          style={{
+            borderRight: `1px solid ${COLORS.border}`,
+            background: "color-mix(in srgb, var(--color-bg) 94%, var(--color-fg) 6%)",
+          }}
+        >
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="animate-pulse" style={skeletonBlock(78, 12, { borderRadius: 4 })} />
+            <div className="animate-pulse" style={skeletonBlock(32, 18)} />
+          </div>
+          <div className="space-y-2">
+            {rowWidths.map((width, index) => (
+              <div
+                key={`lane-loading-row-${index}`}
+                className="animate-pulse"
+                style={{
+                  padding: "10px 10px",
+                  borderRadius: 8,
+                  border: `1px solid ${COLORS.borderMuted}`,
+                  background: COLORS.cardBg,
+                }}
+              >
+                <div style={skeletonBlock(width, 10, { border: "none" })} />
+                <div className="mt-2" style={skeletonBlock(`${Math.max(38, width - 28)}%`, 7, { border: "none", opacity: 0.6 })} />
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="min-h-0 overflow-hidden p-4">
+          <div className="mb-4 flex items-center gap-2">
+            {paneWidths.map((width, index) => (
+              <div
+                key={`lane-loading-pane-tab-${index}`}
+                className="animate-pulse"
+                style={skeletonBlock(width, 26, { borderRadius: 7 })}
+              />
+            ))}
+          </div>
+          <div className="grid h-[calc(100%-42px)] min-h-0 grid-cols-2 gap-3">
+            {[0, 1, 2, 3].map((index) => (
+              <div
+                key={`lane-loading-pane-${index}`}
+                className="animate-pulse"
+                style={{
+                  minHeight: 0,
+                  borderRadius: 8,
+                  border: `1px solid ${COLORS.border}`,
+                  background: COLORS.cardBg,
+                  padding: 12,
+                }}
+              >
+                <div style={skeletonBlock(index % 2 === 0 ? 94 : 72, 11, { border: "none" })} />
+                <div className="mt-4 space-y-2">
+                  <div style={skeletonBlock("88%", 8, { border: "none", opacity: 0.7 })} />
+                  <div style={skeletonBlock("64%", 8, { border: "none", opacity: 0.55 })} />
+                  <div style={skeletonBlock("74%", 8, { border: "none", opacity: 0.45 })} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
   return {
     laneId,
@@ -3648,15 +3748,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
       {/* Floating pane tiling layout */}
       {visibleLaneIds.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center">
+        <div className={lanesLoading && sortedLanes.length === 0 ? "flex-1 min-h-0 flex" : "flex-1 flex items-center justify-center"}>
           {sortedLanes.length === 0 ? (
             lanesLoading ? (
-              <EmptyState
-                title="Loading lanes"
-                description="Reading lane state for this project."
-              >
-                <CircleNotch size={18} className="mt-3 animate-spin text-[#71717A]" />
-              </EmptyState>
+              <LaneLoadingSkeleton />
             ) : (
               <EmptyState
                 title="No lanes created yet"

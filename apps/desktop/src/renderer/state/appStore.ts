@@ -177,6 +177,8 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
 const TERMINAL_PREFERENCES_STORAGE_KEY = "ade.terminalPreferences.v1";
 const USER_PREFERENCES_STORAGE_KEY = "ade.userPreferences.v1";
+const LANE_CACHE_STORAGE_PREFIX = "ade.laneCache.v1:";
+const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -358,6 +360,64 @@ function normalizeLaneWorkScopeKey(projectRoot: string | null | undefined, laneI
   const normalizedLaneId = typeof laneId === "string" ? laneId.trim() : "";
   if (!projectKey || !normalizedLaneId) return "";
   return `${projectKey}::${normalizedLaneId}`;
+}
+
+type WarmLaneCache = { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] };
+
+function laneCacheStorageKey(projectRoot: string): string {
+  return `${LANE_CACHE_STORAGE_PREFIX}${encodeURIComponent(projectRoot)}`;
+}
+
+function isLaneSummaryCandidate(value: unknown): value is LaneSummary {
+  if (!value || typeof value !== "object") return false;
+  const lane = value as Partial<LaneSummary>;
+  return typeof lane.id === "string"
+    && lane.id.trim().length > 0
+    && typeof lane.name === "string"
+    && lane.name.trim().length > 0;
+}
+
+function readPersistedLaneCache(projectRoot: string | null | undefined): WarmLaneCache | null {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return null;
+  try {
+    const raw = window.localStorage.getItem(laneCacheStorageKey(projectKey));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { savedAt?: unknown; lanes?: unknown };
+    const savedAt = typeof parsed.savedAt === "number" ? parsed.savedAt : 0;
+    if (!savedAt || Date.now() - savedAt > LANE_CACHE_TTL_MS) {
+      window.localStorage.removeItem(laneCacheStorageKey(projectKey));
+      return null;
+    }
+    if (!Array.isArray(parsed.lanes)) return null;
+    const lanes = parsed.lanes.filter(isLaneSummaryCandidate);
+    return lanes.length > 0 ? { lanes, laneSnapshots: [] } : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey || lanes.length === 0) return;
+  try {
+    window.localStorage.setItem(
+      laneCacheStorageKey(projectKey),
+      JSON.stringify({ savedAt: Date.now(), lanes }),
+    );
+  } catch {
+    // localStorage can be unavailable or full; the in-memory cache still works.
+  }
+}
+
+function removePersistedLaneCache(projectRoot: string | null | undefined): void {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return;
+  try {
+    window.localStorage.removeItem(laneCacheStorageKey(projectKey));
+  } catch {
+    // ignore
+  }
 }
 
 type PersistedUserPreferences = {
@@ -602,7 +662,7 @@ export type AppState = {
    * unmounts the chat UI even though the agent runtime is still alive on the
    * backend — making it look like the chat closed.
    */
-  laneCacheByProject: Record<string, { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] }>;
+  laneCacheByProject: Record<string, WarmLaneCache>;
   /**
    * Per-project sessions list cache (chats, terminals, CLI runs). Same
    * stale-while-revalidate pattern as `laneCacheByProject`. Without this,
@@ -837,6 +897,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       const previousProjectRoot = prev.project?.rootPath ?? null;
       const nextProjectRoot = project?.rootPath ?? null;
+      const projectChanged = previousProjectRoot !== nextProjectRoot;
+      const warmLaneCache = projectChanged && nextProjectRoot
+        ? prev.laneCacheByProject[nextProjectRoot] ?? readPersistedLaneCache(nextProjectRoot)
+        : null;
+      const nextLaneCacheByProject = projectChanged && nextProjectRoot && warmLaneCache && !prev.laneCacheByProject[nextProjectRoot]
+        ? {
+            ...prev.laneCacheByProject,
+            [nextProjectRoot]: warmLaneCache,
+          }
+        : prev.laneCacheByProject;
+      const restoredSelection = projectChanged && nextProjectRoot
+        ? prev.laneSelectionByProject[nextProjectRoot] ?? {
+            laneId: warmLaneCache?.lanes[0]?.id ?? null,
+            sessionId: null,
+          }
+        : null;
       return {
         project,
         projectInfoByRoot: project
@@ -857,9 +933,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           }
           : null,
         projectRevision:
-          previousProjectRoot !== nextProjectRoot ? prev.projectRevision + 1 : prev.projectRevision,
+          projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
         laneDeleteProgressByLaneId:
-          previousProjectRoot !== nextProjectRoot ? {} : prev.laneDeleteProgressByLaneId,
+          projectChanged ? {} : prev.laneDeleteProgressByLaneId,
+        ...(projectChanged
+          ? {
+              laneSnapshots: warmLaneCache?.laneSnapshots ?? [],
+              lanes: warmLaneCache?.lanes ?? [],
+              lanesLoading: project ? !warmLaneCache : false,
+              selectedLaneId: restoredSelection?.laneId ?? null,
+              focusedSessionId: restoredSelection?.sessionId ?? null,
+              laneInspectorTabs: {},
+              terminalAttention: EMPTY_TERMINAL_ATTENTION,
+              macosVmTabIndicator: null,
+              laneCacheByProject: nextLaneCacheByProject,
+            }
+          : {}),
       };
     }),
   setOpenProjectTabRoots: (next) =>
@@ -1172,6 +1261,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               [activeProjectRoot]: { lanes, laneSnapshots: nextSnapshots },
             }
           : prev.laneCacheByProject;
+        persistLaneCache(activeProjectRoot, lanes);
         return {
           laneSnapshots: nextSnapshots,
           lanes,
@@ -1470,7 +1560,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             const nextWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneSelections: Record<string, { laneId: string | null; sessionId: string | null }> = {};
-            const nextLaneCache: Record<string, { lanes: LaneSummary[]; laneSnapshots: LaneListSnapshot[] }> = {};
+            const nextLaneCache: Record<string, WarmLaneCache> = {};
             const nextSessionsCache: Record<string, unknown[]> = {};
             for (const [key, value] of Object.entries(prev.workViewByProject)) {
               if (retainedRootSet.has(key)) nextWorkViews[key] = value;
@@ -1484,6 +1574,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             }
             for (const [key, value] of Object.entries(prev.laneCacheByProject)) {
               if (retainedRootSet.has(key)) nextLaneCache[key] = value;
+              else removePersistedLaneCache(key);
             }
             for (const [key, value] of Object.entries(prev.sessionsCacheByProject)) {
               if (retainedRootSet.has(key)) nextSessionsCache[key] = value;
