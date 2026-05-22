@@ -984,7 +984,34 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_linear_issue_links_lane on lane_linear_issue_links(project_id, lane_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issue_links(project_id, issue_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_role on lane_linear_issue_links(project_id, role)");
-  db.run("create unique index if not exists uq_lane_linear_issue_links_role on lane_linear_issue_links(project_id, lane_id, issue_id, role)");
+  // CRR-converted tables cannot carry UNIQUE indices besides the primary key
+  // (`crsql_as_crr` rejects them). Uniqueness on (project_id, lane_id, issue_id,
+  // role) is enforced in `laneService.upsertLaneLinearIssueLink` (delete-then-insert).
+  try {
+    db.run("drop index if exists uq_lane_linear_issue_links_role");
+  } catch {
+    // best-effort cleanup from earlier builds
+  }
+  try {
+    db.run(`
+      delete from lane_linear_issue_links
+      where rowid not in (
+        select rowid from lane_linear_issue_links as keep
+        where keep.id = (
+          select id from lane_linear_issue_links inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+            and inner_p.issue_id = keep.issue_id
+            and inner_p.role = keep.role
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next upsert.
+  }
 
   db.run(`
     create table if not exists lane_branch_profiles (
