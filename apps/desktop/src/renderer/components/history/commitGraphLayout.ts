@@ -57,13 +57,20 @@ export function buildCommitGraphLayout(
   const shaToCommit = new Map(commitsNewestFirst.map((c) => [c.sha, c]));
   const shaToCol = new Map<string, number>();
   const activeCols = new Set<number>();
-  let nextFreeCol = 0;
+  const childCounts = new Map<string, number>();
+  const assignedChildren = new Map<string, number>();
+
+  for (const commit of oldestFirst) {
+    for (const parent of commit.parents) {
+      if (!shaToCommit.has(parent)) continue;
+      childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1);
+    }
+  }
 
   function allocCol(): number {
-    while (activeCols.has(nextFreeCol)) nextFreeCol += 1;
-    const col = nextFreeCol;
+    let col = 0;
+    while (activeCols.has(col)) col += 1;
     activeCols.add(col);
-    nextFreeCol += 1;
     return col;
   }
 
@@ -74,8 +81,16 @@ export function buildCommitGraphLayout(
     if (parents.length === 0) {
       col = allocCol();
     } else if (parents.length === 1) {
-      const parentCol = shaToCol.get(parents[0]);
-      col = parentCol ?? allocCol();
+      const parentSha = parents[0]!;
+      const parentCol = shaToCol.get(parentSha);
+      const childIndex = assignedChildren.get(parentSha) ?? 0;
+      const childCount = childCounts.get(parentSha) ?? 0;
+      assignedChildren.set(parentSha, childIndex + 1);
+      col =
+        (childCount <= 1 || childIndex === 0) && parentCol !== undefined
+          ? parentCol
+          : allocCol();
+      activeCols.add(col);
     } else {
       const parentCols = parents
         .map((p) => shaToCol.get(p))

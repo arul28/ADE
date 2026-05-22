@@ -166,8 +166,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   ]);
 
   useEffect(() => {
-    if (!active) return;
-    void fetchEvents({ silent: surface === "commits" });
+    if (!active || surface === "commits") return;
+    void fetchEvents();
   }, [active, surface, fetchEvents]);
 
   useEffect(() => {
@@ -193,7 +193,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId: focusLaneId, limit: 200 })
+      .listRecentCommits({ laneId: focusLaneId, limit: 500 })
       .then((rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
@@ -220,11 +220,29 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         else next.delete("laneId");
         changed = true;
       }
-      if (surface === "activity" && next.has("commitSha")) {
+      const commitParam = selectedCommitSha ?? "";
+      if (surface === "commits") {
+        if (commitParam && next.get("commitSha") !== commitParam) {
+          next.set("commitSha", commitParam);
+          changed = true;
+        } else if (!commitParam && next.has("commitSha")) {
+          next.delete("commitSha");
+          changed = true;
+        }
+      } else if (next.has("commitSha")) {
         next.delete("commitSha");
         changed = true;
       }
-      if (surface === "commits" && next.has("eventId")) {
+      const eventParam = selectedEventId ?? "";
+      if (surface === "activity") {
+        if (eventParam && next.get("eventId") !== eventParam) {
+          next.set("eventId", eventParam);
+          changed = true;
+        } else if (!eventParam && next.has("eventId")) {
+          next.delete("eventId");
+          changed = true;
+        }
+      } else if (next.has("eventId")) {
         next.delete("eventId");
         changed = true;
       }
@@ -232,7 +250,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       lastWrittenUrlRef.current = next.toString();
       return next;
     }, { replace: true });
-  }, [active, surface, focusLaneId, setSearchParams]);
+  }, [active, surface, focusLaneId, selectedCommitSha, selectedEventId, setSearchParams]);
 
   const handleSelectEvent = useCallback(
     (id: string) => {
@@ -307,11 +325,15 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   const focusLane = lanes.find((l) => l.id === focusLaneId) ?? null;
 
-  const laneData = lanes.map((l) => ({
-    id: l.id,
-    name: l.name,
-    color: l.color ?? null,
-  }));
+  const laneData = useMemo(
+    () =>
+      lanes.map((l) => ({
+        id: l.id,
+        name: l.name,
+        color: l.color ?? null,
+      })),
+    [lanes],
+  );
 
   const panelFallback = (
     <div className="flex flex-1 items-center justify-center font-mono text-[11px] text-muted-fg/40">

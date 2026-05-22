@@ -102,9 +102,13 @@ export function CommitDetailPanel({
     if (!laneId || !activeCommit) {
       setFullMessage(null);
       setFiles([]);
+      setLoadingFiles(false);
       return;
     }
     let cancelled = false;
+    setFullMessage(null);
+    setFiles([]);
+    setLoadingFiles(true);
     void window.ade.git
       .getCommitMessage({ laneId, commitSha: activeCommit.sha })
       .then((msg) => {
@@ -113,7 +117,6 @@ export function CommitDetailPanel({
       .catch(() => {
         if (!cancelled) setFullMessage(activeCommit.subject);
       });
-    setLoadingFiles(true);
     void window.ade.git
       .listCommitFiles({ laneId, commitSha: activeCommit.sha })
       .then((rows) => {

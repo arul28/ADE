@@ -9159,6 +9159,7 @@ export function registerIpc({
       : ctx.operationService.list({
           laneId,
           kind,
+          ...(status && status !== "all" ? { status } : {}),
           limit: typeof arg?.limit === "number" ? arg.limit : 1000
         });
     const filteredRows =

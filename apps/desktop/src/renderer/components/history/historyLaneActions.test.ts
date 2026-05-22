@@ -343,10 +343,10 @@ describe("history lane actions", () => {
     await runHistoryLaneAction({ actionId: "merge_continue", laneId: "lane-1" });
     await runHistoryLaneAction({ actionId: "merge_abort", laneId: "lane-1" });
 
-    expect(git.rebaseContinue).toHaveBeenCalledWith("lane-1");
-    expect(git.rebaseAbort).toHaveBeenCalledWith("lane-1");
-    expect(git.mergeContinue).toHaveBeenCalledWith("lane-1");
-    expect(git.mergeAbort).toHaveBeenCalledWith("lane-1");
+    expect(git.rebaseContinue).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(git.rebaseAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(git.mergeContinue).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(git.mergeAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
     expect(confirm).toHaveBeenCalledWith("Abort the in-progress rebase?");
     expect(confirm).toHaveBeenCalledWith("Abort the in-progress merge?");
   });

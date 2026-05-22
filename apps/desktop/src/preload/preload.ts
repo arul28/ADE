@@ -6827,7 +6827,8 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitGetConflictState, { laneId });
     },
-    rebaseContinue: async (laneId: string): Promise<GitActionResult> => {
+    rebaseContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+      const laneId = typeof args === "string" ? args : args.laneId;
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "rebaseContinue",
@@ -6837,7 +6838,8 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId });
     },
-    rebaseAbort: async (laneId: string): Promise<GitActionResult> => {
+    rebaseAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+      const laneId = typeof args === "string" ? args : args.laneId;
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "rebaseAbort",
@@ -6847,7 +6849,8 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId });
     },
-    mergeContinue: async (laneId: string): Promise<GitActionResult> => {
+    mergeContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+      const laneId = typeof args === "string" ? args : args.laneId;
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "mergeContinue",
@@ -6857,7 +6860,8 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.gitMergeContinue, { laneId });
     },
-    mergeAbort: async (laneId: string): Promise<GitActionResult> => {
+    mergeAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+      const laneId = typeof args === "string" ? args : args.laneId;
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "mergeAbort",
@@ -7942,6 +7946,7 @@ contextBridge.exposeInMainWorld("ade", {
       const listArgs: ListOperationsArgs = {
         ...(typeof args?.laneId === "string" ? { laneId: args.laneId } : {}),
         ...(typeof args?.kind === "string" ? { kind: args.kind } : {}),
+        ...(typeof args?.status === "string" && args.status !== "all" ? { status: args.status } : {}),
         limit: typeof args?.limit === "number" ? args.limit : 1000,
       };
       const runtime = await callProjectRuntimeActionIfBound<OperationRecord[]>(

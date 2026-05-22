@@ -52,4 +52,16 @@ describe("filterCommitsForSearch", () => {
     expect(filterCommitsForSearch(commits, refsBySha, "is:unpushed history")).toEqual([fix]);
     expect(filterCommitsForSearch(commits, refsBySha, "is:pushed history")).toEqual([]);
   });
+
+  it("keeps URL-like tokens as plain text instead of bogus keyed filters", () => {
+    const withUrl = commit("d444444444", "See https://github.com/arul28/ADE", "Mo");
+
+    expect(filterCommitsForSearch([withUrl], refsBySha, "https://github.com/arul28/ADE")).toEqual([withUrl]);
+  });
+
+  it("supports quoted keyed values and shorthand aliases", () => {
+    expect(filterCommitsForSearch(commits, refsBySha, 'message:"history search"')).toEqual([fix]);
+    expect(filterCommitsForSearch(commits, refsBySha, "@sam")).toEqual([fix]);
+    expect(filterCommitsForSearch(commits, refsBySha, "#b222")).toEqual([fix]);
+  });
 });

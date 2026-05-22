@@ -44,6 +44,37 @@ describe("buildCommitGraphLayout", () => {
     expect(mergeEdges.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps forked siblings in separate columns until they merge", () => {
+    const merge = commit("m", ["a", "b"]);
+    const branchA = commit("a", ["root"]);
+    const branchB = commit("b", ["root"]);
+    const root = commit("root", []);
+    const layout = buildCommitGraphLayout([merge, branchA, branchB, root]);
+    const colA = layout.nodes.find((node) => node.sha === "a")?.column;
+    const colB = layout.nodes.find((node) => node.sha === "b")?.column;
+
+    expect(colA).toBeDefined();
+    expect(colB).toBeDefined();
+    expect(colA).not.toBe(colB);
+    expect(layout.columnCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reuses columns that merges make inactive", () => {
+    const independent = commit("independent", []);
+    const tip = commit("tip", ["m"]);
+    const merge = commit("m", ["a", "b"]);
+    const branchA = commit("a", ["root"]);
+    const branchB = commit("b", ["root"]);
+    const root = commit("root", []);
+    const layout = buildCommitGraphLayout([independent, tip, merge, branchA, branchB, root]);
+    const independentCol = layout.nodes.find((node) => node.sha === "independent")?.column;
+    const tipCol = layout.nodes.find((node) => node.sha === "tip")?.column;
+
+    expect(independentCol).toBe(1);
+    expect(tipCol).toBe(0);
+    expect(layout.columnCount).toBe(2);
+  });
+
   it("maps row indices for positioning helpers", () => {
     const c2 = commit("c2", ["c1"]);
     const c1 = commit("c1", []);

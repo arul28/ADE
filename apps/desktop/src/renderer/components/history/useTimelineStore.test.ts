@@ -60,7 +60,7 @@ describe("timeline store", () => {
     expect(store.getState().events.map((event) => event.id)).toEqual(["op-1"]);
   });
 
-  it("excludes project-level records when a lane filter is active", () => {
+  it("keeps project-level records when a lane filter is active", () => {
     const store = createTimelineStore();
 
     store.getState().setRawEvents([
@@ -69,6 +69,6 @@ describe("timeline store", () => {
     ]);
     store.getState().setLaneFilter(["lane-1"]);
 
-    expect(store.getState().events.map((event) => event.id)).toEqual(["lane-op"]);
+    expect(store.getState().events.map((event) => event.id)).toEqual(["lane-op", "project-op"]);
   });
 });

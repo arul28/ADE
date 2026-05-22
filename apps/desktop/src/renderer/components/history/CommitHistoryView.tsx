@@ -96,6 +96,11 @@ export function CommitHistoryView({
     void load();
   }, [active, laneId, load, refreshToken]);
 
+  useEffect(() => {
+    if (!active || !laneId || !search.trim() || limit >= 500) return;
+    setLimit(500);
+  }, [active, laneId, limit, search]);
+
   const refsBySha = useMemo(() => {
     const map = new Map<string, GitBranchSummary[]>();
     for (const b of branches) {
@@ -164,19 +169,9 @@ export function CommitHistoryView({
     );
   }
 
-  if (error) {
-    return (
-      <div className="flex flex-1 flex-col gap-2 p-4">
-        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">
-          <Warning size={16} className="mt-0.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      </div>
-    );
-  }
-
   const graphHeight = virtualizer.getTotalSize();
   const svgHeight = layout.totalHeight;
+  const searchExpanding = Boolean(search.trim()) && loading;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -191,6 +186,7 @@ export function CommitHistoryView({
         <button
           type="button"
           title="Refresh commits"
+          aria-label="Refresh commits"
           onClick={handleRefresh}
           disabled={loading}
           className={cn(
@@ -213,11 +209,24 @@ export function CommitHistoryView({
         ) : null}
       </div>
 
-      {filtered.length === 0 ? (
+      {error ? (
+        <div className="flex flex-1 flex-col gap-2 p-4">
+          <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">
+            <Warning size={16} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        </div>
+      ) : filtered.length === 0 ? (
         <EmptyState
           icon={GitBranch}
-          title={search ? "No matching commits" : "No commits"}
-          description={search ? "Try a different search" : "This lane has no commit history yet"}
+          title={searchExpanding ? "Searching commits…" : search ? "No matching commits" : "No commits"}
+          description={
+            searchExpanding
+              ? "Scanning the full loaded commit window"
+              : search
+                ? "Try a different search"
+                : "This lane has no commit history yet"
+          }
         />
       ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={onScroll}>
@@ -313,7 +322,7 @@ export function CommitHistoryView({
                   laneId={laneId}
                   commit={commit}
                   isHead={isHead}
-                  hasWorktree={Boolean(laneId) && !error}
+                  hasWorktree={Boolean(laneId)}
                   onNotice={(m) => {
                     setNotice(m);
                     setActionError(null);
@@ -335,6 +344,7 @@ export function CommitHistoryView({
                         : "border-transparent hover:bg-white/[0.04]",
                     )}
                     onClick={() => onSelectCommit(commit)}
+                    aria-label={`Select commit ${commit.shortSha}: ${commit.subject}`}
                   >
                     <span className="shrink-0 font-mono text-[11px] text-muted-fg">
                       {commit.shortSha}

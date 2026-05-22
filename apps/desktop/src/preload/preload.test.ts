@@ -2162,6 +2162,7 @@ describe("preload OAuth bridge", () => {
         action: "list",
         args: {
           laneId: "lane-1",
+          status: "succeeded",
           limit: 25,
         },
       },

@@ -87,6 +87,11 @@ function eventSha(event: TimelineEvent): string {
   return (event.postHeadSha ?? event.preHeadSha ?? "").slice(0, 7) || "—";
 }
 
+function eventRowLabel(event: TimelineEvent): string {
+  const lane = event.laneName ? ` in ${event.laneName}` : "";
+  return `Open ${event.label}${lane}, ${event.status}`;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -142,6 +147,7 @@ export function TimelineListView({
                 type="button"
                 data-tour="history.entry"
                 onClick={() => onSelectEvent(ev.id)}
+                aria-label={eventRowLabel(ev)}
                 className={cn(
                   "flex w-full items-center gap-2 border-l-2 border-l-transparent px-2 py-1.5",
                   "transition-colors duration-75",

@@ -605,24 +605,24 @@ export async function runHistoryLaneAction(args: {
         return;
       }
       case "rebase_continue":
-        await window.ade.git.rebaseContinue(laneId);
+        await window.ade.git.rebaseContinue({ laneId });
         onNotice?.("Continued rebase");
         onComplete?.();
         return;
       case "rebase_abort":
         if (!confirmOrCancel("Abort the in-progress rebase?")) return;
-        await window.ade.git.rebaseAbort(laneId);
+        await window.ade.git.rebaseAbort({ laneId });
         onNotice?.("Aborted rebase");
         onComplete?.();
         return;
       case "merge_continue":
-        await window.ade.git.mergeContinue(laneId);
+        await window.ade.git.mergeContinue({ laneId });
         onNotice?.("Continued merge");
         onComplete?.();
         return;
       case "merge_abort":
         if (!confirmOrCancel("Abort the in-progress merge?")) return;
-        await window.ade.git.mergeAbort(laneId);
+        await window.ade.git.mergeAbort({ laneId });
         onNotice?.("Aborted merge");
         onComplete?.();
         return;

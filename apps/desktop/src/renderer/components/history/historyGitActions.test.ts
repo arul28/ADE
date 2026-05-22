@@ -35,6 +35,15 @@ function stubWindow(promptValues: string[] = ["v1.2.3", "release tag"]) {
       name: "History lane",
     })),
   };
+  const diff = {
+    getFilePatch: vi.fn(async ({ path }: { path: string }) => ({
+      path,
+      mode: "commit",
+      patch: path === "src/history.ts"
+        ? `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new\n`
+        : "",
+    })),
+  };
   const prompt = vi.fn((_: string, fallback?: string) => promptValues.shift() ?? fallback ?? null);
   const confirm = vi.fn(() => true);
 
@@ -46,22 +55,14 @@ function stubWindow(promptValues: string[] = ["v1.2.3", "release tag"]) {
         openExternal: vi.fn(async () => undefined),
         writeClipboardText: vi.fn(async () => undefined),
       },
-      diff: {
-        getFilePatch: vi.fn(async ({ path }: { path: string }) => ({
-          path,
-          mode: "commit",
-          patch: path === "src/history.ts"
-            ? `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new\n`
-            : "",
-        })),
-      },
+      diff,
     },
     prompt,
     confirm,
     setTimeout: vi.fn(),
   });
 
-  return { git, lanes, prompt, confirm };
+  return { git, lanes, prompt, confirm, diff };
 }
 
 describe("history git actions", () => {
@@ -220,9 +221,8 @@ describe("history git actions", () => {
   });
 
   it("copies a commit patch through existing diff APIs", async () => {
-    const { git } = stubWindow();
+    const { git, diff } = stubWindow();
     const app = window.ade.app;
-    const diff = window.ade.diff;
     const onNotice = vi.fn();
 
     await runHistoryGitAction({
@@ -247,6 +247,31 @@ describe("history git actions", () => {
       expect.stringContaining("diff --git a/src/history.ts b/src/history.ts"),
     );
     expect(onNotice).toHaveBeenCalledWith("Patch copied (1 file)");
+  });
+
+  it("caps copied patch fanout for large commits", async () => {
+    const { git, diff } = stubWindow();
+    const files = Array.from({ length: 55 }, (_, index) => `src/file-${index}.ts`);
+    const onNotice = vi.fn();
+    git.listCommitFiles.mockResolvedValueOnce(files);
+    diff.getFilePatch.mockImplementation(async ({ path }: { path: string }) => ({
+      path,
+      mode: "commit",
+      patch: `diff --git a/${path} b/${path}\n@@ -1 +1 @@\n-old\n+new\n`,
+    }));
+
+    await runHistoryGitAction({
+      actionId: "copy_patch",
+      laneId: "lane-1",
+      commit,
+      onNotice,
+    });
+
+    expect(diff.getFilePatch).toHaveBeenCalledTimes(50);
+    expect(diff.getFilePatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "src/file-54.ts" }),
+    );
+    expect(onNotice).toHaveBeenCalledWith("Patch copied (50 files, 5 skipped)");
   });
 
   it("deep-links Lanes git actions to the selected commit", async () => {

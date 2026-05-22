@@ -313,16 +313,16 @@ export async function fetchSupplementalTimelineRecords(
     ? Math.max(1, Math.min(500, roundedLimit))
     : 500;
   const [chats, missions, ctoSnapshot, workerRuns] = await Promise.all([
-    typeof window.ade.agentChat?.list === "function"
+    typeof window.ade?.agentChat?.list === "function"
       ? settle(window.ade.agentChat.list({ includeAutomation: true }))
       : Promise.resolve(null),
-    typeof window.ade.missions?.list === "function"
+    typeof window.ade?.missions?.list === "function"
       ? settle(window.ade.missions.list({ limit: safeLimit, includeArchived: true }))
       : Promise.resolve(null),
-    typeof window.ade.cto?.getState === "function"
+    typeof window.ade?.cto?.getState === "function"
       ? settle(window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }))
       : Promise.resolve(null),
-    typeof window.ade.cto?.listAgentRuns === "function"
+    typeof window.ade?.cto?.listAgentRuns === "function"
       ? settle(window.ade.cto.listAgentRuns({ limit: Math.min(100, safeLimit) }))
       : Promise.resolve(null),
   ]);

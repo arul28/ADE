@@ -1892,10 +1892,10 @@ declare global {
         sync: (args: GitSyncArgs) => Promise<GitActionResult>;
         push: (args: GitPushArgs) => Promise<GitActionResult>;
         getConflictState: (laneId: string) => Promise<GitConflictState>;
-        rebaseContinue: (laneId: string) => Promise<GitActionResult>;
-        rebaseAbort: (laneId: string) => Promise<GitActionResult>;
-        mergeContinue: (laneId: string) => Promise<GitActionResult>;
-        mergeAbort: (laneId: string) => Promise<GitActionResult>;
+        rebaseContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        rebaseAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        mergeContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        mergeAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
         listBranches: (
           args: GitListBranchesArgs,
         ) => Promise<GitBranchSummary[]>;

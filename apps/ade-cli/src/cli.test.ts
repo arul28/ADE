@@ -1653,6 +1653,17 @@ describe("ADE CLI", () => {
       name: "git_pull",
       arguments: { laneId: "lane-1", mode: "rebase" },
     });
+    expect(() =>
+      buildCliPlan([
+        "git",
+        "pull",
+        "--lane",
+        "lane-1",
+        "--mode",
+        "merge",
+        "--rebase",
+      ]),
+    ).toThrow(/either --mode or a mode flag/);
 
     const undo = buildCliPlan([
       "git",
@@ -4267,7 +4278,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "operation",
         action: "list",
-        args: { laneId: "lane-1", kind: "push", limit: 25 },
+        args: { laneId: "lane-1", kind: "push", status: "succeeded", limit: 25 },
       },
     });
   });
@@ -4281,7 +4292,7 @@ describe("ADE CLI", () => {
     expect(plan.formatter).toBe("history-show");
     expect(plan.steps[0]?.params).toEqual({
       name: "run_ade_action",
-      arguments: { domain: "operation", action: "list", args: { limit: 1000 } },
+      arguments: { domain: "operation", action: "get", args: { operationId: "op-1" } },
     });
   });
 
@@ -4314,6 +4325,8 @@ describe("ADE CLI", () => {
       "export",
       "--lane",
       "lane-1",
+      "--status",
+      "failed",
       "--out",
       "/tmp/history.json",
     ]);
@@ -4326,7 +4339,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "operation",
         action: "list",
-        args: { laneId: "lane-1", limit: 1000 },
+        args: { laneId: "lane-1", status: "failed", limit: 1000 },
       },
     });
   });

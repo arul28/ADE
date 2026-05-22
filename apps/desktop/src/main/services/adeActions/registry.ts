@@ -623,7 +623,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "triggerWakeup",
   ],
   session: ["deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
-  operation: ["finish", "list", "start"],
+  operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "validate"],
   issue_inventory: [

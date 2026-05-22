@@ -60,6 +60,8 @@ const COMMIT_ACTION_GROUPS: Array<{
   },
 ];
 
+const COPY_PATCH_FILE_LIMIT = 50;
+
 function laneCommitDeepLink(laneId: string, commitSha: string): string {
   const params = new URLSearchParams({
     laneId,
@@ -111,8 +113,9 @@ async function copyCommitPatch(args: {
     return;
   }
 
+  const selectedFiles = files.slice(0, COPY_PATCH_FILE_LIMIT);
   const patchResults = await Promise.allSettled(
-    files.map(async (path) => {
+    selectedFiles.map(async (path) => {
       const patch = await window.ade.diff.getFilePatch({
         laneId: args.laneId,
         path,
@@ -135,6 +138,7 @@ async function copyCommitPatch(args: {
   }
 
   const failed = patchResults.filter((result) => result.status === "rejected").length;
+  const skipped = failed + Math.max(0, files.length - selectedFiles.length);
   const text = [
     `# ${args.commit.shortSha} ${args.commit.subject}`,
     "",
@@ -143,8 +147,8 @@ async function copyCommitPatch(args: {
   ].join("\n");
   await window.ade.app.writeClipboardText(text);
   args.onNotice?.(
-    failed > 0
-      ? `Patch copied (${patches.length} file${patches.length === 1 ? "" : "s"}, ${failed} skipped)`
+    skipped > 0
+      ? `Patch copied (${patches.length} file${patches.length === 1 ? "" : "s"}, ${skipped} skipped)`
       : `Patch copied (${patches.length} file${patches.length === 1 ? "" : "s"})`,
   );
 }

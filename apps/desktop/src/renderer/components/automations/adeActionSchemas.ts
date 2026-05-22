@@ -349,7 +349,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     params: [
       LANE_ID_PARAM,
       COMMIT_SHA_PARAM,
-      { name: "mode", type: "string", required: true, description: "Reset mode: soft, mixed, or hard." },
+      { name: "mode", type: "enum", required: true, enumValues: ["soft", "mixed", "hard"], description: "Reset mode." },
     ],
   },
   {
@@ -366,7 +366,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     description: "Pull the lane's branch from its upstream tracking branch.",
     params: [
       LANE_ID_PARAM,
-      { name: "mode", type: "string", description: "Pull mode: ff-only, rebase, or merge." },
+      { name: "mode", type: "enum", enumValues: ["ff-only", "rebase", "merge"], description: "Pull mode." },
     ],
   },
   {

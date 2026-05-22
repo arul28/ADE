@@ -211,6 +211,7 @@ export function TimelineToolbar({
             <select
               value={focusLaneId ?? ""}
               onChange={(e) => setFocusLaneId(e.target.value || null)}
+              aria-label="Lane"
               className="h-7 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
             >
               <option value="">Select lane…</option>
@@ -238,6 +239,8 @@ export function TimelineToolbar({
             <button
               key={mode}
               title={tip}
+              aria-label={tip}
+              aria-pressed={viewMode === mode}
               onClick={() => setViewMode(mode)}
               className={cn(
                 "flex h-7 w-7 items-center justify-center border transition-colors",
@@ -530,22 +533,29 @@ function LaneGitActionsMenu({
       if (!laneId) return;
       setRunningAction(actionId);
       setError(null);
-      await runHistoryLaneAction({
-        actionId,
-        laneId,
-        laneName,
-        onNotice: (message) => {
-          setNotice(message);
-          window.setTimeout(() => setNotice(null), 3500);
-        },
-        onError: (message) => {
-          setError(message);
-          window.setTimeout(() => setError(null), 5000);
-        },
-        onComplete: handleComplete,
-        navigate: (path) => navigate(path),
-      });
-      setRunningAction(null);
+      try {
+        await runHistoryLaneAction({
+          actionId,
+          laneId,
+          laneName,
+          onNotice: (message) => {
+            setNotice(message);
+            window.setTimeout(() => setNotice(null), 3500);
+          },
+          onError: (message) => {
+            setError(message);
+            window.setTimeout(() => setError(null), 5000);
+          },
+          onComplete: handleComplete,
+          navigate: (path) => navigate(path),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        window.setTimeout(() => setError(null), 5000);
+      } finally {
+        setRunningAction(null);
+      }
     },
     [handleComplete, laneId, laneName, navigate],
   );

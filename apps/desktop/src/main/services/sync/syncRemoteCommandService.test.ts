@@ -1224,6 +1224,8 @@ describe("createSyncRemoteCommandService", () => {
       expect(gitService.redoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
       await expect(service.execute(makePayload("git.undoLastHeadChange", {})))
         .rejects.toThrow("git.undoLastHeadChange requires laneId.");
+      await expect(service.execute(makePayload("git.redoLastHeadChange", {})))
+        .rejects.toThrow("git.redoLastHeadChange requires laneId.");
     });
 
     it("git.stageFile requires laneId and path", async () => {

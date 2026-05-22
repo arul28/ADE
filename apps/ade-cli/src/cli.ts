@@ -2889,6 +2889,9 @@ function buildGitPlan(args: string[]): CliPlan {
     if (flagModes.length > 1) {
       throw new CliUsageError("Choose only one pull mode: --ff-only, --rebase, or --merge.");
     }
+    if (explicitMode && flagModes.length > 0) {
+      throw new CliUsageError("Choose pull mode with either --mode or a mode flag, not both.");
+    }
     const rawMode = flagModes.length > 0 ? flagModes[0]! : explicitMode;
     const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
     if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
@@ -5087,11 +5090,12 @@ function buildCliSessionStartPlan(
 
 function collectHistoryListArgs(
   args: string[],
-  filters: { laneId?: string | null; kind?: string | null } = {},
+  filters: { laneId?: string | null; kind?: string | null; status?: string | null } = {},
 ): JsonObject {
   return collectGenericObjectArgs(args, {
     ...(filters.laneId ? { laneId: filters.laneId } : {}),
     ...(filters.kind ? { kind: filters.kind } : {}),
+    ...(filters.status && filters.status !== "all" ? { status: filters.status } : {}),
     limit: readIntOption(args, ["--limit"], 50),
   });
 }
@@ -5116,7 +5120,7 @@ function buildHistoryPlan(args: string[]): CliPlan {
     historyListFilters,
     ...(statusFilter ? { historyStatusFilter: statusFilter } : {}),
   };
-  const listFilters = { laneId, kind };
+  const listFilters = { laneId, kind, status: statusFilter };
   if (sub === "list" || sub === "ls")
     return {
       kind: "execute",
@@ -5144,8 +5148,8 @@ function buildHistoryPlan(args: string[]): CliPlan {
       formatter: "history-show",
       historyOperationId: operationId,
       steps: [
-        actionStep("result", "operation", "list", {
-          limit: readIntOption(args, ["--limit"], 1000),
+        actionStep("result", "operation", "get", {
+          operationId,
         }),
       ],
     };
@@ -13392,26 +13396,23 @@ function summarizeExecution(args: {
     plan.label === "history show"
   ) {
     const raw = unwrapActionEnvelope(values.result);
-    const rows = filterHistoryOperations(
-      asOperationRows(raw),
-      plan.historyStatusFilter,
-    );
     if (plan.label === "history show") {
-      const operationId = plan.historyOperationId;
-      const match =
-        operationId == null
-          ? null
-          : rows.find((row) => row.id === operationId) ?? null;
+      const match = isRecord(raw) ? raw : null;
       if (!match) {
+        const operationId = plan.historyOperationId;
         throw new CliExecutionError(
           operationId
-            ? `Operation '${operationId}' was not found in the recent history window.`
+            ? `Operation '${operationId}' was not found.`
             : "Operation id is required.",
           { operationId: operationId ?? null },
         );
       }
       return match;
     }
+    const rows = filterHistoryOperations(
+      asOperationRows(raw),
+      plan.historyStatusFilter,
+    );
     if (plan.label === "history export") {
       return {
         exportedAt: new Date().toISOString(),

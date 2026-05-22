@@ -96,7 +96,7 @@ function passesFilters(
   if (event.laneId && visibility.hiddenLaneIds.has(event.laneId)) return false;
 
   // Lane filter
-  if (filters.laneIds.length > 0 && (!event.laneId || !filters.laneIds.includes(event.laneId))) return false;
+  if (filters.laneIds.length > 0 && event.laneId && !filters.laneIds.includes(event.laneId)) return false;
 
   // Category filter
   if (filters.categories.length > 0 && !filters.categories.includes(event.category)) return false;
@@ -388,7 +388,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
           opts?.kind ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit),
         ]);
         const scopedSupplemental = opts?.laneId
-          ? supplemental.filter((record) => record.laneId === opts.laneId)
+          ? supplemental.filter((record) => record.laneId == null || record.laneId === opts.laneId)
           : supplemental;
         const combined = sortTimelineRecords([
           ...raw,

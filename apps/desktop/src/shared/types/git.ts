@@ -326,6 +326,7 @@ export type GitHubStatus = {
 export type ListOperationsArgs = {
   laneId?: string;
   kind?: string;
+  status?: "running" | "succeeded" | "failed" | "canceled";
   limit?: number;
 };
 
@@ -342,7 +343,7 @@ export type OperationRecord = {
   metadataJson: string | null;
 };
 
-export type ExportHistoryArgs = ListOperationsArgs & {
+export type ExportHistoryArgs = Omit<ListOperationsArgs, "status"> & {
   status?: OperationRecord["status"] | "all";
   format: "csv" | "json";
 };

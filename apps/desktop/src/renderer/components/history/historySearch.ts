@@ -7,20 +7,57 @@ type SearchToken = {
   value: string;
 };
 
+const SEARCH_KEYS = new Set([
+  "message",
+  "msg",
+  "=",
+  "author",
+  "@",
+  "commit",
+  "sha",
+  "#",
+  "branch",
+  "ref",
+  "parent",
+  "is",
+  "type",
+]);
+
+function unquote(value: string): string {
+  return value.replace(/^"|"$/g, "");
+}
+
+function searchTokenFromRaw(raw: string): SearchToken | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith("@") && trimmed.length > 1) {
+    return { key: "@", value: unquote(trimmed.slice(1)).toLowerCase() };
+  }
+  if (trimmed.startsWith("#") && trimmed.length > 1) {
+    return { key: "#", value: unquote(trimmed.slice(1)).toLowerCase() };
+  }
+  if (trimmed.startsWith("=") && trimmed.length > 1) {
+    return { key: "=", value: unquote(trimmed.slice(1)).toLowerCase() };
+  }
+
+  const separator = trimmed.indexOf(":");
+  if (separator > 0) {
+    const key = trimmed.slice(0, separator).toLowerCase();
+    const value = unquote(trimmed.slice(separator + 1)).toLowerCase();
+    if (!value) return null;
+    if (/^[a-z@#=][a-z0-9_-]*$/i.test(key) && SEARCH_KEYS.has(key)) {
+      return { key, value };
+    }
+  }
+
+  return { key: null, value: unquote(trimmed).toLowerCase() };
+}
+
 function tokenizeSearch(query: string): SearchToken[] {
-  const matches = query.match(/"[^"]+"|\S+/g) ?? [];
+  const matches = query.match(/[^\s"]+:"[^"]+"|"[^"]+"|\S+/g) ?? [];
   return matches
-    .map((raw): SearchToken | null => {
-      const trimmed = raw.trim().replace(/^"|"$/g, "");
-      if (!trimmed) return null;
-      const separator = trimmed.indexOf(":");
-      if (separator > 0) {
-        const key = trimmed.slice(0, separator).toLowerCase();
-        const value = trimmed.slice(separator + 1).toLowerCase();
-        return value ? { key, value } : null;
-      }
-      return { key: null, value: trimmed.toLowerCase() };
-    })
+    .map(searchTokenFromRaw)
     .filter((token): token is SearchToken => token != null);
 }
 
