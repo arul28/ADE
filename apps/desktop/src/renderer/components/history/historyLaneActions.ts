@@ -94,23 +94,14 @@ const laneActionGroups: Array<{
   },
 ];
 
+const GITHUB_REPO_RE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+)$/;
+
 function githubBranchUrl(remoteUrl: string | null, branch: string | null): string | null {
   if (!remoteUrl || !branch) return null;
-  const trimmed = remoteUrl.trim().replace(/\.git$/, "");
+  const match = GITHUB_REPO_RE.exec(remoteUrl.trim().replace(/\.git$/, ""));
+  if (!match) return null;
   const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
-  const httpsMatch = /^https:\/\/github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
-  if (httpsMatch) {
-    return `https://github.com/${httpsMatch[1]}/${httpsMatch[2]}/tree/${encodedBranch}`;
-  }
-  const sshMatch = /^git@github\.com:([^/]+)\/(.+)$/.exec(trimmed);
-  if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/tree/${encodedBranch}`;
-  }
-  const sshUrlMatch = /^ssh:\/\/git@github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
-  if (sshUrlMatch) {
-    return `https://github.com/${sshUrlMatch[1]}/${sshUrlMatch[2]}/tree/${encodedBranch}`;
-  }
-  return null;
+  return `https://github.com/${match[1]}/${match[2]}/tree/${encodedBranch}`;
 }
 
 export function buildHistoryLaneActions(args: {

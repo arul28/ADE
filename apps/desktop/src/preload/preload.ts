@@ -2520,16 +2520,13 @@ function clearGitReadCaches(): void {
 }
 
 function normalizeLaneIdArg(args: unknown): string {
-  if (typeof args === "string") {
-    const laneId = args.trim();
-    if (laneId.length === 0) throw new Error("laneId is required.");
-    return laneId;
-  }
-  if (!isRecord(args) || typeof args.laneId !== "string") {
-    throw new Error("laneId is required.");
-  }
-  const laneId = args.laneId.trim();
-  if (laneId.length === 0) throw new Error("laneId is required.");
+  const raw = typeof args === "string"
+    ? args
+    : isRecord(args) && typeof args.laneId === "string"
+      ? args.laneId
+      : null;
+  const laneId = raw?.trim();
+  if (!laneId) throw new Error("laneId is required.");
   return laneId;
 }
 

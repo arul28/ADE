@@ -569,20 +569,11 @@ export function createGitOperationsService({
     throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
 
-  function operationMetadata(operation: OperationRecord): Record<string, unknown> {
-    const parsed = safeJsonParse<unknown>(operation.metadataJson, null);
-    return isRecord(parsed) ? parsed : {};
-  }
-
-  function listHeadChanges(laneId: string): Array<OperationRecord & { preHeadSha: string; postHeadSha: string }> {
-    return operationService.listHeadChanges({ laneId, limit: 100 });
-  }
-
   function getLatestUndoableHeadChange(laneId: string): OperationRecord & {
     preHeadSha: string;
     postHeadSha: string;
   } {
-    const operation = listHeadChanges(laneId)[0];
+    const operation = operationService.listHeadChanges({ laneId, limit: 100 })[0];
     if (!operation) {
       throw new Error("No undoable head-changing git operation found for this lane.");
     }
@@ -596,11 +587,13 @@ export function createGitOperationsService({
     operation: OperationRecord & { preHeadSha: string; postHeadSha: string };
     redoHeadSha: string;
   } {
-    const latest = listHeadChanges(laneId)[0];
+    const latest = operationService.listHeadChanges({ laneId, limit: 100 })[0];
     if (!latest || latest.kind !== "git_undo_head_change") {
       throw new Error("No redoable git undo operation found for this lane.");
     }
-    const redoHeadSha = operationMetadata(latest).redoHeadSha;
+    const parsed = safeJsonParse<unknown>(latest.metadataJson, null);
+    const metadata = isRecord(parsed) ? parsed : {};
+    const redoHeadSha = metadata.redoHeadSha;
     if (typeof redoHeadSha !== "string" || redoHeadSha.length === 0) {
       throw new Error("No redoable git undo operation found for this lane.");
     }

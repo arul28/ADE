@@ -54,7 +54,7 @@ export function buildCommitGraphLayout(
   }
 
   const oldestFirst = [...commitsNewestFirst].reverse();
-  const shaToCommit = new Map(commitsNewestFirst.map((c) => [c.sha, c]));
+  const knownShas = new Set(commitsNewestFirst.map((c) => c.sha));
   const shaToCol = new Map<string, number>();
   const activeCols = new Set<number>();
   const childCounts = new Map<string, number>();
@@ -62,7 +62,7 @@ export function buildCommitGraphLayout(
 
   for (const commit of oldestFirst) {
     for (const parent of commit.parents) {
-      if (!shaToCommit.has(parent)) continue;
+      if (!knownShas.has(parent)) continue;
       childCounts.set(parent, (childCounts.get(parent) ?? 0) + 1);
     }
   }
@@ -75,7 +75,7 @@ export function buildCommitGraphLayout(
   }
 
   for (const commit of oldestFirst) {
-    const parents = commit.parents.filter((p) => shaToCommit.has(p));
+    const parents = commit.parents.filter((p) => knownShas.has(p));
     let col: number;
 
     if (parents.length === 0) {

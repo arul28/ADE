@@ -182,4 +182,164 @@ describe("operationService.listHeadChanges", () => {
       },
     ]);
   });
+
+  it("clamps the limit argument into the [1, 1000] range and floors fractional values", () => {
+    const { db } = createInMemoryAdeDb();
+    db.run("insert into lanes(id, project_id, name) values('lane-1', 'project-1', 'Lane 1')");
+    const service = createOperationService({ db, projectId: "project-1" });
+
+    for (let i = 0; i < 5; i += 1) {
+      const minute = String(i).padStart(2, "0");
+      insertOperation(db, {
+        id: `head-${i}`,
+        kind: "git_commit",
+        startedAt: `2026-05-22T00:${minute}:00.000Z`,
+        preHeadSha: `pre-${i}`,
+        postHeadSha: `post-${i}`,
+      });
+    }
+
+    expect(service.listHeadChanges({ laneId: "lane-1", limit: 0 })).toHaveLength(1);
+    expect(service.listHeadChanges({ laneId: "lane-1", limit: -50 })).toHaveLength(1);
+    expect(service.listHeadChanges({ laneId: "lane-1", limit: 2.7 })).toHaveLength(2);
+    expect(service.listHeadChanges({ laneId: "lane-1", limit: 10_000 })).toHaveLength(5);
+  });
+});
+
+describe("operationService start/finish lifecycle", () => {
+  it("persists started operations as running and finalises them with merged metadata", () => {
+    const { db } = createInMemoryAdeDb();
+    db.run("insert into lanes(id, project_id, name) values('lane-1', 'project-1', 'Lane 1')");
+    const service = createOperationService({ db, projectId: "project-1" });
+
+    const { operationId, startedAt } = service.start({
+      laneId: "lane-1",
+      kind: "git_pull",
+      preHeadSha: "before",
+      metadata: { source: "remote", attempt: 1 },
+    });
+
+    const running = service.get(operationId);
+    expect(running).toMatchObject({
+      id: operationId,
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      kind: "git_pull",
+      status: "running",
+      preHeadSha: "before",
+      postHeadSha: null,
+      endedAt: null,
+      startedAt,
+    });
+    expect(JSON.parse(running?.metadataJson ?? "{}")).toEqual({ source: "remote", attempt: 1 });
+
+    service.finish({
+      operationId,
+      status: "succeeded",
+      postHeadSha: "after",
+      metadataPatch: { attempt: 2, durationMs: 42 },
+    });
+
+    const finished = service.get(operationId);
+    expect(finished).toMatchObject({
+      id: operationId,
+      status: "succeeded",
+      preHeadSha: "before",
+      postHeadSha: "after",
+    });
+    expect(finished?.endedAt).not.toBeNull();
+    expect(JSON.parse(finished?.metadataJson ?? "{}")).toEqual({
+      source: "remote",
+      attempt: 2,
+      durationMs: 42,
+    });
+  });
+
+  it("ignores get() lookups across projects and treats blank ids as not-found", () => {
+    const { db } = createInMemoryAdeDb();
+    db.run("insert into lanes(id, project_id, name) values('lane-1', 'project-1', 'Lane 1')");
+    db.run("insert into lanes(id, project_id, name) values('lane-x', 'project-2', 'Lane X')");
+    const service = createOperationService({ db, projectId: "project-1" });
+    const foreign = createOperationService({ db, projectId: "project-2" });
+
+    const own = service.recordCompleted({
+      laneId: "lane-1",
+      kind: "git_fetch",
+      preHeadSha: "p",
+      postHeadSha: "q",
+      metadata: { remote: "origin" },
+    });
+
+    expect(service.get(own.operationId)).toMatchObject({
+      id: own.operationId,
+      kind: "git_fetch",
+      status: "succeeded",
+      laneName: "Lane 1",
+    });
+    expect(service.get({ id: own.operationId })).not.toBeNull();
+    expect(foreign.get(own.operationId)).toBeNull();
+    expect(service.get("")).toBeNull();
+    expect(service.get("   ")).toBeNull();
+  });
+});
+
+describe("operationService.list", () => {
+  it("filters by lane, kind, and status, ordering newest first within the clamped limit", () => {
+    const { db } = createInMemoryAdeDb();
+    db.run("insert into lanes(id, project_id, name) values('lane-1', 'project-1', 'Lane 1')");
+    db.run("insert into lanes(id, project_id, name) values('lane-2', 'project-1', 'Lane 2')");
+    const service = createOperationService({ db, projectId: "project-1" });
+
+    insertOperation(db, {
+      id: "old-success",
+      kind: "git_pull",
+      startedAt: "2026-05-22T00:00:00.000Z",
+      status: "succeeded",
+    });
+    insertOperation(db, {
+      id: "new-success",
+      kind: "git_pull",
+      startedAt: "2026-05-22T02:00:00.000Z",
+      status: "succeeded",
+    });
+    insertOperation(db, {
+      id: "new-failed",
+      kind: "git_pull",
+      startedAt: "2026-05-22T03:00:00.000Z",
+      status: "failed",
+    });
+    insertOperation(db, {
+      id: "other-lane",
+      laneId: "lane-2",
+      kind: "git_pull",
+      startedAt: "2026-05-22T04:00:00.000Z",
+      status: "succeeded",
+    });
+    insertOperation(db, {
+      id: "other-kind",
+      kind: "chat_message",
+      startedAt: "2026-05-22T05:00:00.000Z",
+      status: "succeeded",
+    });
+
+    const laneOnly = service.list({ laneId: "lane-1" });
+    expect(laneOnly.map((r) => r.id)).toEqual([
+      "other-kind",
+      "new-failed",
+      "new-success",
+      "old-success",
+    ]);
+
+    const byKindAndStatus = service.list({
+      laneId: "lane-1",
+      kind: "git_pull",
+      status: "succeeded",
+    });
+    expect(byKindAndStatus.map((r) => r.id)).toEqual(["new-success", "old-success"]);
+    expect(byKindAndStatus.every((r) => r.laneName === "Lane 1")).toBe(true);
+
+    const clamped = service.list({ laneId: "lane-1", limit: 2 });
+    expect(clamped.map((r) => r.id)).toEqual(["other-kind", "new-failed"]);
+    expect(service.list({ laneId: "lane-1", limit: 0 })).toHaveLength(1);
+  });
 });

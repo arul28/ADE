@@ -19,13 +19,14 @@ user's local machine).
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/history/operationService.ts` | The service: `start`, `finish`, `recordCompleted`, `list`. |
-| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Primary consumer: every git operation runs through `runTrackedOperation`, which handles start/finish + cache invalidation. |
+| `apps/desktop/src/main/services/history/operationService.ts` | The service: `start`, `finish`, `recordCompleted`, `list`, `get`, `listHeadChanges`. |
+| `apps/desktop/src/main/services/git/gitOperationsService.ts` | Primary consumer: every git operation runs through `runLaneOperation` / `runTrackedOperation`, which handles start/finish + cache invalidation. Also owns the head-change undo/redo helpers that read `operationService.listHeadChanges`. |
 | `apps/desktop/src/main/services/prs/prService.ts` | Records PR creation and related operations. |
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Records rebase lifecycle. |
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (writes `terminal_sessions` rows and persists transcripts to disk). |
 | `apps/desktop/src/shared/chatTranscript.ts` | JSON-lines parser for chat transcripts; used to reconstruct chat state, generate summaries, and derive activity signals. |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations` and `ade.history.exportOperations` handlers. |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations` and `ade.history.exportOperations` handlers, plus the new git IPC the History toolbar relies on (`gitCreateTag`, `gitResetToCommit`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, multi-mode `gitPull`). |
+| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `missions.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
 
 ## Recording pattern
 
@@ -121,14 +122,22 @@ const { operationId } = operationService.recordCompleted({
 
 ### Git operations (`gitOperationsService.ts`)
 
-- `git.commit` -- before/after HEAD, files changed, commit message.
-- `git.checkout` -- from/to branch.
+- `git_commit` -- before/after HEAD, files changed, commit message.
+- `git_checkout_branch` -- `{ fromBranch, toBranch, mode }`.
 - `git.merge` -- base branch, conflict flag.
-- `git.rebase` -- base, number of commits replayed.
-- `git.push` -- remote, branch, commit count.
-- `git.pull` -- remote, branch, new commits.
-- `git.fetch` -- remote.
-- `git.sync` -- mode (`merge` | `rebase`), base ref.
+- `git.rebase` / `git_rebase_continue` / `git_rebase_abort` -- base, commit count.
+- `git_merge_continue` / `git_merge_abort` -- in-progress merge resolution.
+- `git_push` -- `{ remote, branch, commitCount }`.
+- `git_push_force_with_lease` -- annotated separately so the timeline distinguishes lease-rewrites.
+- `git_pull` -- `{ mode: "ff-only" | "rebase" | "merge" }`. The pull command map lives in `gitOperationsService.pull`; each mode maps to a distinct git invocation but they share the same operation kind so the timeline groups by intent.
+- `git_fetch` -- `{ remote }`.
+- `git_sync_merge` / `git_sync_rebase` -- `{ baseRef }`.
+- `git_cherry_pick`, `git_revert` -- `{ commitSha }`.
+- `git_tag_create` -- `{ commitSha, tagName, annotated }`. Annotated when a message is supplied.
+- `git_reset_soft` / `git_reset_mixed` / `git_reset_hard` -- `{ commitSha, mode }`. Bracketed like any other head-changing op so they show up in undo/redo lookups.
+- `git_stash_push` / `git_stash_apply` / `git_stash_pop` / `git_stash_drop` / `git_stash_clear`.
+- `git_undo_head_change` -- bracketed user recovery: looks up the previous successful `git_*` op with non-equal pre/post SHAs via `operationService.listHeadChanges`, refuses if HEAD has moved since, then `git reset --hard preHeadSha`. Metadata: `{ undoneOperationId, undoneOperationKind, redoHeadSha, targetHeadSha }`.
+- `git_redo_head_change` -- inverse: reads `redoHeadSha` from the latest `git_undo_head_change` row's metadata. Metadata: `{ redoneUndoOperationId, targetHeadSha }`.
 
 ### Lane operations
 
@@ -153,6 +162,68 @@ action. Lane-scoped git ops inherit `laneId`.
 - `pack_update_lane` -- lane pack regeneration.
 - `pack_update_project` -- project pack regeneration.
 - Triggered by `session_end`, `head_change`, `manual`, or `scheduled`.
+
+## Head-change undo / redo
+
+The undo/redo feature is a per-lane stack-of-one that reads the same
+operations table it writes to.
+
+`operationService.listHeadChanges({ laneId, limit })` returns the
+recent `succeeded` operations whose kind starts with `git_` /  `git.`,
+both `pre_head_sha` and `post_head_sha` are non-null, and the two SHAs
+differ. The list is ordered newest-first.
+
+`gitOperationsService.undoLastHeadChange` looks at the head of that
+list:
+
+1. Reject if the head row is itself a `git_undo_head_change` -- the
+   lane is already in an undone state; the caller should call redo.
+2. Read the live HEAD with `git rev-parse HEAD`. If it does not match
+   the row's `postHeadSha`, refuse: HEAD has drifted since that
+   operation (the user committed, pulled, or otherwise moved on) and
+   `git reset --hard` would clobber unrelated work.
+3. Run `git reset --hard preHeadSha` and record a new
+   `git_undo_head_change` operation whose metadata captures the row
+   it undid plus `redoHeadSha = preHeadSha`'s sibling (`postHeadSha`
+   of the undone row). This is what `redoLastHeadChange` reads back.
+
+`gitOperationsService.redoLastHeadChange` mirrors the same shape but
+walks the inverse direction: head row must be a `git_undo_head_change`
+and current HEAD must still match its `postHeadSha`, then
+`git reset --hard redoHeadSha`.
+
+Both paths fail loudly with `Cannot undo because the lane head has
+changed since that operation.` (or `since the undo.`) when the SHA
+guard trips. The UI surfaces those errors verbatim through
+`historyLaneActions.runHistoryLaneAction`.
+
+## Synthesized Activity rows
+
+The Activity surface in the History UI merges persisted
+`OperationRecord` rows with synthesized rows pulled from chat,
+mission, CTO, and worker feeds. Synthesis happens in
+`apps/desktop/src/renderer/components/history/historyActivitySources.ts`
+and never writes to the operations table.
+
+The renderer fetches the four feeds in parallel with
+`fetchSupplementalTimelineRecords(limit)` and folds the results into
+`OperationRecord`-shaped objects with namespaced IDs (`chat:`,
+`mission:`, `worker-run:`, `cto-session:`, `cto-activity:`). Each
+record carries:
+
+- `kind` -- `chat.session`, `mission.{completed|failed|intervention|update}`,
+  `worker.run`, `cto.session`, or `worker.activity`. The taxonomy in
+  `eventTaxonomy.ts` ensures each kind has a category, icon, and
+  importance level.
+- `status` -- mapped from the source's status enum (e.g. mission
+  `intervention_required` → `running`, worker `cancelled` → `canceled`).
+- `metadataJson` -- a `JSON.stringify`'d object with at minimum
+  `source`, `eventLabel`, and an `actor` field so the detail panel can
+  render uniformly regardless of source.
+
+`sortTimelineRecords` deduplicates by `id` and sorts by `startedAt`
+descending before the result is clamped to the renderer's limit. The
+export path does not consult these adapters.
 
 ## Chat transcript serialisation
 
@@ -209,8 +280,12 @@ that want plain text.
 
 `ade.history.exportOperations` handler:
 
-1. Call `operationService.list({ laneId, kind, limit: 1000 })`. Note
-   that `status` is filtered client-side after the fetch.
+1. Call `operationService.list({ laneId, kind, status?, limit: 1000 })`.
+   When `args.status` is a single concrete value the handler forwards
+   it as a server-side filter; when it is `"all"` (the export sentinel)
+   or absent, the handler omits the filter and falls back to a
+   client-side filter only if the caller is also doing multi-status
+   selection through `ExportHistoryArgs.status`.
 2. Compute a default filename:
    `ade-history-<projectSlug>-<YYYY-MM-DD>.<format>`.
 3. Open a system save dialog (native `dialog.showSaveDialog`).
@@ -245,7 +320,8 @@ so CSV consumers must respect RFC 4180-style quoting.
   (`{ commit: { ... } }`) are replaced wholesale, not deep-merged.
 - **Max list limit.** `list()` clamps `limit` to `[1, 1000]`. Export
   uses `limit: 1000` by default; larger ranges require multiple
-  calls or a future streaming IPC.
+  calls or a future streaming IPC. `listHeadChanges()` uses the same
+  clamp with a default of 100, scoped to a single lane.
 - **`laneName` resolution via left join.** If a lane is archived or
   deleted, its name disappears from future rows. Historical rows
   still show `laneName: null`. Do not rely on `laneName` to identify
@@ -263,10 +339,13 @@ so CSV consumers must respect RFC 4180-style quoting.
   ANSI; chat transcripts are JSON-lines. Do not cross the streams
   (parsing a terminal transcript as JSON will silently produce zero
   events).
-- **Export filter ordering.** Status filter is applied after the
-  1000-row pull. Heavy status filters combined with a specific kind
-  can yield 0 rows even when many matching rows exist beyond the
-  limit.
+- **Export filter ordering.** A single concrete `status` is now
+  applied server-side (it lands in the SQL `where` clause), so the
+  1000-row clamp happens after that filter. The `"all"` sentinel and
+  multi-status renderer paths still rely on the rows the handler
+  pulled, so a heavily filtered export combined with a specific kind
+  can still yield 0 rows even when many matching rows exist beyond
+  the limit.
 
 ## Related docs
 

@@ -2278,9 +2278,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         const requested = commitSha.toLowerCase();
         const commit = rows.find(
           (row) =>
-            row.sha.toLowerCase() === requested ||
-            row.shortSha.toLowerCase() === requested ||
-            row.sha.toLowerCase().startsWith(requested),
+            row.sha.toLowerCase().startsWith(requested) ||
+            row.shortSha.toLowerCase() === requested,
         );
         if (!commit) return;
         setLanePaneDetails((prev) => ({

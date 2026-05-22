@@ -2892,7 +2892,7 @@ function buildGitPlan(args: string[]): CliPlan {
     if (explicitMode && flagModes.length > 0) {
       throw new CliUsageError("Choose pull mode with either --mode or a mode flag, not both.");
     }
-    const rawMode = flagModes.length > 0 ? flagModes[0]! : explicitMode;
+    const rawMode: string | undefined = flagModes[0] ?? explicitMode;
     const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
     if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
       throw new CliUsageError("--mode must be ff-only, rebase, or merge.");

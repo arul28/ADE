@@ -2565,17 +2565,14 @@ export function createLaneService({
       const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
       const startRef = requestedStartPoint || requestedBaseRef;
       const headRes = await runGit(
-        requestedStartPoint
-          ? ["rev-parse", "--verify", requestedStartPoint]
-          : ["rev-parse", requestedBaseRef],
+        requestedStartPoint ? ["rev-parse", "--verify", requestedStartPoint] : ["rev-parse", requestedBaseRef],
         { cwd: projectRoot, timeoutMs: 10_000 },
       );
-      if (requestedStartPoint && (headRes.exitCode !== 0 || !headRes.stdout.trim().length)) {
+      const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+      if (requestedStartPoint && !resolvedHead) {
         throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
       }
-      const resolvedStartPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
-        ? headRes.stdout.trim()
-        : startRef;
+      const resolvedStartPoint = resolvedHead || startRef;
 
       return await createWorktreeLane({
         name,

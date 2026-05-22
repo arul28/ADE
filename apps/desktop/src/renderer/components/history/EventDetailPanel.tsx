@@ -8,13 +8,11 @@ import {
   Copy,
   GitBranch,
   Hash,
-  Tag,
   X,
   ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
-import { Chip } from "../ui/Chip";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses, getEventMeta, CATEGORY_META } from "./eventTaxonomy";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";

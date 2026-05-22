@@ -71,22 +71,12 @@ function laneCommitDeepLink(laneId: string, commitSha: string): string {
   return `/lanes?${params.toString()}`;
 }
 
+const GITHUB_REPO_RE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+)$/;
+
 function githubCommitUrl(remoteUrl: string | null, commitSha: string): string | null {
   if (!remoteUrl) return null;
-  const trimmed = remoteUrl.trim().replace(/\.git$/, "");
-  const httpsMatch = /^https:\/\/github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
-  if (httpsMatch) {
-    return `https://github.com/${httpsMatch[1]}/${httpsMatch[2]}/commit/${commitSha}`;
-  }
-  const sshMatch = /^git@github\.com:([^/]+)\/(.+)$/.exec(trimmed);
-  if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/commit/${commitSha}`;
-  }
-  const sshUrlMatch = /^ssh:\/\/git@github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
-  if (sshUrlMatch) {
-    return `https://github.com/${sshUrlMatch[1]}/${sshUrlMatch[2]}/commit/${commitSha}`;
-  }
-  return null;
+  const match = GITHUB_REPO_RE.exec(remoteUrl.trim().replace(/\.git$/, ""));
+  return match ? `https://github.com/${match[1]}/${match[2]}/commit/${commitSha}` : null;
 }
 
 function defaultBranchNameForCommit(commit: GitCommitSummary): string {
