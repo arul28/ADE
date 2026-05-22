@@ -391,7 +391,11 @@ ade.files.*                  # file tree, read, write, search, watch
 ade.diff.*                   # lane-scoped change list + per-file diff / patch (diffService)
 ade.pty.*                    # PTY spawn/write/kill, data/exit events
 ade.git.*                    # stage/commit/push/sync/revert/cherry-pick/stash
-ade.github.*                 # PR list, review, merge, checks
+ade.github.*                 # PR list, review, merge, checks. Also exposes
+                             # repo-scoped helpers used by the Linear setup flow:
+                             # listRepoAutolinks / createRepoAutolink (autolink
+                             # references like ADE-* -> Linear), listRepoLabels,
+                             # listRepoCollaborators, listRepoIssues.
 ade.prs.*                    # stacked PR queue, integration, issue inventory,
                              # Path-to-Merge orchestrator (ade.prs.pathToMerge.start /
                              # ade.prs.pathToMerge.stop) and ade.prs.retargetBase used

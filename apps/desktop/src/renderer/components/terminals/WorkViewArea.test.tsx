@@ -182,6 +182,7 @@ vi.mock("../../lib/sessions", () => ({
 vi.mock("../../lib/terminalAttention", () => ({
   sessionStatusDot: vi.fn(() => ({ cls: "ade-status-dot", label: "Idle", spinning: false })),
   sessionStatusBucket: vi.fn(() => "running"),
+  sessionNeedsChatTabHighlight: vi.fn(() => false),
 }));
 
 function makeSession(): TerminalSessionSummary {

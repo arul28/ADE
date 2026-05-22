@@ -114,6 +114,13 @@ export interface DeriveModelOptions {
   includeDroid?: boolean;
 }
 
+/** True when the id resolves to a registry or dynamic Cursor/Droid/OpenCode/local model. */
+export function isKnownSelectableChatModelId(modelId: string | null | undefined): boolean {
+  const id = String(modelId ?? "").trim();
+  if (!id.length) return false;
+  return Boolean(getModelById(id));
+}
+
 export function deriveConfiguredModelIds(
   status: AiSettingsStatus | null | undefined,
   options?: DeriveModelOptions,
@@ -190,10 +197,12 @@ export function deriveConfiguredModelIds(
   }
 
   if (includeCursor) {
-    const cursorAuthed = status.detectedAuth?.some(
-      (a) => a.type === "api-key" && a.provider === "cursor",
-    );
-    if (cursorAuthed && status.availableModelIds?.length) {
+    const cursorAvailable =
+      status.availableProviders?.cursor === true
+      || status.detectedAuth?.some(
+        (a) => a.type === "api-key" && a.provider === "cursor",
+      );
+    if (cursorAvailable && status.availableModelIds?.length) {
       for (const raw of status.availableModelIds) {
         const id = String(raw ?? "").trim();
         if (id.startsWith("cursor/")) ids.add(id as ModelId);

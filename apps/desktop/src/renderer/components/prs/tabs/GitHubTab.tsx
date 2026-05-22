@@ -1,6 +1,7 @@
 import React from "react";
-import { ArrowsClockwise, ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Link, MagnifyingGlass, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Link, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
+import { Group, Panel } from "react-resizable-panels";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   CreateLaneFromPrBranchArgs,
@@ -15,6 +16,7 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
+import { ResizeGutter } from "../../ui/ResizeGutter";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { useAppStore, useAppStoreApi } from "../../../state/appStore";
@@ -23,6 +25,8 @@ import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatte
 import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
+import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
+import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 
 const VIRTUALIZE_AT = 50;
 const LINKED_HYDRATION_LIMIT = 8;
@@ -30,6 +34,33 @@ const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
 const GITHUB_TAB_HOT_REFRESH_DELAY_MS = 30_000;
 const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
+const GITHUB_PR_LIST_WIDTH_KEY = "ade.prs.githubListWidth";
+const GITHUB_PR_LIST_MIN_PX = 260;
+const GITHUB_PR_LIST_MAX_PX = 560;
+const GITHUB_PR_LIST_DEFAULT_PX = 380;
+
+function readPersistedGithubPrListPx(): number {
+  try {
+    const raw = localStorage.getItem(GITHUB_PR_LIST_WIDTH_KEY);
+    if (raw) {
+      const value = Number(raw);
+      if (Number.isFinite(value) && value >= GITHUB_PR_LIST_MIN_PX && value <= GITHUB_PR_LIST_MAX_PX) {
+        return value;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return GITHUB_PR_LIST_DEFAULT_PX;
+}
+
+function persistGithubPrListPx(px: number): void {
+  try {
+    localStorage.setItem(GITHUB_PR_LIST_WIDTH_KEY, String(Math.round(px)));
+  } catch {
+    /* ignore */
+  }
+}
 
 type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -41,17 +72,25 @@ type GitHubTabProps = {
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
   onOpenQueueView?: (groupId: string) => void;
+  relocateHeaderChrome?: boolean;
+  onHeaderChromeChange?: (state: GitHubHeaderChromeState | null) => void;
+};
+
+export type GitHubHeaderChromeState = {
+  repoLabel: string;
+  syncing: boolean;
+  onSync: () => void;
+  searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
 };
 
 type GitHubFilter = "open" | "closed" | "merged";
-type ScopeFilter = "all" | "ade" | "external";
 
 type GitHubTabWarmCache = {
   projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
   selectedItemId: string | null;
-  scopeFilter: ScopeFilter;
   searchQuery: string;
   externalHistoryLoaded: boolean;
   cachedAt: number;
@@ -193,10 +232,15 @@ function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   return item.state === filter;
 }
 
-function matchesScope(item: GitHubPrListItem, scope: ScopeFilter): boolean {
-  if (scope === "all") return true;
-  if (scope === "ade") return item.adeKind !== null;
-  return item.adeKind === null;
+function mergeGitHubListItems(snapshot: GitHubPrSnapshot): GitHubPrListItem[] {
+  const combined = [...snapshot.repoPullRequests, ...snapshot.externalPullRequests];
+  const seen = new Set<string>();
+  return combined.filter((item) => {
+    const key = `${item.scope}:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /* -- Color-coded state badge with distinct colors per state -- */
@@ -272,16 +316,16 @@ const ADE_KIND_STYLES: Record<string, { color: string; background: string; borde
     background: "linear-gradient(135deg, rgba(59,130,246,0.14) 0%, rgba(37,99,235,0.06) 100%)",
     border: "1px solid rgba(59,130,246,0.22)",
   },
-  single: {
-    color: "#A1A1AA",
-    background: "rgba(161,161,170,0.06)",
-    border: "1px solid rgba(161,161,170,0.12)",
-  },
 };
 
-function adeKindBadge(kind: GitHubPrListItem["adeKind"]): React.CSSProperties | null {
-  const style = ADE_KIND_STYLES[kind ?? ""];
+function AdeKindBadge({ kind }: { kind: GitHubPrListItem["adeKind"] }): React.ReactElement | null {
+  if (!kind || kind === "single") return null;
+  const style = ADE_KIND_STYLES[kind];
   if (!style) return null;
+  return <span style={adeKindBadgeStyle(style)}>{kind}</span>;
+}
+
+function adeKindBadgeStyle(style: { color: string; background: string; border: string }): React.CSSProperties {
   return {
     display: "inline-flex",
     alignItems: "center",
@@ -416,7 +460,7 @@ function GitHubReadOnlyPane({
           <div style={{ minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
               <span style={stateBadgeStyle(item)}>{item.state}</span>
-              {adeKindBadge(item.adeKind) ? <span style={adeKindBadge(item.adeKind)!}>{item.adeKind}</span> : null}
+              <AdeKindBadge kind={item.adeKind} />
               {item.scope === "external" ? <span style={inlineBadge(COLORS.textMuted)}>external</span> : null}
             </div>
             <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
@@ -718,6 +762,8 @@ export function GitHubTab({
   onRefreshAll,
   onOpenRebaseTab,
   onOpenQueueView,
+  relocateHeaderChrome = false,
+  onHeaderChromeChange,
 }: GitHubTabProps) {
   const navigate = useNavigate();
   const appStore = useAppStoreApi();
@@ -748,9 +794,6 @@ export function GitHubTab({
   const [filter, setFilter] = React.useState<GitHubFilter>(() => normalizeGitHubFilter(initialWarmCacheRef.current?.filter));
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
-  );
-  const [scopeFilter, setScopeFilter] = React.useState<ScopeFilter>(
-    () => initialWarmCacheRef.current?.scopeFilter ?? "all",
   );
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
@@ -784,6 +827,7 @@ export function GitHubTab({
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
   const projectRootRef = React.useRef(projectRoot);
   const listRef = React.useRef<HTMLDivElement | null>(null);
+  const defaultListPx = React.useMemo(() => readPersistedGithubPrListPx(), []);
   snapshotRef.current = snapshot;
   filterRef.current = filter;
   externalHistoryLoadedRef.current = externalHistoryLoaded;
@@ -869,7 +913,6 @@ export function GitHubTab({
     setError(null);
     setFilter(normalizeGitHubFilter(warmCache?.filter));
     setSelectedItemId(warmCache?.selectedItemId ?? null);
-    setScopeFilter(warmCache?.scopeFilter ?? "all");
     setSearchQuery(warmCache?.searchQuery ?? "");
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
@@ -924,12 +967,11 @@ export function GitHubTab({
       snapshot,
       filter,
       selectedItemId,
-      scopeFilter,
       searchQuery,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, scopeFilter, searchQuery, selectedItemId, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, snapshot]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -980,39 +1022,25 @@ export function GitHubTab({
   }, [searchQuery]);
 
   const allItems = React.useMemo(
-    () => snapshot?.repoPullRequests ?? [],
+    () => (snapshot ? mergeGitHubListItems(snapshot) : []),
     [snapshot],
   );
 
   const filteredItems = React.useMemo(
     () => allItems
-      .filter((item) => matchesFilter(item, filter) && matchesScope(item, scopeFilter) && matchesSearch(item))
+      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
       .sort((a, b) =>
         new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
       ),
-    [allItems, filter, scopeFilter, matchesSearch],
+    [allItems, filter, matchesSearch],
   );
   const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
 
-  // Counts for filter tabs (scoped but not search-filtered)
-  const filterCounts = React.useMemo(() => {
-    const scoped = allItems.filter((item) => matchesScope(item, scopeFilter));
-    return {
-      open: scoped.filter((item) => item.state === "open" || item.state === "draft").length,
-      closed: scoped.filter((item) => item.state === "closed").length,
-      merged: scoped.filter((item) => item.state === "merged").length,
-    };
-  }, [allItems, scopeFilter]);
-
-  // Counts for scope sub-tabs (status-filtered but not search-filtered)
-  const scopeCounts = React.useMemo(() => {
-    const statusFiltered = allItems.filter((item) => matchesFilter(item, filter));
-    return {
-      all: statusFiltered.length,
-      ade: statusFiltered.filter((item) => item.adeKind !== null).length,
-      external: statusFiltered.filter((item) => item.adeKind === null).length,
-    };
-  }, [allItems, filter]);
+  const filterCounts = React.useMemo(() => ({
+    open: allItems.filter((item) => item.state === "open" || item.state === "draft").length,
+    closed: allItems.filter((item) => item.state === "closed").length,
+    merged: allItems.filter((item) => item.state === "merged").length,
+  }), [allItems]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -1034,12 +1062,9 @@ export function GitHubTab({
     if (!matchesFilter(linkedItem, filter)) {
       setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
     }
-    if (!matchesScope(linkedItem, scopeFilter)) {
-      setScopeFilter("all");
-    }
     setSelectedItemId(linkedItem.id);
     hasInitializedSelectionRef.current = true;
-  }, [allItems, snapshot, selectedPrId, filter, scopeFilter]);
+  }, [allItems, snapshot, selectedPrId, filter]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -1166,6 +1191,26 @@ export function GitHubTab({
       setSyncing(false);
     }
   }, [loadSnapshot, onRefreshAll, startHotRefreshWindow]);
+
+  const repoLabel = snapshot?.repo ? `${snapshot.repo.owner}/${snapshot.repo.name}` : "";
+
+  React.useEffect(() => {
+    if (!relocateHeaderChrome || !onHeaderChromeChange) return;
+    onHeaderChromeChange({
+      repoLabel,
+      syncing,
+      onSync: () => {
+        void handleSync();
+      },
+      searchQuery,
+      onSearchQueryChange: setSearchQuery,
+    });
+  }, [handleSync, onHeaderChromeChange, relocateHeaderChrome, repoLabel, searchQuery, syncing]);
+
+  React.useEffect(() => {
+    if (!relocateHeaderChrome || !onHeaderChromeChange) return;
+    return () => onHeaderChromeChange(null);
+  }, [onHeaderChromeChange, relocateHeaderChrome]);
 
   const handleSelectItem = React.useCallback((item: GitHubPrListItem) => {
     hasInitializedSelectionRef.current = true;
@@ -1331,7 +1376,7 @@ export function GitHubTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Search + Filter bar (Better-Hub inspired) */}
+      {/* Filter bar */}
       <div style={{
         display: "flex",
         flexDirection: "column",
@@ -1339,75 +1384,18 @@ export function GitHubTab({
         borderBottom: "1px solid rgba(255,255,255,0.06)",
         background: "rgba(255,255,255,0.01)",
       }}>
-        {/* Search row */}
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-          <div style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            height: 32,
-            padding: "0 10px",
-            background: "rgba(255,255,255,0.03)",
-            border: "1px solid rgba(255,255,255,0.06)",
-            borderRadius: 8,
-          }}>
-            <MagnifyingGlass size={13} style={{ color: COLORS.textDim, flexShrink: 0 }} />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search pull requests..."
-              style={{
-                flex: 1,
-                background: "transparent",
-                border: "none",
-                outline: "none",
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                color: COLORS.textPrimary,
+        {!relocateHeaderChrome ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
+            <GitHubPrSearchInput value={searchQuery} onChange={setSearchQuery} />
+            <GitHubRepoSyncBar
+              repoLabel={repoLabel}
+              syncing={syncing}
+              onSync={() => {
+                void handleSync();
               }}
             />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: COLORS.textDim, display: "flex" }}
-              >
-                <span style={{ fontSize: 11 }}>×</span>
-              </button>
-            )}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-              {snapshot?.repo ? `${snapshot.repo.owner}/${snapshot.repo.name}` : ""}
-            </span>
-            <button
-              type="button"
-              onClick={() => void handleSync()}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 5,
-                height: 28,
-                padding: "0 10px",
-                fontSize: 11,
-                fontWeight: 500,
-                fontFamily: SANS_FONT,
-                color: syncing ? COLORS.accent : COLORS.textSecondary,
-                background: syncing ? "rgba(167,139,250,0.08)" : "rgba(255,255,255,0.03)",
-                border: syncing ? "1px solid rgba(167,139,250,0.15)" : "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 7,
-                cursor: "pointer",
-                transition: "all 150ms ease",
-              }}
-            >
-              <ArrowsClockwise size={12} className={syncing ? "animate-spin" : ""} />
-              {syncing ? "Syncing..." : "Sync"}
-            </button>
-          </div>
-        </div>
+        ) : null}
         {/* Filter tabs with counts (Better-Hub style) */}
         <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "0 16px" }}>
           {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
@@ -1460,45 +1448,6 @@ export function GitHubTab({
             );
           })}
         </div>
-        {/* Scope sub-tabs: All / ADE / External */}
-        <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "4px 16px 6px", borderTop: "1px solid rgba(255,255,255,0.03)" }}>
-          {(["all", "ade", "external"] as ScopeFilter[]).map((scope) => {
-            const active = scopeFilter === scope;
-            const count = scopeCounts[scope];
-            const label = scope === "ade" ? "ADE" : scope === "external" ? "External" : "All";
-            return (
-              <button
-                key={scope}
-                type="button"
-                onClick={() => {
-                  pendingSelectedItemIdRef.current = null;
-                  setScopeFilter(scope);
-                  setSelectedItemId(null);
-                  onSelectPr(null);
-                }}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  height: 24,
-                  padding: "0 10px",
-                  fontSize: 11,
-                  fontWeight: active ? 600 : 400,
-                  fontFamily: SANS_FONT,
-                  color: active ? "#C4B5FD" : COLORS.textMuted,
-                  background: active ? "rgba(167,139,250,0.10)" : "transparent",
-                  border: active ? "1px solid rgba(167,139,250,0.15)" : "1px solid transparent",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  transition: "all 150ms ease",
-                }}
-              >
-                {label}
-                <span style={{ fontSize: 10, fontFamily: MONO_FONT, opacity: 0.7 }}>{count}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       {error ? (
@@ -1516,111 +1465,109 @@ export function GitHubTab({
       ) : null}
 
       <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-        {/* PR list sidebar */}
-        <div ref={listRef} data-tour="prs.list" style={{ width: 380, borderRight: "1px solid rgba(255,255,255,0.06)", overflow: "auto", flexShrink: 0 }}>
-          {/* Section header */}
-          <div style={{
-            padding: "10px 14px",
-            borderBottom: "1px solid rgba(255,255,255,0.06)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}>
-            <div style={{ fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, color: COLORS.textMuted, letterSpacing: "0.3px" }}>
-              Pull Requests
+        <Group id="github-pr-layout" orientation="horizontal" className="flex h-full min-h-0 w-full">
+          <Panel
+            id="github-pr-list"
+            data-tour="prs.list"
+            defaultSize={defaultListPx}
+            minSize={GITHUB_PR_LIST_MIN_PX}
+            maxSize={GITHUB_PR_LIST_MAX_PX}
+            onResize={(size) => persistGithubPrListPx(size.inPixels)}
+            className="min-h-0 min-w-0"
+            style={{ overflow: "hidden", borderRight: "1px solid rgba(255,255,255,0.06)" }}
+          >
+            <div ref={listRef} style={{ height: "100%", overflow: "auto" }}>
+              {filteredItems.length === 0 ? (
+                <div style={{ padding: 20 }}>
+                  <EmptyState
+                    title={loading && !snapshot ? "Preparing pull requests" : "No pull requests"}
+                    description={loading && !snapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
+                  />
+                </div>
+              ) : filteredItems.length > VIRTUALIZE_AT ? (
+                <GitHubTabVirtualList
+                  parentRef={listRef}
+                  items={filteredItems}
+                  selectedItemId={selectedItemId}
+                  prsByIdMap={prsByIdMap}
+                  onSelect={handleSelectItem}
+                  onOpenQueueView={onOpenQueueView}
+                  onHydrationItemsChange={handleHydrationItemsChange}
+                />
+              ) : (
+                filteredItems.map((item) => (
+                  <GitHubTabPrRow
+                    key={item.id}
+                    item={item}
+                    selected={item.id === selectedItemId}
+                    linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
+                    onSelect={handleSelectItem}
+                    onOpenQueueView={onOpenQueueView}
+                  />
+                ))
+              )}
             </div>
-            <span style={{
-              fontFamily: MONO_FONT,
-              fontSize: 10,
-              fontWeight: 600,
-              color: COLORS.accent,
-              background: "rgba(167,139,250,0.08)",
-              padding: "2px 7px",
-              borderRadius: 4,
-            }}>
-              {filteredItems.length}
-            </span>
-          </div>
-
-          {filteredItems.length === 0 ? (
-            <div style={{ padding: 20 }}>
-              <EmptyState
-                title={loading && !snapshot ? "Preparing pull requests" : "No pull requests"}
-                description={loading && !snapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
-              />
-            </div>
-          ) : filteredItems.length > VIRTUALIZE_AT ? (
-            <GitHubTabVirtualList
-              parentRef={listRef}
-              items={filteredItems}
-              selectedItemId={selectedItemId}
-              prsByIdMap={prsByIdMap}
-              onSelect={handleSelectItem}
-              onOpenQueueView={onOpenQueueView}
-              onHydrationItemsChange={handleHydrationItemsChange}
-            />
-          ) : (
-            filteredItems.map((item) => (
-              <GitHubTabPrRow
-                key={item.id}
-                item={item}
-                selected={item.id === selectedItemId}
-                linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
-                onSelect={handleSelectItem}
+          </Panel>
+          <ResizeGutter orientation="vertical" thin narrow />
+          <Panel
+            id="github-pr-detail"
+            data-tour="prs.detailDrawer"
+            minSize="30%"
+            className="min-h-0 min-w-0"
+            style={{ overflow: "hidden" }}
+          >
+            {selectedItem && selectedLinkedPr ? (
+              <PrDetailPane
+                key={selectedLinkedPr.id}
+                pr={selectedLinkedPr}
+                status={detailStatus}
+                checks={detailChecks}
+                reviews={detailReviews}
+                comments={detailComments}
+                snapshotHydration={
+                  detailSnapshot?.prId === selectedLinkedPr.id
+                    ? detailSnapshot
+                    : detailSnapshotsByPrId[selectedLinkedPr.id] ?? null
+                }
+                snapshotHydrationOwnedByContext
+                liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
+                detailBusy={detailBusy}
+                lanes={lanes}
+                mergeMethod={mergeMethod}
+                onRefresh={handleSync}
+                onNavigate={navigate}
+                onOpenRebaseTab={onOpenRebaseTab}
+                queueContext={selectedQueueContext}
                 onOpenQueueView={onOpenQueueView}
+                initialDetailTab={selectedDetailTab}
+                onDetailTabChange={onDetailTabChange}
+                onUnmap={() => handleUnlink(selectedItem)}
+                unmapBusy={unlinkingPrId === selectedLinkedPr.id}
               />
-            ))
-          )}
-        </div>
-
-        {/* Detail pane */}
-        <div data-tour="prs.detailDrawer" style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-          {selectedItem && selectedLinkedPr ? (
-            <PrDetailPane
-              key={selectedLinkedPr.id}
-              pr={selectedLinkedPr}
-              status={detailStatus}
-              checks={detailChecks}
-              reviews={detailReviews}
-              comments={detailComments}
-              snapshotHydration={
-                detailSnapshot?.prId === selectedLinkedPr.id
-                  ? detailSnapshot
-                  : detailSnapshotsByPrId[selectedLinkedPr.id] ?? null
-              }
-              snapshotHydrationOwnedByContext
-              liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
-              detailBusy={detailBusy}
-              lanes={lanes}
-              mergeMethod={mergeMethod}
-              onRefresh={handleSync}
-              onNavigate={navigate}
-              onOpenRebaseTab={onOpenRebaseTab}
-              queueContext={selectedQueueContext}
-              onOpenQueueView={onOpenQueueView}
-              initialDetailTab={selectedDetailTab}
-              onDetailTabChange={onDetailTabChange}
-              onUnmap={() => handleUnlink(selectedItem)}
-              unmapBusy={unlinkingPrId === selectedLinkedPr.id}
-            />
-          ) : selectedItem ? (
-            <GitHubReadOnlyPane
-              item={selectedItem}
-              lanes={lanes}
-              linkingBusy={linkingItemId === selectedItem.id}
-              linkLaneId={linkLaneId}
-              onLinkLaneChange={setLinkLaneId}
-              onLink={handleLink}
-              unlinkBusy={unlinkingPrId === selectedItem.linkedPrId}
-              onUnlink={() => handleUnlink(selectedItem)}
-              onCreateLaneFromPrBranch={() => handleOpenCreateLaneFromPrBranch(selectedItem)}
-            />
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-              <EmptyState title="No pull request selected" description="Choose a GitHub pull request to inspect details." />
-            </div>
-          )}
-        </div>
+            ) : selectedItem ? (
+              <GitHubReadOnlyPane
+                item={selectedItem}
+                lanes={lanes}
+                linkingBusy={linkingItemId === selectedItem.id}
+                linkLaneId={linkLaneId}
+                onLinkLaneChange={setLinkLaneId}
+                onLink={handleLink}
+                unlinkBusy={unlinkingPrId === selectedItem.linkedPrId}
+                onUnlink={() => handleUnlink(selectedItem)}
+                onCreateLaneFromPrBranch={() => handleOpenCreateLaneFromPrBranch(selectedItem)}
+              />
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
+                <EmptyState
+                  icon={GithubLogo}
+                  iconSize={64}
+                  title="No pull request selected"
+                  description="Choose a GitHub pull request to inspect details."
+                />
+              </div>
+            )}
+          </Panel>
+        </Group>
       </div>
       {createLaneItem ? (
         <CreateLaneFromPrBranchDialog
@@ -1656,8 +1603,9 @@ function GitHubTabPrRow({
   const ciRunning = linkedPr?.checksStatus === "pending";
   const review = reviewIndicator(linkedPr);
   const ago = formatTimeAgoCompact(item.createdAt);
-  const visibleLabels = item.labels.slice(0, 4);
-  const overflowCount = item.labels.length - 4;
+  const labels = item.labels ?? [];
+  const visibleLabels = labels.slice(0, 4);
+  const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
   return (
     <button
@@ -1799,15 +1747,17 @@ function GitHubTabPrRow({
       {/* Row 2: branch info */}
       {item.baseBranch && item.headBranch ? (
         <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
+          <span style={{ color: COLORS.textMuted }}>→</span>
           <span>{item.baseBranch}</span>
-          <span style={{ color: COLORS.textMuted }}>←</span>
-          <span style={{ color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
         </div>
       ) : null}
       {/* Row 3: inline stats */}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
-        <span style={stateBadgeStyle(item)}>{item.state}</span>
-        {adeKindBadge(item.adeKind) ? <span style={adeKindBadge(item.adeKind)!}>{item.adeKind}</span> : null}
+        {item.state !== "open" && item.state !== "draft" ? (
+          <span style={stateBadgeStyle(item)}>{item.state}</span>
+        ) : null}
+        <AdeKindBadge kind={item.adeKind} />
         {item.scope === "external" ? (
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
             {item.repoOwner}/{item.repoName}

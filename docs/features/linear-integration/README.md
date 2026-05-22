@@ -210,7 +210,12 @@ Shared types and helpers:
 - `apps/desktop/src/shared/types/lanes.ts` — `LaneLinearIssue` (the
   lane-attached subset of a Linear issue that gets persisted with
   the lane row) plus the optional `linearIssue` field on
-  `CreateLaneArgs` / `CreateChildLaneArgs` / `LaneSummary`.
+  `CreateLaneArgs` / `CreateChildLaneArgs` / `LaneSummary`. Also
+  exports `LaneLinearIssueLink`, `LaneLinearIssueLinkRole`
+  (`primary | worked | referenced | inferred`), and
+  `LaneLinearIssueLinkSource` (`lane_create | lane_link |
+  chat_attach | linear_open_issue | commit | pr_body | manual`),
+  used for multi-issue lane linkage.
 - `apps/desktop/src/shared/linearIssueBranch.ts` — pure helpers
   `linearIssueLaneName(issue)` ("IDENT title") and
   `linearIssueBranchName(issue)` (slugified, sanitised against git
@@ -224,7 +229,12 @@ Shared types and helpers:
   injects the magic word into a PR body if one isn't already there
   (with `preserveExisting: false` to overwrite an existing
   `Refs/Fixes <IDENT>` line); `ensureLinearCommitReference` prefixes
-  a commit subject with `Refs IDENT: …` when missing.
+  a commit subject with `Refs IDENT: …` when missing. Multi-issue
+  helpers (`LinearPrIssueReference`, `dedupeLinearPrIssueReferences`,
+  `ensureLinearPrReferences`, `renderLinearPrIssueLinkSection`,
+  `ensureLinearPrIssueLinkSection`) back the "Linked Linear issues"
+  HTML-fenced markdown block that `prService.applyLinearPrLinkage`
+  writes into PR bodies when a lane is linked to multiple issues.
 - `apps/desktop/src/shared/chatContextAttachments.ts` — pure helpers
   for the chat composer's Linear context attachment surface:
   `makeLinearIssueContextAttachment(issue, source)`,
@@ -385,6 +395,30 @@ exposes that path in three places that all share the same primitives:
   description. The user toggles `closeLinearIssueOnMerge` from a
   checkbox in `CreatePrModal`; the same flag is forwarded by
   `syncRemoteCommandService` so phones drive the same behaviour.
+- **Multi-issue PR linkage.** Lanes can accumulate additional Linear
+  issues beyond the primary one (see `linearIssueLinks` on
+  `LaneSummary`). `prService.applyLinearPrLinkage` collects the
+  primary issue plus every `linearIssueLinks` entry with
+  `includeInPr === true`, deduplicates by issue id, and writes both
+  per-issue magic words (`Fixes` / `Refs IDENT`) and a single
+  HTML-commented "Linked Linear issues" markdown block into the PR
+  body:
+
+    ```markdown
+    <!-- ade:linear-links v=1 -->
+    ### Linked Linear issues
+
+    - [ADE-123: Make X faster](https://linear.app/...) - closes on merge
+    - [ADE-456: Track usage](https://linear.app/...) - referenced
+    <!-- /ade:linear-links -->
+    ```
+
+    The block is idempotent: subsequent saves match the
+    `<!-- ade:linear-links v=N -->` open / close comments and replace
+    the contents in place rather than appending. Pure helpers
+    (`renderLinearPrIssueLinkSection`, `ensureLinearPrIssueLinkSection`,
+    `ensureLinearPrReferences`, `dedupeLinearPrIssueReferences`) live in
+    `apps/desktop/src/shared/linearMagicWords.ts`.
 - **Chat context attachment.** Chats opened on a lane with a
   connected issue automatically receive an
   `AgentChatLinearIssueContextAttachment` (`type: "linear_issue"`,
@@ -392,7 +426,12 @@ exposes that path in three places that all share the same primitives:
   `initialLinearIssueContext`. The composer also supports manual
   attachment through `LinearIssueContextDialog`, which reuses
   `LinearIssueBrowser`. Helpers live in
-  `shared/chatContextAttachments.ts`.
+  `shared/chatContextAttachments.ts`. When a chat attaches one or
+  more Linear issues at run time, `agentChatService` calls
+  `laneService.linkLinearIssues({ issues, role: "worked", source:
+  "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
+  so the attached issues survive across PR creation and show up in
+  the rendered "Linked Linear issues" block.
 - **Top-bar quick view.** `TopBar` mounts
   `LinearQuickViewButton` whenever `LinearConnectionStatus.connected`
   is true. The popover shows `CtoLinearQuickView` (workspace +
@@ -417,6 +456,14 @@ other ADE table. Key tables the Linear stack writes:
   create time, keyed by `(project_id, lane_id)`. Used by lane
   hydration, `LinearIssueBadge`, commit-message prefixing, and PR
   defaults.
+- `lane_linear_issue_links` — additional Linear issues attached to a
+  lane after creation (chat composer attachments, future commit /
+  PR-body scanners, manual link UI). Keyed by `(project_id, lane_id,
+  issue_id)` with `role`, `source`, `include_in_pr`,
+  `close_on_merge`, and a JSON `evidence` blob. Hydrated into
+  `LaneSummary.linearIssueLinks` and combined with the primary
+  `linearIssue` by `prService.applyLinearPrLinkage` to render the
+  PR's "Linked Linear issues" block.
 - `linear_issue_claims` — active-claim ledger (one active row per
   `(project_id, issue_id)`) so two lanes don't try to drive the
   same issue simultaneously.

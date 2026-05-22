@@ -203,6 +203,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
   CreateLaneFromPrBranchArgs,
@@ -1210,7 +1211,11 @@ async function callLocalProjectActionIfBound<T>(
     return { handled: true, result: response.result as T };
   } catch (error) {
     const canUseFallback =
-      allowLocalRuntimeFallback || isLocalRuntimeActionNotCallableError(error);
+      allowLocalRuntimeFallback
+      || isLocalRuntimeActionNotCallableError(error)
+      // Chat turns must not stall behind a hung local-runtime daemon — fall back
+      // to in-process IPC for safe transport errors (timeouts, socket loss).
+      || (domain === "chat" && isSafeLocalRuntimeFallbackError(error));
     if (!canUseFallback || !isSafeLocalRuntimeFallbackError(error)) {
       throw error;
     }
@@ -7080,6 +7085,23 @@ contextBridge.exposeInMainWorld("ade", {
       const status = await githubStatusCache.get();
       return status.repo;
     },
+    listRepoAutolinks: async (args: {
+      owner?: string;
+      name?: string;
+    } = {}): Promise<GitHubAutolink[]> =>
+      callProjectRuntimeActionOr("github", "listRepoAutolinks", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoAutolinks, args),
+      ),
+    createRepoAutolink: async (args: {
+      owner?: string;
+      name?: string;
+      keyPrefix: string;
+      urlTemplate: string;
+      isAlphanumeric?: boolean;
+    }): Promise<GitHubAutolink> =>
+      callProjectRuntimeActionOr("github", "createRepoAutolink", { args }, () =>
+        ipcRenderer.invoke(IPC.githubCreateRepoAutolink, args),
+      ),
     listRepoLabels: async (args: {
       owner: string;
       name: string;

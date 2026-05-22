@@ -369,7 +369,7 @@ describe("ModelPicker", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("falls back trigger display to most-recent when value is empty", () => {
+  it("shows Select model on the trigger when value is empty even if recents exist", () => {
     recentStore.unshift(OPUS.id);
     render(
       <ModelPicker
@@ -380,7 +380,8 @@ describe("ModelPicker", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.textContent).toContain(OPUS.displayName);
+    expect(trigger.textContent).not.toContain(OPUS.displayName);
+    expect(trigger.textContent).toMatch(/Select model/i);
   });
 
   it("shows the correct tooltip on the authOnly toggle and calls toggle on click", async () => {
@@ -409,6 +410,45 @@ describe("ModelPicker", () => {
       .map((el) => el.getAttribute("data-model-id"));
     expect(ids).toContain(SONNET.id);
     expect(ids).not.toContain(GPT.id);
+  });
+
+  it("shows Cursor in the auth-only rail even before Cursor models are discovered", async () => {
+    const user = userEvent.setup();
+    authOnlyState = true;
+    providerAuthStatusInternal = { anthropic: "ok", cursor: "unauthed" };
+    renderPicker({ models: MODELS.filter((model) => model.family !== "cursor") });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    expect(
+      document.querySelector('[data-rail-selection="provider:cursor"]'),
+    ).toBeTruthy();
+  });
+
+  it("loads cached runtime catalog when the picker opens without forcing refresh", async () => {
+    const user = userEvent.setup();
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        agentChat: {
+          modelCatalog,
+        },
+      },
+    });
+
+    renderPicker();
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" });
+    });
+    expect(modelCatalog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "force" }),
+    );
   });
 
   it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {
@@ -541,31 +581,6 @@ describe("ModelPicker", () => {
   });
 
   describe("OpenCode binary gating", () => {
-    it("refreshes the initially selected OpenCode rail on first open", async () => {
-      const user = userEvent.setup();
-      const modelCatalog = vi.fn(async () => ({
-        groups: [],
-        fetchedAt: "2026-05-18T00:00:00.000Z",
-        stale: false,
-      }));
-      Object.defineProperty(window, "ade", {
-        configurable: true,
-        writable: true,
-        value: {
-          agentChat: {
-            modelCatalog,
-          },
-        },
-      });
-
-      renderPicker({ value: OPENCODE_MODEL.id, models: [OPENCODE_MODEL] });
-      await user.click(screen.getByRole("button", { name: /Select model/i }));
-
-      await waitFor(() => {
-        expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
-      });
-    });
-
     it("shows a runtime loading empty state instead of setup while OpenCode is refreshing", async () => {
       const user = userEvent.setup();
       providerAuthStatusInternal = { opencode: "unauthed" };
@@ -706,7 +721,9 @@ describe("ModelPicker", () => {
       await user.click(document.querySelector('[data-rail-selection="provider:opencode"]') as HTMLButtonElement);
 
       expect(screen.getByText(OPENCODE_MODEL.displayName)).toBeTruthy();
-      expect(modelCatalog).not.toHaveBeenCalled();
+      expect(modelCatalog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ refreshProvider: "opencode" }),
+      );
     });
 
     it("shows the same Install OpenCode copy for opencode, ollama, and lmstudio panes when the binary is missing", async () => {

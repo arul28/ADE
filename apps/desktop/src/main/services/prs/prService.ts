@@ -42,6 +42,7 @@ import type {
   IntegrationWorkflowDisplayState,
   LandResult,
   LandPrArgs,
+  MergeMethod,
   LandQueueNextArgs,
   LandStackArgs,
   LandStackEnhancedArgs,
@@ -137,7 +138,11 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
+import type { IssueTracker } from "../cto/issueTracker";
+import { publishLinearPrCard } from "../cto/linearLaneCardService";
+import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
+import { shouldAttemptAdminMergeForRestError } from "./pathToMergeOrchestrator";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
@@ -147,9 +152,13 @@ import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../sha
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
   buildLinearPrTitle,
-  ensureLinearPrReference,
+  dedupeLinearPrIssueReferences,
+  ensureLinearPrIssueLinkSection,
+  ensureLinearPrReferences,
+  type LinearPrIssueReference,
 } from "../../../shared/linearMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
+import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -303,6 +312,42 @@ function assertIntegrationLaneIsNotPrimary(
   if (lane?.laneType === "primary") {
     throw new Error(`${label} cannot be the primary lane.`);
   }
+}
+
+function collectLinearPrIssueReferences(
+  lane: LaneSummary,
+  closePrimaryOnMerge: boolean,
+): LinearPrIssueReference[] {
+  const refs: LinearPrIssueReference[] = [];
+  const primaryIssueId = lane.linearIssue?.id ?? null;
+  if (lane.linearIssue) {
+    refs.push({
+      issue: lane.linearIssue,
+      closeOnMerge: closePrimaryOnMerge,
+      role: "primary",
+    });
+  }
+  for (const link of lane.linearIssueLinks ?? []) {
+    if (!link.includeInPr) continue;
+    if (primaryIssueId && link.issue.id === primaryIssueId) continue;
+    refs.push({
+      issue: link.issue,
+      closeOnMerge: link.closeOnMerge,
+      role: link.role,
+    });
+  }
+  return dedupeLinearPrIssueReferences(refs);
+}
+
+function applyLinearPrLinkage(
+  body: string,
+  lane: LaneSummary,
+  closePrimaryOnMerge: boolean,
+): string {
+  const refs = collectLinearPrIssueReferences(lane, closePrimaryOnMerge);
+  if (!refs.length) return body;
+  const withMagicWords = ensureLinearPrReferences(body, refs, { preserveExisting: false });
+  return ensureLinearPrIssueLinkSection(withMagicWords, refs);
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -653,6 +698,20 @@ function readPrTemplate(projectRoot: string): string | null {
 }
 
 
+function normalizePrDetailBody(body: string | null | undefined): string | null {
+  if (typeof body !== "string") return null;
+  const trimmed = body.trim();
+  if (!trimmed.length) return null;
+  return normalizeEscapedMarkdownNewlines(body);
+}
+
+function normalizePrDetail(detail: PrDetail | null): PrDetail | null {
+  if (!detail) return null;
+  const body = normalizePrDetailBody(detail.body);
+  if (body === detail.body) return detail;
+  return { ...detail, body };
+}
+
 function parsePrDraftJson(text: string): { title: string; body: string } | null {
   const candidate = extractFirstJsonObject(text);
   if (!candidate) return null;
@@ -660,8 +719,8 @@ function parsePrDraftJson(text: string): { title: string; body: string } | null 
     const parsed = JSON.parse(candidate);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const title = asString((parsed as Record<string, unknown>).title).trim();
-    const body = asString((parsed as Record<string, unknown>).body).trim();
-    if (!title.length || !body.length) return null;
+    const body = normalizePrDetailBody(asString((parsed as Record<string, unknown>).body).trim());
+    if (!title.length || !body) return null;
     return { title, body: `${body}\n` };
   } catch {
     return null;
@@ -802,6 +861,7 @@ export function createPrService({
   laneWorktreeLockService,
   autoRebaseService,
   rebaseSuggestionService,
+  getLinearIssueTracker,
   openExternal,
   onHotRefreshChanged,
 }: {
@@ -818,6 +878,7 @@ export function createPrService({
   laneWorktreeLockService?: LaneWorktreeLockService | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
+  getLinearIssueTracker?: () => IssueTracker | null;
   openExternal: (url: string) => Promise<void>;
   onHotRefreshChanged?: () => void;
 }) {
@@ -847,6 +908,42 @@ export function createPrService({
   const releaseLaneMutationLock = (token: string | null): void => {
     if (!token || !laneWorktreeLockService) return;
     laneWorktreeLockService.release({ token });
+  };
+
+  const publishLinearPrCardsForLane = async (args: {
+    lane: LaneSummary;
+    repo: GitHubRepoRef;
+    prNumber: number;
+    githubUrl: string;
+    closePrimaryOnMerge: boolean;
+    linkedAt?: string | null;
+  }): Promise<void> => {
+    const issueTracker = getLinearIssueTracker?.() ?? null;
+    if (!issueTracker) return;
+    const refs = collectLinearPrIssueReferences(args.lane, args.closePrimaryOnMerge);
+    if (!refs.length) return;
+    const results = await Promise.allSettled(refs.map((reference) =>
+      publishLinearPrCard({
+        issueTracker,
+        lane: args.lane,
+        issue: reference.issue,
+        repoOwner: args.repo.owner,
+        repoName: args.repo.name,
+        prNumber: args.prNumber,
+        githubUrl: args.githubUrl,
+        linkedAt: args.linkedAt,
+      })
+    ));
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      if (result?.status !== "rejected") continue;
+      logger.warn("prs.linear_pr_card_failed", {
+        laneId: args.lane.id,
+        prNumber: args.prNumber,
+        issueIdentifier: refs[index]?.issue.identifier ?? null,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+      });
+    }
   };
 
   const getRowById = (prId: string): PullRequestRow | null =>
@@ -1429,7 +1526,7 @@ export function createPrService({
 
     return rows.map((row) => ({
       prId: row.pr_id,
-      detail: decodeSnapshotJson<PrDetail>(row.detail_json),
+      detail: normalizePrDetail(decodeSnapshotJson<PrDetail>(row.detail_json)),
       status: decodeSnapshotJson<PrStatus>(row.status_json),
       checks: decodeSnapshotJson<PrCheck[]>(row.checks_json) ?? [],
       reviews: decodeSnapshotJson<PrReview[]>(row.reviews_json) ?? [],
@@ -2960,7 +3057,7 @@ export function createPrService({
     });
     return {
       prId,
-      body: asString(data?.body) || null,
+      body: normalizePrDetailBody(asString(data?.body)),
       labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
       assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
       requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
@@ -3349,6 +3446,7 @@ export function createPrService({
       baseRef: baseRefForDiff,
       parentLaneId: lane.parentLaneId,
       linearIssue: lane.linearIssue,
+      linearIssueLinks: lane.linearIssueLinks ?? [],
       commits,
       packBody,
       prTemplate: template
@@ -3358,13 +3456,17 @@ export function createPrService({
     const defaultTitle = lane.linearIssue
       ? buildLinearPrTitle(lane.linearIssue)
       : lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
+    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge === true;
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
-      if (!lane.linearIssue) return draft;
+      const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
+      if (!linearRefs.length) return draft;
+      const body = applyLinearPrLinkage(draft.body, lane, closeLinearIssueOnMerge);
+      if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const hasExactIdentifier = new RegExp(`(^|[^A-Za-z0-9])${escapedIdentifier}([^A-Za-z0-9]|$)`, "i").test(draft.title);
       return {
         title: hasExactIdentifier ? draft.title : defaultTitle,
-        body: ensureLinearPrReference(draft.body, lane.linearIssue, args.closeLinearIssueOnMerge === true),
+        body,
       };
     };
 
@@ -3373,7 +3475,7 @@ export function createPrService({
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
         "The body must be GitHub-flavored markdown with sections: Summary, What Changed, Validation, Risks.",
-        "If Linear issue context is present, include the exact Linear issue identifier in the title and include a non-closing Linear reference in the body.",
+        "If Linear issue context is present, include the primary Linear issue identifier in the title and include Linear references in the body.",
         "",
         "PR Context JSON:",
         JSON.stringify(context, null, 2)
@@ -3466,9 +3568,8 @@ export function createPrService({
     }
 
     const repo = await githubService.getRepoOrThrow();
-    const linearAdjustedBody = lane.linearIssue
-      ? ensureLinearPrReference(args.body, lane.linearIssue, args.closeLinearIssueOnMerge === true, { preserveExisting: false })
-      : args.body;
+    const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge === true;
+    const linearAdjustedBody = applyLinearPrLinkage(args.body, lane, closeLinearIssueOnMerge);
     // Append the branded "Open in ADE" footer (branch link only at this point;
     // we'll PATCH the PR body with the PR-number-aware variant once we know it).
     const prBody = ensureAdeDeeplinkFooter(linearAdjustedBody, {
@@ -3515,15 +3616,7 @@ export function createPrService({
         const existingPrNumber = Number(existingPr?.number);
         if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
           const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
-          const closeOnMerge = args.closeLinearIssueOnMerge === true;
-          let patchedBody = lane.linearIssue
-            ? ensureLinearPrReference(
-                existingBody,
-                lane.linearIssue,
-                closeOnMerge,
-                closeOnMerge ? { preserveExisting: false } : undefined,
-              )
-            : existingBody;
+          let patchedBody = applyLinearPrLinkage(existingBody, lane, closeLinearIssueOnMerge);
           patchedBody = ensureAdeDeeplinkFooter(patchedBody, {
             repoOwner: repo.owner,
             repoName: repo.name,
@@ -3564,7 +3657,7 @@ export function createPrService({
     // link is present. The footer is idempotent: if the rendered output is
     // unchanged (rare — happens when prBody was rebuilt elsewhere), we skip.
     const currentBody = typeof pr?.body === "string" ? pr.body : prBody;
-    const enrichedBody = ensureAdeDeeplinkFooter(currentBody, {
+    const enrichedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closeLinearIssueOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -3643,6 +3736,21 @@ export function createPrService({
     });
     markHotRefresh([prId]);
 
+    await publishLinearPrCardsForLane({
+      lane,
+      repo,
+      prNumber,
+      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+      closePrimaryOnMerge: closeLinearIssueOnMerge,
+      linkedAt: createdAt,
+    }).catch((error) => {
+      logger.warn("prs.linear_pr_cards_publish_failed", {
+        laneId: lane.id,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
     return await refreshOne(prId);
   };
 
@@ -3679,6 +3787,30 @@ export function createPrService({
     const creationStrategy: PrCreationStrategy =
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
+    const currentBody = typeof pr?.body === "string" ? pr.body : "";
+    const patchedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, false), {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      branch: headBranch,
+      prNumber: locator.number,
+    });
+    if (patchedBody !== currentBody) {
+      try {
+        await githubService.apiRequest({
+          method: "PATCH",
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${locator.number}`,
+          body: { body: patchedBody },
+        });
+        if (pr) pr.body = patchedBody;
+      } catch (patchError) {
+        logger.warn("prs.link_to_lane_body_patch_failed", {
+          prNumber: locator.number,
+          laneId: lane.id,
+          error: patchError instanceof Error ? patchError.message : String(patchError),
+        });
+      }
+    }
+
     const summary: PrSummary = {
       id: randomUUID(),
       laneId: lane.id,
@@ -3710,6 +3842,22 @@ export function createPrService({
       laneId: lane.id,
     });
     markHotRefresh([prId]);
+
+    await publishLinearPrCardsForLane({
+      lane,
+      repo,
+      prNumber: locator.number,
+      githubUrl: summary.githubUrl || `https://github.com/${repo.owner}/${repo.name}/pull/${locator.number}`,
+      closePrimaryOnMerge: false,
+      linkedAt: createdAt,
+    }).catch((error) => {
+      logger.warn("prs.linear_pr_cards_publish_failed", {
+        laneId: lane.id,
+        prNumber: locator.number,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
     return await refreshOne(prId);
   };
 
@@ -3956,6 +4104,64 @@ export function createPrService({
     return { branchDeleted, laneArchived, childAutoRebaseBlockedCleanup };
   };
 
+  type GhRunResult = { exitCode: number; stdout: string; stderr: string };
+
+  const runGh = async (ghArgs: string[], opts: { cwd: string; timeoutMs?: number }): Promise<GhRunResult> => {
+    const timeoutMs = opts.timeoutMs ?? 90_000;
+    return await new Promise<GhRunResult>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+
+      const child = spawn("gh", ghArgs, {
+        cwd: opts.cwd,
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const finish = (code: number) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        try { child.kill("SIGKILL"); } catch { /* noop */ }
+        resolve({ exitCode: code, stdout, stderr });
+      };
+
+      timer = setTimeout(() => finish(124), timeoutMs);
+      child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+      child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+      child.on("error", () => finish(1));
+      child.on("close", (code) => finish(code ?? 1));
+    });
+  };
+
+  const attemptAdminMerge = async (args: {
+    row: PullRequestRow;
+    method: MergeMethod;
+  }): Promise<{ success: true; mergeCommitSha: string | null } | { success: false; error: string }> => {
+    let laneWorktreePath: string;
+    try {
+      laneWorktreePath = laneService.getLaneBaseAndBranch(args.row.lane_id).worktreePath;
+    } catch (error) {
+      return {
+        success: false,
+        error: `Admin merge failed because the lane worktree is unavailable: ${getErrorMessage(error)}`,
+      };
+    }
+
+    const adminRes = await runGh(
+      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin"],
+      { cwd: laneWorktreePath, timeoutMs: 90_000 },
+    );
+    if (adminRes.exitCode !== 0) {
+      const adminErr = adminRes.stderr.trim() || adminRes.stdout.trim() || `exit ${adminRes.exitCode}`;
+      return { success: false, error: adminErr };
+    }
+
+    return { success: true, mergeCommitSha: null };
+  };
+
   const land = async (args: LandPrArgs): Promise<LandResult> => {
     const row = getRow(args.prId);
     if (!row) throw new Error(`PR not found: ${args.prId}`);
@@ -3967,9 +4173,40 @@ export function createPrService({
       metadata: {
         prId: row.id,
         prNumber: Number(row.github_pr_number),
-        method: args.method
+        method: args.method,
+        bypassRules: Boolean(args.bypassRules),
       }
     });
+
+    const finishFailure = (rawMsg: string, userMsg: string): LandResult => {
+      operationService.finish({
+        operationId: op.operationId,
+        status: "failed",
+        metadataPatch: { error: rawMsg }
+      });
+      return {
+        prId: row.id,
+        prNumber: Number(row.github_pr_number),
+        success: false,
+        mergeCommitSha: null,
+        branchDeleted: false,
+        laneArchived: false,
+        error: userMsg
+      };
+    };
+
+    const formatMergeError = (rawMsg: string): string => {
+      if (rawMsg.includes("Resource not accessible by personal access token")) {
+        return "GitHub token lacks permission to merge PRs. For fine-grained PATs, enable 'Contents: write' and 'Pull requests: write'. For classic PATs, enable the 'repo' scope.";
+      }
+      if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
+        return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
+      }
+      if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
+        return "PR has merge conflicts. Rebase or resolve conflicts before merging.";
+      }
+      return rawMsg;
+    };
 
     try {
       const merge = await githubService.apiRequest<any>({
@@ -4000,29 +4237,31 @@ export function createPrService({
       };
     } catch (error) {
       const rawMsg = error instanceof Error ? error.message : String(error);
-      // Provide actionable guidance for common GitHub API errors
-      let userMsg = rawMsg;
-      if (rawMsg.includes("Resource not accessible by personal access token")) {
-        userMsg = "GitHub token lacks permission to merge PRs. For fine-grained PATs, enable 'Contents: write' and 'Pull requests: write'. For classic PATs, enable the 'repo' scope.";
-      } else if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
-        userMsg = "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
-      } else if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
-        userMsg = "PR has merge conflicts. Rebase or resolve conflicts before merging.";
+      const userMsg = formatMergeError(rawMsg);
+
+      if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
+        const adminAttempt = await attemptAdminMerge({ row, method: args.method });
+        if (adminAttempt.success) {
+          const cleanup = await runPostMergeCleanup({
+            prId: row.id,
+            mergeCommitSha: adminAttempt.mergeCommitSha,
+            archiveLane: Boolean(args.archiveLane),
+            operationId: op.operationId,
+          });
+          return {
+            prId: row.id,
+            prNumber: Number(row.github_pr_number),
+            success: true,
+            mergeCommitSha: adminAttempt.mergeCommitSha,
+            branchDeleted: cleanup.branchDeleted,
+            laneArchived: cleanup.laneArchived,
+            error: null,
+          };
+        }
+        return finishFailure(adminAttempt.error, formatMergeError(adminAttempt.error));
       }
-      operationService.finish({
-        operationId: op.operationId,
-        status: "failed",
-        metadataPatch: { error: rawMsg }
-      });
-      return {
-        prId: row.id,
-        prNumber: Number(row.github_pr_number),
-        success: false,
-        mergeCommitSha: null,
-        branchDeleted: false,
-        laneArchived: false,
-        error: userMsg
-      };
+
+      return finishFailure(rawMsg, userMsg);
     }
   };
 

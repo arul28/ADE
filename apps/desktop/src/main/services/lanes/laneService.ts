@@ -36,6 +36,9 @@ import type {
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
   LaneLinearIssue,
+  LaneLinearIssueLink,
+  LaneLinearIssueLinkRole,
+  LaneLinearIssueLinkSource,
   LaneRuntimePlacement,
   MissionLaneRole,
   LaneStateSnapshotSummary,
@@ -117,6 +120,21 @@ type LaneLinearIssueRow = {
   updated_at: string;
 };
 
+type LaneLinearIssueLinkRow = {
+  id: string;
+  project_id: string;
+  lane_id: string;
+  issue_id: string;
+  issue_json: string;
+  role: string;
+  source: string;
+  include_in_pr: number;
+  close_on_merge: number;
+  evidence_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
 
@@ -181,6 +199,18 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
   };
 }
 
+function cloneLaneLinearIssue(issue: LaneLinearIssue): LaneLinearIssue {
+  return { ...issue, labels: [...issue.labels] };
+}
+
+function cloneLaneLinearIssueLink(link: LaneLinearIssueLink): LaneLinearIssueLink {
+  return {
+    ...link,
+    issue: cloneLaneLinearIssue(link.issue),
+    evidence: link.evidence ? { ...link.evidence } : null,
+  };
+}
+
 function cloneLaneSummary(summary: LaneSummary): LaneSummary {
   return {
     ...summary,
@@ -188,7 +218,8 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
     parentStatus: summary.parentStatus ? cloneLaneStatus(summary.parentStatus) : null,
     tags: [...summary.tags],
     activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
-    linearIssue: summary.linearIssue ? { ...summary.linearIssue, labels: [...summary.linearIssue.labels] } : null
+    linearIssue: summary.linearIssue ? cloneLaneLinearIssue(summary.linearIssue) : null,
+    linearIssueLinks: (summary.linearIssueLinks ?? []).map(cloneLaneLinearIssueLink)
   };
 }
 
@@ -348,6 +379,104 @@ function parseLaneLinearIssue(raw: string | null): LaneLinearIssue | null {
   }
 }
 
+const LANE_LINEAR_ISSUE_LINK_ROLES: ReadonlySet<LaneLinearIssueLinkRole> = new Set([
+  "primary",
+  "worked",
+  "referenced",
+  "inferred",
+]);
+
+const LANE_LINEAR_ISSUE_LINK_SOURCES: ReadonlySet<LaneLinearIssueLinkSource> = new Set([
+  "lane_create",
+  "lane_link",
+  "chat_attach",
+  "linear_open_issue",
+  "commit",
+  "pr_body",
+  "manual",
+]);
+
+function normalizeLaneLinearIssueLinkRole(value: string | null | undefined): LaneLinearIssueLinkRole {
+  return LANE_LINEAR_ISSUE_LINK_ROLES.has(value as LaneLinearIssueLinkRole)
+    ? (value as LaneLinearIssueLinkRole)
+    : "referenced";
+}
+
+function normalizeLaneLinearIssueLinkSource(value: string | null | undefined): LaneLinearIssueLinkSource {
+  return LANE_LINEAR_ISSUE_LINK_SOURCES.has(value as LaneLinearIssueLinkSource)
+    ? (value as LaneLinearIssueLinkSource)
+    : "manual";
+}
+
+function parseIssueLinkEvidence(raw: string | null | undefined): LaneLinearIssueLink["evidence"] {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return {
+      chatSessionId: typeof parsed.chatSessionId === "string" ? parsed.chatSessionId : null,
+      commitSha: typeof parsed.commitSha === "string" ? parsed.commitSha : null,
+      prId: typeof parsed.prId === "string" ? parsed.prId : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined): LaneLinearIssueLink | null {
+  if (!row) return null;
+  const issue = parseLaneLinearIssue(row.issue_json);
+  if (!issue) return null;
+  return {
+    id: row.id,
+    laneId: row.lane_id,
+    issue,
+    role: normalizeLaneLinearIssueLinkRole(row.role),
+    source: normalizeLaneLinearIssueLinkSource(row.source),
+    includeInPr: row.include_in_pr === 1,
+    closeOnMerge: row.close_on_merge === 1,
+    evidence: parseIssueLinkEvidence(row.evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function makePrimaryLinearIssueLink(laneId: string, issue: LaneLinearIssue, timestamp: string): LaneLinearIssueLink {
+  return {
+    id: `primary:${laneId}:${issue.id}`,
+    laneId,
+    issue: cloneLaneLinearIssue(issue),
+    role: "primary",
+    source: "lane_link",
+    includeInPr: true,
+    closeOnMerge: false,
+    evidence: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
+function mergePrimaryLinearIssueLink(
+  laneId: string,
+  primaryIssue: LaneLinearIssue | null,
+  links: LaneLinearIssueLink[],
+  timestamp: string,
+): LaneLinearIssueLink[] {
+  const cloned = links.map(cloneLaneLinearIssueLink);
+  if (!primaryIssue) return cloned;
+  const primaryIndex = cloned.findIndex((link) => link.issue.id === primaryIssue.id || link.issue.identifier === primaryIssue.identifier);
+  if (primaryIndex >= 0) {
+    cloned[primaryIndex] = {
+      ...cloned[primaryIndex],
+      issue: cloneLaneLinearIssue(primaryIssue),
+      role: "primary",
+      includeInPr: true,
+    };
+    return cloned;
+  }
+  return [makePrimaryLinearIssueLink(laneId, primaryIssue, timestamp), ...cloned];
+}
+
 function toLaneSummary(args: {
   row: LaneRow;
   status: LaneStatus;
@@ -356,8 +485,10 @@ function toLaneSummary(args: {
   stackDepth: number;
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
+  linearIssueLinks?: LaneLinearIssueLink[];
 }): LaneSummary {
   const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
+  const linearIssueLinks = mergePrimaryLinearIssueLink(row.id, linearIssue ?? null, args.linearIssueLinks ?? [], row.created_at);
   return {
     id: row.id,
     name: row.name,
@@ -383,7 +514,8 @@ function toLaneSummary(args: {
     createdAt: row.created_at,
     archivedAt: row.archived_at,
     activeBranchProfile: activeBranchProfile ?? null,
-    linearIssue: linearIssue ?? null
+    linearIssue: linearIssue ?? null,
+    linearIssueLinks
   };
 }
 
@@ -941,6 +1073,93 @@ export function createLaneService({
     }
   };
 
+  const getLaneLinearIssueLinks = (laneId: string): LaneLinearIssueLink[] => {
+    try {
+      return db.all<LaneLinearIssueLinkRow>(
+        `
+          select *
+          from lane_linear_issue_links
+          where project_id = ?
+            and lane_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId, laneId],
+      ).map(parseLaneLinearIssueLink).filter((link): link is LaneLinearIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
+  const upsertLaneLinearIssueLink = (args: {
+    laneId: string;
+    issue: LaneLinearIssue;
+    role: LaneLinearIssueLinkRole;
+    source: LaneLinearIssueLinkSource;
+    includeInPr?: boolean;
+    closeOnMerge?: boolean;
+    evidence?: LaneLinearIssueLink["evidence"];
+  }): LaneLinearIssueLink => {
+    const laneId = args.laneId.trim();
+    const now = new Date().toISOString();
+    const includeInPr = args.includeInPr !== false;
+    const closeOnMerge = args.closeOnMerge === true;
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from lane_linear_issue_links
+          where project_id = ?
+            and lane_id = ?
+            and issue_id = ?
+            and role = ?
+        `,
+        [projectId, laneId, args.issue.id, args.role],
+      );
+      const id = randomUUID();
+      db.run(
+        `
+          insert into lane_linear_issue_links(
+            id, project_id, lane_id, issue_id, issue_json, role, source,
+            include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          laneId,
+          args.issue.id,
+          JSON.stringify(args.issue),
+          args.role,
+          args.source,
+          includeInPr ? 1 : 0,
+          closeOnMerge ? 1 : 0,
+          args.evidence ? JSON.stringify(args.evidence) : null,
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+      return {
+        id,
+        laneId,
+        issue: cloneLaneLinearIssue(args.issue),
+        role: args.role,
+        source: args.source,
+        includeInPr,
+        closeOnMerge,
+        evidence: args.evidence ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep original issue-link error */ }
+      throw err;
+    }
+  };
+
   const getAllLaneRows = (includeArchived = false) =>
     db.all<LaneRow>(
       includeArchived
@@ -1149,6 +1368,22 @@ export function createLaneService({
     } catch (err) {
       try { db.run("rollback"); } catch { /* keep the original upsert error */ }
       throw err;
+    }
+    try {
+      upsertLaneLinearIssueLink({
+        laneId,
+        issue: normalized,
+        role: "primary",
+        source: "lane_create",
+        includeInPr: true,
+        closeOnMerge: false,
+      });
+    } catch (error) {
+      logger.warn("laneService.primary_linear_issue_link_upsert_failed", {
+        laneId,
+        issueId: normalized.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return normalized;
   };
@@ -1709,6 +1944,33 @@ export function createLaneService({
       // Non-fatal — fall back to empty map (per-lane lookup absent).
     }
 
+    const linearIssueLinksByLaneId = new Map<string, LaneLinearIssueLink[]>();
+    try {
+      const linkRows = db.all<LaneLinearIssueLinkRow>(
+        `
+          select *
+          from lane_linear_issue_links
+          where project_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId],
+      );
+      for (const linkRow of linkRows) {
+        if (!linkRow?.lane_id) continue;
+        const parsed = parseLaneLinearIssueLink(linkRow);
+        if (!parsed) continue;
+        const list = linearIssueLinksByLaneId.get(linkRow.lane_id) ?? [];
+        if (!list.some((entry) => entry.issue.id === parsed.issue.id && entry.role === parsed.role)) {
+          list.push(parsed);
+        }
+        linearIssueLinksByLaneId.set(linkRow.lane_id, list);
+      }
+    } catch {
+      // Non-fatal — linked issue metadata is additive.
+    }
+
     for (const row of activeRows) {
       if (!row.parent_lane_id) continue;
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
@@ -1816,6 +2078,7 @@ export function createLaneService({
             stackDepth,
             activeBranchProfile: ensureBranchProfileForRow(row),
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
+            linearIssueLinks: linearIssueLinksByLaneId.get(row.id) ?? [],
           })
         );
         if (includeStatus) {
@@ -1931,6 +2194,7 @@ export function createLaneService({
       stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() }),
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue,
+      linearIssueLinks: getLaneLinearIssueLinks(laneId),
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
     return summary;
@@ -2114,6 +2378,7 @@ export function createLaneService({
     db.run("delete from lane_branch_profiles where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_worktree_locks where lane_id = ?", [laneId]);
     db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
+    db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
   };
 
@@ -2182,6 +2447,53 @@ export function createLaneService({
 
     invalidateListCache(): void {
       invalidateLaneListCache();
+    },
+
+    linkLinearIssues(args: {
+      laneId: string;
+      issues: LaneLinearIssue[];
+      role?: LaneLinearIssueLinkRole;
+      source?: LaneLinearIssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: LaneLinearIssueLink["evidence"];
+    }): LaneLinearIssueLink[] {
+      const laneId = args.laneId.trim();
+      if (!laneId) throw new Error("laneId is required.");
+      const row = getLaneRow(laneId);
+      if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.status === "archived") throw new Error("Lane is archived.");
+      const primary = getLaneLinearIssue(laneId);
+      const links: LaneLinearIssueLink[] = [];
+      const seen = new Set<string>();
+      for (const issue of args.issues) {
+        const normalized = normalizeLaneLinearIssue(issue, issue.branchName ?? row.branch_ref);
+        if (
+          !normalized.id
+          || !normalized.identifier
+          || !normalized.title
+          || !normalized.projectId
+          || !normalized.teamKey
+          || seen.has(normalized.id)
+        ) {
+          continue;
+        }
+        seen.add(normalized.id);
+        if (primary && (primary.id === normalized.id || primary.identifier === normalized.identifier)) {
+          continue;
+        }
+        links.push(upsertLaneLinearIssueLink({
+          laneId,
+          issue: normalized,
+          role: args.role ?? "worked",
+          source: args.source ?? "manual",
+          includeInPr: args.includeInPr ?? true,
+          closeOnMerge: args.closeOnMerge ?? false,
+          evidence: args.evidence ?? null,
+        }));
+      }
+      if (links.length) invalidateLaneListCache();
+      return links;
     },
 
     async create({ name, description, parentLaneId, baseBranch, branchName, linearIssue, runtimePlacement }: CreateLaneArgs): Promise<LaneSummary> {
@@ -2431,6 +2743,7 @@ export function createLaneService({
         }
 
         db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
+        db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
         db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
         invalidateLaneListCache();
       };

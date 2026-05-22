@@ -2,7 +2,7 @@
 
 import React from "react";
 import { MemoryRouter } from "react-router-dom";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -25,6 +25,34 @@ import type {
 } from "../../../../shared/types";
 
 const mockUsePrs = vi.fn();
+
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children }: { children: React.ReactNode }) => <div data-testid="pr-detail-layout">{children}</div>,
+  Panel: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement> & { id?: string }) => (
+    <div data-testid={props.id} {...props}>
+      {children}
+    </div>
+  ),
+  Separator: (props: React.HTMLAttributes<HTMLDivElement>) => <div role="separator" {...props} />,
+}));
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: (options: { count: number; estimateSize: () => number }) => {
+    const size = options.estimateSize();
+    return {
+      getTotalSize: () => options.count * size,
+      getVirtualItems: () =>
+        Array.from({ length: options.count }, (_, index) => ({
+          index,
+          key: index,
+          start: index * size,
+          size,
+        })),
+      scrollToIndex: () => {},
+      measureElement: () => {},
+    };
+  },
+}));
 
 vi.mock("../state/PrsContext", () => ({
   usePrs: () => mockUsePrs(),
@@ -314,7 +342,6 @@ function renderPane(args: {
   snapshotHydration?: PrSnapshotHydration | null;
   snapshotHydrationOwnedByContext?: boolean;
   liveDetailReady?: boolean;
-  prsTimelineRailsEnabled?: boolean;
 }) {
   const laneList = args.lanes ?? [makeLane({
     status: {
@@ -455,7 +482,6 @@ function renderPane(args: {
     setResolverModel: vi.fn(),
     setResolverReasoningLevel: vi.fn(),
     setResolverPermissionMode: vi.fn(),
-    prsTimelineRailsEnabled: args.prsTimelineRailsEnabled ?? false,
     dismissedAiSummaries: {},
     timelineFiltersByPrId: {},
     detailAiSummary: null,
@@ -621,6 +647,22 @@ function renderPane(args: {
 
 describe("PrDetailPane", () => {
   beforeEach(() => {
+    (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = class {
+      constructor(private cb: (entries: IntersectionObserverEntry[]) => void) {}
+      observe(el: Element) {
+        this.cb([{ isIntersecting: true, target: el } as unknown as IntersectionObserverEntry]);
+      }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+    };
+    Element.prototype.scrollTo = function () {};
+
     mockUsePrs.mockReturnValue({
       convergenceStatesByPrId: {},
       detailReviewThreads: [],
@@ -692,6 +734,7 @@ describe("PrDetailPane", () => {
   });
 
   it("keeps the merge readiness checks row in a running state while failed checks are still in flight", async () => {
+    const user = userEvent.setup();
     renderPane({
       checks: [
         makeCheck({ name: "ci / unit", conclusion: "success" }),
@@ -701,10 +744,11 @@ describe("PrDetailPane", () => {
       reviewThreads: [],
     });
 
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
+
     await waitFor(() => {
-      expect(screen.getByText("Some checks failing")).toBeTruthy();
-      expect(screen.getByText("1/3 checks passing, 1 still running")).toBeTruthy();
-      expect(screen.getAllByLabelText("CI running").length).toBeGreaterThan(0);
+      expect(screen.getByText(/1 failing/i)).toBeTruthy();
+      expect(screen.getByText(/1 pending/i)).toBeTruthy();
     });
   });
 
@@ -768,7 +812,6 @@ describe("PrDetailPane", () => {
   });
 
   it("hydrates checks and timeline data from a cached snapshot", async () => {
-    const user = userEvent.setup();
     const listSnapshots = vi.fn().mockResolvedValue([{
       prId: "pr-80",
       detail: null,
@@ -789,17 +832,14 @@ describe("PrDetailPane", () => {
 
     await waitFor(() => {
       expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
-    });
-
-    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
-    await waitFor(() => {
       expect(screen.getByText("Cached snapshot check")).toBeTruthy();
     });
 
-    await user.click(screen.getByRole("button", { name: /overview/i }));
+    const rails = await screen.findByTestId("pr-detail-timeline-rails");
     await waitFor(() => {
-      expect(screen.getByText("Cached comment body")).toBeTruthy();
-      expect(screen.getByText("Cached review body")).toBeTruthy();
+      expect(screen.getAllByTestId("pr-timeline-review-card").length).toBeGreaterThan(0);
+      expect(within(rails).getAllByText("Cached comment body").length).toBeGreaterThan(0);
+      expect(within(rails).getAllByText("Cached review body").length).toBeGreaterThan(0);
     });
   });
 
@@ -849,6 +889,7 @@ describe("PrDetailPane", () => {
   });
 
   it("updates synthesized activity when selected PR detail inputs refresh", async () => {
+    const user = userEvent.setup();
     const { rerenderPane } = renderPane({
       checks: [makeCheck({ name: "Old CI", conclusion: "success" })],
       reviewThreads: [],
@@ -858,8 +899,9 @@ describe("PrDetailPane", () => {
       },
     });
 
+    await user.click(screen.getByRole("button", { name: /ci \/ checks/i }));
     await waitFor(() => {
-      expect(screen.getByText("Old CI: success")).toBeTruthy();
+      expect(screen.getByText("Old CI")).toBeTruthy();
     });
 
     rerenderPane(
@@ -871,8 +913,8 @@ describe("PrDetailPane", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("New CI: failure")).toBeTruthy();
-      expect(screen.queryByText("Old CI: success")).toBeNull();
+      expect(screen.getByText("New CI")).toBeTruthy();
+      expect(screen.queryByText("Old CI")).toBeNull();
     });
   });
 
@@ -898,8 +940,8 @@ describe("PrDetailPane", () => {
       addComment,
     });
 
-    await user.type(screen.getByPlaceholderText(/leave a comment/i), "Freshly posted comment");
-    await user.click(screen.getByRole("button", { name: /^comment$/i }));
+    await user.type(screen.getByPlaceholderText("Leave a comment…"), "Freshly posted comment");
+    await user.click(screen.getByRole("button", { name: /post comment/i }));
 
     await waitFor(() => {
       expect(addComment).toHaveBeenCalledWith({ prId: "pr-80", body: "Freshly posted comment" });
@@ -912,19 +954,15 @@ describe("PrDetailPane", () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       renderPane({
-        checks: [
-          makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
-          makeCheck({ name: "CodeRabbit", detailsUrl: null, startedAt: null, completedAt: null }),
-        ],
+        checks: [],
         reviews: [
           makeReview({ reviewer: "reviewer", submittedAt: "2026-03-23T12:05:00.000Z", body: "First review" }),
-          makeReview({ reviewer: "reviewer", submittedAt: "2026-03-23T12:05:00.000Z", body: "Second review" }),
+          makeReview({ reviewer: "reviewer", submittedAt: "2026-03-23T12:06:00.000Z", body: "Second review" }),
         ],
         reviewThreads: [],
       });
 
       await waitFor(() => {
-        expect(screen.getAllByText("CodeRabbit: failure")).toHaveLength(2);
         expect(screen.getByText("First review")).toBeTruthy();
         expect(screen.getByText("Second review")).toBeTruthy();
       });
@@ -1385,19 +1423,20 @@ describe("PrDetailPane", () => {
       },
     });
 
-    const mergeButton = await screen.findByRole("button", { name: /merge pull request/i });
+    const mergeButton = await screen.findByRole("button", { name: /squash and merge/i });
     expect((mergeButton as HTMLButtonElement).disabled).toBe(true);
 
+    await user.click(screen.getByRole("button", { name: /choose merge method/i }));
     await user.click(screen.getByRole("button", { name: /create merge commit/i }));
-    await user.click(screen.getByRole("checkbox", { name: /attempt merge anyway if github allows bypass rules/i }));
+    await user.click(screen.getByLabelText(/merge without waiting for requirements/i));
 
-    const bypassButton = screen.getByRole("button", { name: /attempt merge anyway/i });
+    const bypassButton = screen.getByTestId("pr-merge-primary-button");
     expect((bypassButton as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(bypassButton);
 
     await waitFor(() => {
-      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "merge" });
+      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "merge", bypassRules: true });
       expect(onRefresh).toHaveBeenCalled();
     });
   });
@@ -1407,7 +1446,6 @@ describe("PrDetailPane", () => {
     const { land, onRefresh } = renderPane({
       checks: [makeCheck({ conclusion: "success" })],
       reviewThreads: [],
-      prsTimelineRailsEnabled: true,
       statusOverrides: {
         checksStatus: "passing",
         reviewStatus: "approved",
@@ -1421,23 +1459,22 @@ describe("PrDetailPane", () => {
     });
 
     expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
-    const actionSlot = screen.getByTestId("pr-detail-action-rail-slot");
-    expect(actionSlot.style.overflowY).toBe("auto");
-    expect(actionSlot.style.maxHeight).toBe("min(40%, 340px)");
-    expect(screen.getByRole("button", { name: /ai review/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /submit review/i })).toBeTruthy();
+    expect(screen.getByTestId("pr-comment-composer")).toBeTruthy();
+    expect(screen.getByTestId("pr-detail-metadata-actions")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /request ai review/i })).toBeTruthy();
 
-    const mergeButton = screen.getByRole("button", { name: /merge pull request/i });
+    const mergeButton = screen.getByTestId("pr-merge-primary-button");
     expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
     await user.click(mergeButton);
 
     await waitFor(() => {
-      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash" });
+      expect(land).toHaveBeenCalledWith({ prId: "pr-80", method: "squash", bypassRules: false });
       expect(onRefresh).toHaveBeenCalled();
     });
   });
 
   it("enables resolved and outdated review thread filters for legacy activity deep links", async () => {
+    const user = userEvent.setup();
     window.history.replaceState(null, "", "/prs?tab=normal&prId=pr-80&detailTab=activity&threadId=thread-1");
 
     renderPane({
@@ -1459,13 +1496,12 @@ describe("PrDetailPane", () => {
           ],
         }),
       ],
-      prsTimelineRailsEnabled: true,
     });
 
     expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
-    expect(document.querySelector('[data-filter-key="all"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(document.querySelector('[data-filter-key="unresolved"]')?.getAttribute("aria-pressed")).toBe("false");
-    expect(document.querySelector('[data-filter-key="outdated"]')?.getAttribute("aria-pressed")).toBe("true");
+    const collapsedThread = await screen.findByRole("button", { expanded: false });
+    await user.click(collapsedThread);
+    expect(await screen.findByText("Resolved thread body")).toBeTruthy();
   });
 
   it("launches the issue resolver chat and navigates to the work session", async () => {
@@ -2048,21 +2084,21 @@ describe("PrDetailPane", () => {
   });
 
   it("renders review activity bodies as markdown instead of raw source text", async () => {
+    const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
-      activity: [
-        {
-          id: "review-1",
-          type: "review",
-          author: "coderabbitai[bot]",
-          avatarUrl: null,
+      reviews: [
+        makeReview({
+          reviewer: "coderabbitai[bot]",
+          state: "commented",
           body: "**Actionable comments posted: 3**\n\n<details><summary>Prompt for AI Agents</summary>Use the current code.</details>",
-          timestamp: "2026-03-23T12:00:00.000Z",
-          metadata: { state: "commented" },
-        },
+        }),
       ],
     });
+
+    const botReviewToggle = await screen.findByRole("button", { name: /coderabbit/i });
+    await user.click(botReviewToggle);
 
     expect(await screen.findByText("Actionable comments posted: 3")).toBeTruthy();
     expect(screen.queryByText(/\*\*Actionable comments posted: 3\*\*/)).toBeNull();

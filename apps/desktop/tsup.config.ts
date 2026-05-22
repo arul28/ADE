@@ -20,7 +20,8 @@ export default defineConfig({
   noExternal: ["@opencode-ai/sdk", /^@opencode-ai\/sdk\/v2(?:\/.*)?$/],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
-  clean: true,
+  // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.
+  clean: ["dist/main", "dist/preload"],
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),

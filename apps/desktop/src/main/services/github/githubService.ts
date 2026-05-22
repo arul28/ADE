@@ -3,7 +3,7 @@ import path from "node:path";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
-import type { GitHubRepoRef, GitHubStatus } from "../../../shared/types";
+import type { GitHubAutolink, GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
@@ -667,6 +667,42 @@ export function createGithubService({
     });
   };
 
+  const normalizeAutolink = (raw: Record<string, unknown>): GitHubAutolink => ({
+    id: typeof raw.id === "number" && Number.isFinite(raw.id) ? raw.id : 0,
+    keyPrefix: asString(raw.key_prefix),
+    urlTemplate: asString(raw.url_template),
+    isAlphanumeric: Boolean(raw.is_alphanumeric),
+  });
+
+  const listRepoAutolinks = async (owner: string, name: string): Promise<GitHubAutolink[]> => {
+    const data = await apiRequestAllPages<Record<string, unknown>>({
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
+      query: { per_page: 100 },
+    });
+    return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
+  };
+
+  const createRepoAutolink = async (
+    owner: string,
+    name: string,
+    args: { keyPrefix: string; urlTemplate: string; isAlphanumeric?: boolean },
+  ): Promise<GitHubAutolink> => {
+    const autolinksPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`;
+    const { data } = await apiRequest<Record<string, unknown>>({
+      method: "POST",
+      path: autolinksPath,
+      body: {
+        key_prefix: args.keyPrefix,
+        url_template: args.urlTemplate,
+        is_alphanumeric: args.isAlphanumeric === true,
+      },
+    });
+    for (const cacheKey of etagCache.keys()) {
+      if (cacheKey.includes(autolinksPath)) etagCache.delete(cacheKey);
+    }
+    return normalizeAutolink(data);
+  };
+
   const listRepoCollaborators = async (owner: string, name: string): Promise<GitHubUser[]> => {
     return await apiRequestAllPages<GitHubUser>({
       path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/collaborators`,
@@ -992,6 +1028,8 @@ export function createGithubService({
     publishCurrentProject,
 
     // Polling/picker read helpers
+    listRepoAutolinks,
+    createRepoAutolink,
     listRepoLabels,
     listRepoCollaborators,
     listRepoIssues,

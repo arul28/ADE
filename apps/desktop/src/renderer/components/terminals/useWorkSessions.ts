@@ -247,6 +247,7 @@ export function buildWorkTabGroupModel(args: {
       lastOutputPreview: session.lastOutputPreview,
       runtimeState: session.runtimeState,
       toolType: session.toolType,
+      pendingInputItemId: session.pendingInputItemId,
     });
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
@@ -1103,6 +1104,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           lastOutputPreview: session.lastOutputPreview,
           runtimeState: session.runtimeState,
           toolType: session.toolType,
+          pendingInputItemId: session.pendingInputItemId,
         });
         if (bucket !== filterStatus) return false;
       }
@@ -1144,6 +1146,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         lastOutputPreview: session.lastOutputPreview,
         runtimeState: session.runtimeState,
         toolType: session.toolType,
+        pendingInputItemId: session.pendingInputItemId,
       });
       if (bucket === "running") running.push(session);
       else if (bucket === "awaiting-input") awaiting.push(session);

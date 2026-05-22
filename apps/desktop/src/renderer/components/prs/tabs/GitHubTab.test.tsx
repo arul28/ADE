@@ -7,6 +7,16 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreateLaneFromPrBranchPreflightResult, GitHubPrSnapshot, LaneSummary, MergeMethod, PrWithConflicts } from "../../../../shared/types";
 
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children }: { children: React.ReactNode }) => <div data-testid="github-tab-layout">{children}</div>,
+  Panel: ({ children, ...props }: React.HTMLAttributes<HTMLDivElement> & { id?: string }) => (
+    <div data-testid={props.id} {...props}>
+      {children}
+    </div>
+  ),
+  Separator: (props: React.HTMLAttributes<HTMLDivElement>) => <div role="separator" {...props} />,
+}));
+
 const mockUsePrs = vi.fn();
 
 vi.mock("../state/PrsContext", () => ({
@@ -354,70 +364,6 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     expect(screen.getByRole("button", { name: /connect github/i })).toBeTruthy();
-  });
-
-  it("ignores cross-repo external PRs from legacy snapshots", async () => {
-    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...snapshot,
-      externalPullRequests: [
-        makeGitHubPr({
-          id: "external-other-repo",
-          scope: "external",
-          repoOwner: "elsewhere",
-          repoName: "other-project",
-          githubPrNumber: 901,
-          githubUrl: "https://github.com/elsewhere/other-project/pull/901",
-          title: "Other project PR",
-          linkedPrId: null,
-          linkedLaneId: null,
-          linkedLaneName: null,
-          adeKind: null,
-        }),
-      ],
-    });
-
-    renderTab();
-
-    await waitFor(() => {
-      expect(screen.getByText("Open PR")).toBeTruthy();
-    });
-    expect(screen.queryByText("Other project PR")).toBeNull();
-  });
-
-  it("filters GitHub rows by ADE linkage scope", async () => {
-    const user = userEvent.setup();
-    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue({
-      ...snapshot,
-      repoPullRequests: [
-        ...snapshot.repoPullRequests,
-        makeGitHubPr({
-          id: "repo-unmapped",
-          githubPrNumber: 200,
-          githubUrl: "https://github.com/ade-dev/ade/pull/200",
-          title: "Unmapped PR",
-          headBranch: "feature/unmapped",
-          linkedPrId: null,
-          linkedLaneId: null,
-          linkedLaneName: null,
-          adeKind: null,
-          updatedAt: "2026-03-13T11:50:00.000Z",
-        }),
-      ],
-    });
-
-    renderTab();
-
-    await waitFor(() => {
-      expect(screen.getByText("Unmapped PR")).toBeTruthy();
-    });
-
-    await user.click(screen.getByRole("button", { name: /ADE/i }));
-    expect(screen.queryByText("Unmapped PR")).toBeNull();
-    expect(screen.getByText("Open PR")).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /External/i }));
-    expect(screen.getByText("Unmapped PR")).toBeTruthy();
-    expect(screen.queryByText("Open PR")).toBeNull();
   });
 
   it("passes queue context into the normal PR detail pane", async () => {
@@ -811,9 +757,6 @@ describe("GitHubTab", () => {
       expect(screen.getByText("Open PR")).not.toBeNull();
       expect(screen.getByText("Unlinked PR")).not.toBeNull();
     });
-
-    expect(screen.getByRole("button", { name: /^ADE/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^External/i })).toBeTruthy();
   });
 
   it("marks unlinked PRs as unmapped", async () => {
@@ -1124,8 +1067,6 @@ describe("GitHubTab", () => {
     await waitFor(() => {
       expect(onSelectPr).toHaveBeenCalledWith("pr-created");
     });
-    expect(screen.getByRole("button", { name: /^ADE\s+1$/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /^External\s+0$/i })).toBeTruthy();
     expect(onRefreshAll).toHaveBeenCalledWith({ prId: "pr-created" });
     expect(window.ade.lanes.list).toHaveBeenCalledWith({
       includeArchived: false,

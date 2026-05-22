@@ -162,6 +162,28 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
+  it("uses the shared working detail when local status has no message", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "RUNNING",
+    }, mapperMeta())).toEqual([{
+      type: "activity",
+      activity: "working",
+      detail: "Preparing response",
+      turnId: "turn-1",
+    }]);
+
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "CREATING",
+    }, mapperMeta())).toEqual([{
+      type: "activity",
+      activity: "working",
+      detail: "Preparing response",
+      turnId: "turn-1",
+    }]);
+  });
+
   it("uses the provided task status map for task lifecycle transitions", () => {
     const taskStatusMap = new Map<string, string>();
     const started = mapCursorSdkMessageToChatEvents({

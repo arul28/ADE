@@ -277,6 +277,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
   CreateLaneFromPrBranchArgs,
@@ -1967,6 +1968,17 @@ declare global {
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoAutolinks: (args?: {
+          owner?: string;
+          name?: string;
+        }) => Promise<GitHubAutolink[]>;
+        createRepoAutolink: (args: {
+          owner?: string;
+          name?: string;
+          keyPrefix: string;
+          urlTemplate: string;
+          isAlphanumeric?: boolean;
+        }) => Promise<GitHubAutolink>;
         listRepoLabels: (args: {
           owner: string;
           name: string;

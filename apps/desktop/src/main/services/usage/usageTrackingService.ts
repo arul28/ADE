@@ -906,6 +906,13 @@ type ThresholdStore = {
   save: (state: ThresholdState) => void;
 };
 
+function normalizeResetAtKey(resetsAt: string): string {
+  const trimmed = resetsAt.trim();
+  if (!trimmed) return "";
+  const ms = new Date(trimmed).getTime();
+  return Number.isFinite(ms) ? String(ms) : trimmed;
+}
+
 function createFileThresholdStore(filePath: string, logger: Logger): ThresholdStore {
   return {
     load: () => {
@@ -940,22 +947,27 @@ function detectThresholdCrossings(
       windows.find((w) => w.provider === provider && w.windowType === "monthly");
     if (!primaryWindow || !primaryWindow.resetsAt) continue;
 
+    const resetKey = normalizeResetAtKey(primaryWindow.resetsAt);
     const prev = prevState[provider];
-    const cycleChanged = !prev || prev.resetsAt !== primaryWindow.resetsAt;
+    const cycleChanged = !prev || normalizeResetAtKey(prev.resetsAt) !== resetKey;
     const firedThresholds = cycleChanged ? [] : [...(prev?.firedThresholds ?? [])];
 
     const percent = Math.max(0, Math.min(100, primaryWindow.percentUsed));
+    let highestNewThreshold: (typeof USAGE_THRESHOLDS)[number] | null = null;
     for (const threshold of USAGE_THRESHOLDS) {
       if (percent >= threshold && !firedThresholds.includes(threshold)) {
         firedThresholds.push(threshold);
-        events.push({
-          provider,
-          threshold,
-          percent,
-          resetsAt: primaryWindow.resetsAt,
-          firedAt: nowIso(),
-        });
+        highestNewThreshold = threshold;
       }
+    }
+    if (highestNewThreshold != null) {
+      events.push({
+        provider,
+        threshold: highestNewThreshold,
+        percent,
+        resetsAt: primaryWindow.resetsAt,
+        firedAt: nowIso(),
+      });
     }
     nextState[provider] = { resetsAt: primaryWindow.resetsAt, firedThresholds };
   }
@@ -1199,4 +1211,5 @@ export const _testing = {
   resolveTokenPrice,
   pollCodexViaCliRpc,
   detectThresholdCrossings,
+  normalizeResetAtKey,
 };

@@ -332,7 +332,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
   const [gridResetKey, setGridResetKey] = useState(0);
   const [laneFilter, setLaneFilter] = useState("");
-  const [laneStatusFilter, setLaneStatusFilter] = useState<"all" | "running" | "awaiting-input" | "ended">("all");
   const [manageOpen, setManageOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [createLaneName, setCreateLaneName] = useState("");
@@ -555,24 +554,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     [sortedLanes, laneFilter, pinnedLaneIds],
   );
 
-  const laneStatusCounts = useMemo(() => {
-    const counts = {
-      all: laneFilterMatchedLanes.length,
-      running: 0,
-      "awaiting-input": 0,
-      ended: 0,
-      none: 0,
-    };
-    for (const lane of laneFilterMatchedLanes) {
-      const bucket = laneRuntimeById.get(lane.id)?.bucket ?? "none";
-      if (bucket === "running") counts.running += 1;
-      else if (bucket === "awaiting-input") counts["awaiting-input"] += 1;
-      else if (bucket === "ended") counts.ended += 1;
-      else counts.none += 1;
-    }
-    return counts;
-  }, [laneFilterMatchedLanes, laneRuntimeById]);
-
   const laneOrderById = useMemo(() => {
     const map = new Map<string, number>();
     sortedLanes.forEach((lane, index) => map.set(lane.id, index));
@@ -590,11 +571,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return sortLaneListRows({
       lanes: laneFilterMatchedLanes,
       laneRuntimeById,
-      laneStatusFilter,
+      laneStatusFilter: "all",
       laneOrderById,
       pinnedLaneIds,
     });
-  }, [laneFilterMatchedLanes, laneRuntimeById, laneStatusFilter, laneOrderById, pinnedLaneIds]);
+  }, [laneFilterMatchedLanes, laneRuntimeById, laneOrderById, pinnedLaneIds]);
   const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
 
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
@@ -3074,45 +3055,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           ) : null}
         </div>
 
-        <div data-tour="lanes.statusChips" className="flex shrink-0 items-center gap-1 overflow-x-auto pb-0.5">
-          {([
-            { key: "all", label: "ALL", color: COLORS.accent, count: laneStatusCounts.all },
-            { key: "running", label: "RUNNING", color: COLORS.success, count: laneStatusCounts.running },
-            { key: "awaiting-input", label: "AWAITING INPUT", color: COLORS.warning, count: laneStatusCounts["awaiting-input"] },
-            { key: "ended", label: "ENDED", color: COLORS.danger, count: laneStatusCounts.ended },
-          ] as const).map((chip) => {
-            const active = laneStatusFilter === chip.key;
-            return (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => setLaneStatusFilter(chip.key)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                  height: 24,
-                  padding: "0 8px",
-                  fontFamily: MONO_FONT,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: "1px",
-                  textTransform: "uppercase",
-                  borderRadius: 6,
-                  border: active ? `1px solid ${chip.color}60` : `1px solid ${COLORS.outlineBorder}`,
-                  background: active ? `${chip.color}20` : "rgba(255,255,255,0.02)",
-                  color: active ? chip.color : COLORS.textMuted,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
-                title={`${chip.count} lane${chip.count === 1 ? "" : "s"}`}
-              >
-                <span>{chip.label}</span>
-                <span style={{ color: active ? chip.color : COLORS.textDim }}>{chip.count}</span>
-              </button>
-            );
-          })}
-        </div>
         {laneActionError ? (
           <div
             className="inline-flex max-w-[420px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
@@ -3748,9 +3690,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
               description={
                 filteredLanes.length === 0
-                  ? laneStatusFilter === "all"
-                    ? "Adjust the lane filter."
-                    : "Try a different status filter or adjust the lane filter."
+                  ? "Adjust the lane filter."
                   : "Select a lane tab to begin."
               }
             />

@@ -8,6 +8,7 @@ export function LaneDialogShell({
   onOpenChange,
   title,
   description,
+  headerExtra,
   icon: Icon,
   widthClassName,
   busy = false,
@@ -18,6 +19,7 @@ export function LaneDialogShell({
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
+  headerExtra?: ReactNode;
   icon?: ComponentType<{ size?: number | string; className?: string }>;
   widthClassName?: string;
   busy?: boolean;
@@ -53,15 +55,16 @@ export function LaneDialogShell({
                         ) : null}
                         <span className="truncate">{title}</span>
                       </Dialog.Title>
+                      {headerExtra ? <div className="mt-3 min-w-0">{headerExtra}</div> : null}
                       {description ? (
                         <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-fg sm:max-w-2xl">
                           {description}
                         </Dialog.Description>
-                      ) : (
+                      ) : !headerExtra ? (
                         <Dialog.Description className="sr-only">
                           {title}
                         </Dialog.Description>
-                      )}
+                      ) : null}
                     </div>
                     <Dialog.Close asChild>
                       <Button variant="ghost" size="sm" className="shrink-0" disabled={busy}>

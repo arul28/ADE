@@ -167,4 +167,15 @@ describe("PrMarkdown", () => {
     expect(checkboxes[1].checked).toBe(false);
     expect(checkboxes[1].disabled).toBe(true);
   });
+
+  it("renders literal \\n sequences as markdown line breaks", () => {
+    const markdown = "## Summary\\n- tighten PR snapshot routing\\n- add lane delete cleanup";
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    expect(screen.getByRole("heading", { level: 2, name: /summary/i })).toBeTruthy();
+    expect(screen.getByText(/tighten PR snapshot routing/i)).toBeTruthy();
+    expect(screen.getByText(/add lane delete cleanup/i)).toBeTruthy();
+    expect(screen.queryByText(/\\n/)).toBeNull();
+  });
 });

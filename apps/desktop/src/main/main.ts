@@ -470,6 +470,11 @@ if (process.env.VITE_DEV_SERVER_URL) {
 function getRendererUrl(): string {
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) return devUrl;
+  // Unpackaged launches without VITE_DEV_SERVER_URL (e.g. raw `electron .`) should
+  // prefer the local Vite dev server instead of file:// chunks that tsup watch can delete.
+  if (!app.isPackaged) {
+    return "http://localhost:5173";
+  }
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
@@ -2225,6 +2230,7 @@ app.whenReady().then(async () => {
       laneWorktreeLockService,
       autoRebaseService,
       rebaseSuggestionService,
+      getLinearIssueTracker: () => linearIssueTrackerRef,
       onHotRefreshChanged: () => {
         prPollingServiceRef?.poke();
       },

@@ -174,8 +174,19 @@ describe("applyTimelineFilters", () => {
     }),
   ];
 
-  it("hides resolved and outdated threads by default", () => {
+  it("shows resolved and outdated threads by default", () => {
     const out = applyTimelineFilters(events, DEFAULT_PR_TIMELINE_FILTERS, "alice");
+    expect(out).toHaveLength(3);
+  });
+
+  it("hides resolved and outdated when flags are off", () => {
+    const filters: PrTimelineFilters = {
+      showResolved: false,
+      showOutdated: false,
+      onlyMine: false,
+      onlyBots: false,
+    };
+    const out = applyTimelineFilters(events, filters, "alice");
     const ids = out.map((e) => e.id);
     expect(ids).toEqual(["t-open"]);
   });
@@ -189,6 +200,63 @@ describe("applyTimelineFilters", () => {
     };
     const out = applyTimelineFilters(events, filters, "alice");
     expect(out).toHaveLength(3);
+  });
+
+  it("excludes check notifications from the overview feed", () => {
+    const out = applyTimelineFilters(
+      [
+        makeEvent({
+          id: "check:Vercel:2026-05-15T00:03:20Z",
+          type: "check_update",
+          checkName: "Vercel",
+          status: "completed",
+          conclusion: "success",
+          detailsUrl: "https://example.com",
+        }),
+        makeEvent({
+          id: "t-open",
+          type: "review_thread",
+          threadId: "t-open",
+          path: "a.ts",
+          line: 1,
+          startLine: null,
+          isResolved: false,
+          isOutdated: false,
+          commentCount: 1,
+          firstCommentBody: "open",
+        }),
+      ],
+      DEFAULT_PR_TIMELINE_FILTERS,
+      "alice",
+    );
+    expect(out.map((event) => event.id)).toEqual(["t-open"]);
+  });
+
+  it("always keeps pr_opened events even when mine/bots filters are active", () => {
+    const opened = makeEvent({
+      id: "opened:pr-1",
+      type: "pr_opened",
+      author: "octocat",
+      title: "Add PR opened banner",
+      githubPrNumber: 42,
+      repoOwner: "acme",
+      repoName: "ade",
+      baseBranch: "main",
+      headBranch: "feature/banner",
+      isDraft: false,
+      additions: 12,
+      deletions: 3,
+    });
+    const mineOnly: PrTimelineFilters = {
+      ...DEFAULT_PR_TIMELINE_FILTERS,
+      onlyMine: true,
+    };
+    const botsOnly: PrTimelineFilters = {
+      ...DEFAULT_PR_TIMELINE_FILTERS,
+      onlyBots: true,
+    };
+    expect(applyTimelineFilters([opened], mineOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
+    expect(applyTimelineFilters([opened], botsOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
   });
 });
 
@@ -312,30 +380,6 @@ describe("PrTimeline", () => {
     expect(second?.getAttribute("data-thread-id")).toBe("t2");
   });
 
-  it("renders the timeline filter toolbar", async () => {
-    const user = userEvent.setup();
-    const onFiltersChange = vi.fn();
-    render(
-      <PrTimeline
-        events={[]}
-        prId="pr-1"
-        laneId={null}
-        repoOwner="acme"
-        repoName="ade"
-        viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
-        onFiltersChange={onFiltersChange}
-      />,
-    );
-    expect(screen.getByRole("button", { name: /Mine/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Show outdated/i })).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: /Mine/i }));
-    expect(onFiltersChange).toHaveBeenCalledWith({
-      ...DEFAULT_PR_TIMELINE_FILTERS,
-      onlyMine: true,
-    });
-  });
-
   it("distinguishes empty filtered results from an empty timeline", () => {
     render(
       <PrTimeline
@@ -358,7 +402,7 @@ describe("PrTimeline", () => {
         repoOwner="acme"
         repoName="ade"
         viewerLogin="alice"
-        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: false }}
         onFiltersChange={() => {}}
       />,
     );
@@ -392,7 +436,46 @@ describe("PrTimeline", () => {
     expect(screen.getByTestId("ai-summary-card")).toBeTruthy();
   });
 
-  it("renders commit pushes as prominent dividers without unresolved floating chip", () => {
+  it("renders the PR opened banner with title, branches, and stats", () => {
+    render(
+      <PrTimeline
+        events={[
+          makeEvent({
+            type: "pr_opened",
+            id: "opened:pr-1",
+            author: "arul28",
+            title: "ship: prepare lane for review",
+            githubPrNumber: 128,
+            repoOwner: "acme",
+            repoName: "ade",
+            baseBranch: "main",
+            headBranch: "ship/lane-review",
+            isDraft: false,
+            additions: 240,
+            deletions: 18,
+          }),
+        ]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    const banner = screen.getByTestId("pr-timeline-opened-banner");
+    expect(banner.textContent).toContain("Pull request opened");
+    expect(banner.textContent).toContain("ship: prepare lane for review");
+    expect(banner.textContent).toContain("#128");
+    expect(banner.textContent).toContain("@arul28");
+    expect(banner.textContent).toContain("ship/lane-review");
+    expect(banner.textContent).toContain("main");
+    expect(banner.textContent).toContain("+240");
+    expect(banner.textContent).toContain("-18");
+  });
+
+  it("renders commit pushes as compact dividers without unresolved floating chip", () => {
     render(
       <PrTimeline
         events={[

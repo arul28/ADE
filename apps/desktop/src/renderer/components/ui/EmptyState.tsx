@@ -6,12 +6,14 @@ export function EmptyState({
   title,
   description,
   icon: Icon,
+  iconSize = 48,
   className,
   children
 }: {
   title: string;
   description?: string;
   icon?: React.ElementType;
+  iconSize?: number;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -25,7 +27,7 @@ export function EmptyState({
     >
       {Icon ? (
         <div className="mb-4 inline-flex items-center justify-center">
-          <Icon size={48} weight="regular" className="text-[#52525B]" />
+          <Icon size={iconSize} weight="regular" className="text-[#52525B]" />
         </div>
       ) : null}
       <div

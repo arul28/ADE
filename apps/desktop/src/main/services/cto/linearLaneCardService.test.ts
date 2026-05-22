@@ -3,7 +3,9 @@ import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import {
   buildLinearLaneCardAttachment,
   buildLinearLaneInitialComment,
+  buildLinearPrCardAttachment,
   publishLinearLaneCard,
+  publishLinearPrCard,
 } from "./linearLaneCardService";
 
 function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -171,5 +173,41 @@ describe("linearLaneCardService", () => {
       postInitialComment: true,
     });
     expect(createComment).toHaveBeenCalledWith("issue-1", expect.stringContaining("Open in ADE"));
+  });
+
+  it("builds and publishes a Linear attachment for an ADE PR", async () => {
+    const attachment = buildLinearPrCardAttachment({
+      lane: makeLane(),
+      issue: makeIssue(),
+      repoOwner: "acme",
+      repoName: "ade",
+      prNumber: 42,
+      githubUrl: "https://github.com/acme/ade/pull/42",
+      linkedAt: "2026-05-12T21:00:00.000Z",
+    });
+
+    expect(attachment).toMatchObject({
+      issueId: "issue-1",
+      title: "Open in ADE PR #42: ABC-42",
+      url: "https://ade.app/open?type=pr&repo=acme%2Fade&number=42",
+    });
+    expect(attachment.metadata?.attributes).toContainEqual({ name: "GitHub PR", value: "acme/ade#42" });
+    expect(attachment.metadata?.attributes).toContainEqual(expect.objectContaining({ name: "ADE lane" }));
+    expect(attachment.metadata?.messages?.[0]?.body).toContain("GitHub PR acme/ade#42");
+
+    const createIssueAttachment = vi.fn(async () => ({ id: "attachment-2", url: attachment.url }));
+    await publishLinearPrCard({
+      issueTracker: { createIssueAttachment } as any,
+      lane: makeLane(),
+      issue: makeIssue(),
+      repoOwner: "acme",
+      repoName: "ade",
+      prNumber: 42,
+      githubUrl: "https://github.com/acme/ade/pull/42",
+    });
+    expect(createIssueAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "issue-1",
+      title: "Open in ADE PR #42: ABC-42",
+    }));
   });
 });

@@ -350,6 +350,8 @@ export type LandPrArgs = {
   prId: string;
   method: MergeMethod;
   archiveLane?: boolean;
+  /** When true, retry blocked merges with `gh pr merge --admin`. */
+  bypassRules?: boolean;
 };
 
 export type DeletePrArgs = {
@@ -1664,6 +1666,18 @@ export type PrTimelineEventBase = {
 };
 
 export type PrTimelineEvent =
+  | (PrTimelineEventBase & {
+      type: "pr_opened";
+      title: string;
+      githubPrNumber: number;
+      repoOwner: string;
+      repoName: string;
+      baseBranch: string;
+      headBranch: string;
+      isDraft: boolean;
+      additions: number;
+      deletions: number;
+    })
   | (PrTimelineEventBase & {
       type: "description";
       body: string | null;

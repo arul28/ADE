@@ -157,6 +157,7 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
   CreateLaneFromPrBranchArgs,
@@ -6369,12 +6370,20 @@ export function registerIpc({
         const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
         return sessions.map((session) => {
           if (!isChatToolType(session.toolType)) return session;
-          if (session.status !== "running") return session;
           const chat = chatSummaryBySessionId.get(session.id);
           if (!chat) return session;
-          if (chat.awaitingInput) return { ...session, runtimeState: "waiting-input" as const, chatIdleSinceAt: null };
+          if (chat.awaitingInput) {
+            return {
+              ...session,
+              runtimeState: "waiting-input" as const,
+              chatIdleSinceAt: null,
+              pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+            };
+          }
           if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-          if (chat.status === "idle") return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+          if (chat.status === "idle" || chat.status === "ended") {
+            return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+          }
           return session;
         });
       },
@@ -8115,6 +8124,37 @@ export function registerIpc({
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
     return await ctx.githubService.listRepoLabels(owner, name);
   });
+
+  ipcMain.handle(IPC.githubListRepoAutolinks, async (_event, arg: { owner?: string; name?: string }): Promise<GitHubAutolink[]> => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.listRepoAutolinks(owner, name);
+  });
+
+  ipcMain.handle(
+    IPC.githubCreateRepoAutolink,
+    async (_event, arg: {
+      owner?: string;
+      name?: string;
+      keyPrefix?: string;
+      urlTemplate?: string;
+      isAlphanumeric?: boolean;
+    }): Promise<GitHubAutolink> => {
+      const ctx = getCtx();
+      const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+      const keyPrefix = arg?.keyPrefix?.trim() ?? "";
+      const urlTemplate = arg?.urlTemplate?.trim() ?? "";
+      if (!keyPrefix) throw new Error("Autolink key prefix is required.");
+      if (!urlTemplate || !urlTemplate.includes("<num>")) {
+        throw new Error("Autolink URL template must include <num>.");
+      }
+      return await ctx.githubService.createRepoAutolink(owner, name, {
+        keyPrefix,
+        urlTemplate,
+        isAlphanumeric: arg?.isAlphanumeric === true,
+      });
+    },
+  );
 
   ipcMain.handle(IPC.githubListRepoCollaborators, async (_event, arg: { owner?: string; name?: string }) => {
     const ctx = getCtx();

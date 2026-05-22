@@ -55,7 +55,7 @@ describe("PrCommitRail", () => {
     expect(rows[1]!.getAttribute("aria-current")).toBe("true");
   });
 
-  it("filters to bot-touched commits when Bots pill is selected", () => {
+  it("shows all commits without filter controls", () => {
     const commits = [
       makeCommit({ sha: "1".repeat(40), subject: "human", author: "alice" }),
       makeCommit({ sha: "2".repeat(40), subject: "byebot", author: "renovate[bot]" }),
@@ -67,8 +67,8 @@ describe("PrCommitRail", () => {
         onSelectCommit={() => {}}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Bots" }));
-    expect(screen.queryByText("human")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Bots" })).toBeNull();
+    expect(screen.getByText("human")).toBeTruthy();
     expect(screen.getByText("byebot")).toBeTruthy();
   });
 });

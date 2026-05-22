@@ -62,6 +62,7 @@ export type LaneSummary = {
   devicesOpen?: DeviceMarker[];
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
+  linearIssueLinks?: LaneLinearIssueLink[];
 };
 
 export type LaneLinearIssue = {
@@ -89,6 +90,34 @@ export type LaneLinearIssue = {
   dueDate?: string | null;
   estimate?: number | null;
   branchName?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LaneLinearIssueLinkRole = "primary" | "worked" | "referenced" | "inferred";
+
+export type LaneLinearIssueLinkSource =
+  | "lane_create"
+  | "lane_link"
+  | "chat_attach"
+  | "linear_open_issue"
+  | "commit"
+  | "pr_body"
+  | "manual";
+
+export type LaneLinearIssueLink = {
+  id: string;
+  laneId: string;
+  issue: LaneLinearIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: {
+    chatSessionId?: string | null;
+    commitSha?: string | null;
+    prId?: string | null;
+  } | null;
   createdAt: string;
   updatedAt: string;
 };

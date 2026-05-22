@@ -1,5 +1,7 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
 
+const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
+
 type SdkMessageRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -260,7 +262,7 @@ export function mapCursorSdkMessageToChatEvents(
         return [tagRuntime({
           type: "activity" as const,
           activity: "working" as const,
-          detail: detail ?? "Cursor SDK running",
+          detail: detail ?? CURSOR_WORKING_ACTIVITY_DETAIL,
           turnId,
         }, runtime)];
       }
@@ -268,7 +270,7 @@ export function mapCursorSdkMessageToChatEvents(
         return [tagRuntime({
           type: "activity" as const,
           activity: "working" as const,
-          detail: detail ?? "Cursor SDK starting",
+          detail: detail ?? CURSOR_WORKING_ACTIVITY_DETAIL,
           turnId,
         }, runtime)];
       }

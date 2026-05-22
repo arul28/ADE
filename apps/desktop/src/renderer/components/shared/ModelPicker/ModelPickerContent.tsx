@@ -176,18 +176,14 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     const set = new Set<ProviderFamily>();
     for (const m of expandedModels) set.add(m.family);
-    if (!authOnly) {
-      // Show every provider family ADE supports — including dynamic-only
-      // providers (opencode, lmstudio) that have no static registry entries —
-      // so the user can see the rail entry + empty state instead of wondering
-      // why a provider is missing.
-      for (const family of ALL_PROVIDER_FAMILIES) set.add(family);
-      // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
-      return ALL_PROVIDER_FAMILIES.filter((family) => set.has(family))
-        .concat([...set].filter((family) => !ALL_PROVIDER_FAMILIES.includes(family)));
-    }
-    return [...set];
-  }, [authOnly, expandedModels]);
+    // Always include dynamic-only provider families (Cursor, Droid, OpenCode,
+    // local runtimes). Their models may not exist until a catalog refresh runs,
+    // but the rail entry must still be reachable without toggling "Show all models".
+    for (const family of ALL_PROVIDER_FAMILIES) set.add(family);
+    // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
+    return ALL_PROVIDER_FAMILIES.filter((family) => set.has(family))
+      .concat([...set].filter((family) => !ALL_PROVIDER_FAMILIES.includes(family)));
+  }, [expandedModels]);
 
   const railEntries = useMemo<RailEntry[]>(() => {
     const out: RailEntry[] = [{ kind: "favorites" }, { kind: "recents" }];
@@ -217,12 +213,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, []);
 
   const handleSelectRail = useCallback((next: RailSelection) => {
-    if (next === selection && next !== "favorites" && next !== "recents") {
+    if (next !== "favorites" && next !== "recents") {
       onProviderRailSelect?.(next.slice("provider:".length) as ProviderFamily);
     }
     setSelection(next);
     searchRef.current?.focus({ preventScroll: true });
-  }, [onProviderRailSelect, selection]);
+  }, [onProviderRailSelect]);
 
   // authOnly === true hides models whose family isn't ready;
   // when off, all models are shown (including unauthed, which the row dims + offers sign-in).
@@ -313,11 +309,6 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     if (selection === "favorites" || selection === "recents") return null;
     return selection.slice("provider:".length) as ProviderFamily;
   }, [searchActive, selection]);
-
-  useEffect(() => {
-    if (!activeProviderFamily) return;
-    onProviderRailSelect?.(activeProviderFamily);
-  }, [activeProviderFamily, onProviderRailSelect]);
 
   const activeRefreshProvider = activeProviderFamily ? refreshProviderForFamily(activeProviderFamily) : null;
   const activeProviderRefreshing = activeRefreshProvider != null && refreshingProvider === activeRefreshProvider;

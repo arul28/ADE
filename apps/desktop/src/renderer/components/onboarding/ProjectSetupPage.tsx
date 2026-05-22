@@ -34,7 +34,7 @@ const STEP_META: Record<SetupStep, { title: string; subtitle: string }> = {
   },
   linear: {
     title: "Linear",
-    subtitle: "Issue tracking and CTO workflow routing",
+    subtitle: "Link issues to lanes, chats, PRs, and CTO workflows",
   },
 };
 
@@ -47,7 +47,7 @@ const STEP_HEADERS: Record<SetupStep, { heading: string; sub: string }> = {
   },
   helpers: { heading: "Background helpers", sub: "These lightweight helpers run in the background while you work. They are optional and can be changed anytime in Settings." },
   github: { heading: "GitHub Integration", sub: "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." },
-  linear: { heading: "Linear Integration", sub: "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." },
+  linear: { heading: "Linear Integration", sub: "Connect your Linear workspace so ADE can carry issue context through lanes, chats, GitHub PRs, and CTO workflows." },
 };
 
 export function ProjectSetupPage() {

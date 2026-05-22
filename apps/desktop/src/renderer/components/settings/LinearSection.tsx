@@ -10,21 +10,38 @@ import {
   Plugs,
   XCircle,
 } from "@phosphor-icons/react";
-import type { CtoLinearProject, LinearConnectionStatus } from "../../../shared/types";
+import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
+type GitHubAutolinkCandidate = {
+  id: string;
+  title: string;
+  desc: string;
+  keyPrefix: string;
+  urlTemplate: string;
+  isAlphanumeric: boolean;
+  command: string;
+  configured: boolean;
+};
+
 const FEATURES = [
-  { icon: ArrowsLeftRight, title: "Issue Routing", desc: "Link Linear issues to ADE lanes automatically" },
-  { icon: Lightning, title: "CTO Workflows", desc: "Dispatch missions directly from Linear" },
-  { icon: ArrowsClockwise, title: "Status Sync", desc: "Keep statuses in sync across both tools" },
+  { icon: ArrowsLeftRight, title: "Issue routing", desc: "Attach Linear issues to lanes, chats, and the work that happened there" },
+  { icon: Lightning, title: "PR linkage", desc: "Carry Linear refs, ADE links, and issue lists into GitHub PRs" },
+  { icon: ArrowsClockwise, title: "Linear timeline", desc: "Publish ADE lane and PR cards back onto the Linear issue" },
+  { icon: Plugs, title: "CTO workflows", desc: "Dispatch missions directly from Linear and keep status context close" },
 ];
 
 export function LinearSection() {
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
+  const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
+  const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
+  const [autolinksLoading, setAutolinksLoading] = useState(false);
+  const [autolinkError, setAutolinkError] = useState<string | null>(null);
+  const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [validating, setValidating] = useState(false);
   const [oauthStarting, setOauthStarting] = useState(false);
@@ -66,6 +83,54 @@ export function LinearSection() {
     return connection.authMode === "oauth" ? "OAuth" : "API key";
   }, [connection?.authMode]);
   const workspaceLabel = connection?.organizationName?.trim() || connection?.organizationUrlKey?.trim() || null;
+  const workspaceUrlKey = connection?.organizationUrlKey?.trim() || "YOUR-WORKSPACE";
+  const githubRepoSlug = githubRepo ? `${githubRepo.owner}/${githubRepo.name}` : null;
+  const teamKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const project of projects) {
+      const key = project.teamKey?.trim();
+      if (key) keys.add(key.toUpperCase());
+    }
+    return [...keys].sort((a, b) => a.localeCompare(b));
+  }, [projects]);
+  const autolinkCandidates = useMemo<GitHubAutolinkCandidate[]>(() => {
+    const repoSlug = githubRepoSlug ?? "OWNER/REPO";
+    const adePrTemplate = `https://ade.app/open?type=pr&repo=${encodeURIComponent(repoSlug)}&number=<num>`;
+    const baseCandidates: Array<Omit<GitHubAutolinkCandidate, "configured" | "command">> = [
+      {
+        id: "ade-pr",
+        title: "Open PRs in ADE",
+        desc: "Turns ADEPR-123 in GitHub text into a link that opens that PR in this ADE project.",
+        keyPrefix: "ADEPR-",
+        urlTemplate: adePrTemplate,
+        isAlphanumeric: false,
+      },
+      ...teamKeys.map((teamKey) => ({
+        id: `linear-${teamKey}`,
+        title: `${teamKey} Linear issues`,
+        desc: `Turns ${teamKey}-123 in GitHub text into a Linear issue link.`,
+        keyPrefix: `${teamKey}-`,
+        urlTemplate: `https://linear.app/${encodeURIComponent(workspaceUrlKey)}/issue/${teamKey}-<num>`,
+        isAlphanumeric: false,
+      })),
+    ];
+    return baseCandidates.map((candidate) => {
+      const configured = githubAutolinks.some((autolink) =>
+        autolink.keyPrefix.toLowerCase() === candidate.keyPrefix.toLowerCase()
+      );
+      const command = [
+        "gh",
+        "repo",
+        "autolink",
+        "create",
+        candidate.keyPrefix,
+        `"${candidate.urlTemplate}"`,
+        "--numeric",
+        `--repo ${githubRepoSlug ?? "OWNER/REPO"}`,
+      ].join(" ");
+      return { ...candidate, configured, command };
+    });
+  }, [githubAutolinks, githubRepoSlug, teamKeys, workspaceUrlKey]);
 
   /* ── Load helpers ── */
   const loadProjects = useCallback(async (requestIdArg?: number) => {
@@ -80,6 +145,29 @@ export function LinearSection() {
       setProjects([]);
     }
   }, [invalidateLoadRequests, isCurrentLoadRequest]);
+
+  const loadGithubAutolinks = useCallback(async () => {
+    const github = window.ade?.github;
+    if (!github) return;
+    setAutolinksLoading(true);
+    setAutolinkError(null);
+    try {
+      const repo = await github.detectRepo();
+      setGithubRepo(repo);
+      if (!repo) {
+        setGithubAutolinks([]);
+        setAutolinkError("No GitHub origin remote was detected for this project.");
+        return;
+      }
+      const autolinks = await github.listRepoAutolinks(repo);
+      setGithubAutolinks(autolinks);
+    } catch (err) {
+      setGithubAutolinks([]);
+      setAutolinkError(err instanceof Error ? err.message : "Unable to load GitHub autolinks.");
+    } finally {
+      setAutolinksLoading(false);
+    }
+  }, []);
 
   const loadStatus = useCallback(async () => {
     if (!window.ade?.cto) return;
@@ -106,6 +194,10 @@ export function LinearSection() {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  useEffect(() => {
+    void loadGithubAutolinks();
+  }, [loadGithubAutolinks]);
 
   /* ── OAuth polling ── */
   useEffect(() => {
@@ -260,6 +352,27 @@ export function LinearSection() {
       setOauthStartingState(false);
     }
   }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, setValidatingState]);
+
+  const handleCreateAutolink = useCallback(async (candidate: GitHubAutolinkCandidate) => {
+    const github = window.ade?.github;
+    if (!github || !githubRepo) return;
+    setCreatingAutolinkId(candidate.id);
+    setAutolinkError(null);
+    try {
+      await github.createRepoAutolink({
+        owner: githubRepo.owner,
+        name: githubRepo.name,
+        keyPrefix: candidate.keyPrefix,
+        urlTemplate: candidate.urlTemplate,
+        isAlphanumeric: candidate.isAlphanumeric,
+      });
+      await loadGithubAutolinks();
+    } catch (err) {
+      setAutolinkError(err instanceof Error ? err.message : "Unable to create GitHub autolink.");
+    } finally {
+      setCreatingAutolinkId(null);
+    }
+  }, [githubRepo, loadGithubAutolinks]);
 
   return (
     <div style={{ display: "flex", maxWidth: 780, flexDirection: "column", gap: 20 }}>
@@ -527,6 +640,126 @@ export function LinearSection() {
         </>
       )}
 
+      <div style={{
+        padding: 18,
+        background: COLORS.cardBg,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 14,
+      }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+          <div>
+            <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 6, letterSpacing: "0.06em" }}>
+              GITHUB REFERENCE LINKS
+            </div>
+            <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
+              Configure this GitHub repo so Linear issue keys and ADE PR references stay clickable in comments, PR descriptions, and commits.
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void loadGithubAutolinks()}
+            disabled={autolinksLoading || creatingAutolinkId !== null}
+          >
+            {autolinksLoading ? <CircleNotch size={12} className="animate-spin" /> : null}
+            Refresh
+          </Button>
+        </div>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          padding: "9px 11px",
+          borderRadius: 8,
+          background: "rgba(255,255,255,0.03)",
+          border: `1px solid ${COLORS.border}`,
+          marginBottom: 10,
+        }}>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
+            Repository
+          </div>
+          <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, minWidth: 0, overflowWrap: "anywhere" }}>
+            {githubRepoSlug ?? "No GitHub origin detected"}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {autolinkCandidates.map((candidate) => {
+            const busy = creatingAutolinkId === candidate.id;
+            return (
+              <div
+                key={candidate.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(0, 1fr) auto",
+                  gap: 10,
+                  alignItems: "start",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: `1px solid ${candidate.configured ? "color-mix(in srgb, var(--color-success) 22%, transparent)" : COLORS.border}`,
+                  background: candidate.configured
+                    ? "color-mix(in srgb, var(--color-success) 6%, transparent)"
+                    : "rgba(255,255,255,0.025)",
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                    {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} /> : null}
+                    <div style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                      {candidate.title}
+                    </div>
+                    <code style={{
+                      fontSize: 10,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textDim,
+                      padding: "2px 5px",
+                      borderRadius: 5,
+                      background: "rgba(255,255,255,0.04)",
+                    }}>
+                      {candidate.keyPrefix}
+                    </code>
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px", marginBottom: 6 }}>
+                    {candidate.desc}
+                  </div>
+                  <div style={{
+                    fontSize: 10,
+                    fontFamily: MONO_FONT,
+                    color: COLORS.textDim,
+                    lineHeight: "15px",
+                    overflowWrap: "anywhere",
+                  }}>
+                    {candidate.command}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant={candidate.configured ? "ghost" : "outline"}
+                  size="sm"
+                  onClick={() => void handleCreateAutolink(candidate)}
+                  disabled={!githubRepo || candidate.configured || autolinksLoading || creatingAutolinkId !== null}
+                  style={{ whiteSpace: "nowrap" }}
+                >
+                  {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
+                  {candidate.configured ? "Configured" : "Create"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+        {!teamKeys.length ? (
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginTop: 10 }}>
+            Connect Linear and load projects to add team-key references such as TEAM-123 for this workspace.
+          </div>
+        ) : null}
+        {autolinkError ? (
+          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: "15px", marginTop: 10 }}>
+            {autolinkError}
+          </div>
+        ) : null}
+      </div>
+
       {/* ── Error ── */}
       {error ? (
         <div style={{
@@ -550,7 +783,7 @@ export function LinearSection() {
         <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 12, letterSpacing: "0.06em" }}>
           WHAT LINEAR INTEGRATION ENABLES
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
           {FEATURES.map(({ icon: Icon, title, desc }) => (
             <div key={title} style={{
               display: "flex", alignItems: "flex-start", gap: 10,

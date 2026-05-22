@@ -137,8 +137,6 @@ type PrsState = {
   resolverPermissionMode: PrAgentPermissionMode;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 
-  // Timeline + rails (PRs tab redesign)
-  prsTimelineRailsEnabled: boolean;
   dismissedAiSummaries: Record<string, boolean>;
   timelineFiltersByPrId: Record<string, PrTimelineFilters>;
   viewerLogin: string | null;
@@ -161,8 +159,6 @@ type PrsContextValue = PrsState & {
   resetConvergenceState: (prId: string) => Promise<void>;
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
-  // Timeline + rails controls
-  setPrsTimelineRailsEnabled: (enabled: boolean) => void;
   setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
   setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
   regeneratePrAiSummary: (prId: string) => Promise<void>;
@@ -174,7 +170,6 @@ const PrsContext = createContext<PrsContextValue | null>(null);
 const LS_MODEL_KEY = "ade:prs:resolverModel";
 const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
 const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
-const LS_TIMELINE_RAILS_KEY = "ade:prs:timelineRailsEnabled";
 const LS_DISMISSED_SUMMARIES_KEY = "ade:prs:dismissedAiSummaries";
 const LS_TIMELINE_FILTERS_KEY = "ade:prs:timelineFiltersByPrId";
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
@@ -492,25 +487,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailStatus,
   ]);
 
-  // Timeline + rails (new)
-  const [prsTimelineRailsEnabled, setPrsTimelineRailsEnabledRaw] = useState<boolean>(
-    () => readBoolLs(LS_TIMELINE_RAILS_KEY, true),
-  );
   const [dismissedAiSummaries, setDismissedAiSummaries] = useState<Record<string, boolean>>(
     () => readJsonLs<Record<string, boolean>>(LS_DISMISSED_SUMMARIES_KEY, {}),
   );
   const [timelineFiltersByPrId, setTimelineFiltersByPrId] = useState<Record<string, PrTimelineFilters>>(
     () => readJsonLs<Record<string, PrTimelineFilters>>(LS_TIMELINE_FILTERS_KEY, {}),
   );
-
-  const setPrsTimelineRailsEnabled = useCallback((enabled: boolean) => {
-    setPrsTimelineRailsEnabledRaw(enabled);
-    try {
-      localStorage.setItem(LS_TIMELINE_RAILS_KEY, enabled ? "true" : "false");
-    } catch {
-      /* ignore */
-    }
-  }, []);
 
   const setTimelineFilters = useCallback((prId: string, filters: PrTimelineFilters) => {
     setTimelineFiltersByPrId((prev) => {
@@ -1709,7 +1691,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
       resolverSessionsByContextKey,
-      prsTimelineRailsEnabled,
       dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
@@ -1728,7 +1709,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       saveConvergenceState,
       resetConvergenceState,
       refresh,
-      setPrsTimelineRailsEnabled,
       setTimelineFilters,
       setAiSummaryDismissed,
       regeneratePrAiSummary,
@@ -1770,7 +1750,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       resolverReasoningLevel,
       resolverPermissions,
       resolverSessionsByContextKey,
-      prsTimelineRailsEnabled,
       dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
@@ -1783,7 +1762,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       saveConvergenceState,
       resetConvergenceState,
       refresh,
-      setPrsTimelineRailsEnabled,
       setTimelineFilters,
       setAiSummaryDismissed,
       regeneratePrAiSummary,

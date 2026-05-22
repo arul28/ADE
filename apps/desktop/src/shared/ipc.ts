@@ -510,6 +510,8 @@ export const IPC = {
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
   githubStatusChanged: "ade.github.statusChanged",
+  githubListRepoAutolinks: "ade.github.listRepoAutolinks",
+  githubCreateRepoAutolink: "ade.github.createRepoAutolink",
   githubListRepoLabels: "ade.github.listRepoLabels",
   githubListRepoCollaborators: "ade.github.listRepoCollaborators",
   githubListRepoIssues: "ade.github.listRepoIssues",
