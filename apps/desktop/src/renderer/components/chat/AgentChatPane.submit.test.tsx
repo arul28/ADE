@@ -1078,6 +1078,62 @@ describe("AgentChatPane submit recovery", () => {
     expect(window.ade.pty.create).not.toHaveBeenCalled();
   });
 
+  it("keeps the chat terminal drawer wired when Work hides lane tool drawers", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const { emitSessionChanged } = installAdeMocks({ sessions: [session] });
+    const terminalSession: TerminalSessionDetail = {
+      id: "terminal-1",
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      ptyId: "pty-1",
+      tracked: true,
+      pinned: false,
+      manuallyNamed: false,
+      goal: null,
+      title: "Work shell",
+      startedAt: "2026-03-24T05:57:45.700Z",
+      endedAt: null,
+      exitCode: null,
+      transcriptPath: "/tmp/terminal-1.log",
+      headShaStart: null,
+      headShaEnd: null,
+      status: "running",
+      lastOutputPreview: null,
+      summary: null,
+      toolType: "shell",
+      runtimeState: "running",
+      resumeCommand: null,
+      resumeMetadata: null,
+      archivedAt: null,
+      chatSessionId: session.sessionId,
+    };
+    vi.mocked(window.ade.sessions.get).mockResolvedValue(terminalSession);
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          hideLaneToolDrawers
+          initialSessionSummary={session}
+          onSessionCreated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("textbox");
+    expect(screen.getByRole("button", { name: /^Terminal$/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
+
+    act(() => {
+      emitSessionChanged({ sessionId: terminalSession.id, reason: "created" });
+    });
+
+    expect(await screen.findByText("Work shell")).toBeTruthy();
+    expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-1:pty-1");
+  });
+
   it("reveals rapid CLI-created terminals independently", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { emitSessionChanged } = installAdeMocks({ sessions: [session] });

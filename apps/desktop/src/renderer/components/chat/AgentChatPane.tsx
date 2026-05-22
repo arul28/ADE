@@ -2072,6 +2072,7 @@ export function AgentChatPane({
   const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
   const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
+  const chatTerminalVisible = Boolean(showWorkspaceChrome && laneId);
   const laneDisplayLabel = useMemo(() => {
     const normalized = laneLabel?.trim();
     return normalized?.length ? normalized : laneId;
@@ -3751,7 +3752,7 @@ export function AgentChatPane({
 
   useEffect(() => {
     const sessionsApi = window.ade?.sessions;
-    if (!sessionsApi?.onChanged || !sessionsApi.get || !showWorkspaceChrome || hideLaneToolDrawers || !laneId) return undefined;
+    if (!sessionsApi?.onChanged || !sessionsApi.get || !chatTerminalVisible) return undefined;
 
     let disposed = false;
     const revealCreatedTerminal = async (sessionId: string) => {
@@ -3785,7 +3786,7 @@ export function AgentChatPane({
       disposed = true;
       unsubscribe();
     };
-  }, [hideLaneToolDrawers, laneId, showWorkspaceChrome]);
+  }, [chatTerminalVisible, laneId]);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -6514,7 +6515,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {laneToolsVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {selectedSession?.provider === "codex"
             && selectedSession.surface !== "mission"
             && selectedSessionId
@@ -7591,7 +7592,7 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    {laneToolsVisible ? (
+                    {chatTerminalVisible ? (
                       <ChatTerminalDrawer
                         open={terminalDrawerOpen}
                         onToggle={() => setTerminalDrawerOpen((v) => !v)}
