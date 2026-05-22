@@ -331,14 +331,17 @@ describe("App Work route keep-alive", () => {
     );
   });
 
-  it("does not mount Lanes until the user first navigates to /lanes", async () => {
+  it("keeps a hidden Lanes surface ready while Work is active", async () => {
     const { App } = await import("./App");
 
     render(<App />);
 
     await screen.findByTestId("work-page");
-    expect(screen.queryByTestId("lanes-page")).toBeNull();
-    expect(lanesLifecycle.mounts).toBe(0);
+    const lanesPage = await screen.findByTestId("lanes-page");
+    expect(lanesPage.closest("[aria-hidden='true']")).not.toBeNull();
+    expect(lanesPage.getAttribute("data-active")).toBe("false");
+    expect(lanesLifecycle.mounts).toBe(1);
+    expect(lanesLifecycle.unmounts).toBe(0);
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

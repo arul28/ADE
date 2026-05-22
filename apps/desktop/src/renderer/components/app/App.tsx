@@ -325,10 +325,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
-  const [lanesMounted, setLanesMounted] = React.useState(isLanesRoute);
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
-  const shouldRenderLanes = lanesMounted || isLanesRoute;
+  const shouldRenderLanes = true;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
 
@@ -341,7 +340,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!isLanesRoute) return;
     setLanesRoute(route);
-    setLanesMounted(true);
   }, [isLanesRoute, route]);
 
   React.useEffect(() => {
@@ -742,7 +740,8 @@ function ProjectTabHost() {
       {mountedProjects.map((project) => {
         const store = storesRef.current.get(project.rootPath);
         if (!store) return null;
-        const route = routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
+        const liveRoute = project.rootPath === activeRoot ? serializeProjectRoute(location) : null;
+        const route = liveRoute ?? routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
         return (
           <ProjectSurface
             key={project.rootPath}

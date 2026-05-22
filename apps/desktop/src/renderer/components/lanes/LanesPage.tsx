@@ -732,14 +732,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!syncApi?.setActiveLanePresence) {
       return;
     }
-    const laneIds = project?.rootPath ? [...visibleLaneIds] : [];
+    const laneIds = active && project?.rootPath ? [...visibleLaneIds] : [];
     const signature = laneIds.join("\0");
     if (activeLanePresenceSignatureRef.current === signature) {
       return;
     }
     activeLanePresenceSignatureRef.current = signature;
     void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
-  }, [project?.rootPath, visibleLaneIds]);
+  }, [active, project?.rootPath, visibleLaneIds]);
 
   useEffect(() => {
     const syncApi = window.ade.sync;
