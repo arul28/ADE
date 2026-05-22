@@ -475,6 +475,55 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
+type AgentChatSessionViewCache = {
+  events: AgentChatEventEnvelope[];
+  turnActive: boolean;
+  pendingInputs: DerivedPendingInput[];
+  pendingSteers: PendingSteerEntry[];
+  cachedAtMs: number;
+};
+
+const MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES = 32;
+const AGENT_CHAT_VIEW_CACHE_ENABLED = import.meta.env.MODE !== "test";
+const agentChatSessionViewCacheBySessionId = new Map<string, AgentChatSessionViewCache>();
+
+function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return null;
+  if (!sessionId) return null;
+  const cached = agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
+  if (!cached) return null;
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+  agentChatSessionViewCacheBySessionId.set(sessionId, cached);
+  return cached;
+}
+
+function writeAgentChatSessionViewCache(
+  sessionId: string,
+  events: AgentChatEventEnvelope[],
+  derived = deriveRuntimeState(events),
+): void {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
+  const trimmed = trimChatEventHistory(events, MAX_SELECTED_CHAT_SESSION_EVENTS);
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+  agentChatSessionViewCacheBySessionId.set(sessionId, {
+    events: trimmed,
+    turnActive: derived.turnActive,
+    pendingInputs: derived.pendingInputs,
+    pendingSteers: derived.pendingSteers,
+    cachedAtMs: Date.now(),
+  });
+  while (agentChatSessionViewCacheBySessionId.size > MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES) {
+    const oldest = agentChatSessionViewCacheBySessionId.keys().next().value;
+    if (!oldest) break;
+    agentChatSessionViewCacheBySessionId.delete(oldest);
+  }
+}
+
+function deleteAgentChatSessionViewCache(sessionId: string): void {
+  if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
+  agentChatSessionViewCacheBySessionId.delete(sessionId);
+}
+
 type NativeControlState = {
   interactionMode: AgentChatInteractionMode;
   claudePermissionMode: AgentChatClaudePermissionMode;
@@ -3446,11 +3495,24 @@ export function AgentChatPane({
   }, []);
 
   const clearSessionView = useCallback((sessionId: string) => {
+    deleteAgentChatSessionViewCache(sessionId);
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
     setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
+  }, []);
+
+  const applyCachedSessionView = useCallback((sessionId: string): boolean => {
+    const cached = readAgentChatSessionViewCache(sessionId);
+    if (!cached) return false;
+    eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: cached.events };
+    loadedHistoryRef.current.add(sessionId);
+    setEventsBySession((prev) => ({ ...prev, [sessionId]: cached.events }));
+    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: cached.turnActive }));
+    setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
+    setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
+    return true;
   }, []);
 
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
@@ -3534,6 +3596,7 @@ export function AgentChatPane({
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
       const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
+      writeAgentChatSessionViewCache(sessionId, merged, derived);
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
@@ -3677,7 +3740,8 @@ export function AgentChatPane({
     let cancelled = false;
 
     const boot = async () => {
-      setLoading(true);
+      const hasRenderableSession = Boolean(selectedSessionIdRef.current || lockSessionId || initialSessionSummary);
+      setLoading(!hasRenderableSession);
       setPreferencesReady(false);
       try {
         const snapshot = await window.ade.projectConfig.get();
@@ -3690,13 +3754,19 @@ export function AgentChatPane({
         // fall back to defaults.
       }
 
+      const sessionsRefresh = refreshSessions().catch(() => undefined);
+      const modelsRefresh = refreshAvailableModels().catch(() => []);
       try {
-        await Promise.all([refreshAvailableModels(), refreshSessions()]);
-      } catch {
-        // boot-time refresh errors are swallowed here; individual callbacks fall back to empty state
+        await sessionsRefresh;
       } finally {
         if (!cancelled) {
           setLoading(false);
+        }
+      }
+      try {
+        await modelsRefresh;
+      } finally {
+        if (!cancelled) {
           setPreferencesReady(true);
         }
       }
@@ -3706,7 +3776,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [refreshAvailableModels, refreshSessions]);
+  }, [initialSessionSummary, lockSessionId, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
     if (loading || !availableModelIds.length) return;
@@ -3876,12 +3946,18 @@ export function AgentChatPane({
   useEffect(() => {
     if (!isTileVisible) return;
     if (!selectedSessionId) return;
+    const restoredFromCache = applyCachedSessionView(selectedSessionId);
+    const refreshOptions = { force: !restoredFromCache };
     if (!lockedSingleSessionMode) {
       // Re-read the selected transcript on every tab switch so the selected
       // chat can recover from any background event loss instead of relying
       // solely on the in-memory background buffer.
-      void loadHistory(selectedSessionId, { force: true });
-      return;
+      void loadHistory(selectedSessionId, refreshOptions);
+      if (!restoredFromCache) return;
+      const refreshHandle = window.setTimeout(() => {
+        void loadHistory(selectedSessionId, { force: true });
+      }, 650);
+      return () => window.clearTimeout(refreshHandle);
     }
     // Locked-single-session mode (Work tab tile). Force-reload on every mount
     // so that when the pane is unmounted and remounted (tab switch, project
@@ -3889,13 +3965,22 @@ export function AgentChatPane({
     // rather than short-circuiting on a stale loadedHistoryRef from the
     // previous component instance.
     const hydrateDelayMs = isTileActive
-      ? 120
+      ? 0
       : 220 + (stableSessionDelayOffset(selectedSessionId) % 260);
     const handle = window.setTimeout(() => {
-      void loadHistory(selectedSessionId, { force: true });
+      void loadHistory(selectedSessionId, refreshOptions);
     }, hydrateDelayMs);
-    return () => window.clearTimeout(handle);
-  }, [isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
+    let refreshHandle: number | null = null;
+    if (restoredFromCache) {
+      refreshHandle = window.setTimeout(() => {
+        void loadHistory(selectedSessionId, { force: true });
+      }, Math.max(650, hydrateDelayMs + 650));
+    }
+    return () => {
+      window.clearTimeout(handle);
+      if (refreshHandle != null) window.clearTimeout(refreshHandle);
+    };
+  }, [applyCachedSessionView, isTileActive, isTileVisible, loadHistory, lockedSingleSessionMode, selectedSessionId]);
 
   useEffect(() => {
     if (!isTileVisible || !selectedSessionId) return undefined;
@@ -4061,6 +4146,7 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
+      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived);
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
@@ -7462,7 +7548,7 @@ export function AgentChatPane({
                   key="chat-view"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
-                  transition={{ duration: 0.25, ease: "easeOut", delay: 0.15 }}
+                  transition={{ duration: 0.12, ease: "easeOut" }}
                   className="absolute inset-0 flex min-h-0 overflow-hidden"
                 >
                   {/* Chat column */}

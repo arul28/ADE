@@ -169,34 +169,13 @@ function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string
 }
 
 function DeferredLanePane({
-  cacheKey,
-  label,
   children,
 }: {
   cacheKey: string;
   label: string;
   children: React.ReactNode;
 }) {
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    setReady(false);
-    const timer = window.setTimeout(() => {
-      setReady(true);
-    }, 140);
-    return () => window.clearTimeout(timer);
-  }, [cacheKey]);
-
-  if (ready) return <>{children}</>;
-
-  return (
-    <div
-      className="flex h-full items-center justify-center"
-      style={{ background: COLORS.cardBg, color: COLORS.textDim, fontFamily: MONO_FONT, fontSize: 11 }}
-    >
-      Preparing {label.toUpperCase()} pane...
-    </div>
-  );
+  return <>{children}</>;
 }
 
 function lanePrTagColor(state: PrSummary["state"]): string {

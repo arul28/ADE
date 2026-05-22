@@ -54,7 +54,6 @@ export function WorkStartSurface({
     return lanes[0]?.id ?? "";
   });
   const [launchBusy, setLaunchBusy] = useState(false);
-  const [draftReady, setDraftReady] = useState(false);
   const selectedLane = useMemo(
     () => lanes.find((lane) => lane.id === selectedLaneId) ?? lanes[0] ?? null,
     [lanes, selectedLaneId],
@@ -88,13 +87,6 @@ export function WorkStartSurface({
       selectLaneGlobal(fallbackLaneId);
     }
   }, [draftLaneId, globallySelectedLaneId, lanes, onDraftLaneChange, selectedLaneId, selectLaneGlobal]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setDraftReady(true);
-    }, 140);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   const launchShell = async (laneId: string) => {
     if (!laneId || launchBusy) return;
@@ -133,35 +125,23 @@ export function WorkStartSurface({
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
       <div className="flex w-full min-h-0 flex-1 flex-col overflow-hidden">
-        {draftReady ? (
-          <AgentChatPane
-            laneId={selectedLaneId}
-            laneLabel={selectedLane?.name ?? selectedLaneId}
-            hideSessionTabs
-            hideLaneToolDrawers
-            forceDraftMode
-            embeddedWorkLayout
-            workDraftKind={draftKind}
-            initialLinearIssueContext={initialLinearIssueContext}
-            onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
-            onSessionCreated={onOpenChatSession}
-            onLaunchCliSession={onLaunchPtySession}
-            onOpenShellSession={launchShell}
-            availableLanes={lanes}
-            onLaneChange={setLaneAndSync}
-          />
-        ) : (
-          <div className="flex flex-1 items-center justify-center px-6">
-            <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg px-4 py-3 text-center">
-              <div className="text-[12px] font-medium text-fg">Preparing draft</div>
-              <div className="mt-1.5 text-[11px] text-muted-fg">
-                ADE waits briefly before mounting the full chat surface so fast tab switches stay cheap.
-              </div>
-            </div>
-          </div>
-        )}
+        <AgentChatPane
+          laneId={selectedLaneId}
+          laneLabel={selectedLane?.name ?? selectedLaneId}
+          hideSessionTabs
+          hideLaneToolDrawers
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind={draftKind}
+          initialLinearIssueContext={initialLinearIssueContext}
+          onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
+          onSessionCreated={onOpenChatSession}
+          onLaunchCliSession={onLaunchPtySession}
+          onOpenShellSession={launchShell}
+          availableLanes={lanes}
+          onLaneChange={setLaneAndSync}
+        />
       </div>
     </div>
   );
 }
-

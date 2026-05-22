@@ -422,6 +422,7 @@ export function PaneTilingLayout({
         resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}
         className="h-full w-full min-h-0 min-w-0"
         onLayoutChanged={(nextLayout) => {
+          if (!loaded) return;
           const updates: Record<string, number> = {};
           for (let idx = 0; idx < node.children.length; idx += 1) {
             const panelId = `${key}:${idx}`;
@@ -476,8 +477,6 @@ export function PaneTilingLayout({
       </Group>
     );
   };
-
-  if (!loaded || !treeLoaded) return null;
 
   return (
     <div className={cn("ade-tiling-surface h-full min-h-0", className)}>

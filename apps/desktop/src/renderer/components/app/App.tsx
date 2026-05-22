@@ -50,12 +50,16 @@ const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const LanesPage = lanesRoute.Component;
 const preloadLanesPage = lanesRoute.preload;
-const FilesPage = React.lazy(() =>
+const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../files/FilesPage").then((m) => ({ default: m.FilesPage }))
 );
-const TerminalsPage = React.lazy(() =>
+const FilesPage = filesRoute.Component;
+const preloadFilesPage = filesRoute.preload;
+const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
 );
+const TerminalsPage = workRoute.Component;
+const preloadTerminalsPage = workRoute.preload;
 const PRsPage = React.lazy(() =>
   import("../prs/PRsPage").then((m) => ({ default: m.PRsPage }))
 );
@@ -80,9 +84,11 @@ const WorkspaceGraphPage = React.lazy(() =>
 const MissionsPage = React.lazy(() =>
   import("../missions/MissionsPage").then((m) => ({ default: m.MissionsPage }))
 );
-const CtoPage = React.lazy(() =>
+const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../cto/CtoPage").then((m) => ({ default: m.CtoPage }))
 );
+const CtoPage = ctoRoute.Component;
+const preloadCtoPage = ctoRoute.preload;
 const MacVmPage = React.lazy(() =>
   import("../vm/MacVmPage").then((m) => ({ default: m.MacVmPage }))
 );
@@ -327,7 +333,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
   const routeProps = { active } as { active?: boolean };
   const shouldRenderWork = workMounted || isWorkRoute;
-  const shouldRenderLanes = true;
+  const shouldRenderLanes = isLanesRoute;
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
 
@@ -612,7 +618,10 @@ function ProjectTabHost() {
   React.useEffect(() => {
     if (!activeRoot) return;
     const preload = () => {
+      void preloadTerminalsPage().catch(() => undefined);
       void preloadLanesPage().catch(() => undefined);
+      void preloadFilesPage().catch(() => undefined);
+      void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
