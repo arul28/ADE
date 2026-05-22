@@ -2085,6 +2085,44 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.historyListOperations, { limit: 10 });
   });
 
+  it("guards git conflict actions against malformed lane args", async () => {
+    process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON = "1";
+    const result = { success: true };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.gitRebaseContinue) return result;
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.git.rebaseContinue(null)).rejects.toThrow("laneId is required.");
+    await expect(bridge.git.mergeAbort({})).rejects.toThrow("laneId is required.");
+    await expect(bridge.git.rebaseContinue(" lane-1 ")).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.gitRebaseContinue, { laneId: "lane-1" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitMergeAbort, expect.anything());
+  });
+
   it("exports history using rows from a bound remote project runtime", async () => {
     const binding = {
       kind: "remote",
@@ -2162,6 +2200,7 @@ describe("preload OAuth bridge", () => {
         action: "list",
         args: {
           laneId: "lane-1",
+          status: "succeeded",
           limit: 25,
         },
       },

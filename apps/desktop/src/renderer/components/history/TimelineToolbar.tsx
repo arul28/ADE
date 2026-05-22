@@ -1,4 +1,6 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import * as Popover from "@radix-ui/react-popover";
 import {
   Graph,
   ListBullets,
@@ -8,15 +10,27 @@ import {
   X,
   Circle,
   Funnel,
+  GitBranch,
+  Clock,
+  Export,
 } from "@phosphor-icons/react";
+import type { ExportHistoryResult, GitConflictState } from "../../../shared/types";
+import { useAppStore } from "../../state/appStore";
+import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
-import type { ViewMode, TimeRange } from "./timelineTypes";
+import type { TimelineColumn, ViewMode, TimeRange } from "./timelineTypes";
 import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
 import type { ScopeLevel } from "./useTimelineStore";
+import {
+  buildHistoryLaneActions,
+  groupHistoryLaneActions,
+  runHistoryLaneAction,
+  type HistoryLaneActionId,
+} from "./historyLaneActions";
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -54,8 +68,31 @@ const SCOPE_OPTIONS: { value: ScopeLevel; label: string; tip: string }[] = [
 
 /* ── Component ──────────────────────────────────────────────── */
 
-export function TimelineToolbar() {
+const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.ElementType }[] = [
+  { value: "commits", label: "Commits", Icon: GitBranch },
+  { value: "activity", label: "Activity", Icon: Clock },
+];
+
+function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("cancelled" in value || "savedPath" in value)
+  );
+}
+
+export function TimelineToolbar({
+  onCommitGitActionComplete,
+}: {
+  onCommitGitActionComplete?: () => void;
+} = {}) {
+  const lanes = useAppStore((s) => s.lanes ?? []);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   /* ── Store ─────────────────────────────────────────────────── */
+  const surface = useTimelineStore((s) => s.surface);
+  const setSurface = useTimelineStore((s) => s.setSurface);
+  const focusLaneId = useTimelineStore((s) => s.focusLaneId);
+  const setFocusLaneId = useTimelineStore((s) => s.setFocusLaneId);
   const viewMode = useTimelineStore((s) => s.viewMode);
   const setViewMode = useTimelineStore((s) => s.setViewMode);
   const filters = useTimelineStore((s) => s.filters);
@@ -63,6 +100,7 @@ export function TimelineToolbar() {
   const uniqueCategories = useTimelineStore((s) => s.uniqueCategories);
   const visibility = useTimelineStore((s) => s.visibility);
   const scope = useTimelineStore((s) => s.scope);
+  const columns = useTimelineStore((s) => s.columns);
   const setScope = useTimelineStore((s) => s.setScope);
   const setSearchQuery = useTimelineStore((s) => s.setSearchQuery);
   const setCategoryFilter = useTimelineStore((s) => s.setCategoryFilter);
@@ -112,10 +150,107 @@ export function TimelineToolbar() {
 
   const hasSolo = visibility.soloedLaneIds.size > 0;
 
+  const handleExport = useCallback(async () => {
+    const exportFn = window.ade?.history?.exportOperations;
+    if (typeof exportFn !== "function") {
+      setExportNotice("Export unavailable (headless)");
+      window.setTimeout(() => setExportNotice(null), 4000);
+      return;
+    }
+    const promptFn = typeof window.prompt === "function" ? window.prompt.bind(window) : null;
+    let chosenLimit = 500;
+    if (promptFn) {
+      const raw = promptFn(
+        "Export how many rows? (1–10000, default 500)",
+        "500",
+      );
+      if (raw == null) return; // user cancelled
+      const trimmed = raw.trim();
+      if (trimmed.length) {
+        const parsed = Number.parseInt(trimmed, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          setExportNotice("Invalid export limit; must be a positive integer");
+          window.setTimeout(() => setExportNotice(null), 4000);
+          return;
+        }
+        chosenLimit = Math.min(10000, Math.max(1, parsed));
+      }
+    }
+    try {
+      const result = await exportFn({
+        format: "json",
+        limit: chosenLimit,
+        ...(focusLaneId ? { laneId: focusLaneId } : {}),
+        ...(filters.statuses.length === 1 ? { status: filters.statuses[0] } : {}),
+      });
+      if (!isHistoryExportResult(result)) {
+        setExportNotice("Export unavailable (headless)");
+        window.setTimeout(() => setExportNotice(null), 4000);
+        return;
+      }
+      if (result.cancelled) return;
+      setExportNotice(`Exported ${result.rowCount} rows to ${result.savedPath}`);
+      window.setTimeout(() => setExportNotice(null), 5000);
+    } catch (err) {
+      setExportNotice(
+        `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      window.setTimeout(() => setExportNotice(null), 5000);
+    }
+  }, [focusLaneId, filters.statuses]);
+
   /* ── Render ────────────────────────────────────────────────── */
+  const showActivityControls = surface === "activity";
+  const focusLane = lanes.find((lane) => lane.id === focusLaneId) ?? null;
+
   return (
     <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
+      {/* ── Row 0: Surface + lane (commits) ──────────────────── */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-0.5">
+          {SURFACE_OPTIONS.map(({ value, label, Icon }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setSurface(value)}
+              className={cn(
+                "flex h-7 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
+                surface === value
+                  ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
+                  : "border-transparent text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
+              )}
+            >
+              <Icon size={12} weight={surface === value ? "fill" : "regular"} />
+              {label}
+            </button>
+          ))}
+        </div>
+        {surface === "commits" ? (
+          <>
+            <select
+              value={focusLaneId ?? ""}
+              onChange={(e) => setFocusLaneId(e.target.value || null)}
+              aria-label="Lane"
+              className="h-7 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
+            >
+              <option value="">Select lane…</option>
+              {lanes.map((lane) => (
+                <option key={lane.id} value={lane.id}>
+                  {lane.name}
+                </option>
+              ))}
+            </select>
+            <LaneGitActionsMenu
+              laneId={focusLaneId}
+              laneName={focusLane?.name ?? null}
+              onComplete={onCommitGitActionComplete}
+            />
+          </>
+        ) : null}
+      </div>
+
       {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
+      {showActivityControls ? (
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
         <div className="flex items-center gap-0.5">
@@ -123,6 +258,8 @@ export function TimelineToolbar() {
             <button
               key={mode}
               title={tip}
+              aria-label={tip}
+              aria-pressed={viewMode === mode}
               onClick={() => setViewMode(mode)}
               className={cn(
                 "flex h-7 w-7 items-center justify-center border transition-colors",
@@ -183,22 +320,37 @@ export function TimelineToolbar() {
           />
         </div>
 
-        {/* Column config */}
-        {/* tour anchor — closest viable: no dedicated export button; column/gear is the only row-1 config control. */}
+        {exportNotice ? (
+          <span
+            className="max-w-[200px] truncate font-mono text-[10px] text-accent"
+            title={exportNotice}
+          >
+            {exportNotice}
+          </span>
+        ) : null}
+
         <button
-          title="Column settings"
+          type="button"
+          title="Export operations (JSON via save dialog; unavailable in headless)"
+          aria-label="Export activity history"
           data-tour="history.export"
-          onClick={() => toggleColumn("")}
+          onClick={() => void handleExport()}
           className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
-            "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
+            "flex h-7 items-center gap-1 rounded-md border border-transparent px-2",
+            "font-mono text-[10px] font-bold uppercase tracking-[0.5px] text-[var(--color-muted-fg)]",
+            "transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
           )}
         >
-          <GearSix size={14} />
+          <Export size={14} />
+          Export
         </button>
+
+        <ColumnSettingsMenu columns={columns} onToggleColumn={toggleColumn} />
       </div>
+      ) : null}
 
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
+      {showActivityControls ? (
       <div className="flex flex-wrap items-center gap-1.5" data-tour="history.filter">
         {/* Section label */}
         <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
@@ -354,6 +506,215 @@ export function TimelineToolbar() {
           </Button>
         )}
       </div>
+      ) : null}
     </div>
+  );
+}
+
+function LaneGitActionsMenu({
+  laneId,
+  laneName,
+  onComplete,
+}: {
+  laneId: string | null;
+  laneName: string | null;
+  onComplete?: () => void;
+}) {
+  const navigate = useNavigate();
+  const [runningAction, setRunningAction] = useState<HistoryLaneActionId | null>(null);
+  const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId), conflictState });
+
+  const refreshConflictState = useCallback(async () => {
+    if (!laneId) {
+      setConflictState(null);
+      return;
+    }
+    try {
+      setConflictState(await window.ade.git.getConflictState(laneId));
+    } catch {
+      setConflictState(null);
+    }
+  }, [laneId]);
+
+  useEffect(() => {
+    void refreshConflictState();
+  }, [refreshConflictState]);
+
+  const handleComplete = useCallback(() => {
+    onComplete?.();
+    void refreshConflictState();
+  }, [onComplete, refreshConflictState]);
+
+  const run = useCallback(
+    async (actionId: HistoryLaneActionId) => {
+      if (!laneId) return;
+      setRunningAction(actionId);
+      setError(null);
+      try {
+        await runHistoryLaneAction({
+          actionId,
+          laneId,
+          laneName,
+          onNotice: (message) => {
+            setNotice(message);
+            window.setTimeout(() => setNotice(null), 3500);
+          },
+          onError: (message) => {
+            setError(message);
+            window.setTimeout(() => setError(null), 5000);
+          },
+          onComplete: handleComplete,
+          navigate: (path) => navigate(path),
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        window.setTimeout(() => setError(null), 5000);
+      } finally {
+        setRunningAction(null);
+      }
+    },
+    [handleComplete, laneId, laneName, navigate],
+  );
+  const actionGroups = groupHistoryLaneActions(actions);
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          disabled={!laneId}
+          title={laneId ? "Lane git actions" : "Select a lane first"}
+          className={cn(
+            "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2",
+            "border-white/[0.06] bg-white/[0.03] font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
+            "text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40",
+          )}
+        >
+          <GitBranch size={12} />
+          Git actions
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 outline-none"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+            {actionGroups.map((group, groupIndex) => (
+              <div
+                key={group.id}
+                className={cn(groupIndex > 0 ? "border-t border-white/[0.06] pt-1" : undefined)}
+              >
+                <div className="px-2 py-1 font-sans text-[10px] font-semibold text-muted-fg">
+                  {group.label}
+                </div>
+                {group.actions.map((action) => {
+                  const busy = runningAction === action.id;
+                  return (
+                    <button
+                      key={action.id}
+                      type="button"
+                      disabled={action.disabled || runningAction != null}
+                      title={action.disabledReason}
+                      onClick={() => void run(action.id)}
+                      className={cn(
+                        "flex w-full flex-col rounded px-2 py-1.5 text-left outline-none transition-colors",
+                        "hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-40",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "font-sans text-[12px] text-fg",
+                          action.destructive ? "text-red-200" : undefined,
+                        )}
+                      >
+                        {busy ? "Running…" : action.label}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted-fg">
+                        {action.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            {notice ? (
+              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-accent" title={notice}>
+                {notice}
+              </div>
+            ) : null}
+            {error ? (
+              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-red-300" title={error}>
+                {error}
+              </div>
+            ) : null}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function ColumnSettingsMenu({
+  columns,
+  onToggleColumn,
+}: {
+  columns: Array<{ id: TimelineColumn; label: string; visible: boolean }>;
+  onToggleColumn: (columnId: TimelineColumn) => void;
+}) {
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title="Column settings"
+          className={cn(
+            "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
+            "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
+          )}
+        >
+          <GearSix size={14} />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 outline-none"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+            <div className="px-2 py-1 font-sans text-[11px] font-medium text-muted-fg">
+              Columns
+            </div>
+            {columns.map((column) => (
+              <label
+                key={column.id}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
+                  "font-sans text-[12px] text-fg hover:bg-white/[0.04]",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={column.visible}
+                  onChange={() => onToggleColumn(column.id)}
+                  className="h-3 w-3 accent-[var(--color-accent)]"
+                />
+                <span>{column.label}</span>
+              </label>
+            ))}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

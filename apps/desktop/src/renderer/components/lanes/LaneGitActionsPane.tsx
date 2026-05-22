@@ -780,19 +780,10 @@ export function LaneGitActionsPane({
     if (!isViewingLane(targetLaneId)) return;
 
     if (stashesResult.status === "fulfilled") setStashes(stashesResult.value);
-    if (syncStatusResult.status === "fulfilled") {
-      setSyncStatus(syncStatusResult.value);
-    } else {
-      setSyncStatus(null);
-    }
-    if (conflictResult.status === "fulfilled") {
-      const cs = conflictResult.value;
-      setConflictState(cs);
-      setStuckRebase(cs.kind === "rebase" && cs.inProgress ? cs : null);
-    } else {
-      setConflictState(null);
-      setStuckRebase(null);
-    }
+    setSyncStatus(syncStatusResult.status === "fulfilled" ? syncStatusResult.value : null);
+    const cs = conflictResult.status === "fulfilled" ? conflictResult.value : null;
+    setConflictState(cs);
+    setStuckRebase(cs?.kind === "rebase" && cs.inProgress ? cs : null);
   };
 
   const refreshLaneGitState = useCallback(async (targetLaneId: string | null) => {

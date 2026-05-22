@@ -1,6 +1,9 @@
 import type { OperationRecord } from "../../../shared/types";
 import type { EventCategory, EventImportance, NodeShape } from "./eventTaxonomy";
 
+// ── History surface (activity timeline vs git commit graph) ───────
+export type HistorySurface = "activity" | "commits";
+
 // ── View Modes ───────────────────────────────────────────────────
 export type ViewMode = "graph" | "list" | "compact";
 
@@ -151,7 +154,7 @@ export const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "lane",      label: "Lane",     width: 100, visible: true,  sortable: true },
   { id: "author",    label: "Author",   width: 80,  visible: false, sortable: true },
   { id: "status",    label: "Status",   width: 80,  visible: true,  sortable: true },
-  { id: "duration",  label: "Duration", width: 64,  visible: false, sortable: true },
+  { id: "duration",  label: "Duration", width: 64,  visible: true,  sortable: true },
   { id: "sha",       label: "SHA",      width: 72,  visible: false, sortable: false },
 ];
 

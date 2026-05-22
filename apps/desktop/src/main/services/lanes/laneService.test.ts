@@ -616,6 +616,80 @@ describe("laneService create", () => {
     }
   });
 
+  it("creates an unparented lane from an explicit start point", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-start-point-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    let worktreeStartPoint: string | null = null;
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-create-start-point", repoRoot, "demo", "main", now, now],
+      );
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          worktreeStartPoint = args[5] ?? null;
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "abc123456789") {
+          return { exitCode: 0, stdout: "sha-selected\n", stderr: "" };
+        }
+        if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        if (args[0] === "ls-remote") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "push" && args[1] === "-u") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+        }
+        if (args[0] === "rev-parse" && args.includes("--git-dir")) {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-create-start-point",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const lane = await service.create({
+        name: "History point",
+        baseBranch: "main",
+        branchName: "history/point",
+        startPoint: "abc123456789",
+      });
+
+      expect(lane.baseRef).toBe("main");
+      expect(lane.branchRef).toBe("history/point");
+      expect(worktreeStartPoint).toBe("sha-selected");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("creates a fresh lane from primary using the project default base by default", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-from-primary-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

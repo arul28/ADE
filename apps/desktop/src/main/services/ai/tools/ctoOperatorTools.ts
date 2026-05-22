@@ -15,6 +15,7 @@ import type {
   AutomationRunListArgs,
   CtoTriggerAgentWakeupArgs,
   LinearWorkflowConfig,
+  GitPullArgs,
   OperatorNavigationSuggestion,
   TestRunSummary,
   TestSuiteDefinition,
@@ -93,7 +94,9 @@ export interface CtoOperatorToolDeps {
     getSyncStatus: (args: { laneId: string }) => Promise<any>;
     commit: (args: any) => Promise<any>;
     push: (args: any) => Promise<any>;
-    pull: (args: { laneId: string }) => Promise<any>;
+    pull: (args: GitPullArgs) => Promise<any>;
+    undoLastHeadChange: (args: { laneId: string }) => Promise<any>;
+    redoLastHeadChange: (args: { laneId: string }) => Promise<any>;
     fetch: (args: { laneId: string }) => Promise<any>;
     listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<any[]>;
     listBranches: (args: any) => Promise<any[]>;
@@ -2571,9 +2574,24 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitPull = tool({
-    description: "Pull from the remote for a lane.",
+    description: "Pull from the remote for a lane. Defaults to fast-forward only; use rebase or merge when that is the intended history shape.",
+    inputSchema: z.object({
+      laneId: z.string().optional(),
+      mode: z.enum(["ff-only", "rebase", "merge"]).optional().default("ff-only"),
+    }),
+    execute: ({ laneId, mode }) => gitGuard(() => deps.gitService!.pull({ laneId: resolveLaneId(laneId), mode })),
+  });
+
+  tools.gitUndoLastHeadChange = tool({
+    description: "Undo the latest successful head-changing git operation recorded by ADE for a lane. This resets the lane with git reset --hard.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.pull({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.undoLastHeadChange({ laneId: resolveLaneId(laneId) })),
+  });
+
+  tools.gitRedoLastHeadChange = tool({
+    description: "Redo the latest successful ADE git undo for a lane. This resets the lane with git reset --hard.",
+    inputSchema: z.object({ laneId: z.string().optional() }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.redoLastHeadChange({ laneId: resolveLaneId(laneId) })),
   });
 
   tools.gitFetch = tool({

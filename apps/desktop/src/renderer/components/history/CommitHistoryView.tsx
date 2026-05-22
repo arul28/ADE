@@ -1,0 +1,404 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ArrowClockwise, GitBranch, Warning } from "@phosphor-icons/react";
+import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types";
+import { cn } from "../ui/cn";
+import { EmptyState } from "../ui/EmptyState";
+import { relativeWhen } from "../../lib/format";
+import { HistoryGitContextMenu } from "./HistoryGitContextMenu";
+import { filterCommitsForSearch } from "./historySearch";
+import {
+  buildCommitGraphLayout,
+  columnCenterX,
+  commitEdgePath,
+  COMMIT_ROW_HEIGHT,
+  rowCenterY,
+} from "./commitGraphLayout";
+
+function formatTimelineError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const message = raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
+  if (/^Lane worktree is missing\./i.test(message)) return message;
+  if (/git working directory not found:/i.test(message)) {
+    return "Lane worktree is missing. Restore or recreate the lane worktree before viewing commits.";
+  }
+  return message || "Unable to load commit history.";
+}
+
+type CommitHistoryViewProps = {
+  laneId: string | null;
+  laneName: string | null;
+  selectedSha: string | null;
+  onSelectCommit: (commit: GitCommitSummary) => void;
+  refreshToken?: number;
+  active?: boolean;
+};
+
+export function CommitHistoryView({
+  laneId,
+  laneName,
+  selectedSha,
+  onSelectCommit,
+  refreshToken = 0,
+  active = true,
+}: CommitHistoryViewProps) {
+  const navigate = useNavigate();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const loadRequestSeq = useRef(0);
+  const [commits, setCommits] = useState<GitCommitSummary[]>([]);
+  const [branches, setBranches] = useState<GitBranchSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [limit, setLimit] = useState(120);
+  const [search, setSearch] = useState("");
+
+  const load = useCallback(async () => {
+    if (!laneId) return;
+    const requestId = ++loadRequestSeq.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const [rows, branchRows] = await Promise.all([
+        window.ade.git.listRecentCommits({ laneId, limit }),
+        window.ade.git.listBranches({ laneId }).catch(() => [] as GitBranchSummary[]),
+      ]);
+      if (loadRequestSeq.current !== requestId) return;
+      setCommits(rows);
+      setBranches(branchRows);
+    } catch (err) {
+      if (loadRequestSeq.current !== requestId) return;
+      setError(formatTimelineError(err));
+      setCommits([]);
+      setBranches([]);
+    } finally {
+      if (loadRequestSeq.current === requestId) {
+        setLoading(false);
+      }
+    }
+  }, [laneId, limit]);
+
+  useEffect(() => {
+    loadRequestSeq.current += 1;
+    setCommits([]);
+    setBranches([]);
+    setError(null);
+    setActionError(null);
+    setNotice(null);
+    setLimit(120);
+    setSearch("");
+  }, [laneId]);
+
+  useEffect(() => {
+    if (!active || !laneId) return;
+    void load();
+  }, [active, laneId, load, refreshToken]);
+
+  useEffect(() => {
+    if (!active || !laneId || !search.trim() || limit >= 500) return;
+    setLimit(500);
+  }, [active, laneId, limit, search]);
+
+  const refsBySha = useMemo(() => {
+    const map = new Map<string, GitBranchSummary[]>();
+    for (const b of branches) {
+      const sha = b.lastCommitSha?.trim();
+      if (!sha) continue;
+      const arr = map.get(sha) ?? [];
+      arr.push(b);
+      map.set(sha, arr);
+    }
+    return map;
+  }, [branches]);
+
+  const filtered = useMemo(
+    () => filterCommitsForSearch(commits, refsBySha, search),
+    [commits, refsBySha, search],
+  );
+
+  const layout = useMemo(() => buildCommitGraphLayout(filtered), [filtered]);
+  const nodeBySha = useMemo(
+    () => new Map(layout.nodes.map((n) => [n.sha, n])),
+    [layout.nodes],
+  );
+
+  const virtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => COMMIT_ROW_HEIGHT,
+    overscan: 12,
+  });
+
+  const headSha = commits[0]?.sha ?? null;
+
+  const handleRefresh = useCallback(() => {
+    void load();
+  }, [load]);
+
+  const onScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const el = e.currentTarget;
+      const nearBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      if (nearBottom && !loading && limit < 500) {
+        setLimit((prev) => Math.min(500, prev + 40));
+      }
+    },
+    [loading, limit],
+  );
+
+  if (!laneId) {
+    return (
+      <EmptyState
+        icon={GitBranch}
+        title="Select a lane"
+        description="Pick a lane in the toolbar to view its commit graph"
+      />
+    );
+  }
+
+  if (loading && commits.length === 0) {
+    return (
+      <EmptyState
+        icon={GitBranch}
+        title="Loading commits…"
+        description={laneName ? `Fetching history for ${laneName}` : "Fetching commit history"}
+      />
+    );
+  }
+
+  const graphHeight = virtualizer.getTotalSize();
+  const svgHeight = layout.totalHeight;
+  const searchExpanding = Boolean(search.trim()) && loading;
+  const showTopLoadingStripe = loading && commits.length > 0;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {showTopLoadingStripe ? (
+        <div
+          role="progressbar"
+          aria-label="Refreshing commits"
+          className="h-0.5 w-full shrink-0 animate-pulse bg-accent"
+        />
+      ) : null}
+      <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search message:, author:, commit:, branch:, is:merge…"
+          className="h-7 flex-1 rounded border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] text-fg placeholder:text-muted-fg/60 outline-none focus:border-accent/50"
+        />
+        <button
+          type="button"
+          title="Refresh commits"
+          aria-label="Refresh commits"
+          onClick={handleRefresh}
+          disabled={loading}
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-transparent",
+            "text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg disabled:opacity-40",
+          )}
+        >
+          <ArrowClockwise size={14} className={loading ? "animate-spin" : undefined} />
+        </button>
+        <span className="shrink-0 font-mono text-[10px] text-muted-fg">
+          {filtered.length} commit{filtered.length === 1 ? "" : "s"}
+        </span>
+        {notice ? (
+          <span className="shrink-0 font-mono text-[10px] text-accent">{notice}</span>
+        ) : null}
+        {actionError ? (
+          <span className="shrink-0 font-mono text-[10px] text-red-300" title={actionError}>
+            Action failed
+          </span>
+        ) : null}
+      </div>
+
+      {error ? (
+        <div className="flex flex-1 flex-col gap-2 p-4">
+          <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">
+            <Warning size={16} className="mt-0.5 shrink-0" />
+            <span>{error}</span>
+          </div>
+        </div>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={GitBranch}
+          title={searchExpanding ? "Searching commits…" : search ? "No matching commits" : "No commits"}
+          description={
+            searchExpanding
+              ? "Scanning the full loaded commit window"
+              : search
+                ? "Try a different search"
+                : "This lane has no commit history yet"
+          }
+        />
+      ) : (
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={onScroll}>
+        <div
+          className="relative"
+          style={{ height: graphHeight, minHeight: svgHeight }}
+        >
+          {/* SVG graph layer — fixed to content height */}
+          <svg
+            className="pointer-events-none absolute left-0 top-0"
+            width={layout.graphWidth}
+            height={graphHeight}
+            aria-hidden
+          >
+            {layout.edges
+              .filter((edge) => {
+                const fromIdx = layout.shaToRow.get(edge.fromSha);
+                const toIdx = layout.shaToRow.get(edge.toSha);
+                if (fromIdx === undefined || toIdx === undefined) return false;
+                const minR = Math.min(fromIdx, toIdx);
+                const maxR = Math.max(fromIdx, toIdx);
+                return virtualizer.getVirtualItems().some(
+                  (v) => v.index >= minR - 2 && v.index <= maxR + 2,
+                );
+              })
+              .map((edge) => {
+              const x1 = columnCenterX(edge.fromCol);
+              const y1 = rowCenterY(edge.fromRow) + 4;
+              const x2 = columnCenterX(edge.toCol);
+              const y2 = rowCenterY(edge.toRow) - 4;
+              return (
+                <path
+                  key={edge.id}
+                  d={commitEdgePath(x1, y1, x2, y2)}
+                  fill="none"
+                  stroke={edge.kind === "merge" ? "rgba(59,130,246,0.55)" : "rgba(255,255,255,0.14)"}
+                  strokeWidth={edge.kind === "merge" ? 1.5 : 1}
+                  strokeDasharray={edge.kind === "merge" ? "3 2" : undefined}
+                />
+              );
+            })}
+            {virtualizer.getVirtualItems().map((vRow) => {
+              const node = nodeBySha.get(filtered[vRow.index]?.sha ?? "");
+              if (!node) return null;
+              const cx = columnCenterX(node.column);
+              const cy = rowCenterY(node.rowIndex);
+              const fill = node.isHead
+                ? "#22C55E"
+                : node.isMerge
+                  ? "#3B82F6"
+                  : "var(--color-card)";
+              const stroke = node.isHead
+                ? "#22C55E"
+                : node.isMerge
+                  ? "#3B82F6"
+                  : "rgba(255,255,255,0.35)";
+              return (
+                <circle
+                  key={node.sha}
+                  cx={cx}
+                  cy={cy}
+                  r={node.isMerge ? 5 : 4}
+                  fill={fill}
+                  stroke={stroke}
+                  strokeWidth={2}
+                />
+              );
+            })}
+          </svg>
+
+          {virtualizer.getVirtualItems().map((vRow) => {
+            const commit = filtered[vRow.index];
+            if (!commit) return null;
+            const node = nodeBySha.get(commit.sha);
+            const isSelected = selectedSha === commit.sha;
+            const isHead = commit.sha === headSha;
+            const refs = refsBySha.get(commit.sha) ?? [];
+
+            return (
+              <div
+                key={commit.sha}
+                className="absolute left-0 right-0 flex"
+                style={{
+                  height: COMMIT_ROW_HEIGHT,
+                  transform: `translateY(${vRow.start}px)`,
+                }}
+              >
+                <div
+                  className="shrink-0"
+                  style={{ width: layout.graphWidth }}
+                />
+                <HistoryGitContextMenu
+                  laneId={laneId}
+                  commit={commit}
+                  isHead={isHead}
+                  hasWorktree={Boolean(laneId)}
+                  onNotice={(m) => {
+                    setNotice(m);
+                    setActionError(null);
+                    void load();
+                    window.setTimeout(() => setNotice(null), 2500);
+                  }}
+                  onError={(m) => {
+                    setActionError(m);
+                    window.setTimeout(() => setActionError(null), 5000);
+                  }}
+                  navigate={(path) => navigate(path)}
+                >
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex min-w-0 flex-1 items-center gap-2 border-l px-2 text-left transition-colors",
+                      isSelected
+                        ? "border-accent bg-accent/10"
+                        : "border-transparent hover:bg-white/[0.04]",
+                    )}
+                    onClick={() => onSelectCommit(commit)}
+                    aria-label={`Select commit ${commit.shortSha}: ${commit.subject}`}
+                  >
+                    <span className="shrink-0 font-mono text-[11px] text-muted-fg">
+                      {commit.shortSha}
+                    </span>
+                    {isHead ? (
+                      <span className="shrink-0 rounded bg-emerald-500/20 px-1 font-mono text-[9px] font-bold uppercase text-emerald-400">
+                        HEAD
+                      </span>
+                    ) : null}
+                    {node?.isMerge ? (
+                      <span className="shrink-0 rounded bg-blue-500/20 px-1 font-mono text-[9px] font-bold uppercase text-blue-300">
+                        merge
+                      </span>
+                    ) : null}
+                    {refs.slice(0, 2).map((ref) => (
+                      <span
+                        key={ref.name}
+                        className="max-w-[120px] truncate rounded bg-violet-500/15 px-1 font-mono text-[9px] text-violet-300"
+                        title={ref.name}
+                      >
+                        {ref.isCurrent ? "● " : ""}
+                        {ref.name}
+                      </span>
+                    ))}
+                    <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg">
+                      {commit.subject}
+                    </span>
+                    {commit.authorName ? (
+                      <span
+                        className="hidden max-w-[120px] shrink-0 truncate font-mono text-[10px] text-muted-fg sm:inline"
+                        title={commit.authorName}
+                      >
+                        {commit.authorName}
+                      </span>
+                    ) : null}
+                    <span className="shrink-0 font-mono text-[10px] text-muted-fg">
+                      {relativeWhen(commit.authoredAt)}
+                    </span>
+                  </button>
+                </HistoryGitContextMenu>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      )}
+    </div>
+  );
+}

@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 export type GitSyncMode = "merge" | "rebase";
+export type GitPullMode = "ff-only" | "rebase" | "merge";
 
 export type GitFileActionArgs = {
   laneId: string;
@@ -40,6 +41,19 @@ export type GitCherryPickArgs = {
   commitSha: string;
 };
 
+export type GitCreateTagArgs = {
+  laneId: string;
+  commitSha: string;
+  tagName: string;
+  message?: string;
+};
+
+export type GitResetCommitArgs = {
+  laneId: string;
+  commitSha: string;
+  mode: "soft" | "mixed" | "hard";
+};
+
 export type GitStashPushArgs = {
   laneId: string;
   message?: string;
@@ -56,6 +70,15 @@ export type GitSyncArgs = {
   laneId: string;
   mode?: GitSyncMode;
   baseRef?: string;
+};
+
+export type GitPullArgs = {
+  laneId: string;
+  mode?: GitPullMode;
+};
+
+export type GitHeadChangeActionArgs = {
+  laneId: string;
 };
 
 export type GitPushArgs = {
@@ -303,6 +326,7 @@ export type GitHubStatus = {
 export type ListOperationsArgs = {
   laneId?: string;
   kind?: string;
+  status?: "running" | "succeeded" | "failed" | "canceled";
   limit?: number;
 };
 
@@ -319,7 +343,7 @@ export type OperationRecord = {
   metadataJson: string | null;
 };
 
-export type ExportHistoryArgs = ListOperationsArgs & {
+export type ExportHistoryArgs = Omit<ListOperationsArgs, "status"> & {
   status?: OperationRecord["status"] | "all";
   format: "csv" | "json";
 };

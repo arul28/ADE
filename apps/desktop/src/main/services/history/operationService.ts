@@ -6,6 +6,7 @@ import { isRecord, nowIso, safeJsonParse } from "../shared/utils";
 type OperationStatus = "running" | "succeeded" | "failed" | "canceled";
 
 type OperationMetadata = Record<string, unknown>;
+type HeadChangeOperationRecord = OperationRecord & { preHeadSha: string; postHeadSha: string };
 
 function safeParseMetadata(raw: string | null | undefined): OperationMetadata {
   const parsed = safeJsonParse(raw, null);
@@ -89,6 +90,33 @@ export function createOperationService({
     start,
     finish,
 
+    get(args: { operationId?: string; id?: string } | string): OperationRecord | null {
+      const operationId =
+        typeof args === "string" ? args : (args.operationId ?? args.id ?? "");
+      if (!operationId.trim()) return null;
+      const row = db.get<OperationRecord>(
+        `
+          select
+            o.id as id,
+            o.lane_id as laneId,
+            l.name as laneName,
+            o.kind as kind,
+            o.started_at as startedAt,
+            o.ended_at as endedAt,
+            o.status as status,
+            o.pre_head_sha as preHeadSha,
+            o.post_head_sha as postHeadSha,
+            o.metadata_json as metadataJson
+          from operations o
+          left join lanes l on l.id = o.lane_id
+          where o.project_id = ? and o.id = ?
+          limit 1
+        `,
+        [projectId, operationId.trim()]
+      );
+      return row ?? null;
+    },
+
     recordCompleted(args: {
       laneId?: string | null;
       kind: string;
@@ -112,6 +140,39 @@ export function createOperationService({
       return { operationId: started.operationId };
     },
 
+    listHeadChanges(args: { laneId: string; limit?: number }): HeadChangeOperationRecord[] {
+      const limit = typeof args.limit === "number" ? Math.max(1, Math.min(1000, Math.floor(args.limit))) : 100;
+      return db.all<HeadChangeOperationRecord>(
+        `
+          select
+            o.id as id,
+            o.lane_id as laneId,
+            l.name as laneName,
+            o.kind as kind,
+            o.started_at as startedAt,
+            o.ended_at as endedAt,
+            o.status as status,
+            o.pre_head_sha as preHeadSha,
+            o.post_head_sha as postHeadSha,
+            o.metadata_json as metadataJson
+          from operations o
+          left join lanes l on l.id = o.lane_id
+          where o.project_id = ?
+            and o.lane_id = ?
+            and o.status = 'succeeded'
+            and substr(o.kind, 1, 4) in ('git_', 'git.')
+            and o.pre_head_sha is not null
+            and o.pre_head_sha != ''
+            and o.post_head_sha is not null
+            and o.post_head_sha != ''
+            and o.pre_head_sha != o.post_head_sha
+          order by o.started_at desc
+          limit ?
+        `,
+        [projectId, args.laneId, limit]
+      );
+    },
+
     list(args: ListOperationsArgs = {}): OperationRecord[] {
       const where = ["o.project_id = ?"];
       const params: Array<string | number> = [projectId];
@@ -124,6 +185,11 @@ export function createOperationService({
       if (args.kind) {
         where.push("o.kind = ?");
         params.push(args.kind);
+      }
+
+      if (args.status) {
+        where.push("o.status = ?");
+        params.push(args.status);
       }
 
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(1000, Math.floor(args.limit))) : 300;

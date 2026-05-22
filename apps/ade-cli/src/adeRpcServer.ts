@@ -859,12 +859,13 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "git_pull",
-    description: "Pull remote changes into a lane.",
+    description: "Pull remote changes into a lane. Defaults to fast-forward only; pass mode rebase or merge for non-ff pull behavior.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        laneId: { type: "string", minLength: 1 }
+        laneId: { type: "string", minLength: 1 },
+        mode: { type: "string", enum: ["ff-only", "ff_only", "rebase", "merge"] }
       }
     }
   },
@@ -878,6 +879,28 @@ const TOOL_SPECS: ToolSpec[] = [
         laneId: { type: "string", minLength: 1 },
         force: { type: "boolean", default: false },
         setUpstream: { type: "boolean", default: true }
+      }
+    }
+  },
+  {
+    name: "git_undo_last_head_change",
+    description: "Reset a lane to the pre-HEAD SHA from the latest successful head-changing git operation recorded by ADE.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "git_redo_last_head_change",
+    description: "Restore the post-HEAD SHA from the latest successful ADE git undo operation.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        laneId: { type: "string", minLength: 1 }
       }
     }
   },
@@ -2138,6 +2161,8 @@ const MUTATION_TOOLS = new Set([
   "git_fetch",
   "git_pull",
   "git_push",
+  "git_undo_last_head_change",
+  "git_redo_last_head_change",
   "git_checkout_branch",
   "commit_changes",
   "stash_push",
@@ -6143,7 +6168,15 @@ async function runTool(args: {
 
   if (name === "git_pull") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_pull");
-    const action = await runtime.gitService.pull({ laneId });
+    const rawMode = asOptionalTrimmedString(toolArgs.mode);
+    const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
+    if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "mode must be ff-only, rebase, or merge.");
+    }
+    const action = await runtime.gitService.pull({
+      laneId,
+      ...(mode ? { mode: mode as "ff-only" | "rebase" | "merge" } : {}),
+    });
     return { laneId, action };
   }
 
@@ -6151,6 +6184,18 @@ async function runTool(args: {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_push");
     const force = asBoolean(toolArgs.forceWithLease, asBoolean(toolArgs.force, false));
     const action = await runtime.gitService.push({ laneId, forceWithLease: force });
+    return { laneId, action };
+  }
+
+  if (name === "git_undo_last_head_change") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_undo_last_head_change");
+    const action = await runtime.gitService.undoLastHeadChange({ laneId });
+    return { laneId, action };
+  }
+
+  if (name === "git_redo_last_head_change") {
+    const laneId = requireLaneIdForTool(runtime, session, toolArgs, "git_redo_last_head_change");
+    const action = await runtime.gitService.redoLastHeadChange({ laneId });
     return { laneId, action };
   }
 

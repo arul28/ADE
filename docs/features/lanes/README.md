@@ -274,14 +274,21 @@ default from the Lanes list (see `isMissionLaneHiddenByDefault` in
    or parent's branch), normalizes the branch name, computes a unique
    worktree path under `.ade/worktrees/<slug>/`, runs `git worktree
    add`, inserts the lane row, and returns a `LaneSummary`. When
-   `CreateLaneArgs.linearIssue` is supplied (from `CreateLaneDialog`
-   via the Linear issue picker), the service derives the branch name
-   from the issue (`linearIssueBranchName`: `ident-title-slug`,
-   sanitised against git-ref rules) when no explicit `branchName` was
-   provided, refuses to create the lane if the resolved branch already
-   exists locally or under `origin/`, and writes the issue payload
-   into `lane_linear_issues` so the PR / commit / chat surfaces can
-   pick it up later. The same path runs for `createChild`.
+   `CreateLaneArgs.startPoint` is supplied (e.g. from the History
+   tab's "Create lane here" affordance on a commit), the service
+   verifies the ref with `git rev-parse --verify` in the parent
+   worktree (or the project root for unparented creates), uses the
+   resolved SHA as the worktree's start point, and skips the
+   `fetch + reset` step that primary-derived lanes normally run.
+   When `CreateLaneArgs.linearIssue` is supplied (from
+   `CreateLaneDialog` via the Linear issue picker), the service
+   derives the branch name from the issue (`linearIssueBranchName`:
+   `ident-title-slug`, sanitised against git-ref rules) when no
+   explicit `branchName` was provided, refuses to create the lane if
+   the resolved branch already exists locally or under `origin/`,
+   and writes the issue payload into `lane_linear_issues` so the PR
+   / commit / chat surfaces can pick it up later. The same path runs
+   for `createChild`.
 2. **Create child** — same as create but with `parentLaneId`. Child's
    base ref defaults to the parent's branch ref. Callers can override
    with `baseBranchRef` on `CreateChildLaneArgs` to fork from any local

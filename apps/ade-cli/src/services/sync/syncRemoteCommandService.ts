@@ -49,6 +49,7 @@ import type {
   GitBatchFileActionArgs,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitCreateTagArgs,
   GitFileActionArgs,
   GitGenerateCommitMessageArgs,
   GitGetCommitMessageArgs,
@@ -56,7 +57,10 @@ import type {
   GitCheckoutBranchArgs,
   GitListBranchesArgs,
   GitListCommitFilesArgs,
+  GitPullArgs,
+  GitPullMode,
   GitPushArgs,
+  GitResetCommitArgs,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -910,6 +914,27 @@ function parseGitCherryPickArgs(value: Record<string, unknown>): GitCherryPickAr
   };
 }
 
+function parseGitCreateTagArgs(value: Record<string, unknown>): GitCreateTagArgs {
+  return {
+    laneId: requireString(value.laneId, "git.createTag requires laneId."),
+    commitSha: requireString(value.commitSha, "git.createTag requires commitSha."),
+    tagName: requireString(value.tagName, "git.createTag requires tagName."),
+    ...(asTrimmedString(value.message) ? { message: asTrimmedString(value.message)! } : {}),
+  };
+}
+
+function parseGitResetCommitArgs(value: Record<string, unknown>): GitResetCommitArgs {
+  const mode = requireString(value.mode, "git.resetToCommit requires mode.");
+  if (mode !== "soft" && mode !== "mixed" && mode !== "hard") {
+    throw new Error("git.resetToCommit mode must be soft, mixed, or hard.");
+  }
+  return {
+    laneId: requireString(value.laneId, "git.resetToCommit requires laneId."),
+    commitSha: requireString(value.commitSha, "git.resetToCommit requires commitSha."),
+    mode,
+  };
+}
+
 function parseGitStashPushArgs(value: Record<string, unknown>): GitStashPushArgs {
   return {
     laneId: requireString(value.laneId, "git.stashPush requires laneId."),
@@ -936,6 +961,24 @@ function parseGitSyncArgs(value: Record<string, unknown>): GitSyncArgs {
     laneId: requireString(value.laneId, "git.sync requires laneId."),
     ...(asTrimmedString(value.mode) ? { mode: value.mode as GitSyncArgs["mode"] } : {}),
     ...(asTrimmedString(value.baseRef) ? { baseRef: asTrimmedString(value.baseRef)! } : {}),
+  };
+}
+
+function normalizeGitPullMode(value: unknown, action: string): GitPullMode | undefined {
+  const raw = asTrimmedString(value);
+  if (!raw) return undefined;
+  const mode = raw === "ff_only" ? "ff-only" : raw;
+  if (mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+    throw new Error(`${action} mode must be ff-only, rebase, or merge.`);
+  }
+  return mode;
+}
+
+function parseGitPullArgs(value: Record<string, unknown>): GitPullArgs {
+  const mode = normalizeGitPullMode(value.mode, "git.pull");
+  return {
+    laneId: requireString(value.laneId, "git.pull requires laneId."),
+    ...(mode ? { mode } : {}),
   };
 }
 
@@ -2479,6 +2522,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
     requireService(args.gitService, "Git service not available.").revertCommit(parseGitRevertArgs(payload)));
   register("git.cherryPickCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").cherryPickCommit(parseGitCherryPickArgs(payload)));
+  register("git.createTag", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").createTag(parseGitCreateTagArgs(payload)));
+  register("git.resetToCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").resetToCommit(parseGitResetCommitArgs(payload)));
   register("git.stashPush", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").stashPush(parseGitStashPushArgs(payload)));
   register("git.stashList", { viewerAllowed: true }, async (payload) =>
@@ -2492,7 +2539,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   register("git.fetch", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").fetch(parseConflictLaneArgs(payload, "git.fetch")));
   register("git.pull", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.gitService, "Git service not available.").pull(parseConflictLaneArgs(payload, "git.pull")));
+    requireService(args.gitService, "Git service not available.").pull(parseGitPullArgs(payload)));
+  register("git.undoLastHeadChange", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").undoLastHeadChange(parseConflictLaneArgs(payload, "git.undoLastHeadChange")));
+  register("git.redoLastHeadChange", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").redoLastHeadChange(parseConflictLaneArgs(payload, "git.redoLastHeadChange")));
   register("git.getSyncStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
   register("git.sync", { viewerAllowed: true, queueable: true }, async (payload) =>
