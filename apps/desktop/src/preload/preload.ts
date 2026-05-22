@@ -2519,6 +2519,20 @@ function clearGitReadCaches(): void {
   sessionDeltaCache.clear();
 }
 
+function normalizeLaneIdArg(args: unknown): string {
+  if (typeof args === "string") {
+    const laneId = args.trim();
+    if (laneId.length === 0) throw new Error("laneId is required.");
+    return laneId;
+  }
+  if (!isRecord(args) || typeof args.laneId !== "string") {
+    throw new Error("laneId is required.");
+  }
+  const laneId = args.laneId.trim();
+  if (laneId.length === 0) throw new Error("laneId is required.");
+  return laneId;
+}
+
 function clearProjectScopedReadCaches(): void {
   clearGitReadCaches();
   githubStatusCache.clear();
@@ -6828,7 +6842,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.gitGetConflictState, { laneId });
     },
     rebaseContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
-      const laneId = typeof args === "string" ? args : args.laneId;
+      const laneId = normalizeLaneIdArg(args);
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "rebaseContinue",
@@ -6839,7 +6853,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId });
     },
     rebaseAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
-      const laneId = typeof args === "string" ? args : args.laneId;
+      const laneId = normalizeLaneIdArg(args);
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "rebaseAbort",
@@ -6850,7 +6864,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId });
     },
     mergeContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
-      const laneId = typeof args === "string" ? args : args.laneId;
+      const laneId = normalizeLaneIdArg(args);
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "mergeContinue",
@@ -6861,7 +6875,7 @@ contextBridge.exposeInMainWorld("ade", {
         : ipcRenderer.invoke(IPC.gitMergeContinue, { laneId });
     },
     mergeAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
-      const laneId = typeof args === "string" ? args : args.laneId;
+      const laneId = normalizeLaneIdArg(args);
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
         "mergeAbort",
