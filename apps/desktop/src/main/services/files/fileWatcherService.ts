@@ -6,7 +6,7 @@ import { normalizeRelative } from "../shared/utils";
 type WatchCallback = (event: FileChangeEvent) => void;
 
 type WatchSubscription = {
-  watcher: FSWatcher | null;
+  watcher: ManagedWatcher | null;
   workspaceId: string;
   senderId: number;
   rootPath: string;
@@ -14,6 +14,14 @@ type WatchSubscription = {
   includeIgnored: boolean;
   defaultRefCount: number;
   includeIgnoredRefCount: number;
+};
+
+type ManagedWatcher = {
+  watcher: FSWatcher;
+  active: boolean;
+  ready: boolean;
+  closeAfterReady: boolean;
+  closing: boolean;
 };
 
 const EVENT_DEBOUNCE_MS = 140;
@@ -64,13 +72,27 @@ export function createFileWatcherService() {
     pendingCloseBySub.delete(key);
   };
 
-  const closeWatcher = (subscription: WatchSubscription | undefined): void => {
-    if (!subscription?.watcher) return;
-    const watcher = subscription.watcher;
-    subscription.watcher = null;
-    void watcher.close().catch(() => {
+  const closeManagedWatcher = (managed: ManagedWatcher | null): void => {
+    if (!managed || managed.closing) return;
+    managed.active = false;
+
+    if (!managed.ready) {
+      // On macOS, closing chokidar while FSEvents is still starting can block Node's main loop.
+      managed.closeAfterReady = true;
+      return;
+    }
+
+    managed.closing = true;
+    void managed.watcher.close().catch(() => {
       // ignore close errors
     });
+  };
+
+  const closeWatcher = (subscription: WatchSubscription | undefined): void => {
+    if (!subscription?.watcher) return;
+    const managed = subscription.watcher;
+    subscription.watcher = null;
+    closeManagedWatcher(managed);
   };
 
   const scheduleIdleClose = (key: string, subscription: WatchSubscription): void => {
@@ -106,12 +128,26 @@ export function createFileWatcherService() {
       ignoreInitial: true,
       awaitWriteFinish: {
         stabilityThreshold: 120,
-        pollInterval: 50
+        pollInterval: 50,
       },
-      ignored: ignoredPatternsFor(subscription.includeIgnored)
+      ignored: ignoredPatternsFor(subscription.includeIgnored),
+    });
+    const managed: ManagedWatcher = {
+      watcher,
+      active: true,
+      ready: false,
+      closeAfterReady: false,
+      closing: false,
+    };
+
+    watcher.once("ready", () => {
+      managed.ready = true;
+      if (!managed.closeAfterReady) return;
+      setImmediate(() => closeManagedWatcher(managed));
     });
 
     const forward = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
+      if (!managed.active || subscription.watcher !== managed) return;
       const relRaw = path.relative(subscription.rootPath, absPath);
       const relPath = normalizeRelative(relRaw);
       if (!relPath || relPath.startsWith(".git/") || relPath === ".git") return;
@@ -123,7 +159,7 @@ export function createFileWatcherService() {
           workspaceId: subscription.workspaceId,
           type: mapEventType(kind),
           path: relPath,
-          ts: new Date().toISOString()
+          ts: new Date().toISOString(),
         });
       });
     };
@@ -144,7 +180,7 @@ export function createFileWatcherService() {
     watcher.on("addDir", (absPath) => forward("addDir", absPath));
     watcher.on("unlinkDir", (absPath) => forward("unlinkDir", absPath));
 
-    subscription.watcher = watcher;
+    subscription.watcher = managed;
   };
 
   const stop = (workspaceId: string, senderId: number, includeIgnored = false): void => {

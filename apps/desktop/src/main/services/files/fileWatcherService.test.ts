@@ -1,28 +1,50 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FileChangeEvent } from "../../../shared/types";
 
 const chokidarState = vi.hoisted(() => {
   const watchers: Array<{
-    handlers: Map<string, (absPath: string) => void>;
+    handlers: Map<string, (...args: unknown[]) => void>;
+    emitReady: () => void;
     close: ReturnType<typeof vi.fn>;
   }> = [];
+  let autoReady = true;
   const watchMock = vi.fn((_rootPath: string, _options: unknown) => {
-    const handlers = new Map<string, (absPath: string) => void>();
+    const handlers = new Map<string, (...args: unknown[]) => void>();
     const close = vi.fn(async () => undefined);
+    let readyHandler: (() => void) | null = null;
     const watcher: {
       on: ReturnType<typeof vi.fn>;
+      once: ReturnType<typeof vi.fn>;
       close: ReturnType<typeof vi.fn>;
     } = {
-      on: vi.fn((event: string, cb: (absPath: string) => void) => {
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         handlers.set(event, cb);
+        return watcher;
+      }),
+      once: vi.fn((event: string, cb: () => void) => {
+        if (event === "ready") {
+          readyHandler = cb;
+          if (autoReady) cb();
+        }
         return watcher;
       }),
       close,
     };
-    watchers.push({ handlers, close });
+    watchers.push({
+      handlers,
+      emitReady: () => {
+        readyHandler?.();
+      },
+      close,
+    });
     return watcher;
   });
-  return { watchMock, watchers };
+  return {
+    watchMock,
+    watchers,
+    setAutoReady(value: boolean) {
+      autoReady = value;
+    },
+  };
 });
 
 vi.mock("chokidar", () => ({
@@ -37,6 +59,7 @@ describe("fileWatcherService", () => {
   beforeEach(() => {
     chokidarState.watchMock.mockClear();
     chokidarState.watchers.length = 0;
+    chokidarState.setAutoReady(true);
     vi.useFakeTimers();
   });
 
@@ -197,5 +220,21 @@ describe("fileWatcherService", () => {
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
 
     expect(chokidarState.watchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers closing a watcher until chokidar reports ready", () => {
+    chokidarState.setAutoReady(false);
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+    service.stop("ws-1", 1, false);
+
+    vi.runOnlyPendingTimers();
+    expect(chokidarState.watchers[0]?.close).not.toHaveBeenCalled();
+
+    chokidarState.watchers[0]?.emitReady();
+    vi.runOnlyPendingTimers();
+
+    expect(chokidarState.watchers[0]?.close).toHaveBeenCalledTimes(1);
   });
 });
