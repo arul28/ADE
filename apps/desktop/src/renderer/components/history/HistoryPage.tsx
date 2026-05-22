@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Clock } from "@phosphor-icons/react";
+import { Clock, GitBranch } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
 import {
@@ -60,6 +60,8 @@ export function HistoryPage({ active = true }: { active?: boolean } = {}) {
 function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const syncingFromUrlRef = useRef(false);
+  const lastWrittenUrlRef = useRef<string>("");
 
   const events = useTimelineStore((s) => s.events);
   const rawEvents = useTimelineStore((s) => s.rawEvents);
@@ -84,28 +86,63 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
 
-  // Default focus lane from URL, active lane, or first lane
+  // Hydrate store from URL (single effect to avoid sync loops)
   useEffect(() => {
     if (!active) return;
-    const laneFromUrl = searchParams.get("laneId");
-    if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
-      if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
-      return;
-    }
-    if (focusLaneId && lanes.some((l) => l.id === focusLaneId)) return;
-    const fallback =
-      (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null) ??
-      lanes[0]?.id ??
-      null;
-    if (fallback) setFocusLaneId(fallback);
-  }, [active, lanes, selectedLaneId, focusLaneId, searchParams, setFocusLaneId]);
+    const paramsKey = searchParams.toString();
+    if (paramsKey === lastWrittenUrlRef.current) return;
 
-  const surfaceFromUrl = searchParams.get("surface");
-  useEffect(() => {
+    syncingFromUrlRef.current = true;
+
+    const surfaceFromUrl = searchParams.get("surface");
     if (surfaceFromUrl === "activity" || surfaceFromUrl === "commits") {
       setSurface(surfaceFromUrl);
     }
-  }, [surfaceFromUrl, setSurface]);
+
+    const laneFromUrl = searchParams.get("laneId");
+    if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
+      if (focusLaneId !== laneFromUrl) setFocusLaneId(laneFromUrl);
+    } else if (!laneFromUrl) {
+      if (!focusLaneId || !lanes.some((l) => l.id === focusLaneId)) {
+        const fallback =
+          (selectedLaneId && lanes.some((l) => l.id === selectedLaneId) ? selectedLaneId : null) ??
+          lanes[0]?.id ??
+          null;
+        if (fallback && focusLaneId !== fallback) setFocusLaneId(fallback);
+      }
+    }
+
+    const eventId = searchParams.get("eventId");
+    if (eventId && eventId !== selectedEventId) {
+      setSelectedEventId(eventId);
+      setSurface("activity");
+    }
+
+    const commitSha = searchParams.get("commitSha");
+    if (commitSha && commitSha !== selectedCommitSha) {
+      setSelectedCommitSha(commitSha);
+      setSurface("commits");
+      if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
+        setFocusLaneId(laneFromUrl);
+      }
+    }
+
+    queueMicrotask(() => {
+      syncingFromUrlRef.current = false;
+    });
+  }, [
+    active,
+    lanes,
+    selectedLaneId,
+    focusLaneId,
+    searchParams,
+    selectedEventId,
+    selectedCommitSha,
+    setFocusLaneId,
+    setSurface,
+    setSelectedEventId,
+    setSelectedCommitSha,
+  ]);
 
   useEffect(() => {
     if (!active) return;
@@ -114,60 +151,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (!active || surface !== "activity") return;
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      void fetchEvents({ silent: true });
+    };
     const hasRunning = events.some((e) => e.status === "running");
-    if (!hasRunning) return;
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      void fetchEvents({ silent: true });
-    };
-    const interval = setInterval(refresh, 4_000);
-    const onFocus = () => refresh();
-    const onVisibilityChange = () => refresh();
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [active, surface, events, fetchEvents]);
-
-  useEffect(() => {
-    if (!active || surface !== "activity") return;
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      void fetchEvents({ silent: true });
-    };
+    const interval = hasRunning ? setInterval(refresh, 4_000) : undefined;
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
+      if (interval) clearInterval(interval);
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [active, surface, fetchEvents]);
-
-  useEffect(() => {
-    const eventId = searchParams.get("eventId");
-    if (eventId && eventId !== selectedEventId) {
-      setSelectedEventId(eventId);
-      setSurface("activity");
-    }
-    const commitSha = searchParams.get("commitSha");
-    const laneFromUrl = searchParams.get("laneId");
-    if (commitSha && commitSha !== selectedCommitSha) {
-      setSelectedCommitSha(commitSha);
-      setSurface("commits");
-      if (laneFromUrl) setFocusLaneId(laneFromUrl);
-    }
-  }, [
-    searchParams,
-    selectedEventId,
-    selectedCommitSha,
-    setSelectedEventId,
-    setSelectedCommitSha,
-    setFocusLaneId,
-    setSurface,
-  ]);
+  }, [active, surface, events, fetchEvents]);
 
   useEffect(() => {
     if (!active || !focusLaneId || !selectedCommitSha || selectedCommit?.sha === selectedCommitSha) {
@@ -188,6 +185,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [active, focusLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
 
   useEffect(() => {
+    if (!active || syncingFromUrlRef.current) return;
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       let changed = false;
@@ -201,19 +199,23 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         else next.delete("laneId");
         changed = true;
       }
-      return changed ? next : prev;
+      if (!changed) return prev;
+      lastWrittenUrlRef.current = next.toString();
+      return next;
     }, { replace: true });
-  }, [surface, focusLaneId, setSearchParams]);
+  }, [active, surface, focusLaneId, setSearchParams]);
 
   const handleSelectEvent = useCallback(
     (id: string) => {
       setSelectedEventId(id);
       setSelectedCommit(null);
       setSearchParams((prev) => {
-        prev.set("eventId", id);
-        prev.delete("commitSha");
-        prev.set("surface", "activity");
-        return prev;
+        const next = new URLSearchParams(prev);
+        next.set("eventId", id);
+        next.delete("commitSha");
+        next.set("surface", "activity");
+        lastWrittenUrlRef.current = next.toString();
+        return next;
       });
     },
     [setSelectedEventId, setSelectedCommit, setSearchParams],
@@ -224,11 +226,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       setSelectedCommit(commit);
       setSelectedEventId(null);
       setSearchParams((prev) => {
-        prev.set("commitSha", commit.sha);
-        prev.delete("eventId");
-        prev.set("surface", "commits");
-        if (focusLaneId) prev.set("laneId", focusLaneId);
-        return prev;
+        const next = new URLSearchParams(prev);
+        next.set("commitSha", commit.sha);
+        next.delete("eventId");
+        next.set("surface", "commits");
+        if (focusLaneId) next.set("laneId", focusLaneId);
+        lastWrittenUrlRef.current = next.toString();
+        return next;
       });
     },
     [setSelectedCommit, setSelectedEventId, setSearchParams, focusLaneId],
@@ -238,9 +242,11 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     setSelectedEventId(null);
     setSelectedCommit(null);
     setSearchParams((prev) => {
-      prev.delete("eventId");
-      prev.delete("commitSha");
-      return prev;
+      const next = new URLSearchParams(prev);
+      next.delete("eventId");
+      next.delete("commitSha");
+      lastWrittenUrlRef.current = next.toString();
+      return next;
     });
   }, [setSelectedEventId, setSelectedCommit, setSearchParams]);
 
@@ -387,6 +393,17 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       children: (
         <div className="flex min-h-0 flex-1 flex-col">
           <TimelineToolbar />
+          {surface === "commits" ? (
+            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5">
+              <GitBranch size={14} className="shrink-0 text-accent" weight="bold" />
+              <span className="font-sans text-[11px] font-bold uppercase tracking-[1px] text-muted-fg">
+                Lane
+              </span>
+              <span className="truncate font-mono text-[12px] text-fg">
+                {focusLane?.name ?? (focusLaneId ? focusLaneId : "Select a lane")}
+              </span>
+            </div>
+          ) : null}
           {timelineBody}
         </div>
       ),

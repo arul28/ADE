@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useState } from "react";
 import {
   Graph,
   ListBullets,
@@ -10,7 +10,9 @@ import {
   Funnel,
   GitBranch,
   Clock,
+  Export,
 } from "@phosphor-icons/react";
+import type { ExportHistoryResult } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
@@ -63,8 +65,17 @@ const SURFACE_OPTIONS: { value: HistorySurface; label: string; Icon: React.Eleme
   { value: "activity", label: "Activity", Icon: Clock },
 ];
 
+function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("cancelled" in value || "savedPath" in value)
+  );
+}
+
 export function TimelineToolbar() {
   const lanes = useAppStore((s) => s.lanes ?? []);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   /* ── Store ─────────────────────────────────────────────────── */
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
@@ -125,6 +136,36 @@ export function TimelineToolbar() {
     scope !== "standard";
 
   const hasSolo = visibility.soloedLaneIds.size > 0;
+
+  const handleExport = useCallback(async () => {
+    const exportFn = window.ade?.history?.exportOperations;
+    if (typeof exportFn !== "function") {
+      setExportNotice("Export unavailable (headless)");
+      window.setTimeout(() => setExportNotice(null), 4000);
+      return;
+    }
+    try {
+      const result = await exportFn({
+        format: "json",
+        limit: 500,
+        ...(focusLaneId ? { laneId: focusLaneId } : {}),
+        ...(filters.statuses.length === 1 ? { status: filters.statuses[0] } : {}),
+      });
+      if (!isHistoryExportResult(result)) {
+        setExportNotice("Export unavailable (headless)");
+        window.setTimeout(() => setExportNotice(null), 4000);
+        return;
+      }
+      if (result.cancelled) return;
+      setExportNotice(`Exported ${result.rowCount} rows to ${result.savedPath}`);
+      window.setTimeout(() => setExportNotice(null), 5000);
+    } catch (err) {
+      setExportNotice(
+        `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      window.setTimeout(() => setExportNotice(null), 5000);
+    }
+  }, [focusLaneId, filters.statuses]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
@@ -236,11 +277,33 @@ export function TimelineToolbar() {
           />
         </div>
 
-        {/* Column config */}
-        {/* tour anchor — closest viable: no dedicated export button; column/gear is the only row-1 config control. */}
+        {exportNotice ? (
+          <span
+            className="max-w-[200px] truncate font-mono text-[10px] text-accent"
+            title={exportNotice}
+          >
+            {exportNotice}
+          </span>
+        ) : null}
+
         <button
-          title="Column settings"
+          type="button"
+          title="Export operations (JSON via save dialog; unavailable in headless)"
           data-tour="history.export"
+          onClick={() => void handleExport()}
+          className={cn(
+            "flex h-7 items-center gap-1 rounded-md border border-transparent px-2",
+            "font-mono text-[10px] font-bold uppercase tracking-[0.5px] text-[var(--color-muted-fg)]",
+            "transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
+          )}
+        >
+          <Export size={14} />
+          Export
+        </button>
+
+        <button
+          type="button"
+          title="Column settings"
           onClick={() => toggleColumn("")}
           className={cn(
             "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",

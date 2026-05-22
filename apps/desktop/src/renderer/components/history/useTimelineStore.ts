@@ -349,7 +349,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
         const raw = await window.ade.history.listOperations({
           laneId: opts?.laneId,
           kind: opts?.kind,
-          limit: opts?.limit ?? 350,
+          limit: opts?.limit ?? 500,
         });
         set({ rawEvents: raw, loading: false });
         refilter();

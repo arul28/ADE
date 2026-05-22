@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { GitBranch, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, GitBranch, Warning } from "@phosphor-icons/react";
 import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
@@ -114,6 +114,10 @@ export function CommitHistoryView({
 
   const headSha = commits[0]?.sha ?? null;
 
+  const handleRefresh = useCallback(() => {
+    void load();
+  }, [load]);
+
   const onScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget;
@@ -180,6 +184,18 @@ export function CommitHistoryView({
           placeholder="Search SHA, message, author…"
           className="h-7 flex-1 rounded border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] text-fg placeholder:text-muted-fg/60 outline-none focus:border-accent/50"
         />
+        <button
+          type="button"
+          title="Refresh commits"
+          onClick={handleRefresh}
+          disabled={loading}
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-transparent",
+            "text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg disabled:opacity-40",
+          )}
+        >
+          <ArrowClockwise size={14} className={loading ? "animate-spin" : undefined} />
+        </button>
         <span className="shrink-0 font-mono text-[10px] text-muted-fg">
           {filtered.length} commit{filtered.length === 1 ? "" : "s"}
         </span>
@@ -335,6 +351,14 @@ export function CommitHistoryView({
                     <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg">
                       {commit.subject}
                     </span>
+                    {commit.authorName ? (
+                      <span
+                        className="hidden max-w-[120px] shrink-0 truncate font-mono text-[10px] text-muted-fg sm:inline"
+                        title={commit.authorName}
+                      >
+                        {commit.authorName}
+                      </span>
+                    ) : null}
                     <span className="shrink-0 font-mono text-[10px] text-muted-fg">
                       {relativeWhen(commit.authoredAt)}
                     </span>
