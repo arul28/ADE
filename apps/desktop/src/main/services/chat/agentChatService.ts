@@ -129,6 +129,7 @@ import type {
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatSession,
+  AgentChatSessionProfile,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
@@ -318,6 +319,15 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
+import { createLaneOrchestratorService } from "../orchestrator/laneOrchestratorService";
+import {
+  createOrchestratorChatToolHandlers,
+  parseOrchestratorControlPayload,
+} from "../orchestrator/orchestratorChatTools";
+import {
+  buildOrchestratorSystemPrompt,
+  buildOrchestratorWorkerSystemPrompt,
+} from "../orchestrator/orchestratorPrompt";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -354,7 +364,9 @@ type PersistedChatState = {
   provider: AgentChatProvider;
   model: string;
   modelId?: string;
-  sessionProfile?: "light" | "workflow";
+  sessionProfile?: "light" | "workflow" | "orchestrator" | "orchestrator-worker";
+  orchestratorRole?: "lead" | "worker";
+  orchestratorLeadSessionId?: string;
   reasoningEffort?: string | null;
   codexFastMode?: boolean;
   executionMode?: AgentChatExecutionMode | null;
@@ -3810,20 +3822,28 @@ function buildAdeGuidanceForLane(laneWorktreePath: string): string {
 
 function buildCodexDeveloperInstructions(args: {
   laneWorktreePath: string;
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  session: Pick<AgentChatSession, "permissionMode" | "interactionMode" | "sessionProfile" | "orchestratorLeadSessionId">;
   collaborationMode: "default" | "plan";
 }): string {
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
     ? "planning"
     : "coding";
-  return buildCodingAgentSystemPrompt({
-    cwd: args.laneWorktreePath,
-    mode: promptMode,
-    permissionMode: toHarnessPermissionMode(args.session.permissionMode),
-    interactive: true,
-    runtime: "codex-app-server",
-    adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
-  });
+  const sections = [
+    buildCodingAgentSystemPrompt({
+      cwd: args.laneWorktreePath,
+      mode: promptMode,
+      permissionMode: toHarnessPermissionMode(args.session.permissionMode),
+      interactive: true,
+      runtime: "codex-app-server",
+      adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    }),
+  ];
+  if (isOrchestratorLeadSession(args.session)) {
+    sections.push(buildOrchestratorSystemPrompt());
+  } else if (isOrchestratorWorkerSession(args.session) && args.session.orchestratorLeadSessionId) {
+    sections.push(buildOrchestratorWorkerSystemPrompt({ leadSessionId: args.session.orchestratorLeadSessionId }));
+  }
+  return sections.join("\n\n");
 }
 
 function resolveCodexInstructionCollaborationMode(
@@ -4273,10 +4293,25 @@ function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined 
   return undefined;
 }
 
-function normalizeSessionProfile(value: unknown): "light" | "workflow" | undefined {
-  if (value === "light" || value === "workflow") return value;
+function normalizeSessionProfile(value: unknown): AgentChatSessionProfile | undefined {
+  if (
+    value === "light"
+    || value === "workflow"
+    || value === "orchestrator"
+    || value === "orchestrator-worker"
+  ) {
+    return value;
+  }
   if (value === "agent") return "workflow";
   return undefined;
+}
+
+function isOrchestratorLeadSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
+  return session.sessionProfile === "orchestrator";
+}
+
+function isOrchestratorWorkerSession(session: Pick<AgentChatSession, "sessionProfile">): boolean {
+  return session.sessionProfile === "orchestrator-worker";
 }
 
 function inferCapabilityMode(provider: AgentChatProvider): CtoCapabilityMode {
@@ -4457,6 +4492,10 @@ export function createAgentChatService(args: {
   fs.mkdirSync(chatSessionsDir, { recursive: true });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
+
+  const laneOrchestratorServiceHolder: {
+    value: ReturnType<typeof createLaneOrchestratorService> | null;
+  } = { value: null };
 
   const runSessionIntelligencePrompt = async (args: {
     cwd: string;
@@ -4731,6 +4770,16 @@ export function createAgentChatService(args: {
     // Intercept ExitPlanMode to show a plan approval UI instead of letting the
     // SDK handle it natively (which just collapses into the work log).
     if (toolName === "ExitPlanMode") {
+      if (isOrchestratorLeadSession(managed.session)) {
+        if (sdkOptions?.toolUseID) {
+          runtime.resolvedToolUseIds.add(String(sdkOptions.toolUseID));
+        }
+        return {
+          behavior: "deny",
+          message: "Orchestrator lead sessions stay in plan/delegate mode. Delegate implementation to worker sessions instead of exiting plan mode.",
+        };
+      }
+
       // Idempotency guard: if plan mode was already exited (e.g. retry after
       // the first approval), return immediately without showing the approval UI
       // again. This prevents the retry loop caused by the SDK's ExitPlanMode
@@ -6970,6 +7019,10 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
+      ...(managed.session.orchestratorRole ? { orchestratorRole: managed.session.orchestratorRole } : {}),
+      ...(managed.session.orchestratorLeadSessionId
+        ? { orchestratorLeadSessionId: managed.session.orchestratorLeadSessionId }
+        : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
       ...(managed.session.codexFastMode === true ? { codexFastMode: true } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
@@ -7115,6 +7168,13 @@ export function createAgentChatService(args: {
         ? (getModelById(storedModelId) ?? resolveModelAlias(storedModelId))?.id
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
+      const orchestratorRole = record.orchestratorRole === "lead" || record.orchestratorRole === "worker"
+        ? record.orchestratorRole
+        : undefined;
+      const orchestratorLeadSessionId = typeof record.orchestratorLeadSessionId === "string"
+        && record.orchestratorLeadSessionId.trim().length
+        ? record.orchestratorLeadSessionId.trim()
+        : undefined;
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
       const codexFastMode = normalizeCodexFastMode(record.codexFastMode);
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
@@ -7238,6 +7298,8 @@ export function createAgentChatService(args: {
         model,
         ...(modelId ? { modelId } : {}),
         ...(sessionProfile ? { sessionProfile } : {}),
+        ...(orchestratorRole ? { orchestratorRole } : {}),
+        ...(orchestratorLeadSessionId ? { orchestratorLeadSessionId } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(codexFastMode ? { codexFastMode: true } : {}),
         ...(executionMode ? { executionMode } : {}),
@@ -8364,6 +8426,10 @@ export function createAgentChatService(args: {
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
+        ...(persisted?.orchestratorRole ? { orchestratorRole: persisted.orchestratorRole } : {}),
+        ...(persisted?.orchestratorLeadSessionId
+          ? { orchestratorLeadSessionId: persisted.orchestratorLeadSessionId }
+          : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         codexFastMode: persisted?.codexFastMode === true,
         executionMode: persisted?.executionMode ?? null,
@@ -14166,6 +14232,11 @@ export function createAgentChatService(args: {
           ...slashCommandsSection,
           "",
           buildAdeGuidanceForLane(managed.laneWorktreePath),
+          ...(isOrchestratorLeadSession(managed.session)
+            ? ["", buildOrchestratorSystemPrompt()]
+            : isOrchestratorWorkerSession(managed.session) && managed.session.orchestratorLeadSessionId
+              ? ["", buildOrchestratorWorkerSystemPrompt({ leadSessionId: managed.session.orchestratorLeadSessionId })]
+              : []),
         ].join("\n"),
       };
       opts.settingSources = ["user", "project", "local"];
@@ -14968,6 +15039,8 @@ export function createAgentChatService(args: {
     modelId,
     title,
     sessionProfile,
+    orchestratorRole,
+    orchestratorLeadSessionId,
     reasoningEffort,
       codexFastMode: requestedCodexFastMode,
       interactionMode: requestedInteractionMode,
@@ -15070,23 +15143,34 @@ export function createAgentChatService(args: {
         : undefined;
     const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
     const capabilityMode = inferCapabilityMode(effectiveProvider);
+    const effectiveSessionProfile = sessionProfile ?? "workflow";
+    const orchestratorLead = effectiveSessionProfile === "orchestrator";
+    const orchestratorWorker = effectiveSessionProfile === "orchestrator-worker";
     // Identity-pinned sessions (CTO + worker agents) are locked to full-auto.
     // Discard the native provider permission overrides supplied by callers so
     // they cannot smuggle `plan` / `ask` / read-only sandboxes past the lock
     // via claudePermissionMode / codexApprovalPolicy / codexSandbox /
     // opencodePermissionMode.
     const identityPinned = isPrimaryPinnedIdentity(identityKey);
-    const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
-    const effectiveClaudePermissionMode = identityPinned ? undefined : requestedClaudePermissionMode;
+    const effectiveInteractionMode = orchestratorLead
+      ? "plan"
+      : identityPinned ? undefined : requestedInteractionMode;
+    const effectiveClaudePermissionMode = orchestratorLead
+      ? "plan"
+      : identityPinned ? undefined : requestedClaudePermissionMode;
     const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
     const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
     const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
     const requestedDroidPermissionMode = identityPinned ? undefined : requestedDroidPermissionModeArg;
-    let effectivePermissionMode = identityKey
-      ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
-      : requestedPermMode;
+    let effectivePermissionMode = orchestratorLead
+      ? "plan"
+      : identityKey
+        ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
+        : requestedPermMode;
     const chatConfig = resolveChatConfig();
-    let requestedOpenCodePermissionMode = identityPinned ? undefined : requestedOpenCodePermissionModeArg;
+    let requestedOpenCodePermissionMode = orchestratorLead
+      ? "plan"
+      : identityPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
       descriptor: resolvedDescriptor,
       requestedPermissionMode: effectivePermissionMode,
@@ -15189,7 +15273,9 @@ export function createAgentChatService(args: {
         provider: effectiveProvider,
         model: normalizedModel,
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
-        sessionProfile: sessionProfile ?? "workflow",
+        sessionProfile: effectiveSessionProfile,
+        ...(orchestratorRole ? { orchestratorRole } : orchestratorLead ? { orchestratorRole: "lead" as const } : {}),
+        ...(orchestratorLeadSessionId ? { orchestratorLeadSessionId } : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(requestedCodexFastMode === true ? { codexFastMode: true } : {}),
           ...nativePermissionFields,
@@ -15282,6 +15368,13 @@ export function createAgentChatService(args: {
     if (effectiveProvider === "claude") {
       ensureClaudeSessionRuntime(managed);
       prewarmClaudeQuery(managed);
+    }
+
+    if (orchestratorLead) {
+      getLaneOrchestratorService().ensureRun({
+        leadSessionId: sessionId,
+        laneId,
+      });
     }
 
     persistChatState(managed);
@@ -16173,6 +16266,18 @@ export function createAgentChatService(args: {
           ? response.responseText.trim()
           : null;
         if (approved) {
+          if (isOrchestratorLeadSession(managed.session)) {
+            getLaneOrchestratorService().setPhase({
+              leadSessionId: managed.session.id,
+              phase: "executing",
+            });
+            queueCursorControlFollowup(
+              managed,
+              runtime,
+              "The user approved the plan. Stay in plan/delegate mode and spawn worker sessions to execute the plan.",
+            );
+            return;
+          }
           managed.session.cursorModeId = "agent";
           runtime.currentModeId = "agent";
           runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
@@ -16241,6 +16346,100 @@ export function createAgentChatService(args: {
     emitCursorSdkPlanApprovalRequest(managed, runtime, action.payload);
   };
 
+  const ORCHESTRATOR_CONTROL_OPENINGS = [
+    "```ade_orchestrator_spawn_worker",
+    "```ade_orchestrator_list_workers",
+    "```ade_orchestrator_message_worker",
+    "```ade_orchestrator_read_worker_status",
+    "```ade_orchestrator_update_plan",
+  ];
+  const ORCHESTRATOR_CONTROL_OPEN_RE = /```ade_orchestrator_(spawn_worker|list_workers|message_worker|read_worker_status|update_plan)/g;
+
+  const findNextOrchestratorControlOpening = (
+    text: string,
+    fromIndex: number,
+  ): { index: number; payloadStart: number; kind: string } | null => {
+    ORCHESTRATOR_CONTROL_OPEN_RE.lastIndex = fromIndex;
+    for (;;) {
+      const match = ORCHESTRATOR_CONTROL_OPEN_RE.exec(text);
+      if (!match) return null;
+      const next = text[ORCHESTRATOR_CONTROL_OPEN_RE.lastIndex] ?? "";
+      if (/[\w-]/.test(next)) continue;
+      return {
+        index: match.index,
+        payloadStart: ORCHESTRATOR_CONTROL_OPEN_RE.lastIndex,
+        kind: match[1] ?? "",
+      };
+    }
+  };
+
+  const parseOrchestratorControlBlocks = (
+    text: string,
+  ): { text: string; actions: Array<{ kind: string; payload: Record<string, unknown>; raw: string }> } => {
+    const actions: Array<{ kind: string; payload: Record<string, unknown>; raw: string }> = [];
+    let stripped = "";
+    let cursor = 0;
+    for (;;) {
+      const opening = findNextOrchestratorControlOpening(text, cursor);
+      if (!opening) {
+        stripped += text.slice(cursor);
+        break;
+      }
+      stripped += text.slice(cursor, opening.index);
+      const closeIndex = text.indexOf("```", opening.payloadStart);
+      if (closeIndex < 0) {
+        stripped += text.slice(opening.index);
+        break;
+      }
+      const raw = text.slice(opening.payloadStart, closeIndex).trim();
+      try {
+        const payload = asRecord(JSON.parse(raw || "{}"));
+        if (payload) {
+          actions.push({ kind: opening.kind, payload, raw });
+        }
+      } catch (error) {
+        logger.warn("agent_chat.orchestrator_control_payload_parse_failed", {
+          kind: opening.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      cursor = closeIndex + 3;
+    }
+    return {
+      text: stripped.replace(/\n{3,}/g, "\n\n"),
+      actions,
+    };
+  };
+
+  const handleOrchestratorControlAction = (
+    managed: ManagedChatSession,
+    runtime: CursorRuntime,
+    action: { kind: string; payload: Record<string, unknown> },
+  ): void => {
+    const mapping = parseOrchestratorControlPayload(`orchestrator_${action.kind}`, action.payload);
+    if (!mapping) return;
+    const handlers = createOrchestratorChatToolHandlers({
+      laneOrchestratorService: getLaneOrchestratorService(),
+      leadSessionId: managed.session.id,
+      laneId: managed.session.laneId,
+    });
+    void handlers[mapping.tool](mapping.input)
+      .then((result) => {
+        queueCursorControlFollowup(
+          managed,
+          runtime,
+          `Orchestrator tool ${mapping.tool} result:\n${JSON.stringify(result, null, 2)}`,
+        );
+      })
+      .catch((error) => {
+        queueCursorControlFollowup(
+          managed,
+          runtime,
+          `Orchestrator tool ${mapping.tool} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  };
+
   const emitCursorSdkMappedEvent = (
     managed: ManagedChatSession,
     runtime: CursorRuntime,
@@ -16250,7 +16449,15 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, event);
       return;
     }
-    const parsed = parseCursorSdkControlBlocks(runtime, event.text);
+    let workingText = event.text;
+    if (isOrchestratorLeadSession(managed.session)) {
+      const orchestratorParsed = parseOrchestratorControlBlocks(workingText);
+      for (const action of orchestratorParsed.actions) {
+        handleOrchestratorControlAction(managed, runtime, action);
+      }
+      workingText = orchestratorParsed.text;
+    }
+    const parsed = parseCursorSdkControlBlocks(runtime, workingText);
     for (const action of parsed.actions) {
       handleCursorSdkControlAction(managed, runtime, action);
     }
@@ -18014,14 +18221,21 @@ export function createAgentChatService(args: {
       }
 
       runtime.eventMapperState = createDroidSdkEventMapperState();
-      const droidHarnessPrompt = buildCodingAgentSystemPrompt({
-        cwd: managed.laneWorktreePath,
-        mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
-        permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
-        interactive: true,
-        runtime: "droid-sdk",
-        adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
-      });
+      const droidHarnessPrompt = [
+        buildCodingAgentSystemPrompt({
+          cwd: managed.laneWorktreePath,
+          mode: resolveDroidSdkInteractionMode(managed.session) === "spec" ? "planning" : "coding",
+          permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+          interactive: true,
+          runtime: "droid-sdk",
+          adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+        }),
+        ...(isOrchestratorLeadSession(managed.session)
+          ? [buildOrchestratorSystemPrompt()]
+          : isOrchestratorWorkerSession(managed.session) && managed.session.orchestratorLeadSessionId
+            ? [buildOrchestratorWorkerSystemPrompt({ leadSessionId: managed.session.orchestratorLeadSessionId })]
+            : []),
+      ].join("\n\n");
       const sdkInput = [
         droidHarnessPrompt,
         "",
@@ -18524,6 +18738,31 @@ export function createAgentChatService(args: {
     if (dispatchPromise) {
       await dispatchPromise;
     }
+  };
+
+  const getLaneOrchestratorService = () => {
+    if (!laneOrchestratorServiceHolder.value) {
+      laneOrchestratorServiceHolder.value = createLaneOrchestratorService({
+        projectRoot,
+        adeDir: layout.adeDir,
+        transcriptsDir,
+        createSession,
+        sendMessage,
+        updateSessionTitle: ({ sessionId, title }) => {
+          sessionService.updateMeta({ sessionId, title, manuallyNamed: true });
+        },
+        getLeadSession: (leadSessionId) => {
+          const managed = managedSessions.get(leadSessionId);
+          if (!managed) return null;
+          return {
+            provider: managed.session.provider,
+            model: managed.session.model,
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          };
+        },
+      });
+    }
+    return laneOrchestratorServiceHolder.value;
   };
 
   const steer = async ({ sessionId, text, attachments = [], contextAttachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
