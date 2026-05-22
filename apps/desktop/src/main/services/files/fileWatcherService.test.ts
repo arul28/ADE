@@ -73,18 +73,54 @@ describe("fileWatcherService", () => {
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
     service.watch({ workspaceId: "ws-2", rootPath: "/repo", senderId: 2, includeIgnored: true }, vi.fn());
 
-    const defaultIgnored = chokidarState.watchMock.mock.calls[0]?.[1] as { ignored: RegExp[] };
-    const includeIgnored = chokidarState.watchMock.mock.calls[1]?.[1] as { ignored: RegExp[] };
+    const defaultIgnored = chokidarState.watchMock.mock.calls[0]?.[1] as { ignored: Array<RegExp | ((path: string) => boolean)> };
+    const includeIgnored = chokidarState.watchMock.mock.calls[1]?.[1] as { ignored: Array<RegExp | ((path: string) => boolean)> };
 
-    expect(defaultIgnored.ignored.map((pattern) => String(pattern))).toEqual([
+    expect(defaultIgnored.ignored.filter((pattern) => pattern instanceof RegExp).map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
       "/(^|[/\\\\])\\.ade($|[/\\\\])/",
     ]);
-    expect(includeIgnored.ignored.map((pattern) => String(pattern))).toEqual([
+    expect(includeIgnored.ignored.filter((pattern) => pattern instanceof RegExp).map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
     ]);
+  });
+
+  it("filters volatile ADE runtime paths at the watcher level", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1, includeIgnored: true }, vi.fn());
+
+    const options = chokidarState.watchMock.mock.calls[0]?.[1] as {
+      ignored: Array<RegExp | ((path: string) => boolean)>;
+    };
+    const ignoredFn = options.ignored.find((pattern): pattern is (path: string) => boolean => typeof pattern === "function");
+
+    expect(ignoredFn?.("/repo/.ade/transcripts")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/transcripts/logs/main.jsonl")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/worktrees")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/worktrees/lane/src/file.ts")).toBe(true);
+    expect(ignoredFn?.("/repo/.ade/notes/project.md")).toBe(false);
+  });
+
+  it("uses polling on macOS so watcher close cannot block inside native FSEvents", () => {
+    const service = createFileWatcherService();
+
+    service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
+
+    const options = chokidarState.watchMock.mock.calls[0]?.[1] as {
+      usePolling?: boolean;
+      interval?: number;
+      binaryInterval?: number;
+    };
+    if (process.platform === "darwin") {
+      expect(options.usePolling).toBe(true);
+      expect(options.interval).toBe(1_000);
+      expect(options.binaryInterval).toBe(2_000);
+    } else {
+      expect(options.usePolling).toBeUndefined();
+    }
   });
 
   it("forwards ignored-path events when includeIgnored is true but still filters .git", () => {

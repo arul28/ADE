@@ -1,6 +1,7 @@
 import path from "node:path";
-import chokidar, { type FSWatcher } from "chokidar";
+import chokidar, { type ChokidarOptions, type FSWatcher } from "chokidar";
 import type { FileChangeEvent } from "../../../shared/types";
+import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import { normalizeRelative } from "../shared/utils";
 
 type WatchCallback = (event: FileChangeEvent) => void;
@@ -32,6 +33,7 @@ const VOLATILE_ADE_PREFIXES = [
   ".ade/agent-configs/",
   ".ade/secrets/",
   ".ade/transcripts/",
+  ".ade/worktrees/",
 ] as const;
 const VOLATILE_ADE_EXACT_PATHS = new Set([
   ".ade/ade.db",
@@ -41,7 +43,19 @@ const VOLATILE_ADE_EXACT_PATHS = new Set([
 function isVolatileAdePath(relPath: string): boolean {
   if (VOLATILE_ADE_EXACT_PATHS.has(relPath)) return true;
   if (relPath.startsWith(".ade/ade.db-")) return true;
-  return VOLATILE_ADE_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+  return VOLATILE_ADE_PREFIXES.some((prefix) => relPath === prefix.slice(0, -1) || relPath.startsWith(prefix));
+}
+
+function isVolatileAdePathAtAnyDepth(relPath: string): boolean {
+  if (isVolatileAdePath(relPath)) return true;
+  const marker = "/.ade/";
+  let index = relPath.indexOf(marker);
+  while (index >= 0) {
+    const nestedRelPath = relPath.slice(index + 1);
+    if (isVolatileAdePath(nestedRelPath)) return true;
+    index = relPath.indexOf(marker, index + marker.length);
+  }
+  return false;
 }
 
 function mapEventType(kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir"): FileChangeEvent["type"] {
@@ -118,20 +132,26 @@ export function createFileWatcherService() {
     /(^|[/\\])\.ade($|[/\\])/,
   ];
 
-  const ignoredPatternsFor = (includeIgnored: boolean): RegExp[] =>
-    includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS;
+  const ignoredPatternsFor = (rootPath: string, includeIgnored: boolean): ChokidarOptions["ignored"] => [
+    ...(includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS),
+    (candidatePath: string) => {
+      const relPath = normalizeRelative(path.relative(rootPath, candidatePath));
+      if (!relPath || relPath.startsWith("../") || path.isAbsolute(relPath)) return false;
+      return isVolatileAdePathAtAnyDepth(relPath);
+    },
+  ];
 
   const startWatcher = (key: string, subscription: WatchSubscription): void => {
     closeWatcher(subscription);
 
-    const watcher = chokidar.watch(subscription.rootPath, {
+    const watcher = chokidar.watch(subscription.rootPath, withMacosSafeChokidarOptions({
       ignoreInitial: true,
       awaitWriteFinish: {
         stabilityThreshold: 120,
         pollInterval: 50,
       },
-      ignored: ignoredPatternsFor(subscription.includeIgnored),
-    });
+      ignored: ignoredPatternsFor(subscription.rootPath, subscription.includeIgnored),
+    }));
     const managed: ManagedWatcher = {
       watcher,
       active: true,

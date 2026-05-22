@@ -33,6 +33,7 @@ import type { AdeDb, SqlValue } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
+import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
 import type { createTestService } from "../tests/testService";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
@@ -2699,7 +2700,7 @@ export function createAutomationService({
 
     for (const root of desired) {
       if (fileWatchers.has(root.key)) continue;
-      const watcher = chokidar.watch(root.rootPath, {
+      const watcher = chokidar.watch(root.rootPath, withMacosSafeChokidarOptions({
         ignoreInitial: true,
         awaitWriteFinish: {
           stabilityThreshold: 120,
@@ -2710,7 +2711,7 @@ export function createAutomationService({
           /(^|[/\\])node_modules($|[/\\])/,
           /(^|[/\\])\.ade($|[/\\])/,
         ],
-      });
+      }));
       const onFileEvent = (kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir", absPath: string) => {
         const relPath = path.relative(root.rootPath, absPath).split(path.sep).join("/");
         if (!relPath || relPath.startsWith(".git/") || relPath.startsWith("node_modules/") || relPath.startsWith(".ade/")) return;
