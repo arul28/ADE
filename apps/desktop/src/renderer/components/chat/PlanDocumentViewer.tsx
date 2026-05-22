@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { ChatBubble, PaperPlaneTilt } from "@phosphor-icons/react";
+import { ChatsCircle, PaperPlaneTilt } from "@phosphor-icons/react";
 import { ChatMarkdown } from "./chatMarkdown";
 import { cn } from "../ui/cn";
 
@@ -101,7 +101,7 @@ export const PlanDocumentViewer = React.memo(function PlanDocumentViewer({
 
       <div className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
         <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-fg/70">
-          <ChatBubble size={12} weight="fill" className="text-violet-300/70" />
+          <ChatsCircle size={12} weight="fill" className="text-violet-300/70" />
           <span>
             {selectedLines.length
               ? `Comment on ${selectedLines.length === 1 ? `line ${selectedLines[0]}` : `lines ${selectedLines[0]}-${selectedLines[selectedLines.length - 1]}`}`

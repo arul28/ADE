@@ -66,7 +66,7 @@ function LinearIssueContextChip({
   attachment,
   onRemove,
 }: {
-  attachment: AgentChatContextAttachment;
+  attachment: Extract<AgentChatContextAttachment, { type: "linear_issue" }>;
   onRemove?: (key: string) => void;
 }) {
   const issue = attachment.issue;
@@ -539,13 +539,41 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
       className={cn("flex flex-wrap items-center gap-2 px-4 py-3", className)}
       data-chat-attachment-tray="true"
     >
-      {contextAttachments.map((attachment) => (
-        <LinearIssueContextChip
-          key={chatContextAttachmentKey(attachment)}
-          attachment={attachment}
-          onRemove={onRemoveContext}
-        />
-      ))}
+      {contextAttachments.map((attachment) => {
+        if (attachment.type === "plan_comment") {
+          const lineLabel = attachment.lines.length === 1
+            ? `L${attachment.lines[0]}`
+            : `L${attachment.lines[0]}-${attachment.lines[attachment.lines.length - 1]}`;
+          return (
+            <span
+              key={chatContextAttachmentKey(attachment)}
+              className="ade-liquid-glass-pill inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border border-violet-400/20 bg-violet-500/10 px-2.5 py-1.5 text-[10px] text-violet-100"
+              title={attachment.comment}
+            >
+              <span className="shrink-0 rounded bg-violet-500/15 px-1 font-mono text-[9px] font-semibold">{lineLabel}</span>
+              <span className="min-w-0 max-w-[220px] truncate font-sans text-[11px]">{attachment.comment}</span>
+              {onRemoveContext ? (
+                <button
+                  type="button"
+                  className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+                  title="Remove plan comment"
+                  aria-label="Remove plan comment"
+                  onClick={() => onRemoveContext(chatContextAttachmentKey(attachment))}
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              ) : null}
+            </span>
+          );
+        }
+        return (
+          <LinearIssueContextChip
+            key={chatContextAttachmentKey(attachment)}
+            attachment={attachment}
+            onRemove={onRemoveContext}
+          />
+        );
+      })}
       {pendingImageAttachments.map((attachment) => (
         <PendingImageAttachmentPreview
           key={attachment.id}

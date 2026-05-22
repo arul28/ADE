@@ -2823,7 +2823,7 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueContextDialog
         open={linearIssuePickerOpen}
-        selectedIssue={contextAttachments[0]?.issue ?? null}
+        selectedIssue={contextAttachments.find((a): a is Extract<typeof a, { type: "linear_issue" }> => a.type === "linear_issue")?.issue ?? null}
         pinnedIssue={pinnedLinearIssue}
         busy={busy || parallelLaunchBusy}
         onOpenChange={setLinearIssuePickerOpen}

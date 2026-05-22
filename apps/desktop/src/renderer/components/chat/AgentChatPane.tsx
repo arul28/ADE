@@ -45,6 +45,7 @@ import {
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
+  chatContextAttachmentKey,
   makeLinearIssueContextAttachment,
   makePlanCommentContextAttachment,
   mergeChatContextAttachments,
@@ -998,7 +999,7 @@ function attachmentMatchKey(attachment: AgentChatFileRef): string {
 }
 
 function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): string {
-  return `${attachment.type}:${attachment.issue.id}`;
+  return chatContextAttachmentKey(attachment);
 }
 
 function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string): string[] {
