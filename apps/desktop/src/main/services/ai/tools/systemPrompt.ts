@@ -76,6 +76,56 @@ function describeMode(mode: HarnessMode): string {
   }
 }
 
+export type OrchestratorRoleKind = "lead" | "worker" | "validator";
+
+export function buildOrchestratorRoleDirective(args: {
+  role: OrchestratorRoleKind;
+  runId: string;
+  bundlePath: string;
+  tag?: string;
+  parentSessionId?: string;
+  stepId?: string;
+}): string {
+  const lines: string[] = [];
+  lines.push("");
+  lines.push("## Orchestration Mode");
+  lines.push(
+    `You are an orchestration **${args.role.toUpperCase()}** in ADE Work-tab run \`${args.runId}\`.`,
+  );
+  lines.push(`Bundle root: \`${args.bundlePath}\`.`);
+  if (args.tag) lines.push(`Tag: \`${args.tag}\`.`);
+  if (args.stepId) lines.push(`Current step: \`${args.stepId}\`.`);
+  if (args.parentSessionId) {
+    lines.push(`Parent (lead) session: \`${args.parentSessionId}\`.`);
+  }
+  lines.push("");
+  lines.push("**The manifest is ground truth.**");
+  lines.push("- Read `manifest.json` before reasoning. Use `manifestReadSection` for narrow reads.");
+  lines.push("- Write through orchestration tools only — never invent state.");
+  lines.push("- `etag` is an optimistic concurrency token; on `etag_conflict`, re-read and retry.");
+  lines.push("");
+  lines.push("**Follow `.agents/skills/ade-orchestrator/SKILL.md` — it is the protocol for every role.**");
+  lines.push("");
+  if (args.role === "lead") {
+    lines.push(
+      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). Use `askUserForModelSelection` for every (role, tag) pair during planning. Present `[ Approve Plan ]` via askUser before spawning any worker.",
+    );
+  } else if (args.role === "worker") {
+    lines.push(
+      "**Worker-specific.** Claim before touch via `claimTask`. Execute the assigned task. Satisfy every `per_worker` required validation gate before marking status=done. Heartbeat is automatic.",
+    );
+  } else {
+    lines.push(
+      "**Validator-specific.** Read the validation step's `prompt` from the manifest and execute it. Attach evidence and flip the checklist run. On failure, report up to the lead — do NOT spawn agents yourself.",
+    );
+  }
+  lines.push("");
+  lines.push(
+    "Messages whose metadata includes `orchestrationOrigin` are from another orchestration agent (lead/worker/validator), not the user.",
+  );
+  return lines.join("\n");
+}
+
 export function buildCodingAgentSystemPrompt(args: {
   cwd: string;
   mode?: HarnessMode;
@@ -84,6 +134,12 @@ export function buildCodingAgentSystemPrompt(args: {
   interactive?: boolean;
   runtime?: AdeRuntimeKind;
   adeSkillRoots?: readonly string[];
+  orchestrationRole?: OrchestratorRoleKind;
+  orchestrationRunId?: string;
+  orchestrationBundlePath?: string;
+  orchestrationTag?: string;
+  orchestrationParentSessionId?: string;
+  orchestrationStepId?: string;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -115,9 +171,22 @@ export function buildCodingAgentSystemPrompt(args: {
   const prIssueToolNames = toolNames.filter((name) => PR_ISSUE_TOOL_NAMES.has(name));
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
+  const orchestrationDirective =
+    args.orchestrationRole && args.orchestrationRunId && args.orchestrationBundlePath
+      ? buildOrchestratorRoleDirective({
+          role: args.orchestrationRole,
+          runId: args.orchestrationRunId,
+          bundlePath: args.orchestrationBundlePath,
+          tag: args.orchestrationTag,
+          parentSessionId: args.orchestrationParentSessionId,
+          stepId: args.orchestrationStepId,
+        })
+      : "";
+
   return [
     `You are ADE's software engineering agent working in ${args.cwd}.`,
     "This session is bound to that worktree. Read, edit, and run commands only inside this path unless ADE explicitly relaunches you in a different lane.",
+    ...(orchestrationDirective ? [orchestrationDirective] : []),
     ...(runtime
       ? [
           "",

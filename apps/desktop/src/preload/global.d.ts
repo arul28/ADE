@@ -1337,6 +1337,100 @@ declare global {
         ) => () => void;
         onDagMutation: (cb: (ev: DagMutationEvent) => void) => () => void;
       };
+      orchestration: {
+        runCreate: (args: {
+          laneId: string;
+          leadSessionId: string;
+          title?: string;
+          goalSummary?: string;
+        }) => Promise<{
+          runId: string;
+          manifest: import("../shared/types/orchestration").OrchestrationManifest;
+          etag: string;
+        }>;
+        bundleRead: (args: { runId: string; laneId: string }) => Promise<{
+          manifest: import("../shared/types/orchestration").OrchestrationManifest;
+          planMd: string;
+          etag: string;
+        }>;
+        manifestReadSection: (args: {
+          runId: string;
+          laneId: string;
+          section: import("../shared/types/orchestration").ManifestSection;
+        }) => Promise<{
+          section: import("../shared/types/orchestration").ManifestSection;
+          data: unknown;
+          etag: string;
+        }>;
+        manifestPatch: (
+          args: import("../shared/types/orchestration").OrchestrationManifestPatchRequest & {
+            laneId: string;
+          },
+        ) => Promise<import("../shared/types/orchestration").OrchestrationManifestPatchResponse>;
+        planAppend: (
+          args: import("../shared/types/orchestration").OrchestrationPlanAppendRequest & {
+            laneId: string;
+          },
+        ) => Promise<{ planMd: string; etag: string }>;
+        planWrite: (
+          args: import("../shared/types/orchestration").OrchestrationPlanWriteRequest & {
+            laneId: string;
+          },
+        ) => Promise<{ planMd: string; etag: string } | { error: "etag_conflict"; etag: string }>;
+        spawnAgent: (
+          args: import("../shared/types/orchestration").OrchestrationSpawnAgentRequest & {
+            laneId: string;
+            leadSessionId: string;
+          },
+        ) => Promise<{ sessionId: string; etag: string }>;
+        agentInject: (
+          args: import("../shared/types/orchestration").OrchestrationAgentInjectRequest,
+        ) => Promise<void>;
+        assetRegister: (
+          args: import("../shared/types/orchestration").OrchestrationAssetRegisterRequest & {
+            laneId: string;
+          },
+        ) => Promise<{
+          asset: import("../shared/types/orchestration").OrchestrationAsset;
+          etag: string;
+        }>;
+        claimTask: (
+          args: import("../shared/types/orchestration").OrchestrationClaimTaskRequest & {
+            laneId: string;
+          },
+        ) => Promise<
+          | {
+              ok: true;
+              manifest: import("../shared/types/orchestration").OrchestrationManifest;
+              etag: string;
+            }
+          | {
+              ok: false;
+              reason: string;
+              manifest: import("../shared/types/orchestration").OrchestrationManifest;
+              etag: string;
+            }
+        >;
+        releaseTask: (
+          args: import("../shared/types/orchestration").OrchestrationReleaseTaskRequest & {
+            laneId: string;
+          },
+        ) => Promise<{
+          manifest: import("../shared/types/orchestration").OrchestrationManifest;
+          etag: string;
+        }>;
+        runList: (args?: {
+          laneId?: string;
+        }) => Promise<
+          import("../shared/types/orchestration").OrchestrationRunSummary[]
+        >;
+        subscribe: (
+          args: { runId: string },
+          callback: (
+            payload: import("../shared/types/orchestration").OrchestrationEventPayload,
+          ) => void,
+        ) => () => void;
+      };
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;

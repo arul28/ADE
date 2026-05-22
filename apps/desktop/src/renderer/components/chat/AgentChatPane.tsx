@@ -46,9 +46,14 @@ import {
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
+  makeOrchestrationAnnotationContextAttachment,
   mergeChatContextAttachments,
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import type {
+  OrchestrationAnnotationEventDetail,
+  OrchestrationContextItem,
+} from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
@@ -87,6 +92,8 @@ import {
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ChatSurfaceShell } from "./ChatSurfaceShell";
+import { OrchestratorLeadFrame } from "./OrchestratorLeadFrame";
+import { OrchestrationPanel } from "../orchestration/OrchestrationPanel";
 import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
@@ -508,7 +515,7 @@ function launchConfigStorageKey(scope: {
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
-  workDraftKind: "chat" | "cli";
+  workDraftKind: "chat" | "cli" | "chat-orchestrator";
 }): string {
   return [
     LAST_LAUNCH_CONFIG_KEY_PREFIX,
@@ -986,7 +993,35 @@ function attachmentMatchKey(attachment: AgentChatFileRef): string {
 }
 
 function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): string {
-  return `${attachment.type}:${attachment.issue.id}`;
+  switch (attachment.type) {
+    case "linear_issue":
+      return `${attachment.type}:${attachment.issue.id}`;
+    case "orchestration_annotation": {
+      const anchor = attachment.item.anchor;
+      const anchorId = anchor.id ?? "anon";
+      return `${attachment.type}:${attachment.item.runId}:${anchor.kind}:${anchorId}:${attachment.item.capturedAt}`;
+    }
+  }
+}
+
+/**
+ * Runtime guard for the OrchestrationContextItem payload arriving via the
+ * `ade:agent-chat:add-plan-annotation` CustomEvent. We validate the bare
+ * minimum so a malformed event can't crash the renderer.
+ */
+function isOrchestrationContextItem(value: unknown): value is OrchestrationContextItem {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "orchestration_annotation") return false;
+  if (typeof record.runId !== "string" || !record.runId.length) return false;
+  if (typeof record.capturedAt !== "string" || !record.capturedAt.length) return false;
+  if (typeof record.comment !== "string") return false;
+  if (typeof record.selectionExcerpt !== "string") return false;
+  const anchor = record.anchor as Record<string, unknown> | null | undefined;
+  if (!anchor || typeof anchor !== "object") return false;
+  if (typeof anchor.kind !== "string" || !anchor.kind.length) return false;
+  if (typeof anchor.preview !== "string") return false;
+  return true;
 }
 
 function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string): string[] {
@@ -1738,7 +1773,7 @@ export function AgentChatPane({
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli";
+  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
   onLaunchCliSession?: (args: {
     laneId: string;
     profile: LaunchProfile;
@@ -4459,6 +4494,20 @@ export function AgentChatPane({
       if (!matchesThisChat(detail?.sessionId) || !detail.item) return;
       addMacosVmContext(detail.item as MacosVmContextItem);
     };
+    // Plan-panel annotation events (goal.md §10.7). The popover composes an
+    // OrchestrationContextItem, dispatches `ade:agent-chat:add-plan-annotation`,
+    // and the listener below merges it into the composer attachment tray via
+    // the existing `mergeChatContextAttachments` flow. Pure ephemeral — no
+    // persistence to the manifest in v1.
+    const onAddPlanAnnotation = (event: Event) => {
+      const detail = (event as CustomEvent<OrchestrationAnnotationEventDetail>).detail;
+      if (!matchesThisChat(detail?.sessionId)) return;
+      const rawItem = detail?.item;
+      if (!isOrchestrationContextItem(rawItem)) return;
+      setContextAttachments((prev) => mergeChatContextAttachments(prev, [
+        makeOrchestrationAnnotationContextAttachment(rawItem),
+      ]));
+    };
 
     window.addEventListener("ade:agent-chat:add-attachment", onAddAttachment);
     window.addEventListener("ade:agent-chat:insert-draft", onInsertDraft);
@@ -4466,6 +4515,7 @@ export function AgentChatPane({
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
     window.addEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
+    window.addEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
       window.removeEventListener("ade:agent-chat:insert-draft", onInsertDraft);
@@ -4473,6 +4523,7 @@ export function AgentChatPane({
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
       window.removeEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
+      window.removeEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     };
   }, [addAppControlContext, addAttachment, addBuiltInBrowserContext, addIosElementContext, addMacosVmContext, insertComposerDraft]);
 
@@ -4659,6 +4710,12 @@ export function AgentChatPane({
             ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
           }
         : buildNativeControlPayload(provider);
+      // Orchestrator-lead draft: force the interactionMode so the lead chat
+      // boots with the orchestrator skill + tool gates (`goal.md` §10.1).
+      const orchestratorOverrides: Partial<Parameters<typeof window.ade.agentChat.create>[0]> =
+        workDraftKind === "chat-orchestrator"
+          ? { interactionMode: "orchestrator-lead" as AgentChatInteractionMode }
+          : {};
       const created = await window.ade.agentChat.create({
         laneId: targetLaneId,
         provider,
@@ -4668,7 +4725,35 @@ export function AgentChatPane({
         reasoningEffort,
         ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
         ...nativeControlPayload,
+        ...orchestratorOverrides,
       });
+      // Follow-up: allocate the orchestration bundle. We do this immediately
+      // so the bundle path is persisted alongside the new chat (workers will
+      // pick it up from the manifest). If it fails the chat is still usable;
+      // we surface the error so the user can retry.
+      if (workDraftKind === "chat-orchestrator") {
+        try {
+          const runCreate = await window.ade.orchestration.runCreate({
+            laneId: targetLaneId,
+            leadSessionId: created.id,
+          });
+          // Stitch the run id into the local session summary cache so the
+          // OrchestrationPanel mounts on the next render. The main process
+          // persists the same fields against the chat record.
+          patchSessionSummary(created.id, {
+            orchestrationRunId: runCreate.runId,
+            orchestrationRole: "lead",
+          });
+        } catch (runCreateError) {
+          console.warn(
+            "[AgentChatPane] orchestration.runCreate failed; lead chat created without bundle",
+            runCreateError,
+          );
+          setError(runCreateError instanceof Error
+            ? `Orchestration bundle could not be allocated: ${runCreateError.message}`
+            : "Orchestration bundle could not be allocated.");
+        }
+      }
       const launchConfig = buildLastLaunchConfig({
         model: created.model,
         modelId: created.modelId ?? modelId,
@@ -4719,7 +4804,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -4889,7 +4974,7 @@ export function AgentChatPane({
       }
       return;
     }
-    if (selectedSessionId || workDraftKind !== "chat") return;
+    if (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator")) return;
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -6975,6 +7060,19 @@ export function AgentChatPane({
             onRemoveMacosVmContext={removeMacosVmContext}
             onOpenAiSettings={openAiProvidersSettings}
             onOpenLinearSettings={openLinearSettings}
+            onStartOrchestratorChat={() => {
+              // Switch the lane to a fresh orchestrator-lead draft. The
+              // submit path will then call `agentChat.create` +
+              // `orchestration.runCreate` together.
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("ade:work:start-orchestrator-chat"),
+                );
+              } catch {
+                /* dispatch is best-effort */
+              }
+            }}
+            orchestrationRole={selectedSession?.orchestrationRole ?? null}
             onModelChange={(nextModelId) => {
               const modelAllowed =
                 !effectiveAvailableModelIds.length
@@ -7079,8 +7177,8 @@ export function AgentChatPane({
             onInterrupt={() => {
               void interrupt();
             }}
-            onApproval={(decision, responseText) => {
-              void approve(decision, responseText);
+            onApproval={(decision, responseText, answers) => {
+              void approve(decision, responseText, answers);
             }}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
@@ -7348,7 +7446,14 @@ export function AgentChatPane({
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const effectiveSubagentPaneOpen = subagentPaneOpen && selectedSubagentPaneAvailable;
   const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
-  const rightPaneOpen = proofDrawerOpen || appPanelOpen || effectiveSubagentPaneOpen || effectiveCursorCloudPaneOpen;
+  // Orchestration: derive runId / role from the active session. When set, mount
+  // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
+  // the conic-gradient frame.
+  const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
+  const orchestrationRole = selectedSession?.orchestrationRole ?? null;
+  const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
+  const orchestrationPanelOpen = Boolean(orchestrationRunId);
+  const rightPaneOpen = proofDrawerOpen || appPanelOpen || effectiveSubagentPaneOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const splitChatColStyle: React.CSSProperties | undefined =
     rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
@@ -7379,8 +7484,31 @@ export function AgentChatPane({
       </div>
     );
 
+  // Orchestration plan panel — mounted whenever the active session has a
+  // runId. Lead view is fully interactive; worker/validator view is read-only.
+  const orchestrationPanelContent = orchestrationRunId ? (
+    <OrchestrationPanel
+      runId={orchestrationRunId}
+      laneId={selectedSession?.laneId ?? laneId ?? ""}
+      laneName={laneLabel ?? null}
+      viewerRole={orchestrationRole ?? undefined}
+      bundleRoot={selectedSession?.orchestrationBundlePath ?? null}
+      onOpenSession={(sessionId) => {
+        // Switch the Work tab to the target chat session.
+        try {
+          window.dispatchEvent(
+            new CustomEvent("ade:work:select-session", { detail: { sessionId } }),
+          );
+        } catch {
+          /* no-op */
+        }
+      }}
+    />
+  ) : null;
+
   return (
     <>
+      <OrchestratorLeadFrame active={isOrchestratorLead} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
         mode={surfaceMode}
@@ -7473,6 +7601,55 @@ export function AgentChatPane({
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
+                    {(orchestrationRole === "worker" || orchestrationRole === "validator") && orchestrationRunId ? (
+                      <div
+                        data-orchestration-role-banner={orchestrationRole}
+                        className={cn(
+                          "flex shrink-0 items-center gap-2 border-b px-4 py-1.5 font-sans text-[11px]",
+                          orchestrationRole === "worker"
+                            ? "border-sky-300/20 bg-sky-500/[0.05] text-sky-100/85"
+                            : "border-emerald-300/20 bg-emerald-500/[0.05] text-emerald-100/85",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "inline-flex h-4 items-center rounded-sm px-1.5 font-mono text-[9px] font-bold uppercase tracking-[0.16em]",
+                            orchestrationRole === "worker"
+                              ? "border border-sky-300/30 bg-sky-300/10 text-sky-100"
+                              : "border border-emerald-300/30 bg-emerald-300/10 text-emerald-100",
+                          )}
+                        >
+                          {orchestrationRole}
+                          {selectedSession?.orchestrationTag ? ` · ${selectedSession.orchestrationTag.toLowerCase()}` : ""}
+                        </span>
+                        {selectedSession?.orchestrationParentSessionId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const targetId = selectedSession.orchestrationParentSessionId;
+                              if (!targetId) return;
+                              try {
+                                window.dispatchEvent(
+                                  new CustomEvent("ade:work:select-session", {
+                                    detail: { sessionId: targetId },
+                                  }),
+                                );
+                              } catch {
+                                /* no-op */
+                              }
+                            }}
+                            className="inline-flex items-center text-fg/80 underline-offset-2 hover:underline"
+                          >
+                            Lead chat
+                          </button>
+                        ) : null}
+                        {selectedSession?.orchestrationStepId ? (
+                          <span className="text-fg/60">
+                            · Task <span className="font-mono text-fg/80">{selectedSession.orchestrationStepId}</span>
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {selectedSession?.cursorRuntime === "cloud" && selectedSession?.cursorCloudAgentId ? (
                       <div
                         className="shrink-0 border-b border-violet-300/20 bg-violet-500/[0.06] px-4 py-1.5 font-sans text-[11px] leading-snug text-violet-100/85"
@@ -7613,6 +7790,7 @@ export function AgentChatPane({
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
+                  {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
                 </motion.div>
               ) : (
                 <motion.div
@@ -7735,6 +7913,7 @@ export function AgentChatPane({
           )}
         </div>
       </ChatSurfaceShell>
+      </OrchestratorLeadFrame>
       <RewindFilesConfirmDialog
         state={rewindConfirmDialog}
         sessionId={selectedSessionId}

@@ -156,6 +156,7 @@ import { publishLinearLaneCard } from "./services/cto/linearLaneCardService";
 import { createLinearIngressService } from "./services/cto/linearIngressService";
 import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestratorService } from "./services/orchestrator/orchestratorService";
+import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createAiOrchestratorService } from "./services/orchestrator/aiOrchestratorService";
 import { createMissionBudgetService } from "./services/orchestrator/missionBudgetService";
 import { transitionMissionStatus } from "./services/orchestrator/missionLifecycle";
@@ -3045,6 +3046,15 @@ app.whenReady().then(async () => {
       },
     });
     orchestratorServiceRef = orchestratorService;
+    const orchestrationService = createOrchestrationService({
+      resolveLaneWorktree: (laneId: string): string | undefined => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return undefined;
+        }
+      },
+    });
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,
@@ -4148,6 +4158,7 @@ app.whenReady().then(async () => {
       missionService,
       missionPreflightService,
       orchestratorService,
+      orchestrationService,
       missionBudgetService,
       aiOrchestratorService,
       agentChatService,
@@ -4338,6 +4349,7 @@ app.whenReady().then(async () => {
       missionService: null,
       missionPreflightService: null,
       orchestratorService: null,
+      orchestrationService: null,
       missionBudgetService: null,
       aiOrchestratorService: null,
       projectConfigService: null,

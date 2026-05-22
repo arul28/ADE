@@ -5499,6 +5499,53 @@ contextBridge.exposeInMainWorld("ade", {
       ): Promise<AgentChatCodexOpenInCliResult> =>
         ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
     },
+    readTranscript: (args: {
+      sessionId: string;
+      limit?: number;
+      since?: string;
+    }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
+  },
+  orchestration: {
+    runCreate: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationRunCreate, args),
+    bundleRead: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationBundleRead, args),
+    manifestReadSection: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationManifestReadSection, args),
+    manifestPatch: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationManifestPatch, args),
+    planAppend: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationPlanAppend, args),
+    planWrite: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationPlanWrite, args),
+    spawnAgent: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationSpawnAgent, args),
+    agentInject: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationAgentInject, args),
+    assetRegister: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationAssetRegister, args),
+    claimTask: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationClaimTask, args),
+    releaseTask: (args: unknown) =>
+      ipcRenderer.invoke(IPC.orchestrationReleaseTask, args),
+    runList: (args: unknown = {}) =>
+      ipcRenderer.invoke(IPC.orchestrationRunList, args),
+    subscribe: (
+      args: { runId: string },
+      callback: (payload: unknown) => void,
+    ): (() => void) => {
+      const listener = (_evt: unknown, payload: unknown) => {
+        if (!payload || typeof payload !== "object") return;
+        const runId = (payload as { runId?: string }).runId;
+        if (runId === args.runId) callback(payload);
+      };
+      ipcRenderer.on(IPC.orchestrationEvent, listener);
+      void ipcRenderer.invoke(IPC.orchestrationSubscribe, args);
+      return () => {
+        ipcRenderer.removeListener(IPC.orchestrationEvent, listener);
+        void ipcRenderer.invoke(IPC.orchestrationUnsubscribe, args).catch(() => undefined);
+      };
+    },
   },
   computerUse: {
     listArtifacts: async (

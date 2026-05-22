@@ -1,6 +1,7 @@
 import React from "react";
 import { Info, WarningCircle } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
 import {
   getStaleRunningCliSessionAgeHours,
@@ -23,6 +24,77 @@ const DELTA_CHIP_STYLE: React.CSSProperties = {
   letterSpacing: "0",
   borderRadius: 4,
 };
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Orchestration role pills.
+   • lead       → purple `LEAD`
+   • worker     → blue   `WORKER · <tag>` (tag lowercased)
+   • validator  → green  `VALIDATOR`
+   See goal.md §10.8 + §10.12.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const ORCHESTRATION_PILL_BASE: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 3,
+  padding: "1px 6px",
+  fontSize: 9,
+  fontWeight: 600,
+  fontFamily: MONO_FONT,
+  textTransform: "uppercase",
+  letterSpacing: "0.14em",
+  borderRadius: 4,
+  borderWidth: 1,
+  borderStyle: "solid",
+};
+
+const ORCHESTRATION_PILL_PALETTE: Record<
+  OrchestrationRole,
+  { background: string; borderColor: string; color: string }
+> = {
+  lead: {
+    background: "rgba(168, 85, 247, 0.14)",
+    borderColor: "rgba(168, 85, 247, 0.42)",
+    color: "rgb(216, 180, 254)",
+  },
+  worker: {
+    background: "rgba(96, 165, 250, 0.13)",
+    borderColor: "rgba(96, 165, 250, 0.38)",
+    color: "rgb(147, 197, 253)",
+  },
+  validator: {
+    background: "rgba(34, 197, 94, 0.13)",
+    borderColor: "rgba(34, 197, 94, 0.36)",
+    color: "rgb(134, 239, 172)",
+  },
+};
+
+function OrchestrationRolePill({
+  role,
+  tag,
+}: {
+  role: OrchestrationRole;
+  tag?: string | null;
+}) {
+  const palette = ORCHESTRATION_PILL_PALETTE[role];
+  const label =
+    role === "worker" && tag && tag.trim().length > 0
+      ? `WORKER · ${tag.trim().toLowerCase()}`
+      : role === "lead"
+        ? "LEAD"
+        : role === "validator"
+          ? "VALIDATOR"
+          : role.toUpperCase();
+  return (
+    <span
+      data-orchestration-role={role}
+      style={{ ...ORCHESTRATION_PILL_BASE, ...palette }}
+      title={label}
+    >
+      {label}
+    </span>
+  );
+}
 
 function getPreviewLine(session: TerminalSessionSummary, primaryText: string): string | null {
   const summary = preferredSessionLabel(session.summary);
@@ -116,7 +188,7 @@ export const SessionCard = React.memo(function SessionCard({
 
           {/* Content — 3 rows */}
           <div className="min-w-0 flex-1">
-            {/* Row 1: Title + status dot + relative time */}
+            {/* Row 1: Title + role pill + status dot + relative time */}
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className={cn(
@@ -126,6 +198,12 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {session.orchestrationRole ? (
+                <OrchestrationRolePill
+                  role={session.orchestrationRole}
+                  tag={session.orchestrationTag ?? null}
+                />
+              ) : null}
               {staleAgeHours != null ? (
                 <span
                   className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"

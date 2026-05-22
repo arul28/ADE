@@ -34,6 +34,11 @@ import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
+import type {
+  ModelSelection,
+  OrchestrationModelSelectionMetadata,
+  OrchestrationRole,
+} from "../../../shared/types/orchestration";
 import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
@@ -55,6 +60,7 @@ import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingI
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
+import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -66,6 +72,45 @@ const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+
+/**
+ * Best-effort decoder for the `providerMetadata` payload carried on a
+ * `model_selection` PendingInputRequest. The server packs
+ * `OrchestrationModelSelectionMetadata` into the metadata bag; here we
+ * recover it defensively so a malformed payload renders an empty picker
+ * rather than crashing the composer.
+ */
+function readOrchestrationModelSelectionMetadata(
+  value: Record<string, unknown> | undefined,
+): OrchestrationModelSelectionMetadata | null {
+  if (!value || typeof value !== "object") return null;
+  const role = value.role;
+  if (role !== "lead" && role !== "worker" && role !== "validator") return null;
+  const tag = typeof value.tag === "string" ? value.tag : "";
+  const rawSuggested = value.suggested;
+  let suggested: ModelSelection | undefined;
+  if (rawSuggested && typeof rawSuggested === "object") {
+    const r = rawSuggested as Record<string, unknown>;
+    const sProvider = typeof r.provider === "string" ? r.provider : null;
+    const sModelId = typeof r.modelId === "string" ? r.modelId : null;
+    if (sProvider && sModelId) {
+      suggested = {
+        provider: sProvider as ModelSelection["provider"],
+        modelId: sModelId,
+        ...(typeof r.reasoningEffort === "string" || r.reasoningEffort === null
+          ? { reasoningEffort: r.reasoningEffort as string | null }
+          : {}),
+        ...(typeof r.codexFastMode === "boolean" ? { codexFastMode: r.codexFastMode } : {}),
+      };
+    }
+  }
+  return {
+    role,
+    tag,
+    ...(suggested ? { suggested } : {}),
+    ...(value.availableModels !== undefined ? { availableModels: value.availableModels } : {}),
+  };
+}
 
 type PasteShortcutEvent = {
   key: string;
@@ -755,6 +800,7 @@ export function AgentChatComposer({
   modelSelectionLocked = false,
   permissionModeLocked = false,
   hideNativeControls = false,
+  orchestrationRole = null,
   messagePlaceholder,
   onModelChange,
   onReasoningEffortChange,
@@ -799,6 +845,7 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt,
   onOpenAiSettings,
   onOpenLinearSettings,
+  onStartOrchestratorChat,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -877,6 +924,18 @@ export function AgentChatComposer({
   modelSelectionLocked?: boolean;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
+  /**
+   * Orchestration role lock (see `goal.md` §10.10).
+   *   - `"lead"`: hide permission picker AND model picker (lead's model is
+   *     fixed at create-time).
+   *   - `"worker"` / `"validator"`: hide permission picker; show model +
+   *     fast + reasoning rows.
+   *   - `null` / undefined: default behaviour (regular chat composer).
+   *
+   * Worker/Validator permission tier is forced by the orchestration spawn
+   * profile (`goal.md` §12) — the user should not be able to demote it.
+   */
+  orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
@@ -889,7 +948,11 @@ export function AgentChatComposer({
   backgroundLaunchBusy?: boolean;
   backgroundLaunchLabel?: string;
   onInterrupt: () => void;
-  onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onApproval: (
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
@@ -926,6 +989,13 @@ export function AgentChatComposer({
   onDispatchSteerInterrupt?: (steerId: string) => void;
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
+  /**
+   * Open the "New orchestrator chat" flow from the composer attachment menu
+   * (see `goal.md` §10.1). When provided, a "New orchestrator chat" entry
+   * with purple-accent tone shows up next to the Linear/GitHub items.
+   * Hosts that don't want the entry simply leave this undefined.
+   */
+  onStartOrchestratorChat?: () => void;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -1932,6 +2002,12 @@ export function AgentChatComposer({
     if (hideNativeControls) {
       return null;
     }
+    // Orchestration-locked composers (lead / worker / validator) hide the
+    // native permission picker — the orchestrator forces the permission
+    // tier per `goal.md` §10.10 + §12.
+    if (orchestrationRole) {
+      return null;
+    }
     const effectiveModelId =
       parallelChatMode && parallelConfiguringIndex != null
         ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
@@ -2371,6 +2447,7 @@ export function AgentChatComposer({
     hoveredCodexPreset,
     nativeControlsDisabled,
     hideNativeControls,
+    orchestrationRole,
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
@@ -2819,6 +2896,32 @@ export function AgentChatComposer({
             <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
           </span>
         </button>
+        {onStartOrchestratorChat ? (
+          <button
+            type="button"
+            data-testid="composer-new-orchestrator-chat"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            onClick={() => {
+              setIssueContextMenuOpen(false);
+              onStartOrchestratorChat();
+            }}
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+              style={{ background: "rgba(168,130,255,0.16)", color: "rgba(220,210,255,0.92)" }}
+            >
+              <SquareSplitHorizontal size={11} weight="bold" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium" style={{ color: "rgba(220,210,255,0.92)" }}>
+                New orchestrator chat
+              </span>
+              <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">
+                Spawn a lead chat with workers and validators.
+              </span>
+            </span>
+          </button>
+        ) : null}
       </div>
     </div>,
     document.body,
@@ -2829,7 +2932,11 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueContextDialog
         open={linearIssuePickerOpen}
-        selectedIssue={contextAttachments[0]?.issue ?? null}
+        selectedIssue={
+          contextAttachments[0]?.type === "linear_issue"
+            ? contextAttachments[0].issue
+            : null
+        }
         pinnedIssue={pinnedLinearIssue}
         busy={busy || parallelLaunchBusy}
         onOpenChange={setLinearIssuePickerOpen}
@@ -2865,6 +2972,30 @@ export function AgentChatComposer({
             onApprove={() => onApproval("accept")}
             onReject={() => onApproval("decline")}
           />
+        ) : pendingInput.kind === "model_selection" ? (
+          (() => {
+            // Decode the orchestration model-selection metadata payload. The
+            // server packs `{ role, tag, suggested?, availableModels? }` into
+            // `providerMetadata`; if it's malformed we fall back to a
+            // permissive shape so the user can still pick a model.
+            const meta = readOrchestrationModelSelectionMetadata(pendingInput.providerMetadata);
+            const availableModelIdsForPicker = meta?.availableModels && Array.isArray(meta.availableModels)
+              ? (meta.availableModels as unknown[]).filter((id): id is string => typeof id === "string")
+              : availableModelIds;
+            return (
+              <ChatModelSelectionPendingCard
+                metadata={meta}
+                {...(meta?.suggested ? { suggested: meta.suggested } : {})}
+                {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
+                {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                responding={approvalResponding ?? false}
+                onConfirm={(selection) => {
+                  onApproval("accept", null, { selection: JSON.stringify(selection) });
+                }}
+                onCancel={() => onApproval("cancel")}
+              />
+            );
+          })()
         ) : (
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
@@ -3435,7 +3566,7 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!parallelChatMode ? (
+            {!parallelChatMode && orchestrationRole !== "lead" ? (
               <>
                 <ModelPicker
                   value={modelId}

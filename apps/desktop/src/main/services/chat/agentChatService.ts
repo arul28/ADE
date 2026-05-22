@@ -414,6 +414,13 @@ type PersistedChatState = {
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
   pendingSteers?: PersistedPendingSteer[];
+  // Orchestration-mode fields
+  orchestrationRunId?: string;
+  orchestrationRole?: "lead" | "worker" | "validator";
+  orchestrationParentSessionId?: string;
+  orchestrationTag?: string;
+  orchestrationStepId?: string;
+  orchestrationBundlePath?: string;
   updatedAt: string;
 };
 
@@ -3810,7 +3817,17 @@ function buildAdeGuidanceForLane(laneWorktreePath: string): string {
 
 function buildCodexDeveloperInstructions(args: {
   laneWorktreePath: string;
-  session: Pick<AgentChatSession, "permissionMode" | "interactionMode">;
+  session: Pick<
+    AgentChatSession,
+    | "permissionMode"
+    | "interactionMode"
+    | "orchestrationRole"
+    | "orchestrationRunId"
+    | "orchestrationBundlePath"
+    | "orchestrationTag"
+    | "orchestrationParentSessionId"
+    | "orchestrationStepId"
+  >;
   collaborationMode: "default" | "plan";
 }): string {
   const promptMode = args.collaborationMode === "plan" || args.session.interactionMode === "plan"
@@ -3823,6 +3840,12 @@ function buildCodexDeveloperInstructions(args: {
     interactive: true,
     runtime: "codex-app-server",
     adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: args.laneWorktreePath }),
+    orchestrationRole: args.session.orchestrationRole,
+    orchestrationRunId: args.session.orchestrationRunId,
+    orchestrationBundlePath: args.session.orchestrationBundlePath,
+    orchestrationTag: args.session.orchestrationTag,
+    orchestrationParentSessionId: args.session.orchestrationParentSessionId,
+    orchestrationStepId: args.session.orchestrationStepId,
   });
 }
 
@@ -4496,7 +4519,8 @@ export function createAgentChatService(args: {
   ): void => {
     if (!managed.session.laneId || contextAttachments.length === 0) return;
     const issues = contextAttachments
-      .filter((attachment) => attachment.type === "linear_issue")
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> =>
+        attachment.type === "linear_issue")
       .map((attachment) => attachment.issue);
     if (!issues.length) return;
     try {
@@ -7109,6 +7133,24 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      ...(managed.session.orchestrationRunId
+        ? { orchestrationRunId: managed.session.orchestrationRunId }
+        : prevPersisted?.orchestrationRunId ? { orchestrationRunId: prevPersisted.orchestrationRunId } : {}),
+      ...(managed.session.orchestrationRole
+        ? { orchestrationRole: managed.session.orchestrationRole }
+        : prevPersisted?.orchestrationRole ? { orchestrationRole: prevPersisted.orchestrationRole } : {}),
+      ...(managed.session.orchestrationParentSessionId
+        ? { orchestrationParentSessionId: managed.session.orchestrationParentSessionId }
+        : prevPersisted?.orchestrationParentSessionId ? { orchestrationParentSessionId: prevPersisted.orchestrationParentSessionId } : {}),
+      ...(managed.session.orchestrationTag
+        ? { orchestrationTag: managed.session.orchestrationTag }
+        : prevPersisted?.orchestrationTag ? { orchestrationTag: prevPersisted.orchestrationTag } : {}),
+      ...(managed.session.orchestrationStepId
+        ? { orchestrationStepId: managed.session.orchestrationStepId }
+        : prevPersisted?.orchestrationStepId ? { orchestrationStepId: prevPersisted.orchestrationStepId } : {}),
+      ...(managed.session.orchestrationBundlePath
+        ? { orchestrationBundlePath: managed.session.orchestrationBundlePath }
+        : prevPersisted?.orchestrationBundlePath ? { orchestrationBundlePath: prevPersisted.orchestrationBundlePath } : {}),
       updatedAt: nowIso()
     };
 
@@ -7341,6 +7383,51 @@ export function createAgentChatService(args: {
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
         ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
           ? { runtimeMode: record.runtimeMode }
+          : {}),
+        ...(typeof (record as { orchestrationRunId?: unknown }).orchestrationRunId === "string"
+          ? {
+              orchestrationRunId: (
+                record as { orchestrationRunId: string }
+              ).orchestrationRunId.trim(),
+            }
+          : {}),
+        ...(typeof (record as { orchestrationRole?: unknown }).orchestrationRole === "string" &&
+        ["lead", "worker", "validator"].includes(
+          (record as { orchestrationRole: string }).orchestrationRole,
+        )
+          ? {
+              orchestrationRole: (
+                record as { orchestrationRole: "lead" | "worker" | "validator" }
+              ).orchestrationRole,
+            }
+          : {}),
+        ...(typeof (record as { orchestrationParentSessionId?: unknown }).orchestrationParentSessionId === "string"
+          ? {
+              orchestrationParentSessionId: (
+                record as { orchestrationParentSessionId: string }
+              ).orchestrationParentSessionId.trim(),
+            }
+          : {}),
+        ...(typeof (record as { orchestrationTag?: unknown }).orchestrationTag === "string"
+          ? {
+              orchestrationTag: (
+                record as { orchestrationTag: string }
+              ).orchestrationTag.trim(),
+            }
+          : {}),
+        ...(typeof (record as { orchestrationStepId?: unknown }).orchestrationStepId === "string"
+          ? {
+              orchestrationStepId: (
+                record as { orchestrationStepId: string }
+              ).orchestrationStepId.trim(),
+            }
+          : {}),
+        ...(typeof (record as { orchestrationBundlePath?: unknown }).orchestrationBundlePath === "string"
+          ? {
+              orchestrationBundlePath: (
+                record as { orchestrationBundlePath: string }
+              ).orchestrationBundlePath.trim(),
+            }
           : {}),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
@@ -8420,6 +8507,16 @@ export function createAgentChatService(args: {
         ...(persisted?.runtimeMode ? { runtimeMode: persisted.runtimeMode } : {}),
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
+          : {}),
+        ...(persisted?.orchestrationRunId ? { orchestrationRunId: persisted.orchestrationRunId } : {}),
+        ...(persisted?.orchestrationRole ? { orchestrationRole: persisted.orchestrationRole } : {}),
+        ...(persisted?.orchestrationParentSessionId
+          ? { orchestrationParentSessionId: persisted.orchestrationParentSessionId }
+          : {}),
+        ...(persisted?.orchestrationTag ? { orchestrationTag: persisted.orchestrationTag } : {}),
+        ...(persisted?.orchestrationStepId ? { orchestrationStepId: persisted.orchestrationStepId } : {}),
+        ...(persisted?.orchestrationBundlePath
+          ? { orchestrationBundlePath: persisted.orchestrationBundlePath }
           : {}),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
@@ -15017,6 +15114,12 @@ export function createAgentChatService(args: {
     automationRunId,
     requestedCwd,
     runtimeMode,
+    orchestrationRunId: requestedOrchestrationRunId,
+    orchestrationRole: requestedOrchestrationRole,
+    orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+    orchestrationTag: requestedOrchestrationTag,
+    orchestrationStepId: requestedOrchestrationStepId,
+    orchestrationBundlePath: requestedOrchestrationBundlePath,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
     const launchContext = resolveLaneLaunchContext({
       laneService,
@@ -15239,6 +15342,16 @@ export function createAgentChatService(args: {
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
         ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
+        ...(requestedOrchestrationRunId ? { orchestrationRunId: requestedOrchestrationRunId } : {}),
+        ...(requestedOrchestrationRole ? { orchestrationRole: requestedOrchestrationRole } : {}),
+        ...(requestedOrchestrationParentSessionId
+          ? { orchestrationParentSessionId: requestedOrchestrationParentSessionId }
+          : {}),
+        ...(requestedOrchestrationTag ? { orchestrationTag: requestedOrchestrationTag } : {}),
+        ...(requestedOrchestrationStepId ? { orchestrationStepId: requestedOrchestrationStepId } : {}),
+        ...(requestedOrchestrationBundlePath
+          ? { orchestrationBundlePath: requestedOrchestrationBundlePath }
+          : {}),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -18051,6 +18164,12 @@ export function createAgentChatService(args: {
         interactive: true,
         runtime: "droid-sdk",
         adeSkillRoots: getAdeAgentSkillRootsForPrompt({ cwd: managed.laneWorktreePath }),
+        orchestrationRole: managed.session.orchestrationRole,
+        orchestrationRunId: managed.session.orchestrationRunId,
+        orchestrationBundlePath: managed.session.orchestrationBundlePath,
+        orchestrationTag: managed.session.orchestrationTag,
+        orchestrationParentSessionId: managed.session.orchestrationParentSessionId,
+        orchestrationStepId: managed.session.orchestrationStepId,
       });
       const sdkInput = [
         droidHarnessPrompt,
@@ -22281,11 +22400,87 @@ export function createAgentChatService(args: {
     }
   };
 
+  const readTranscript = async (
+    sessionId: string,
+    limit?: number,
+    since?: string,
+  ): Promise<AgentChatTranscriptEntry[]> => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return [];
+    const entries = readTranscriptEntries(managed);
+    let filtered = entries;
+    if (typeof since === "string" && since.trim().length) {
+      filtered = filtered.filter((entry) => entry.timestamp >= since);
+    }
+    if (typeof limit === "number" && limit > 0) {
+      filtered = filtered.slice(-Math.floor(limit));
+    }
+    return filtered;
+  };
+
+  /**
+   * Set orchestration fields on a session and persist them. Used by the
+   * orchestration.runCreate IPC handler to stitch the new run id back into the
+   * lead chat's persisted record so the OrchestrationPanel mounts after a
+   * restart.
+   */
+  const setOrchestrationFields = (
+    sessionId: string,
+    fields: {
+      orchestrationRunId?: string | null;
+      orchestrationRole?: "lead" | "worker" | "validator" | null;
+      orchestrationParentSessionId?: string | null;
+      orchestrationTag?: string | null;
+      orchestrationStepId?: string | null;
+      orchestrationBundlePath?: string | null;
+    },
+  ): void => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+    const session = managed.session as AgentChatSession & {
+      orchestrationRunId?: string;
+      orchestrationRole?: "lead" | "worker" | "validator";
+      orchestrationParentSessionId?: string;
+      orchestrationTag?: string;
+      orchestrationStepId?: string;
+      orchestrationBundlePath?: string;
+    };
+    if (fields.orchestrationRunId !== undefined) {
+      if (fields.orchestrationRunId) session.orchestrationRunId = fields.orchestrationRunId;
+      else delete session.orchestrationRunId;
+    }
+    if (fields.orchestrationRole !== undefined) {
+      if (fields.orchestrationRole) session.orchestrationRole = fields.orchestrationRole;
+      else delete session.orchestrationRole;
+    }
+    if (fields.orchestrationParentSessionId !== undefined) {
+      if (fields.orchestrationParentSessionId)
+        session.orchestrationParentSessionId = fields.orchestrationParentSessionId;
+      else delete session.orchestrationParentSessionId;
+    }
+    if (fields.orchestrationTag !== undefined) {
+      if (fields.orchestrationTag) session.orchestrationTag = fields.orchestrationTag;
+      else delete session.orchestrationTag;
+    }
+    if (fields.orchestrationStepId !== undefined) {
+      if (fields.orchestrationStepId) session.orchestrationStepId = fields.orchestrationStepId;
+      else delete session.orchestrationStepId;
+    }
+    if (fields.orchestrationBundlePath !== undefined) {
+      if (fields.orchestrationBundlePath)
+        session.orchestrationBundlePath = fields.orchestrationBundlePath;
+      else delete session.orchestrationBundlePath;
+    }
+    persistChatState(managed);
+  };
+
   return {
     createSession,
     suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
+    readTranscript,
+    setOrchestrationFields,
     runSessionTurn,
     steer,
     cancelSteer,

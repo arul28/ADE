@@ -124,7 +124,23 @@ export type AgentChatLinearIssueContextAttachment = {
   attachedAt?: string;
 };
 
-export type AgentChatContextAttachment = AgentChatLinearIssueContextAttachment;
+/**
+ * Ephemeral plan-annotation attachment produced by the orchestration plan
+ * panel popover (see `goal.md` §10.7). Lives only in the composer tray; not
+ * persisted to the manifest in v1. The payload carries the anchor (what was
+ * selected) and the user's free-form comment, so the lead sees what was
+ * being commented on when the message is sent.
+ */
+export type AgentChatOrchestrationAnnotationContextAttachment = {
+  type: "orchestration_annotation";
+  item: import("./orchestration").OrchestrationContextItem;
+  source?: "manual";
+  attachedAt?: string;
+};
+
+export type AgentChatContextAttachment =
+  | AgentChatLinearIssueContextAttachment
+  | AgentChatOrchestrationAnnotationContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
@@ -659,7 +675,25 @@ export type AgentChatEventHistorySnapshot = {
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
 export type AgentChatExecutionMode = "focused" | "parallel" | "subagents" | "teams";
-export type AgentChatInteractionMode = "default" | "plan";
+export type AgentChatInteractionMode =
+  | "default"
+  | "plan"
+  | "orchestrator-lead"
+  | "orchestrator-worker"
+  | "orchestrator-validator";
+/**
+ * Optional fields persisted on chat sessions/summaries when the session is part
+ * of an orchestration run. All fields are optional for migration tolerance —
+ * older sessions deserialise cleanly with these absent.
+ */
+export type OrchestrationSessionFields = {
+  orchestrationRunId?: string;
+  orchestrationRole?: import("./orchestration").OrchestrationRole;
+  orchestrationParentSessionId?: string;
+  orchestrationTag?: string;
+  orchestrationStepId?: string;
+  orchestrationBundlePath?: string;
+};
 export type AgentChatIdentityKey = "cto" | `agent:${string}`;
 export type AgentChatSurface = "work" | "automation" | "mission";
 export type AgentChatCursorConfigValue = string | boolean | number;
@@ -689,7 +723,13 @@ export type AgentChatCursorModeSnapshot = {
   configOptions?: AgentChatCursorConfigOption[];
 };
 export type PendingInputSource = "claude" | "codex" | "cursor" | "droid" | "opencode" | "mission" | "ade";
-export type PendingInputKind = "approval" | "question" | "structured_question" | "permissions" | "plan_approval";
+export type PendingInputKind =
+  | "approval"
+  | "question"
+  | "structured_question"
+  | "permissions"
+  | "plan_approval"
+  | "model_selection";
 
 export type PendingInputOption = {
   label: string;
@@ -776,7 +816,7 @@ export type AgentChatSession = {
   requestedCwd?: string | null;
   createdAt: string;
   lastActivityAt: string;
-};
+} & OrchestrationSessionFields;
 
 export type AgentChatSessionSummary = {
   sessionId: string;
@@ -825,7 +865,7 @@ export type AgentChatSessionSummary = {
   pendingInputItemId?: string | null;
   threadId?: string;
   requestedCwd?: string | null;
-};
+} & OrchestrationSessionFields;
 
 export type AgentChatTranscriptEntry = {
   role: "user" | "assistant";
@@ -1071,6 +1111,14 @@ export type AgentChatCreateArgs = {
   openInUi?: boolean;
   requestedCwd?: string;
   runtimeMode?: AgentChatRuntimeMode;
+  goal?: string | null;
+  // Orchestration-mode fields — set when spawning into an orchestration run.
+  orchestrationRunId?: string;
+  orchestrationRole?: import("./orchestration").OrchestrationRole;
+  orchestrationParentSessionId?: string;
+  orchestrationTag?: string;
+  orchestrationStepId?: string;
+  orchestrationBundlePath?: string;
 };
 
 export type AgentChatRuntimeMode = "interactive" | "print";

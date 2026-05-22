@@ -43,6 +43,14 @@ export type ModelPickerProps = {
   fastModeActive?: boolean;
   onFastModeToggle?: (next: boolean) => void;
   fastModeSupported?: boolean;
+  /**
+   * When invoked from a `model_selection` pending-input slot
+   * (see `goal.md` §10.9), hide permission-related rail/picker rows. The
+   * orchestrator forces the permission tier server-side (§12), so the user
+   * should only choose model + fast-mode + reasoning. Forwarded to
+   * {@link ModelPickerContent} via the `hidePermissionRail` prop.
+   */
+  hidePermissionRail?: boolean;
   className?: string;
   triggerClassName?: string;
 };
@@ -63,6 +71,7 @@ export const ModelPicker = memo(function ModelPicker({
   fastModeActive = false,
   onFastModeToggle,
   fastModeSupported,
+  hidePermissionRail = false,
   className,
   triggerClassName,
 }: ModelPickerProps) {
@@ -271,6 +280,7 @@ export const ModelPicker = memo(function ModelPicker({
                 onRequestClose={handleRequestClose}
                 onProviderRailSelect={handleProviderRailSelect}
                 refreshingProvider={refreshingProvider}
+                hidePermissionRail={hidePermissionRail}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />
             ) : null}

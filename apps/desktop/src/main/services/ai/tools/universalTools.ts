@@ -160,8 +160,17 @@ function compileSandbox(config: WorkerSandboxConfig): CompiledSandbox {
 }
 
 const WRITE_COMMAND_RE = /(?:>|>>|\btee\b|\bcp\s|\bmv\s|\brm\s|\bwrite\b|\bedit\b)/;
-const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i)\b|>>?|tee\b/i;
+const MUTATING_BASH_RE = /\b(?:rm|mv|cp|mkdir|touch|chmod|chown|patch|install|uninstall|add|remove|upgrade|apply|commit|rebase|merge|reset|checkout|switch|restore|sed\s+-i|perl\s+-i|ln\s+(?!-s))\b|>>?|tee\b/i;
 const MUTATING_CMD_RE = /\b(?:copy|xcopy|robocopy|move|del|erase|rd|rmdir|md|mkdir|ren|rename)\b|>>?|tee\b/i;
+/**
+ * Interpreters that can stage filesystem writes through a `-c` / `-e` flag.
+ * Used by the orchestration sandbox to force path-inspection on commands like
+ *   python -c "open('/etc/passwd', 'w')"
+ *   node -e "require('fs').writeFileSync('manifest.json', '')"
+ * `perl` already has its own `perl -i` match in `MUTATING_BASH_RE`; the
+ * negative lookahead here keeps us from double-matching that path.
+ */
+const INTERPRETER_RE = /\b(?:python3?|node|ruby|perl(?!\s+-i))\b/i;
 
 type PathAccessMode = "read" | "write" | "unknown";
 type PathReference = {
@@ -806,7 +815,30 @@ function bashCommandLikelyMutates(
   powerShellInspection?: PowerShellInspection,
 ): boolean {
   const inspection = powerShellInspection ?? inspectPowerShellInvocations(command, cwd);
-  return inspection.mutates || !!inspection.blockedReason || MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command);
+  if (inspection.mutates || !!inspection.blockedReason) return true;
+  if (MUTATING_BASH_RE.test(command) || MUTATING_CMD_RE.test(command) || WRITE_COMMAND_RE.test(command)) {
+    return true;
+  }
+  // Interpreter `-c`/`-e` invocations can stage writes through their script
+  // payload. Treat them as mutating whenever the payload contains a write-y
+  // builtin (open(...,"w"), writeFile, File.open(...,"w"), File.write, etc).
+  if (INTERPRETER_RE.test(command) && /-[ce]\b/.test(command)) {
+    if (/\b(?:open|writeFile|writeFileSync|appendFile|appendFileSync|truncate|copyFile|rename|unlink|rmdir|mkdir|chmod|chown|symlink|link)\b/.test(command)) {
+      return true;
+    }
+    if (/File\.(?:open|write|delete|rename|new)\b/.test(command)) return true;
+  }
+  return false;
+}
+
+/**
+ * Heuristic check whether a command is an interpreter invocation that includes
+ * a script payload (i.e. would bypass argv-based path inspection). Exported
+ * for use by the orchestration worker hardening in checkWorkerSandbox.
+ */
+export function commandUsesInterpreterPayload(command: string): boolean {
+  if (!INTERPRETER_RE.test(command)) return false;
+  return /-[ce]\b/.test(command);
 }
 
 function resolveAllowedWriteRoots(cwd: string, sandboxConfig?: WorkerSandboxConfig, pathApi: SandboxPathApi = getSandboxPathApi(cwd)): string[] {
