@@ -574,25 +574,8 @@ export function createGitOperationsService({
     return isRecord(parsed) ? parsed : {};
   }
 
-  function isSucceededHeadChange(operation: OperationRecord): operation is OperationRecord & {
-    preHeadSha: string;
-    postHeadSha: string;
-  } {
-    return (
-      operation.status === "succeeded" &&
-      (operation.kind.startsWith("git_") || operation.kind.startsWith("git.")) &&
-      typeof operation.preHeadSha === "string" &&
-      operation.preHeadSha.length > 0 &&
-      typeof operation.postHeadSha === "string" &&
-      operation.postHeadSha.length > 0 &&
-      operation.preHeadSha !== operation.postHeadSha
-    );
-  }
-
   function listHeadChanges(laneId: string): Array<OperationRecord & { preHeadSha: string; postHeadSha: string }> {
-    return operationService
-      .list({ laneId, limit: 100 })
-      .filter(isSucceededHeadChange);
+    return operationService.listHeadChanges({ laneId, limit: 100 });
   }
 
   function getLatestUndoableHeadChange(laneId: string): OperationRecord & {

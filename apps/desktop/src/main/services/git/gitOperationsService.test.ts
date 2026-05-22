@@ -23,6 +23,7 @@ function createTestGitOperationsService(
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
   const mockList = vi.fn().mockReturnValue([]);
+  const mockListHeadChanges = vi.fn().mockReturnValue([]);
   const mockInvalidateListCache = vi.fn();
   const mockLogger = {
     info: vi.fn(),
@@ -45,6 +46,7 @@ function createTestGitOperationsService(
       start: mockStart,
       finish: mockFinish,
       list: mockList,
+      listHeadChanges: mockListHeadChanges,
     } as any,
     projectConfigService: {
       get: () => ({ effective: { ai: {} } }),
@@ -62,6 +64,7 @@ function createTestGitOperationsService(
     mockStart,
     mockFinish,
     mockList,
+    mockListHeadChanges,
     mockInvalidateListCache,
     mockLogger,
   };
@@ -281,8 +284,8 @@ describe("gitOperationsService undo and redo head changes", () => {
       .mockResolvedValueOnce("after")
       .mockResolvedValueOnce("before");
     mockGit.runGitOrThrow.mockResolvedValue(undefined);
-    const { service, mockStart, mockList } = createTestGitOperationsService();
-    mockList.mockReturnValue([
+    const { service, mockStart, mockList, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
       {
         id: "op-pick",
         laneId: "lane-1",
@@ -299,7 +302,8 @@ describe("gitOperationsService undo and redo head changes", () => {
 
     await service.undoLastHeadChange({ laneId: "lane-1" });
 
-    expect(mockList).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
+    expect(mockListHeadChanges).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
+    expect(mockList).not.toHaveBeenCalled();
     expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
       ["reset", "--hard", "before"],
       { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
@@ -322,8 +326,8 @@ describe("gitOperationsService undo and redo head changes", () => {
       .mockResolvedValueOnce("before")
       .mockResolvedValueOnce("after");
     mockGit.runGitOrThrow.mockResolvedValue(undefined);
-    const { service, mockList } = createTestGitOperationsService();
-    mockList.mockReturnValue([
+    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
       {
         id: "op-undo",
         laneId: "lane-1",
@@ -347,8 +351,8 @@ describe("gitOperationsService undo and redo head changes", () => {
   });
 
   it("does not undo an already-undone head change through the undo command", async () => {
-    const { service, mockList } = createTestGitOperationsService();
-    mockList.mockReturnValue([
+    const { service, mockListHeadChanges } = createTestGitOperationsService();
+    mockListHeadChanges.mockReturnValue([
       {
         id: "op-undo",
         laneId: "lane-1",
