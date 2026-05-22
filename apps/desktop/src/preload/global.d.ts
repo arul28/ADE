@@ -259,6 +259,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
   GitGenerateCommitMessageArgs,
@@ -270,7 +271,10 @@ import type {
   BranchPullRequest,
   GitFileActionArgs,
   GitBatchFileActionArgs,
+  GitHeadChangeActionArgs,
+  GitPullArgs,
   GitPushArgs,
+  GitResetCommitArgs,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -1858,6 +1862,8 @@ declare global {
         getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
         revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
         cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
+        createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;
+        resetToCommit: (args: GitResetCommitArgs) => Promise<GitActionResult>;
         stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
         stashList: (args: { laneId: string }) => Promise<GitStashSummary[]>;
         stashApply: (args: GitStashRefArgs) => Promise<GitActionResult>;
@@ -1865,7 +1871,9 @@ declare global {
         stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashClear: (args: { laneId: string }) => Promise<GitActionResult>;
         fetch: (args: { laneId: string }) => Promise<GitActionResult>;
-        pull: (args: { laneId: string }) => Promise<GitActionResult>;
+        pull: (args: GitPullArgs) => Promise<GitActionResult>;
+        undoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
+        redoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
         getSyncStatus: (args: {
           laneId: string;
         }) => Promise<GitUpstreamSyncStatus>;

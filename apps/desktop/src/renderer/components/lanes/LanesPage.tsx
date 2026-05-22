@@ -394,6 +394,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       sessionId: p.get("sessionId"),
       inspectorTab: p.get("inspectorTab"),
       focus: p.get("focus"),
+      commitSha: p.get("commitSha"),
       runtimePlacement: p.get("runtimePlacement"),
     };
   }, [location.search]);
@@ -536,6 +537,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   } | null>(null);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
+  const consumedCommitDeepLinkSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
     logRendererDebugEvent("renderer.lanes.page_mount");
@@ -2245,6 +2247,67 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     deletingLaneIds,
     selectLane,
     setLaneInspectorTab,
+  ]);
+
+  useEffect(() => {
+    if (!active) return;
+    if (urlLaneDeeplinks.action) return;
+    if (urlLaneDeeplinks.laneIdsRaw) return;
+
+    const laneId = urlLaneDeeplinks.laneId?.trim();
+    const commitSha = urlLaneDeeplinks.commitSha?.trim();
+    if (!laneId || !commitSha) {
+      consumedCommitDeepLinkSignatureRef.current = null;
+      return;
+    }
+    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
+
+    const signature = `${laneId}:${commitSha}`;
+    if (consumedCommitDeepLinkSignatureRef.current === signature) return;
+    consumedCommitDeepLinkSignatureRef.current = signature;
+
+    selectLane(laneId);
+    setActiveLaneIds((prev) => mergeUnique([laneId], prev));
+    setExpandedGitActionsLaneId(laneId);
+
+    let cancelled = false;
+    void window.ade.git
+      .listRecentCommits({ laneId, limit: 500 })
+      .then((rows) => {
+        if (cancelled) return;
+        const requested = commitSha.toLowerCase();
+        const commit = rows.find(
+          (row) =>
+            row.sha.toLowerCase() === requested ||
+            row.shortSha.toLowerCase() === requested ||
+            row.sha.toLowerCase().startsWith(requested),
+        );
+        if (!commit) return;
+        setLanePaneDetails((prev) => ({
+          ...prev,
+          [laneId]: {
+            selectedFilePath: null,
+            selectedFileMode: null,
+            selectedCommit: commit,
+          },
+        }));
+        setPulsingLaneId(laneId);
+      })
+      .catch(() => {
+        if (!cancelled) consumedCommitDeepLinkSignatureRef.current = null;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    active,
+    deletingLaneIds,
+    lanesById,
+    selectLane,
+    urlLaneDeeplinks.action,
+    urlLaneDeeplinks.commitSha,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.laneIdsRaw,
   ]);
 
   useEffect(() => {

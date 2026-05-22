@@ -1,4 +1,6 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import * as Popover from "@radix-ui/react-popover";
 import {
   Graph,
   ListBullets,
@@ -12,17 +14,23 @@ import {
   Clock,
   Export,
 } from "@phosphor-icons/react";
-import type { ExportHistoryResult } from "../../../shared/types";
+import type { ExportHistoryResult, GitConflictState } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
-import type { ViewMode, TimeRange } from "./timelineTypes";
+import type { TimelineColumn, ViewMode, TimeRange } from "./timelineTypes";
 import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
 import type { ScopeLevel } from "./useTimelineStore";
+import {
+  buildHistoryLaneActions,
+  groupHistoryLaneActions,
+  runHistoryLaneAction,
+  type HistoryLaneActionId,
+} from "./historyLaneActions";
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -73,7 +81,11 @@ function isHistoryExportResult(value: unknown): value is ExportHistoryResult {
   );
 }
 
-export function TimelineToolbar() {
+export function TimelineToolbar({
+  onCommitGitActionComplete,
+}: {
+  onCommitGitActionComplete?: () => void;
+} = {}) {
   const lanes = useAppStore((s) => s.lanes ?? []);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   /* ── Store ─────────────────────────────────────────────────── */
@@ -88,6 +100,7 @@ export function TimelineToolbar() {
   const uniqueCategories = useTimelineStore((s) => s.uniqueCategories);
   const visibility = useTimelineStore((s) => s.visibility);
   const scope = useTimelineStore((s) => s.scope);
+  const columns = useTimelineStore((s) => s.columns);
   const setScope = useTimelineStore((s) => s.setScope);
   const setSearchQuery = useTimelineStore((s) => s.setSearchQuery);
   const setCategoryFilter = useTimelineStore((s) => s.setCategoryFilter);
@@ -169,6 +182,7 @@ export function TimelineToolbar() {
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
+  const focusLane = lanes.find((lane) => lane.id === focusLaneId) ?? null;
 
   return (
     <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
@@ -193,18 +207,25 @@ export function TimelineToolbar() {
           ))}
         </div>
         {surface === "commits" ? (
-          <select
-            value={focusLaneId ?? ""}
-            onChange={(e) => setFocusLaneId(e.target.value || null)}
-            className="h-7 max-w-[220px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
-          >
-            <option value="">Select lane…</option>
-            {lanes.map((lane) => (
-              <option key={lane.id} value={lane.id}>
-                {lane.name}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              value={focusLaneId ?? ""}
+              onChange={(e) => setFocusLaneId(e.target.value || null)}
+              className="h-7 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
+            >
+              <option value="">Select lane…</option>
+              {lanes.map((lane) => (
+                <option key={lane.id} value={lane.id}>
+                  {lane.name}
+                </option>
+              ))}
+            </select>
+            <LaneGitActionsMenu
+              laneId={focusLaneId}
+              laneName={focusLane?.name ?? null}
+              onComplete={onCommitGitActionComplete}
+            />
+          </>
         ) : null}
       </div>
 
@@ -301,17 +322,7 @@ export function TimelineToolbar() {
           Export
         </button>
 
-        <button
-          type="button"
-          title="Column settings"
-          onClick={() => toggleColumn("")}
-          className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
-            "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
-          )}
-        >
-          <GearSix size={14} />
-        </button>
+        <ColumnSettingsMenu columns={columns} onToggleColumn={toggleColumn} />
       </div>
       ) : null}
 
@@ -474,5 +485,206 @@ export function TimelineToolbar() {
       </div>
       ) : null}
     </div>
+  );
+}
+
+function LaneGitActionsMenu({
+  laneId,
+  laneName,
+  onComplete,
+}: {
+  laneId: string | null;
+  laneName: string | null;
+  onComplete?: () => void;
+}) {
+  const navigate = useNavigate();
+  const [runningAction, setRunningAction] = useState<HistoryLaneActionId | null>(null);
+  const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId), conflictState });
+
+  const refreshConflictState = useCallback(async () => {
+    if (!laneId) {
+      setConflictState(null);
+      return;
+    }
+    try {
+      setConflictState(await window.ade.git.getConflictState(laneId));
+    } catch {
+      setConflictState(null);
+    }
+  }, [laneId]);
+
+  useEffect(() => {
+    void refreshConflictState();
+  }, [refreshConflictState]);
+
+  const handleComplete = useCallback(() => {
+    onComplete?.();
+    void refreshConflictState();
+  }, [onComplete, refreshConflictState]);
+
+  const run = useCallback(
+    async (actionId: HistoryLaneActionId) => {
+      if (!laneId) return;
+      setRunningAction(actionId);
+      setError(null);
+      await runHistoryLaneAction({
+        actionId,
+        laneId,
+        laneName,
+        onNotice: (message) => {
+          setNotice(message);
+          window.setTimeout(() => setNotice(null), 3500);
+        },
+        onError: (message) => {
+          setError(message);
+          window.setTimeout(() => setError(null), 5000);
+        },
+        onComplete: handleComplete,
+        navigate: (path) => navigate(path),
+      });
+      setRunningAction(null);
+    },
+    [handleComplete, laneId, laneName, navigate],
+  );
+  const actionGroups = groupHistoryLaneActions(actions);
+
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          disabled={!laneId}
+          title={laneId ? "Lane git actions" : "Select a lane first"}
+          className={cn(
+            "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2",
+            "border-white/[0.06] bg-white/[0.03] font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
+            "text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40",
+          )}
+        >
+          <GitBranch size={12} />
+          Git actions
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 outline-none"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+            {actionGroups.map((group, groupIndex) => (
+              <div
+                key={group.id}
+                className={cn(groupIndex > 0 ? "border-t border-white/[0.06] pt-1" : undefined)}
+              >
+                <div className="px-2 py-1 font-sans text-[10px] font-semibold text-muted-fg">
+                  {group.label}
+                </div>
+                {group.actions.map((action) => {
+                  const busy = runningAction === action.id;
+                  return (
+                    <button
+                      key={action.id}
+                      type="button"
+                      disabled={action.disabled || runningAction != null}
+                      title={action.disabledReason}
+                      onClick={() => void run(action.id)}
+                      className={cn(
+                        "flex w-full flex-col rounded px-2 py-1.5 text-left outline-none transition-colors",
+                        "hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-40",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "font-sans text-[12px] text-fg",
+                          action.destructive ? "text-red-200" : undefined,
+                        )}
+                      >
+                        {busy ? "Running…" : action.label}
+                      </span>
+                      <span className="font-mono text-[10px] text-muted-fg">
+                        {action.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+            {notice ? (
+              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-accent" title={notice}>
+                {notice}
+              </div>
+            ) : null}
+            {error ? (
+              <div className="truncate border-t border-white/[0.06] px-2 py-1 font-mono text-[10px] text-red-300" title={error}>
+                {error}
+              </div>
+            ) : null}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
+function ColumnSettingsMenu({
+  columns,
+  onToggleColumn,
+}: {
+  columns: Array<{ id: TimelineColumn; label: string; visible: boolean }>;
+  onToggleColumn: (columnId: TimelineColumn) => void;
+}) {
+  return (
+    <Popover.Root>
+      <Popover.Trigger asChild>
+        <button
+          type="button"
+          title="Column settings"
+          className={cn(
+            "flex h-7 w-7 items-center justify-center rounded-md border border-transparent",
+            "text-[var(--color-muted-fg)] transition-colors hover:bg-[var(--color-surface)]/60 hover:text-[var(--color-fg)]",
+          )}
+        >
+          <GearSix size={14} />
+        </button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="end"
+          sideOffset={6}
+          collisionPadding={8}
+          className="z-50 outline-none"
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
+            <div className="px-2 py-1 font-sans text-[11px] font-medium text-muted-fg">
+              Columns
+            </div>
+            {columns.map((column) => (
+              <label
+                key={column.id}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5",
+                  "font-sans text-[12px] text-fg hover:bg-white/[0.04]",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={column.visible}
+                  onChange={() => onToggleColumn(column.id)}
+                  className="h-3 w-3 accent-[var(--color-accent)]"
+                />
+                <span>{column.label}</span>
+              </label>
+            ))}
+          </div>
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

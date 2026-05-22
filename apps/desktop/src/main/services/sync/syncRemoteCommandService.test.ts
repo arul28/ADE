@@ -64,6 +64,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.getCommitMessage",
   "git.revertCommit",
   "git.cherryPickCommit",
+  "git.createTag",
+  "git.resetToCommit",
   "git.stashPush",
   "git.stashList",
   "git.stashApply",
@@ -71,6 +73,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.stashDrop",
   "git.fetch",
   "git.pull",
+  "git.undoLastHeadChange",
+  "git.redoLastHeadChange",
   "git.getSyncStatus",
   "git.sync",
   "git.push",
@@ -382,6 +386,8 @@ function createMockGitService() {
     getCommitMessage: vi.fn().mockResolvedValue({ message: "msg" }),
     revertCommit: vi.fn().mockResolvedValue(undefined),
     cherryPickCommit: vi.fn().mockResolvedValue(undefined),
+    createTag: vi.fn().mockResolvedValue(undefined),
+    resetToCommit: vi.fn().mockResolvedValue(undefined),
     stashPush: vi.fn().mockResolvedValue(undefined),
     listStashes: vi.fn().mockResolvedValue([]),
     stashApply: vi.fn().mockResolvedValue(undefined),
@@ -389,6 +395,8 @@ function createMockGitService() {
     stashDrop: vi.fn().mockResolvedValue(undefined),
     fetch: vi.fn().mockResolvedValue(undefined),
     pull: vi.fn().mockResolvedValue(undefined),
+    undoLastHeadChange: vi.fn().mockResolvedValue(undefined),
+    redoLastHeadChange: vi.fn().mockResolvedValue(undefined),
     getSyncStatus: vi.fn().mockResolvedValue(null),
     sync: vi.fn().mockResolvedValue(undefined),
     push: vi.fn().mockResolvedValue(undefined),
@@ -1190,6 +1198,34 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
+    it("git.pull parses optional pull mode", async () => {
+      await service.execute(makePayload("git.pull", {
+        laneId: "lane-1",
+        mode: "rebase",
+      }));
+      expect(gitService.pull).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        mode: "rebase",
+      });
+    });
+
+    it("git.pull rejects unknown pull modes", async () => {
+      await expect(service.execute(makePayload("git.pull", {
+        laneId: "lane-1",
+        mode: "squash",
+      }))).rejects.toThrow("git.pull mode must be ff-only, rebase, or merge.");
+    });
+
+    it("git undo and redo head-change actions require a lane", async () => {
+      await service.execute(makePayload("git.undoLastHeadChange", { laneId: "lane-1" }));
+      await service.execute(makePayload("git.redoLastHeadChange", { laneId: "lane-1" }));
+
+      expect(gitService.undoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(gitService.redoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
+      await expect(service.execute(makePayload("git.undoLastHeadChange", {})))
+        .rejects.toThrow("git.undoLastHeadChange requires laneId.");
+    });
+
     it("git.stageFile requires laneId and path", async () => {
       await service.execute(makePayload("git.stageFile", {
         laneId: "lane-1",
@@ -1242,6 +1278,40 @@ describe("createSyncRemoteCommandService", () => {
     it("git.revertCommit throws when commitSha is missing", async () => {
       await expect(service.execute(makePayload("git.revertCommit", { laneId: "lane-1" })))
         .rejects.toThrow("git.revertCommit requires commitSha.");
+    });
+
+    it("git.createTag parses commit tag arguments", async () => {
+      await service.execute(makePayload("git.createTag", {
+        laneId: "lane-1",
+        commitSha: "abc123",
+        tagName: "v1.2.3",
+        message: "release",
+      }));
+      expect(gitService.createTag).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        commitSha: "abc123",
+        tagName: "v1.2.3",
+        message: "release",
+      });
+    });
+
+    it("git.resetToCommit parses and validates reset modes", async () => {
+      await service.execute(makePayload("git.resetToCommit", {
+        laneId: "lane-1",
+        commitSha: "abc123",
+        mode: "mixed",
+      }));
+      expect(gitService.resetToCommit).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        commitSha: "abc123",
+        mode: "mixed",
+      });
+
+      await expect(service.execute(makePayload("git.resetToCommit", {
+        laneId: "lane-1",
+        commitSha: "abc123",
+        mode: "merge",
+      }))).rejects.toThrow("git.resetToCommit mode must be soft, mixed, or hard.");
     });
 
     it("git.sync parses optional mode and baseRef", async () => {

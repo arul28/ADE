@@ -1640,6 +1640,46 @@ describe("ADE CLI", () => {
       },
     });
 
+    const pull = buildCliPlan([
+      "git",
+      "pull",
+      "--lane",
+      "lane-1",
+      "--rebase",
+    ]);
+    expect(pull.kind).toBe("execute");
+    if (pull.kind !== "execute") return;
+    expect(pull.steps[0]?.params).toEqual({
+      name: "git_pull",
+      arguments: { laneId: "lane-1", mode: "rebase" },
+    });
+
+    const undo = buildCliPlan([
+      "git",
+      "undo",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(undo.kind).toBe("execute");
+    if (undo.kind !== "execute") return;
+    expect(undo.steps[0]?.params).toEqual({
+      name: "git_undo_last_head_change",
+      arguments: { laneId: "lane-1" },
+    });
+
+    const redo = buildCliPlan([
+      "git",
+      "redo",
+      "--lane",
+      "lane-1",
+    ]);
+    expect(redo.kind).toBe("execute");
+    if (redo.kind !== "execute") return;
+    expect(redo.steps[0]?.params).toEqual({
+      name: "git_redo_last_head_change",
+      arguments: { laneId: "lane-1" },
+    });
+
     const conflictShow = buildCliPlan([
       "git",
       "conflict",

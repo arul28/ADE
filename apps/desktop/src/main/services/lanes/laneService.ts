@@ -2496,7 +2496,8 @@ export function createLaneService({
       return links;
     },
 
-    async create({ name, description, parentLaneId, baseBranch, branchName, linearIssue, runtimePlacement }: CreateLaneArgs): Promise<LaneSummary> {
+    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, runtimePlacement }: CreateLaneArgs): Promise<LaneSummary> {
+      const requestedStartPoint = startPoint?.trim() ?? "";
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
         if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
@@ -2509,7 +2510,7 @@ export function createLaneService({
 
         // If we are branching directly from the current primary checkout, ensure
         // it is in sync with remote before using it as the base.
-        if (parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
+        if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
           await runGitOrThrow(["fetch", "--prune"], { cwd: parent.worktree_path, timeoutMs: 60_000 });
           const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
           if (upstreamRes.exitCode === 0) {
@@ -2528,7 +2529,16 @@ export function createLaneService({
           }
         }
         let parentHeadSha: string | null;
-        if (parent.lane_type === "primary") {
+        if (requestedStartPoint) {
+          const result = await runGit(["rev-parse", "--verify", requestedStartPoint], {
+            cwd: parent.worktree_path,
+            timeoutMs: 10_000,
+          });
+          if (result.exitCode !== 0 || !result.stdout.trim().length) {
+            throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+          }
+          parentHeadSha = result.stdout.trim();
+        } else if (parent.lane_type === "primary") {
           const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
           if (result.exitCode !== 0 || !result.stdout.trim().length) {
             throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
@@ -2553,16 +2563,25 @@ export function createLaneService({
       // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
       const trimmedBase = baseBranch?.trim() ?? "";
       const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
-      const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
-      const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
+      const startRef = requestedStartPoint || requestedBaseRef;
+      const headRes = await runGit(
+        requestedStartPoint
+          ? ["rev-parse", "--verify", requestedStartPoint]
+          : ["rev-parse", requestedBaseRef],
+        { cwd: projectRoot, timeoutMs: 10_000 },
+      );
+      if (requestedStartPoint && (headRes.exitCode !== 0 || !headRes.stdout.trim().length)) {
+        throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+      }
+      const resolvedStartPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
         ? headRes.stdout.trim()
-        : requestedBaseRef;
+        : startRef;
 
       return await createWorktreeLane({
         name,
         description,
         baseRef: requestedBaseRef,
-        startPoint,
+        startPoint: resolvedStartPoint,
         parentLaneId: null,
         branchName,
         linearIssue,

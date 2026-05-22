@@ -331,6 +331,29 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "git",
+    action: "createTag",
+    label: "Create tag",
+    description: "Create a lightweight or annotated tag at a commit.",
+    params: [
+      LANE_ID_PARAM,
+      COMMIT_SHA_PARAM,
+      { name: "tagName", type: "string", required: true, description: "Tag name to create." },
+      { name: "message", type: "string", description: "Optional tag annotation message." },
+    ],
+  },
+  {
+    domain: "git",
+    action: "resetToCommit",
+    label: "Reset to commit",
+    description: "Move the lane branch to a commit using soft, mixed, or hard reset.",
+    params: [
+      LANE_ID_PARAM,
+      COMMIT_SHA_PARAM,
+      { name: "mode", type: "string", required: true, description: "Reset mode: soft, mixed, or hard." },
+    ],
+  },
+  {
+    domain: "git",
     action: "fetch",
     label: "Fetch from remote",
     description: "Run `git fetch` for the lane's worktree.",
@@ -341,6 +364,23 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     action: "pull",
     label: "Pull from remote",
     description: "Pull the lane's branch from its upstream tracking branch.",
+    params: [
+      LANE_ID_PARAM,
+      { name: "mode", type: "string", description: "Pull mode: ff-only, rebase, or merge." },
+    ],
+  },
+  {
+    domain: "git",
+    action: "undoLastHeadChange",
+    label: "Undo last head change",
+    description: "Reset the lane back to the pre-HEAD SHA recorded for the latest successful head-changing git operation.",
+    params: [LANE_ID_PARAM],
+  },
+  {
+    domain: "git",
+    action: "redoLastHeadChange",
+    label: "Redo last head change",
+    description: "Restore the post-HEAD SHA recorded by the latest successful git undo operation.",
     params: [LANE_ID_PARAM],
   },
   {

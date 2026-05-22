@@ -22,6 +22,7 @@ function createTestGitOperationsService(
 ) {
   const mockStart = vi.fn().mockReturnValue({ operationId: "op-1" });
   const mockFinish = vi.fn();
+  const mockList = vi.fn().mockReturnValue([]);
   const mockInvalidateListCache = vi.fn();
   const mockLogger = {
     info: vi.fn(),
@@ -43,6 +44,7 @@ function createTestGitOperationsService(
     operationService: {
       start: mockStart,
       finish: mockFinish,
+      list: mockList,
     } as any,
     projectConfigService: {
       get: () => ({ effective: { ai: {} } }),
@@ -59,6 +61,7 @@ function createTestGitOperationsService(
     service,
     mockStart,
     mockFinish,
+    mockList,
     mockInvalidateListCache,
     mockLogger,
   };
@@ -204,6 +207,165 @@ describe("gitOperationsService.getSyncStatus", () => {
       diverged: false,
       recommendedAction: "push",
     });
+  });
+});
+
+describe("gitOperationsService.pull", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("runs the requested pull mode and records it in operation metadata", async () => {
+    mockGit.getHeadSha.mockResolvedValue("abc123");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.pull({ laneId: "lane-1" });
+    await service.pull({ laneId: "lane-1", mode: "rebase" });
+    await service.pull({ laneId: "lane-1", mode: "merge" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["pull", "--ff-only"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["pull", "--rebase"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      3,
+      ["pull", "--no-rebase", "--no-edit"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        laneId: "lane-1",
+        kind: "git_pull",
+        metadata: expect.objectContaining({ reason: "pull_ff_only", mode: "ff-only" }),
+      }),
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ reason: "pull_rebase", mode: "rebase" }),
+      }),
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        metadata: expect.objectContaining({ reason: "pull_merge", mode: "merge" }),
+      }),
+    );
+  });
+
+  it("rejects unknown pull modes before running git", async () => {
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.pull({ laneId: "lane-1", mode: "squash" } as any))
+      .rejects.toThrow("git.pull mode must be ff-only, rebase, or merge.");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+  });
+});
+
+describe("gitOperationsService undo and redo head changes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("undoes the latest recorded head-changing operation with a guarded hard reset", async () => {
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("after")
+      .mockResolvedValueOnce("before");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart, mockList } = createTestGitOperationsService();
+    mockList.mockReturnValue([
+      {
+        id: "op-pick",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_cherry_pick",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "before",
+        postHeadSha: "after",
+        metadataJson: "{}",
+      },
+    ]);
+
+    await service.undoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockList).toHaveBeenCalledWith({ laneId: "lane-1", limit: 100 });
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "before"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_undo_head_change",
+        metadata: expect.objectContaining({
+          undoneOperationId: "op-pick",
+          redoHeadSha: "after",
+          targetHeadSha: "before",
+        }),
+      }),
+    );
+  });
+
+  it("redoes the latest undo operation only when it is still the latest head change", async () => {
+    mockGit.getHeadSha
+      .mockResolvedValueOnce("before")
+      .mockResolvedValueOnce("before")
+      .mockResolvedValueOnce("after");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockList } = createTestGitOperationsService();
+    mockList.mockReturnValue([
+      {
+        id: "op-undo",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_undo_head_change",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "after",
+        postHeadSha: "before",
+        metadataJson: JSON.stringify({ redoHeadSha: "after" }),
+      },
+    ]);
+
+    await service.redoLastHeadChange({ laneId: "lane-1" });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "after"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+  });
+
+  it("does not undo an already-undone head change through the undo command", async () => {
+    const { service, mockList } = createTestGitOperationsService();
+    mockList.mockReturnValue([
+      {
+        id: "op-undo",
+        laneId: "lane-1",
+        laneName: "Lane",
+        kind: "git_undo_head_change",
+        startedAt: "2026-05-22T00:00:00.000Z",
+        endedAt: "2026-05-22T00:00:01.000Z",
+        status: "succeeded",
+        preHeadSha: "after",
+        postHeadSha: "before",
+        metadataJson: JSON.stringify({ redoHeadSha: "after" }),
+      },
+    ]);
+
+    await expect(service.undoLastHeadChange({ laneId: "lane-1" }))
+      .rejects.toThrow("Latest head change is already an undo. Use redo to restore it.");
+    expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
   });
 });
 
@@ -589,6 +751,85 @@ describe("gitOperationsService.commit", () => {
         metadata: expect.objectContaining({ message: "Refs ADE-123: Update git service" }),
       }),
     );
+  });
+});
+
+describe("gitOperationsService commit graph actions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates annotated and lightweight tags at a selected commit", async () => {
+    mockGit.getHeadSha.mockResolvedValue("head");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "v1.2.3",
+      message: "release",
+    });
+    await service.createTag({
+      laneId: "lane-1",
+      commitSha: "def456",
+      tagName: "checkpoint",
+    });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      1,
+      ["tag", "-a", "v1.2.3", "abc123", "-m", "release"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
+      2,
+      ["tag", "checkpoint", "def456"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 30_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_tag_create",
+        metadata: expect.objectContaining({ tagName: "v1.2.3", annotated: true }),
+      }),
+    );
+  });
+
+  it("resets the lane branch to a selected commit with the chosen mode", async () => {
+    mockGit.getHeadSha.mockResolvedValue("head");
+    mockGit.runGitOrThrow.mockResolvedValue(undefined);
+    const { service, mockStart } = createTestGitOperationsService();
+
+    await service.resetToCommit({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      mode: "hard",
+    });
+
+    expect(mockGit.runGitOrThrow).toHaveBeenCalledWith(
+      ["reset", "--hard", "abc123"],
+      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+    );
+    expect(mockStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "git_reset_hard",
+        metadata: expect.objectContaining({ commitSha: "abc123", mode: "hard" }),
+      }),
+    );
+  });
+
+  it("rejects empty or option-like tag names", async () => {
+    const { service } = createTestGitOperationsService();
+
+    await expect(service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "  ",
+    })).rejects.toThrow("Tag name is required");
+    await expect(service.createTag({
+      laneId: "lane-1",
+      commitSha: "abc123",
+      tagName: "-bad",
+    })).rejects.toThrow("Invalid tag name");
   });
 });
 

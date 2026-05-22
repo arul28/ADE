@@ -183,6 +183,7 @@ import type {
   GitCherryPickArgs,
   GitCommitArgs,
   GitCommitSummary,
+  GitCreateTagArgs,
   GitConflictState,
   GitGetCommitMessageArgs,
   GitGenerateCommitMessageArgs,
@@ -196,7 +197,10 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitCheckoutBranchArgs,
+  GitHeadChangeActionArgs,
+  GitPullArgs,
   GitPushArgs,
+  GitResetCommitArgs,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -6589,6 +6593,34 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as GitActionResult;
     },
+    createTag: async (args: GitCreateTagArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "createTag",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitCreateTag, args);
+      clearGitReadCaches();
+      return result as GitActionResult;
+    },
+    resetToCommit: async (
+      args: GitResetCommitArgs,
+    ): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "resetToCommit",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitResetToCommit, args);
+      clearGitReadCaches();
+      return result as GitActionResult;
+    },
     stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
@@ -6677,7 +6709,7 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    pull: async (args: { laneId: string }): Promise<GitActionResult> => {
+    pull: async (args: GitPullArgs): Promise<GitActionResult> => {
       clearGitReadCaches();
       const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
         "git",
@@ -6687,6 +6719,32 @@ contextBridge.exposeInMainWorld("ade", {
       const result = runtime.handled
         ? runtime.result
         : await ipcRenderer.invoke(IPC.gitPull, args);
+      clearGitReadCaches();
+      return result as GitActionResult;
+    },
+    undoLastHeadChange: async (args: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "undoLastHeadChange",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitUndoLastHeadChange, args);
+      clearGitReadCaches();
+      return result as GitActionResult;
+    },
+    redoLastHeadChange: async (args: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+      clearGitReadCaches();
+      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+        "git",
+        "redoLastHeadChange",
+        { args },
+      );
+      const result = runtime.handled
+        ? runtime.result
+        : await ipcRenderer.invoke(IPC.gitRedoLastHeadChange, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },

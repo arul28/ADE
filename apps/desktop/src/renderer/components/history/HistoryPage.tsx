@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { Suspense, useEffect, useCallback, useRef, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock, GitBranch } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
@@ -62,6 +62,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const syncingFromUrlRef = useRef(false);
   const lastWrittenUrlRef = useRef<string>("");
+  const [commitRefreshToken, setCommitRefreshToken] = useState(0);
 
   const events = useTimelineStore((s) => s.events);
   const rawEvents = useTimelineStore((s) => s.rawEvents);
@@ -73,6 +74,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const selectedCommit = useTimelineStore((s) => s.selectedCommit);
   const selectedEventId = useTimelineStore((s) => s.selectedEventId);
   const hoveredLaneId = useTimelineStore((s) => s.hoveredLaneId);
+  const columns = useTimelineStore((s) => s.columns);
   const loading = useTimelineStore((s) => s.loading);
   const error = useTimelineStore((s) => s.error);
   const fetchEvents = useTimelineStore((s) => s.fetchEvents);
@@ -95,6 +97,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     syncingFromUrlRef.current = true;
 
     const surfaceFromUrl = searchParams.get("surface");
+    const requestedSurface =
+      surfaceFromUrl === "activity" || surfaceFromUrl === "commits"
+        ? surfaceFromUrl
+        : null;
+    const cleanedParams = new URLSearchParams(searchParams);
+    let cleanedUrl = false;
+
     if (surfaceFromUrl === "activity" || surfaceFromUrl === "commits") {
       setSurface(surfaceFromUrl);
     }
@@ -113,18 +122,29 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
 
     const eventId = searchParams.get("eventId");
-    if (eventId && eventId !== selectedEventId) {
+    if (eventId && requestedSurface === "commits") {
+      cleanedParams.delete("eventId");
+      cleanedUrl = true;
+    } else if (eventId && eventId !== selectedEventId) {
       setSelectedEventId(eventId);
       setSurface("activity");
     }
 
     const commitSha = searchParams.get("commitSha");
-    if (commitSha && commitSha !== selectedCommitSha) {
+    if (commitSha && requestedSurface === "activity") {
+      cleanedParams.delete("commitSha");
+      cleanedUrl = true;
+    } else if (commitSha && commitSha !== selectedCommitSha) {
       setSelectedCommitSha(commitSha);
       setSurface("commits");
       if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
         setFocusLaneId(laneFromUrl);
       }
+    }
+
+    if (cleanedUrl) {
+      lastWrittenUrlRef.current = cleanedParams.toString();
+      setSearchParams(cleanedParams, { replace: true });
     }
 
     queueMicrotask(() => {
@@ -142,6 +162,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     setSurface,
     setSelectedEventId,
     setSelectedCommitSha,
+    setSearchParams,
   ]);
 
   useEffect(() => {
@@ -197,6 +218,14 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       if ((next.get("laneId") ?? "") !== laneParam) {
         if (laneParam) next.set("laneId", laneParam);
         else next.delete("laneId");
+        changed = true;
+      }
+      if (surface === "activity" && next.has("commitSha")) {
+        next.delete("commitSha");
+        changed = true;
+      }
+      if (surface === "commits" && next.has("eventId")) {
+        next.delete("eventId");
         changed = true;
       }
       if (!changed) return prev;
@@ -300,7 +329,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
         active={active}
-        refreshToken={rawEvents.length}
+        refreshToken={rawEvents.length + commitRefreshToken}
       />
     );
   } else if (loading && events.length === 0) {
@@ -319,8 +348,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     timelineBody = (
       <EmptyState
         icon={Clock}
-        title="No events yet"
-        description="Operations will appear here as you work"
+        title={rawEvents.length > 0 ? "No matching events" : "No events yet"}
+        description={
+          rawEvents.length > 0
+            ? "The current scope and filters hide all recorded activity"
+            : "Operations will appear here as you work"
+        }
       />
     );
   } else {
@@ -344,6 +377,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         timelineBody = (
           <TimelineListView
             events={events}
+            columns={columns}
             selectedEventId={selectedEventId}
             onSelectEvent={handleSelectEvent}
           />
@@ -353,6 +387,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         timelineBody = (
           <TimelineCompactView
             events={events}
+            columns={columns}
             selectedEventId={selectedEventId}
             onSelectEvent={handleSelectEvent}
           />
@@ -392,7 +427,9 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       bodyClassName: "flex flex-col",
       children: (
         <div className="flex min-h-0 flex-1 flex-col">
-          <TimelineToolbar />
+          <TimelineToolbar
+            onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
+          />
           {surface === "commits" ? (
             <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5">
               <GitBranch size={14} className="shrink-0 text-accent" weight="bold" />

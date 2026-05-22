@@ -10,6 +10,7 @@ import type {
   LaneVisibility,
   TimelineEvent,
   TimelineFilters,
+  TimelineColumn,
   TimeRange,
   ViewMode,
   WIPNode,
@@ -17,8 +18,26 @@ import type {
 import { DEFAULT_COLUMNS } from "./timelineTypes";
 import { getEventMeta } from "./eventTaxonomy";
 import type { EventCategory, EventImportance } from "./eventTaxonomy";
+import {
+  fetchSupplementalTimelineRecords,
+  sortTimelineRecords,
+} from "./historyActivitySources";
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+function metadataDisplayLabel(
+  metadata: Record<string, unknown> | null,
+  fallback: string,
+): string {
+  if (!metadata) return fallback;
+  for (const key of ["eventLabel", "title", "summary", "message", "subject"]) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return fallback;
+}
 
 /** Enrich a raw OperationRecord into a TimelineEvent with resolved metadata. */
 export function enrichEvent(op: OperationRecord): TimelineEvent {
@@ -38,7 +57,7 @@ export function enrichEvent(op: OperationRecord): TimelineEvent {
   }
   return {
     ...op,
-    label: meta.label,
+    label: metadataDisplayLabel(parsed, meta.label),
     category: meta.category,
     iconName: meta.iconName,
     color: meta.categoryMeta.color,
@@ -77,7 +96,7 @@ function passesFilters(
   if (event.laneId && visibility.hiddenLaneIds.has(event.laneId)) return false;
 
   // Lane filter
-  if (filters.laneIds.length > 0 && event.laneId && !filters.laneIds.includes(event.laneId)) return false;
+  if (filters.laneIds.length > 0 && (!event.laneId || !filters.laneIds.includes(event.laneId))) return false;
 
   // Category filter
   if (filters.categories.length > 0 && !filters.categories.includes(event.category)) return false;
@@ -105,7 +124,12 @@ function passesFilters(
   // Search query
   if (filters.searchQuery) {
     const q = filters.searchQuery.toLowerCase();
-    const haystack = `${event.label} ${event.kind} ${event.laneName ?? ""} ${event.status}`.toLowerCase();
+    const metadataText = event.metadata
+      ? Object.values(event.metadata)
+          .filter((value) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+          .join(" ")
+      : "";
+    const haystack = `${event.label} ${event.kind} ${event.laneName ?? ""} ${event.status} ${metadataText}`.toLowerCase();
     if (!haystack.includes(q)) return false;
   }
 
@@ -172,7 +196,7 @@ export type TimelineStore = {
   clearSolo: () => void;
 
   // Column actions
-  toggleColumn: (columnId: string) => void;
+  toggleColumn: (columnId: TimelineColumn) => void;
 
   // Data actions
   fetchEvents: (opts?: { laneId?: string; kind?: string; limit?: number; silent?: boolean }) => Promise<void>;
@@ -258,7 +282,15 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     uniqueCategories: [],
 
     // ── View actions ────────────────────────────────────────
-    setSurface: (surface) => set({ surface }),
+    setSurface: (surface) =>
+      set((state) => ({
+        surface,
+        ...(surface === "activity"
+          ? { selectedCommit: null, selectedCommitSha: null }
+          : state.selectedEventId
+            ? { selectedEventId: null }
+            : {}),
+      })),
     setFocusLaneId: (laneId) =>
       set({
         focusLaneId: laneId,
@@ -346,12 +378,23 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
         set({ error: null });
       }
       try {
-        const raw = await window.ade.history.listOperations({
-          laneId: opts?.laneId,
-          kind: opts?.kind,
-          limit: opts?.limit ?? 500,
-        });
-        set({ rawEvents: raw, loading: false });
+        const limit = opts?.limit ?? 500;
+        const [raw, supplemental] = await Promise.all([
+          window.ade.history.listOperations({
+            laneId: opts?.laneId,
+            kind: opts?.kind,
+            limit,
+          }),
+          opts?.kind ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit),
+        ]);
+        const scopedSupplemental = opts?.laneId
+          ? supplemental.filter((record) => record.laneId === opts.laneId)
+          : supplemental;
+        const combined = sortTimelineRecords([
+          ...raw,
+          ...scopedSupplemental,
+        ]).slice(0, limit);
+        set({ rawEvents: combined, loading: false });
         refilter();
       } catch (err) {
         set({

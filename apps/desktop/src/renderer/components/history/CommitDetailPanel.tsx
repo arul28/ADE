@@ -12,6 +12,7 @@ import {
 import type { GitCommitSummary } from "../../../shared/types";
 import type { TimelineEvent } from "./timelineTypes";
 import { Button } from "../ui/Button";
+import { cn } from "../ui/cn";
 import { formatDate } from "../../lib/format";
 import { buildCommitContextActions, runHistoryGitAction } from "./historyGitActions";
 
@@ -20,7 +21,14 @@ function shortSha(sha: string): string {
 }
 
 function copyText(text: string) {
-  void navigator.clipboard.writeText(text);
+  void window.ade.app.writeClipboardText(text).catch(() => {
+    void navigator.clipboard?.writeText(text).catch(() => {});
+  });
+}
+
+function stripIpcError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
 }
 
 type CommitDetailPanelProps = {
@@ -44,6 +52,9 @@ export function CommitDetailPanel({
   const [files, setFiles] = useState<string[]>([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [metaExpanded, setMetaExpanded] = useState(false);
+  const [headSha, setHeadSha] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const [resolvedCommit, setResolvedCommit] = useState<GitCommitSummary | null>(commit);
 
@@ -66,6 +77,25 @@ export function CommitDetailPanel({
       cancelled = true;
     };
   }, [laneId, commit]);
+
+  useEffect(() => {
+    if (!laneId || !resolvedCommit?.sha) {
+      setHeadSha(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ade.git
+      .listRecentCommits({ laneId, limit: 1 })
+      .then((rows) => {
+        if (!cancelled) setHeadSha(rows[0]?.sha ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setHeadSha(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [laneId, resolvedCommit?.sha]);
 
   useEffect(() => {
     const activeCommit = resolvedCommit;
@@ -105,12 +135,32 @@ export function CommitDetailPanel({
       resolvedCommit
         ? buildCommitContextActions({
             commit: resolvedCommit,
-            isHead: false,
-            hasWorktree: Boolean(laneId && resolvedCommit?.subject),
+            isHead: headSha === resolvedCommit.sha,
+            hasWorktree: Boolean(laneId),
           })
         : [],
-    [resolvedCommit, laneId],
+    [headSha, resolvedCommit, laneId],
   );
+
+  const runAction = (actionId: ReturnType<typeof buildCommitContextActions>[number]["id"]) => {
+    if (!laneId || !resolvedCommit) return;
+    setActionNotice(null);
+    setActionError(null);
+    void runHistoryGitAction({
+      actionId,
+      laneId,
+      commit: resolvedCommit,
+      navigate,
+      onNotice: (message) => {
+        setActionNotice(message);
+        window.setTimeout(() => setActionNotice(null), 3500);
+      },
+      onError: (message) => {
+        setActionError(stripIpcError(message));
+        window.setTimeout(() => setActionError(null), 5000);
+      },
+    });
+  };
 
   return (
     <AnimatePresence mode="wait">
@@ -192,20 +242,24 @@ export function CommitDetailPanel({
                       type="button"
                       disabled={action.disabled}
                       title={action.disabledReason}
-                      className="rounded border border-white/10 px-2 py-1 font-sans text-[11px] text-fg hover:bg-white/5 disabled:opacity-40"
-                      onClick={() =>
-                        void runHistoryGitAction({
-                          actionId: action.id,
-                          laneId,
-                          commit: resolvedCommit,
-                          navigate,
-                        })
-                      }
+                      className={cn(
+                        "rounded border border-white/10 px-2 py-1 font-sans text-[11px] hover:bg-white/5 disabled:opacity-40",
+                        action.destructive ? "text-red-200" : "text-fg",
+                      )}
+                      onClick={() => runAction(action.id)}
                     >
                       {action.label}
                     </button>
                   ))}
               </div>
+              {actionNotice ? (
+                <div className="font-mono text-[10px] text-accent">{actionNotice}</div>
+              ) : null}
+              {actionError ? (
+                <div className="font-mono text-[10px] text-red-300" title={actionError}>
+                  {actionError}
+                </div>
+              ) : null}
             </div>
 
             <section>

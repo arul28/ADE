@@ -2,8 +2,17 @@ import type { GitCommitSummary } from "../../../shared/types";
 
 export type HistoryGitActionId =
   | "checkout"
+  | "create_branch"
+  | "create_lane"
+  | "create_tag"
   | "cherry_pick"
   | "revert"
+  | "reset_soft"
+  | "reset_mixed"
+  | "reset_hard"
+  | "open_commit"
+  | "copy_commit_link"
+  | "copy_patch"
   | "copy_sha"
   | "copy_subject"
   | "open_lane_git"
@@ -17,6 +26,128 @@ export type HistoryGitAction = {
   disabled?: boolean;
   disabledReason?: string;
 };
+
+export type HistoryGitActionGroup = {
+  id: string;
+  label: string;
+  actions: HistoryGitAction[];
+};
+
+const COMMIT_ACTION_GROUPS: Array<{
+  id: string;
+  label: string;
+  actionIds: HistoryGitActionId[];
+}> = [
+  {
+    id: "inspect",
+    label: "Inspect",
+    actionIds: ["checkout", "open_lane_git", "compare_parent", "view_files"],
+  },
+  {
+    id: "create",
+    label: "Create",
+    actionIds: ["create_branch", "create_lane", "create_tag"],
+  },
+  {
+    id: "apply",
+    label: "Apply",
+    actionIds: ["cherry_pick", "revert", "reset_soft", "reset_mixed", "reset_hard"],
+  },
+  {
+    id: "share",
+    label: "Share",
+    actionIds: ["open_commit", "copy_commit_link", "copy_patch", "copy_sha", "copy_subject"],
+  },
+];
+
+function laneCommitDeepLink(laneId: string, commitSha: string): string {
+  const params = new URLSearchParams({
+    laneId,
+    focus: "single",
+    commitSha,
+  });
+  return `/lanes?${params.toString()}`;
+}
+
+function githubCommitUrl(remoteUrl: string | null, commitSha: string): string | null {
+  if (!remoteUrl) return null;
+  const trimmed = remoteUrl.trim().replace(/\.git$/, "");
+  const httpsMatch = /^https:\/\/github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
+  if (httpsMatch) {
+    return `https://github.com/${httpsMatch[1]}/${httpsMatch[2]}/commit/${commitSha}`;
+  }
+  const sshMatch = /^git@github\.com:([^/]+)\/(.+)$/.exec(trimmed);
+  if (sshMatch) {
+    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/commit/${commitSha}`;
+  }
+  const sshUrlMatch = /^ssh:\/\/git@github\.com\/([^/]+)\/(.+)$/.exec(trimmed);
+  if (sshUrlMatch) {
+    return `https://github.com/${sshUrlMatch[1]}/${sshUrlMatch[2]}/commit/${commitSha}`;
+  }
+  return null;
+}
+
+function defaultBranchNameForCommit(commit: GitCommitSummary): string {
+  const subjectSlug = commit.subject
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42)
+    .replace(/[-/]+$/g, "");
+  return `history/${commit.shortSha}${subjectSlug ? `-${subjectSlug}` : ""}`;
+}
+
+async function copyCommitPatch(args: {
+  laneId: string;
+  commit: GitCommitSummary;
+  onNotice?: (message: string) => void;
+}): Promise<void> {
+  const files = await window.ade.git.listCommitFiles({
+    laneId: args.laneId,
+    commitSha: args.commit.sha,
+  });
+  if (files.length === 0) {
+    args.onNotice?.("No changed files found for this commit");
+    return;
+  }
+
+  const patchResults = await Promise.allSettled(
+    files.map(async (path) => {
+      const patch = await window.ade.diff.getFilePatch({
+        laneId: args.laneId,
+        path,
+        mode: "commit",
+        compareRef: args.commit.sha,
+        compareTo: "parent",
+      });
+      const body = patch.patch.trim();
+      return body.length ? body : null;
+    }),
+  );
+  const patches = patchResults
+    .filter((result): result is PromiseFulfilledResult<string> => (
+      result.status === "fulfilled" && result.value != null
+    ))
+    .map((result) => result.value);
+  if (patches.length === 0) {
+    args.onNotice?.("No patch available for this commit");
+    return;
+  }
+
+  const failed = patchResults.filter((result) => result.status === "rejected").length;
+  const text = [
+    `# ${args.commit.shortSha} ${args.commit.subject}`,
+    "",
+    ...patches,
+    "",
+  ].join("\n");
+  await window.ade.app.writeClipboardText(text);
+  args.onNotice?.(
+    failed > 0
+      ? `Patch copied (${patches.length} file${patches.length === 1 ? "" : "s"}, ${failed} skipped)`
+      : `Patch copied (${patches.length} file${patches.length === 1 ? "" : "s"})`,
+  );
+}
 
 export function buildCommitContextActions(args: {
   commit: GitCommitSummary;
@@ -35,6 +166,24 @@ export function buildCommitContextActions(args: {
       disabledReason: baseReason,
     },
     {
+      id: "create_branch",
+      label: "Create branch here",
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
+    {
+      id: "create_lane",
+      label: "Create lane here",
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
+    {
+      id: "create_tag",
+      label: "Create tag here",
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
+    {
       id: "cherry_pick",
       label: "Cherry-pick",
       disabled: baseDisabled || isHead,
@@ -46,12 +195,47 @@ export function buildCommitContextActions(args: {
       disabled: baseDisabled,
       disabledReason: baseReason,
     },
+    {
+      id: "reset_soft",
+      label: "Soft reset lane here",
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
+    {
+      id: "reset_mixed",
+      label: "Mixed reset lane here",
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
+    {
+      id: "reset_hard",
+      label: "Hard reset lane here",
+      destructive: true,
+      disabled: baseDisabled,
+      disabledReason: baseReason,
+    },
     { id: "compare_parent", label: "Compare with parent", disabled: commit.parents.length === 0 },
     { id: "view_files", label: "View changed files", disabled: baseDisabled, disabledReason: baseReason },
     { id: "open_lane_git", label: "Open in Lanes git pane" },
+    { id: "open_commit", label: "Open commit on GitHub" },
+    { id: "copy_commit_link", label: "Copy commit link" },
+    { id: "copy_patch", label: "Copy patch", disabled: baseDisabled, disabledReason: baseReason },
     { id: "copy_sha", label: "Copy full SHA" },
     { id: "copy_subject", label: "Copy subject" },
   ];
+}
+
+export function groupCommitContextActions(actions: HistoryGitAction[]): HistoryGitActionGroup[] {
+  const byId = new Map(actions.map((action) => [action.id, action]));
+  return COMMIT_ACTION_GROUPS
+    .map((group) => ({
+      id: group.id,
+      label: group.label,
+      actions: group.actionIds
+        .map((id) => byId.get(id))
+        .filter((action): action is HistoryGitAction => action != null),
+    }))
+    .filter((group) => group.actions.length > 0);
 }
 
 export async function runHistoryGitAction(args: {
@@ -67,16 +251,82 @@ export async function runHistoryGitAction(args: {
   try {
     switch (actionId) {
       case "copy_sha":
-        await navigator.clipboard.writeText(commit.sha);
+        await window.ade.app.writeClipboardText(commit.sha);
         onNotice?.("SHA copied");
         return;
       case "copy_subject":
-        await navigator.clipboard.writeText(commit.subject);
+        await window.ade.app.writeClipboardText(commit.subject);
         onNotice?.("Subject copied");
         return;
-      case "checkout":
-        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}`);
+      case "open_commit":
+      case "copy_commit_link": {
+        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const url = githubCommitUrl(remote.remoteUrl, commit.sha);
+        if (!url) {
+          onNotice?.("No GitHub remote found for this commit");
+          return;
+        }
+        if (actionId === "open_commit") {
+          await window.ade.app.openExternal(url);
+          onNotice?.("Opened commit on GitHub");
+        } else {
+          await window.ade.app.writeClipboardText(url);
+          onNotice?.("Commit link copied");
+        }
         return;
+      }
+      case "copy_patch":
+        await copyCommitPatch({ laneId, commit, onNotice });
+        return;
+      case "checkout":
+        navigate?.(laneCommitDeepLink(laneId, commit.sha));
+        return;
+      case "create_branch": {
+        const branchName = window.prompt(`Create branch at ${commit.shortSha}`);
+        const trimmed = branchName?.trim();
+        if (!trimmed) return;
+        await window.ade.git.checkoutBranch({
+          laneId,
+          branchName: trimmed,
+          mode: "create",
+          startPoint: commit.sha,
+        });
+        onNotice?.(`Created ${trimmed}`);
+        return;
+      }
+      case "create_lane": {
+        const fallbackBranchName = defaultBranchNameForCommit(commit);
+        const branchName = window.prompt(`Create lane branch at ${commit.shortSha}`, fallbackBranchName);
+        const trimmedBranchName = branchName?.trim();
+        if (!trimmedBranchName) return;
+        const laneName = window.prompt("Lane name", trimmedBranchName)?.trim();
+        if (!laneName) return;
+        const remote = await window.ade.git.getOriginRemote({ laneId });
+        const lane = await window.ade.lanes.create({
+          name: laneName,
+          parentLaneId: laneId,
+          branchName: trimmedBranchName,
+          startPoint: commit.sha,
+          ...(remote.branch ? { baseBranch: remote.branch } : {}),
+        });
+        onNotice?.(`Created lane ${lane.name}`);
+        navigate?.(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+        return;
+      }
+      case "create_tag": {
+        const tagName = window.prompt(`Create tag at ${commit.shortSha}`);
+        const trimmed = tagName?.trim();
+        if (!trimmed) return;
+        const message = window.prompt("Tag message (optional)")?.trim();
+        await window.ade.git.createTag({
+          laneId,
+          tagName: trimmed,
+          commitSha: commit.sha,
+          ...(message ? { message } : {}),
+        });
+        onNotice?.(`Created tag ${trimmed}`);
+        return;
+      }
       case "cherry_pick": {
         if (!window.confirm(`Cherry-pick ${commit.shortSha} onto this lane?`)) return;
         await window.ade.git.cherryPickCommit({ laneId, commitSha: commit.sha });
@@ -89,12 +339,26 @@ export async function runHistoryGitAction(args: {
         onNotice?.(`Reverted ${commit.shortSha}`);
         return;
       }
-      case "open_lane_git":
-        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}&commitSha=${encodeURIComponent(commit.sha)}`);
+      case "reset_soft":
+      case "reset_mixed":
+      case "reset_hard": {
+        const mode =
+          actionId === "reset_soft" ? "soft" : actionId === "reset_mixed" ? "mixed" : "hard";
+        const detail =
+          mode === "hard"
+            ? " This discards uncommitted worktree changes."
+            : mode === "mixed"
+              ? " This keeps file changes but unstages them."
+              : " This keeps changes staged.";
+        if (!window.confirm(`Reset this lane to ${commit.shortSha}?${detail}`)) return;
+        await window.ade.git.resetToCommit({ laneId, commitSha: commit.sha, mode });
+        onNotice?.(`Reset lane to ${commit.shortSha}`);
         return;
+      }
+      case "open_lane_git":
       case "compare_parent":
       case "view_files":
-        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}`);
+        navigate?.(laneCommitDeepLink(laneId, commit.sha));
         return;
       default:
         return;

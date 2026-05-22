@@ -10,6 +10,7 @@ import type {
   GitUserIdentity,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitCreateTagArgs,
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitCommitSummary,
@@ -17,10 +18,14 @@ import type {
   GitFileHistoryEntry,
   GitGetCommitMessageArgs,
   GitGetFileHistoryArgs,
+  GitHeadChangeActionArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitPullArgs,
+  GitPullMode,
   GitPushArgs,
   GitRecommendedAction,
+  GitResetCommitArgs,
   GitRevertArgs,
   GitStashPushArgs,
   GitStashRefArgs,
@@ -29,7 +34,8 @@ import type {
   GitSyncMode,
   GitUpstreamSyncStatus,
   LaneLinearIssue,
-  LaneType
+  LaneType,
+  OperationRecord,
 } from "../../../shared/types";
 import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import type { Logger } from "../logging/logger";
@@ -37,7 +43,7 @@ import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
-import { isRecord } from "../shared/utils";
+import { isRecord, safeJsonParse } from "../shared/utils";
 
 type LaneInfo = {
   baseRef: string;
@@ -103,6 +109,15 @@ function ensureRelativeRepoPath(relPath: string): string {
     throw new Error("Path escapes lane root");
   }
   if (normalized === ".") throw new Error("Path must point to a file");
+  return normalized;
+}
+
+function ensureGitTagName(tagName: string): string {
+  const normalized = tagName.trim();
+  if (!normalized.length) throw new Error("Tag name is required");
+  if (normalized.includes("\0") || normalized.startsWith("-")) {
+    throw new Error("Invalid tag name");
+  }
   return normalized;
 }
 
@@ -553,6 +568,61 @@ export function createGitOperationsService({
     }
     throw new Error((res.stderr || res.stdout).trim() || "Failed to merge");
   };
+
+  function operationMetadata(operation: OperationRecord): Record<string, unknown> {
+    const parsed = safeJsonParse<unknown>(operation.metadataJson, null);
+    return isRecord(parsed) ? parsed : {};
+  }
+
+  function isSucceededHeadChange(operation: OperationRecord): operation is OperationRecord & {
+    preHeadSha: string;
+    postHeadSha: string;
+  } {
+    return (
+      operation.status === "succeeded" &&
+      (operation.kind.startsWith("git_") || operation.kind.startsWith("git.")) &&
+      typeof operation.preHeadSha === "string" &&
+      operation.preHeadSha.length > 0 &&
+      typeof operation.postHeadSha === "string" &&
+      operation.postHeadSha.length > 0 &&
+      operation.preHeadSha !== operation.postHeadSha
+    );
+  }
+
+  function listHeadChanges(laneId: string): Array<OperationRecord & { preHeadSha: string; postHeadSha: string }> {
+    return operationService
+      .list({ laneId, limit: 100 })
+      .filter(isSucceededHeadChange);
+  }
+
+  function getLatestUndoableHeadChange(laneId: string): OperationRecord & {
+    preHeadSha: string;
+    postHeadSha: string;
+  } {
+    const operation = listHeadChanges(laneId)[0];
+    if (!operation) {
+      throw new Error("No undoable head-changing git operation found for this lane.");
+    }
+    if (operation.kind === "git_undo_head_change") {
+      throw new Error("Latest head change is already an undo. Use redo to restore it.");
+    }
+    return operation;
+  }
+
+  function getLatestRedoableUndo(laneId: string): {
+    operation: OperationRecord & { preHeadSha: string; postHeadSha: string };
+    redoHeadSha: string;
+  } {
+    const latest = listHeadChanges(laneId)[0];
+    if (!latest || latest.kind !== "git_undo_head_change") {
+      throw new Error("No redoable git undo operation found for this lane.");
+    }
+    const redoHeadSha = operationMetadata(latest).redoHeadSha;
+    if (typeof redoHeadSha !== "string" || redoHeadSha.length === 0) {
+      throw new Error("No redoable git undo operation found for this lane.");
+    }
+    return { operation: latest, redoHeadSha };
+  }
 
   return {
     async stageFile(args: GitFileActionArgs): Promise<GitActionResult> {
@@ -1017,6 +1087,47 @@ export function createGitOperationsService({
       return action;
     },
 
+    async createTag(args: GitCreateTagArgs): Promise<GitActionResult> {
+      const commitSha = args.commitSha.trim();
+      if (!commitSha.length) throw new Error("Commit SHA is required");
+      const tagName = ensureGitTagName(args.tagName);
+      const message = args.message?.trim();
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_tag_create",
+        reason: "create_tag",
+        metadata: { commitSha, tagName, annotated: Boolean(message) },
+        fn: async (lane) => {
+          const cmd = message
+            ? ["tag", "-a", tagName, commitSha, "-m", message]
+            : ["tag", tagName, commitSha];
+          await runGitOrThrow(cmd, { cwd: lane.worktreePath, timeoutMs: 30_000 });
+        }
+      });
+      return action;
+    },
+
+    async resetToCommit(args: GitResetCommitArgs): Promise<GitActionResult> {
+      const commitSha = args.commitSha.trim();
+      if (!commitSha.length) throw new Error("Commit SHA is required");
+      if (!["soft", "mixed", "hard"].includes(args.mode)) {
+        throw new Error("Reset mode must be soft, mixed, or hard");
+      }
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: `git_reset_${args.mode}`,
+        reason: "reset_to_commit",
+        metadata: { commitSha, mode: args.mode },
+        fn: async (lane) => {
+          await runGitOrThrow(["reset", `--${args.mode}`, commitSha], {
+            cwd: lane.worktreePath,
+            timeoutMs: 60_000
+          });
+        }
+      });
+      return action;
+    },
+
     async stashPush(args: GitStashPushArgs): Promise<GitActionResult> {
       const message = args.message?.trim();
       invalidateStashReadCaches();
@@ -1167,14 +1278,73 @@ export function createGitOperationsService({
       return action;
     },
 
-    async pull(args: { laneId: string }): Promise<GitActionResult> {
+    async pull(args: GitPullArgs): Promise<GitActionResult> {
+      const mode = args.mode ?? "ff-only";
+      if (mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+        throw new Error("git.pull mode must be ff-only, rebase, or merge.");
+      }
+      const commandByMode: Record<GitPullMode, string[]> = {
+        "ff-only": ["pull", "--ff-only"],
+        rebase: ["pull", "--rebase"],
+        merge: ["pull", "--no-rebase", "--no-edit"],
+      };
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_pull",
-        reason: "pull_from_remote",
-        metadata: {},
+        reason: `pull_${mode.replace("-", "_")}`,
+        metadata: { mode },
         fn: async (lane) => {
-          await runGitOrThrow(["pull", "--ff-only"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+        }
+      });
+      return action;
+    },
+
+    async undoLastHeadChange(args: GitHeadChangeActionArgs): Promise<GitActionResult> {
+      const operation = getLatestUndoableHeadChange(args.laneId);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_undo_head_change",
+        reason: "undo_head_change",
+        metadata: {
+          undoneOperationId: operation.id,
+          undoneOperationKind: operation.kind,
+          redoHeadSha: operation.postHeadSha,
+          targetHeadSha: operation.preHeadSha,
+        },
+        fn: async (lane) => {
+          const currentHead = await getHeadSha(lane.worktreePath);
+          if (currentHead !== operation.postHeadSha) {
+            throw new Error("Cannot undo because the lane head has changed since that operation.");
+          }
+          await runGitOrThrow(["reset", "--hard", operation.preHeadSha], {
+            cwd: lane.worktreePath,
+            timeoutMs: 60_000,
+          });
+        }
+      });
+      return action;
+    },
+
+    async redoLastHeadChange(args: GitHeadChangeActionArgs): Promise<GitActionResult> {
+      const { operation, redoHeadSha } = getLatestRedoableUndo(args.laneId);
+      const { action } = await runLaneOperation({
+        laneId: args.laneId,
+        kind: "git_redo_head_change",
+        reason: "redo_head_change",
+        metadata: {
+          redoneUndoOperationId: operation.id,
+          targetHeadSha: redoHeadSha,
+        },
+        fn: async (lane) => {
+          const currentHead = await getHeadSha(lane.worktreePath);
+          if (currentHead !== operation.postHeadSha) {
+            throw new Error("Cannot redo because the lane head has changed since the undo.");
+          }
+          await runGitOrThrow(["reset", "--hard", redoHeadSha], {
+            cwd: lane.worktreePath,
+            timeoutMs: 60_000,
+          });
         }
       });
       return action;

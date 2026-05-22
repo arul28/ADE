@@ -7,6 +7,7 @@ import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { relativeWhen } from "../../lib/format";
 import { HistoryGitContextMenu } from "./HistoryGitContextMenu";
+import { filterCommitsForSearch } from "./historySearch";
 import {
   buildCommitGraphLayout,
   columnCenterX,
@@ -44,6 +45,7 @@ export function CommitHistoryView({
 }: CommitHistoryViewProps) {
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const loadRequestSeq = useRef(0);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,6 +57,7 @@ export function CommitHistoryView({
 
   const load = useCallback(async () => {
     if (!laneId) return;
+    const requestId = ++loadRequestSeq.current;
     setLoading(true);
     setError(null);
     try {
@@ -62,36 +65,36 @@ export function CommitHistoryView({
         window.ade.git.listRecentCommits({ laneId, limit }),
         window.ade.git.listBranches({ laneId }).catch(() => [] as GitBranchSummary[]),
       ]);
+      if (loadRequestSeq.current !== requestId) return;
       setCommits(rows);
       setBranches(branchRows);
     } catch (err) {
+      if (loadRequestSeq.current !== requestId) return;
       setError(formatTimelineError(err));
       setCommits([]);
       setBranches([]);
     } finally {
-      setLoading(false);
+      if (loadRequestSeq.current === requestId) {
+        setLoading(false);
+      }
     }
   }, [laneId, limit]);
+
+  useEffect(() => {
+    loadRequestSeq.current += 1;
+    setCommits([]);
+    setBranches([]);
+    setError(null);
+    setActionError(null);
+    setNotice(null);
+    setLimit(120);
+    setSearch("");
+  }, [laneId]);
 
   useEffect(() => {
     if (!active || !laneId) return;
     void load();
   }, [active, laneId, load, refreshToken]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return commits;
-    return commits.filter((c) => {
-      const hay = `${c.shortSha} ${c.sha} ${c.subject} ${c.authorName}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [commits, search]);
-
-  const layout = useMemo(() => buildCommitGraphLayout(filtered), [filtered]);
-  const nodeBySha = useMemo(
-    () => new Map(layout.nodes.map((n) => [n.sha, n])),
-    [layout.nodes],
-  );
 
   const refsBySha = useMemo(() => {
     const map = new Map<string, GitBranchSummary[]>();
@@ -104,6 +107,17 @@ export function CommitHistoryView({
     }
     return map;
   }, [branches]);
+
+  const filtered = useMemo(
+    () => filterCommitsForSearch(commits, refsBySha, search),
+    [commits, refsBySha, search],
+  );
+
+  const layout = useMemo(() => buildCommitGraphLayout(filtered), [filtered]);
+  const nodeBySha = useMemo(
+    () => new Map(layout.nodes.map((n) => [n.sha, n])),
+    [layout.nodes],
+  );
 
   const virtualizer = useVirtualizer({
     count: filtered.length,
@@ -161,16 +175,6 @@ export function CommitHistoryView({
     );
   }
 
-  if (filtered.length === 0) {
-    return (
-      <EmptyState
-        icon={GitBranch}
-        title={search ? "No matching commits" : "No commits"}
-        description={search ? "Try a different search" : "This lane has no commit history yet"}
-      />
-    );
-  }
-
   const graphHeight = virtualizer.getTotalSize();
   const svgHeight = layout.totalHeight;
 
@@ -181,7 +185,7 @@ export function CommitHistoryView({
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search SHA, message, author…"
+          placeholder="Search message:, author:, commit:, branch:, is:merge…"
           className="h-7 flex-1 rounded border border-white/10 bg-white/[0.03] px-2 font-mono text-[11px] text-fg placeholder:text-muted-fg/60 outline-none focus:border-accent/50"
         />
         <button
@@ -209,6 +213,13 @@ export function CommitHistoryView({
         ) : null}
       </div>
 
+      {filtered.length === 0 ? (
+        <EmptyState
+          icon={GitBranch}
+          title={search ? "No matching commits" : "No commits"}
+          description={search ? "Try a different search" : "This lane has no commit history yet"}
+        />
+      ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={onScroll}>
         <div
           className="relative"
@@ -369,6 +380,7 @@ export function CommitHistoryView({
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }

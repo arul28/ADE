@@ -136,6 +136,7 @@ import type {
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
+  GitCreateTagArgs,
   GitGenerateCommitMessageArgs,
   GitGenerateCommitMessageResult,
   GitCommitSummary,
@@ -150,7 +151,10 @@ import type {
   GitGetUserIdentityArgs,
   GitUserIdentity,
   GitCheckoutBranchArgs,
+  GitHeadChangeActionArgs,
+  GitPullArgs,
   GitPushArgs,
+  GitResetCommitArgs,
   GitUpstreamSyncStatus,
   GitRevertArgs,
   GitStashPushArgs,
@@ -7764,6 +7768,16 @@ export function registerIpc({
     return ctx.gitService.cherryPickCommit(arg);
   });
 
+  ipcMain.handle(IPC.gitCreateTag, async (_event, arg: GitCreateTagArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.createTag(arg);
+  });
+
+  ipcMain.handle(IPC.gitResetToCommit, async (_event, arg: GitResetCommitArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.resetToCommit(arg);
+  });
+
   ipcMain.handle(IPC.gitStashPush, async (_event, arg: GitStashPushArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.stashPush(arg);
@@ -7799,9 +7813,19 @@ export function registerIpc({
     return ctx.gitService.fetch(arg);
   });
 
-  ipcMain.handle(IPC.gitPull, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
+  ipcMain.handle(IPC.gitPull, async (_event, arg: GitPullArgs): Promise<GitActionResult> => {
     const ctx = getCtx();
     return ctx.gitService.pull(arg);
+  });
+
+  ipcMain.handle(IPC.gitUndoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.undoLastHeadChange(arg);
+  });
+
+  ipcMain.handle(IPC.gitRedoLastHeadChange, async (_event, arg: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    const ctx = getCtx();
+    return ctx.gitService.redoLastHeadChange(arg);
   });
 
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {

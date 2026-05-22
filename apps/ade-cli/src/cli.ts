@@ -962,6 +962,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
     $ ade git fetch --lane <lane>                   Fetch remote refs
     $ ade git pull --lane <lane>                    Pull with ADE's ff-only lane operation
+    $ ade git pull --lane <lane> --rebase           Pull and replay local commits on upstream
+    $ ade git pull --lane <lane> --merge            Pull and merge upstream into the lane
+    $ ade git undo --lane <lane>                    Reset to the previous recorded HEAD
+    $ ade git redo --lane <lane>                    Restore the last undone HEAD
     $ ade git sync --lane <lane> --rebase --base main
                                                     Sync the lane with its base branch
     $ ade git stage --lane <lane> src/file.ts       Stage one file
@@ -2876,11 +2880,37 @@ function buildGitPlan(args: string[]): CliPlan {
       label: "git fetch",
       steps: [actionCallStep("result", "git_fetch", withLane())],
     };
-  if (sub === "pull")
+  if (sub === "pull") {
+    const explicitMode = readValue(args, ["--mode"]);
+    const flagModes: Array<"ff-only" | "rebase" | "merge"> = [];
+    if (readFlag(args, ["--ff-only"])) flagModes.push("ff-only");
+    if (readFlag(args, ["--rebase"])) flagModes.push("rebase");
+    if (readFlag(args, ["--merge"])) flagModes.push("merge");
+    if (flagModes.length > 1) {
+      throw new CliUsageError("Choose only one pull mode: --ff-only, --rebase, or --merge.");
+    }
+    const rawMode = flagModes.length > 0 ? flagModes[0]! : explicitMode;
+    const mode = rawMode === "ff_only" ? "ff-only" : rawMode;
+    if (mode && mode !== "ff-only" && mode !== "rebase" && mode !== "merge") {
+      throw new CliUsageError("--mode must be ff-only, rebase, or merge.");
+    }
     return {
       kind: "execute",
       label: "git pull",
-      steps: [actionCallStep("result", "git_pull", withLane())],
+      steps: [actionCallStep("result", "git_pull", withLane(mode ? { mode } : {}))],
+    };
+  }
+  if (sub === "undo")
+    return {
+      kind: "execute",
+      label: "git undo",
+      steps: [actionCallStep("result", "git_undo_last_head_change", withLane())],
+    };
+  if (sub === "redo")
+    return {
+      kind: "execute",
+      label: "git redo",
+      steps: [actionCallStep("result", "git_redo_last_head_change", withLane())],
     };
   if (sub === "sync") {
     const explicitMode = readValue(args, ["--mode"]);

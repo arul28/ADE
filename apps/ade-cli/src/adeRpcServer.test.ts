@@ -290,6 +290,8 @@ function createRuntime() {
       fetch: vi.fn(async () => ({ success: true })),
       pull: vi.fn(async () => ({ success: true })),
       push: vi.fn(async () => ({ success: true })),
+      undoLastHeadChange: vi.fn(async () => ({ success: true })),
+      redoLastHeadChange: vi.fn(async () => ({ success: true })),
       listBranches: vi.fn(async () => [{ name: "main", current: true, ahead: 0, behind: 0, hasUpstream: true, upstream: "origin/main" }]),
       checkoutBranch: vi.fn(async () => ({ success: true })),
       stashPush: vi.fn(async () => ({ success: true })),
@@ -4214,9 +4216,21 @@ describe("adeRpcServer", () => {
     expect(syncStatus?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
 
+    const pull = await callTool(handler, "git_pull", { laneId: "lane-1", mode: "merge" });
+    expect(pull?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.pull).toHaveBeenCalledWith({ laneId: "lane-1", mode: "merge" });
+
     const push = await callTool(handler, "git_push", { laneId: "lane-1", force: true, setUpstream: false });
     expect(push?.isError).toBeUndefined();
     expect(fixture.runtime.gitService.push).toHaveBeenCalledWith({ laneId: "lane-1", forceWithLease: true });
+
+    const undo = await callTool(handler, "git_undo_last_head_change", { laneId: "lane-1" });
+    expect(undo?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.undoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
+
+    const redo = await callTool(handler, "git_redo_last_head_change", { laneId: "lane-1" });
+    expect(redo?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.redoLastHeadChange).toHaveBeenCalledWith({ laneId: "lane-1" });
   });
 
   it("supports create/update/comment PR actions via ADE RPC", async () => {
