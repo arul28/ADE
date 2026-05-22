@@ -259,7 +259,12 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
 
     // ── View actions ────────────────────────────────────────
     setSurface: (surface) => set({ surface }),
-    setFocusLaneId: (laneId) => set({ focusLaneId: laneId }),
+    setFocusLaneId: (laneId) =>
+      set({
+        focusLaneId: laneId,
+        selectedCommit: null,
+        selectedCommitSha: null,
+      }),
     setSelectedCommitSha: (sha) => set({ selectedCommitSha: sha }),
     setSelectedCommit: (commit) =>
       set({

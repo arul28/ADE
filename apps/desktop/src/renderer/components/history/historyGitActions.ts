@@ -75,14 +75,16 @@ export async function runHistoryGitAction(args: {
         onNotice?.("Subject copied");
         return;
       case "checkout":
-        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}&commitSha=${encodeURIComponent(commit.sha)}`);
+        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}`);
         return;
       case "cherry_pick": {
+        if (!window.confirm(`Cherry-pick ${commit.shortSha} onto this lane?`)) return;
         await window.ade.git.cherryPickCommit({ laneId, commitSha: commit.sha });
         onNotice?.(`Cherry-picked ${commit.shortSha}`);
         return;
       }
       case "revert": {
+        if (!window.confirm(`Revert ${commit.shortSha}? This creates a new commit.`)) return;
         await window.ade.git.revertCommit({ laneId, commitSha: commit.sha });
         onNotice?.(`Reverted ${commit.shortSha}`);
         return;
@@ -92,9 +94,7 @@ export async function runHistoryGitAction(args: {
         return;
       case "compare_parent":
       case "view_files":
-        navigate?.(
-          `/lanes?laneId=${encodeURIComponent(laneId)}&commitSha=${encodeURIComponent(commit.sha)}&historyAction=${actionId}`,
-        );
+        navigate?.(`/lanes?laneId=${encodeURIComponent(laneId)}`);
         return;
       default:
         return;

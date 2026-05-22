@@ -108,8 +108,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [surfaceFromUrl, setSurface]);
 
   useEffect(() => {
-    if (!active || surface !== "activity") return;
-    void fetchEvents();
+    if (!active) return;
+    void fetchEvents({ silent: surface === "commits" });
   }, [active, surface, fetchEvents]);
 
   useEffect(() => {
@@ -153,18 +153,57 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       setSurface("activity");
     }
     const commitSha = searchParams.get("commitSha");
-    if (commitSha && commitSha !== selectedCommitSha && !selectedCommit) {
+    const laneFromUrl = searchParams.get("laneId");
+    if (commitSha && commitSha !== selectedCommitSha) {
       setSelectedCommitSha(commitSha);
       setSurface("commits");
+      if (laneFromUrl) setFocusLaneId(laneFromUrl);
     }
   }, [
     searchParams,
     selectedEventId,
     selectedCommitSha,
     setSelectedEventId,
-    setSelectedCommit,
+    setSelectedCommitSha,
+    setFocusLaneId,
     setSurface,
   ]);
+
+  useEffect(() => {
+    if (!active || !focusLaneId || !selectedCommitSha || selectedCommit?.sha === selectedCommitSha) {
+      return;
+    }
+    let cancelled = false;
+    void window.ade.git
+      .listRecentCommits({ laneId: focusLaneId, limit: 200 })
+      .then((rows) => {
+        if (cancelled) return;
+        const found = rows.find((r) => r.sha === selectedCommitSha);
+        if (found) setSelectedCommit(found);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [active, focusLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
+
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      let changed = false;
+      if (next.get("surface") !== surface) {
+        next.set("surface", surface);
+        changed = true;
+      }
+      const laneParam = focusLaneId ?? "";
+      if ((next.get("laneId") ?? "") !== laneParam) {
+        if (laneParam) next.set("laneId", laneParam);
+        else next.delete("laneId");
+        changed = true;
+      }
+      return changed ? next : prev;
+    }, { replace: true });
+  }, [surface, focusLaneId, setSearchParams]);
 
   const handleSelectEvent = useCallback(
     (id: string) => {
@@ -255,7 +294,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
         active={active}
-        refreshToken={events.length}
+        refreshToken={rawEvents.length}
       />
     );
   } else if (loading && events.length === 0) {

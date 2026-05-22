@@ -106,7 +106,7 @@ export function CommitDetailPanel({
         ? buildCommitContextActions({
             commit: resolvedCommit,
             isHead: false,
-            hasWorktree: Boolean(laneId),
+            hasWorktree: Boolean(laneId && resolvedCommit?.subject),
           })
         : [],
     [resolvedCommit, laneId],

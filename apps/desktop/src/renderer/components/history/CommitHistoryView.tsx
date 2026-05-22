@@ -48,6 +48,7 @@ export function CommitHistoryView({
   const [branches, setBranches] = useState<GitBranchSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [limit, setLimit] = useState(120);
   const [search, setSearch] = useState("");
@@ -87,6 +88,10 @@ export function CommitHistoryView({
   }, [commits, search]);
 
   const layout = useMemo(() => buildCommitGraphLayout(filtered), [filtered]);
+  const nodeBySha = useMemo(
+    () => new Map(layout.nodes.map((n) => [n.sha, n])),
+    [layout.nodes],
+  );
 
   const refsBySha = useMemo(() => {
     const map = new Map<string, GitBranchSummary[]>();
@@ -107,11 +112,15 @@ export function CommitHistoryView({
     overscan: 12,
   });
 
+  const headSha = commits[0]?.sha ?? null;
+
   const onScroll = useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget;
-      if (el.scrollTop < 80 && !loading && limit < 200) {
-        setLimit((prev) => Math.min(200, prev + 40));
+      const nearBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      if (nearBottom && !loading && limit < 500) {
+        setLimit((prev) => Math.min(500, prev + 40));
       }
     },
     [loading, limit],
@@ -177,6 +186,11 @@ export function CommitHistoryView({
         {notice ? (
           <span className="shrink-0 font-mono text-[10px] text-accent">{notice}</span>
         ) : null}
+        {actionError ? (
+          <span className="shrink-0 font-mono text-[10px] text-red-300" title={actionError}>
+            Action failed
+          </span>
+        ) : null}
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" onScroll={onScroll}>
@@ -188,10 +202,21 @@ export function CommitHistoryView({
           <svg
             className="pointer-events-none absolute left-0 top-0"
             width={layout.graphWidth}
-            height={svgHeight}
+            height={graphHeight}
             aria-hidden
           >
-            {layout.edges.map((edge) => {
+            {layout.edges
+              .filter((edge) => {
+                const fromIdx = layout.shaToRow.get(edge.fromSha);
+                const toIdx = layout.shaToRow.get(edge.toSha);
+                if (fromIdx === undefined || toIdx === undefined) return false;
+                const minR = Math.min(fromIdx, toIdx);
+                const maxR = Math.max(fromIdx, toIdx);
+                return virtualizer.getVirtualItems().some(
+                  (v) => v.index >= minR - 2 && v.index <= maxR + 2,
+                );
+              })
+              .map((edge) => {
               const x1 = columnCenterX(edge.fromCol);
               const y1 = rowCenterY(edge.fromRow) + 4;
               const x2 = columnCenterX(edge.toCol);
@@ -207,7 +232,9 @@ export function CommitHistoryView({
                 />
               );
             })}
-            {layout.nodes.map((node) => {
+            {virtualizer.getVirtualItems().map((vRow) => {
+              const node = nodeBySha.get(filtered[vRow.index]?.sha ?? "");
+              if (!node) return null;
               const cx = columnCenterX(node.column);
               const cy = rowCenterY(node.rowIndex);
               const fill = node.isHead
@@ -237,9 +264,9 @@ export function CommitHistoryView({
           {virtualizer.getVirtualItems().map((vRow) => {
             const commit = filtered[vRow.index];
             if (!commit) return null;
-            const node = layout.nodes.find((n) => n.sha === commit.sha);
+            const node = nodeBySha.get(commit.sha);
             const isSelected = selectedSha === commit.sha;
-            const isHead = vRow.index === 0;
+            const isHead = commit.sha === headSha;
             const refs = refsBySha.get(commit.sha) ?? [];
 
             return (
@@ -259,12 +286,17 @@ export function CommitHistoryView({
                   laneId={laneId}
                   commit={commit}
                   isHead={isHead}
-                  hasWorktree={!error}
+                  hasWorktree={Boolean(laneId) && !error}
                   onNotice={(m) => {
                     setNotice(m);
+                    setActionError(null);
+                    void load();
                     window.setTimeout(() => setNotice(null), 2500);
                   }}
-                  onError={setError}
+                  onError={(m) => {
+                    setActionError(m);
+                    window.setTimeout(() => setActionError(null), 5000);
+                  }}
                   navigate={(path) => navigate(path)}
                 >
                   <button
