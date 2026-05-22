@@ -2,11 +2,26 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
 
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
+const { DatabaseSync } = require("node:sqlite") as {
+  DatabaseSync: new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+};
+
+function isFts4Available(): boolean {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec("create virtual table temp.__ade_fts4_probe using fts4(content)");
+    db.exec("drop table if exists temp.__ade_fts4_probe");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function createLogger() {
   return {
@@ -221,7 +236,78 @@ describe("openKvDb SQL binding", () => {
   });
 });
 
+describe.skipIf(!isFts4Available())("openKvDb legacy unified_memories cleanup", () => {
+  it("removes FTS4 artifacts and orphan repair tables before retrofit", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-legacy-memories-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`
+      create table unified_memories (
+        rowid integer primary key autoincrement,
+        content text not null
+      );
+      create virtual table unified_memories_fts using fts4(content);
+      create trigger unified_memories_fts_ai after insert on unified_memories begin
+        insert into unified_memories_fts(rowid, content) values (new.rowid, new.content);
+      end;
+      create table __ade_crr_repair_unified_memories_fts_segdir (dummy integer);
+    `);
+    raw.close();
+
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name = 'unified_memories' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name like 'unified_memories_fts%' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      db.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'table' and name like '__ade_crr_repair_unified_memories%' limit 1",
+      ),
+    ).toBeNull();
+  });
+});
+
 describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
+  it("drops lane_linear_issue_links unique index so CRR conversion succeeds", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-linear-links-crr-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    first.run(`
+      create unique index if not exists uq_lane_linear_issue_links_role
+      on lane_linear_issue_links(project_id, lane_id, issue_id, role)
+    `);
+    expect(
+      first.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'index' and name = 'uq_lane_linear_issue_links_role' limit 1",
+      )?.present,
+    ).toBe(1);
+    first.close();
+
+    const reopened = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(
+      reopened.get<{ present: number }>(
+        "select 1 as present from sqlite_master where type = 'index' and name = 'uq_lane_linear_issue_links_role' limit 1",
+      ),
+    ).toBeNull();
+    expect(
+      reopened.get<{ name: string }>(
+        "select name from sqlite_master where type = 'table' and name = 'lane_linear_issue_links__crsql_clock' limit 1",
+      )?.name,
+    ).toBe("lane_linear_issue_links__crsql_clock");
+  });
+
   it("keeps composite-key PR AI summary cache local-only", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-ai-summary-local-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
