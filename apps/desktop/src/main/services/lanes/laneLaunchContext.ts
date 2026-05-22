@@ -1,7 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { createLaneService } from "./laneService";
-import type { MacosVmPhaseNumber, MacosVmStatus } from "../../../shared/types/macosVm";
+import type {
+  MacosVmEventPayload,
+  MacosVmPhaseNumber,
+  MacosVmStatus,
+} from "../../../shared/types/macosVm";
 import { resolvePathWithinRoot } from "../shared/utils";
 
 export type LaneLaunchExecStrategy = "local" | "ssh";
@@ -309,4 +313,56 @@ export function invalidateVmLaneLaunchCache(laneId?: string): void {
     return;
   }
   vmLaunchContextCache.clear();
+}
+
+const MACOS_VM_LAUNCH_CACHE_REFRESH_OPERATIONS = new Set([
+  "provision",
+  "start",
+  "stop",
+  "restart",
+  "set-credentials",
+  "delete",
+  "wipe",
+]);
+
+/**
+ * Keep the synchronous VM launch cache aligned with macosVmService lifecycle
+ * events. Without this, agent/PTY launches can keep a stale SSH target for up
+ * to VM_LAUNCH_CONTEXT_TTL_MS after restart/stop.
+ */
+export function syncMacosVmLaunchCacheFromEvent(
+  payload: MacosVmEventPayload,
+  log?: (event: string, fields: Record<string, unknown>) => void,
+): void {
+  const laneId = (() => {
+    if (payload.type === "vm-updated") {
+      return payload.vm.laneId?.trim() ?? "";
+    }
+    if (payload.type === "operation") {
+      return payload.laneId?.trim() ?? "";
+    }
+    return "";
+  })();
+  if (!laneId) return;
+
+  const shouldRefresh = (() => {
+    if (payload.type === "vm-updated") return true;
+    if (payload.type === "operation") {
+      return (
+        payload.state === "completed"
+        && MACOS_VM_LAUNCH_CACHE_REFRESH_OPERATIONS.has(payload.operation)
+      );
+    }
+    return false;
+  })();
+  if (!shouldRefresh) return;
+
+  invalidateVmLaneLaunchCache(laneId);
+  void refreshVmLaneLaunchCache({ laneId }).catch((error) => {
+    log?.("lane.vm_launch_cache_refresh_failed", {
+      laneId,
+      eventType: payload.type,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }

@@ -32,6 +32,7 @@ import {
   refreshVmLaneLaunchCache,
   resolveLaneLaunchContext,
   setMacosVmLaunchProvider,
+  syncMacosVmLaunchCacheFromEvent,
   VmNotReadyError,
   type MacosVmLaunchProvider,
 } from "./laneLaunchContext";
@@ -544,6 +545,60 @@ describe("resolveLaneLaunchContext", () => {
       expect(result.execStrategy).toBe("local");
       expect(result.sshTarget).toBeUndefined();
       expect(result.cwd).toBe("/real/lane/root");
+    });
+  });
+
+  describe("syncMacosVmLaunchCacheFromEvent", () => {
+    it("refreshes cache after vm-updated with a new IP", async () => {
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.11" }),
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+
+      const updatedStatus = makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.22" });
+      provider.getStatus = vi.fn(async () => updatedStatus);
+      syncMacosVmLaunchCacheFromEvent({
+        type: "vm-updated",
+        vm: updatedStatus.laneVm!,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+        laneId: "lane-vm",
+        purpose: "start agent",
+      });
+      expect(result.sshTarget?.ip).toBe("192.168.64.22");
+    });
+
+    it("ignores unrelated macos VM operation events", async () => {
+      const provider = makeVmProvider({
+        status: makeVmStatus({ laneId: "lane-vm", ipAddress: "192.168.64.11" }),
+      });
+      setMacosVmLaunchProvider(provider);
+      await refreshVmLaneLaunchCache({ laneId: "lane-vm", provider });
+      provider.getStatus = vi.fn(async () => {
+        throw new Error("should not refresh");
+      });
+
+      syncMacosVmLaunchCacheFromEvent({
+        type: "operation",
+        operation: "screenshot",
+        state: "completed",
+        laneId: "lane-vm",
+        vmName: "ade-vm",
+        message: "done",
+        occurredAt: new Date().toISOString(),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const result = resolveLaneLaunchContext({
+        laneService: makeLaneService("/projects/my-lane", "macos-vm"),
+        laneId: "lane-vm",
+        purpose: "start agent",
+      });
+      expect(result.sshTarget?.ip).toBe("192.168.64.11");
     });
   });
 });

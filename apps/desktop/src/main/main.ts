@@ -27,6 +27,7 @@ import {
   invalidateVmLaneLaunchCache,
   refreshVmLaneLaunchCache,
   setMacosVmLaunchProvider,
+  syncMacosVmLaunchCacheFromEvent,
 } from "./services/lanes/laneLaunchContext";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
@@ -3187,8 +3188,12 @@ app.whenReady().then(async () => {
       projectRoot,
       logger,
       resolveLanes: async () => laneService.list({ includeArchived: false }),
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -3206,6 +3211,15 @@ app.whenReady().then(async () => {
       // wire-up needs the pool/registry to be lifted into a shared scope.
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        const vmLane = laneService.findExistingVmLane();
+        if (!vmLane) return;
+        invalidateVmLaneLaunchCache(vmLane.id);
+        void refreshVmLaneLaunchCache({ laneId: vmLane.id }).catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            laneId: vmLane.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
     // Wire macosVmService into laneService now that both exist. The hooks let
@@ -4204,8 +4218,12 @@ app.whenReady().then(async () => {
           worktreePath: lane.worktreePath,
         }));
       },
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload),
+      onEvent: (payload) => {
+        syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
+          logger.warn(event, fields);
+        });
+        emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
+      },
       captureWindowSources: async () => {
         const sources = await desktopCapturer.getSources({
           types: ["window"],
@@ -4222,6 +4240,22 @@ app.whenReady().then(async () => {
       // bootstrap script only writes a marker file).
       onRuntimeReady: ({ vmName, ipAddress, username }) => {
         logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
+        void (async () => {
+          const response = await localRuntimePool.callActionForRoot(projectRoot, {
+            domain: "lane",
+            action: "list",
+            args: { includeArchived: false, includeStatus: false },
+          });
+          const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
+          const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
+          if (!vmLane) return;
+          invalidateVmLaneLaunchCache(vmLane.id);
+          await refreshVmLaneLaunchCache({ laneId: vmLane.id });
+        })().catch((error) => {
+          logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       },
     });
     logger.info("project.runtime_bound", {
