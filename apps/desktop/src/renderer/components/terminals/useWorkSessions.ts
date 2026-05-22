@@ -13,7 +13,7 @@ import {
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
-import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary, enrichTerminalSessionsWithOrchestratorRole, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
   resolveLaunchFields,
@@ -768,24 +768,25 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             : { projectRoot: requestedProjectRoot },
         )
       ).filter((session) => !isRunOwnedSession(session));
+      const enrichedRows = await enrichTerminalSessionsWithOrchestratorRole(rows);
       if (projectRootRef.current !== requestedProjectRoot) {
         return;
       }
       const pending = pendingOptimisticSessionsRef.current;
       if (pending.size > 0) {
         const now = Date.now();
-        const rowIndexById = new Map(rows.map((session, index) => [session.id, index] as const));
+        const rowIndexById = new Map(enrichedRows.map((session, index) => [session.id, index] as const));
         for (const [sessionId, entry] of [...pending.entries()]) {
           const expired = now - entry.createdAtMs > OPTIMISTIC_PTY_SESSION_TTL_MS;
           const existingIndex = rowIndexById.get(sessionId);
           if (existingIndex != null) {
-            const persisted = rows[existingIndex];
+            const persisted = enrichedRows[existingIndex];
             if (expired || !persisted) {
               pending.delete(sessionId);
               continue;
             }
             const merged = mergePendingOptimisticSession(persisted, entry.session);
-            rows[existingIndex] = merged.session;
+            enrichedRows[existingIndex] = merged.session;
             if (!merged.keepPending) pending.delete(sessionId);
             continue;
           }
@@ -793,12 +794,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             pending.delete(sessionId);
             continue;
           }
-          rows.push(entry.session);
-          rowIndexById.set(sessionId, rows.length - 1);
+          enrichedRows.push(entry.session);
+          rowIndexById.set(sessionId, enrichedRows.length - 1);
         }
-        rows.sort(compareSessionsByStartedAtDesc);
+        enrichedRows.sort(compareSessionsByStartedAtDesc);
       }
-      setSessions(rows);
+      setSessions(enrichedRows);
       hasLoadedOnceRef.current = true;
     } finally {
       if (showLoading) setLoading(false);

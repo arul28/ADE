@@ -765,6 +765,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel = "Background",
   onInterrupt,
   onApproval,
+  onAddPlanComment,
   onAddAttachment,
   onRemoveAttachment,
   onAddContextAttachment,
@@ -885,6 +886,7 @@ export function AgentChatComposer({
   backgroundLaunchLabel?: string;
   onInterrupt: () => void;
   onApproval: (decision: AgentChatApprovalDecision, responseText?: string | null) => void;
+  onAddPlanComment?: (args: { lines: number[]; excerpt: string; comment: string }) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
   onRemoveAttachment: (path: string) => void;
   onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
@@ -2856,6 +2858,7 @@ export function AgentChatComposer({
             disabled={approvalResponding ?? false}
             onApprove={() => onApproval("accept")}
             onReject={() => onApproval("decline")}
+            onAddPlanComment={onAddPlanComment}
           />
         ) : (
           <div className="px-4 py-3">

@@ -46,6 +46,7 @@ import {
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
+  makePlanCommentContextAttachment,
   mergeChatContextAttachments,
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
@@ -72,6 +73,7 @@ import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
+import { PlanDocumentViewer } from "./PlanDocumentViewer";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -108,7 +110,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { useClickOutside } from "../../hooks/useClickOutside";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type WorkDraftKind } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { LaneCombobox } from "../terminals/LaneCombobox";
@@ -365,8 +367,19 @@ function LocalRuntimeNoticeBlock(props: {
   );
 }
 
-export function resolveChatSessionProfile(): AgentChatSessionProfile {
+export function resolveChatSessionProfile(options?: {
+  workDraftKind?: WorkDraftKind;
+  sessionProfile?: AgentChatSessionProfile | null;
+}): AgentChatSessionProfile {
+  if (options?.sessionProfile === "orchestrator") return "orchestrator";
+  if (options?.workDraftKind === "orchestrator") return "orchestrator";
   return "workflow";
+}
+
+export function isOrchestratorChatSession(
+  session: Pick<AgentChatSessionSummary, "sessionProfile"> | null | undefined,
+): boolean {
+  return session?.sessionProfile === "orchestrator";
 }
 
 export function shouldPromoteSessionForComputerUse(
@@ -507,7 +520,7 @@ function launchConfigStorageKey(scope: {
   projectRoot: string | null | undefined;
   laneId: string | null | undefined;
   surfaceProfile: ChatSurfaceProfile;
-  workDraftKind: "chat" | "cli";
+  workDraftKind: WorkDraftKind;
 }): string {
   return [
     LAST_LAUNCH_CONFIG_KEY_PREFIX,
@@ -1737,7 +1750,7 @@ export function AgentChatPane({
   initialLinearIssueContext?: LaneLinearIssue | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli";
+  workDraftKind?: WorkDraftKind;
   onLaunchCliSession?: (args: {
     laneId: string;
     profile: LaunchProfile;
@@ -1812,6 +1825,13 @@ export function AgentChatPane({
   const [draftLaunchTargetId, setDraftLaunchTargetId] = useState<string | null>(null);
   const [backgroundLaunchBusy, setBackgroundLaunchBusy] = useState(false);
   const [backgroundLaunchNotice, setBackgroundLaunchNotice] = useState<BackgroundLaunchNotice | null>(null);
+  const isWorkOrchestratorLaunchDraft =
+    !lockSessionId
+    && !initialSessionId
+    && forceDraft
+    && embeddedWorkLayout
+    && workDraftKind === "orchestrator"
+    && selectedSessionId == null;
   const isWorkCliLaunchDraft =
     !lockSessionId
     && !initialSessionId
@@ -2762,7 +2782,19 @@ export function AgentChatPane({
     prevModelDescRef.current = getModelDescriptorForPermissionMode(modelId);
   }, [modelId]);
 
-  const surfaceMode = presentation?.mode ?? "standard";
+  const surfaceMode = isOrchestratorChatSession(selectedSession)
+    || (workDraftKind === "orchestrator" && !selectedSessionId)
+    ? "orchestrator"
+    : (presentation?.mode ?? "standard");
+  const orchestratorPermissionLocked = isOrchestratorChatSession(selectedSession)
+    || isWorkOrchestratorLaunchDraft;
+  const orchestratorPlanBody = useMemo(() => {
+    if (!isOrchestratorChatSession(selectedSession)) return null;
+    if (pendingInput?.request.kind !== "plan_approval") return null;
+    return pendingInput.request.description
+      ?? pendingInput.request.questions[0]?.question
+      ?? null;
+  }, [pendingInput?.request, selectedSession]);
   const identitySessionSettingsBusy = isPersistentIdentitySurface && sessionMutationKind !== null;
 
   useEffect(() => {
@@ -4628,28 +4660,44 @@ export function AgentChatPane({
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
       const model = provider === "opencode" ? modelId : runtimeFacingModelId(desc, modelId);
-      const sessionProfile = resolveChatSessionProfile();
-      const harnessPermissionMode = provider === "opencode"
+      const orchestratorDraft = workDraftKind === "orchestrator";
+      const sessionProfile = resolveChatSessionProfile({ workDraftKind });
+      const harnessPermissionMode = !orchestratorDraft && provider === "opencode"
         ? recommendedOpenCodePermissionModeForModel(permissionDesc)
         : null;
-      const launchControls = harnessPermissionMode
+      const launchControls = orchestratorDraft
         ? {
             ...currentNativeControls,
-            opencodePermissionMode: harnessPermissionMode,
+            interactionMode: "plan" as const,
+            claudePermissionMode: "plan" as const,
+            opencodePermissionMode: "plan" as const,
           }
-        : currentNativeControls;
-      const nativeControlPayload = harnessPermissionMode
+        : harnessPermissionMode
+          ? {
+              ...currentNativeControls,
+              opencodePermissionMode: harnessPermissionMode,
+            }
+          : currentNativeControls;
+      const nativeControlPayload = orchestratorDraft
         ? {
             ...summarizeNativeControls(provider, launchControls),
+            permissionMode: "plan" as const,
+            interactionMode: "plan" as const,
             ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
           }
-        : buildNativeControlPayload(provider);
+        : harnessPermissionMode
+          ? {
+              ...summarizeNativeControls(provider, launchControls),
+              ...(provider === "cursor" ? { cursorConfigValues: currentNativeControls.cursorConfigValues } : {}),
+            }
+          : buildNativeControlPayload(provider);
       const created = await window.ade.agentChat.create({
         laneId: targetLaneId,
         provider,
         model,
         modelId,
         sessionProfile,
+        surface: "work",
         reasoningEffort,
         ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
         ...nativeControlPayload,
@@ -4704,7 +4752,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -4869,7 +4917,7 @@ export function AgentChatPane({
 
   const launchDraftChat = useCallback(async (mode: "foreground" | "background") => {
     if (submitInFlightRef.current || busy || backgroundLaunchBusy || parallelLaunchBusy) return;
-    if (selectedSessionId || workDraftKind !== "chat" || !modelId) return;
+    if (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "orchestrator") || !modelId) return;
     const snapshot = buildDraftLaunchSnapshotForCurrentState();
     if (!snapshot) return;
 
@@ -5337,7 +5385,7 @@ export function AgentChatPane({
       return;
     }
 
-    if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+    if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && (workDraftKind === "chat" || workDraftKind === "orchestrator")) {
       await launchDraftChat("foreground");
       return;
     }
@@ -6049,6 +6097,12 @@ export function AgentChatPane({
     setExecutionMode(nextExecutionMode);
   }, [draftLaunchConfigScopeKey, selectedSessionId]);
 
+  const handlePlanComment = useCallback((args: { lines: number[]; excerpt: string; comment: string }) => {
+    setContextAttachments((current) => mergeChatContextAttachments(current, [
+      makePlanCommentContextAttachment(args),
+    ]));
+  }, []);
+
   const handleComputerUsePolicyChange = useCallback(async (_nextPolicy: unknown) => {
     // Computer-use policy gating has been removed; this handler is a no-op retained for UI compat.
   }, []);
@@ -6061,7 +6115,7 @@ export function AgentChatPane({
     && selectedSessionId == null
     && !lockSessionId
     && !initialSessionId
-    && workDraftKind === "chat";
+    && (workDraftKind === "chat" || workDraftKind === "orchestrator");
   const draftLaneSelectorLanes = useMemo(
     () => showDraftLaunchControls && availableLanes
       ? [AUTO_CREATE_LANE_OPTION, ...availableLanes]
@@ -6875,8 +6929,8 @@ export function AgentChatPane({
             macosVmContextItems={macosVmContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
-            permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
-            hideNativeControls={hideNativeControls}
+            permissionModeLocked={permissionModeLocked || orchestratorPermissionLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
+            hideNativeControls={hideNativeControls || orchestratorPermissionLocked}
             messagePlaceholder={effectiveMessagePlaceholder}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
@@ -7005,6 +7059,7 @@ export function AgentChatPane({
             onApproval={(decision, responseText) => {
               void approve(decision, responseText);
             }}
+            onAddPlanComment={handlePlanComment}
             onAddAttachment={addAttachment}
             onRemoveAttachment={removeAttachment}
             onAddContextAttachment={addContextAttachment}
@@ -7416,6 +7471,18 @@ export function AgentChatPane({
                           void sendCodexControlMessage(selectedSessionId, "/goal clear");
                         }}
                       />
+                    ) : null}
+                    {orchestratorPlanBody ? (
+                      <div className="shrink-0 border-b border-violet-400/15 bg-violet-500/[0.04] px-4 py-3">
+                        <div className="mb-2 font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-violet-200/75">
+                          Orchestrator plan
+                        </div>
+                        <PlanDocumentViewer
+                          content={orchestratorPlanBody}
+                          tone="amber"
+                          onAddComment={handlePlanComment}
+                        />
+                      </div>
                     ) : null}
                     {subagentView ? (
                       <button

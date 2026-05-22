@@ -118,7 +118,7 @@ export type MacosVmTabIndicator = "blocker" | "failed" | null;
 export type WorkViewMode = "tabs" | "grid";
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
-export type WorkDraftKind = "chat" | "cli";
+export type WorkDraftKind = "chat" | "cli" | "orchestrator";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
   | "all-lanes-by-status"

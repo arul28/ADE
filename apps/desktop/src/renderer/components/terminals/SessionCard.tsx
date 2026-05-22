@@ -77,6 +77,8 @@ export const SessionCard = React.memo(function SessionCard({
     idleSinceAt: session.chatIdleSinceAt,
     awaitingInput: session.runtimeState === "waiting-input",
   });
+  const orchestratorRole = session.orchestratorRole
+    ?? (session.toolType?.endsWith("-orchestrated") ? "worker" as const : null);
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
   const hasFooterMeta =
     showClaudeCacheTimer || hasDeltaChips || (session.exitCode != null && session.exitCode !== 0);
@@ -126,6 +128,16 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {orchestratorRole === "lead" ? (
+                <span className="ade-orchestrator-badge shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide">
+                  Orchestrator
+                </span>
+              ) : null}
+              {orchestratorRole === "worker" ? (
+                <span className="shrink-0 rounded-full border border-white/[0.10] bg-white/[0.05] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-fg/70">
+                  Worker
+                </span>
+              ) : null}
               {staleAgeHours != null ? (
                 <span
                   className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"

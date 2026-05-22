@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Funnel, GitBranch, MagnifyingGlass, Plus, Square, Terminal, Trash, X, CirclesThreePlus } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
@@ -610,6 +610,22 @@ export const SessionListPane = React.memo(function SessionListPane({
             >
               <Plus size={10} weight="bold" />
               New Chat
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "Orchestrator", description: "Start a new orchestrator planning session." }}>
+            <button
+              type="button"
+              className="ade-orchestrator-btn-border relative inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors hover:brightness-110"
+              style={{
+                color: "rgba(244, 114, 182, 0.95)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onClick={() => onShowDraftKind("orchestrator")}
+              aria-label="Start a new orchestrator session"
+            >
+              <CirclesThreePlus size={10} weight="bold" />
+              Orchestrator
             </button>
           </SmartTooltip>
           <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane, status, or time." }}>

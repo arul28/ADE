@@ -11,9 +11,9 @@ import type { DelegationContract } from "./orchestrator";
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
-export type AgentChatSessionProfile = "light" | "workflow";
+export type AgentChatSessionProfile = "light" | "workflow" | "orchestrator" | "orchestrator-worker";
 
-export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed";
+export type ChatSurfaceMode = "standard" | "resolver" | "mission-thread" | "mission-feed" | "orchestrator";
 export type ChatSurfaceProfile = "standard" | "persistent_identity";
 export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-launch";
 
@@ -124,7 +124,15 @@ export type AgentChatLinearIssueContextAttachment = {
   attachedAt?: string;
 };
 
-export type AgentChatContextAttachment = AgentChatLinearIssueContextAttachment;
+export type AgentChatPlanCommentContextAttachment = {
+  type: "plan_comment";
+  lines: number[];
+  excerpt: string;
+  comment: string;
+  attachedAt?: string;
+};
+
+export type AgentChatContextAttachment = AgentChatLinearIssueContextAttachment | AgentChatPlanCommentContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
@@ -736,6 +744,8 @@ export type AgentChatSession = {
   model: string;
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
+  orchestratorRole?: "lead" | "worker";
+  orchestratorLeadSessionId?: string;
   reasoningEffort?: string | null;
   codexFastMode?: boolean;
   executionMode?: AgentChatExecutionMode | null;
@@ -1051,6 +1061,8 @@ export type AgentChatCreateArgs = {
   modelId?: ModelId;
   title?: string | null;
   sessionProfile?: AgentChatSessionProfile;
+  orchestratorRole?: "lead" | "worker";
+  orchestratorLeadSessionId?: string;
   reasoningEffort?: string | null;
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;

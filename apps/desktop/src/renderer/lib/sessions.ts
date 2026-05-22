@@ -1,6 +1,6 @@
 /** Shared session/terminal utilities for the renderer. */
 
-import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import type { AgentChatProvider, AgentChatSession, AgentChatSessionSummary, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 
 /** Returns true if the tool type represents an AI chat session. */
@@ -70,11 +70,12 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
 }
 
 export function buildOptimisticChatSessionSummary(args: {
-  session: Pick<AgentChatSession, "id" | "laneId" | "provider" | "status" | "createdAt" | "lastActivityAt" | "idleSinceAt">;
+  session: Pick<AgentChatSession, "id" | "laneId" | "provider" | "status" | "createdAt" | "lastActivityAt" | "idleSinceAt" | "sessionProfile">;
   laneName?: string | null;
 }): TerminalSessionSummary {
   const toolType = chatToolTypeForProvider(args.session.provider);
   const isEnded = args.session.status === "ended";
+  const isOrchestratorLead = args.session.sessionProfile === "orchestrator";
 
   return {
     id: args.session.id,
@@ -85,7 +86,7 @@ export function buildOptimisticChatSessionSummary(args: {
     pinned: false,
     goal: null,
     toolType,
-    title: defaultSessionLabel(toolType),
+    title: isOrchestratorLead ? "Orchestrator" : defaultSessionLabel(toolType),
     status: isEnded ? "completed" : "running",
     startedAt: args.session.createdAt,
     endedAt: isEnded ? args.session.lastActivityAt : null,
@@ -98,7 +99,50 @@ export function buildOptimisticChatSessionSummary(args: {
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,
     chatIdleSinceAt: args.session.status === "idle" ? args.session.idleSinceAt ?? null : null,
+    orchestratorRole: isOrchestratorLead ? "lead" : undefined,
   };
+}
+
+function inferOrchestratorRoleFromTitle(title: string | null | undefined): "lead" | "worker" | null {
+  const normalized = (title ?? "").trim();
+  if (!normalized) return null;
+  if (/^\[?orchestrator\]?/i.test(normalized)) return "lead";
+  if (/^\[?worker\]?/i.test(normalized)) return "worker";
+  return null;
+}
+
+export async function enrichTerminalSessionsWithOrchestratorRole(
+  rows: TerminalSessionSummary[],
+): Promise<TerminalSessionSummary[]> {
+  const chatSessionsById = new Map<string, AgentChatSessionSummary>();
+  try {
+    const chatSessions = await window.ade.agentChat.list({});
+    for (const session of chatSessions) {
+      chatSessionsById.set(session.sessionId, session);
+    }
+  } catch {
+    return rows.map((row) => {
+      if (row.orchestratorRole) return row;
+      if (row.toolType?.endsWith("-orchestrated")) {
+        return { ...row, orchestratorRole: "worker" as const };
+      }
+      const titleRole = inferOrchestratorRoleFromTitle(row.title);
+      return titleRole ? { ...row, orchestratorRole: titleRole } : row;
+    });
+  }
+
+  return rows.map((row) => {
+    if (row.orchestratorRole) return row;
+    if (row.toolType?.endsWith("-orchestrated")) {
+      return { ...row, orchestratorRole: "worker" as const };
+    }
+    const chatSession = isChatToolType(row.toolType) ? chatSessionsById.get(row.id) : null;
+    if (chatSession?.sessionProfile === "orchestrator") {
+      return { ...row, orchestratorRole: "lead" as const };
+    }
+    const titleRole = inferOrchestratorRoleFromTitle(row.title);
+    return titleRole ? { ...row, orchestratorRole: titleRole } : row;
+  });
 }
 
 /** Exact tool-type -> short label map for compact card display. */

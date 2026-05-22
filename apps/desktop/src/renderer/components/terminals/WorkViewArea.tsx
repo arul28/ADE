@@ -20,6 +20,7 @@ import {
   SidebarSimple,
   SpinnerGap,
   X,
+  CirclesThreePlus,
 } from "@phosphor-icons/react";
 import type {
   AgentChatModelInfo,
@@ -998,9 +999,11 @@ const MODE_OPTIONS: Array<{
   label: string;
   description: string;
   Icon: typeof Chats;
+  orchestrator?: boolean;
 }> = [
   { kind: "chat", label: "Chat", description: "Compose a new ADE chat in this lane.", Icon: Chats },
   { kind: "cli", label: "CLI", description: "Start a tracked agent CLI session.", Icon: Code },
+  { kind: "orchestrator", label: "Orchestrator", description: "Start an orchestrator planning session.", Icon: CirclesThreePlus, orchestrator: true },
 ];
 
 type SessionsPaneExpandAffordanceProps = {
@@ -1076,10 +1079,11 @@ function ModeSwitcherPills({
               className={cn(
                 "inline-flex min-h-[48px] items-center gap-2.5 rounded-full px-5 py-2.5 text-[14px] font-medium transition-all",
                 active && "ade-work-tab-active",
+                opt.orchestrator && !active && "ade-orchestrator-btn-border",
               )}
               style={{
-                background: active ? undefined : "transparent",
-                color: active ? "var(--color-fg)" : "var(--color-muted-fg)",
+                background: active ? undefined : opt.orchestrator ? "color-mix(in srgb, var(--color-card) 88%, transparent)" : "transparent",
+                color: active ? "var(--color-fg)" : opt.orchestrator ? "rgba(244, 114, 182, 0.92)" : "var(--color-muted-fg)",
                 cursor: "pointer",
                 border: "none",
               }}

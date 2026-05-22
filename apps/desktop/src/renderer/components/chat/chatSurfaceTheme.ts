@@ -7,6 +7,7 @@ export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   resolver: "#F97316",
   "mission-thread": "#38BDF8",
   "mission-feed": "#22C55E",
+  orchestrator: "#8B5CF6",
 };
 
 /// Per-provider chat-surface accent. Keeps Claude/Codex/etc. visually
@@ -151,12 +152,23 @@ function neutralChatSurfaceVars(): CSSProperties {
   };
 }
 
+/** Rainbow orchestrator accent tokens — used for Work-tab orchestrator chats. */
+export function orchestratorSurfaceVars(): CSSProperties {
+  const accent = CHAT_SURFACE_ACCENTS.orchestrator;
+  return {
+    ...coloredChatSurfaceVars("orchestrator", accent),
+    ["--chat-orchestrator-ring" as string]: "conic-gradient(from 0deg, #f472b6, #fb923c, #facc15, #4ade80, #38bdf8, #a78bfa, #f472b6)",
+    ["--chat-orchestrator-glow" as string]: colorToRgba(accent, 0.24),
+  };
+}
+
 export function chatSurfaceVars(
   mode: ChatSurfaceMode,
   accentColor?: string | null,
   options?: { chromeTint?: ChatChromeTint },
 ): CSSProperties {
   const tint = options?.chromeTint ?? "colored";
+  if (mode === "orchestrator") return orchestratorSurfaceVars();
   if (tint === "neutral") return neutralChatSurfaceVars();
   return coloredChatSurfaceVars(mode, accentColor);
 }

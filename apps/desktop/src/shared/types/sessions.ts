@@ -89,6 +89,8 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Parent chat session id when this terminal was launched from a chat (e.g. App Control, in-chat terminal drawer). */
   chatSessionId?: string | null;
+  /** Orchestrator team role when this session belongs to an orchestrator run. */
+  orchestratorRole?: "lead" | "worker";
 };
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

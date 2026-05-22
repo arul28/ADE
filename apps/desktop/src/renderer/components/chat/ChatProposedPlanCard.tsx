@@ -3,6 +3,7 @@ import { ListChecks, CopySimple, ArrowsOut, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatMarkdown } from "./chatMarkdown";
+import { PlanDocumentViewer } from "./PlanDocumentViewer";
 
 /* ── Types ── */
 
@@ -13,6 +14,7 @@ interface ChatProposedPlanCardProps {
   disabled: boolean;
   onApprove: () => void;
   onReject: () => void;
+  onAddPlanComment?: (args: { lines: number[]; excerpt: string; comment: string }) => void;
 }
 
 /* ── Constants ── */
@@ -28,6 +30,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   disabled,
   onApprove,
   onReject,
+  onAddPlanComment,
 }: ChatProposedPlanCardProps) {
   const [fullViewOpen, setFullViewOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -196,8 +199,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
                 <X size={14} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-5 text-[13px] leading-6 text-fg/88">
-              <ChatMarkdown tone="amber">{bodyText}</ChatMarkdown>
+            <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+              <PlanDocumentViewer content={bodyText} tone="amber" onAddComment={onAddPlanComment} />
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-amber-400/10 bg-[linear-gradient(180deg,rgba(245,158,11,0.04),transparent)] px-5 py-3">
               <button

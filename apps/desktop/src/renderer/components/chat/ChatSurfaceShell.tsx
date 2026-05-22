@@ -107,6 +107,7 @@ export function ChatSurfaceShell({
           "relative flex w-full max-w-full flex-col",
           /* autoHeight: grow with transcript (e.g. settings preview) — avoid min-h-0 or the shell can clip when nested in grid/flex. */
           autoHeight ? "h-auto min-h-min overflow-visible" : "min-h-0 h-full min-w-0 overflow-hidden",
+          mode === "orchestrator" && "ade-orchestrator-ring",
           className,
         )}
         style={{
