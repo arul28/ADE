@@ -29,6 +29,7 @@ function formatTimelineError(err: unknown): string {
 type CommitHistoryViewProps = {
   laneId: string | null;
   laneName: string | null;
+  laneHasWorktree?: boolean;
   selectedSha: string | null;
   onSelectCommit: (commit: GitCommitSummary) => void;
   refreshToken?: number;
@@ -38,6 +39,7 @@ type CommitHistoryViewProps = {
 export function CommitHistoryView({
   laneId,
   laneName,
+  laneHasWorktree = false,
   selectedSha,
   onSelectCommit,
   refreshToken = 0,
@@ -132,6 +134,10 @@ export function CommitHistoryView({
   });
 
   const headSha = commits[0]?.sha ?? null;
+  const worktreeMissingFromLoad =
+    error != null && /worktree is missing/i.test(error);
+  const commitGitActionsEnabled =
+    Boolean(laneId) && laneHasWorktree && !worktreeMissingFromLoad;
 
   const handleRefresh = useCallback(() => {
     void load();
@@ -330,7 +336,7 @@ export function CommitHistoryView({
                   laneId={laneId}
                   commit={commit}
                   isHead={isHead}
-                  hasWorktree={Boolean(laneId)}
+                  hasWorktree={commitGitActionsEnabled}
                   onNotice={(m) => {
                     setNotice(m);
                     setActionError(null);

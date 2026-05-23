@@ -202,6 +202,7 @@ export function TimelineToolbar({
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
   const focusLane = lanes.find((lane) => lane.id === focusLaneId) ?? null;
+  const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
 
   return (
     <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
@@ -243,6 +244,7 @@ export function TimelineToolbar({
             <LaneGitActionsMenu
               laneId={focusLaneId}
               laneName={focusLane?.name ?? null}
+              laneHasWorktree={focusLaneHasWorktree}
               onComplete={onCommitGitActionComplete}
             />
           </>
@@ -514,10 +516,12 @@ export function TimelineToolbar({
 function LaneGitActionsMenu({
   laneId,
   laneName,
+  laneHasWorktree,
   onComplete,
 }: {
   laneId: string | null;
   laneName: string | null;
+  laneHasWorktree: boolean;
   onComplete?: () => void;
 }) {
   const navigate = useNavigate();
@@ -525,7 +529,7 @@ function LaneGitActionsMenu({
   const [conflictState, setConflictState] = useState<GitConflictState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId), conflictState });
+  const actions = buildHistoryLaneActions({ hasLane: Boolean(laneId) && laneHasWorktree, conflictState });
 
   const refreshConflictState = useCallback(async () => {
     if (!laneId) {

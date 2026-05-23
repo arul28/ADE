@@ -148,9 +148,6 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     } else if (commitSha && commitSha !== selectedCommitSha) {
       setSelectedCommitSha(commitSha);
       setSurface("commits");
-      if (laneFromUrl && lanes.some((l) => l.id === laneFromUrl)) {
-        setFocusLaneId(laneFromUrl);
-      }
     }
 
     if (cleanedUrl) {
@@ -175,6 +172,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     setSelectedCommitSha,
     setSearchParams,
   ]);
+
+  // Keep History destructive git actions aligned with the lane selected elsewhere
+  // (Lanes / Work), unless the URL is driving lane or commit-only deeplink state.
+  useEffect(() => {
+    if (!active) return;
+    if (syncingFromUrlRef.current) return;
+    if (searchParams.get("laneId")) return;
+    if (searchParams.get("commitSha") && !searchParams.get("laneId")) return;
+    const selected =
+      selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : null;
+    if (selected && focusLaneId !== selected) {
+      setFocusLaneId(selected);
+    }
+  }, [active, focusLaneId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
 
   useEffect(() => {
     if (!active || surface === "commits") return;
@@ -355,6 +366,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [selectedCommitSha, rawEvents, events]);
 
   const focusLane = lanes.find((l) => l.id === focusLaneId) ?? null;
+  const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
 
   const laneData = useMemo(
     () =>
@@ -379,6 +391,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       <CommitHistoryView
         laneId={focusLaneId}
         laneName={focusLane?.name ?? null}
+        laneHasWorktree={focusLaneHasWorktree}
         selectedSha={selectedCommitSha}
         onSelectCommit={handleSelectCommit}
         active={active}
@@ -455,6 +468,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       <Suspense fallback={panelFallback}>
         <CommitDetailPanel
           laneId={focusLaneId}
+          laneHasWorktree={focusLaneHasWorktree}
           commit={selectedCommit}
           relatedEvents={relatedEventsForCommit}
           onClose={handleCloseDetail}

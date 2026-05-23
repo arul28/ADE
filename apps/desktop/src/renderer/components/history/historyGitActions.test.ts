@@ -101,6 +101,21 @@ describe("history git actions", () => {
     ]);
   });
 
+  it("disables destructive commit actions when the lane worktree is unavailable", () => {
+    const actions = buildCommitContextActions({
+      commit,
+      isHead: false,
+      hasWorktree: false,
+    });
+
+    for (const id of ["cherry_pick", "revert", "reset_hard"] as const) {
+      expect(actions.find((action) => action.id === id)).toMatchObject({
+        disabled: true,
+        disabledReason: "Lane worktree is missing",
+      });
+    }
+  });
+
   it("disables cherry-pick when the selected commit is HEAD", () => {
     const actions = buildCommitContextActions({
       commit,

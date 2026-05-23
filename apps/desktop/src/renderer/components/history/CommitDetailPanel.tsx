@@ -33,6 +33,7 @@ function stripIpcError(err: unknown): string {
 
 type CommitDetailPanelProps = {
   laneId: string | null;
+  laneHasWorktree?: boolean;
   commit: GitCommitSummary | null;
   relatedEvents: TimelineEvent[];
   onClose: () => void;
@@ -42,6 +43,7 @@ type CommitDetailPanelProps = {
 
 export function CommitDetailPanel({
   laneId,
+  laneHasWorktree = false,
   commit,
   relatedEvents,
   onClose,
@@ -152,10 +154,10 @@ export function CommitDetailPanel({
         ? buildCommitContextActions({
             commit: resolvedCommit,
             isHead: headSha === resolvedCommit.sha,
-            hasWorktree: Boolean(laneId),
+            hasWorktree: Boolean(laneId) && laneHasWorktree,
           })
         : [],
-    [headSha, resolvedCommit, laneId],
+    [headSha, laneHasWorktree, resolvedCommit, laneId],
   );
 
   const runAction = (actionId: ReturnType<typeof buildCommitContextActions>[number]["id"]) => {
