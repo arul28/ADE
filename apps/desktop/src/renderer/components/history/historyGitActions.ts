@@ -190,10 +190,18 @@ export function buildCommitContextActions(args: {
   commit: GitCommitSummary;
   isHead: boolean;
   hasWorktree: boolean;
+  /** When false, commit is visible via shared object db but not on this lane's branch history. */
+  commitOnLaneHistory?: boolean;
 }): HistoryGitAction[] {
-  const { commit, isHead, hasWorktree } = args;
+  const { commit, isHead, hasWorktree, commitOnLaneHistory = true } = args;
   const baseDisabled = !hasWorktree;
   const baseReason = baseDisabled ? "Lane worktree is missing" : undefined;
+  const laneHistoryDisabled = hasWorktree && !commitOnLaneHistory;
+  const laneHistoryReason = laneHistoryDisabled
+    ? "Select the lane that contains this commit before changing git state"
+    : undefined;
+  const gitMutationDisabled = baseDisabled || laneHistoryDisabled;
+  const gitMutationReason = baseReason ?? laneHistoryReason;
 
   return [
     {
@@ -205,51 +213,51 @@ export function buildCommitContextActions(args: {
     {
       id: "create_branch",
       label: "Create branch here",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "create_lane",
       label: "Create lane here",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "create_tag",
       label: "Create tag here",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "cherry_pick",
       label: "Cherry-pick",
-      disabled: baseDisabled || isHead,
-      disabledReason: isHead ? "Cannot cherry-pick HEAD" : baseReason,
+      disabled: gitMutationDisabled || isHead,
+      disabledReason: isHead ? "Cannot cherry-pick HEAD" : gitMutationReason,
     },
     {
       id: "revert",
       label: "Revert commit",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "reset_soft",
       label: "Soft reset lane here",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "reset_mixed",
       label: "Mixed reset lane here",
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     {
       id: "reset_hard",
       label: "Hard reset lane here",
       destructive: true,
-      disabled: baseDisabled,
-      disabledReason: baseReason,
+      disabled: gitMutationDisabled,
+      disabledReason: gitMutationReason,
     },
     { id: "compare_parent", label: "Compare with parent", disabled: commit.parents.length === 0 },
     { id: "view_files", label: "View changed files", disabled: baseDisabled, disabledReason: baseReason },

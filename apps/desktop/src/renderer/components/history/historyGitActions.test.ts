@@ -70,6 +70,22 @@ describe("history git actions", () => {
     vi.unstubAllGlobals();
   });
 
+  it("disables lane git mutations when the commit is not on the focused lane history", () => {
+    const actions = buildCommitContextActions({
+      commit,
+      isHead: false,
+      hasWorktree: true,
+      commitOnLaneHistory: false,
+    });
+    const byId = new Map(actions.map((action) => [action.id, action]));
+    expect(byId.get("reset_hard")).toMatchObject({
+      disabled: true,
+      disabledReason: "Select the lane that contains this commit before changing git state",
+    });
+    expect(byId.get("cherry_pick")).toMatchObject({ disabled: true });
+    expect(byId.get("copy_sha")?.disabled).not.toBe(true);
+  });
+
   it("includes branch, tag, reset, and commit inspection actions for a worktree", () => {
     const actions = buildCommitContextActions({
       commit,

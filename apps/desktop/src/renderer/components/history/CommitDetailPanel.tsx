@@ -34,6 +34,8 @@ function stripIpcError(err: unknown): string {
 type CommitDetailPanelProps = {
   laneId: string | null;
   commit: GitCommitSummary | null;
+  /** When false, commit was resolved outside this lane's history — block lane git mutations. */
+  commitOnLaneHistory?: boolean;
   relatedEvents: TimelineEvent[];
   onClose: () => void;
   onNavigateToLane?: (laneId: string) => void;
@@ -43,6 +45,7 @@ type CommitDetailPanelProps = {
 export function CommitDetailPanel({
   laneId,
   commit,
+  commitOnLaneHistory = true,
   relatedEvents,
   onClose,
   onNavigateToLane,
@@ -153,9 +156,10 @@ export function CommitDetailPanel({
             commit: resolvedCommit,
             isHead: headSha === resolvedCommit.sha,
             hasWorktree: Boolean(laneId),
+            commitOnLaneHistory,
           })
         : [],
-    [headSha, resolvedCommit, laneId],
+    [headSha, resolvedCommit, laneId, commitOnLaneHistory],
   );
 
   const runAction = (actionId: ReturnType<typeof buildCommitContextActions>[number]["id"]) => {
