@@ -8,8 +8,8 @@ import type {
 
 /**
  * Resolution order: byRoleTag → byTag → byRole → default → caller-supplied fallback.
- * Mirrors `resolveOrchestrationModel` in registerIpc.ts; kept here as a pure function
- * so we can unit-test precedence without booting the IPC layer.
+ * Mirrors `resolveOrchestrationModel` in runtimeProfile.ts; kept here as a pure
+ * function so we can unit-test precedence without booting the IPC layer.
  */
 function resolve(
   routing: ModelRouting,

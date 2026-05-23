@@ -3,7 +3,7 @@
  * orchestration bundle (see `goal.md` §10.6).
  *
  * Renders a 240×180 sandboxed iframe thumbnail, the relative asset path,
- * and an "Open in ADE browser" button that focuses the Work-tab Browser
+ * and a "View full design" button that focuses the Work-tab Browser
  * surface and navigates to the file URL.
  *
  * Right-click → "Annotate spec" opens the AnnotationPopover with the spec
@@ -129,7 +129,7 @@ export function SpecPreviewCard({
           className="inline-flex items-center justify-center gap-1.5 rounded-md border border-violet-300/25 bg-violet-300/10 px-2.5 py-1 font-sans text-[10.5px] font-medium text-violet-100 transition-colors hover:bg-violet-300/15"
         >
           <ArrowSquareOut size={11} weight="bold" />
-          Open in ADE browser
+          View full design
         </button>
         {runId ? (
           <button

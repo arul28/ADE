@@ -44,7 +44,7 @@ describe("fileWatcherService", () => {
     vi.useRealTimers();
   });
 
-  it("keeps node_modules filtered even when includeIgnored is requested", () => {
+  it("keeps heavy runtime paths filtered even when includeIgnored is requested", () => {
     const service = createFileWatcherService();
 
     service.watch({ workspaceId: "ws-1", rootPath: "/repo", senderId: 1 }, vi.fn());
@@ -61,6 +61,9 @@ describe("fileWatcherService", () => {
     expect(includeIgnored.ignored.map((pattern) => String(pattern))).toEqual([
       "/(^|[/\\\\])\\.git($|[/\\\\])/",
       "/(^|[/\\\\])node_modules($|[/\\\\])/",
+      "/(^|[/\\\\])\\.ade[/\\\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime)($|[/\\\\])/",
+      "/(^|[/\\\\])\\.ade[/\\\\]ade\\.db($|-)/",
+      "/(^|[/\\\\])\\.ade[/\\\\]ade\\.sock$/",
     ]);
   });
 

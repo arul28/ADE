@@ -78,6 +78,17 @@ function describeMode(mode: HarnessMode): string {
 
 export type OrchestratorRoleKind = "lead" | "worker" | "validator";
 
+function describeAdeOrchestratorSkill(adeSkillRoots: readonly string[] | undefined): string[] {
+  const roots = (adeSkillRoots ?? []).filter((entry) => entry.trim().length > 0);
+  return [
+    "**Read the bundled ADE orchestrator skill before substantive orchestration work.**",
+    roots.length
+      ? `- ADE skill roots in this prompt: ${roots.join(", ")}. ADE also exposes these through \`ADE_AGENT_SKILLS_DIRS\`. Read \`<root>/ade-orchestrator/SKILL.md\` from the bundled ADE \`agent-skills\` resources.`
+      : "- ADE exposes the bundled skill roots through `ADE_AGENT_SKILLS_DIRS`. Read `<root>/ade-orchestrator/SKILL.md` from ADE's bundled `agent-skills` resources.",
+    "- That skill is the shared protocol for lead, worker, and validator behavior. Treat this prompt as a role-specific overlay on top of it.",
+  ];
+}
+
 export function buildOrchestratorRoleDirective(args: {
   role: OrchestratorRoleKind;
   runId: string;
@@ -85,6 +96,7 @@ export function buildOrchestratorRoleDirective(args: {
   tag?: string;
   parentSessionId?: string;
   stepId?: string;
+  adeSkillRoots?: readonly string[];
 }): string {
   const lines: string[] = [];
   lines.push("");
@@ -104,20 +116,41 @@ export function buildOrchestratorRoleDirective(args: {
   lines.push("- Write through orchestration tools only — never invent state.");
   lines.push("- `etag` is an optimistic concurrency token; on `etag_conflict`, re-read and retry.");
   lines.push("");
-  lines.push("**Follow `.agents/skills/ade-orchestrator/SKILL.md` — it is the protocol for every role.**");
+  lines.push(...describeAdeOrchestratorSkill(args.adeSkillRoots));
   lines.push("");
   if (args.role === "lead") {
     lines.push(
-      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). Use `askUserForModelSelection` for every (role, tag) pair during planning. Present `[ Approve Plan ]` via askUser before spawning any worker.",
+      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). Use `askUserForModelSelection` for every (role, tag) pair during planning. Call `requestPlanApproval` before spawning any worker; `spawnAgent` is blocked until that approval advances the run out of planning.",
     );
+    lines.push("");
+    lines.push("**Lead planning quality contract.** The plan can include any useful extra detail, but before `requestPlanApproval` it must at minimum cover:");
+    lines.push("- Goal, assumptions, and locked user decisions.");
+    lines.push("- In-scope work and a clear out-of-scope / non-goals section.");
+    lines.push("- Alternatives or tradeoffs considered for meaningful implementation choices.");
+    lines.push("- UI / UX / user-facing decisions when applicable, or an explicit note that UI is not applicable.");
+    lines.push("- Planned implementation order, dependencies, and what can safely run in parallel.");
+    lines.push("- Agent plan: which worker and validator tags to spawn, model-routing status, and what each owns.");
+    lines.push("- Coordination log rules: how `plan.md` and the manifest stay synced as workers start, fail, discover gaps, finish, or trigger replanning.");
+    lines.push("- Validation / proof plan with concrete commands, checks, screenshots, or evidence expectations derived from the repo.");
+    lines.push("- Plan presentation: write `plan.md` for the plan pane. Use GFM tables, mermaid fences, images, and links to `artifacts/ui/*.html` for design specs. Do not embed raw iframes; ADE renders `artifacts/ui/*.html` links as sandboxed previews with a full-design action.");
+    lines.push("");
+    lines.push("**Lead live coordination.** Treat `plan.md` as the shared operations log. Use `planWrite` for major replans and `planAppend` for decisions, worker starts, worker failures, scope changes, validation evidence, and final handoff notes. Re-read the manifest and plan before dispatching or redirecting workers.");
+    lines.push("");
+    lines.push("**Implementation handoff.** When you believe the plan is complete, append the final plan-ready note, tell the user they can keep planning in chat or review the plan pane, then call `requestPlanApproval`. That tool surfaces the `Implement` button in the plan pane. Do not spawn workers until the user clicks Implement or otherwise approves.");
+    lines.push("");
+    lines.push("**Spawn brief discipline.** Every spawn brief must tell the agent what to read (`manifest.json`, `plan.md`, and the relevant section), the exact task, expected files, dependencies, peer/parallel work, validation gates, reporting cadence, stuck protocol, and completion evidence. Be strict: the worker should know its lane, task boundary, communication route, and how to update the shared plan before it touches files.");
   } else if (args.role === "worker") {
     lines.push(
       "**Worker-specific.** Claim before touch via `claimTask`. Execute the assigned task. Satisfy every `per_worker` required validation gate before marking status=done. Heartbeat is automatic.",
     );
+    lines.push("");
+    lines.push("**Worker coordination.** Before editing, read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`. Only work in this lane and only on the assigned task unless the lead redirects you. Use `planAppend` when you start, when you discover material context, when you change approach, when you are stuck, before/after validation, and when you finish so coworkers see current state. Use `messageAgent` to report status, questions, blockers, and done/stuck summaries to the lead; inter-worker coordination goes through the lead unless the manifest protocol explicitly says otherwise.");
   } else {
     lines.push(
       "**Validator-specific.** Read the validation step's `prompt` from the manifest and execute it. Attach evidence and flip the checklist run. On failure, report up to the lead — do NOT spawn agents yourself.",
     );
+    lines.push("");
+    lines.push("**Validator coordination.** Read `manifest.json` and `plan.md` before validating. Append evidence to `plan.md`, update checklist state through `manifestPatch`, and message the lead with pass/fail details, blocking ambiguity, and any recommended fix-task split. Stay inside the assigned validation scope.");
   }
   lines.push("");
   lines.push(
@@ -180,6 +213,7 @@ export function buildCodingAgentSystemPrompt(args: {
           tag: args.orchestrationTag,
           parentSessionId: args.orchestrationParentSessionId,
           stepId: args.orchestrationStepId,
+          adeSkillRoots,
         })
       : "";
 

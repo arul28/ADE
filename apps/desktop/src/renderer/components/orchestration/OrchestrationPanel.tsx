@@ -13,7 +13,7 @@
  * Lead view = fully interactive (context menus on tasks). Worker /
  * Validator view = same panel, read-only.
  *
- * Subscribes to `window.ade.orchestration.subscribe({ runId }, cb)` which
+ * Subscribes to `window.ade.orchestration.subscribe({ runId, laneId }, cb)` which
  * fires on every manifest / plan / asset / lifecycle event. We do a full
  * bundle re-read on every event for now — the bundle is small (kilobytes),
  * mutex-serialised on the server, and the panel only mounts on the active
@@ -23,7 +23,6 @@
 import {
   type CSSProperties,
   type ReactNode,
-  useCallback,
   useEffect,
   useMemo,
   useReducer,
@@ -49,6 +48,10 @@ import {
   PaperPlaneTilt,
 } from "@phosphor-icons/react";
 import type {
+  AgentChatApprovalDecision,
+  PendingInputRequest,
+} from "../../../shared/types/chat";
+import type {
   DecisionLogEntry,
   OrchestrationAgent,
   OrchestrationEventPayload,
@@ -69,6 +72,7 @@ export const ORCHESTRATION_PANEL_TEST_ID = "orchestration-panel";
 export const ORCHESTRATION_PANEL_EMPTY_QA_TEST_ID = "orchestration-panel-empty-qa";
 export const ORCHESTRATION_PANEL_TASK_CARD_TEST_ID = "orchestration-task-card";
 export const ORCHESTRATION_PANEL_PLAN_TEST_ID = "orchestration-panel-plan";
+export const ORCHESTRATION_PLAN_IMPLEMENT_BUTTON_TEST_ID = "orchestration-plan-implement-button";
 
 /* ──────────────────────────────────────────────────────────────────────────
    Public props
@@ -101,10 +105,23 @@ export type OrchestrationPanelProps = {
   onTaskAction?: (action: OrchestrationTaskAction, task: OrchestrationTask) => void;
   /** Resolve a relative asset path into a renderable URL for PlanMarkdown. */
   resolveAsset?: PlanAssetResolver;
-  /** Bundle root (forwarded to PlanMarkdown for "Open in ADE browser"). */
+  /** Bundle root (forwarded to PlanMarkdown for "View full design"). */
   bundleRoot?: string | null;
   /** External signal: scroll the panel to highlight this task card. */
   highlightedTaskId?: string | null;
+  /** Pending plan-ready gate for the active lead session. */
+  planApprovalPending?: {
+    itemId: string;
+    request: PendingInputRequest;
+    responding?: boolean;
+  } | null;
+  /** Resolve the plan-ready gate when the user clicks Implement. */
+  onPlanApproval?: (
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ) => void;
   /** Override the subscribe / read pipeline (used by tests). */
   source?: OrchestrationDataSource;
   /** Optional default-collapsed flag (icon strip only). */
@@ -126,7 +143,7 @@ export type OrchestrationDataSource = {
     args: { runId: string; laneId: string },
   ) => Promise<{ manifest: OrchestrationManifest; planMd: string; etag: string }>;
   subscribe: (
-    args: { runId: string },
+    args: { runId: string; laneId: string },
     callback: (payload: OrchestrationEventPayload) => void,
   ) => () => void;
 };
@@ -141,19 +158,19 @@ function defaultDataSource(): OrchestrationDataSource {
       if (!read) throw new Error("orchestration.bundleRead is not available");
       return read({ runId, laneId });
     },
-    subscribe: ({ runId }, cb) => {
+    subscribe: ({ runId, laneId }, cb) => {
       const w = (typeof window !== "undefined" ? window : undefined) as
         | {
             ade?: {
               orchestration?: {
-                subscribe?: (args: { runId: string }, cb: (payload: OrchestrationEventPayload) => void) => () => void;
+                subscribe?: (args: { runId: string; laneId?: string }, cb: (payload: OrchestrationEventPayload) => void) => () => void;
               };
             };
           }
         | undefined;
       const subscribe = w?.ade?.orchestration?.subscribe;
       if (!subscribe) return () => undefined;
-      return subscribe({ runId }, cb);
+      return subscribe({ runId, laneId }, cb);
     },
   };
 }
@@ -218,30 +235,6 @@ const STATUS_PILL: Record<
   },
 };
 
-const ROLE_PILL: Record<
-  OrchestrationRole,
-  { label: string; bg: string; border: string; fg: string }
-> = {
-  lead: {
-    label: "LEAD",
-    bg: "rgba(168, 85, 247, 0.14)",
-    border: "rgba(168, 85, 247, 0.40)",
-    fg: "rgb(216, 180, 254)",
-  },
-  worker: {
-    label: "WORKER",
-    bg: "rgba(96, 165, 250, 0.13)",
-    border: "rgba(96, 165, 250, 0.36)",
-    fg: "rgb(147, 197, 253)",
-  },
-  validator: {
-    label: "VALIDATOR",
-    bg: "rgba(34, 197, 94, 0.12)",
-    border: "rgba(34, 197, 94, 0.34)",
-    fg: "rgb(134, 239, 172)",
-  },
-};
-
 /* ──────────────────────────────────────────────────────────────────────────
    Reducer / state plumbing
    ────────────────────────────────────────────────────────────────────────── */
@@ -302,11 +295,12 @@ export function OrchestrationPanel({
   initialPlanMd = "",
   viewerRole,
   onOpenSession,
-  onSwitchToLead,
   onTaskAction,
   resolveAsset,
   bundleRoot,
   highlightedTaskId = null,
+  planApprovalPending = null,
+  onPlanApproval,
   source,
   defaultCollapsed = false,
   className,
@@ -351,7 +345,7 @@ export function OrchestrationPanel({
 
   // Subscribe to live events
   useEffect(() => {
-    const off = ds.subscribe({ runId }, (payload) => {
+    const off = ds.subscribe({ runId, laneId }, (payload) => {
       // If a manifest event omits the full manifest (small patch), refresh.
       if (payload.kind === "manifest" && !payload.manifest) {
         ds.read({ runId, laneId })
@@ -442,6 +436,13 @@ export function OrchestrationPanel({
         loading={state.loading}
         error={state.error}
       />
+
+      {planApprovalPending ? (
+        <PlanReadyBar
+          pending={planApprovalPending}
+          onImplement={onPlanApproval}
+        />
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {/* Phases */}
@@ -626,6 +627,41 @@ function RunHeader({
           {error}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function PlanReadyBar({
+  pending,
+  onImplement,
+}: {
+  pending: NonNullable<OrchestrationPanelProps["planApprovalPending"]>;
+  onImplement?: OrchestrationPanelProps["onPlanApproval"];
+}) {
+  const disabled = pending.responding === true || !onImplement;
+  const planTitle = pending.request.title?.trim() || "Plan ready";
+  return (
+    <div className="shrink-0 border-b border-white/[0.05] px-3 py-2">
+      <div className="flex items-center gap-2 rounded-md border border-emerald-400/18 bg-emerald-400/[0.055] px-2.5 py-2">
+        <CheckCircle size={13} weight="duotone" className="shrink-0 text-emerald-300/80" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[11.5px] font-medium text-fg/86">
+            {planTitle}
+          </div>
+          <div className="truncate text-[10.5px] text-muted-fg/68">
+            Keep planning in chat, or start from this plan.
+          </div>
+        </div>
+        <button
+          type="button"
+          data-testid={ORCHESTRATION_PLAN_IMPLEMENT_BUTTON_TEST_ID}
+          disabled={disabled}
+          onClick={() => onImplement?.(pending.itemId, "accept")}
+          className="inline-flex h-7 shrink-0 items-center justify-center rounded-md border border-emerald-300/30 bg-emerald-300/12 px-2.5 text-[11px] font-medium text-emerald-100 transition-colors hover:bg-emerald-300/18 disabled:pointer-events-none disabled:opacity-45"
+        >
+          {pending.responding ? "Starting..." : "Implement"}
+        </button>
+      </div>
     </div>
   );
 }

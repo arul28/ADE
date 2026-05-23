@@ -1024,6 +1024,13 @@ function isOrchestrationContextItem(value: unknown): value is OrchestrationConte
   return true;
 }
 
+function isOrchestrationPlanApprovalRequest(
+  request: DerivedPendingInput["request"] | null | undefined,
+): boolean {
+  return request?.kind === "plan_approval"
+    && request.providerMetadata?.orchestrationPlanApproval === true;
+}
+
 function sortedMatchKeys<T>(items: T[] | undefined, readKey: (item: T) => string): string[] {
   return (items ?? []).map(readKey).sort((left, right) => left.localeCompare(right));
 }
@@ -2401,7 +2408,20 @@ export function AgentChatPane({
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
-  const pendingInput = selectedSessionId ? (pendingInputsBySession[selectedSessionId]?.[0] ?? null) : null;
+  const selectedPendingInputs = selectedSessionId ? (pendingInputsBySession[selectedSessionId] ?? []) : [];
+  const pendingInput = selectedPendingInputs[0] ?? null;
+  const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
+    isOrchestrationPlanApprovalRequest(entry.request),
+  ) ?? null;
+  const composerPendingInput = pendingInput
+    ? isOrchestrationPlanApprovalRequest(pendingInput.request)
+      ? {
+          ...pendingInput.request,
+          blocking: false,
+          canProceedWithoutAnswer: true,
+        }
+      : pendingInput.request
+    : null;
   const selectedSessionAwaitingInput = Boolean(pendingInput) || selectedSession?.awaitingInput === true;
   const turnActive = selectedSessionId ? (turnActiveBySession[selectedSessionId] ?? false) : false;
   const sendCodexControlMessage = useCallback(async (sessionId: string, text: string) => {
@@ -2989,7 +3009,11 @@ export function AgentChatPane({
     || (surfaceMode === "resolver" ? "AI Resolver" : selectedSession ? chatSessionTitle(selectedSession) : "New chat");
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
-  const messagePlaceholder = presentation?.messagePlaceholder?.trim() || "Type to vibecode...";
+  const defaultMessagePlaceholder =
+    workDraftKind === "chat-orchestrator" && !selectedSessionId
+      ? "Describe the orchestration goal..."
+      : "Type to vibecode...";
+  const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
   const effectiveMessagePlaceholder = projectTransitionBlocksChat
     ? "Project is switching..."
     : messagePlaceholder;
@@ -5226,6 +5250,37 @@ export function AgentChatPane({
     void createSession();
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
+  const handleApproval = useCallback(async (
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+    answers?: Record<string, string | string[]>,
+  ): Promise<boolean> => {
+    if (!selectedSessionId) return false;
+    try {
+      touchSession(selectedSessionId);
+      setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
+      await window.ade.agentChat.respondToInput({
+        sessionId: selectedSessionId,
+        itemId,
+        decision,
+        responseText,
+        ...(answers ? { answers } : {}),
+      });
+      setPendingInputsBySession((prev) => ({
+        ...prev,
+        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
+      }));
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      await refreshSessions().catch(() => {});
+      return true;
+    } catch (approvalError) {
+      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
+      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
+      return false;
+    }
+  }, [refreshSessions, selectedSessionId, touchSession]);
+
   const submit = useCallback(async () => {
     if (submitInFlightRef.current || busy || parallelLaunchBusy || projectTransitionBlocksChat) {
       if (submitInFlightRef.current) {
@@ -5235,6 +5290,28 @@ export function AgentChatPane({
     }
     if (selectedSessionId) {
       const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
+      const planReadyGate = sessionPending.find((entry) =>
+        isOrchestrationPlanApprovalRequest(entry.request),
+      ) ?? null;
+      const onlyPlanReadyGatePending = sessionPending.length > 0
+        && sessionPending.every((entry) => isOrchestrationPlanApprovalRequest(entry.request));
+      const draftText = draft.trim();
+      if (planReadyGate && onlyPlanReadyGatePending && draftText.length > 0) {
+        const hasUnsupportedRevisionContext = attachments.length > 0
+          || contextAttachments.length > 0
+          || iosElementContextItems.length > 0
+          || appControlContextItems.length > 0
+          || builtInBrowserContextItems.length > 0
+          || macosVmContextItems.length > 0;
+        if (hasUnsupportedRevisionContext) {
+          setError("Plan revisions from the ready gate are text-only. Remove attachments or click Keep planning first.");
+          return;
+        }
+        setPromptSuggestion(null);
+        const resolved = await handleApproval(planReadyGate.itemId, "decline", draftText);
+        if (resolved) setDraft("");
+        return;
+      }
       const hasBlockingPending = sessionPending.some((entry) => entry.request.blocking);
       if (hasBlockingPending || selectedSession?.awaitingInput === true) {
         setError("Answer or decline the pending request before sending another message.");
@@ -5839,6 +5916,7 @@ export function AgentChatPane({
     draft,
     draftLaunchTargetIsAutoCreate,
     executionMode,
+    handleApproval,
     hasComputerUseSelectionChanged,
     interactionMode,
     laneId,
@@ -5955,35 +6033,6 @@ export function AgentChatPane({
       setError(interruptError instanceof Error ? interruptError.message : String(interruptError));
     }
   }, [selectedSessionId, touchSession]);
-
-  const handleApproval = useCallback(async (
-    itemId: string,
-    decision: AgentChatApprovalDecision,
-    responseText?: string | null,
-    answers?: Record<string, string | string[]>,
-  ) => {
-    if (!selectedSessionId) return;
-    try {
-      touchSession(selectedSessionId);
-      setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
-      await window.ade.agentChat.respondToInput({
-        sessionId: selectedSessionId,
-        itemId,
-        decision,
-        responseText,
-        ...(answers ? { answers } : {}),
-      });
-      setPendingInputsBySession((prev) => ({
-        ...prev,
-        [selectedSessionId]: (prev[selectedSessionId] ?? []).filter((entry) => entry.itemId !== itemId)
-      }));
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-      await refreshSessions().catch(() => {});
-    } catch (approvalError) {
-      setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
-      setError(approvalError instanceof Error ? approvalError.message : String(approvalError));
-    }
-  }, [refreshSessions, selectedSessionId, touchSession]);
 
   const approve = useCallback(async (
     decision: AgentChatApprovalDecision,
@@ -6987,6 +7036,10 @@ export function AgentChatPane({
     </div>
   );
 
+  const activeOrchestrationRole = selectedSession?.orchestrationRole ?? null;
+  const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
+  const isOrchestratorDraft = forceDraft && workDraftKind === "chat-orchestrator" && selectedSessionId == null;
+
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
@@ -7009,7 +7062,7 @@ export function AgentChatPane({
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
             pinnedLinearIssue={pinnedLinearIssue}
-            pendingInput={pendingInput?.request ?? null}
+            pendingInput={composerPendingInput}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
@@ -7072,7 +7125,17 @@ export function AgentChatPane({
                 /* dispatch is best-effort */
               }
             }}
-            orchestrationRole={selectedSession?.orchestrationRole ?? null}
+            onStopOrchestratorChat={() => {
+              try {
+                window.dispatchEvent(
+                  new CustomEvent("ade:work:stop-orchestrator-chat"),
+                );
+              } catch {
+                /* dispatch is best-effort */
+              }
+            }}
+            orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
+            orchestrationRole={activeOrchestrationRole}
             onModelChange={(nextModelId) => {
               const modelAllowed =
                 !effectiveAvailableModelIds.length
@@ -7450,8 +7513,7 @@ export function AgentChatPane({
   // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
   // the conic-gradient frame.
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
-  const orchestrationRole = selectedSession?.orchestrationRole ?? null;
-  const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
+  const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
   const rightPaneOpen = proofDrawerOpen || appPanelOpen || effectiveSubagentPaneOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
@@ -7493,6 +7555,14 @@ export function AgentChatPane({
       laneName={laneLabel ?? null}
       viewerRole={orchestrationRole ?? undefined}
       bundleRoot={selectedSession?.orchestrationBundlePath ?? null}
+      planApprovalPending={planApprovalPendingInput ? {
+        itemId: planApprovalPendingInput.itemId,
+        request: planApprovalPendingInput.request,
+        responding: respondingApprovalIds.has(planApprovalPendingInput.itemId),
+      } : null}
+      onPlanApproval={(itemId, decision, responseText, answers) => {
+        void handleApproval(itemId, decision, responseText, answers);
+      }}
       onOpenSession={(sessionId) => {
         // Switch the Work tab to the target chat session.
         try {
@@ -7508,7 +7578,7 @@ export function AgentChatPane({
 
   return (
     <>
-      <OrchestratorLeadFrame active={isOrchestratorLead} className="flex h-full min-h-0 w-full min-w-0 flex-col">
+      <OrchestratorLeadFrame active={isOrchestratorLead || isOrchestratorDraft} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
         mode={surfaceMode}
@@ -7832,7 +7902,7 @@ export function AgentChatPane({
                         </motion.div>
 
                         <h2 className="font-sans text-[18px] font-semibold tracking-tight text-fg/80">
-                          Start a new conversation
+                          {isOrchestratorDraft ? "Start a new orchestration" : "Start a new conversation"}
                         </h2>
 
                         {/* Lane selector pill */}

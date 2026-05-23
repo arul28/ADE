@@ -10,7 +10,7 @@ import { createGrepSearchTool } from "./grepSearch";
 import { createGlobSearchTool } from "./globSearch";
 import { webFetchTool } from "./webFetch";
 import { webSearchTool } from "./webSearch";
-import type { AgentChatApprovalDecision, AgentChatEvent, WorkerSandboxConfig } from "../../../../shared/types";
+import type { AgentChatApprovalDecision, AgentChatEvent, PendingInputKind, WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
 import { getErrorMessage, isEnoentError, isWithinDir, resolvePathWithinRoot } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
@@ -45,6 +45,8 @@ export type AskUserToolInput = {
   title?: string;
   body?: string;
   questions?: AskUserToolQuestion[];
+  pendingInputKind?: PendingInputKind;
+  providerMetadata?: Record<string, unknown>;
 };
 
 export type AskUserToolResult = {
@@ -68,6 +70,11 @@ export interface UniversalToolSetOptions {
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>;
   /** Sandbox config for API-model workers. CLI models skip this check. */
   sandboxConfig?: WorkerSandboxConfig;
+  /**
+   * Optional lifecycle hook for long-running bash calls. Callers can retain the
+   * controller and abort it when an external policy event cancels the session.
+   */
+  registerActiveBash?: (controller: AbortController) => (() => void) | void;
 }
 
 // ── Permission helpers ──────────────────────────────────────────────
@@ -1304,6 +1311,7 @@ function createBashTool(
   mode: PermissionMode,
   sandboxConfig?: WorkerSandboxConfig,
   onApprovalRequest?: (request: ToolApprovalRequest) => Promise<ToolApprovalResult>,
+  registerActiveBash?: (controller: AbortController) => (() => void) | void,
 ) {
   return tool({
     description:
@@ -1348,9 +1356,22 @@ function createBashTool(
         }
       }
       const clampedTimeout = Math.min(timeout, 600_000);
-      const killProc = (proc: ReturnType<typeof spawn>): void => {
-        terminateProcessTree(proc, "SIGTERM");
+      const killProc = (proc: ReturnType<typeof spawn>, signal: NodeJS.Signals = "SIGTERM"): void => {
+        if (process.platform !== "win32" && typeof proc.pid === "number") {
+          try {
+            process.kill(-proc.pid, signal);
+            return;
+          } catch {
+            // Fall back to killing the direct child when process-group teardown is unavailable.
+          }
+        }
+        terminateProcessTree(proc, signal);
       };
+      const abortController = new AbortController();
+      const unregisterActiveBash = registerActiveBash?.(abortController);
+      const unregister = typeof unregisterActiveBash === "function"
+        ? unregisterActiveBash
+        : () => {};
       try {
         const result = await new Promise<{ stdout: string; stderr: string; exitCode: number }>(
           (resolve, reject) => {
@@ -1358,14 +1379,34 @@ function createBashTool(
             const proc = spawn(file, args, {
               cwd,
               stdio: ["ignore", "pipe", "pipe"],
+              detached: process.platform !== "win32",
               windowsVerbatimArguments: process.platform === "win32",
               env:
                 process.platform === "win32"
                   ? { ...process.env }
                   : { ...process.env, TERM: "dumb" },
             });
+            let abortMessage: string | null = null;
+            let forceKillId: NodeJS.Timeout | null = null;
+            const onAbort = () => {
+              const reason = abortController.signal.reason;
+              abortMessage = typeof reason === "string"
+                ? reason
+                : reason instanceof Error
+                  ? reason.message
+                  : "Command aborted.";
+              killProc(proc);
+              forceKillId ??= setTimeout(() => killProc(proc, "SIGKILL"), 2_000);
+              forceKillId.unref?.();
+            };
+            abortController.signal.addEventListener("abort", onAbort, { once: true });
+            if (abortController.signal.aborted) {
+              onAbort();
+            }
             const timeoutId = setTimeout(() => {
               killProc(proc);
+              forceKillId ??= setTimeout(() => killProc(proc, "SIGKILL"), 2_000);
+              forceKillId.unref?.();
             }, clampedTimeout);
 
             let stdout = "";
@@ -1387,14 +1428,21 @@ function createBashTool(
 
             proc.on("close", (code) => {
               clearTimeout(timeoutId);
+              if (forceKillId) clearTimeout(forceKillId);
+              abortController.signal.removeEventListener("abort", onAbort);
+              const stderrWithAbort = abortMessage
+                ? `${stderr}${stderr.length ? "\n" : ""}ABORTED: ${abortMessage}`
+                : stderr;
               resolve({
                 stdout: stdout.slice(0, 200_000),
-                stderr: stderr.slice(0, 50_000),
-                exitCode: code ?? 1,
+                stderr: stderrWithAbort.slice(0, 50_000),
+                exitCode: code ?? (abortMessage ? 130 : 1),
               });
             });
             proc.on("error", (error) => {
               clearTimeout(timeoutId);
+              if (forceKillId) clearTimeout(forceKillId);
+              abortController.signal.removeEventListener("abort", onAbort);
               reject(error);
             });
           }
@@ -1406,6 +1454,8 @@ function createBashTool(
           stderr: `Command failed: ${getErrorMessage(err)}`,
           exitCode: 1,
         };
+      } finally {
+        unregister();
       }
     },
   });
@@ -2508,7 +2558,6 @@ function createTodoWriteTool(args: {
   getItems?: () => TodoToolItem[];
   onUpdate?: (items: TodoToolItem[]) => void;
 }) {
-  let todoItems = args.getItems?.() ?? [];
   return tool({
     description:
       "Create or update the current task list for this chat. " +
@@ -2521,7 +2570,6 @@ function createTodoWriteTool(args: {
       if (normalized == null) {
         return { updated: false, error: "Provide a todos array." };
       }
-      todoItems = normalized;
       args.onUpdate?.(normalized);
       return {
         updated: true,
@@ -2705,6 +2753,7 @@ export function createUniversalToolSet(
       permissionMode,
       effectiveSandboxConfig,
       onApprovalRequest,
+      opts.registerActiveBash,
     );
   }
 

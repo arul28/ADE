@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   OrchestrationEventPayload,
   OrchestrationManifest,
@@ -12,6 +12,7 @@ import {
   ORCHESTRATION_PANEL_PLAN_TEST_ID,
   ORCHESTRATION_PANEL_TASK_CARD_TEST_ID,
   ORCHESTRATION_PANEL_TEST_ID,
+  ORCHESTRATION_PLAN_IMPLEMENT_BUTTON_TEST_ID,
   filterPlanningQuestions,
 } from "./OrchestrationPanel";
 
@@ -71,7 +72,7 @@ function makeSource(initial: { manifest: OrchestrationManifest; planMd?: string 
       planMd: initial.planMd ?? "",
       etag: initial.manifest.etag,
     })),
-    subscribe: vi.fn((_args: { runId: string }, callback: (p: OrchestrationEventPayload) => void) => {
+    subscribe: vi.fn((_args: { runId: string; laneId: string }, callback: (p: OrchestrationEventPayload) => void) => {
       cb = callback;
       return vi.fn(() => {
         cb = null;
@@ -190,6 +191,46 @@ describe("OrchestrationPanel", () => {
     );
     const plan = await screen.findByTestId(ORCHESTRATION_PANEL_PLAN_TEST_ID);
     expect(plan.textContent ?? "").toMatch(/This is the plan/);
+  });
+
+  it("surfaces an Implement button when the lead has a pending plan-ready gate", async () => {
+    const manifest = makeManifest();
+    const source = makeSource({
+      manifest,
+      planMd: "# Plan\n\nReady for implementation.",
+    });
+    const onPlanApproval = vi.fn();
+    render(
+      <OrchestrationPanel
+        runId="run-1"
+        laneId="lane-1"
+        source={source}
+        initialManifest={manifest}
+        initialPlanMd={"# Plan\n\nReady for implementation."}
+        viewerRole="lead"
+        planApprovalPending={{
+          itemId: "approval-1",
+          request: {
+            requestId: "approval-1",
+            itemId: "approval-1",
+            source: "ade",
+            kind: "plan_approval",
+            title: "Plan ready",
+            description: "Ready for implementation.",
+            questions: [],
+            allowsFreeform: true,
+            blocking: true,
+            canProceedWithoutAnswer: false,
+            providerMetadata: { orchestrationPlanApproval: true },
+          },
+        }}
+        onPlanApproval={onPlanApproval}
+      />,
+    );
+    const button = await screen.findByTestId(ORCHESTRATION_PLAN_IMPLEMENT_BUTTON_TEST_ID);
+    expect(button.textContent ?? "").toBe("Implement");
+    fireEvent.click(button);
+    expect(onPlanApproval).toHaveBeenCalledWith("approval-1", "accept");
   });
 
   it("collapses into the icon rail and expands back", async () => {

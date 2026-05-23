@@ -63,6 +63,7 @@ function sessionOptions(
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
+    ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.CreateSessionOptions["mcpServers"] } : {}),
     permissionHandler: requestPermission,
     askUserHandler: requestAskUser,
   };
@@ -213,6 +214,7 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         execPath: init.droidPath,
         permissionHandler: requestPermission,
         askUserHandler: requestAskUser,
+        ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.ResumeSessionOptions["mcpServers"] } : {}),
       });
       await applySettings(init.settings);
     } catch (error) {

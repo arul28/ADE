@@ -12,7 +12,7 @@ import type {
 
 /**
  * Mirrors the per-provider permission profile applied at orchestration spawn
- * time (see `applyOrchestrationPermissionProfile` in registerIpc.ts). The
+ * time (see `applyOrchestrationPermissionProfile` in runtimeProfile.ts). The
  * canary test here pins the mode strings to the runtime unions — if a
  * provider's union shifts and these strings stop being valid, this test fails
  * BEFORE silently demoting orchestration workers to a weaker permission tier.

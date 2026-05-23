@@ -459,10 +459,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const startOrchestratorChat = () => {
       showDraftKind("chat-orchestrator");
     };
+    const stopOrchestratorChat = () => {
+      showDraftKind("chat");
+    };
     window.addEventListener("ade:work:start-orchestrator-chat", startOrchestratorChat);
+    window.addEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
     return () => {
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
       window.removeEventListener("ade:work:start-orchestrator-chat", startOrchestratorChat);
+      window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
   }, [active, setViewMode, setWorkSidebarTab, showDraftKind]);

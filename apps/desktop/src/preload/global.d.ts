@@ -1425,7 +1425,7 @@ declare global {
           import("../shared/types/orchestration").OrchestrationRunSummary[]
         >;
         subscribe: (
-          args: { runId: string },
+          args: { runId: string; laneId?: string },
           callback: (
             payload: import("../shared/types/orchestration").OrchestrationEventPayload,
           ) => void,

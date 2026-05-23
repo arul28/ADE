@@ -681,9 +681,13 @@ import type { createMissionBudgetService } from "../orchestrator/missionBudgetSe
 import type { createOrchestratorService } from "../orchestrator/orchestratorService";
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import { validateSpawnBrief } from "../orchestration/orchestrationService";
+import {
+  applyOrchestrationPermissionProfile,
+  isOrchestrationPlanApproved,
+  resolveOrchestrationModel,
+} from "../orchestration/runtimeProfile";
 import type {
   ManifestSection,
-  ModelSelection,
   OrchestrationAgentInjectRequest,
   OrchestrationAssetRegisterRequest,
   OrchestrationClaimTaskRequest,
@@ -849,51 +853,6 @@ function clampLayout(layout: DockLayout): DockLayout {
 
 function pathJoinOrchestration(worktree: string, runId: string): string {
   return path.join(worktree, ".ade", "orchestration", runId);
-}
-
-type OrchestrationRoutingResult = ModelSelection & {
-  routingKey: "byRoleTag" | "byTag" | "byRole" | "default" | "fallback" | "override";
-};
-
-function resolveOrchestrationModel(
-  manifest: import("../../../shared/types/orchestration").OrchestrationManifest,
-  role: "worker" | "validator",
-  tag: string,
-  override?: ModelSelection,
-): OrchestrationRoutingResult {
-  if (override) return { ...override, routingKey: "override" };
-  const r = manifest.modelRouting;
-  const byRoleTag = r.byRoleTag?.[`${role}:${tag}`];
-  if (byRoleTag) return { ...byRoleTag, routingKey: "byRoleTag" };
-  const byTag = r.byTag?.[tag];
-  if (byTag) return { ...byTag, routingKey: "byTag" };
-  const byRole = r.byRole?.[role];
-  if (byRole) return { ...byRole, routingKey: "byRole" };
-  if (r.default) return { ...r.default, routingKey: "default" };
-  return {
-    provider: "claude",
-    modelId: "claude-sonnet-4-6",
-    reasoningEffort: null,
-    codexFastMode: false,
-    routingKey: "fallback",
-  };
-}
-
-function applyOrchestrationPermissionProfile(provider: string): Record<string, unknown> {
-  switch (provider) {
-    case "claude":
-      return { claudePermissionMode: "bypassPermissions" };
-    case "codex":
-      return { codexSandbox: "danger-full-access", codexApprovalPolicy: "never" };
-    case "cursor":
-      return { cursorModeId: "full-auto" };
-    case "droid":
-      return { droidPermissionMode: "auto-high" };
-    case "opencode":
-      return { opencodePermissionMode: "full-auto" };
-    default:
-      return {};
-  }
 }
 
 function escapeCsvCell(value: string | null | undefined): string {
@@ -6982,6 +6941,9 @@ export function registerIpc({
     if (!manifest) {
       throw new Error(`run ${arg.runId} not loaded — call orchestrationBundleRead first`);
     }
+    if (!isOrchestrationPlanApproved(manifest)) {
+      throw new Error("spawnAgent is blocked until the user approves the orchestration plan.");
+    }
     const brief = validateSpawnBrief(arg.initialMessage);
     if (!brief.ok) {
       throw new Error(
@@ -7118,7 +7080,13 @@ export function registerIpc({
     }
   });
 
-  ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string }) => {
+  ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string; laneId?: string }) => {
+    const { ctx, service } = ensureOrchestration();
+    if (typeof arg.laneId === "string" && arg.laneId.trim()) {
+      const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
+      const bundlePath = pathJoinOrchestration(worktree, arg.runId);
+      await service.subscribe(arg.runId, bundlePath);
+    }
     subscribeOrchestrationBroadcast();
     return { ok: true, runId: arg.runId };
   });

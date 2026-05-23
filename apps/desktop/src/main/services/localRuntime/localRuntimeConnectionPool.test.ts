@@ -297,7 +297,43 @@ describe("local runtime connection pool", () => {
     expect(pool.getStatus().connectionState).toBe("idle");
   });
 
-  it("reattaches to a machine daemon after the desktop-side client disconnects", async () => {
+  it("terminates an app-owned fallback runtime when disposed", async () => {
+    vi.useFakeTimers();
+    const child = {
+      pid: 24680,
+      kill: vi.fn(),
+      once: vi.fn(),
+    } as unknown as ChildProcess;
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, { disableSync: true });
+    const client = {
+      call: vi.fn(),
+      close: vi.fn(),
+    };
+    (pool as unknown as { connection: Promise<unknown>; activeClient: unknown }).connection = Promise.resolve({
+      client,
+      child,
+      socketPath: "/tmp/ade-owned-runtime.sock",
+    });
+    (pool as unknown as { activeClient: unknown }).activeClient = client;
+
+    try {
+      pool.dispose();
+      await Promise.resolve();
+
+      expect(client.close).toHaveBeenCalledTimes(1);
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("reattaches to an externally managed machine daemon after the desktop-side client disconnects", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -321,14 +357,31 @@ describe("local runtime connection pool", () => {
       warn: vi.fn(),
       error: vi.fn(),
     };
+    const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
+    expect(expectedBuildHash).toBeTruthy();
+    const daemonEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      ADE_CLI_VERSION: "1.2.3",
+      ADE_RUNTIME_BUILD_HASH: expectedBuildHash!,
+      NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
+    };
+    const daemon = startServeProcess({
+      cliPath,
+      cwd: adeCliRoot,
+      env: daemonEnv,
+      socketPath,
+    });
     let firstPool: LocalRuntimeConnectionPool | null = null;
     let secondPool: LocalRuntimeConnectionPool | null = null;
 
     try {
+      await waitForRuntimeSocket(socketPath);
       process.env.ADE_CLI_JS = cliPath;
       process.env.ADE_HOME = adeHome;
       process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
-      process.env.NODE_OPTIONS = withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath);
+      process.env.NODE_OPTIONS = daemonEnv.NODE_OPTIONS;
 
       firstPool = new LocalRuntimeConnectionPool("1.2.3", logger as never, { disableSync: true });
       const registered = await firstPool.ensureProject(projectRoot);
@@ -346,6 +399,7 @@ describe("local runtime connection pool", () => {
       firstPool?.dispose();
       secondPool?.dispose();
       await shutdownRuntime(socketPath);
+      if (!daemon.killed) daemon.kill("SIGKILL");
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;

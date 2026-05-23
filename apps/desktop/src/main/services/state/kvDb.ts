@@ -186,14 +186,22 @@ function rewriteCreateTableName(sql: string, fromName: string, toName: string): 
 function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
-    `select name, sql
-       from sqlite_master
-      where type = 'table'
-        and sql is not null
-        and name not like 'sqlite_%'
-        and name not like 'crsql_%'
-        and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'`
+    `select m.name, m.sql
+       from sqlite_master m
+      where m.type = 'table'
+        and m.sql is not null
+        and m.name not like 'sqlite_%'
+        and m.name not like 'crsql_%'
+        and m.name not like '%__crsql_clock'
+        and m.name not like '%__crsql_pks'
+        and lower(m.sql) not like 'create virtual%'
+        and not exists (
+          select 1 from sqlite_master v
+           where v.type = 'table'
+             and v.sql is not null
+             and lower(v.sql) like 'create virtual%'
+             and m.name like v.name || '\\_%' escape '\\'
+        )`
   );
 
   let changed = false;
@@ -313,14 +321,22 @@ const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
 function retrofitForeignKeyCascadeActions(db: DatabaseSyncType, crsqliteEnabled: boolean): boolean {
   const tables = allRows<{ name: string; sql: string }>(
     db,
-    `select name, sql
-       from sqlite_master
-      where type = 'table'
-        and sql is not null
-        and name not like 'sqlite_%'
-        and name not like 'crsql_%'
-        and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'`
+    `select m.name, m.sql
+       from sqlite_master m
+      where m.type = 'table'
+        and m.sql is not null
+        and m.name not like 'sqlite_%'
+        and m.name not like 'crsql_%'
+        and m.name not like '%__crsql_clock'
+        and m.name not like '%__crsql_pks'
+        and lower(m.sql) not like 'create virtual%'
+        and not exists (
+          select 1 from sqlite_master v
+           where v.type = 'table'
+             and v.sql is not null
+             and lower(v.sql) like 'create virtual%'
+             and m.name like v.name || '\\_%' escape '\\'
+        )`
   );
 
   // Build a lookup: tableName -> list of { column, references, action }
@@ -432,18 +448,25 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
   const tables = allRows<{ name: string; sql: string | null }>(
     db,
-    `select name, sql
-       from sqlite_master
-      where type = 'table'
-        and sql is not null
-        and name not like 'sqlite_%'
-        and name not like 'crsql_%'
-        and name not like '%__crsql_clock'
-        and name not like '%__crsql_pks'`
+    `select m.name, m.sql
+       from sqlite_master m
+      where m.type = 'table'
+        and m.sql is not null
+        and m.name not like 'sqlite_%'
+        and m.name not like 'crsql_%'
+        and m.name not like '%__crsql_clock'
+        and m.name not like '%__crsql_pks'
+        and lower(m.sql) not like 'create virtual%'
+        and not exists (
+          select 1 from sqlite_master v
+           where v.type = 'table'
+             and v.sql is not null
+             and lower(v.sql) like 'create virtual%'
+             and m.name like v.name || '\\_%' escape '\\'
+        )`
   );
   return tables
     .filter((table) => !LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name))
-    .filter((table) => !table.sql?.toLowerCase().startsWith("create virtual table"))
     .filter((table) => allRows<{ pk: number }>(db, `pragma table_info('${table.name.replace(/'/g, "''")}')`).some((column) => column.pk > 0))
     .map((table) => table.name);
 }
@@ -567,6 +590,100 @@ function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
       deletedMetadataCount,
     });
   }
+}
+
+/**
+ * Drop the legacy `unified_memories` + `unified_memories_fts` schema that
+ * existed before #329 (Memory Wipe).
+ *
+ * Old DBs carry an FTS4 virtual table whose shadow tables (`*_segdir`,
+ * `*_segments`, `*_docsize`, `*_stat`) cannot be dropped individually — the
+ * retrofit pass that follows iterates `sqlite_master` and previously crashed
+ * with `table <shadow> may not be dropped`. Without this cleanup, every user
+ * upgrading from a pre-#329 build would brick on first launch.
+ *
+ * The function is idempotent: every statement uses `if exists`, so it is safe
+ * to run on every open. Once a DB has been cleaned, subsequent calls are
+ * cheap no-ops.
+ */
+function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger): void {
+  const ftsParent = "unified_memories_fts";
+  const baseTable = "unified_memories";
+  const hasFtsParent = rawHasTable(db, ftsParent);
+  const hasBaseTable = rawHasTable(db, baseTable);
+  if (!hasFtsParent && !hasBaseTable) return;
+
+  for (const trigger of [
+    "unified_memories_fts_ai",
+    "unified_memories_fts_au",
+    "unified_memories_fts_bd",
+    "unified_memories_fts_bu",
+  ]) {
+    try {
+      runStatement(db, `drop trigger if exists ${quoteIdentifier(trigger)}`);
+    } catch (error) {
+      logger?.warn("db.legacy_memory_trigger_drop_failed", {
+        trigger,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (hasFtsParent) {
+    try {
+      runStatement(db, `drop table if exists ${quoteIdentifier(ftsParent)}`);
+    } catch (error) {
+      logger?.warn("db.legacy_memory_fts_drop_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const orphanRepairs = allRows<{ name: string }>(
+    db,
+    "select name from sqlite_master where type = 'table' and name like '__ade_crr_repair_unified_memories%'",
+  );
+  for (const orphan of orphanRepairs) {
+    try {
+      runStatement(db, `drop table if exists ${quoteIdentifier(orphan.name)}`);
+    } catch (error) {
+      logger?.warn("db.legacy_memory_orphan_drop_failed", {
+        table: orphan.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (hasBaseTable) {
+    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+      runStatement(db, "delete from crsql_master where tbl_name = ?", [baseTable]);
+    }
+    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
+      runStatement(db, "delete from crsql_changes where [table] = ?", [baseTable]);
+    }
+    try {
+      getRow(db, "select crsql_as_table(?) as ok", [baseTable]);
+    } catch {
+      // The table may not be CRR-registered at runtime (older partial state); the
+      // explicit shadow + trigger cleanup below covers that case.
+    }
+    dropCrrTriggers(db, baseTable, logger);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${baseTable}__crsql_clock`)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${baseTable}__crsql_pks`)}`);
+    try {
+      runStatement(db, `drop table if exists ${quoteIdentifier(baseTable)}`);
+    } catch (error) {
+      logger?.warn("db.legacy_memory_base_drop_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  logger?.info("db.legacy_unified_memories_cleaned", {
+    hadFts: hasFtsParent,
+    hadBase: hasBaseTable,
+    orphanRepairsDropped: orphanRepairs.length,
+  });
 }
 
 function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
@@ -984,7 +1101,40 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_linear_issue_links_lane on lane_linear_issue_links(project_id, lane_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issue_links(project_id, issue_id)");
   db.run("create index if not exists idx_lane_linear_issue_links_role on lane_linear_issue_links(project_id, role)");
-  db.run("create unique index if not exists uq_lane_linear_issue_links_role on lane_linear_issue_links(project_id, lane_id, issue_id, role)");
+  // Drop the legacy UNIQUE index on (project_id, lane_id, issue_id, role).
+  // CRR-converted tables cannot carry UNIQUE indices besides the primary key
+  // (`crsql_as_crr` rejects them with "Table … has unique indices besides the
+  // primary key. This is not allowed for CRRs"). Uniqueness on this tuple is
+  // enforced at the application layer (same pattern as `lane_linear_issues`
+  // above). Without this drop, every existing user DB with the legacy index
+  // bricks on `ensureCrrTables` during the next attach.
+  try {
+    db.run("drop index if exists uq_lane_linear_issue_links_role");
+  } catch {
+    // best-effort cleanup
+  }
+  // Coalesce any duplicates that older dev builds may have produced — keep
+  // the most recently updated row per (project_id, lane_id, issue_id, role).
+  try {
+    db.run(`
+      delete from lane_linear_issue_links
+      where rowid not in (
+        select rowid from lane_linear_issue_links as keep
+        where keep.id = (
+          select id from lane_linear_issue_links inner_p
+          where inner_p.project_id = keep.project_id
+            and inner_p.lane_id = keep.lane_id
+            and inner_p.issue_id = keep.issue_id
+            and inner_p.role = keep.role
+          order by inner_p.updated_at desc,
+                   inner_p.id asc
+          limit 1
+        )
+      )
+    `);
+  } catch {
+    // best-effort migration; duplicates will be coalesced on the next upsert.
+  }
 
   db.run(`
     create table if not exists lane_branch_profiles (
@@ -3519,6 +3669,14 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     const migrateDb = makeMigrateDb();
     migrate(migrateDb);
     removeExcludedCrrMetadata(db, logger);
+    // Tear down the legacy `unified_memories` schema (removed in #329) before
+    // any retrofit pass runs — the FTS4 shadow tables cannot be dropped
+    // individually and would crash the schema-rewrite loop further down.
+    try {
+      dropLegacyUnifiedMemoriesSchema(db, logger);
+    } catch (error) {
+      if (!isReadonlyDatabaseError(error)) throw error;
+    }
 
     if (existedBeforeOpen && !hasCrsqlMetadata(db)) {
       writeMigrationBackupIfNeeded(dbPath);

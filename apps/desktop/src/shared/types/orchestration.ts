@@ -271,7 +271,13 @@ export type OrchestrationManifest = {
   assets: OrchestrationAsset[];
   decisions: DecisionLogEntry[];
   userOverrides: UserOverrideEntry[];
-  leadState: { lastSnapshotEtag?: string; lastSnapshotSeenAt?: string };
+  leadState: {
+    lastSnapshotEtag?: string;
+    lastSnapshotSeenAt?: string;
+    planApprovedAt?: string;
+    planApprovedBySessionId?: string;
+    planApprovalSummary?: string;
+  };
   history: OrchestrationHistoryEntry[];
   defaultBudget?: AgentBudget;
 

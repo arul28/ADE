@@ -51,9 +51,12 @@ class AsyncMutex {
 const MANIFEST_FILE = "manifest.json";
 const PLAN_FILE = "plan.md";
 const GEN_FILE = ".gen";
+const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
 const WATCHER_DEBOUNCE_MS = 50;
+const WATCHER_IDLE_CLOSE_MS = 30_000;
+const ORCHESTRATION_INDEX_VERSION = 1;
 
 export type OrchestrationServiceEvents = {
   event: (payload: OrchestrationEventPayload) => void;
@@ -69,7 +72,20 @@ type RunRuntime = {
   refCount: number;
   recentSelfWriteUntil: number;
   watcherDebounceTimer: NodeJS.Timeout | null;
+  watcherIdleTimer: NodeJS.Timeout | null;
   suspended: boolean;
+};
+
+type RunIndexEntry = {
+  runId: string;
+  createdAt: string;
+  title: string;
+  bundlePath: string;
+};
+
+type RunIndex = {
+  version: 1;
+  runs: RunIndexEntry[];
 };
 
 export type OrchestrationServiceDeps = {
@@ -82,6 +98,7 @@ export type OrchestrationServiceDeps = {
 export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   const emitter = new EventEmitter();
   const runs = new Map<string, RunRuntime>();
+  const laneIndexMutexes = new Map<string, AsyncMutex>();
   const now = deps.now ?? (() => new Date());
 
   function nowIso(): string {
@@ -140,6 +157,159 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     await fsp.rename(tmp, target);
   }
 
+  function getLaneIndexMutex(laneId: string): AsyncMutex {
+    let mutex = laneIndexMutexes.get(laneId);
+    if (!mutex) {
+      mutex = new AsyncMutex();
+      laneIndexMutexes.set(laneId, mutex);
+    }
+    return mutex;
+  }
+
+  function orchestrationDirForLane(laneId: string): string {
+    const worktree = deps.resolveLaneWorktree(laneId);
+    if (!worktree) {
+      throw new Error(`unknown laneId ${laneId} — cannot resolve worktree`);
+    }
+    return path.join(worktree, ".ade", "orchestration");
+  }
+
+  function indexPathForLane(laneId: string): string {
+    return path.join(orchestrationDirForLane(laneId), INDEX_FILE);
+  }
+
+  function parseRunIndex(raw: string): RunIndex {
+    const parsed = JSON.parse(raw) as Partial<RunIndex>;
+    if (parsed.version !== ORCHESTRATION_INDEX_VERSION || !Array.isArray(parsed.runs)) {
+      throw new Error("unsupported orchestration index");
+    }
+    return {
+      version: ORCHESTRATION_INDEX_VERSION,
+      runs: parsed.runs.filter((entry): entry is RunIndexEntry => {
+        const candidate = entry as Partial<RunIndexEntry>;
+        return (
+          typeof candidate.runId === "string" &&
+          candidate.runId.length > 0 &&
+          typeof candidate.createdAt === "string" &&
+          candidate.createdAt.length > 0 &&
+          typeof candidate.title === "string" &&
+          typeof candidate.bundlePath === "string" &&
+          candidate.bundlePath.length > 0
+        );
+      }),
+    };
+  }
+
+  async function readRunIndex(laneId: string): Promise<RunIndex | null> {
+    try {
+      return parseRunIndex(await fsp.readFile(indexPathForLane(laneId), "utf-8"));
+    } catch {
+      return null;
+    }
+  }
+
+  async function appendRunIndexEntry(
+    laneId: string,
+    entry: RunIndexEntry,
+  ): Promise<void> {
+    await getLaneIndexMutex(laneId).run(async () => {
+      let index = await readRunIndex(laneId);
+      if (!index) {
+        index = { version: ORCHESTRATION_INDEX_VERSION, runs: [] };
+      }
+      const withoutExisting = index.runs.filter((it) => it.runId !== entry.runId);
+      const next: RunIndex = {
+        version: ORCHESTRATION_INDEX_VERSION,
+        runs: [...withoutExisting, entry],
+      };
+      await atomicWrite(indexPathForLane(laneId), JSON.stringify(next, null, 2));
+    });
+  }
+
+  async function readRunIndexEntriesOrScan(laneId: string): Promise<RunIndexEntry[]> {
+    const index = await getLaneIndexMutex(laneId).run(() => readRunIndex(laneId));
+    const scanned = await scanRunIndexEntries(laneId);
+    if (!index) return mergeScannedIntoRunIndex(laneId, scanned);
+
+    const merged = mergeRunIndexEntries(index.runs, scanned);
+    if (merged.length !== index.runs.length) {
+      return mergeScannedIntoRunIndex(laneId, scanned);
+    }
+    return merged;
+  }
+
+  async function mergeScannedIntoRunIndex(
+    laneId: string,
+    scanned: readonly RunIndexEntry[],
+  ): Promise<RunIndexEntry[]> {
+    return getLaneIndexMutex(laneId).run(async () => {
+      const latest = await readRunIndex(laneId);
+      const latestEntries = latest?.runs ?? [];
+      const next = mergeRunIndexEntries(latestEntries, scanned);
+      if (!latest || next.length !== latestEntries.length) {
+        await atomicWrite(
+          indexPathForLane(laneId),
+          JSON.stringify({ version: ORCHESTRATION_INDEX_VERSION, runs: next } satisfies RunIndex, null, 2),
+        );
+      }
+      return next;
+    });
+  }
+
+  function mergeRunIndexEntries(
+    primary: readonly RunIndexEntry[],
+    secondary: readonly RunIndexEntry[],
+  ): RunIndexEntry[] {
+    const byRunId = new Map<string, RunIndexEntry>();
+    for (const entry of primary) byRunId.set(entry.runId, entry);
+    for (const entry of secondary) {
+      if (!byRunId.has(entry.runId)) byRunId.set(entry.runId, entry);
+    }
+    return Array.from(byRunId.values()).sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+  }
+
+  async function scanRunIndexEntries(laneId: string): Promise<RunIndexEntry[]> {
+    const orchestrationDir = orchestrationDirForLane(laneId);
+    let entries: string[];
+    try {
+      entries = await fsp.readdir(orchestrationDir);
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e && e.code === "ENOENT") return [];
+      throw err;
+    }
+    const out: RunIndexEntry[] = [];
+    for (const runId of entries) {
+      const bundlePath = path.join(orchestrationDir, runId);
+      const manifestPath = path.join(bundlePath, MANIFEST_FILE);
+      try {
+        const stat = await fsp.stat(bundlePath);
+        if (!stat.isDirectory()) continue;
+        const manifest = JSON.parse(
+          await fsp.readFile(manifestPath, "utf-8"),
+        ) as OrchestrationManifest;
+        if (
+          manifest.version !== ORCHESTRATION_MANIFEST_VERSION ||
+          manifest.runId !== runId ||
+          manifest.laneId !== laneId
+        ) {
+          continue;
+        }
+        out.push({
+          runId: manifest.runId,
+          createdAt: manifest.createdAt,
+          title: manifest.title,
+          bundlePath: manifest.bundlePath || bundlePath,
+        });
+      } catch {
+        // Ignore stale or malformed bundles while discovering runs.
+      }
+    }
+    return out;
+  }
+
   function makeEtag(runtime: RunRuntime, serverGen: number): string {
     const random = crypto.randomBytes(4).toString("hex");
     return `g${serverGen}-${random}`;
@@ -172,6 +342,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         refCount: 0,
         recentSelfWriteUntil: 0,
         watcherDebounceTimer: null,
+        watcherIdleTimer: null,
         suspended: false,
       };
       runs.set(runId, runtime);
@@ -217,6 +388,21 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     }
   }
 
+  async function hydrateRunForList(entry: RunIndexEntry): Promise<void> {
+    const runtime = getOrCreateRuntime(entry.runId, entry.bundlePath);
+    await runtime.mutex.run(async () => {
+      try {
+        await loadIntoRuntime(runtime);
+        if (!runtime.manifest) {
+          runs.delete(entry.runId);
+          return;
+        }
+      } catch {
+        runs.delete(entry.runId);
+      }
+    });
+  }
+
   function emit(payload: OrchestrationEventPayload): void {
     emitter.emit("event", payload);
   }
@@ -226,6 +412,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   }
 
   async function startWatcher(runtime: RunRuntime): Promise<void> {
+    if (runtime.watcherIdleTimer) {
+      clearTimeout(runtime.watcherIdleTimer);
+      runtime.watcherIdleTimer = null;
+    }
     if (runtime.watcher) return;
     if (!existsSync(runtime.bundlePath)) return;
     const watcher = chokidar.watch(
@@ -402,8 +592,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       };
       await persistManifest(runtime, manifest);
       await persistPlan(runtime, initialPlanMd(manifest));
-      await startWatcher(runtime);
-      runtime.refCount++;
+      await appendRunIndexEntry(req.laneId, {
+        runId,
+        createdAt,
+        title: manifest.title,
+        bundlePath,
+      });
       emit({
         runId,
         kind: "manifest",
@@ -424,8 +618,6 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (!runtime.manifest) {
         throw new Error(`run ${runId} not found at ${bundlePath}`);
       }
-      await startWatcher(runtime);
-      runtime.refCount++;
       return {
         manifest: runtime.manifest,
         planMd: runtime.planMd ?? "",
@@ -735,7 +927,40 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     });
   }
 
+  async function agentHeartbeat(
+    req: { runId: string; sessionId: string },
+    bundlePath: string,
+  ): Promise<{ ok: true; etag: string } | { ok: false; reason: string; etag?: string }> {
+    const runtime = getOrCreateRuntime(req.runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      const manifest = runtime.manifest;
+      if (!manifest) return { ok: false, reason: `run ${req.runId} not found` };
+      if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
+        return { ok: false, reason: `agent ${req.sessionId} not found`, etag: manifest.etag };
+      }
+      const patchRes = await directPatch(
+        runtime,
+        [{
+          op: "add",
+          path: `/agents/{sessionId:${req.sessionId}}/lastHeartbeatAt`,
+          value: nowIso(),
+        }],
+        "heartbeat",
+      );
+      return { ok: true, etag: patchRes.etag };
+    });
+  }
+
   async function runList(laneId?: string): Promise<OrchestrationRunSummary[]> {
+    if (laneId) {
+      const entries = await readRunIndexEntriesOrScan(laneId);
+      for (const entry of entries) {
+        const existing = runs.get(entry.runId);
+        if (existing?.manifest) continue;
+        await hydrateRunForList(entry);
+      }
+    }
     const out: OrchestrationRunSummary[] = [];
     for (const runtime of runs.values()) {
       const m = runtime.manifest;
@@ -764,8 +989,14 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     if (!runtime) return;
     runtime.refCount = Math.max(0, runtime.refCount - 1);
     if (runtime.refCount === 0 && runtime.watcher) {
-      await runtime.watcher.close();
-      runtime.watcher = null;
+      if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
+      runtime.watcherIdleTimer = setTimeout(() => {
+        runtime.watcherIdleTimer = null;
+        if (runtime.refCount > 0 || !runtime.watcher) return;
+        void runtime.watcher.close().catch(() => undefined);
+        runtime.watcher = null;
+      }, WATCHER_IDLE_CLOSE_MS);
+      runtime.watcherIdleTimer.unref?.();
     }
   }
 
@@ -773,8 +1004,21 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     for (const runtime of runs.values()) {
       if (runtime.watcher) await runtime.watcher.close();
       if (runtime.watcherDebounceTimer) clearTimeout(runtime.watcherDebounceTimer);
+      if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
     }
     runs.clear();
+  }
+
+  async function subscribe(runId: string, bundlePath: string): Promise<void> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    await runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (!runtime.manifest) {
+        throw new Error(`run ${runId} not found at ${bundlePath}`);
+      }
+      await startWatcher(runtime);
+      runtime.refCount++;
+    });
   }
 
   function on(
@@ -836,7 +1080,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     assetRegister,
     claimTask,
     releaseTask,
+    agentHeartbeat,
     runList,
+    subscribe,
     release,
     dispose,
     on,

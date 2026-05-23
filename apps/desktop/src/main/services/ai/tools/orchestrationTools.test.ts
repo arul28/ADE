@@ -2,10 +2,11 @@
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOrchestrationService } from "../../orchestration/orchestrationService";
 import {
+  assessOrchestrationPlanQuality,
   buildOrchestrationSandboxConfig,
   createOrchestrationToolSet,
   type OrchestrationAgentChatHandle,
@@ -37,6 +38,35 @@ none
 ## SUCCESS
 
 tests pass
+`.trim();
+
+const VALID_APPROVAL_PLAN = `
+## Goal and assumptions
+Implement the requested orchestration hardening with the current ADE patterns.
+
+## In scope
+Prompt guidance, runtime plan approval, and focused tests.
+
+## Out of scope
+No PR publishing, release work, or unrelated refactors.
+
+## Alternatives and tradeoffs
+Considered a strict template, but chose a minimum-quality gate so the planner can add deeper sections.
+
+## UI decisions
+No UI changes are required for this backend-only plan.
+
+## Implementation order
+First update prompts, then add the approval gate, then update tests. The prompt and tool work can run in parallel after shared requirements are locked.
+
+## Agent plan
+Spawn one worker with tag prompt-tools for implementation and one validator with tag validation for focused checks. Model routing is selected before approval.
+
+## Coordination log
+Workers use plan.md and manifest updates for progress updates, stuck reports, failures, and final handoff notes.
+
+## Validation plan
+Run targeted vitest files, typecheck, and diff checks as proof.
 `.trim();
 
 function makeChatStub(): OrchestrationAgentChatHandle & {
@@ -87,6 +117,29 @@ async function setupWithRun(role: "lead" | "worker" | "validator"): Promise<Setu
 async function cleanup(s: Setup): Promise<void> {
   await s.svc.dispose();
   await fsp.rm(s.laneRoot, { recursive: true, force: true });
+}
+
+async function approveRun(setup: Setup): Promise<void> {
+  const manifest = setup.svc.getManifestForRun(setup.runId)!;
+  const approvedAt = new Date().toISOString();
+  const res = await setup.svc.manifestPatch(
+    {
+      runId: setup.runId,
+      ifMatchEtag: manifest.etag,
+      actorRole: "lead",
+      actorSessionId: "S-lead",
+      summary: "approve plan",
+      patches: [
+        { op: "add", path: "/leadState/planApprovedAt", value: approvedAt },
+        { op: "add", path: "/leadState/planApprovedBySessionId", value: "S-lead" },
+        { op: "replace", path: "/currentPhase", value: "developing" },
+        { op: "replace", path: "/phases/{id:planning}/status", value: "done" },
+        { op: "replace", path: "/phases/{id:developing}/status", value: "active" },
+      ],
+    },
+    setup.bundlePath,
+  );
+  expect(res.ok).toBe(true);
 }
 
 function makeToolSet(
@@ -142,13 +195,14 @@ describe("createOrchestrationToolSet", () => {
     expect(tools.manifestPatch).toBeDefined();
     expect(tools.planAppend).toBeDefined();
     expect(tools.planWrite).toBeDefined();
+    expect(tools.requestPlanApproval).toBeDefined();
     expect(tools.askUserForModelSelection).toBeDefined();
     expect(tools.registerAsset).toBeDefined();
     expect(tools.claimTask).toBeDefined();
     expect(tools.releaseTask).toBeDefined();
   });
 
-  it("worker toolset has editFile/writeFile/bash + orchestration tools but no spawnAgent/planWrite/askUserForModelSelection", async () => {
+  it("worker toolset has editFile/writeFile/bash + orchestration tools but no lead-only tools", async () => {
     setup = await setupWithRun("worker");
     const tools = makeToolSet(setup, "worker", "S-worker");
     expect(tools.readFile).toBeDefined();
@@ -157,6 +211,7 @@ describe("createOrchestrationToolSet", () => {
     expect(tools.bash).toBeDefined();
     expect(tools.spawnAgent).toBeUndefined();
     expect(tools.planWrite).toBeUndefined();
+    expect(tools.requestPlanApproval).toBeUndefined();
     expect(tools.askUserForModelSelection).toBeUndefined();
     expect(tools.claimTask).toBeDefined();
     expect(tools.releaseTask).toBeDefined();
@@ -166,6 +221,65 @@ describe("createOrchestrationToolSet", () => {
     expect(tools.getAgentTranscript).toBeDefined();
     expect(tools.registerAsset).toBeDefined();
   });
+
+  it("worker bash aborts when the manifest requests cancellation", async () => {
+    setup = await setupWithRun("worker");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-worker",
+              role: "worker",
+              tag: "impl",
+              goalSummary: "implement",
+              status: "running",
+              spawnedAt: new Date().toISOString(),
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const bash = tools.bash!;
+    const run = bash.execute({
+      command: "node -e \"setTimeout(() => {}, 30000)\"",
+      timeout: 30_000,
+    }) as Promise<{ stdout: string; stderr: string; exitCode: number }>;
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const current = setup.svc.getManifestForRun(setup.runId)!;
+    expect(current.agents.some((agent) => agent.sessionId === "S-worker")).toBe(true);
+    const cancelPatch = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: current.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/{sessionId:S-worker}/cancellationRequested",
+            value: true,
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    expect(cancelPatch.ok).toBe(true);
+
+    const result = await run;
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain("orchestration cancellation requested");
+  }, 10_000);
 
   it("validator toolset matches worker shape but server enforces patch scope (smoke-check via parallel surface)", async () => {
     setup = await setupWithRun("validator");
@@ -207,6 +321,7 @@ describe("spawnAgent tool", () => {
 
   it("creates a session and patches the agents array when the brief is valid", async () => {
     setup = await setupWithRun("lead");
+    await approveRun(setup);
     const tools = makeToolSet(setup, "lead", "S-lead");
     const spawn = tools.spawnAgent!;
     const result: any = await spawn.execute({
@@ -222,9 +337,218 @@ describe("spawnAgent tool", () => {
     expect(createArgs.interactionMode).toBe("orchestrator-worker");
     expect(createArgs.orchestrationRunId).toBe(setup.runId);
     expect(createArgs.orchestrationRole).toBe("worker");
+    expect(createArgs.provider).toBe("claude");
+    expect(createArgs.model).toBe("claude-sonnet-4-6");
+    expect(createArgs.claudePermissionMode).toBe("bypassPermissions");
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.agents.some((a) => a.sessionId === "S-spawned-1")).toBe(true);
+    const spawned = manifest.agents.find((a) => a.sessionId === "S-spawned-1")!;
+    expect(spawned.spawnFingerprint).toMatchObject({
+      provider: "claude",
+      modelId: "claude-sonnet-4-6",
+      routingKey: "fallback",
+    });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks spawning until the orchestration plan is approved", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const result: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_not_approved");
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["codex", { codexSandbox: "danger-full-access", codexApprovalPolicy: "never", codexConfigSource: "flags" }],
+    ["cursor", { cursorModeId: "full-auto" }],
+    ["droid", { droidPermissionMode: "auto-high" }],
+    ["opencode", { opencodePermissionMode: "full-auto" }],
+  ] as const)("spawns %s workers with the provider full-access profile", async (provider, expected) => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const routed = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/modelRouting/byRoleTag",
+          value: {
+            "worker:backend": {
+              provider,
+              modelId: `${provider}-model`,
+              reasoningEffort: provider === "codex" ? "high" : null,
+              codexFastMode: provider === "codex",
+            },
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(routed.ok).toBe(true);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const result: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(result.ok).toBe(true);
+    expect(setup.chat.createSession).toHaveBeenCalledTimes(1);
+    expect(setup.chat.createSession.mock.calls[0]![0]).toMatchObject({
+      provider,
+      model: `${provider}-model`,
+      ...expected,
+    });
+  });
+});
+
+describe("requestPlanApproval and model routing tools", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("records plan approval through a plan_approval pending input", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.requestPlanApproval!.execute({
+      planSummary: VALID_APPROVAL_PLAN,
+    });
+    expect(result.ok).toBe(true);
+    expect(onAskUser).toHaveBeenCalledWith(expect.objectContaining({
+      pendingInputKind: "plan_approval",
+      providerMetadata: expect.objectContaining({
+        orchestrationPlanApproval: true,
+        planQuality: expect.objectContaining({ ok: true }),
+      }),
+    }));
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.currentPhase).toBe("developing");
+    expect(manifest.leadState.planApprovedAt).toBeTruthy();
+    expect(manifest.leadState.planApprovedBySessionId).toBe("S-lead");
+  });
+
+  it("blocks plan approval until the minimum plan sections are present", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.requestPlanApproval!.execute({
+      planSummary: "1. do it\n2. verify something",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_quality_missing_sections");
+    expect(result.missing).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "out_of_scope" }),
+      expect.objectContaining({ id: "agent_plan" }),
+      expect.objectContaining({ id: "ui_impact" }),
+      expect.objectContaining({ id: "coordination_log" }),
+    ]));
+    expect(onAskUser).not.toHaveBeenCalled();
+  });
+
+  it("accepts concise plans that include the minimum approval anatomy", () => {
+    const assessment = assessOrchestrationPlanQuality(VALID_APPROVAL_PLAN);
+    expect(assessment).toEqual({ ok: true, missing: [] });
+  });
+
+  it("writes model picker selections into role/tag routing", async () => {
+    setup = await setupWithRun("lead");
+    const selection = {
+      provider: "codex",
+      modelId: "gpt-5.4",
+      reasoningEffort: "high",
+      codexFastMode: true,
+    };
+    const onAskUser = vi.fn(async () => ({
+      answer: JSON.stringify(selection),
+      decision: "accept" as const,
+    }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.askUserForModelSelection!.execute({
+      role: "worker",
+      tag: "web-ui",
+    });
+    expect(result.ok).toBe(true);
+    expect(onAskUser).toHaveBeenCalledWith(expect.objectContaining({
+      pendingInputKind: "model_selection",
+      providerMetadata: expect.objectContaining({
+        role: "worker",
+        tag: "web-ui",
+      }),
+    }));
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.modelRouting.byRoleTag?.["worker:web-ui"]).toEqual(selection);
+  });
+});
+
+describe("orchestration heartbeats", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("touches worker heartbeat and notifies the lead after a mutating tool succeeds", async () => {
+    setup = await setupWithRun("worker");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const patched = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-worker",
+            role: "worker",
+            tag: "impl",
+            goalSummary: "implement",
+            status: "running",
+            spawnedAt: new Date().toISOString(),
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(patched.ok).toBe(true);
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const result: any = await tools.planAppend!.execute({
+      section: "Worker evidence",
+      body: "Patched the target module.",
+    });
+    expect(result.ok).toBe(true);
+    const updated = setup.svc.getManifestForRun(setup.runId)!;
+    const worker = updated.agents.find((agent) => agent.sessionId === "S-worker")!;
+    expect(worker.lastHeartbeatAt).toBeTruthy();
+    expect(setup.chat.steer).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "S-lead",
+      metadata: expect.objectContaining({
+        orchestrationOrigin: expect.objectContaining({
+          runId: setup.runId,
+          fromSessionId: "S-worker",
+          intent: "status",
+        }),
+      }),
+    }));
   });
 });
 
@@ -236,6 +560,7 @@ describe("messageAgent tool", () => {
 
   it("worker messageAgent rejects intent=cancellation at runtime even if the schema bypassed", async () => {
     setup = await setupWithRun("worker");
+    await approveRun(setup);
     // First, spawn a peer worker so messageAgent can find it.
     const leadTools = makeToolSet(setup, "lead", "S-lead");
     await (leadTools.spawnAgent!.execute({
@@ -289,6 +614,7 @@ describe("messageAgent tool", () => {
 
   it("lead messageAgent with kind=interrupt-replace invokes interrupt + sendMessage", async () => {
     setup = await setupWithRun("lead");
+    await approveRun(setup);
     // Spawn a target so the manifest membership check passes.
     const leadTools = makeToolSet(setup, "lead", "S-lead");
     const spawnResult: any = await leadTools.spawnAgent!.execute({
@@ -338,6 +664,7 @@ describe("getAgentTranscript tool", () => {
 
   it("forwards to readTranscript when the session is in the run", async () => {
     setup = await setupWithRun("lead");
+    await approveRun(setup);
     const leadTools = makeToolSet(setup, "lead", "S-lead");
     const spawnResult: any = await leadTools.spawnAgent!.execute({
       role: "worker",

@@ -177,6 +177,37 @@ function buildPendingInputTranscript(sessionId: string): string {
   })}\n`;
 }
 
+function buildOrchestrationPlanApprovalTranscript(sessionId: string): string {
+  return `${JSON.stringify({
+    sessionId,
+    timestamp: "2026-03-24T05:57:45.700Z",
+    event: {
+      type: "approval_request",
+      itemId: "approval-1",
+      kind: "tool_call",
+      description: "Plan ready for approval",
+      turnId: "turn-1",
+      detail: {
+        request: {
+          requestId: "approval-1",
+          itemId: "approval-1",
+          source: "ade",
+          kind: "plan_approval",
+          title: "Plan ready",
+          description: "1. Inspect\n2. Patch\n3. Verify",
+          questions: [],
+          allowsFreeform: true,
+          blocking: true,
+          canProceedWithoutAnswer: false,
+          providerMetadata: {
+            orchestrationPlanApproval: true,
+          },
+        },
+      },
+    },
+  })}\n`;
+}
+
 function installAdeMocks(options?: {
   transcript?: string;
   sendError?: Error;
@@ -413,6 +444,7 @@ function LocationProbe() {
 
 const originalAde = globalThis.window.ade;
 const originalNavigatorPlatform = window.navigator.platform;
+const originalMatchMedia = window.matchMedia;
 let iosEventListener: ((event: { type: string; chatSessionId?: string; laneId?: string; mode?: string }) => void) | null = null;
 
 beforeEach(() => {
@@ -424,6 +456,20 @@ beforeEach(() => {
     configurable: true,
     value: "MacIntel",
   });
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
   resetChatTestStore();
 });
 
@@ -434,6 +480,15 @@ afterEach(() => {
     configurable: true,
     value: originalNavigatorPlatform,
   });
+  if (originalMatchMedia === undefined) {
+    delete (window as unknown as { matchMedia?: Window["matchMedia"] }).matchMedia;
+  } else {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: originalMatchMedia,
+    });
+  }
   if (originalAde === undefined) {
     delete (globalThis.window as any).ade;
   } else {
@@ -1178,6 +1233,36 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
     expect(window.ade.agentChat.respondToInput).not.toHaveBeenCalled();
+  });
+
+  it("lets a typed follow-up revise an orchestration plan-ready gate", async () => {
+    const session = buildSession("session-1", {
+      awaitingInput: true,
+    });
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+      transcript: buildOrchestrationPlanApprovalTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByRole("button", { name: "Implement" })).toBeTruthy();
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textbox.disabled).toBe(false);
+
+    fireEvent.change(textbox, { target: { value: "Add the rollback risks before implementation." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(window.ade.agentChat.respondToInput).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        itemId: "approval-1",
+        decision: "decline",
+        responseText: "Add the rollback risks before implementation.",
+      });
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
   });
 
   it("falls back to the session summary when a chat is awaiting input", async () => {

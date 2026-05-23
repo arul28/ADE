@@ -808,6 +808,39 @@ describe("AgentChatComposer", () => {
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("starts orchestrator mode from a visible composer button", () => {
+    const onStartOrchestratorChat = vi.fn();
+    renderComposer({
+      turnActive: false,
+      sessionId: null,
+      onStartOrchestratorChat,
+    });
+
+    const button = screen.getByRole("button", { name: "Start orchestrator mode" });
+    fireEvent.click(button);
+
+    expect(onStartOrchestratorChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the visible orchestrator composer button as active", () => {
+    const onStopOrchestratorChat = vi.fn();
+    const { container } = renderComposer({
+      turnActive: false,
+      sessionId: null,
+      onStartOrchestratorChat: vi.fn(),
+      onStopOrchestratorChat,
+      orchestratorModeActive: true,
+    });
+
+    const button = screen.getByRole("button", { name: "Orchestrator mode active" });
+    expect(button.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector("[data-chat-composer-orchestrator-effects]")).toBeTruthy();
+    expect(container.querySelector("[data-chat-composer-orchestrator-glow]")).toBeTruthy();
+
+    fireEvent.click(button);
+    expect(onStopOrchestratorChat).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the issue context menu outside the clipped composer shell", () => {
     const { container } = renderComposer({
       draft: "",

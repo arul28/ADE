@@ -52,6 +52,180 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("hydrates lane runs from the persistent discovery index after restart", async () => {
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const created = [];
+    for (const title of ["First run", "Second run", "Third run"]) {
+      created.push(
+        await svc.runCreate({
+          laneId: "L-1",
+          leadSessionId: `S-${title}`,
+          bundleRoot: lane,
+          title,
+          goalSummary: `goal ${title}`,
+        }),
+      );
+    }
+    const index = JSON.parse(
+      await fsp.readFile(path.join(lane, ".ade", "orchestration", "index.json"), "utf-8"),
+    );
+    expect(index.runs.map((entry: { runId: string }) => entry.runId)).toEqual(
+      created.map((entry) => entry.runId),
+    );
+    await svc.dispose();
+
+    const restarted = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+    });
+    const list = await restarted.runList("L-1");
+    expect(list).toHaveLength(3);
+    expect(list.map((entry) => entry.runId)).toEqual(
+      created.map((entry) => entry.runId),
+    );
+    expect(list.map((entry) => entry.title)).toEqual([
+      "First run",
+      "Second run",
+      "Third run",
+    ]);
+    expect(list.map((entry) => entry.goalSummary)).toEqual([
+      "goal First run",
+      "goal Second run",
+      "goal Third run",
+    ]);
+    await restarted.dispose();
+  });
+
+  it("falls back to scanning manifests when the discovery index is missing", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const first = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-1",
+      bundleRoot: lane,
+      title: "Indexed one",
+    });
+    const second = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-2",
+      bundleRoot: lane,
+      title: "Indexed two",
+    });
+    await fsp.rm(path.join(lane, ".ade", "orchestration", "index.json"), {
+      force: true,
+    });
+    await svc.dispose();
+
+    const restarted = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const list = await restarted.runList("L-1");
+    expect(list.map((entry) => entry.runId).sort()).toEqual(
+      [first.runId, second.runId].sort(),
+    );
+    expect(list.map((entry) => entry.title).sort()).toEqual([
+      "Indexed one",
+      "Indexed two",
+    ]);
+    const repaired = JSON.parse(
+      await fsp.readFile(path.join(lane, ".ade", "orchestration", "index.json"), "utf-8"),
+    ) as { runs: Array<{ runId: string }> };
+    expect(repaired.runs.map((entry) => entry.runId).sort()).toEqual(
+      [first.runId, second.runId].sort(),
+    );
+    await restarted.dispose();
+  });
+
+  it("merges scanned manifests back into a partial discovery index", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const first = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-1",
+      bundleRoot: lane,
+      title: "Indexed one",
+    });
+    const second = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-2",
+      bundleRoot: lane,
+      title: "Indexed two",
+    });
+    const indexPath = path.join(lane, ".ade", "orchestration", "index.json");
+    const index = JSON.parse(await fsp.readFile(indexPath, "utf-8")) as {
+      version: number;
+      runs: Array<{ runId: string }>;
+    };
+    await fsp.writeFile(
+      indexPath,
+      JSON.stringify({
+        version: index.version,
+        runs: index.runs.filter((entry) => entry.runId === second.runId),
+      }, null, 2),
+    );
+    await svc.dispose();
+
+    const restarted = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const list = await restarted.runList("L-1");
+    expect(list.map((entry) => entry.runId).sort()).toEqual(
+      [first.runId, second.runId].sort(),
+    );
+    const repaired = JSON.parse(await fsp.readFile(indexPath, "utf-8")) as {
+      runs: Array<{ runId: string }>;
+    };
+    expect(repaired.runs.map((entry) => entry.runId).sort()).toEqual(
+      [first.runId, second.runId].sort(),
+    );
+    await restarted.dispose();
+  });
+
+  it("falls back to scanning manifests when the discovery index is corrupt", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-1",
+      bundleRoot: lane,
+      title: "Recoverable run",
+    });
+    await fsp.writeFile(path.join(lane, ".ade", "orchestration", "index.json"), "{nope");
+    await svc.dispose();
+
+    const restarted = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const list = await restarted.runList("L-1");
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      runId: created.runId,
+      title: "Recoverable run",
+    });
+    await restarted.dispose();
+  });
+
+  it("skips stale discovery index entries whose manifest is gone", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const stale = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-stale",
+      bundleRoot: lane,
+      title: "Stale run",
+    });
+    const kept = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-kept",
+      bundleRoot: lane,
+      title: "Kept run",
+    });
+    await fsp.rm(path.join(stale.manifest.bundlePath, "manifest.json"), {
+      force: true,
+    });
+    await svc.dispose();
+
+    const restarted = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const list = await restarted.runList("L-1");
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      runId: kept.runId,
+      title: "Kept run",
+    });
+    await restarted.dispose();
+  });
+
   it("rejects mismatched etag on manifestPatch", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const { manifest } = await svc.runCreate({
@@ -74,6 +248,46 @@ describe("orchestrationService", () => {
     if (!res.ok) {
       expect(res.error).toBe("etag_conflict");
     }
+    await svc.dispose();
+  });
+
+  it("updates an agent heartbeat without requiring a manifest etag", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    const withWorker = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-worker",
+            role: "worker",
+            tag: "impl",
+            goalSummary: "implement",
+            status: "running",
+            spawnedAt: new Date().toISOString(),
+          },
+        }],
+      },
+      manifest.bundlePath,
+    );
+    expect(withWorker.ok).toBe(true);
+
+    const heartbeat = await svc.agentHeartbeat(
+      { runId: manifest.runId, sessionId: "S-worker" },
+      manifest.bundlePath,
+    );
+    expect(heartbeat.ok).toBe(true);
+    const current = svc.getManifestForRun(manifest.runId)!;
+    expect(current.agents.find((agent) => agent.sessionId === "S-worker")?.lastHeartbeatAt).toBeTruthy();
     await svc.dispose();
   });
 

@@ -44,6 +44,7 @@ import { createFileService } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
+import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedAgentProcessReaper";
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
@@ -1380,7 +1381,7 @@ app.whenReady().then(async () => {
       if (ctx) {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
       }
-      if (process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_LOCAL_RUNTIME_DAEMON !== "1") {
+      if (!shouldUseInProcessProjectRuntime()) {
         void localRuntimePool.ensureProject(normalizedRoot).catch((error) => {
           localRuntimeLogger.warn("local_runtime.project_registration_failed", {
             rootPath: normalizedRoot,
@@ -2398,6 +2399,8 @@ app.whenReady().then(async () => {
     > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
+    let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
+      null;
     const queueLandingService = createQueueLandingService({
       db,
       logger,
@@ -2703,6 +2706,7 @@ app.whenReady().then(async () => {
       flowPolicyService,
       getMissionService: () => missionServiceRef,
       getAiOrchestratorService: () => aiOrchestratorServiceRef,
+      getOrchestrationService: () => orchestrationServiceRef,
       getLinearDispatcherService: () => linearDispatcherServiceRef,
       linearClient,
       linearCredentials: linearCredentialService,
@@ -3055,6 +3059,7 @@ app.whenReady().then(async () => {
         }
       },
     });
+    orchestrationServiceRef = orchestrationService;
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,
@@ -5103,6 +5108,11 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
+    try {
+      localRuntimePool.dispose();
+    } catch {
+      // ignore
+    }
 
     const contexts = new Set<AppContext>(projectContexts.values());
     contexts.add(getActiveContext());
@@ -5507,6 +5517,11 @@ app.whenReady().then(async () => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
+    getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
       win.webContents.send(IPC.updateEvent, snapshot);

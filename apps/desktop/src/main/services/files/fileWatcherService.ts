@@ -24,6 +24,9 @@ const VOLATILE_ADE_PREFIXES = [
   ".ade/agent-configs/",
   ".ade/secrets/",
   ".ade/transcripts/",
+  ".ade/logs/",
+  ".ade/tmp/",
+  ".ade/runtime/",
 ] as const;
 const VOLATILE_ADE_EXACT_PATHS = new Set([
   ".ade/ade.db",
@@ -91,13 +94,20 @@ export function createFileWatcherService() {
     /(^|[/\\])\.git($|[/\\])/,
     /(^|[/\\])node_modules($|[/\\])/,
   ];
+  const VOLATILE_ADE_IGNORED_PATTERNS: RegExp[] = [
+    /(^|[/\\])\.ade[/\\](artifacts|cache|agent-configs|secrets|transcripts|logs|tmp|runtime)($|[/\\])/,
+    /(^|[/\\])\.ade[/\\]ade\.db($|-)/,
+    /(^|[/\\])\.ade[/\\]ade\.sock$/,
+  ];
   const DEFAULT_IGNORED_PATTERNS: RegExp[] = [
     ...ALWAYS_IGNORED_PATTERNS,
     /(^|[/\\])\.ade($|[/\\])/,
   ];
 
   const ignoredPatternsFor = (includeIgnored: boolean): RegExp[] =>
-    includeIgnored ? ALWAYS_IGNORED_PATTERNS : DEFAULT_IGNORED_PATTERNS;
+    includeIgnored
+      ? [...ALWAYS_IGNORED_PATTERNS, ...VOLATILE_ADE_IGNORED_PATTERNS]
+      : DEFAULT_IGNORED_PATTERNS;
 
   const startWatcher = (key: string, subscription: WatchSubscription): void => {
     closeWatcher(subscription);

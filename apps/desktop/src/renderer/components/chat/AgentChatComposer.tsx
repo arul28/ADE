@@ -846,6 +846,8 @@ export function AgentChatComposer({
   onOpenAiSettings,
   onOpenLinearSettings,
   onStartOrchestratorChat,
+  onStopOrchestratorChat,
+  orchestratorModeActive = false,
   sessionId,
   parallelChatMode = false,
   onParallelChatModeChange,
@@ -990,12 +992,13 @@ export function AgentChatComposer({
   onOpenAiSettings?: () => void;
   onOpenLinearSettings?: () => void;
   /**
-   * Open the "New orchestrator chat" flow from the composer attachment menu
-   * (see `goal.md` §10.1). When provided, a "New orchestrator chat" entry
-   * with purple-accent tone shows up next to the Linear/GitHub items.
-   * Hosts that don't want the entry simply leave this undefined.
+   * Open the "New orchestrator chat" flow from the visible composer mode
+   * button (see `goal.md` §10.1). Hosts that don't want the entry simply
+   * leave this undefined.
    */
   onStartOrchestratorChat?: () => void;
+  onStopOrchestratorChat?: () => void;
+  orchestratorModeActive?: boolean;
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
@@ -1117,6 +1120,8 @@ export function AgentChatComposer({
   });
   const contextAttachmentCount = contextAttachments.length;
   const canAttachIssueContext = !composerInputLocked && typeof onAddContextAttachment === "function";
+  const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
+  const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -2484,6 +2489,7 @@ export function AgentChatComposer({
   }, [parallelChatMode, nativeControlPanel, composerToolbarReasoningVisible]);
 
   const composerGlowColor = useMemo(() => {
+    if (orchestratorModeActive) return "rgba(217, 70, 239, 0.36)";
     const provider = sessionProvider ?? (modelId ? "anthropic" : null);
     if (!provider) return null;
     if (provider === "anthropic") return "rgba(249, 115, 22, 0.25)";
@@ -2491,7 +2497,7 @@ export function AgentChatComposer({
     if (provider === "cursor") return "rgba(59, 130, 246, 0.25)";
     if (provider === "opencode") return "rgba(255, 255, 255, 0.12)";
     return null;
-  }, [sessionProvider, modelId]);
+  }, [orchestratorModeActive, sessionProvider, modelId]);
 
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -2795,11 +2801,15 @@ export function AgentChatComposer({
     setSelectedMacosVmContextId(null);
   }, [macosVmContextItems, selectedMacosVmContextId]);
 
-  // Idle composer motion keeps the GPU busy; reserve the beam for active turns.
-  const composerBeamActive = isActive && layoutVariant !== "grid-tile" && !iosSimulatorOpen && turnActive;
-  const composerBeamVariant = turnActive ? "ocean" : "colorful";
-  const composerBeamDuration = turnActive ? 20 : 5;
-  const composerBeamStrength = turnActive ? 0.26 : 0.44;
+  // Idle composer motion keeps the GPU busy; keep the animated beam to active
+  // turns and explicit orchestration mode.
+  const composerBeamActive = isActive
+    && layoutVariant !== "grid-tile"
+    && !iosSimulatorOpen
+    && (turnActive || orchestratorModeActive);
+  const composerBeamVariant = orchestratorModeActive ? "colorful" : turnActive ? "ocean" : "colorful";
+  const composerBeamDuration = orchestratorModeActive ? 8 : turnActive ? 20 : 5;
+  const composerBeamStrength = orchestratorModeActive ? 0.68 : turnActive ? 0.26 : 0.44;
 
   const parallelReady =
     parallelChatMode
@@ -2896,32 +2906,6 @@ export function AgentChatComposer({
             <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
           </span>
         </button>
-        {onStartOrchestratorChat ? (
-          <button
-            type="button"
-            data-testid="composer-new-orchestrator-chat"
-            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-            onClick={() => {
-              setIssueContextMenuOpen(false);
-              onStartOrchestratorChat();
-            }}
-          >
-            <span
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-              style={{ background: "rgba(168,130,255,0.16)", color: "rgba(220,210,255,0.92)" }}
-            >
-              <SquareSplitHorizontal size={11} weight="bold" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block font-medium" style={{ color: "rgba(220,210,255,0.92)" }}>
-                New orchestrator chat
-              </span>
-              <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">
-                Spawn a lead chat with workers and validators.
-              </span>
-            </span>
-          </button>
-        ) : null}
       </div>
     </div>,
     document.body,
@@ -2959,6 +2943,7 @@ export function AgentChatComposer({
       <ChatComposerShell
       mode={surfaceMode}
       glowColor={composerGlowColor}
+      orchestratorActive={orchestratorModeActive}
       className={cn(
         layoutVariant === "grid-tile" ? "border-0 bg-transparent shadow-none" : "",
       )}
@@ -3650,6 +3635,44 @@ export function AgentChatComposer({
                 ) : null}
               </button>
             </SmartTooltip>
+
+            {showOrchestratorModeButton ? (
+              <SmartTooltip
+                content={{
+                  label: orchestratorModeActive ? "Orchestrator mode" : "Start orchestrator mode",
+                  description: orchestratorModeActive
+                    ? "Return this draft to a normal chat."
+                    : "Turn this draft into an orchestrator lead chat before sending.",
+                  effect: orchestratorModeActive ? "Click to turn it off." : undefined,
+                }}
+              >
+                <button
+                  type="button"
+                  data-testid="composer-orchestrator-mode-button"
+                  disabled={orchestratorModeButtonDisabled}
+                  onClick={() => {
+                    if (orchestratorModeButtonDisabled) return;
+                    if (orchestratorModeActive) {
+                      onStopOrchestratorChat?.();
+                      return;
+                    }
+                    onStartOrchestratorChat?.();
+                  }}
+                  className={cn(
+                    "relative inline-flex h-8 min-w-8 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                    orchestratorModeActive
+                      ? "border-fuchsia-300/35 bg-fuchsia-400/[0.12] text-fuchsia-100 shadow-[0_0_18px_rgba(217,70,239,0.18)]"
+                      : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-fuchsia-300/22 hover:bg-fuchsia-400/[0.08] hover:text-fuchsia-100/80",
+                    orchestratorModeButtonDisabled ? "cursor-not-allowed opacity-45" : "",
+                  )}
+                  aria-label={orchestratorModeActive ? "Orchestrator mode active" : "Start orchestrator mode"}
+                  aria-pressed={orchestratorModeActive}
+                >
+                  <SquareSplitHorizontal className="h-3 w-3" size={14} weight={orchestratorModeActive ? "bold" : "regular"} />
+                  <span className="hidden lg:inline">Orchestrator</span>
+                </button>
+              </SmartTooltip>
+            ) : null}
 
             {showParallelChatToggle && !parallelChatMode ? (
               <SmartTooltip

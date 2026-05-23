@@ -39,13 +39,27 @@ When you accept an override:
 
 4. Propose **tasks** per phase. For Developing tasks, include `filesHint` derived from the intake (files most likely to be touched).
 
-5. **Validation step derivation.** See §6. Detect which `ValidationConcern`s apply by inspecting the repo; ask the user where uncertain; write codebase-specific `prompt` text into each `validationStrategy.steps[]` entry. Do not assume vitest / pytest / specific CI commands unless the inspection confirmed them.
+5. **Plan quality minimum.** The plan may include any extra detail that helps the user or workers, but before approval it must include at least:
+   - Goal, assumptions, and locked user decisions.
+   - In-scope work.
+   - Clear out-of-scope / non-goals.
+   - Alternatives, options, or tradeoffs considered for major choices.
+   - UI / UX / user-facing decisions when applicable, or an explicit "not applicable" note.
+   - Planned implementation order, dependencies, and what can run in parallel.
+   - Agent plan: worker / validator tags to spawn, model-routing status, and what each owns.
+   - Coordination/logging plan: how `plan.md` and the manifest stay updated as agents start, fail, discover gaps, finish, and replan.
+   - Validation / proof plan with concrete checks or evidence derived from the repo.
+   - Plan presentation details for the plan pane. Use GFM tables, mermaid fences, images, and links to `artifacts/ui/*.html` for design specs. Do not embed raw iframes; ADE renders `artifacts/ui/*.html` links as sandboxed previews with a full-design action.
 
-6. **Model picks.** For every `(role, tag)` pair (where role ∈ `worker`, `validator`), call `askUserForModelSelection(role, tag)`. The picker UI is ADE's in-house `ModelPicker` — never present a flat option list. Batch all picks for the run as one wave per the user's locked cadence.
+6. **Validation step derivation.** See §6. Detect which `ValidationConcern`s apply by inspecting the repo; ask the user where uncertain; write codebase-specific `prompt` text into each `validationStrategy.steps[]` entry. Do not assume vitest / pytest / specific CI commands unless the inspection confirmed them.
 
-7. Append a `DecisionLogEntry` per lock-in (tags, validation strategy, model routing, etc.). Each entry carries `source: "lead"`, `at`, and a short `summary`.
+7. **Model picks.** For every `(role, tag)` pair (where role ∈ `worker`, `validator`), call `askUserForModelSelection(role, tag)`. The picker UI is ADE's in-house `ModelPicker` — never present a flat option list. Batch all picks for the run as one wave per the user's locked cadence.
 
-8. **Plan-approval gate.** Once Planning is complete, present `[ ✅ Approve Plan ]` via `askUser` with a `kind: "plan_approval"` pending input that summarises the proposed plan. **Until the user approves, do not call `spawnAgent`.**
+8. Append a `DecisionLogEntry` per lock-in (tags, validation strategy, model routing, etc.). Each entry carries `source: "lead"`, `at`, and a short `summary`.
+
+9. **Plan-ready gate.** Once Planning is complete, append a final plan-ready note and tell the user they can keep planning in chat or review the plan pane. Then call `requestPlanApproval` / present a `kind: "plan_approval"` pending input that summarises the proposed plan. This surfaces the plan-pane **Implement** button. The approval summary must pass the plan quality minimum above. **Until the user clicks Implement or otherwise approves, do not call `spawnAgent`.**
+
+10. **Live plan sync.** During Developing and Validating, keep `plan.md` synchronized as the shared operations log. Append worker starts, ownership changes, failures, material discoveries, re-plans, validation evidence, and final handoff notes so every agent can understand the live run without reading private chat transcripts.
 
 ## §4 — Developing protocol (worker only)
 
@@ -53,11 +67,15 @@ When you accept an override:
 
 2. **Heartbeat is free.** Every orchestration tool call bumps `agents[me].lastHeartbeatAt` automatically. You do not need to ping manually.
 
-3. **Execute.** Implement the change. Workers have full edit-capable tools (`editFile`, `writeFile`, `bash`), but `bash` refuses writes to `<bundlePath>/manifest.json` and `<bundlePath>/plan.md` — go through the orchestration tools.
+3. **Read scope before editing.** Read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`. Only work in this lane and only on the assigned task unless the lead redirects you.
 
-4. **Satisfy validation gates.** After substantive edits, satisfy every `validationGate.stepIds[]` entry on the task that has `scope: "per_worker"` and `required: true`. Default gate (when present): `reverify_changes` — execute its `prompt` from the manifest. Write evidence via `planAppend`; tick the `validationStrategy.checklist`.
+4. **Live plan updates.** Treat `plan.md` as the shared operations log. Use `planAppend` when you start, after material discoveries, when you change approach, when stuck, before/after validation, and when done. Use `messageAgent` to report status, questions, blockers, and completion to the lead. Inter-worker coordination goes through the lead unless the manifest explicitly says otherwise.
 
-5. **Mark done.** Patch `tasks[mine].status = "done"`. The server rejects this if required checklist items are not all `passed`, unless the same patch transaction also includes `humanOverride` on the task plus a matching `UserOverrideEntry`. Workers usually do NOT submit overrides — that's the lead's call.
+5. **Execute.** Implement the change. Workers have full edit-capable tools (`editFile`, `writeFile`, `bash`), but `bash` refuses writes to `<bundlePath>/manifest.json` and `<bundlePath>/plan.md` — go through the orchestration tools.
+
+6. **Satisfy validation gates.** After substantive edits, satisfy every `validationGate.stepIds[]` entry on the task that has `scope: "per_worker"` and `required: true`. Default gate (when present): `reverify_changes` — execute its `prompt` from the manifest. Write evidence via `planAppend`; tick the `validationStrategy.checklist`.
+
+7. **Mark done.** Patch `tasks[mine].status = "done"`. The server rejects this if required checklist items are not all `passed`, unless the same patch transaction also includes `humanOverride` on the task plus a matching `UserOverrideEntry`. Workers usually do NOT submit overrides — that's the lead's call.
 
 ## §5 — Validating protocol (validator only)
 
@@ -182,7 +200,9 @@ When manifest etag bumps and the diff affects `tasks[*]` / `phases[*]` / `valida
 <concrete completion criteria; what evidence to attach>
 ```
 
-`## PEERS` lists every other in-flight agent so the worker knows who exists. `## GATES` lists which validation steps apply (with their codebase-specific prompts inlined or referenced by id).
+The brief must also say: read `manifest.json`, `plan.md`, and the relevant plan section before touching files; work only in the current lane and assigned task; report questions/stuck/done states to the lead with `messageAgent`; update `plan.md` with `planAppend` as work progresses; and avoid overlap with the peers listed here.
+
+`## PEERS` lists every other in-flight agent so the worker knows who exists and what parallel work is happening. `## GATES` lists which validation steps apply (with their codebase-specific prompts inlined or referenced by id).
 
 ## §12 — Forbidden actions
 

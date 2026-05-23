@@ -8,8 +8,10 @@ import {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   parseCliArgs,
+  readRuntimeIdleExitMs,
   renderLaneGraph,
   resolveRoots,
   shouldAutoRegisterProjectForPlan,
@@ -138,6 +140,21 @@ describe("ADE CLI", () => {
       kind: "rpc-stdio",
       rest: ["--trace"],
     });
+  });
+
+  it("classifies only ADE temp runtime sockets as ephemeral", () => {
+    const tempSocket = path.join(os.tmpdir(), "ade-stdio-rpc-test", "sock", "ade.sock");
+
+    expect(isEphemeralRuntimeSocketPath(tempSocket)).toBe(true);
+    expect(isEphemeralRuntimeSocketPath(path.join(os.tmpdir(), "other-app", "ade.sock"))).toBe(false);
+    expect(isEphemeralRuntimeSocketPath(path.join(os.homedir(), ".ade", "sock", "ade.sock"))).toBe(false);
+    expect(isEphemeralRuntimeSocketPath("tcp://127.0.0.1:8765")).toBe(false);
+  });
+
+  it("parses runtime idle expiry with a minimum clamp", () => {
+    expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "30000" } as NodeJS.ProcessEnv)).toBe(30_000);
+    expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "100" } as NodeJS.ProcessEnv)).toBe(5_000);
+    expect(readRuntimeIdleExitMs({ ADE_RUNTIME_IDLE_EXIT_MS: "nope" } as NodeJS.ProcessEnv)).toBeNull();
   });
 
   it("marks failed service manager results as CLI failures", () => {

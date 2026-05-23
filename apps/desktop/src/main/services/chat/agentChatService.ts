@@ -14,7 +14,13 @@ import {
   renameSession as renameClaudeSession,
   startup,
   tagSession as tagClaudeSession,
+  createSdkMcpServer,
+  tool as createClaudeSdkTool,
 } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer as createDroidSdkMcpServer,
+  tool as createDroidSdkTool,
+} from "@factory/droid-sdk";
 import type {
   SDKSessionInfo,
   SessionMessage as ClaudeSdkSessionMessage,
@@ -27,6 +33,7 @@ import type {
   SDKUserMessage,
   WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
+import { z, type ZodType } from "zod";
 import { buildClaudeV2Message, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
@@ -164,6 +171,7 @@ import type {
   CodexTokenUsageBreakdown,
   CodexWebSearchAction,
   PendingInputQuestion,
+  PendingInputKind,
   PendingInputRequest,
   PendingInputSource,
   AgentChatUpdateSessionArgs,
@@ -202,7 +210,19 @@ import {
 } from "../../../shared/modelCatalog";
 import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
-import type { PermissionMode } from "../ai/tools/universalTools";
+import type {
+  AskUserToolInput,
+  AskUserToolResult,
+  PermissionMode,
+  UniversalToolSetOptions,
+} from "../ai/tools/universalTools";
+import {
+  createOrchestrationToolSet,
+  type OrchestrationInteractionMode,
+  type OrchestrationSessionContext,
+  type OrchestrationToolMap,
+} from "../ai/tools/orchestrationTools";
+import type { ExecutableTool } from "../ai/tools/executableTool";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
 import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
@@ -318,6 +338,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import type { createMissionService } from "../missions/missionService";
 import type { createAiOrchestratorService } from "../orchestrator/aiOrchestratorService";
+import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
 const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
@@ -338,6 +359,14 @@ type JsonRpcEnvelope = {
     message?: string;
     data?: unknown;
   };
+};
+
+type CodexDynamicToolSpec = {
+  namespace?: string | null;
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  deferLoading?: boolean;
 };
 
 type PersistedRecentConversationEntry = {
@@ -518,6 +547,8 @@ type CodexRuntime = {
   planModeFallbackNotified: boolean;
   goalBudgetClearInFlight: Set<string>;
   goalBudgetClearRetryAfterByThreadId: Map<string, number>;
+  dynamicTools: Map<string, ExecutableTool>;
+  dynamicToolSpecs: CodexDynamicToolSpec[];
 };
 
 type QueuedSteer = {
@@ -1566,6 +1597,10 @@ type ManagedChatSession = {
       responseText?: string | null;
     }) => void;
   }>;
+  orchestrationHttpMcpServer: {
+    config: { type?: string; name?: string; url?: string; headers?: unknown };
+    close: () => Promise<void>;
+  } | null;
   eventSequence: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
@@ -3737,21 +3772,26 @@ function hydrateNativePermissionControls(
     "provider" | "permissionMode" | "interactionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode"
   >,
 ): void {
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudeAccessMode(session, "default");
   } else if (session.provider === "codex") {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.codexApprovalPolicy = session.codexApprovalPolicy ?? legacyPermissionModeToCodexApprovalPolicy(session.permissionMode);
     session.codexSandbox = session.codexSandbox ?? legacyPermissionModeToCodexSandbox(session.permissionMode);
     session.codexConfigSource = session.codexConfigSource ?? legacyPermissionModeToCodexConfigSource(session.permissionMode);
   } else if (session.provider === "droid") {
-    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default";
+      : "default");
     session.droidPermissionMode = session.droidPermissionMode
       ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
       ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode);
   } else {
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
     session.opencodePermissionMode = session.opencodePermissionMode ?? legacyPermissionModeToOpenCodePermissionMode(session.permissionMode);
   }
 
@@ -3809,6 +3849,56 @@ function toHarnessPermissionMode(
 ): "plan" | "edit" | "full-auto" {
   if (mode === "plan" || mode === "full-auto") return mode;
   return "edit";
+}
+
+function isOrchestrationInteractionMode(
+  mode: AgentChatInteractionMode | null | undefined,
+): mode is OrchestrationInteractionMode {
+  return mode === "orchestrator-lead"
+    || mode === "orchestrator-worker"
+    || mode === "orchestrator-validator";
+}
+
+function orchestrationRoleForMode(
+  mode: OrchestrationInteractionMode,
+): OrchestrationSessionContext["role"] {
+  if (mode === "orchestrator-lead") return "lead";
+  if (mode === "orchestrator-validator") return "validator";
+  return "worker";
+}
+
+const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
+const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
+const ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS = new Set([
+  "Bash",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+]);
+
+function stripJsonSchemaMeta(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
+  const record = { ...(schema as Record<string, unknown>) };
+  delete record.$schema;
+  return record;
+}
+
+function jsonSchemaForExecutableTool(toolDefinition: ExecutableTool): unknown {
+  try {
+    return stripJsonSchemaMeta(z.toJSONSchema(toolDefinition.inputSchema as ZodType));
+  } catch {
+    return { type: "object", additionalProperties: true };
+  }
+}
+
+function stringifyExecutableToolOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
 }
 
 function buildAdeGuidanceForLane(laneWorktreePath: string): string {
@@ -4182,6 +4272,9 @@ function normalizeSessionNativePermissionControls(
   >,
   config: ResolvedChatConfig,
 ): void {
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
@@ -4191,7 +4284,8 @@ function normalizeSessionNativePermissionControls(
     delete session.opencodePermissionMode;
     delete session.droidPermissionMode;
   } else if (session.provider === "codex") {
-    delete session.interactionMode;
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
     if (session.codexConfigSource === "config-toml") {
       delete session.codexApprovalPolicy;
@@ -4204,9 +4298,9 @@ function normalizeSessionNativePermissionControls(
     delete session.opencodePermissionMode;
     delete session.droidPermissionMode;
   } else if (session.provider === "droid") {
-    session.interactionMode = session.interactionMode === "plan" || session.permissionMode === "plan"
+    session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
-      : "default";
+      : "default");
     session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
@@ -4214,7 +4308,8 @@ function normalizeSessionNativePermissionControls(
     delete session.codexConfigSource;
     delete session.opencodePermissionMode;
   } else {
-    delete session.interactionMode;
+    if (orchestrationMode) session.interactionMode = orchestrationMode;
+    else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
     delete session.claudePermissionMode;
     delete session.codexApprovalPolicy;
@@ -4328,6 +4423,7 @@ export function createAgentChatService(args: {
   flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   getMissionService?: () => ReturnType<typeof createMissionService> | null;
   getAiOrchestratorService?: () => ReturnType<typeof createAiOrchestratorService> | null;
+  getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
   getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
@@ -4366,6 +4462,7 @@ export function createAgentChatService(args: {
     flowPolicyService,
     getMissionService,
     getAiOrchestratorService,
+    getOrchestrationService,
     getLinearDispatcherService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
@@ -4763,6 +4860,16 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     managed: ManagedChatSession,
   ): ClaudeSDKOptions["canUseTool"] => async (toolName, input, sdkOptions): Promise<ClaudePermissionResult> => {
+    if (
+      managed.session.interactionMode === "orchestrator-lead"
+      && ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS.has(toolName)
+    ) {
+      return {
+        behavior: "deny",
+        message: "Orchestrator lead sessions cannot edit files or run bash directly. Spawn a worker with spawnAgent instead.",
+      };
+    }
+
     // ── EnterPlanMode interception ──
     // Sync ADE session state when the SDK enters plan mode mid-session so
     // the permission-mode picker in the UI stays in sync.
@@ -4838,8 +4945,8 @@ export function createAgentChatService(args: {
           header: "Implementation Plan",
           question: planSummary,
           options: [
-            { label: "Approve & Implement", value: "approve", recommended: true },
-            { label: "Reject & Revise", value: "reject" },
+            { label: "Implement", value: "approve", recommended: true },
+            { label: "Keep planning", value: "reject" },
           ],
           allowsFreeform: true,
         }],
@@ -6468,18 +6575,36 @@ export function createAgentChatService(args: {
         // Non-fatal — provider may be offline
       }
     }
-    const handle = await startOpenCodeSession({
-      directory: managed.laneWorktreePath,
-      title: manualSessionTitleForRuntime(managed),
-      sessionId: persisted?.providerSessionId,
-      projectConfig: configSnapshot.effective,
-      discoveredLocalModels,
-      ownerKind: "chat",
-      ownerId: managed.session.id,
-      ownerKey: `chat:${managed.session.id}`,
-      leaseKind: "shared",
-      logger,
-    });
+    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+    const opencodeOrchestrationMcp = orchestrationMcp?.config.url
+      ? {
+          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
+            type: "remote" as const,
+            url: orchestrationMcp.config.url,
+            enabled: true,
+            timeout: 10_000,
+          },
+        }
+      : undefined;
+    let handle: OpenCodeSessionHandle;
+    try {
+      handle = await startOpenCodeSession({
+        directory: managed.laneWorktreePath,
+        title: manualSessionTitleForRuntime(managed),
+        sessionId: persisted?.providerSessionId,
+        projectConfig: configSnapshot.effective,
+        discoveredLocalModels,
+        ...(opencodeOrchestrationMcp ? { mcp: opencodeOrchestrationMcp } : {}),
+        ownerKind: "chat",
+        ownerId: managed.session.id,
+        ownerKey: `chat:${managed.session.id}`,
+        leaseKind: "shared",
+        logger,
+      });
+    } catch (error) {
+      closeOrchestrationHttpMcpServer(managed);
+      throw error;
+    }
     adoptRuntimeSessionTitle(managed, handle.initialTitle, "opencode_session_create");
 
     const runtime: OpenCodeRuntime = {
@@ -8061,6 +8186,281 @@ export function createAgentChatService(args: {
     return normalized;
   };
 
+  const activeTurnIdForManaged = (managed: ManagedChatSession): string | null => {
+    const runtime = managed.runtime;
+    if (!runtime) return null;
+    return runtime.activeTurnId ?? null;
+  };
+
+  const firstAnswerText = (
+    answers: Record<string, string[]> | undefined,
+    fallback?: string | null,
+  ): string => {
+    const fromAnswers = Object.values(answers ?? {})
+      .flat()
+      .map((value) => value.trim())
+      .find((value) => value.length > 0);
+    return fromAnswers ?? fallback?.trim() ?? "";
+  };
+
+  const buildOrchestrationSessionContext = (
+    managed: ManagedChatSession,
+  ): {
+    interactionMode: OrchestrationInteractionMode;
+    sessionContext: OrchestrationSessionContext;
+  } | null => {
+    const interactionMode = managed.session.interactionMode;
+    if (!isOrchestrationInteractionMode(interactionMode)) return null;
+    const runId = managed.session.orchestrationRunId?.trim();
+    const bundlePath = managed.session.orchestrationBundlePath?.trim();
+    if (!runId || !bundlePath) return null;
+    return {
+      interactionMode,
+      sessionContext: {
+        sessionId: managed.session.id,
+        runId,
+        role: managed.session.orchestrationRole ?? orchestrationRoleForMode(interactionMode),
+        bundlePath,
+        laneId: managed.session.laneId,
+        ...(managed.session.orchestrationParentSessionId
+          ? { leadSessionId: managed.session.orchestrationParentSessionId }
+          : {}),
+      },
+    };
+  };
+
+  const buildOrchestrationUniversalOptions = (
+    managed: ManagedChatSession,
+  ): UniversalToolSetOptions => ({
+    permissionMode: toHarnessPermissionMode(managed.session.permissionMode),
+    getTodoItems: () => managed.todoItems,
+    onTodoUpdate: (items) => {
+      emitChatEvent(managed, {
+        type: "todo_update",
+        items,
+        ...(activeTurnIdForManaged(managed) ? { turnId: activeTurnIdForManaged(managed)! } : {}),
+      });
+    },
+    onAskUser: async (input: AskUserToolInput): Promise<AskUserToolResult> => {
+      const title = input.title?.trim() || "Input requested";
+      const body =
+        input.body?.trim()
+        || input.question?.trim()
+        || input.questions?.[0]?.question?.trim()
+        || "The agent needs input before it can continue.";
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title,
+        body,
+        source: "ade",
+        ...(input.pendingInputKind ? { kind: input.pendingInputKind } : {}),
+        questions: input.questions,
+        providerMetadata: {
+          tool: "askUser",
+          orchestration: true,
+          ...(input.providerMetadata ?? {}),
+        },
+        eventDescription: body,
+        eventDetail: {
+          tool: "askUser",
+          orchestration: true,
+          ...(input.providerMetadata ?? {}),
+        },
+      });
+      return {
+        answer: firstAnswerText(response.answers, response.responseText),
+        answers: response.answers,
+        responseText: response.responseText,
+        decision: response.decision,
+      };
+    },
+    onApprovalRequest: async (request) => {
+      const response = await requestChatInput({
+        chatSessionId: managed.session.id,
+        title: "Approval required",
+        body: request.description,
+        source: "ade",
+        questions: [{
+          id: "tool_decision",
+          header: "Tool approval",
+          question: request.description,
+          options: [
+            { label: "Allow", value: "allow", recommended: true },
+            { label: "Deny", value: "deny" },
+          ],
+          allowsFreeform: true,
+        }],
+        providerMetadata: { toolApproval: true, detail: request.detail ?? null },
+        eventDescription: request.description,
+        eventDetail: { toolApproval: true, detail: request.detail ?? null },
+      });
+      const answer = firstAnswerText(response.answers, response.responseText).toLowerCase();
+      const denied = response.decision === "decline"
+        || response.decision === "cancel"
+        || answer.includes("deny")
+        || answer.includes("reject");
+      return {
+        approved: !denied,
+        decision: denied ? "decline" : "accept",
+        reason: response.responseText,
+      };
+    },
+  });
+
+  const createOrchestrationRuntimeToolMap = (
+    managed: ManagedChatSession,
+  ): OrchestrationToolMap | null => {
+    const context = buildOrchestrationSessionContext(managed);
+    if (!context) return null;
+    const orchestrationService = getOrchestrationService?.() ?? null;
+    if (!orchestrationService) return null;
+    return createOrchestrationToolSet({
+      cwd: managed.laneWorktreePath,
+      interactionMode: context.interactionMode,
+      sessionContext: context.sessionContext,
+      orchestrationService,
+      agentChatService: {
+        createSession: (args) => createSession(args as never),
+        sendMessage: (args, options) => sendMessage(args as never, options),
+        steer: (args) => steer(args as never),
+        interrupt: (args) => interrupt(args as never),
+        readTranscript,
+      },
+      universal: buildOrchestrationUniversalOptions(managed),
+    });
+  };
+
+  const droidMcpInputShapeForTool = (toolDefinition: ExecutableTool): Record<string, z.ZodTypeAny> => {
+    const schema = toolDefinition.inputSchema as unknown as {
+      shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
+    };
+    if (!schema || typeof schema !== "object") return {};
+    const shape = typeof schema.shape === "function" ? schema.shape() : schema.shape;
+    return shape && typeof shape === "object" && !Array.isArray(shape) ? shape : {};
+  };
+
+  const ensureOrchestrationHttpMcpServer = async (
+    managed: ManagedChatSession,
+  ): Promise<ManagedChatSession["orchestrationHttpMcpServer"]> => {
+    if (managed.orchestrationHttpMcpServer) return managed.orchestrationHttpMcpServer;
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return null;
+    const server = createDroidSdkMcpServer({
+      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      version: appVersion,
+      tools: Object.entries(tools).map(([name, toolDefinition]) =>
+        createDroidSdkTool(
+          name,
+          toolDefinition.description,
+          droidMcpInputShapeForTool(toolDefinition) as any,
+          async (args) => {
+            const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
+            if (!parsed.success) return parsed.error.message;
+            try {
+              return stringifyExecutableToolOutput(await toolDefinition.execute(parsed.data));
+            } catch (error) {
+              return error instanceof Error ? error.message : String(error);
+            }
+          },
+        ),
+      ),
+    });
+    const config = await server.start();
+    managed.orchestrationHttpMcpServer = {
+      config,
+      close: () => server.close(),
+    };
+    return managed.orchestrationHttpMcpServer;
+  };
+
+  const closeOrchestrationHttpMcpServer = (managed: ManagedChatSession): void => {
+    const lease = managed.orchestrationHttpMcpServer;
+    managed.orchestrationHttpMcpServer = null;
+    if (!lease) return;
+    lease.close().catch((error) => {
+      logger.warn("agent_chat.orchestration_mcp_close_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const codexDynamicToolKey = (namespace: string | null | undefined, name: string): string =>
+    `${namespace ?? ""}\u0000${name}`;
+
+  const buildCodexDynamicToolSpecs = (
+    tools: OrchestrationToolMap,
+  ): CodexDynamicToolSpec[] =>
+    Object.entries(tools).map(([name, toolDefinition]) => ({
+      namespace: ORCHESTRATION_CODEX_TOOL_NAMESPACE,
+      name,
+      description: toolDefinition.description,
+      inputSchema: jsonSchemaForExecutableTool(toolDefinition),
+      deferLoading: false,
+    }));
+
+  const refreshCodexDynamicTools = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): CodexDynamicToolSpec[] => {
+    runtime.dynamicTools.clear();
+    runtime.dynamicToolSpecs = [];
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return [];
+    for (const [name, toolDefinition] of Object.entries(tools)) {
+      runtime.dynamicTools.set(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, name), toolDefinition);
+    }
+    runtime.dynamicToolSpecs = buildCodexDynamicToolSpecs(tools);
+    return runtime.dynamicToolSpecs;
+  };
+
+  const buildClaudeOrchestrationMcpServer = (
+    managed: ManagedChatSession,
+  ): ReturnType<typeof createSdkMcpServer> | null => {
+    const tools = createOrchestrationRuntimeToolMap(managed);
+    if (!tools) return null;
+    const sdkTools = Object.entries(tools).map(([name, toolDefinition]) =>
+      createClaudeSdkTool(
+        name,
+        toolDefinition.description,
+        toolDefinition.inputSchema as any,
+        async (args: unknown) => {
+          const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
+          if (!parsed.success) {
+            return {
+              content: [{ type: "text" as const, text: parsed.error.message }],
+              isError: true,
+            };
+          }
+          try {
+            const result = await toolDefinition.execute(parsed.data);
+            return {
+              content: [{
+                type: "text" as const,
+                text: stringifyExecutableToolOutput(result),
+              }],
+            };
+          } catch (error) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: error instanceof Error ? error.message : String(error),
+              }],
+              isError: true,
+            };
+          }
+        },
+        { alwaysLoad: true },
+      ),
+    );
+    return createSdkMcpServer({
+      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      version: appVersion,
+      tools: sdkTools,
+      alwaysLoad: true,
+    });
+  };
+
   const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
     runtime.busy = busy;
     runtime.handle.setBusy(busy);
@@ -8076,6 +8476,7 @@ export function createAgentChatService(args: {
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    closeOrchestrationHttpMcpServer(managed);
 
     const reasonAllowsPreservation =
       openCodeReason === "idle_ttl"
@@ -8561,6 +8962,7 @@ export function createAgentChatService(args: {
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -11674,6 +12076,81 @@ export function createAgentChatService(args: {
     }
   };
 
+  const handleCodexDynamicToolCall = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    id: string | number,
+    params: unknown,
+  ): Promise<void> => {
+    const record = asRecord(params) ?? {};
+    const toolName = typeof record.tool === "string"
+      ? record.tool.trim()
+      : typeof record.name === "string"
+        ? record.name.trim()
+        : "";
+    const namespace = typeof record.namespace === "string" && record.namespace.trim().length
+      ? record.namespace.trim()
+      : null;
+    if (!toolName.length) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: "Dynamic tool call missing tool name." }],
+      });
+      return;
+    }
+
+    if (runtime.dynamicTools.size === 0) {
+      refreshCodexDynamicTools(managed, runtime);
+    }
+    const toolDefinition =
+      runtime.dynamicTools.get(codexDynamicToolKey(namespace, toolName))
+      ?? runtime.dynamicTools.get(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, toolName));
+    if (!toolDefinition) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: `ADE dynamic tool '${toolName}' is not available for this session.` }],
+      });
+      return;
+    }
+
+    const rawArgs = typeof record.arguments === "string"
+      ? (() => {
+          try {
+            return JSON.parse(record.arguments as string);
+          } catch {
+            return record.arguments;
+          }
+        })()
+      : record.arguments ?? {};
+    const parsed = await toolDefinition.inputSchema.safeParseAsync(rawArgs);
+    if (!parsed.success) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{ type: "inputText", text: parsed.error.message }],
+      });
+      return;
+    }
+
+    try {
+      const result = await toolDefinition.execute(parsed.data);
+      runtime.sendResponse(id, {
+        success: true,
+        contentItems: [{
+          type: "inputText",
+          text: stringifyExecutableToolOutput(result),
+        }],
+      });
+    } catch (error) {
+      runtime.sendResponse(id, {
+        success: false,
+        contentItems: [{
+          type: "inputText",
+          text: error instanceof Error ? error.message : String(error),
+        }],
+      });
+    }
+  };
+
   const handleCodexServerRequest = (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): void => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const id = payload.id;
@@ -11904,10 +12381,22 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (method === "item/tool/call") {
+      void handleCodexDynamicToolCall(managed, runtime, id, payload.params).catch((error) => {
+        runtime.sendResponse(id, {
+          success: false,
+          contentItems: [{
+            type: "inputText",
+            text: error instanceof Error ? error.message : String(error),
+          }],
+        });
+      });
+      return;
+    }
+
     if (
       method === "attestation/generate"
       || method === "account/chatgptAuthTokens/refresh"
-      || method === "item/tool/call"
     ) {
       runtime.sendError(id, `ADE does not provide Codex app-server capability '${method}'.`, -32601);
       return;
@@ -12021,8 +12510,8 @@ export function createAgentChatService(args: {
         header: "Implementation Plan",
         question: planSummary,
         options: [
-          { label: "Approve & Implement", value: "approve", recommended: true },
-          { label: "Reject & Revise", value: "reject" },
+          { label: "Implement", value: "approve", recommended: true },
+          { label: "Keep planning", value: "reject" },
         ],
         allowsFreeform: true,
       }],
@@ -12109,8 +12598,8 @@ export function createAgentChatService(args: {
         header: "Implementation Plan",
         question: planText,
         options: [
-          { label: "Approve & Implement", value: "approve", recommended: true },
-          { label: "Reject & Revise", value: "reject" },
+          { label: "Implement", value: "approve", recommended: true },
+          { label: "Keep planning", value: "reject" },
         ],
         allowsFreeform: true,
       }],
@@ -13674,6 +14163,8 @@ export function createAgentChatService(args: {
       planModeFallbackNotified: false,
       goalBudgetClearInFlight: new Set<string>(),
       goalBudgetClearRetryAfterByThreadId: new Map<string, number>(),
+      dynamicTools: new Map(),
+      dynamicToolSpecs: [],
       request: async <T = unknown>(method: string, params?: unknown): Promise<T> => {
       const id = runtime.nextRequestId;
       runtime.nextRequestId += 1;
@@ -13894,6 +14385,17 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
+    if (managed.session.interactionMode === "orchestrator-lead") {
+      const codexPolicy: CodexPolicy = {
+        approvalPolicy: "on-request",
+        sandbox: "read-only",
+      };
+      managed.session.codexConfigSource = "flags";
+      managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
+      managed.session.codexSandbox = codexPolicy.sandbox;
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? "plan";
+      return { codexPolicy };
+    }
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
     managed.session.codexConfigSource = codexConfigSource;
     const codexPolicy = codexConfigSource === "config-toml"
@@ -13925,6 +14427,7 @@ export function createAgentChatService(args: {
       descriptor,
     );
     managed.session.reasoningEffort = reasoningEffort;
+    const dynamicTools = refreshCodexDynamicTools(managed, runtime);
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
@@ -13936,6 +14439,7 @@ export function createAgentChatService(args: {
       }),
       ...codexServiceTierArgs(managed.session),
       ...codexPolicyArgs(codexPolicy),
+      ...(dynamicTools.length ? { dynamicTools } : {}),
       experimentalRawEvents: false,
       persistExtendedHistory: true
     });
@@ -14229,6 +14733,31 @@ export function createAgentChatService(args: {
         cwd: managed.laneWorktreePath,
       }),
     };
+    const orchestrationMcpServer = buildClaudeOrchestrationMcpServer(managed);
+    if (orchestrationMcpServer) {
+      opts.mcpServers = {
+        ...(opts.mcpServers ?? {}),
+        [ORCHESTRATION_CLAUDE_SERVER_NAME]: orchestrationMcpServer,
+      };
+      const existingAllowedMcpServers = opts.managedSettings?.allowedMcpServers ?? [];
+      const hasOrchestrationMcpServer = existingAllowedMcpServers.some(
+        (server) => server.serverName === ORCHESTRATION_CLAUDE_SERVER_NAME,
+      );
+      opts.managedSettings = {
+        ...(opts.managedSettings ?? {}),
+        allowedMcpServers: hasOrchestrationMcpServer
+          ? existingAllowedMcpServers
+          : [...existingAllowedMcpServers, { serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }],
+        allowManagedMcpServersOnly: true,
+        strictPluginOnlyCustomization: ["mcp"],
+      };
+      if (managed.session.interactionMode === "orchestrator-lead") {
+        opts.disallowedTools = Array.from(new Set([
+          ...(opts.disallowedTools ?? []),
+          ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
+        ]));
+      }
+    }
     logger.debug("agent_chat.claude_executable_resolved", {
       sessionId: managed.session.id,
       source: claudeExecutable.source,
@@ -14921,6 +15450,7 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -15326,6 +15856,9 @@ export function createAgentChatService(args: {
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
           ...(requestedCodexFastMode === true ? { codexFastMode: true } : {}),
           ...nativePermissionFields,
+          ...(isOrchestrationInteractionMode(effectiveInteractionMode)
+            ? { interactionMode: effectiveInteractionMode }
+            : {}),
           ...(initialClaudeOutputStyle ? { claudeOutputStyle: initialClaudeOutputStyle } : {}),
           ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
         ...(identityKey ? { identityKey } : {}),
@@ -15388,6 +15921,7 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
+      orchestrationHttpMcpServer: null,
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -15864,6 +16398,7 @@ export function createAgentChatService(args: {
     policy.chatMode,
     policy.approvalPolicy,
     policy.force ? "force" : "guarded",
+    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const resolveCursorSdkModelParamsForSession = (
@@ -16881,6 +17416,15 @@ export function createAgentChatService(args: {
       );
     }
 
+    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+    const cursorOrchestrationMcpServers = orchestrationMcp?.config.url
+      ? {
+          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
+            type: "http" as const,
+            url: orchestrationMcp.config.url,
+          },
+        }
+      : undefined;
     const persisted = readPersistedState(managed.session.id);
     const persistedCursorSdkAgentId =
       persisted?.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
@@ -16899,6 +17443,7 @@ export function createAgentChatService(args: {
         agentName: manualSessionTitleForRuntime(managed),
         sessionId: managed.session.id,
         policy,
+        ...(cursorOrchestrationMcpServers ? { mcpServers: cursorOrchestrationMcpServers } : {}),
         logger,
       });
       reportProviderRuntimeReady("cursor");
@@ -16909,6 +17454,7 @@ export function createAgentChatService(args: {
       } else {
         reportProviderRuntimeFailure("cursor", errorMessage);
       }
+      closeOrchestrationHttpMcpServer(managed);
       throw error;
     }
     const pooled = acquired.pooled;
@@ -17926,6 +18472,7 @@ export function createAgentChatService(args: {
     managed.session.id,
     managed.session.laneId,
     managed.laneWorktreePath,
+    buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
@@ -17976,6 +18523,10 @@ export function createAgentChatService(args: {
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
+      const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
+      const droidOrchestrationMcpServers = orchestrationMcp?.config.url
+        ? [orchestrationMcp.config]
+        : undefined;
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
         poolKey,
@@ -17984,6 +18535,7 @@ export function createAgentChatService(args: {
         sessionId: managed.session.id,
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
+        ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
         logger,
       });
       pooled = acquired.pooled;
@@ -18025,6 +18577,9 @@ export function createAgentChatService(args: {
     } catch (err) {
       if (!released && pooled && managed.runtime?.kind !== "droid") {
         releaseDroidSdkConnection(poolKey, poolGeneration);
+      }
+      if (managed.runtime?.kind !== "droid") {
+        closeOrchestrationHttpMcpServer(managed);
       }
       droidRuntimeSetupInterruptRequested.delete(managed);
       throw err;
@@ -18464,6 +19019,7 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
+            refreshCodexDynamicTools(managed, runtime);
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
@@ -19389,6 +19945,7 @@ export function createAgentChatService(args: {
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
+          refreshCodexDynamicTools(managed, runtime);
           const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
@@ -22191,6 +22748,8 @@ export function createAgentChatService(args: {
     title: string;
     body: string;
     source?: PendingInputSource;
+    kind?: PendingInputKind;
+    allowsFreeform?: boolean;
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
     eventDetail?: Record<string, unknown>;
@@ -22317,11 +22876,11 @@ export function createAgentChatService(args: {
       requestId: itemId,
       itemId,
       source: args.source ?? "ade",
-      kind: questions.some((q) => q.options?.length) ? "structured_question" : "question",
+      kind: args.kind ?? (questions.some((q) => q.options?.length) ? "structured_question" : "question"),
       title: args.title,
       description: questions[0]?.question ?? args.body,
       questions,
-      allowsFreeform: true,
+      allowsFreeform: args.allowsFreeform ?? true,
       blocking: true,
       canProceedWithoutAnswer: false,
       ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
@@ -22437,6 +22996,7 @@ export function createAgentChatService(args: {
   ): void => {
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
+    const hadOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
     const session = managed.session as AgentChatSession & {
       orchestrationRunId?: string;
       orchestrationRole?: "lead" | "worker" | "validator";
@@ -22452,6 +23012,12 @@ export function createAgentChatService(args: {
     if (fields.orchestrationRole !== undefined) {
       if (fields.orchestrationRole) session.orchestrationRole = fields.orchestrationRole;
       else delete session.orchestrationRole;
+    }
+    if (
+      fields.orchestrationRole === "lead"
+      && !isOrchestrationInteractionMode(session.interactionMode)
+    ) {
+      session.interactionMode = "orchestrator-lead";
     }
     if (fields.orchestrationParentSessionId !== undefined) {
       if (fields.orchestrationParentSessionId)
@@ -22470,6 +23036,18 @@ export function createAgentChatService(args: {
       if (fields.orchestrationBundlePath)
         session.orchestrationBundlePath = fields.orchestrationBundlePath;
       else delete session.orchestrationBundlePath;
+    }
+    const hasOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
+    if (
+      !hadOrchestrationToolContext
+      && hasOrchestrationToolContext
+      && managed.runtime?.kind === "claude"
+      && managed.session.status !== "active"
+    ) {
+      resetClaudeQuerySession(managed, managed.runtime, "session_reset", {
+        clearSdkSessionId: true,
+      });
+      prewarmClaudeQuery(managed);
     }
     persistChatState(managed);
   };

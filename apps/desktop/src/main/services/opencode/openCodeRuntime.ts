@@ -131,6 +131,7 @@ type BuildOpenCodeConfigArgs = {
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   /** Dynamically discovered models from local provider endpoints (e.g. LM Studio /v1/models). */
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
+  mcp?: OpenCodeConfig["mcp"];
 };
 
 type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
@@ -342,6 +343,7 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     autoupdate: false,
     snapshot: false,
     ...(provider ? { provider } : {}),
+    ...(args.mcp ? { mcp: args.mcp } : {}),
     agent: {
       "ade-plan": {
         permission: buildPermissionConfig("plan"),

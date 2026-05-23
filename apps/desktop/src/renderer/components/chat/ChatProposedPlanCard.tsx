@@ -102,7 +102,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           </span>
           <ListChecks size={13} weight="bold" className="text-amber-400/60" />
           <span className="text-amber-300/50 font-mono text-[9px] uppercase tracking-[0.16em]">
-            Plan Approval &middot; {source}
+            Plan ready &middot; {source}
           </span>
         </div>
 
@@ -141,7 +141,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
             )}
             onClick={onApprove}
           >
-            Approve &amp; Implement
+            Implement
           </button>
           <button
             type="button"
@@ -152,7 +152,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
             )}
             onClick={onReject}
           >
-            Reject &amp; Revise
+            Keep planning
           </button>
           <button
             type="button"
@@ -183,7 +183,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
               <div className="flex items-center gap-2">
                 <ListChecks size={14} weight="bold" className="text-amber-300/75" />
                 <div className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200/80">
-                  Plan Approval &middot; {source}
+                  Plan ready &middot; {source}
                 </div>
               </div>
               <button
@@ -218,7 +218,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
                   )}
                   onClick={() => { setFullViewOpen(false); onApprove(); }}
                 >
-                  Approve &amp; Implement
+                  Implement
                 </button>
                 <button
                   type="button"
@@ -229,7 +229,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
                   )}
                   onClick={() => { setFullViewOpen(false); onReject(); }}
                 >
-                  Reject &amp; Revise
+                  Keep planning
                 </button>
               </div>
             </div>

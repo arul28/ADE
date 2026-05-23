@@ -1,10 +1,10 @@
 /* @vitest-environment jsdom */
 
 /**
- * Composer + sidebar "+" menu entry for new orchestrator chats. The user
+ * Composer + sidebar entry points for new orchestrator chats. The user
  * can pick "Orchestrator" from either:
  *   1. The SessionListPane "+ New Chat" picker (purple-accent pill).
- *   2. The AgentChatComposer "+" attachment menu ("New orchestrator chat").
+ *   2. The AgentChatComposer prompt-box mode button.
  *
  * Both flows resolve to `onShowDraftKind("chat-orchestrator")`. The
  * subsequent draft submit calls `agentChat.create({ interactionMode:
@@ -139,10 +139,8 @@ describe("SessionListPane orchestrator entry", () => {
 });
 
 /**
- * Verifies the contract from the composer side: when the host wires
- * `onStartOrchestratorChat`, the menu entry is rendered and clicking it
- * fires the callback. We test the callback wiring without mounting the
- * entire ChatComposerShell — see `goal.md` step 6 hook contract.
+ * Verifies the contract from the composer side: the prompt-box button asks
+ * TerminalsPage to switch the draft kind through this event.
  */
 describe("composer New orchestrator chat entry contract", () => {
   it("dispatches `ade:work:start-orchestrator-chat` when invoked", () => {

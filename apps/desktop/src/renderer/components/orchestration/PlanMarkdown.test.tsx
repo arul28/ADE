@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PlanMarkdown, slugify } from "./PlanMarkdown";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 // Mermaid lazy-imports inside the component; stub it so the spawned import
 // resolves immediately to a no-op renderer.
@@ -77,9 +78,12 @@ describe("PlanMarkdown", () => {
     expect(iframe).toBeTruthy();
     expect(iframe?.getAttribute("sandbox")).toBe("");
     expect(iframe?.getAttribute("src")).toBe("file:///run/artifacts/ui/login.html");
-    // "Open in ADE browser" button rendered.
+    // "View full design" button rendered and opens the resolved file URL.
     const btn = card?.querySelector("button");
-    expect(btn?.textContent ?? "").toMatch(/Open in ADE browser/i);
+    expect(btn?.textContent ?? "").toMatch(/View full design/i);
+    if (!btn) throw new Error("missing full design button");
+    fireEvent.click(btn);
+    expect(openUrlInAdeBrowser).toHaveBeenCalledWith("file:///run/artifacts/ui/login.html");
   });
 
   it("renders ordinary anchors with openUrlInAdeBrowser fallback (no spec card)", () => {
@@ -89,6 +93,32 @@ describe("PlanMarkdown", () => {
     expect(container.querySelector("[data-plan-spec-card]")).toBeNull();
     const link = container.querySelector("a");
     expect(link?.getAttribute("href")).toBe("https://example.com");
+  });
+
+  it("sanitizes raw html while preserving plan-safe anchors and subscript", () => {
+    const { container } = render(
+      <PlanMarkdown
+        source={[
+          "<script>alert(1)</script>",
+          "<a href=\"javascript:alert(1)\">bad href</a>",
+          "<sub>2026-05-22</sub>",
+          "<a id=\"section-foo\" href=\"#phase-a\">jump</a>",
+        ].join("\n\n")}
+      />,
+    );
+
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent ?? "").not.toContain("alert(1)");
+
+    const links = Array.from(container.querySelectorAll("a"));
+    const badHref = links.find((link) => link.textContent === "bad href");
+    expect(badHref).toBeTruthy();
+    expect(badHref?.getAttribute("href") ?? "").not.toMatch(/^javascript:/i);
+
+    expect(container.querySelector("sub")?.textContent).toBe("2026-05-22");
+    const anchor = container.querySelector("a#section-foo");
+    expect(anchor).toBeTruthy();
+    expect(anchor?.getAttribute("href")).toBe("#phase-a");
   });
 
   it("renders mermaid blocks via a lazy loader placeholder", async () => {

@@ -256,6 +256,15 @@ describe("ModelPicker", () => {
     expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
   });
 
+  it("respects hidePermissionRail when forwarded", async () => {
+    const user = userEvent.setup();
+    renderPicker({ hidePermissionRail: true });
+
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    expect(screen.queryByTestId("model-picker-permission-row")).toBeNull();
+  });
+
   it("closes the popover when Escape is pressed", async () => {
     const user = userEvent.setup();
     renderPicker();

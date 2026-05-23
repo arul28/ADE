@@ -1,10 +1,41 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
+
+const ORCHESTRATOR_COMPOSER_GRADIENT =
+  "conic-gradient(from 0deg, #ff5f5f, #ff9b3f, #f7d05c, #59d97f, #4f93ff, #a566ff, #ff5f5f)";
+
+const orchestratorComposerStyleId = "ade-orchestrator-composer-effects";
+
+function ensureOrchestratorComposerStyles(): void {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(orchestratorComposerStyleId)) return;
+  const sheet = document.createElement("style");
+  sheet.id = orchestratorComposerStyleId;
+  sheet.textContent = `
+    @keyframes ade-orchestrator-composer-spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes ade-orchestrator-composer-pulse {
+      0%, 100% { opacity: 0.28; transform: scale(0.98); }
+      50% { opacity: 0.46; transform: scale(1.02); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      [data-chat-composer-orchestrator-effects] {
+        animation: none !important;
+      }
+      [data-chat-composer-orchestrator-glow] {
+        animation: none !important;
+      }
+    }
+  `;
+  document.head.appendChild(sheet);
+}
 
 export function ChatComposerShell({
   mode,
   glowColor,
+  orchestratorActive = false,
   pendingBanner,
   trays,
   pickerLayer,
@@ -14,6 +45,7 @@ export function ChatComposerShell({
 }: {
   mode: ChatSurfaceMode;
   glowColor?: string | null;
+  orchestratorActive?: boolean;
   pendingBanner?: ReactNode;
   trays?: ReactNode;
   pickerLayer?: ReactNode;
@@ -21,6 +53,8 @@ export function ChatComposerShell({
   footer?: ReactNode;
   className?: string;
 }) {
+  if (orchestratorActive) ensureOrchestratorComposerStyles();
+
   return (
     <div
       className={cn(
@@ -32,7 +66,37 @@ export function ChatComposerShell({
         borderColor: `color-mix(in srgb, ${glowColor} 30%, transparent)`,
       } : undefined}
       data-chat-composer-mode={mode}
+      data-chat-composer-orchestrator-active={orchestratorActive ? "true" : undefined}
     >
+      {orchestratorActive ? (
+        <>
+          <div
+            data-chat-composer-orchestrator-glow=""
+            aria-hidden
+            className="pointer-events-none absolute -inset-8 rounded-[calc(var(--chat-radius-shell)+24px)] blur-3xl"
+            style={{
+              background: ORCHESTRATOR_COMPOSER_GRADIENT,
+              animation: "ade-orchestrator-composer-pulse 4.8s ease-in-out infinite",
+              willChange: "opacity, transform",
+            }}
+          />
+          <div
+            data-chat-composer-orchestrator-effects=""
+            aria-hidden
+            className="pointer-events-none absolute -inset-[1.5px] rounded-[calc(var(--chat-radius-shell)+1.5px)]"
+            style={{
+              background: ORCHESTRATOR_COMPOSER_GRADIENT,
+              animation: "ade-orchestrator-composer-spin 9s linear infinite",
+              padding: 2,
+              WebkitMask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+              WebkitMaskComposite: "xor",
+              maskComposite: "exclude",
+              opacity: 0.92,
+              willChange: "transform",
+            } as CSSProperties}
+          />
+        </>
+      ) : null}
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
         <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
         <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.10)_0%,transparent_72%)] opacity-70 blur-2xl" />
