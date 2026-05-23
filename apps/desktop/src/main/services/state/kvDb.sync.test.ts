@@ -178,4 +178,24 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     repaired.close();
   });
 
+  it("ignores CRDT changes for legacy unified_memories tables removed in #329", async () => {
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-skip-"), createLogger() as any);
+    const legacyChange = {
+      table: "unified_memories",
+      pk: Buffer.from([0x01, 0x06, 0, 0, 0, 0, 0, 1]).toString("base64"),
+      cid: "id",
+      val: null,
+      col_version: 1,
+      db_version: 1,
+      site_id: "a".repeat(32),
+      cl: 1,
+      seq: 1,
+    };
+
+    expect(() => db2.sync.applyChanges([legacyChange as any])).not.toThrow();
+    expect(db2.sync.getDbVersion()).toBe(0);
+
+    db2.close();
+  });
+
 });
