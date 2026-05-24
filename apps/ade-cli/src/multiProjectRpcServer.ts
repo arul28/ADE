@@ -413,7 +413,7 @@ export function createMultiProjectRpcRequestHandler(
         },
         capabilities: {
           actions: {
-            listChanged: false,
+            listChanged: true,
           },
           projects: true,
           machineProjects: {

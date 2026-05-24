@@ -7441,10 +7441,8 @@ export function createAdeRpcRequestHandler(args: {
     }
   };
 
-  let sessionActionSpecs: ToolSpec[] | null = null;
-
   const listActions = async (): Promise<Record<string, unknown>> => {
-    const actionSpecs = sessionActionSpecs ?? await listToolSpecsForSession(runtime, session);
+    const actionSpecs = await listToolSpecsForSession(runtime, session);
     return {
       actions: actionSpecs.map((tool) => ({
         name: tool.name,
@@ -7482,7 +7480,6 @@ export function createAdeRpcRequestHandler(args: {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
       session.identity = parseInitializeIdentity(runtime, params);
-      sessionActionSpecs = await listToolSpecsForSession(runtime, session);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,
@@ -7502,7 +7499,7 @@ export function createAdeRpcRequestHandler(args: {
         },
         capabilities: {
           actions: {
-            listChanged: false
+            listChanged: true
           },
           ...(resourcesEnabled
             ? {

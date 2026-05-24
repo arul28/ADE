@@ -1617,7 +1617,7 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("keeps the action list static for the initialized session", async () => {
+  it("reflects backend availability changes in the action list", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
@@ -1639,8 +1639,8 @@ describe("adeRpcServer", () => {
 
     const after = (await handler({ jsonrpc: "2.0", id: 4, method: "ade/actions/list" })) as any;
     const afterNames = (after.actions ?? []).map((tool: any) => tool.name);
-    expect(afterNames).toEqual(beforeNames);
-    expect(fixture.runtime.computerUseArtifactBrokerService.getBackendStatus).toHaveBeenCalledTimes(1);
+    expect(afterNames).not.toContain("screenshot_environment");
+    expect(fixture.runtime.computerUseArtifactBrokerService.getBackendStatus).toHaveBeenCalledTimes(2);
   });
 
   it("routes macOS VM computer-use tools and ingests screenshots as proof artifacts", async () => {
@@ -2415,7 +2415,7 @@ describe("adeRpcServer", () => {
         params: { identity: { callerId: "coord-1", role: "orchestrator" } }
       }) as any;
 
-      expect(response.capabilities?.actions).toBeTruthy();
+      expect(response.capabilities?.actions).toEqual({ listChanged: true });
       expect(response.capabilities?.resources).toBeUndefined();
     } finally {
       if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
