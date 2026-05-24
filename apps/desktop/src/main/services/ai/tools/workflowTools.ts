@@ -185,6 +185,7 @@ export function createWorkflowTools(
           const result = computerUseArtifactBrokerService.ingest({
             backend: {
               name: "screencapture",
+              style: "local_fallback",
               toolName: "captureScreenshot",
             },
             inputs: [

@@ -428,6 +428,7 @@ describe("connectToAde embedded mode", () => {
         ADE_RPC_SOCKET_PATH: socketPath,
       }),
     });
+    expect((spawnCall?.[2] as { env?: Record<string, string> } | undefined)?.env?.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
     expect(childProcess.child.unref).toHaveBeenCalledTimes(1);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
@@ -439,6 +440,7 @@ describe("connectToAde embedded mode", () => {
     );
     const entrypoint = path.join(entrypointDir, "cli.cjs");
     fs.writeFileSync(entrypoint, "#!/usr/bin/env node\n");
+    const expectedBuildHash = createHash("sha256").update(fs.readFileSync(entrypoint)).digest("hex");
     process.argv[1] = entrypoint;
     mockAttachedClient();
 
@@ -458,6 +460,7 @@ describe("connectToAde embedded mode", () => {
       env: expect.objectContaining({
         ADE_DEFAULT_ROLE: "cto",
         ADE_RPC_SOCKET_PATH: socketPath,
+        ADE_RUNTIME_BUILD_HASH: expectedBuildHash,
       }),
     });
   });

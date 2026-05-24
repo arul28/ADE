@@ -2608,6 +2608,11 @@ export function AgentChatComposer({
     captureRichSelection();
   }, [captureRichSelection, getRichCursorTextOffset, onDraftChange, serializeRichEditor]);
 
+  const singleModelBlockedMessage = (modelUnavailableMessage?.trim() ?? "").length > 0
+    ? modelUnavailableMessage
+    : null;
+  const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
+
   const submitComposerDraft = useCallback(() => {
     if (pendingInput?.blocking) {
       return;
@@ -2650,12 +2655,12 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !modelId || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
-      if (!busy && !modelId) onSubmitBlocked?.(modelUnavailableMessage ?? "Select a model first");
+    if (busy || !singleModelReady || (!draft.trim().length && !hasContextSelection && contextAttachmentCount === 0)) {
+      if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, modelId, modelUnavailableMessage, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length]);
+  }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, macosVmContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
@@ -2713,7 +2718,7 @@ export function AgentChatComposer({
   const hasAppControlContext = appControlContextItems.length > 0;
   const hasBuiltInBrowserContext = builtInBrowserContextItems.length > 0;
   const hasMacosVmContext = macosVmContextItems.length > 0;
-  const singleReady = !parallelChatMode && Boolean(modelId) && (
+  const singleReady = !parallelChatMode && singleModelReady && (
     draft.trim().length > 0
     || (allowAttachmentOnlySubmit && attachments.length > 0)
     || hasIosElementContext
@@ -2740,7 +2745,8 @@ export function AgentChatComposer({
       if (draft.trim().length === 0 && attachments.length === 0 && contextAttachmentCount === 0) return "Add a message or at least one attachment";
       return "Send to all lanes";
     }
-    if (!modelId) return modelUnavailableMessage ?? "Select a model first";
+    if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
+    if (singleModelBlockedMessage) return singleModelBlockedMessage;
     if (!draft.trim().length && allowAttachmentOnlySubmit && attachments.length > 0) return "Send attached files";
     if (!draft.trim().length && contextAttachmentCount > 0) return "Send attached issue context";
     if (!draft.trim().length && hasAppControlContext) return "Send selected App Control context";

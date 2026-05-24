@@ -6982,7 +6982,7 @@ Check all worker statuses and continue managing the mission from here. Read work
       return mission.steps.find((step) => {
         const metadata = isRecord(step.metadata) ? step.metadata : null;
         return metadata?.orchestratorStepId === runStep.id || metadata?.stepKey === runStep.stepKey;
-      }) ?? mission.steps.find((step) => step.title === runStep.title) ?? null;
+      }) ?? null;
     };
 
     for (const runStep of graph.steps) {
@@ -7063,7 +7063,9 @@ Check all worker statuses and continue managing the mission from here. Read work
         reasonCode: "terminal_run_failed_step",
       }
     });
-    transitionMissionStatus(mission.id, "intervention_required", { allowTerminalRestart: true });
+    if (mission.status !== "intervention_required") {
+      transitionMissionStatus(mission.id, "intervention_required", { allowTerminalRestart: true });
+    }
   };
 
   // TERMINAL_PHASE_STEP_STATUSES — imported from missionLifecycle
@@ -7341,7 +7343,9 @@ Check all worker statuses and continue managing the mission from here. Read work
           : deriveMissionStatusFromRun(graph, latestMission);
         if (latestStatus === "intervention_required") {
           nextMissionStatus = latestStatus;
-          transitionMissionStatus(mission.id, latestStatus, { allowTerminalRestart: true });
+          if (latestMission.status !== "intervention_required") {
+            transitionMissionStatus(mission.id, latestStatus, { allowTerminalRestart: true });
+          }
         } else {
           transitionMissionStatus(mission.id, "failed", {
             lastError: extractRunFailureMessage(graph)

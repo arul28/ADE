@@ -204,6 +204,25 @@ function createSocket(socketPath) {
   return net.createConnection(socketPath);
 }
 
+function isTcpSocketPath(socketPath) {
+  return socketPath.startsWith("tcp://");
+}
+
+function canAutoStartRuntime(socketPath) {
+  if (!isTcpSocketPath(socketPath)) return true;
+  try {
+    const parsed = new URL(socketPath);
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost"
+      || host === "127.0.0.1"
+      || host === "::1"
+      || host === "[::1]"
+      || host === "0.0.0.0";
+  } catch {
+    return false;
+  }
+}
+
 function readRuntimeInfo(value) {
   const runtimeInfo =
     value && typeof value === "object" && !Array.isArray(value)
@@ -429,8 +448,8 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
     const info = await getRuntimeInfo(socketPath);
     const mismatch = runtimeMismatchReason(info, { projectRoot });
     if (!mismatch) return false;
-    if (socketPath.startsWith("tcp://")) {
-      throw new Error(`ADE dev runtime at ${socketPath} is stale (${mismatch}), and TCP runtimes cannot be auto-started.`);
+    if (!canAutoStartRuntime(socketPath)) {
+      throw new Error(`ADE dev runtime at ${socketPath} is stale (${mismatch}), and only local TCP or Unix-socket runtimes can be auto-started.`);
     }
     process.stdout.write(`[ade] restarting stale dev runtime at ${socketPath} (${mismatch})\n`);
     await shutdownRuntime(socketPath);
@@ -439,8 +458,8 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
       throw error;
     }
   }
-  if (socketPath.startsWith("tcp://")) {
-    throw new Error(`Cannot auto-start ADE dev runtime on TCP socket ${socketPath}.`);
+  if (!canAutoStartRuntime(socketPath)) {
+    throw new Error(`Cannot auto-start ADE dev runtime on remote TCP socket ${socketPath}. Start it with npm run dev:runtime, or use a local TCP/Unix socket for auto mode.`);
   }
   process.stdout.write(`[ade] starting dev runtime at ${socketPath}\n`);
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {

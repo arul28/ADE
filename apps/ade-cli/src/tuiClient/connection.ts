@@ -452,20 +452,23 @@ function attachedRuntimeMismatchReason(
 
 function spawnDaemon(socketPath: string): boolean {
   const cliEntrypoint = resolveCliEntrypoint();
+  const buildHash = computeCliEntrypointBuildHash();
   const daemonArgs = cliEntrypoint
     ? [cliEntrypoint, "serve", "--socket", socketPath]
     : ["serve", "--socket", socketPath];
+  const env = {
+    ...process.env,
+    ADE_DEFAULT_ROLE: "cto",
+    ADE_RPC_SOCKET_PATH: socketPath,
+    ...(buildHash ? { ADE_RUNTIME_BUILD_HASH: buildHash } : {}),
+  };
   const child = spawn(
     process.execPath,
     daemonArgs,
     {
       detached: true,
       stdio: "ignore",
-      env: {
-        ...process.env,
-        ADE_DEFAULT_ROLE: "cto",
-        ADE_RPC_SOCKET_PATH: socketPath,
-      },
+      env,
     },
   );
   child.unref();

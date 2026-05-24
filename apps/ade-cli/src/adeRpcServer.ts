@@ -42,6 +42,7 @@ import {
 } from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
+  type ComputerUseBackendStyle,
   type ComputerUseArtifactOwner,
   type LaneLinearIssue,
   type MergeMethod,
@@ -2440,6 +2441,14 @@ function assertNonEmptyString(value: unknown, field: string): string {
   return text;
 }
 
+function assertComputerUseBackendStyle(value: unknown, field: string): ComputerUseBackendStyle {
+  const style = assertNonEmptyString(value, field);
+  if (style === "external_cli" || style === "manual" || style === "local_fallback") {
+    return style;
+  }
+  throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${field} must be one of: external_cli, manual, local_fallback`);
+}
+
 function parseCliSessionProvider(value: unknown): LaunchProfile {
   const provider = asTrimmedString(value).toLowerCase();
   if (!isLaunchProfile(provider)) {
@@ -4666,6 +4675,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
+        style: "local_fallback",
         toolName: args.toolName,
       },
       inputs: [
@@ -4735,6 +4745,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "macos-vm",
+        style: "local_fallback",
         toolName: args.toolName,
       },
       inputs: [
@@ -5894,7 +5905,7 @@ async function runTool(args: {
   }
 
   if (name === "ingest_computer_use_artifacts") {
-    assertNonEmptyString(toolArgs.backendStyle, "backendStyle");
+    const backendStyle = assertComputerUseBackendStyle(toolArgs.backendStyle, "backendStyle");
     const backendName = assertNonEmptyString(toolArgs.backendName, "backendName");
     const manifestPath = asOptionalTrimmedString(toolArgs.manifestPath);
     let inputs = Array.isArray(toolArgs.inputs) ? toolArgs.inputs.map((entry) => safeObject(entry)) : [];
@@ -5933,6 +5944,7 @@ async function runTool(args: {
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: backendName,
+        style: backendStyle,
         toolName: asOptionalTrimmedString(toolArgs.toolName),
         command: asOptionalTrimmedString(toolArgs.command),
       },

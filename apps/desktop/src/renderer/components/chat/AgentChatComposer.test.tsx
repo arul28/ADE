@@ -155,23 +155,6 @@ function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): Normal
   };
 }
 
-const executionModeOptions = [
-  {
-    value: "focused",
-    label: "Focused",
-    summary: "Single stream",
-    helper: "Keep work in one stream.",
-    accent: "#38bdf8",
-  },
-  {
-    value: "parallel",
-    label: "Parallel",
-    summary: "Split work",
-    helper: "Use parallel branches for independent tasks.",
-    accent: "#c084fc",
-  },
-] as NonNullable<ComponentProps<typeof AgentChatComposer>["executionModeOptions"]>;
-
 describe("AgentChatComposer", () => {
   it("clear draft only triggers the draft-clear action during an active turn", () => {
     const props = renderComposer();
@@ -636,6 +619,32 @@ describe("AgentChatComposer", () => {
 
     expect(props.onApproval).not.toHaveBeenCalled();
     expect(props.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("blocks send when the selected model is unavailable on a constrained surface", () => {
+    const onSubmit = vi.fn();
+    const onSubmitBlocked = vi.fn();
+    const onSubmitInBackground = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "This should not send with a stale model.",
+      modelId: "openai/retired-model",
+      availableModelIds: ["openai/gpt-5.4"],
+      constrainModelSelection: true,
+      modelUnavailableMessage: "This model is not available in this context.",
+      onSubmit,
+      onSubmitBlocked,
+      onSubmitInBackground,
+    });
+
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Launch in background" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onSubmitInBackground).not.toHaveBeenCalled();
+    expect(onSubmitBlocked).toHaveBeenCalledWith("This model is not available in this context.");
   });
 
   it("keeps the option hint when a pending question includes selectable options", () => {

@@ -7007,6 +7007,71 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("does not sync run steps to duplicate mission titles without a stable link", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Avoid title-only mission step sync.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement API",
+            detail: "First duplicate title",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          },
+          {
+            index: 1,
+            title: "Implement API",
+            detail: "Second duplicate title",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const missionSteps = fixture.missionService.get(mission.id)?.steps ?? [];
+      expect(missionSteps.map((step) => step.title)).toEqual(["Implement API", "Implement API"]);
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "unlinked-implement-api",
+            title: "Implement API",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [failedAt, runId],
+      );
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where run_id = ?`,
+        [failedAt, failedAt, runId],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "step_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.steps.map((step) => step.status)).toEqual(["pending", "pending"]);
+      expect(refreshed?.status).toBe("in_progress");
+      expect(refreshed?.interventions).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("applies steering directives onto active run steps for worker prompt guidance", async () => {
     const fixture = await createFixture();
     try {

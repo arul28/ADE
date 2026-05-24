@@ -1608,7 +1608,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "macos_vm_screenshot" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "macos_vm_screenshot" },
         owners: expect.arrayContaining([
           expect.objectContaining({ kind: "lane", id: "lane-1" }),
           expect.objectContaining({ kind: "chat_session", id: "chat-session-1" }),
@@ -1631,7 +1631,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "macos_vm_select" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "macos_vm_select" },
       }),
     );
 
@@ -1671,7 +1671,7 @@ describe("adeRpcServer", () => {
     });
     expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
-        backend: { name: "macos-vm", toolName: "screenshot_environment" },
+        backend: { name: "macos-vm", style: "local_fallback", toolName: "screenshot_environment" },
       }),
     );
 
@@ -1967,6 +1967,10 @@ describe("adeRpcServer", () => {
 
     expect(runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
       expect.objectContaining({
+        backend: expect.objectContaining({
+          name: "agent-browser",
+          style: "external_cli",
+        }),
         owners: expect.arrayContaining([
           expect.objectContaining({
             kind: "chat_session",

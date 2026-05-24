@@ -2058,7 +2058,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
   const options: GlobalOptions = {
     projectRoot: null,
     workspaceRoot: null,
-    role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto"),
+    role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
     headless: parseBooleanEnv(process.env.ADE_CLI_HEADLESS),
     requireSocket: false,
     pretty: true,
@@ -13443,7 +13443,7 @@ function summarizeExecution(args: {
         connection.mode === "desktop-socket"
           ? "local-desktop-socket"
           : "local-headless-project",
-      role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto"),
+      role: resolveAdeDefaultRole(process.env.ADE_DEFAULT_ROLE, "agent"),
       projectRoot: connection.projectRoot,
       workspaceRoot: connection.workspaceRoot,
       socketPath: connection.socketPath,
