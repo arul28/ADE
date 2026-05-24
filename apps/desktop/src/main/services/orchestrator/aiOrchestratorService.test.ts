@@ -7072,6 +7072,62 @@ describe("aiOrchestratorService", () => {
     }
   });
 
+  it("does not sync run steps through blank step keys", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Avoid blank step key mission step sync.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement API",
+            detail: "Blank metadata key from legacy state",
+            kind: "implementation",
+            metadata: { stepType: "implementation", stepKey: "" }
+          }
+        ]
+      });
+
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "runtime-step",
+            title: "Different runtime step",
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [failedAt, runId],
+      );
+      fixture.db.run(
+        `update orchestrator_steps set step_key = '', status = 'failed', completed_at = ?, updated_at = ? where run_id = ?`,
+        [failedAt, failedAt, runId],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "step_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.steps.map((step) => step.status)).toEqual(["pending"]);
+      expect(refreshed?.status).toBe("in_progress");
+      expect(refreshed?.interventions).toHaveLength(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
   it("applies steering directives onto active run steps for worker prompt guidance", async () => {
     const fixture = await createFixture();
     try {

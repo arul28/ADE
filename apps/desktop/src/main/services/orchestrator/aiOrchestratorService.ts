@@ -6974,14 +6974,25 @@ Check all worker statuses and continue managing the mission from here. Read work
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
     const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+    const stableString = (value: unknown): string | null => {
+      if (typeof value !== "string") return null;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
     const resolveMissionStepForRunStep = (runStep: OrchestratorRunGraph["steps"][number]) => {
       if (runStep.missionStepId) {
         const byId = missionStepById.get(runStep.missionStepId);
         if (byId) return byId;
       }
+      const runStepId = stableString(runStep.id);
+      const runStepKey = stableString(runStep.stepKey);
       return mission.steps.find((step) => {
         const metadata = isRecord(step.metadata) ? step.metadata : null;
-        return metadata?.orchestratorStepId === runStep.id || metadata?.stepKey === runStep.stepKey;
+        if (!metadata) return false;
+        const metadataOrchestratorStepId = stableString(metadata.orchestratorStepId);
+        if (runStepId && metadataOrchestratorStepId === runStepId) return true;
+        const metadataStepKey = stableString(metadata.stepKey);
+        return Boolean(runStepKey && metadataStepKey === runStepKey);
       }) ?? null;
     };
 
