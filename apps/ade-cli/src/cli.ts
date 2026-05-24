@@ -10927,7 +10927,10 @@ async function connectMachineRuntimeDaemon(
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const label = "ADE runtime daemon socket";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
-  const expectedBuildHash = await resolveExpectedMachineRuntimeBuildHash();
+  const isTcpSocket = socketPath.startsWith("tcp://");
+  const expectedBuildHash = isTcpSocket
+    ? null
+    : await resolveExpectedMachineRuntimeBuildHash();
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
@@ -10944,7 +10947,7 @@ async function connectMachineRuntimeDaemon(
       options.role,
     );
     if (mismatch) {
-      if (!allowSpawn || socketPath.startsWith("tcp://")) {
+      if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
           `ADE runtime daemon ${mismatch}.`,
