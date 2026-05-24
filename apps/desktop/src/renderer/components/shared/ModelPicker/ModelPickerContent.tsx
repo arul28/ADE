@@ -106,6 +106,7 @@ export type ModelPickerContentProps = {
   onProviderRailSelect?: (family: ProviderFamily) => void;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   onOpenSignIn?: () => void;
+  allowRegistryExpansion?: boolean;
 };
 
 export const ModelPickerContent = memo(function ModelPickerContent({
@@ -119,6 +120,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   onProviderRailSelect,
   refreshingProvider,
   onOpenSignIn,
+  allowRegistryExpansion = true,
 }: ModelPickerContentProps) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -163,7 +165,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   );
 
   const expandedModels = useMemo<readonly ModelDescriptor[]>(() => {
-    if (authOnly) return models;
+    if (authOnly || !allowRegistryExpansion) return models;
     const merged = new Map<string, ModelDescriptor>();
     for (const m of models) merged.set(m.id, m);
     for (const m of MODEL_REGISTRY) {
@@ -171,7 +173,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       if (!merged.has(m.id)) merged.set(m.id, m);
     }
     return [...merged.values()];
-  }, [authOnly, models]);
+  }, [allowRegistryExpansion, authOnly, models]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
     const set = new Set<ProviderFamily>();

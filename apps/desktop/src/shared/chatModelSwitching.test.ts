@@ -39,6 +39,17 @@ describe("chatModelSwitching", () => {
     ]);
   });
 
+  it("can leave the active session model out when a caller supplies a strict allowlist", () => {
+    expect(
+      filterChatModelIdsForSession({
+        availableModelIds: ["anthropic/claude-sonnet-4-6"],
+        activeSessionModelId: "openai/gpt-5.4",
+        hasConversation: true,
+        includeActiveSessionModel: false,
+      }),
+    ).toEqual(["anthropic/claude-sonnet-4-6"]);
+  });
+
   it("allows same-family switches after launch", () => {
     expect(
       canSwitchChatSessionModel({

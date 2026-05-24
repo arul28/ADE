@@ -618,7 +618,6 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
-  CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -9913,31 +9912,6 @@ export function registerIpc({
       },
       local: snapshot.local ?? {},
     });
-  };
-
-  // Re-run ApnsService.configure when we have both a stored key and valid config.
-  const reconfigureApnsIfReady = (): void => {
-    const ctx = getCtx();
-    const effective = ctx.projectConfigService?.get?.()?.effective;
-    const apnsConfig = effective?.notifications?.apns ?? null;
-    if (!ctx.apnsService || !ctx.apnsKeyStore) return;
-    if (!apnsConfig?.enabled) return;
-    if (!apnsConfig.keyId || !apnsConfig.teamId || !apnsConfig.bundleId) return;
-    if (!ctx.apnsKeyStore.has()) return;
-    try {
-      const pem = ctx.apnsKeyStore.load();
-      if (!pem) return;
-      ctx.apnsService.configure({
-        keyP8Pem: pem,
-        keyId: apnsConfig.keyId,
-        teamId: apnsConfig.teamId,
-        bundleId: apnsConfig.bundleId,
-        env: apnsConfig.env === "production" ? "production" : "sandbox",
-      });
-    } catch (error) {
-      // Surface to the caller via status; don't crash the handler.
-      console.warn("apns.reconfigure_failed", error);
-    }
   };
 
   ipcMain.handle(IPC.notificationsApnsGetStatus, async (): Promise<ApnsBridgeStatus> => {

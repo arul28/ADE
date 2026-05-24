@@ -6974,10 +6974,19 @@ Check all worker statuses and continue managing the mission from here. Read work
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
     const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+    const resolveMissionStepForRunStep = (runStep: OrchestratorRunGraph["steps"][number]) => {
+      if (runStep.missionStepId) {
+        const byId = missionStepById.get(runStep.missionStepId);
+        if (byId) return byId;
+      }
+      return mission.steps.find((step) => {
+        const metadata = isRecord(step.metadata) ? step.metadata : null;
+        return metadata?.orchestratorStepId === runStep.id || metadata?.stepKey === runStep.stepKey;
+      }) ?? mission.steps.find((step) => step.title === runStep.title) ?? null;
+    };
 
     for (const runStep of graph.steps) {
-      if (!runStep.missionStepId) continue;
-      const missionStep = missionStepById.get(runStep.missionStepId);
+      const missionStep = resolveMissionStepForRunStep(runStep);
       if (!missionStep) continue;
       const nextStatus = mapOrchestratorStepStatus(runStep.status);
       if (missionStep.status === nextStatus) continue;
@@ -7024,6 +7033,39 @@ Check all worker statuses and continue managing the mission from here. Read work
     }
   };
 
+  const ensureTerminalFailedRunIntervention = (graph: OrchestratorRunGraph) => {
+    if (graph.run.status !== "failed") return;
+    const mission = missionService.get(graph.run.missionId);
+    if (!mission) return;
+    if (mission.interventions.some((entry) => entry.status === "open" && entry.interventionType === "failed_step")) {
+      return;
+    }
+
+    const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+    const failedRunStep = graph.steps.find((step) => step.status === "failed");
+    const failedMissionStep = failedRunStep?.missionStepId
+      ? missionStepById.get(failedRunStep.missionStepId) ?? null
+      : mission.steps.find((step) => step.status === "failed") ?? null;
+    if (!failedRunStep && !failedMissionStep) return;
+    const failedStepTitle = failedMissionStep?.title ?? failedRunStep?.title ?? "Run step";
+
+    missionService.addIntervention({
+      missionId: mission.id,
+      interventionType: "failed_step",
+      title: `Step failed: ${failedStepTitle}`,
+      body: `Synchronized from failed orchestrator run ${graph.run.id.slice(0, 8)}.`,
+      requestedAction: "Review the failure and decide whether to continue, retry, or cancel.",
+      metadata: {
+        runId: graph.run.id,
+        stepId: failedMissionStep?.id ?? null,
+        stepKey: failedRunStep?.stepKey ?? null,
+        orchestratorStepId: failedRunStep?.id ?? null,
+        reasonCode: "terminal_run_failed_step",
+      }
+    });
+    transitionMissionStatus(mission.id, "intervention_required", { allowTerminalRestart: true });
+  };
+
   // TERMINAL_PHASE_STEP_STATUSES — imported from missionLifecycle
 
   const syncMissionPhaseFromRun = (graph: OrchestratorRunGraph, _reason: string) => {
@@ -7064,13 +7106,15 @@ Check all worker statuses and continue managing the mission from here. Read work
       if (!mission) return;
 
       syncMissionStepsFromRun(graph);
+      ensureTerminalFailedRunIntervention(graph);
       syncMissionPhaseFromRun(graph, reason);
       const refreshed = missionService.get(mission.id) ?? mission;
-      const nextMissionStatus = options?.nextMissionStatus ?? deriveMissionStatusFromRun(graph, refreshed);
+      let nextMissionStatus = options?.nextMissionStatus ?? deriveMissionStatusFromRun(graph, refreshed);
       if (nextMissionStatus === "completed") {
         let workersSpawned = false;
-        const finalizationPolicy = resolveMissionFinalizationPolicyForMission(mission.id);
-        const missionBaseBranch = await resolveMissionBaseBranch(mission.id);
+        const missionForFinalization = missionService.get(mission.id) ?? refreshed;
+        const finalizationPolicy = resolveMissionFinalizationPolicyForMission(missionForFinalization.id);
+        const missionBaseBranch = await resolveMissionBaseBranch(missionForFinalization.id);
 
         // ── Guard: skip duplicate finalization ──────────────────────
         // If a previous sync already completed finalization or is actively
@@ -7136,7 +7180,7 @@ Check all worker statuses and continue managing the mission from here. Read work
           }, { graph });
 
           const result = await finalizeMissionToResultLane({
-            mission,
+            mission: missionForFinalization,
             runId,
             missionBaseBranch: missionBaseBranch ?? "main",
           });
@@ -7227,8 +7271,9 @@ Check all worker statuses and continue managing the mission from here. Read work
           ? await readMissionStateDocument({ projectRoot, runId }).catch(() => null)
           : null;
         if (stateDocAfterFinalization?.finalization) {
+          const missionForCloseout = missionService.get(mission.id) ?? missionForFinalization;
           const closeoutRequirements = buildMissionCloseoutRequirements({
-            mission,
+            mission: missionForCloseout,
             graph,
             policy: stateDocAfterFinalization.finalization.policy,
             finalization: stateDocAfterFinalization.finalization,
@@ -7290,10 +7335,22 @@ Check all worker statuses and continue managing the mission from here. Read work
           });
         }
       } else if (nextMissionStatus === "failed") {
-        transitionMissionStatus(mission.id, "failed", {
-          lastError: extractRunFailureMessage(graph)
-        });
+        const latestMission = missionService.get(mission.id) ?? refreshed;
+        const latestStatus = graph.steps.some((step) => step.status === "failed") || latestMission.steps.some((step) => step.status === "failed")
+          ? "intervention_required"
+          : deriveMissionStatusFromRun(graph, latestMission);
+        if (latestStatus === "intervention_required") {
+          nextMissionStatus = latestStatus;
+          transitionMissionStatus(mission.id, latestStatus, { allowTerminalRestart: true });
+        } else {
+          transitionMissionStatus(mission.id, "failed", {
+            lastError: extractRunFailureMessage(graph)
+          });
+        }
       } else {
+        if (!options?.nextMissionStatus) {
+          nextMissionStatus = deriveMissionStatusFromRun(graph, missionService.get(mission.id) ?? refreshed);
+        }
         transitionMissionStatus(mission.id, nextMissionStatus);
       }
       logger.debug("ai_orchestrator.sync_completed", {

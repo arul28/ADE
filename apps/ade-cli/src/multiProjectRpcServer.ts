@@ -28,6 +28,7 @@ import {
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
+import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
 
 type HandlerEntry = {
@@ -279,7 +280,6 @@ export function createMultiProjectRpcRequestHandler(
       const handler = createAdeRpcRequestHandler({
         runtime: scope.runtime,
         serverVersion: options.serverVersion,
-        onActionsListChanged: () => {},
       });
       if (initializedParams) {
         await handler({
@@ -379,6 +379,20 @@ export function createMultiProjectRpcRequestHandler(
     return syncService;
   };
 
+  const resolveRuntimeEnvInfo = () => ({
+    buildHash:
+      typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
+      process.env.ADE_RUNTIME_BUILD_HASH.trim()
+        ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
+        : null,
+    defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+    projectRoot:
+      typeof process.env.ADE_PROJECT_ROOT === "string" &&
+      process.env.ADE_PROJECT_ROOT.trim()
+        ? path.resolve(process.env.ADE_PROJECT_ROOT.trim())
+        : null,
+  });
+
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";
     const params = safeParams(request.params);
@@ -393,17 +407,13 @@ export function createMultiProjectRpcRequestHandler(
         runtimeInfo: {
           name: "ade-rpc",
           version: options.serverVersion,
-          buildHash:
-            typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
-            process.env.ADE_RUNTIME_BUILD_HASH.trim()
-              ? process.env.ADE_RUNTIME_BUILD_HASH.trim()
-              : null,
+          ...resolveRuntimeEnvInfo(),
           multiProject: true,
           pid: process.pid,
         },
         capabilities: {
           actions: {
-            listChanged: true,
+            listChanged: false,
           },
           projects: true,
           machineProjects: {
@@ -436,9 +446,19 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "runtime/info" || method === "machineInfo.get") {
       const layout = resolveMachineAdeLayout();
+      const envInfo = resolveRuntimeEnvInfo();
       return {
         version: options.serverVersion,
         runtimeKind: "headless",
+        ...envInfo,
+        pid: process.pid,
+        runtimeInfo: {
+          name: "ade-rpc",
+          version: options.serverVersion,
+          ...envInfo,
+          multiProject: true,
+          pid: process.pid,
+        },
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,
         projectCount: projectRegistry.list().length,

@@ -22,7 +22,6 @@ import {
 import { TabBackground } from "../ui/TabBackground";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { useAppStore } from "../../state/appStore";
-import { useOnboardingStore } from "../../state/onboardingStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
@@ -1085,7 +1084,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/project" &&
     onboardingStatusLoading;
   const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
-  const tourActive = useOnboardingStore((s) => s.activeTourId != null);
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({
         status: "running",

@@ -123,7 +123,6 @@ export function createMissionPreflightService(args: {
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
 }) {
   const {
-    projectRoot,
     missionService,
     laneService,
     aiIntegrationService,

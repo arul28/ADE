@@ -139,6 +139,10 @@ function startServeProcess(args: {
   });
 }
 
+function removeTempDir(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 async function shutdownRuntime(socketPath: string): Promise<void> {
   let client: RawRuntimeSocketClient | null = null;
   try {
@@ -354,6 +358,8 @@ describe("local runtime connection pool", () => {
       else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
       if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(projectRoot);
+      removeTempDir(adeHome);
     }
   }, 45_000);
 
@@ -459,6 +465,8 @@ describe("local runtime connection pool", () => {
       else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
       if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(projectRoot);
+      removeTempDir(adeHome);
     }
   }, 45_000);
 
@@ -493,6 +501,7 @@ describe("local runtime connection pool", () => {
         ...baseEnv,
         ADE_CLI_VERSION: "0.0.0",
         ADE_RUNTIME_BUILD_HASH: expectedBuildHash!,
+        ADE_DEFAULT_ROLE: "cto",
       },
       socketPath,
     });
@@ -535,6 +544,8 @@ describe("local runtime connection pool", () => {
       else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
       if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(projectRoot);
+      removeTempDir(adeHome);
     }
   }, 45_000);
 
@@ -644,6 +655,110 @@ describe("local runtime connection pool", () => {
       else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
       if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(projectRoot);
+      removeTempDir(adeHome);
+    }
+  }, 45_000);
+
+  it("replaces a same-version local daemon when its default role is not CTO", async () => {
+    const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
+    const cliPath = path.join(adeCliRoot, "src", "cli.ts");
+    const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    expect(fs.existsSync(cliPath)).toBe(true);
+    expect(fs.existsSync(tsxLoaderPath)).toBe(true);
+
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-project-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
+    expect(expectedBuildHash).toBeTruthy();
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      NODE_OPTIONS: process.env.NODE_OPTIONS,
+    };
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
+    };
+    const oldDaemon = startServeProcess({
+      cliPath,
+      cwd: adeCliRoot,
+      env: {
+        ...baseEnv,
+        ADE_CLI_VERSION: "1.0.0",
+        ADE_RUNTIME_BUILD_HASH: expectedBuildHash!,
+        ADE_DEFAULT_ROLE: "agent",
+      },
+      socketPath,
+    });
+    const oldPid = oldDaemon.pid!;
+    expect(oldPid).toBeGreaterThan(0);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    let pool: LocalRuntimeConnectionPool | null = null;
+
+    try {
+      await waitForRuntimeSocket(socketPath);
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+      process.env.NODE_OPTIONS = baseEnv.NODE_OPTIONS;
+
+      pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
+      const registered = await pool.ensureProject(projectRoot);
+      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+
+      expect(logger.info).toHaveBeenCalledWith("local_runtime.role_mismatch_detected", expect.objectContaining({
+        runtimeDefaultRole: "agent",
+        expectedDefaultRole: "cto",
+        runtimePid: oldPid,
+      }));
+      expect(logger.warn).toHaveBeenCalledWith("local_runtime.replacing_stale", expect.objectContaining({
+        pid: oldPid,
+        socketPath,
+      }));
+
+      const client = await RawRuntimeSocketClient.connect(socketPath);
+      try {
+        const initialized = await client.request("ade/initialize", {
+          protocolVersion: "2025-06-18",
+          clientName: "local-runtime-role-test",
+          identity: { role: "external", callerId: "local-runtime-role-test" },
+        });
+        expect(initialized).toMatchObject({
+          runtimeInfo: {
+            version: "1.0.0",
+            buildHash: expectedBuildHash,
+            defaultRole: "cto",
+          },
+        });
+      } finally {
+        client.close();
+      }
+    } finally {
+      pool?.dispose();
+      await shutdownRuntime(socketPath);
+      if (!oldDaemon.killed) {
+        try { oldDaemon.kill("SIGKILL"); } catch {}
+      }
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(projectRoot);
+      removeTempDir(adeHome);
     }
   }, 45_000);
 

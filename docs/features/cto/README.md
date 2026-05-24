@@ -98,6 +98,11 @@ Portability rule: identity YAML is git-tracked; generated CTO continuity files a
 | Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
 | Settings | Identity and session logs | On tab activation |
 
+The CTO tour switches tabs through `ade:tour-cto-tab` before the Team
+and Workflows steps. The first-run journey wraps those CTO steps but
+preserves their `beforeEnter` hooks, so the correct tab is active
+before each wrapped anchor is awaited.
+
 The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
 
 ## Wiring and IPC

@@ -956,17 +956,6 @@ type MigrationDb = {
   get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: SqlValue[]) => T | null;
 };
 
-function wrapRawDb(db: DatabaseSyncType): MigrationDb {
-  return {
-    run: (sql: string, params: SqlValue[] = []) => {
-      runStatement(db, sql, params);
-    },
-    get: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params: SqlValue[] = []) => {
-      return getRow<T>(db, sql, params);
-    },
-  };
-}
-
 function parseAlterTableTarget(sql: string): string | null {
   const match = sql.match(/^\s*alter\s+table\s+([`"'[\]A-Za-z0-9_]+)\s+add\s+column\s+/i);
   if (!match?.[1]) return null;

@@ -26,7 +26,8 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. Owns the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. Also backs `/skills` by listing Agent Skill roots from project, user, inherited, and bundled ADE locations, independent of the active provider. |
 | `apps/ade-cli/src/tuiClient/deeplinkRow.ts` | Pure helper used by the `Ctrl+Y` keybinding. Maps the focused lane or PR row (including parsing a GitHub PR URL when the right pane only carries the URL) onto a `DeeplinkTarget` and returns the built `ade://` URL. Tested in `tuiClient/__tests__/deeplinkKeybind.test.ts`. |
 | `apps/ade-cli/src/commands/deeplinks.ts` | `ade open`, `ade link`, and `ade linear install` subcommands. Shares the parser + builder with the desktop main process so URLs round-trip across both surfaces. See [features/deeplinks/README.md](../deeplinks/README.md). |
-| `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. |
+| `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. Computes the daemon's expected SHA-256 build hash from the resolved CLI entrypoint and compares it against the runtime's reported `runtimeInfo.buildHash` / `defaultRole` / `projectRoot`; a mismatch throws `StaleAdeSocketError`, optionally shuts the stale daemon down, and lets `spawnDaemon` start a compatible one (with `ADE_DEFAULT_ROLE=cto` in the spawned env). `initializeEmbeddedCto` injects a trusted `cto` role only when `ADE_DEFAULT_ROLE` is not already set to a valid value. |
+| `apps/ade-cli/src/runtimeRoles.ts` | `ADE_RUNTIME_ROLES` (`cto`, `orchestrator`, `agent`, `external`, `evaluator`), `normalizeAdeRuntimeRole`, and `resolveAdeDefaultRole`. Shared by `cli.ts`, `adeRpcServer.ts`, `multiProjectRpcServer.ts`, and `tuiClient/connection.ts` so role parsing stays consistent across surfaces. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships `/lane delete` (right-pane confirmation form that destroys the active lane), `/effort` (reasoning-effort-only picker, a narrower companion to `/model`), and provider-agnostic `/skills` for Agent Skill discovery. `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. |
 | `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | Pure formatters for right-pane result panes (PR summary / review / checks / comments, Linear status, system details). Keeps `app.tsx` free of ad-hoc rendering helpers. |
@@ -87,9 +88,36 @@ Both modes run the same handshake before the TUI mounts:
      clientName: "ade-code",
      identity: { role: "cto", callerId: "ade-code:<pid>" }
    }
-<- { runtimeInfo: { multiProject: true, version, ... }, capabilities: { projects: true, ... } }
+<- {
+     runtimeInfo: {
+       name: "ade-rpc",
+       version: "<cli-version>",
+       buildHash: "<sha256-or-null>",
+       defaultRole: "cto",
+       projectRoot: "/path/to/project",
+       multiProject: true,
+       pid: 12345
+     },
+     capabilities: {
+       projects: true,
+       actions: { listChanged: false }
+     }
+   }
 -> ade/initialized
 ```
+
+`identity.role` remains compatibility metadata; the runtime's trusted
+role comes from `ADE_DEFAULT_ROLE` and the rest of the ADE context env.
+Direct headless CLI sets that env role from `--role` (defaulting to
+`cto`). `ade code` injects `cto` only for an embedded runtime or a
+freshly spawned daemon when no valid explicit role exists. Socket
+clients then read `runtimeInfo.buildHash`, `runtimeInfo.defaultRole`,
+`runtimeInfo.projectRoot`, and `runtimeInfo.pid` to detect stale local
+daemons via `attachedRuntimeMismatchReason`; a mismatch raises
+`StaleAdeSocketError`, optionally shuts the stale daemon down, and
+falls through to `spawnDaemon`. `capabilities.actions.listChanged` is
+currently `false`, so the action list is static after initialization
+and there is no `ade/actions/list_changed` notification stream.
 
 If the response advertises `runtimeInfo.multiProject === true` or `capabilities.projects === true`, `connection.ts` calls `projects.add { rootPath: <project-root> }`, captures the returned `projectId`, and from then on every project-scoped request is rewritten to include `projectId`. The runtime-scoped methods (the set in `MULTI_PROJECT_RUNTIME_METHODS`: `ade/initialize`, `projects.*`, `ping`, `runtime/info`, etc.) pass through unchanged.
 

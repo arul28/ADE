@@ -209,16 +209,6 @@ export const COORDINATOR_TOOL_NAMES = [
   "check_finalization_status",
 ] as const;
 
-const COORDINATOR_OBSERVATION_TOOL_NAMES = [
-  "get_mission",
-  "get_run_graph",
-  "get_step_output",
-  "get_worker_states",
-  "get_timeline",
-  "get_final_diff",
-  "stream_events",
-] as const;
-
 export type PlannerLaunchFailureCategory =
   | "run_context_bug"
   | "provider_unreachable"
@@ -860,7 +850,6 @@ export function createCoordinatorToolSet(deps: {
   const missionLaneId = typeof deps.missionLaneId === "string" && deps.missionLaneId.trim().length > 0
     ? deps.missionLaneId.trim()
     : null;
-  const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const resolvedWorkspaceRootReal = fs.existsSync(resolvedWorkspaceRoot)
     ? fs.realpathSync(resolvedWorkspaceRoot)
@@ -2398,19 +2387,6 @@ export function createCoordinatorToolSet(deps: {
     const stepPhaseKey = typeof stepMeta?.phaseKey === "string" ? stepMeta.phaseKey.trim().toLowerCase() : "";
     const stepPhaseName = typeof stepMeta?.phaseName === "string" ? stepMeta.phaseName.trim().toLowerCase() : "";
     return !isTaskShellStep(step) && (stepPhaseKey === "planning" || stepPhaseName === "planning");
-  }
-
-  function phaseHasCompletionEligibleStep(
-    phase: PhaseCard,
-    stepsForPhase: (phase: PhaseCard) => OrchestratorStep[],
-  ): boolean {
-    const phaseKey = phase.phaseKey.trim().toLowerCase();
-    const phaseName = phase.name.trim().toLowerCase();
-    const phaseSteps = filterExecutionSteps(stepsForPhase(phase));
-    if (phaseKey === "planning" || phaseName === "planning") {
-      return phaseSteps.some((step) => isPlanningExecutionStep(step) && step.status === "succeeded");
-    }
-    return phaseSteps.some((step) => TERMINAL_STEP_STATUSES.has(step.status));
   }
 
   function phaseHasSuccessfulCompletion(

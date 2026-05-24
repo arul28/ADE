@@ -5,7 +5,6 @@ import type {
   CtoFlowPolicyRevision,
   LaneSummary,
   LinearConnectionStatus,
-  LinearIngressEventRecord,
   LinearIngressStatus,
   LinearSyncResolutionAction,
   LinearWorkflowMatchCandidate,
@@ -259,7 +258,6 @@ export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[
   const [revisions, setRevisions] = useState<CtoFlowPolicyRevision[]>([]);
   const [agents, setAgents] = useState<AgentIdentity[]>([]);
   const [ingressStatus, setIngressStatus] = useState<LinearIngressStatus | null>(null);
-  const [ingressEvents, setIngressEvents] = useState<LinearIngressEventRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -302,7 +300,7 @@ export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[
 
   const loadRuntimeState = useCallback(async () => {
     if (!window.ade?.cto) return;
-    const [dash, q, nextIngressStatus, nextIngressEvents] = await Promise.all([
+    const [dash, q, nextIngressStatus] = await Promise.all([
       window.ade.cto.getLinearSyncDashboard(),
       window.ade.cto.listLinearSyncQueue(),
       window.ade.cto.getLinearIngressStatus().catch(
@@ -312,12 +310,10 @@ export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[
           reconciliation: { enabled: true, intervalSec: 30, lastRunAt: null },
         })
       ),
-      window.ade.cto.listLinearIngressEvents({ limit: 12 }).catch(async (): Promise<LinearIngressEventRecord[]> => []),
     ]);
     setDashboard(dash);
     setQueue(q);
     setIngressStatus(nextIngressStatus);
-    setIngressEvents(nextIngressEvents);
   }, []);
 
   const loadRunDetail = useCallback(async (runId: string | null) => {
@@ -493,7 +489,6 @@ export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[
     try {
       const ensured = await window.ade.cto.ensureLinearWebhook({ force: true });
       setIngressStatus(ensured);
-      setIngressEvents(await window.ade.cto.listLinearIngressEvents({ limit: 12 }));
       setStatusNote("Linear webhook ingress is configured and listening for real-time events.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to ensure the Linear webhook.");

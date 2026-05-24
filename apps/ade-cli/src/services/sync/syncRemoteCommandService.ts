@@ -108,7 +108,6 @@ import type {
   SyncStartCliSessionArgs,
   SyncStartCliSessionResult,
   SyncRunQuickCommandArgs,
-  TerminalSessionSummary,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
   TerminalToolType,
@@ -119,15 +118,12 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import {
   buildTrackedCliLaunchCommand,
-  buildTrackedCliResumeCommand,
   deriveTrackedCliInitialInputSessionMeta,
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
-  launchProfileForTerminalSession,
   resolveCleanShellLaunchFields,
-  resolveTrackedCliResumeCommand,
   validateLaunchProfilePermissionMode,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";

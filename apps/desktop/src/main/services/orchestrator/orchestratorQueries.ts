@@ -14,7 +14,6 @@ import type {
   OrchestratorClaim,
   OrchestratorClaimScope,
   OrchestratorClaimState,
-  OrchestratorContextProfileId,
   OrchestratorContextPolicyProfile,
   OrchestratorContextSnapshot,
   OrchestratorContextSnapshotCursor,

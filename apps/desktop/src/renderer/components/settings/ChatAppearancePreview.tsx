@@ -158,14 +158,12 @@ function PreviewColumn({
   accentColor,
   shellGeometry,
   chromeTint,
-  rootStyle,
   children,
 }: {
   provider: PreviewProviderKey;
   accentColor: string;
   shellGeometry: ChatShellGeometry;
   chromeTint: ChatChromeTint;
-  rootStyle: React.CSSProperties;
   children: React.ReactNode;
 }) {
   return (
@@ -287,7 +285,6 @@ export function ChatAppearancePreview({
         accentColor={codexAccent}
         shellGeometry={shellGeometry}
         chromeTint={chromeTint}
-        rootStyle={rootStyle}
       >
         <SharedAppearanceTranscript rootStyle={rootStyle} provider="codex" chromeTint={chromeTint} />
       </PreviewColumn>
@@ -296,7 +293,6 @@ export function ChatAppearancePreview({
         accentColor={claudeAccent}
         shellGeometry={shellGeometry}
         chromeTint={chromeTint}
-        rootStyle={rootStyle}
       >
         <SharedAppearanceTranscript rootStyle={rootStyle} provider="claude" chromeTint={chromeTint} />
       </PreviewColumn>
@@ -305,7 +301,6 @@ export function ChatAppearancePreview({
         accentColor={opencodeAccent}
         shellGeometry={shellGeometry}
         chromeTint={chromeTint}
-        rootStyle={rootStyle}
       >
         <SharedAppearanceTranscript rootStyle={rootStyle} provider="opencode" chromeTint={chromeTint} />
       </PreviewColumn>

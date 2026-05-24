@@ -513,7 +513,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | **Thin delegation to the runtime daemon's sync host plus a legacy in-process fallback.** The authoritative sync host now lives in `apps/ade-cli/src/services/sync/`; the desktop main-process instances default to a non-host viewer role for legacy state. The old in-process host is disabled unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1` (diagnostics only). Wire formats — WebSocket envelope, remote command routing, device registry, pairing secrets — are the same across both implementations. |
 | `notifications/` | `apnsService.ts`, `apnsBridgeService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, key persisted via Electron `safeStorage` on the desktop or `EncryptedFileCredentialStore` under `.ade/secrets/` in the headless daemon), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. `apnsBridgeService.ts` is the `notifications_apns` ADE action domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`, `sendTestPush`) so the same Settings flow works whether the active project is local-bound or SSH-bound. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
-| `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle | checking | downloading | ready | installing | error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
+| `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle \| checking \| downloading \| ready \| installing \| error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
 | `usage/` | `usageTrackingService.ts`, `budgetCapService.ts` | Token/cost accounting, budget enforcement. Local cost scans stream bounded recent Claude/Codex JSONL files instead of loading the whole history into memory. |
 | `perf/` | `perfLog.ts`, `perfIpc.ts`, `metricsSampler.ts`, `aggregator.ts` | Opt-in local performance harness. `ADE_PERF_RUN_ID` opens a JSONL event log, samples Electron process metrics, records IPC durations, accepts renderer perf marks/web-vitals, and aggregates each run into `summary.json`. |
 
@@ -914,7 +914,7 @@ ADE/
 └── .ade/               # Self-hosted ADE project state (ignored subset)
 ```
 
-Root `package.json` is a thin aggregator: `npm test` runs desktop + ade-cli; `npm run test:ci` runs coverage on desktop + ade-cli.
+Root `package.json` is a thin aggregator: `npm test` and `npm run test:ci` run the desktop suite in CI-style shards plus the ade-cli suite. `npm run test:coverage` runs desktop coverage plus the ade-cli suite.
 
 Per-app scripts:
 
@@ -947,7 +947,7 @@ Sharding is required because the desktop suite is large enough to be slow in a s
 ### 14.3 Test organization
 
 - **Tooling**: Vitest with `node` environment, `pool: "forks"`, `maxForks: 4`, 20s test/hook timeouts.
-- **Config**: `apps/desktop/vitest.config.ts` (base), plus project-specific configs for `unit-main`, `unit-renderer`, `unit-shared` when needed.
+- **Config**: `apps/desktop/vitest.workspace.ts` defines the `unit-main`, `unit-renderer`, and `unit-shared` projects. The pinned Vitest version does not support CLI `--project`, so `test:unit` is plain `vitest run`, `test:integration` filters `*.integration.test.*`, and `test:component` filters `src/renderer/**/*.test.*`. Root desktop sharding uses `scripts/run-desktop-test-shards.mjs`, which runs `vitest run --shard=N/8` for shards 1-8.
 - **Test locations**: colocated with source (`*.test.ts` / `*.test.tsx`) under `src/**`.
 - **Setup**: `apps/desktop/src/test/setup.ts` (browser/DOM mocks via `browserMock.ts`).
 - **Philosophy**: keep tests that carry real value; aggressively remove brittle UI/render tests; keep mutation + integration coverage solid.

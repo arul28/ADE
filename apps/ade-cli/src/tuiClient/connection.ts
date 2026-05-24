@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +9,7 @@ import { JsonRpcClient } from "./jsonRpcClient";
 import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import type { BufferedEvent } from "../eventBuffer";
+import { resolveAdeDefaultRole } from "../runtimeRoles";
 
 type RpcResponseEnvelope<T> =
   | T
@@ -26,10 +28,22 @@ type AdeActionHelpers = Pick<
 type InitializeResult = {
   runtimeInfo?: {
     multiProject?: boolean;
+    version?: string | null;
+    buildHash?: string | null;
+    defaultRole?: string | null;
+    projectRoot?: string | null;
+    pid?: number | null;
   };
   capabilities?: {
     projects?: boolean;
   };
+};
+
+type AttachedRuntimeInfo = {
+  buildHash: string | null;
+  defaultRole: string | null;
+  projectRoot: string | null;
+  pid: number | null;
 };
 
 type ProjectRecord = {
@@ -245,6 +259,22 @@ async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
   return result;
 }
 
+async function initializeEmbeddedCto(request: AdeRpcRequest): Promise<InitializeResult> {
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  const shouldInjectTrustedRole = previousRole?.trim() !== "cto";
+  if (shouldInjectTrustedRole) {
+    process.env.ADE_DEFAULT_ROLE = "cto";
+  }
+  try {
+    return await initialize(request);
+  } finally {
+    if (shouldInjectTrustedRole) {
+      if (previousRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  }
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -309,6 +339,16 @@ function withProjectId(
   return { projectId };
 }
 
+function isLikelyAdeCliEntrypoint(candidate: string): boolean {
+  const basename = path.basename(candidate).toLowerCase();
+  return basename === "ade"
+    || basename === "ade-cli"
+    || basename === "cli.ts"
+    || basename === "cli.js"
+    || basename === "cli.cjs"
+    || basename === "cli.mjs";
+}
+
 function resolveCliEntrypoint(): string | null {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
@@ -318,7 +358,9 @@ function resolveCliEntrypoint(): string | null {
     process.argv[1],
   ].filter(
     (candidate): candidate is string =>
-      typeof candidate === "string" && candidate.trim().length > 0,
+      typeof candidate === "string" &&
+      candidate.trim().length > 0 &&
+      (candidate !== process.argv[1] || isLikelyAdeCliEntrypoint(candidate)),
   );
   for (const candidate of candidates) {
     try {
@@ -329,6 +371,82 @@ function resolveCliEntrypoint(): string | null {
       // Try the next candidate.
     }
   }
+  return null;
+}
+
+class StaleAdeSocketError extends Error {
+  readonly pid: number | null;
+
+  constructor(message: string, pid: number | null) {
+    super(message);
+    this.name = "StaleAdeSocketError";
+    this.pid = pid;
+  }
+}
+
+function readAttachedRuntimeInfo(result: InitializeResult): AttachedRuntimeInfo {
+  const runtimeInfo = result.runtimeInfo;
+  const pid = runtimeInfo?.pid;
+  return {
+    buildHash:
+      typeof runtimeInfo?.buildHash === "string" && runtimeInfo.buildHash.trim()
+        ? runtimeInfo.buildHash.trim()
+        : null,
+    defaultRole:
+      typeof runtimeInfo?.defaultRole === "string" && runtimeInfo.defaultRole.trim()
+        ? runtimeInfo.defaultRole.trim()
+        : null,
+    projectRoot:
+      typeof runtimeInfo?.projectRoot === "string" && runtimeInfo.projectRoot.trim()
+        ? path.resolve(runtimeInfo.projectRoot.trim())
+        : null,
+    pid:
+      typeof pid === "number" && Number.isFinite(pid) && pid > 0
+        ? Math.floor(pid)
+        : null,
+  };
+}
+
+function computeCliEntrypointBuildHash(): string | null {
+  const entrypoint = resolveCliEntrypoint();
+  if (!entrypoint) return null;
+  try {
+    return createHash("sha256").update(fs.readFileSync(entrypoint)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function attachedRuntimeMismatchReason(
+  result: InitializeResult,
+  project: ProjectLaunchContext,
+): { reason: string; pid: number | null } | null {
+  const info = readAttachedRuntimeInfo(result);
+  if (info.defaultRole !== "cto") {
+    return {
+      reason: `default role ${info.defaultRole ?? "missing"} is not cto`,
+      pid: info.pid,
+    };
+  }
+
+  const expectedBuildHash = computeCliEntrypointBuildHash();
+  if (expectedBuildHash && info.buildHash !== expectedBuildHash) {
+    return {
+      reason: info.buildHash ? "build hash changed" : "build hash missing",
+      pid: info.pid,
+    };
+  }
+
+  if (!isMultiProjectRuntime(result)) {
+    const expectedProjectRoot = path.resolve(project.projectRoot);
+    if (info.projectRoot !== expectedProjectRoot) {
+      return {
+        reason: `project root ${info.projectRoot ?? "missing"} does not match ${expectedProjectRoot}`,
+        pid: info.pid,
+      };
+    }
+  }
+
   return null;
 }
 
@@ -345,6 +463,7 @@ function spawnDaemon(socketPath: string): boolean {
       stdio: "ignore",
       env: {
         ...process.env,
+        ADE_DEFAULT_ROLE: "cto",
         ADE_RPC_SOCKET_PATH: socketPath,
       },
     },
@@ -356,6 +475,7 @@ function spawnDaemon(socketPath: string): boolean {
 async function connectAttachedSocket(args: {
   socketPath: string;
   project: ProjectLaunchContext;
+  shutdownOnStale?: boolean;
 }): Promise<AdeCodeConnection> {
   let client: JsonRpcClient | null = await JsonRpcClient.connect(
     args.socketPath,
@@ -369,6 +489,16 @@ async function connectAttachedSocket(args: {
       3000,
       "ADE RPC socket did not finish initialization.",
     );
+    const runtimeMismatch = attachedRuntimeMismatchReason(initializeResult, args.project);
+    if (runtimeMismatch) {
+      if (args.shutdownOnStale) {
+        await connectedClient.request("shutdown").catch(() => null);
+      }
+      throw new StaleAdeSocketError(
+        `ADE RPC socket is stale (${runtimeMismatch.reason}).`,
+        runtimeMismatch.pid,
+      );
+    }
     let request = rawRequest;
     const multiProjectRuntime = isMultiProjectRuntime(initializeResult);
     if (multiProjectRuntime) {
@@ -495,6 +625,7 @@ async function connectAttachedSocketWithRetry(args: {
   project: ProjectLaunchContext;
   attempts: number;
   delayMs: number;
+  shutdownOnStale?: boolean;
 }): Promise<AdeCodeConnection> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < Math.max(1, args.attempts); attempt += 1) {
@@ -502,6 +633,7 @@ async function connectAttachedSocketWithRetry(args: {
       return await connectAttachedSocket({
         socketPath: args.socketPath,
         project: args.project,
+        shutdownOnStale: args.shutdownOnStale,
       });
     } catch (error) {
       lastError = error;
@@ -558,6 +690,7 @@ export async function connectToAde(args: {
         project: args.project,
         attempts,
         delayMs: 200,
+        shutdownOnStale: true,
       });
     try {
       if (!fs.existsSync(machineSocketPath)) {
@@ -566,6 +699,9 @@ export async function connectToAde(args: {
       }
       return await tryDaemon(1);
     } catch (firstError) {
+      if (firstError instanceof StaleAdeSocketError) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
       try {
         const spawned = spawnDaemon(machineSocketPath);
         if (spawned) return await tryDaemon(25);
@@ -635,7 +771,7 @@ export async function connectToAde(args: {
       params,
     })) as T;
   };
-  await initialize(request);
+  await initializeEmbeddedCto(request);
   const chatEvents =
     typeof runtime.agentChatService?.subscribeToEvents === "function"
       ? runtime.agentChatService.subscribeToEvents.bind(

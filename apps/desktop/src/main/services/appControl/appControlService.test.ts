@@ -14,6 +14,7 @@ const mockState = vi.hoisted(() => ({
   httpResponses: [] as Array<FakeCdpTarget[] | Promise<FakeCdpTarget[]>>,
   sockets: [] as Array<{ url: string; sent: string[] }>,
   runtimeValues: [] as unknown[],
+  screenshotData: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
 }));
 
 vi.mock("node:http", async () => {
@@ -74,7 +75,9 @@ vi.mock("ws", async () => {
       if (this.readyState === FakeWebSocket.OPEN) {
         const result = message.method === "Runtime.evaluate"
           ? { result: { value: mockState.runtimeValues.shift() ?? {} } }
-          : {};
+          : message.method === "Page.captureScreenshot"
+            ? { data: mockState.screenshotData }
+            : {};
         this.emit("message", Buffer.from(JSON.stringify({ id: message.id, result })));
       }
       callback?.();
@@ -211,5 +214,26 @@ describe("appControlService", () => {
     const messages = socket!.sent.map((payload) => JSON.parse(payload) as { method: string });
     expect(messages.filter((message) => message.method === "Runtime.evaluate")).toHaveLength(2);
     expect(messages.some((message) => message.method === "Input.dispatchMouseEvent")).toBe(false);
+  });
+
+  it("clears the bounded capture timeout after successful screenshots", async () => {
+    const targetA = target("a");
+    mockState.httpResponses.push([targetA]);
+
+    const service = createAppControlService({
+      projectRoot: "/tmp/project",
+      logger: createLogger(),
+    });
+
+    await service.connect({ cdpPort: 12345, force: true });
+    const timerCountBeforeCapture = vi.getTimerCount();
+
+    const screenshotPromise = service.screenshot();
+    await vi.advanceTimersByTimeAsync(100);
+    const screenshot = await screenshotPromise;
+
+    expect(screenshot.width).toBe(1);
+    expect(screenshot.height).toBe(1);
+    expect(vi.getTimerCount()).toBe(timerCountBeforeCapture);
   });
 });

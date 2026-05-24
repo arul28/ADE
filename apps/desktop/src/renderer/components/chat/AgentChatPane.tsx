@@ -1165,6 +1165,8 @@ const CODEX_CONFIG_SOURCES: readonly AgentChatCodexConfigSource[] = ["flags", "c
 const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["plan", "edit", "full-auto"];
 const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
+const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
+const EMPTY_REASONING_TIERS: string[] = [];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -2255,7 +2257,7 @@ export function AgentChatPane({
     return lane?.worktreePath ?? projectRoot;
   }, [laneId, lanes, projectRoot]);
 
-  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? [] : [];
+  const selectedEvents = selectedSessionId ? eventsBySession[selectedSessionId] ?? EMPTY_CHAT_EVENTS : EMPTY_CHAT_EVENTS;
   const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
@@ -2681,7 +2683,7 @@ export function AgentChatPane({
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
-  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? [];
+  const reasoningTiers = selectedModelDesc?.reasoningTiers ?? EMPTY_REASONING_TIERS;
   const localRuntimeState = useMemo(() => {
     const provider = selectedModelDesc?.authTypes.includes("local")
       ? (selectedModelDesc.family as LocalProviderFamily)
@@ -3011,15 +3013,20 @@ export function AgentChatPane({
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
 
-  // Keep all configured models selectable, and always include the active session model.
-  // All models are available regardless of surface — the runtime handles provider transitions.
+  // Keep configured models selectable unless a caller explicitly constrains
+  // this surface. Unconstrained sessions keep their active model visible even
+  // when it has fallen out of the discovered catalog.
+  const modelSelectionConstrained = availableModelIdsOverride != null;
   const effectiveAvailableModelIds = useMemo(() => {
+    const sourceAvailableModelIds = availableModelIdsOverride ?? availableModelIds;
     const base = filterChatModelIdsForSession({
-      availableModelIds,
+      availableModelIds: sourceAvailableModelIds,
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
+      includeActiveSessionModel: !modelSelectionConstrained,
       policy: modelSwitchPolicy,
     });
+    if (modelSelectionConstrained) return base;
     const catalog = getSharedRuntimeCatalog();
     if (!catalog) return base;
     const runtimeIds = descriptorsFromAgentChatModelCatalog(catalog).availableModelIds;
@@ -3027,7 +3034,7 @@ export function AgentChatPane({
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return [...merged];
-  }, [availableModelIds, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
+  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],
@@ -3036,6 +3043,16 @@ export function AgentChatPane({
     () => effectiveAvailableModelIds.filter((id) => id.startsWith("cursor/")),
     [effectiveAvailableModelIds],
   );
+  const constrainedModelSelectionError = useMemo(() => {
+    if (!modelSelectionConstrained) return null;
+    if (!effectiveAvailableModelIds.length) {
+      return "No models are available for this chat surface.";
+    }
+    if (modelId && !effectiveAvailableModelIds.includes(modelId)) {
+      return "Select an available model for this chat surface before sending.";
+    }
+    return null;
+  }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
   const cursorCloudAvailable = Boolean(laneId)
     && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
@@ -3779,23 +3796,25 @@ export function AgentChatPane({
   }, [initialSessionSummary, lockSessionId, refreshAvailableModels, refreshSessions]);
 
   useEffect(() => {
-    if (loading || !availableModelIds.length) return;
+    const selectableModelIds = modelSelectionConstrained ? effectiveAvailableModelIds : availableModelIds;
+    if (loading || !selectableModelIds.length) return;
     // If the user hasn't picked a model yet, don't auto-select one.
     if (!modelId) return;
-    if (availableModelIds.includes(modelId)) return;
+    if (selectableModelIds.includes(modelId)) return;
+    if (modelSelectionConstrained) return;
     // Runtime catalog can surface Cursor/Droid SDK models before ai status catches up.
     if (isKnownSelectableChatModelId(modelId) || resolveModelDescriptorWithRuntimeCatalog(modelId)) return;
-    if (selectedSessionModelId) {
+    if (selectedSessionModelId && selectableModelIds.includes(selectedSessionModelId)) {
       setModelId(selectedSessionModelId);
       return;
     }
     const preferred = readLastUsedModelId();
-    if (preferred && availableModelIds.includes(preferred)) {
+    if (preferred && selectableModelIds.includes(preferred)) {
       setModelId(preferred);
     } else {
-      setModelId(availableModelIds[0]!);
+      setModelId(selectableModelIds[0]!);
     }
-  }, [loading, availableModelIds, modelId, selectedSessionModelId]);
+  }, [loading, availableModelIds, effectiveAvailableModelIds, modelId, modelSelectionConstrained, selectedSessionModelId]);
 
   useEffect(() => {
     if (!reasoningTiers.length) {
@@ -4726,6 +4745,9 @@ export function AgentChatPane({
     targetLaneId: string,
     options: { select?: boolean; notify?: boolean; notifyOptions?: AgentChatSessionCreatedOptions } = {},
   ): Promise<AgentChatSession> => {
+      if (constrainedModelSelectionError) {
+        throw new Error(constrainedModelSelectionError);
+      }
       const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
       const permissionDesc = getModelDescriptorForPermissionMode(modelId);
       const provider = resolveChatRuntimeProvider(desc);
@@ -4806,13 +4828,17 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions().catch(() => {});
       return created;
-  }, [buildNativeControlPayload, codexFastMode, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
+  }, [buildNativeControlPayload, codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, iosSimulatorOpen, laneId, modelId, notifySessionCreated, reasoningEffort, refreshSessions, touchSession]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
       return createSessionPromiseRef.current;
     }
     if (!laneId) return null;
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return null;
+    }
     const createPromise = createSessionForLane(laneId, { select: true, notify: true })
       .then((created) => created.id);
     createSessionPromiseRef.current = createPromise;
@@ -4823,7 +4849,7 @@ export function AgentChatPane({
         createSessionPromiseRef.current = null;
       }
     }
-  }, [createSessionForLane, laneId]);
+  }, [constrainedModelSelectionError, createSessionForLane, laneId]);
 
   const buildDraftLaunchSnapshotForCurrentState = useCallback((): DraftLaunchSnapshot | null => {
     const text = draft.trim();
@@ -4977,6 +5003,10 @@ export function AgentChatPane({
       return;
     }
     if (selectedSessionId || workDraftKind !== "chat") return;
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return;
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -5072,6 +5102,7 @@ export function AgentChatPane({
     backgroundLaunchBusy,
     buildDraftLaunchSnapshotForCurrentState,
     busy,
+    constrainedModelSelectionError,
     createSessionForLane,
     draftLaunchTargetIsAutoCreate,
     executionMode,
@@ -5264,6 +5295,17 @@ export function AgentChatPane({
       if (emptySlot) {
         setError("All parallel lanes must have a model selected.");
         return;
+      }
+      if (modelSelectionConstrained) {
+        if (!effectiveAvailableModelIds.length) {
+          setError("No models are available for this chat surface.");
+          return;
+        }
+        const unavailableSlot = parallelModelSlots.find((slot) => !effectiveAvailableModelIds.includes(slot.modelId));
+        if (unavailableSlot) {
+          setError("Each parallel lane must use an available model for this chat surface.");
+          return;
+        }
       }
       const modelKeys = parallelModelSlots.map((s) => s.modelId);
       if (new Set(modelKeys).size !== modelKeys.length) {
@@ -5460,6 +5502,10 @@ export function AgentChatPane({
     }
 
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      if (constrainedModelSelectionError) {
+        setError(constrainedModelSelectionError);
+        return;
+      }
       if (!modelId) {
         setError("Select a model first");
         return;
@@ -5476,6 +5522,10 @@ export function AgentChatPane({
       && !lockSessionId
       && !draftLaunchTargetIsAutoCreate
     ) {
+      if (constrainedModelSelectionError) {
+        setError(constrainedModelSelectionError);
+        return;
+      }
       if (!modelId) {
         setError("Select a model first");
         return;
@@ -5484,6 +5534,10 @@ export function AgentChatPane({
       return;
     }
 
+    if (constrainedModelSelectionError) {
+      setError(constrainedModelSelectionError);
+      return;
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -5835,17 +5889,20 @@ export function AgentChatPane({
     buildNativeControlPayload,
     busy,
     codexFastMode,
+    constrainedModelSelectionError,
     createSession,
     currentNativeControls,
     contextAttachments,
     draft,
     draftLaunchTargetIsAutoCreate,
+    effectiveAvailableModelIds,
     executionMode,
     hasComputerUseSelectionChanged,
     interactionMode,
     laneId,
     launchDraftChat,
     launchModeEditable,
+    modelSelectionConstrained,
     modelId,
     patchSessionSummary,
     projectTransitionBlocksChat,
@@ -6999,6 +7056,8 @@ export function AgentChatPane({
             sdkSlashCommands={sdkSlashCommands}
             modelId={modelId}
             availableModelIds={effectiveAvailableModelIds}
+            constrainModelSelection={modelSelectionConstrained}
+            modelUnavailableMessage={constrainedModelSelectionError ?? undefined}
             providerAuthStatus={modelPickerProviderAuthStatus}
             onRuntimeCatalogRefreshed={() => {
               setRuntimeCatalogVersion((version) => version + 1);
@@ -7064,11 +7123,15 @@ export function AgentChatPane({
             onOpenLinearSettings={openLinearSettings}
             onModelChange={(nextModelId) => {
               const modelAllowed =
-                !effectiveAvailableModelIds.length
-                || effectiveAvailableModelIds.includes(nextModelId)
-                || isKnownSelectableChatModelId(nextModelId)
-                || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId));
-              if (selectedSessionModelId && !modelAllowed) {
+                modelSelectionConstrained
+                  ? effectiveAvailableModelIds.includes(nextModelId)
+                  : (
+                      !effectiveAvailableModelIds.length
+                      || effectiveAvailableModelIds.includes(nextModelId)
+                      || isKnownSelectableChatModelId(nextModelId)
+                      || Boolean(resolveModelDescriptorWithRuntimeCatalog(nextModelId))
+                    );
+              if (!modelAllowed) {
                 return;
               }
               if (isPersistentIdentitySurface && sessionMutationKind) {
@@ -7316,6 +7379,7 @@ export function AgentChatPane({
               });
             }}
             onParallelSlotModelChange={(index, nextModelId) => {
+              if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });

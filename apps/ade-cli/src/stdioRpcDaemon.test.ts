@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -23,6 +24,10 @@ type PendingRequest = {
 function withTsxNodeOptions(value: string | undefined): string {
   const existing = value?.trim();
   return existing ? `${existing} --import tsx` : "--import tsx";
+}
+
+function fileSha256(filePath: string): string {
+  return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
 async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
@@ -285,6 +290,123 @@ describe("ade rpc --stdio daemon bridge", () => {
       expect(initialize).toMatchObject({
         runtimeInfo: {
           version: "2.0.0",
+          multiProject: true,
+        },
+      });
+
+      await expect(proxy.request("shutdown")).resolves.toEqual({});
+      proxy.closeInput();
+      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
+    } finally {
+      proxy?.kill();
+      if (!oldDaemon.killed) oldDaemon.kill();
+    }
+  }, 45_000);
+
+  itUnix("restarts a same-version daemon when its build hash is stale", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-build-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+      ADE_CLI_VERSION: "2.0.0",
+    };
+    const oldDaemon = startServeProcess({
+      cliPath,
+      cwd: packageRoot,
+      env: {
+        ...baseEnv,
+        ADE_RUNTIME_BUILD_HASH: "old-build",
+      },
+      socketPath,
+    });
+
+    let proxy: StdioRpcProcess | null = null;
+    try {
+      await waitForSocket(socketPath);
+
+      proxy = StdioRpcProcess.start({
+        cliPath,
+        cwd: packageRoot,
+        env: baseEnv,
+      });
+      const initialize = await proxy.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "stdio-daemon-build-test",
+        identity: { role: "external", callerId: "stdio-daemon-build-test" },
+      });
+
+      expect(initialize).toMatchObject({
+        runtimeInfo: {
+          version: "2.0.0",
+          multiProject: true,
+        },
+      });
+      expect(
+        (initialize as { runtimeInfo?: { buildHash?: string | null } }).runtimeInfo?.buildHash,
+      ).toBeTruthy();
+      expect(
+        (initialize as { runtimeInfo?: { buildHash?: string | null } }).runtimeInfo?.buildHash,
+      ).not.toBe("old-build");
+
+      await expect(proxy.request("shutdown")).resolves.toEqual({});
+      proxy.closeInput();
+      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
+    } finally {
+      proxy?.kill();
+      if (!oldDaemon.killed) oldDaemon.kill();
+    }
+  }, 45_000);
+
+  itUnix("restarts a same-version daemon when its default role is stale", async () => {
+    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const cliPath = path.join(packageRoot, "src", "cli.ts");
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-role-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const baseEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+      ADE_CLI_VERSION: "2.0.0",
+    };
+    const oldDaemon = startServeProcess({
+      cliPath,
+      cwd: packageRoot,
+      env: {
+        ...baseEnv,
+        ADE_DEFAULT_ROLE: "external",
+        ADE_RUNTIME_BUILD_HASH: fileSha256(cliPath),
+      },
+      socketPath,
+    });
+
+    let proxy: StdioRpcProcess | null = null;
+    try {
+      await waitForSocket(socketPath);
+
+      proxy = StdioRpcProcess.start({
+        cliPath,
+        cwd: packageRoot,
+        env: {
+          ...baseEnv,
+          ADE_DEFAULT_ROLE: "agent",
+        },
+      });
+      const initialize = await proxy.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "stdio-daemon-role-test",
+        identity: { role: "external", callerId: "stdio-daemon-role-test" },
+      });
+
+      expect(initialize).toMatchObject({
+        runtimeInfo: {
+          version: "2.0.0",
+          defaultRole: "agent",
           multiProject: true,
         },
       });

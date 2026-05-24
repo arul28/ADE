@@ -376,16 +376,6 @@ function getPullModeSummary(mode: GitSyncMode): string {
     : "Rebase replays your local commits on top of the remote branch for a cleaner history.";
 }
 
-function getPushSummary(syncStatus: GitUpstreamSyncStatus | null): string {
-  if (syncStatus?.upstreamState === "missing") {
-    return "The configured remote branch is missing. Push only if you need to recreate it.";
-  }
-  if (syncStatus?.hasUpstream === false) {
-    return "Publish lane creates the remote branch and connects this lane to it.";
-  }
-  return "Push sends your local commits to the tracked remote branch.";
-}
-
 function getAmendSummary(amendCommit: boolean): string {
   return amendCommit
     ? "Amend is on. Your next commit will replace the latest commit instead of creating a new one."
@@ -672,8 +662,6 @@ export function LaneGitActionsPane({
   const hiddenUnstagedChangeCount = Math.max(0, changes.unstaged.length - visibleUnstagedChanges.length);
   const responsiveMode = getResponsiveMode(paneWidth);
   const maxVisibleStashes = responsiveMode === "wide" ? 2 : 3;
-  const actionGridColumns =
-    responsiveMode === "wide" ? "repeat(3, minmax(0, 1fr))" : responsiveMode === "medium" ? "repeat(2, minmax(0, 1fr))" : "1fr";
   currentLaneIdRef.current = laneId;
 
   const isViewingLane = useCallback((targetLaneId: string | null) => currentLaneIdRef.current === targetLaneId, []);
@@ -1397,12 +1385,9 @@ export function LaneGitActionsPane({
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
   const headerDotColor = getLaneHeaderDotColor(lane);
-  const pushButtonTitle = upstreamMissing ? "Recreate remote branch" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
-  const isGeneratingCommitMessage = busyAction === AUTO_GENERATE_COMMIT_ACTION;
   const commitButtonLabel = getCommitButtonLabel({ busyAction, amendCommit });
   const commitHelperText = getCommitHelperText({ commitMessage, commitMessageAi });
-  const primaryPushLabel = upstreamMissing ? "Recreate remote" : syncStatus?.hasUpstream === false ? "Publish lane" : "Push to remote";
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
   const syncButtonTitle = useMemo(() => {
     if (!laneId) return "Sync is unavailable until you select a child lane.";

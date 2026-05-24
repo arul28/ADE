@@ -1,5 +1,3 @@
-import type { ComponentType } from "react";
-
 // ── Event Categories ─────────────────────────────────────────────
 export type EventCategory =
   | "git"

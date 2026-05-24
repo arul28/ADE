@@ -16,7 +16,7 @@ function usage() {
     "Builds the ADE CLI/runtime, then runs only the dev runtime in the foreground.",
     "",
     "Options:",
-    "  --project-root <path>       Project root exported to the runtime. Defaults to this checkout.",
+    "  --project-root <path>       Project root exported to the runtime. Defaults to the primary checkout for ADE worktrees.",
     "  --socket <path>             Dev runtime socket. Defaults to /tmp/ade-runtime-dev.sock.",
     "  --skip-runtime-build        Launch without rebuilding apps/ade-cli.",
     "  --no-sync                   Disable runtime sync discovery for this run.",

@@ -1282,10 +1282,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Lane management actions ---- */
 
-  const currentLaneBranch = useMemo(
-    () => laneBranches.find((branch) => branch.isCurrent)?.name ?? branchLane?.branchRef ?? "",
-    [laneBranches, branchLane?.branchRef]
-  );
   const localLaneBranches = useMemo(() => {
     const q = branchSearchQuery.toLowerCase();
     return laneBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));

@@ -421,6 +421,7 @@ export function AiFeaturesSection() {
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
                     surfaceKey={`ai-feature-${feature.key}`}
                     availableModelIds={availableModelIds}
+                    onOpenSignIn={openAiProvidersSettings}
                     disabled={!enabled}
                   />
                   <ReasoningEffortPicker
@@ -527,6 +528,7 @@ export function AiFeaturesSection() {
                 }}
                 surfaceKey="ai-feature-chat-auto-title"
                 availableModelIds={availableModelIds}
+                onOpenSignIn={openAiProvidersSettings}
                 disabled={!chatAutoTitleEnabled}
               />
               <ReasoningEffortPicker

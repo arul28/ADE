@@ -2476,7 +2476,6 @@ function createTodoWriteTool(args: {
   getItems?: () => TodoToolItem[];
   onUpdate?: (items: TodoToolItem[]) => void;
 }) {
-  let todoItems = args.getItems?.() ?? [];
   return tool({
     description:
       "Create or update the current task list for this chat. " +
@@ -2489,7 +2488,6 @@ function createTodoWriteTool(args: {
       if (normalized == null) {
         return { updated: false, error: "Provide a todos array." };
       }
-      todoItems = normalized;
       args.onUpdate?.(normalized);
       return {
         updated: true,

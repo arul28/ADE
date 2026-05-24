@@ -2350,7 +2350,6 @@ export function createMissionService({
         }
       );
       if (metadata.warning) warnings.push(metadata.warning);
-      const launchMetadata = isRecord(metadata.value?.launch) ? metadata.value.launch : null;
       const plannerPlan = isRecord(metadata.value?.plannerPlan)
         ? (metadata.value.plannerPlan as PlannerPlan)
         : null;

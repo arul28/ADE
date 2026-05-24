@@ -4,6 +4,7 @@ type FilterChatModelIdsArgs = {
   availableModelIds: string[];
   activeSessionModelId?: string | null;
   hasConversation: boolean;
+  includeActiveSessionModel?: boolean;
   policy?: ChatModelSwitchPolicy;
 };
 
@@ -22,7 +23,7 @@ export function canSwitchChatSessionModel(_args: CanSwitchChatSessionModelArgs):
 export function filterChatModelIdsForSession(args: FilterChatModelIdsArgs): string[] {
   const ids = args.availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean);
   const activeModelId = String(args.activeSessionModelId ?? "").trim();
-  if (activeModelId && !ids.includes(activeModelId)) {
+  if (args.includeActiveSessionModel !== false && activeModelId && !ids.includes(activeModelId)) {
     return [activeModelId, ...ids];
   }
   return ids;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { PackDeltaDigestV1, PackExport, PackType, PhaseCard } from "../../../shared/types";
+import type { PhaseCard } from "../../../shared/types";
 import { openKvDb } from "../state/kvDb";
 import { createMissionService } from "../missions/missionService";
 import { createOrchestratorService } from "./orchestratorService";
@@ -33,22 +33,6 @@ function createLogger() {
     warn: () => {},
     error: () => {}
   } as any;
-}
-
-function buildExport(packKey: string, packType: PackType, level: "lite" | "standard" | "deep"): PackExport {
-  return {
-    packKey,
-    packType,
-    level,
-    header: {} as any,
-    content: `${packKey}:${level}`,
-    approxTokens: 24,
-    maxTokens: 500,
-    truncated: false,
-    warnings: [],
-    clipReason: null,
-    omittedSections: null
-  };
 }
 
 function phaseCard(overrides: Partial<PhaseCard> & Pick<PhaseCard, "phaseKey" | "name" | "position">): PhaseCard {
@@ -1225,64 +1209,6 @@ async function createFixture(args: {
           }
         }
       }
-    })
-  } as any;
-
-  const packService = {
-    getLaneExport: async ({ laneId: targetLaneId, level }: { laneId: string; level: "lite" | "standard" | "deep" }) =>
-      buildExport(`lane:${targetLaneId}`, "lane", level),
-    getProjectExport: async ({ level }: { level: "lite" | "standard" | "deep" }) => buildExport("project", "project", level),
-    getHeadVersion: ({ packKey }: { packKey: string }) => ({
-      packKey,
-      packType: packKey.startsWith("lane:") ? "lane" : "project",
-      versionId: `${packKey}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-${packKey}`,
-      updatedAt: now
-    }),
-    getDeltaDigest: async (): Promise<PackDeltaDigestV1> => ({
-      packKey: `lane:${laneId}`,
-      packType: "lane",
-      since: {
-        sinceVersionId: null,
-        sinceTimestamp: now,
-        baselineVersionId: null,
-        baselineVersionNumber: null,
-        baselineCreatedAt: null
-      },
-      newVersion: {
-        packKey: `lane:${laneId}`,
-        packType: "lane",
-        versionId: `lane:${laneId}-v1`,
-        versionNumber: 1,
-        contentHash: "hash",
-        updatedAt: now
-      },
-      changedSections: [],
-      highImpactEvents: [],
-      blockers: [],
-      conflicts: null,
-      decisionState: {
-        recommendedExportLevel: "standard",
-        reasons: []
-      },
-      handoffSummary: "none",
-      clipReason: null,
-      omittedSections: null
-    }),
-    refreshMissionPack: async ({ missionId }: { missionId: string }) => ({
-      packKey: `mission:${missionId}`,
-      packType: "mission",
-      path: path.join(projectRoot, ".ade", "packs", "missions", missionId, "mission_pack.md"),
-      exists: true,
-      deterministicUpdatedAt: now,
-      narrativeUpdatedAt: null,
-      lastHeadSha: null,
-      versionId: `mission-${missionId}-v1`,
-      versionNumber: 1,
-      contentHash: `hash-mission-${missionId}`,
-      metadata: null,
-      body: "# Mission Pack"
     })
   } as any;
 
@@ -6968,6 +6894,114 @@ describe("aiOrchestratorService", () => {
       expect(refreshed?.status).toBe("completed");
       expect(refreshed?.steps.every((step) => step.status === "succeeded")).toBe(true);
       expect((refreshed?.outcomeSummary ?? "").length).toBeGreaterThan(0);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps intervention_required when step sync opens a failed-step intervention", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep mission status aligned with interventions created during sync.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement risky change",
+            detail: "Make the update",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const missionStep = fixture.missionService.get(mission.id)?.steps[0];
+      if (!missionStep) throw new Error("Expected mission step");
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "implement-risky-change",
+            title: missionStep.title,
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            missionStepId: missionStep.id,
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_runs set status = 'active', updated_at = ? where id = ?`,
+        [failedAt, runId],
+      );
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where run_id = ?`,
+        [failedAt, failedAt, runId],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "step_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.status).toBe("intervention_required");
+      expect(refreshed?.steps[0]?.status).toBe("failed");
+      expect(refreshed?.interventions.some((entry) =>
+        entry.status === "open" && entry.interventionType === "failed_step"
+      )).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("keeps intervention_required when a failed run opens a failed-step intervention", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep terminal failed runs recoverable when sync opens an intervention.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement risky change",
+            detail: "Make the update",
+            kind: "implementation",
+            metadata: { stepType: "implementation" }
+          }
+        ]
+      });
+      const missionStep = fixture.missionService.get(mission.id)?.steps[0];
+      expect(missionStep?.id).toBeTruthy();
+
+      const launch = await fixture.aiOrchestratorService.startMissionRun({
+        missionId: mission.id,
+        runMode: "manual",
+        defaultExecutorKind: "manual"
+      });
+      if (!launch.started) throw new Error("Expected mission run to start");
+      const runId = launch.started.run.id;
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_runs set status = 'failed', updated_at = ? where id = ?`,
+        [failedAt, runId],
+      );
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where run_id = ?`,
+        [failedAt, failedAt, runId],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "run_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      expect(refreshed?.status).toBe("intervention_required");
+      expect(refreshed?.interventions.some((entry) =>
+        entry.status === "open" && entry.interventionType === "failed_step"
+      )).toBe(true);
     } finally {
       fixture.dispose();
     }

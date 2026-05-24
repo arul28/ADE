@@ -2719,10 +2719,6 @@ export function createOrchestratorService({
     return { blocked: true, recoveryMode: null };
   };
 
-  const hasOpenBlockingInterventionForRun = (run: OrchestratorRun): boolean => {
-    return getRunInterventionGateState(run).blocked;
-  };
-
   const ensurePlannerQuestionIntervention = (args: {
     missionId: string;
     runId: string;

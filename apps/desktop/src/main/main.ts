@@ -337,19 +337,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_SYNC_INIT",
 ]);
 
-function isBackgroundTaskEnabled(enableFlag?: string): boolean {
-  if (!devStabilityMode || enableAllBackgroundTasks) {
-    return true;
-  }
-  if (!enableFlag) {
-    return false;
-  }
-  return (
-    process.env[enableFlag] === "1" ||
-    defaultEnabledBackgroundTaskFlags.has(enableFlag)
-  );
-}
-
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = source?.[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -4028,9 +4015,6 @@ app.whenReady().then(async () => {
         const rpcHandler = createAdeRpcRequestHandler({
           runtime: rpcRuntime,
           serverVersion: app.getVersion(),
-          onActionsListChanged: () => {
-            stop?.notify("ade/actions/list_changed", {});
-          },
         });
         stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
         const unsubscribeChatEvents = rpcRuntime.agentChatService?.subscribeToEvents((event) => {

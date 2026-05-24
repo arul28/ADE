@@ -40,6 +40,7 @@ export type ModelPickerProps = {
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
   onOpenSignIn?: () => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
+  constrainToAvailableModelIds?: boolean;
   fastModeActive?: boolean;
   onFastModeToggle?: (next: boolean) => void;
   fastModeSupported?: boolean;
@@ -60,6 +61,7 @@ export const ModelPicker = memo(function ModelPicker({
   providerAuthStatus,
   onOpenSignIn,
   onRuntimeCatalogRefreshed,
+  constrainToAvailableModelIds = false,
   fastModeActive = false,
   onFastModeToggle,
   fastModeSupported,
@@ -161,13 +163,26 @@ export const ModelPicker = memo(function ModelPicker({
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
     if (models && models.length) return models;
-    const fallbackModels = mergeSelectorModels(availableModelIds, value, filter, catalogMode);
+    const selectedValue = (() => {
+      if (!constrainToAvailableModelIds) return value;
+      const normalizedValue = value.trim();
+      if (!normalizedValue) return "";
+      const available = new Set((availableModelIds ?? []).map((id) => id.trim()).filter(Boolean));
+      return available.has(normalizedValue) ? normalizedValue : "";
+    })();
+    const fallbackModels = mergeSelectorModels(
+      availableModelIds,
+      selectedValue,
+      filter,
+      constrainToAvailableModelIds ? "available-only" : catalogMode,
+    );
     if (catalogModels.models.length === 0) return fallbackModels;
+    if (constrainToAvailableModelIds) return fallbackModels;
     const merged = new Map<string, ModelDescriptor>();
     for (const model of fallbackModels) merged.set(model.id, model);
     for (const model of catalogModels.models) merged.set(model.id, model);
     return [...merged.values()];
-  }, [models, availableModelIds, value, filter, catalogMode, catalogModels.models]);
+  }, [models, availableModelIds, value, filter, catalogMode, catalogModels.models, constrainToAvailableModelIds]);
 
   const effectiveValue = useMemo<string>(() => {
     if (value && value.length > 0) return value;
@@ -186,10 +201,12 @@ export const ModelPicker = memo(function ModelPicker({
   }, [value]);
 
   const availableSet = useMemo(() => {
-    const ids = runtimeCatalog ? catalogModels.availableModelIds : availableModelIds;
+    const ids = constrainToAvailableModelIds || !runtimeCatalog
+      ? availableModelIds
+      : catalogModels.availableModelIds;
     if (!ids) return null;
     return new Set(ids.map((id) => id.trim()).filter(Boolean));
-  }, [availableModelIds, catalogModels.availableModelIds, runtimeCatalog]);
+  }, [availableModelIds, catalogModels.availableModelIds, constrainToAvailableModelIds, runtimeCatalog]);
 
   const isAvailable = useCallback(
     (modelId: string): boolean => {
@@ -271,6 +288,7 @@ export const ModelPicker = memo(function ModelPicker({
                 onRequestClose={handleRequestClose}
                 onProviderRailSelect={handleProviderRailSelect}
                 refreshingProvider={refreshingProvider}
+                allowRegistryExpansion={!constrainToAvailableModelIds}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
               />
             ) : null}
