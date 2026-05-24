@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
 import { connectSshWithRoute, execSsh, openSshRuntimeTransport } from "./sshTransport";
+import { routeKey } from "./routeUtils";
 import {
   normalizeRemoteTargetRoutes,
   type RemoteTargetRegistry,
@@ -328,9 +329,6 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
   });
 }
 
-function routeKey(route: Pick<RemoteRuntimeTargetRoute, "hostname" | "port">): string {
-  return `${route.hostname.toLowerCase().replace(/\.$/, "")}:${route.port ?? ""}`;
-}
 
 export function markRemoteTargetRouteSucceeded(args: {
   target: RemoteRuntimeTarget;

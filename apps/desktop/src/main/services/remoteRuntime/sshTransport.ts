@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeTargetRoute,
 } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
+import { routeKey } from "./routeUtils";
 
 export type SshExecResult = {
   stdout: string;
@@ -174,9 +175,6 @@ function uniqueUsernames(values: Array<string | null | undefined>): string[] {
   return result;
 }
 
-function routeKey(route: Pick<RemoteRuntimeTargetRoute, "hostname" | "port">): string {
-  return `${route.hostname.toLowerCase().replace(/\.$/, "")}:${route.port ?? ""}`;
-}
 
 function normalizeTargetRoute(
   value: unknown,

@@ -314,7 +314,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.1"),
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
     await expect(pool.projectsForTarget(target)).resolves.toEqual([
       {
@@ -349,7 +349,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.1"),
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
     await expect(
       pool.callMachineForTarget(
@@ -384,7 +384,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.1"),
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
     await expect(
       pool.callActionForTarget(target, "project-1", {
@@ -432,7 +432,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.1"),
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
     await expect(
       pool.callActionForTarget(target, "project-1", {
@@ -618,7 +618,7 @@ describe("RemoteConnectionPool", () => {
       ssh: createSsh(),
       result: connectResult("1.0.1"),
     });
-    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
 
     await expect(
       pool.callSyncForTarget(target, "project-1", "sync.getStatus", {

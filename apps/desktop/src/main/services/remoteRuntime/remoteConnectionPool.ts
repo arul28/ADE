@@ -479,8 +479,7 @@ export class RemoteConnectionPool {
     } catch (error) {
       if (!isRemoteRuntimeConnectionError(error)) throw error;
       this.disconnect(target.id);
-      const registry = this.registry as Partial<RemoteTargetRegistry>;
-      const reconnectTarget = registry.get?.(target.id) ?? target;
+      const reconnectTarget = this.registry.get(target.id) ?? target;
       const nextEntry = await this.connectEntry(reconnectTarget);
       if (options.retryOnConnectionError) {
         return await operation(nextEntry);
