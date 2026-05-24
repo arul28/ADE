@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { RecentlyInstalledUpdate } from "../../../shared/types";
+import type { OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
 
 export type RecentProject = {
   rootPath: string;
@@ -17,6 +17,9 @@ export type PendingInstallUpdate = {
 
 export type GlobalState = {
   lastProjectRoot?: string;
+  lastRemoteProjectBinding?: Extract<OpenProjectBinding, { kind: "remote" }> & {
+    updatedAt?: string;
+  };
   recentProjects?: RecentProject[];
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;

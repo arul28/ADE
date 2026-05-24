@@ -31,4 +31,48 @@ describe("RemoteTargetRegistry", () => {
       targets: [target],
     });
   });
+
+  it("persists discovered route fallbacks with a normalized primary route", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
+    process.env.ADE_HOME = adeHome;
+
+    const registry = new RemoteTargetRegistry();
+    const target = registry.save({
+      name: "Mac Studio",
+      hostname: "studio.tailnet.ts.net",
+      sshUser: "admin",
+      port: null,
+      sshKeyPath: null,
+      routes: [
+        {
+          hostname: "studio.tailnet.ts.net",
+          port: null,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+        {
+          hostname: "192.168.1.42",
+          port: null,
+          source: "bonjour",
+          lastSucceededAt: null,
+        },
+      ],
+    });
+
+    expect(target.routes).toEqual([
+      {
+        hostname: "studio.tailnet.ts.net",
+        port: null,
+        source: "tailscale",
+        lastSucceededAt: null,
+      },
+      {
+        hostname: "192.168.1.42",
+        port: null,
+        source: "bonjour",
+        lastSucceededAt: null,
+      },
+    ]);
+    expect(registry.list()[0]?.routes).toEqual(target.routes);
+  });
 });

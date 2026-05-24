@@ -6,16 +6,23 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
 
 ## Source file map
 
-- `apps/desktop/src/main/services/remoteRuntime/` — SSH transport, runtime
-  bootstrap, target registry, runtime RPC client, remote connection pool.
+- `apps/desktop/src/main/services/remoteRuntime/` — SSH transport (multi-route
+  fallback, ssh2 keepalive), runtime bootstrap, target registry (saved routes +
+  per-route `lastSucceededAt`), runtime RPC client (timeouts treated as fatal),
+  remote connection pool (eviction listeners, retryable read-only actions),
+  remote connection service (`powerMonitor`-driven `probeSavedConnections`),
+  `runtimeDiscovery.ts` (Bonjour + Tailscale with `discoverLanRuntimes`
+  returning `{ machines, diagnostics }`).
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local daemon connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. Spawns `ade serve` if the machine socket is
   not listening; tracks the per-user login service install/health state; applies
   short per-call timeouts for project registration, file actions, and event
   polling so renderer IPC calls do not wait for the desktop handler timeout.
-- `apps/desktop/src/renderer/components/remoteTargets/` — remote machine form,
-  target list, project picker, dirty-local-work warning.
+- `apps/desktop/src/renderer/components/remoteTargets/` — remote machine form
+  (carries `routes` through saves), target list (Tailscale-preferred primary
+  route, "+ N routes" fallback hint, Tailscale/Bonjour discovery diagnostics
+  warning), project picker, dirty-local-work warning.
 - `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
@@ -51,11 +58,13 @@ When opening a remote project, ADE checks local projects with the same git origi
 
 ## Connect flow
 
-1. Add a machine from the remote machines panel or command palette.
+1. Add a machine from the remote machines panel or command palette. Discovered machines (LAN + Tailscale) prefill the form with the Tailscale FQDN as the primary host plus every other reachable route (LAN address, mDNS host, alt IPs) on the saved target so reconnects can fall back automatically.
 2. Enter a display name, hostname, SSH user, port, and optionally a private key path. If no key path is provided, ADE uses the user's local ssh-agent when `SSH_AUTH_SOCK` is available and reads matching `HostName` / `IdentityFile` entries from `~/.ssh/config`.
-3. Connect. ADE opens an SSH session, detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`.
+3. Connect. ADE opens an SSH session (15 s keepalive, 3 strikes), detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
 4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing or stale, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade`, uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, and verifies `~/.ade/bin/ade --version`.
 5. Pick an existing remote project or register a new remote path; the desktop calls `projects.add { rootPath }` against the remote runtime to bind it.
+
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side, and they pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so the channel build doesn't fight the stable login service for the socket.
 
@@ -117,6 +126,8 @@ On desktop, phone pairing and sync status are managed by the local `ade serve` d
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
+- `Remote ADE service connection failed: timed out waiting for method ...` — the RPC client timed out and tore the connection down deliberately so the pool can rebuild it. Retry the action; the pool will reconnect using the latest known route.
+- "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
 
 ## Related docs

@@ -18,6 +18,7 @@ const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallSyncForTargetMock = vi.hoisted(() => vi.fn());
+const remoteListActionRegistryForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
 
@@ -48,6 +49,9 @@ vi.mock("electron", () => ({
     }),
     on: vi.fn(),
   },
+  powerMonitor: {
+    on: vi.fn(),
+  },
   nativeImage: {
     createFromPath: vi.fn(() => ({ isEmpty: () => true })),
   },
@@ -73,13 +77,15 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     projectsForTarget: remoteProjectsForTargetMock,
     callActionForTarget: remoteCallActionForTargetMock,
     callSyncForTarget: remoteCallSyncForTargetMock,
+    listActionRegistryForTarget: remoteListActionRegistryForTargetMock,
     callMachineForTarget: remoteCallMachineForTargetMock,
     disconnect: remoteDisconnectMock,
+    onEntryEvicted: vi.fn(() => () => {}),
   })),
 }));
 
 vi.mock("../remoteRuntime/runtimeDiscovery", () => ({
-  discoverLanRuntimes: vi.fn(() => []),
+  discoverLanRuntimes: vi.fn(() => ({ machines: [], diagnostics: [] })),
 }));
 
 vi.mock("../git/git", () => ({
@@ -142,6 +148,7 @@ describe("registerRuntimeBridge", () => {
     remoteProjectsForTargetMock.mockReset();
     remoteCallActionForTargetMock.mockReset();
     remoteCallSyncForTargetMock.mockReset();
+    remoteListActionRegistryForTargetMock.mockReset();
     remoteCallMachineForTargetMock.mockReset();
     remoteDisconnectMock.mockReset();
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
@@ -388,6 +395,41 @@ describe("registerRuntimeBridge", () => {
         action: "create",
         args: { startupCommand: "codex login" },
       },
+    );
+  });
+
+  it("forwards remote project action registry listing through the selected target and project", async () => {
+    const registry = [
+      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "git", actions: [{ name: "status" }] },
+    ];
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteConnectMock.mockResolvedValue({
+      target,
+      arch: "linux-x64",
+      version: "1.0.0",
+      projects: [],
+    });
+    remoteListActionRegistryForTargetMock.mockResolvedValue(registry);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeListActionRegistry)?.(
+        eventForSender(sender(202)),
+        {
+          id: "target-1",
+          projectId: "project-1",
+        },
+      ),
+    ).resolves.toEqual(registry);
+
+    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteListActionRegistryForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
     );
   });
 

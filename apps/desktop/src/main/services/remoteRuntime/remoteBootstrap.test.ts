@@ -17,7 +17,7 @@ import {
   validateRemoteRuntimeInitializeResult,
 } from "./remoteBootstrap";
 
-const connectSshMock = vi.hoisted(() => vi.fn());
+const connectSshWithRouteMock = vi.hoisted(() => vi.fn());
 const execSshMock = vi.hoisted(() => vi.fn());
 const openSshRuntimeTransportMock = vi.hoisted(() => vi.fn());
 const initializeMock = vi.hoisted(() => vi.fn());
@@ -25,7 +25,7 @@ const callMock = vi.hoisted(() => vi.fn());
 const runtimeRpcClientMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./sshTransport", () => ({
-  connectSsh: connectSshMock,
+  connectSshWithRoute: connectSshWithRouteMock,
   execSsh: execSshMock,
   openSshRuntimeTransport: openSshRuntimeTransportMock,
 }));
@@ -235,8 +235,15 @@ const uploadTarget: RemoteRuntimeTarget = {
   port: 22,
   sshKeyPath: null,
   lastSeenArch: null,
-  runtimeBinaryVersion: null,
-  lastConnectedAt: null,
+    runtimeBinaryVersion: null,
+    lastConnectedAt: null,
+};
+
+const uploadRoute = {
+  hostname: uploadTarget.hostname,
+  port: uploadTarget.port,
+  source: "manual" as const,
+  lastSucceededAt: null,
 };
 
 function ok(stdout = "") {
@@ -293,7 +300,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   beforeEach(() => {
     if (originalPackageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
     else process.env.ADE_PACKAGE_CHANNEL = originalPackageChannel;
-    connectSshMock.mockReset();
+    connectSshWithRouteMock.mockReset();
     execSshMock.mockReset();
     openSshRuntimeTransportMock.mockReset();
     initializeMock.mockReset();
@@ -354,7 +361,10 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
-    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
@@ -376,7 +386,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       appVersion: APP_VERSION,
     });
 
-    expect(connectSshMock).toHaveBeenCalledWith(uploadTarget);
+    expect(connectSshWithRouteMock).toHaveBeenCalledWith(uploadTarget);
     expect(fakeSsh.fastPut).toHaveBeenCalledWith(resources.binaryPath, ".ade/bin/ade", {}, expect.any(Function));
     expect(commands).toEqual([
       "uname -sm",
@@ -398,6 +408,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       lastSeenArch: "linux-x64",
       runtimeBinaryVersion: APP_VERSION,
       lastConnectedAt: expect.any(Number),
+      routes: [
+        {
+          hostname: "build-host.local",
+          port: 22,
+          source: "manual",
+          lastSucceededAt: expect.any(Number),
+        },
+      ],
     });
     expect(connected.result).toMatchObject({
       arch: "linux-x64",
@@ -412,7 +430,10 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
-    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
       if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
@@ -444,7 +465,10 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
-    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Darwin arm64\n");
       if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("");
@@ -481,7 +505,10 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
     const registry = createRegistry();
-    connectSshMock.mockResolvedValue(fakeSsh.ssh);
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);

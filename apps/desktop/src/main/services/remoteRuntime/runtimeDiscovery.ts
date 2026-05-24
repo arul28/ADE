@@ -6,7 +6,11 @@ import {
   type Service as BonjourService,
 } from "bonjour-service";
 import { resolveTailscaleCliPath } from "../../../../../ade-cli/src/services/sync/resolveTailscaleCliPath";
-import type { RemoteRuntimeDiscoveredMachine } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryDiagnostic,
+  RemoteRuntimeDiscoveryResult,
+} from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const TAILSCALE_SSH_PORT = 22;
@@ -240,7 +244,10 @@ export function discoveredRuntimesFromTailscaleStatus(
 
 async function discoverTailscalePeers(
   timeoutMs = 1_200,
-): Promise<RemoteRuntimeDiscoveredMachine[]> {
+): Promise<{
+  machines: RemoteRuntimeDiscoveredMachine[];
+  diagnostics: RemoteRuntimeDiscoveryDiagnostic[];
+}> {
   try {
     const { stdout } = await execFileAsync(
       resolveTailscaleCliPath(),
@@ -250,20 +257,58 @@ async function discoverTailscalePeers(
         maxBuffer: 1024 * 1024,
       },
     );
-    return discoveredRuntimesFromTailscaleStatus(
-      JSON.parse(stdout),
-      Date.now(),
-    );
-  } catch {
-    return [];
+    return {
+      machines: discoveredRuntimesFromTailscaleStatus(
+        JSON.parse(stdout),
+        Date.now(),
+      ),
+      diagnostics: [],
+    };
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException & {
+      killed?: boolean;
+      signal?: NodeJS.Signals | null;
+    };
+    const message = error instanceof Error ? error.message : String(error);
+    const timedOut =
+      nodeError.killed === true ||
+      /timed out|timeout|ETIMEDOUT/i.test(message);
+    const notFound =
+      nodeError.code === "ENOENT" ||
+      /ENOENT|not found|no such file/i.test(message);
+    let code: string;
+    let summary: string;
+    if (timedOut) {
+      code = "tailscale-timeout";
+      summary = "Tailscale discovery timed out; LAN discovery still ran.";
+    } else if (notFound) {
+      code = "tailscale-unavailable";
+      summary = "Tailscale CLI was not found; only LAN discovery ran.";
+    } else {
+      code = "tailscale-status-failed";
+      summary = "Tailscale discovery failed; LAN discovery still ran.";
+    }
+    return {
+      machines: [],
+      diagnostics: [
+        {
+          source: "tailscale",
+          severity: "warning",
+          code,
+          message: summary,
+          detail: message || null,
+        },
+      ],
+    };
   }
 }
 
 export async function discoverLanRuntimes(
   timeoutMs = 1_200,
-): Promise<RemoteRuntimeDiscoveredMachine[]> {
+): Promise<RemoteRuntimeDiscoveryResult> {
   const bonjour = new Bonjour();
   const discovered = new Map<string, RemoteRuntimeDiscoveredMachine>();
+  const diagnostics: RemoteRuntimeDiscoveryDiagnostic[] = [];
   let browser: Browser | null = null;
 
   const remember = (service: BonjourService): void => {
@@ -281,6 +326,15 @@ export async function discoverLanRuntimes(
         await new Promise((resolve) =>
           setTimeout(resolve, Math.max(100, timeoutMs)),
         );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        diagnostics.push({
+          source: "bonjour",
+          severity: "warning",
+          code: "bonjour-discovery-failed",
+          message: "LAN discovery failed; Tailscale discovery still ran.",
+          detail: message || null,
+        });
       } finally {
         browser?.stop();
         await new Promise<void>((resolve) => {
@@ -290,15 +344,20 @@ export async function discoverLanRuntimes(
       }
     })(),
     (async () => {
-      for (const machine of await discoverTailscalePeers(timeoutMs)) {
+      const tailscale = await discoverTailscalePeers(timeoutMs);
+      diagnostics.push(...tailscale.diagnostics);
+      for (const machine of tailscale.machines) {
         discovered.set(machine.id, machine);
       }
     })(),
   ]);
 
-  return [...discovered.values()].sort((a, b) => {
-    const name = a.machineName.localeCompare(b.machineName);
-    if (name !== 0) return name;
-    return a.serviceName.localeCompare(b.serviceName);
-  });
+  return {
+    machines: [...discovered.values()].sort((a, b) => {
+      const name = a.machineName.localeCompare(b.machineName);
+      if (name !== 0) return name;
+      return a.serviceName.localeCompare(b.serviceName);
+    }),
+    diagnostics,
+  };
 }

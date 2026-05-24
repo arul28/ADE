@@ -17,6 +17,8 @@ import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/compute
 import type {
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  AgentChatCodexOpenInCliArgs,
+  AgentChatCodexOpenInCliResult,
   AgentChatGetTurnFileDiffArgs,
   AgentChatParallelLaunchState,
   AgentChatSetParallelLaunchStateArgs,
@@ -79,6 +81,13 @@ import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 import { readCoordinatorCheckpoint } from "../orchestrator/missionStateDoc";
+import { resolveCodexExecutable } from "../ai/codexExecutable";
+import {
+  buildResumeArgv,
+  detectCodexResumeStrategy,
+  spawnInNewTerminalWindow,
+} from "../chat/codexCliLauncher";
+import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
   "lane",
@@ -132,6 +141,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "automations",
   "review",
   "issue",
+  "notifications_apns",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -441,6 +451,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
+    "codexOpenInCli",
     "fileSearch",
     "handoffSession",
     "respondToInput",
@@ -460,6 +471,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ai: [
     "getStatus",
     "getOpenCodeRuntimeDiagnostics",
+    "isOpenCodeInstalled",
     "verifyApiKeyConnection",
     "storeApiKey",
     "deleteApiKey",
@@ -475,6 +487,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getCursorCloudAgent",
     "listCursorCloudArtifacts",
     "downloadCursorCloudArtifact",
+    "cursorCloudStreamRun",
     "cancelCursorCloudRun",
     "cursorCloudFollowUp",
     "openCursorCloudChat",
@@ -791,6 +804,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "assign",
     "setTitle",
   ],
+  notifications_apns: [
+    "getStatus",
+    "saveConfig",
+    "uploadKey",
+    "clearKey",
+    "sendTestPush",
+  ],
 };
 
 type AutomationsDomainService = {
@@ -1014,6 +1034,44 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
+    codexOpenInCli: async (
+      args?: AgentChatCodexOpenInCliArgs,
+    ): Promise<AgentChatCodexOpenInCliResult> => {
+      const sessionId =
+        typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) {
+        throw new Error("chat.codexOpenInCli requires a sessionId");
+      }
+      const resumeCtx = agentChatService.getCodexResumeContext(sessionId);
+      if (!resumeCtx) {
+        throw new Error(`No resumable Codex thread for session ${sessionId}`);
+      }
+      if (resumeCtx.provider !== "codex") {
+        throw new Error("Open-in-CLI is only supported for Codex sessions");
+      }
+      if (resumeCtx.isMission) {
+        throw new Error("Mission sessions cannot be resumed in Codex CLI (ephemeral CODEX_HOME)");
+      }
+      const resolved = resolveCodexExecutable();
+      const strategy = await detectCodexResumeStrategy(resolved.path);
+      const argv = buildResumeArgv(strategy, resumeCtx.threadId);
+      const result: AgentChatCodexOpenInCliResult = {
+        binary: resolved.path,
+        argv,
+        cwd: resumeCtx.laneWorktreePath,
+        threadId: resumeCtx.threadId,
+        copyThreadIdToClipboard: strategy.copyThreadIdToClipboard,
+      };
+      if (args?.mode === "new-window") {
+        spawnInNewTerminalWindow({
+          binary: resolved.path,
+          argv,
+          cwd: resumeCtx.laneWorktreePath,
+        });
+        result.spawnedNewWindow = true;
+      }
+      return result;
+    },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -1862,6 +1920,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
       return getOpenCodeRuntimeSnapshot();
     },
+    isOpenCodeInstalled: async () => {
+      const { resolveOpenCodeBinary } = await import("../opencode/openCodeBinaryManager");
+      const info = resolveOpenCodeBinary();
+      return { installed: Boolean(info.path), source: info.source };
+    },
     verifyApiKeyConnection: (args?: { provider?: string }) =>
       aiIntegrationService.verifyApiKeyConnection(requireNonEmptyString(args?.provider, "provider")),
     storeApiKey: (args?: { provider?: string; key?: string }) =>
@@ -1915,6 +1978,11 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         agentId: requireNonEmptyString(args?.agentId, "agentId"),
         path: requireNonEmptyString(args?.path, "path"),
       }),
+    cursorCloudStreamRun: (args?: { agentId?: string; runId?: string }) => {
+      const agentId = requireNonEmptyString(args?.agentId, "agentId");
+      const runId = requireNonEmptyString(args?.runId, "runId");
+      return { subscriptionId: `cursor-cloud-stream-${agentId}-${runId}` };
+    },
     cancelCursorCloudRun: (args?: { agentId?: string; runId?: string }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").cancelCursorCloudRun({
         agentId: requireNonEmptyString(args?.agentId, "agentId"),
@@ -3083,6 +3151,15 @@ export function getAdeActionDomainServices(
     automations: toService(buildAutomationsDomainService(runtime)),
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
+    notifications_apns: toService(
+      createApnsBridgeService({
+        projectConfigService: runtime.projectConfigService,
+        apnsService: runtime.apnsService,
+        apnsKeyStore: runtime.apnsKeyStore,
+        getDeviceRegistryService: () =>
+          runtime.syncService?.getDeviceRegistryService?.() ?? null,
+      }),
+    ),
   };
 }
 

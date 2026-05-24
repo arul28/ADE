@@ -18,6 +18,9 @@ describe("createEventBuffer", () => {
     expect(result.events[1]!.category).toBe("runtime");
     expect(result.nextCursor).toBe(2);
     expect(result.hasMore).toBe(false);
+    expect(result.eventEpoch).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   it("evicts oldest events when capacity is exceeded", () => {

@@ -46,6 +46,7 @@ export function RemoteTargetForm({
   const prefillSshUser = prefill?.sshUser;
   const prefillPort = prefill?.port;
   const prefillSshKeyPath = prefill?.sshKeyPath;
+  const prefillRoutes = prefill?.routes;
 
   useEffect(() => {
     if (!prefill) return;
@@ -73,6 +74,10 @@ export function RemoteTargetForm({
       sshUser: sshUser.trim() || null,
       port: port.trim() ? Number.parseInt(port, 10) : null,
       sshKeyPath: sshKeyPath.trim() || null,
+      routes:
+        prefillRoutes && hostname.trim() === prefillHostname?.trim()
+          ? prefillRoutes
+          : null,
     });
   }
 

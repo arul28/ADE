@@ -730,7 +730,7 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
-  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryResult,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeStreamEventsRequest,
@@ -855,7 +855,7 @@ declare global {
         onConnectionSnapshotChanged: (
           cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
         ) => () => void;
-        listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveredMachine[]>;
+        listDiscoveredMachines: () => Promise<RemoteRuntimeDiscoveryResult>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
         ) => Promise<RemoteRuntimeTarget>;

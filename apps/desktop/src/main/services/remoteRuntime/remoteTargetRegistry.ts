@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import type { RemoteRuntimeTarget, RemoteRuntimeTargetInput } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetInput,
+  RemoteRuntimeTargetRoute,
+  RemoteRuntimeTargetRouteSource,
+} from "../../../shared/types/remoteRuntime";
 
 type RegistryFile = {
   version: 1;
@@ -16,6 +21,88 @@ function registryPath(): string {
 function normalizePort(port: number | null | undefined): number | null {
   if (!port || !Number.isFinite(port)) return null;
   return Math.max(1, Math.min(65_535, Math.floor(port)));
+}
+
+function normalizeRouteSource(value: unknown): RemoteRuntimeTargetRouteSource {
+  return value === "bonjour" || value === "tailscale" ? value : "manual";
+}
+
+function normalizeRouteKey(hostname: string, port: number | null): string {
+  return `${hostname.toLowerCase().replace(/\.$/, "")}:${port ?? ""}`;
+}
+
+export function normalizeRemoteTargetRoutes(args: {
+  hostname: string;
+  port: number | null | undefined;
+  routes?: unknown;
+}): RemoteRuntimeTargetRoute[] {
+  const primaryHostname = args.hostname.trim();
+  if (!primaryHostname) return [];
+  const primaryPort = normalizePort(args.port);
+  const normalized: RemoteRuntimeTargetRoute[] = [];
+  const seen = new Set<string>();
+  const addRoute = (
+    value: unknown,
+    fallbackSource: RemoteRuntimeTargetRouteSource,
+  ): void => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const record = value as Record<string, unknown>;
+    const hostname =
+      typeof record.hostname === "string" ? record.hostname.trim() : "";
+    if (!hostname) return;
+    const port = normalizePort(
+      typeof record.port === "number" ? record.port : primaryPort,
+    );
+    const key = normalizeRouteKey(hostname, port);
+    const source =
+      record.source == null
+        ? fallbackSource
+        : normalizeRouteSource(record.source);
+    const lastSucceededAt =
+      typeof record.lastSucceededAt === "number" &&
+      Number.isFinite(record.lastSucceededAt)
+        ? record.lastSucceededAt
+        : null;
+    if (seen.has(key)) {
+      const existing = normalized.find(
+        (route) => normalizeRouteKey(route.hostname, route.port) === key,
+      );
+      if (existing) {
+        if (existing.source === "manual" && source !== "manual") {
+          existing.source = source;
+        }
+        if (
+          lastSucceededAt != null &&
+          (existing.lastSucceededAt == null ||
+            lastSucceededAt > existing.lastSucceededAt)
+        ) {
+          existing.lastSucceededAt = lastSucceededAt;
+        }
+      }
+      return;
+    }
+    seen.add(key);
+    normalized.push({
+      hostname,
+      port,
+      source,
+      lastSucceededAt,
+    });
+  };
+
+  addRoute(
+    {
+      hostname: primaryHostname,
+      port: primaryPort,
+      source: "manual",
+      lastSucceededAt: null,
+    },
+    "manual",
+  );
+  if (Array.isArray(args.routes)) {
+    for (const route of args.routes) addRoute(route, "manual");
+  }
+  return normalized;
 }
 
 function defaultName(input: RemoteRuntimeTargetInput): string {
@@ -45,6 +132,11 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
     sshUser,
     port: normalizePort(typeof record.port === "number" ? record.port : null),
     sshKeyPath: typeof record.sshKeyPath === "string" && record.sshKeyPath.trim() ? record.sshKeyPath.trim() : null,
+    routes: normalizeRemoteTargetRoutes({
+      hostname,
+      port: typeof record.port === "number" ? record.port : null,
+      routes: record.routes,
+    }),
     lastSeenArch: typeof record.lastSeenArch === "string" && record.lastSeenArch.trim() ? record.lastSeenArch.trim() : null,
     runtimeBinaryVersion: typeof record.runtimeBinaryVersion === "string" && record.runtimeBinaryVersion.trim() ? record.runtimeBinaryVersion.trim() : null,
     lastConnectedAt: typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt) ? record.lastConnectedAt : null,
@@ -76,6 +168,11 @@ export class RemoteTargetRegistry {
       sshUser,
       port: normalizePort(input.port),
       sshKeyPath: input.sshKeyPath?.trim() || null,
+      routes: normalizeRemoteTargetRoutes({
+        hostname,
+        port: input.port,
+        routes: input.routes,
+      }),
       lastSeenArch: existing?.lastSeenArch ?? null,
       runtimeBinaryVersion: existing?.runtimeBinaryVersion ?? null,
       lastConnectedAt: existing?.lastConnectedAt ?? null,

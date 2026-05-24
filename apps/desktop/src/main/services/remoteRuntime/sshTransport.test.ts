@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
-import { buildSshConfig, buildSshConfigCandidates, buildSshUsernameCandidates, parseOpenSshHostConfig } from "./sshTransport";
+import { buildSshConfig, buildSshConfigCandidates, buildSshRouteCandidates, buildSshUsernameCandidates, parseOpenSshHostConfig } from "./sshTransport";
 
 const target: RemoteRuntimeTarget = {
   id: "target-1",
@@ -35,6 +35,9 @@ describe("buildSshConfig", () => {
       host: "remote.example.test",
       port: 22,
       username: "ade",
+      readyTimeout: 20_000,
+      keepaliveInterval: 15_000,
+      keepaliveCountMax: 3,
       agent: "/tmp/ade-agent.sock",
     });
   });
@@ -126,6 +129,53 @@ describe("buildSshConfig", () => {
 
     expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
     expect(configs.every((config) => config.host === "100.75.20.63" && config.port === 22)).toBe(true);
+  });
+
+  it("tries saved route fallbacks and prioritizes the last successful route", () => {
+    const configs = buildSshConfigCandidates({
+      ...target,
+      hostname: "studio.tailnet.ts.net",
+      sshUser: null,
+      port: null,
+      routes: [
+        {
+          hostname: "192.168.1.42",
+          port: null,
+          source: "bonjour",
+          lastSucceededAt: 200,
+        },
+        {
+          hostname: "studio.tailnet.ts.net",
+          port: null,
+          source: "tailscale",
+          lastSucceededAt: 100,
+        },
+      ],
+    }, {
+      env: {},
+      sshConfigPath: null,
+    });
+
+    const usernames = Array.from(new Set([os.userInfo().username, "admin"]));
+    expect(configs.map((config) => config.host)).toEqual([
+      ...usernames.map(() => "192.168.1.42"),
+      ...usernames.map(() => "studio.tailnet.ts.net"),
+    ]);
+    expect(buildSshRouteCandidates({
+      ...target,
+      hostname: "studio.tailnet.ts.net",
+      routes: [
+        {
+          hostname: "192.168.1.42",
+          port: null,
+          source: "bonjour",
+          lastSucceededAt: 200,
+        },
+      ],
+    }).map((route) => route.hostname)).toEqual([
+      "192.168.1.42",
+      "studio.tailnet.ts.net",
+    ]);
   });
 
   it("uses the first readable OpenSSH default identity when no explicit key is configured", () => {
