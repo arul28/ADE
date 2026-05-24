@@ -641,6 +641,41 @@ describe("RemoteConnectionPool", () => {
     });
   });
 
+  it("does not retry mutating sync RPCs after a connection drop", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote ADE service connection closed."),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callSyncForTarget(target, "project-1", "sync.connectToBrain", {
+        host: "brain.local",
+        port: 8765,
+      }),
+    ).rejects.toThrow(/connection was interrupted before ADE could confirm the action result/i);
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledTimes(1);
+    expect(firstClient.call).toHaveBeenCalledWith("sync.connectToBrain", {
+      projectId: "project-1",
+      host: "brain.local",
+      port: 8765,
+    });
+  });
+
   it("subscribes to runtime event notifications and unsubscribes on cleanup", async () => {
     const client = createClient();
     client.call.mockImplementation(async (method: string) => {
