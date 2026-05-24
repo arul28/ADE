@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
@@ -368,6 +368,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const appliedUrlFilterKeyRef = useRef<string | null>(null);
   const partiallyAppliedUrlFilterKeyRef = useRef<string | null>(null);
   const hasLoadedOnceRef = useRef(false);
+  /** True only after `refresh` has applied sessions for the active project (not cache-only). */
+  const hasAuthoritativeSessionsRef = useRef(false);
+  /** Blocks mirror/prune while `sessions` still reflects the previous project after `projectRoot` changes. */
+  const pendingProjectSwitchRef = useRef<string | null>(null);
   const projectRootRef = useRef<string | null>(projectRoot);
   const laneRecoveryRefreshProjectRef = useRef<string | null>(null);
   const isWorkRoute = active && (location.pathname === "/work" || location.pathname.startsWith("/work/"));
@@ -736,6 +740,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!requestedProjectRoot) {
       setSessions([]);
       hasLoadedOnceRef.current = false;
+      hasAuthoritativeSessionsRef.current = false;
       return;
     }
     const showLoading = options.showLoading ?? true;
@@ -801,6 +806,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       setSessions(rows);
       hasLoadedOnceRef.current = true;
+      hasAuthoritativeSessionsRef.current = true;
+      if (pendingProjectSwitchRef.current === requestedProjectRoot) {
+        pendingProjectSwitchRef.current = null;
+      }
     } finally {
       if (showLoading) setLoading(false);
       refreshInFlightRef.current = false;
@@ -849,6 +858,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // either — leave each project's hot cache alone.
     const cachedSessions =
       (projectRoot ? (appStore.getState().sessionsCacheByProject[projectRoot] as TerminalSessionSummary[] | undefined) : undefined) ?? null;
+    pendingProjectSwitchRef.current = projectRoot;
+    hasAuthoritativeSessionsRef.current = false;
     setSessions(cachedSessions ?? []);
     setLoading(false);
     if (refreshQueuedRef.current) {
@@ -857,7 +868,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     // If we already have cached sessions, treat this as a "loaded" state so the
     // upcoming refresh runs silently in the background (no spinner).
-    hasLoadedOnceRef.current = Boolean(cachedSessions && cachedSessions.length >= 0);
+    hasLoadedOnceRef.current = cachedSessions != null;
     hasRunningSessionsRef.current = (cachedSessions ?? []).some((s) => s.status === "running");
     laneRecoveryRefreshProjectRef.current = null;
     appliedQuerySessionIdRef.current = null;
@@ -866,11 +877,20 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     pendingOptimisticSessionsRef.current.clear();
   }, [appStore, projectRoot]);
 
+  useLayoutEffect(() => {
+    if (pendingProjectSwitchRef.current !== projectRoot) return;
+    // `sessions` has caught up after hydrate's setState — safe to mirror again.
+    pendingProjectSwitchRef.current = null;
+  }, [projectRoot, sessions]);
+
   // Mirror the locally-fetched sessions into the per-project cache in the
   // global store. The next time the user switches BACK to this project the
   // effect above can render these sessions instantly instead of blanking.
   useEffect(() => {
     if (!projectRoot) return;
+    // During a project switch, `sessions` can still be the previous project's list
+    // for one render; mirroring it into the new project's cache poisons warm reload.
+    if (pendingProjectSwitchRef.current != null) return;
     appStore.setState((prev) => ({
       sessionsCacheByProject: {
         ...prev.sessionsCacheByProject,
@@ -1183,10 +1203,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   useEffect(() => {
     if (!projectRoot) return;
-    // Don't prune open tabs until sessions have been fetched at least once.
-    // On remount, sessions starts as [] before the async fetch completes;
-    // pruning against an empty set would wipe all persisted open tabs.
-    if (!hasLoadedOnceRef.current) return;
+    // Don't prune open tabs until sessions have been fetched at least once for
+    // this project. On remount or warm cache hydration, `sessions` can briefly
+    // reflect the previous project — pruning then drops the destination tabs.
+    if (pendingProjectSwitchRef.current != null) return;
+    if (!hasAuthoritativeSessionsRef.current) return;
     const validIds = new Set(sessions.map((session) => session.id));
 
     setProjectViewState((prev) => {
