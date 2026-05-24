@@ -29,7 +29,7 @@ import {
 } from "./AgentChatPane";
 
 vi.mock("../terminals/TerminalView", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     TerminalView: (props: { sessionId: string; ptyId: string }) =>
       ReactMod.createElement("div", { "data-testid": "terminal-view" }, `${props.sessionId}:${props.ptyId}`),
@@ -37,14 +37,14 @@ vi.mock("../terminals/TerminalView", () => {
 });
 
 vi.mock("./ChatIosSimulatorPanel", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     ChatIosSimulatorPanel: () => ReactMod.createElement("div", { "data-testid": "ios-panel" }, "iOS panel mounted"),
   };
 });
 
 vi.mock("./ChatAppControlPanel", () => {
-  const ReactMod = require("react") as typeof import("react");
+  const ReactMod = require("react") as typeof React;
   return {
     ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
   };
@@ -883,7 +883,8 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(modelLabel)}`, "i") })).toBeTruthy();
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This must not launch with a stale model." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    expect((await screen.findByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(await screen.findByText("No models are available for this chat surface.")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
@@ -912,7 +913,8 @@ describe("AgentChatPane submit recovery", () => {
 
     const textbox = await screen.findByRole("textbox");
     fireEvent.change(textbox, { target: { value: "This should not send with a stale model." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    expect((await screen.findByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(await screen.findByText("Select an available model for this chat surface before sending.")).toBeTruthy();
     expect(send).not.toHaveBeenCalled();
