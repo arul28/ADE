@@ -7044,7 +7044,8 @@ async function runTool(args: {
       return {
         events: sliced,
         nextCursor: result.nextCursor,
-        hasMore: filtered.length > limit || result.hasMore
+        hasMore: filtered.length > limit || result.hasMore,
+        eventEpoch: result.eventEpoch
       };
     }
     return runtime.eventBuffer.drain(cursor, limit);

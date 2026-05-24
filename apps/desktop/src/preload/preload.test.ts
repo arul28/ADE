@@ -370,6 +370,57 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.macosVmEvent, listener);
   });
 
+  it("rejects sensitive local host helpers for remote project bindings before local IPC", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.macosVm.getDisplaySession({ laneId: "lane-1" })).rejects.toThrow(/local project host/i);
+    await expect(bridge.macosVm.setCredentials({ vmName: "vm-1", username: "u", password: "p" })).rejects.toThrow(/local project host/i);
+    await expect(bridge.macosVm.detachLane({ laneId: "lane-1" })).rejects.toThrow(/local project host/i);
+    await expect(bridge.iosSimulator.getSimulatorWindowState()).rejects.toThrow(/local project host/i);
+    await expect(bridge.iosSimulator.listSimulatorWindowSources()).rejects.toThrow(/local project host/i);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.macosVmGetDisplaySession, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.macosVmSetCredentials, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.macosVmDetachLane, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorGetWindowState);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources);
+  });
+
   it("routes local macOS VM deletion through direct IPC when a local project runtime is bound", async () => {
     const binding = {
       kind: "local",
@@ -568,6 +619,122 @@ describe("preload OAuth bridge", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).not.toHaveBeenCalledWith(IPC.lanesOpenFolder, { laneId: "lane-1" });
+  });
+
+  it("rejects local desktop path actions for remote project bindings before local IPC", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.app.revealPath("/remote/project/file.txt")).rejects.toThrow(/remote project paths/i);
+    await expect(bridge.app.openPath("/remote/project/file.txt")).rejects.toThrow(/remote project paths/i);
+    await expect(bridge.app.getImageDataUrl("/remote/project/image.png")).rejects.toThrow(/remote project paths/i);
+    await expect(bridge.app.writeClipboardImage("/remote/project/image.png")).rejects.toThrow(/remote project paths/i);
+    await expect(
+      bridge.app.openPathInEditor({
+        rootPath: "/remote/project",
+        relativePath: "file.txt",
+        target: "cursor",
+      }),
+    ).rejects.toThrow(/remote project paths/i);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appRevealPath, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPath, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appWriteClipboardImage, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPathInEditor, expect.anything());
+  });
+
+  it("allows local temp path actions while a remote project is bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.appGetImageDataUrl) return { dataUrl: "data:image/png;base64,AA==" };
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.app.revealPath("/tmp/local-file.txt")).resolves.toBeUndefined();
+    await expect(bridge.app.openPath("/tmp/local-file.txt")).resolves.toBeUndefined();
+    await expect(bridge.app.getImageDataUrl("/tmp/local-image.png")).resolves.toEqual({ dataUrl: "data:image/png;base64,AA==" });
+    await expect(bridge.app.writeClipboardImage("/tmp/local-image.png")).resolves.toBeUndefined();
+    await expect(
+      bridge.app.openPathInEditor({
+        rootPath: "/tmp/local-project",
+        relativePath: "file.txt",
+        target: "cursor",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appRevealPath, { path: "/tmp/local-file.txt" });
+    expect(invoke).toHaveBeenCalledWith(IPC.appOpenPath, { path: "/tmp/local-file.txt" });
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetImageDataUrl, { path: "/tmp/local-image.png" });
+    expect(invoke).toHaveBeenCalledWith(IPC.appWriteClipboardImage, { path: "/tmp/local-image.png" });
+    expect(invoke).toHaveBeenCalledWith(IPC.appOpenPathInEditor, {
+      rootPath: "/tmp/local-project",
+      relativePath: "file.txt",
+      target: "cursor",
+    });
   });
 
   it("does not let stale window-session refreshes overwrite a newer project binding", async () => {
@@ -1176,6 +1343,104 @@ describe("preload OAuth bridge", () => {
       request: { domain: "pr", action: "getDetail", arg: "pr-1" },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetDetail, expect.anything());
+  });
+
+  it("routes ADE action registry listing through a remote project runtime when bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const registry = [
+      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "git", actions: [{ name: "status" }] },
+    ];
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeListActionRegistry) {
+        return registry;
+      }
+      if (channel === IPC.adeActionsListRegistry) {
+        throw new Error("remote action registry should not use local IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.actions.listRegistry()).resolves.toEqual(registry);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeListActionRegistry, {
+      id: "target-1",
+      projectId: "project-1",
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.adeActionsListRegistry);
+  });
+
+  it("uses the local ADE action registry when no remote project is bound", async () => {
+    const registry = [{ domain: "git", actions: [{ name: "status" }] }];
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding: null };
+      }
+      if (channel === IPC.adeActionsListRegistry) {
+        return registry;
+      }
+      if (channel === IPC.remoteRuntimeListActionRegistry) {
+        throw new Error("local action registry should not use remote IPC");
+      }
+      throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(payload)}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.actions.listRegistry()).resolves.toEqual(registry);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.adeActionsListRegistry);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeListActionRegistry,
+      expect.anything(),
+    );
   });
 
   it("uses in-process file IPC when no local runtime binding exists", async () => {
@@ -2372,9 +2637,25 @@ describe("preload OAuth bridge", () => {
     const autolinks = [{ id: 1, keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>", isAlphanumeric: false }];
     const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade.app/open?number=<num>", isAlphanumeric: false };
     const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
+    const myRepos = {
+      repos: [{
+        owner: "acme",
+        name: "repo",
+        fullName: "acme/repo",
+        isPrivate: false,
+        pushedAt: null,
+        defaultBranch: "main",
+        htmlUrl: "https://github.com/acme/repo",
+        cloneUrl: "https://github.com/acme/repo.git",
+        sshUrl: "git@github.com:acme/repo.git",
+      }],
+    };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeListMyGitHubRepos) {
+        return myRepos;
       }
       if (channel === IPC.remoteRuntimeCallAction) {
         const request = (payload as { request?: { action?: string } } | undefined)?.request;
@@ -2451,6 +2732,7 @@ describe("preload OAuth bridge", () => {
       isAlphanumeric: false,
     })).resolves.toEqual(createdAutolink);
     await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
+    await expect(bridge.github.listMyRepos({ search: "repo" })).resolves.toEqual(myRepos);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -2503,11 +2785,16 @@ describe("preload OAuth bridge", () => {
         args: { forceRefresh: true },
       },
     });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeListMyGitHubRepos, {
+      id: "target-1",
+      input: { search: "repo" },
+    });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoLabels, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoCollaborators, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoAutolinks, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubCreateRepoAutolink, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetRemoteStatus, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubListMyRepos, expect.anything());
   });
 
   it("routes GitHub publish through a remote project runtime when bound", async () => {
@@ -2563,6 +2850,175 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubPublishCurrentProject, input);
+  });
+
+  it("does not fall back to local slash commands after a remote empty result", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const input = { laneId: "lane-1", provider: "codex" };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "chat", action: "getSlashCommands", result: [], statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.slashCommands(input)).resolves.toEqual([]);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "chat",
+        action: "getSlashCommands",
+        args: input,
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSlashCommands, input);
+  });
+
+  it("routes Codex open-in-CLI setup through a remote project runtime when bound", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const input = { sessionId: "session-1", mode: "ade-terminal" };
+    const result = {
+      binary: "/usr/local/bin/codex",
+      argv: ["resume", "thread-1"],
+      cwd: "/remote/project/.ade/worktrees/lane",
+      threadId: "thread-1",
+      copyThreadIdToClipboard: false,
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "chat", action: "codexOpenInCli", result, statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.codex.openInCli(input)).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "chat",
+        action: "codexOpenInCli",
+        args: input,
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCodexOpenInCli, input);
+  });
+
+  it("does not fall back to a local PR lookup when remote open-in-GitHub misses", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "pr", action: "listAll", result: [], statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.prs.openInGitHub("pr-404")).rejects.toThrow(/Remote PR pr-404/);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "pr",
+        action: "listAll",
+        args: {},
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.prsOpenInGitHub, { prId: "pr-404" });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenExternal, expect.anything());
   });
 
   it("routes PTY creation through a remote project runtime when bound", async () => {
@@ -2690,6 +3146,932 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ptySendToSession, input);
+  });
+
+  it("routes App Control attachToTarget through the remote runtime with positional args", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const result = {
+      id: "session-1",
+      status: "connected",
+      targetId: "target-2",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return {
+          ok: true,
+          domain: "app_control",
+          action: "attachToTarget",
+          result,
+          statusHints: {},
+        };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.appControl.attachToTarget({ targetId: "target-2" })).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "app_control",
+        action: "attachToTarget",
+        argsList: ["target-2"],
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appControlAttachToTarget, expect.anything());
+  });
+
+  it("routes OpenCode diagnostics and Cursor Cloud stream subscriptions through a remote runtime", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const diagnostics = { version: 1, sessions: [] };
+    const installed = { installed: true, source: "bundled" };
+    const stream = { subscriptionId: "cursor-cloud-stream-agent-1-run-1" };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { action?: string } }).request;
+        if (request?.action === "getOpenCodeRuntimeDiagnostics") {
+          return { ok: true, domain: "ai", action: request.action, result: diagnostics, statusHints: {} };
+        }
+        if (request?.action === "isOpenCodeInstalled") {
+          return { ok: true, domain: "ai", action: request.action, result: installed, statusHints: {} };
+        }
+        if (request?.action === "cursorCloudStreamRun") {
+          return { ok: true, domain: "ai", action: request.action, result: stream, statusHints: {} };
+        }
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.ai.getOpenCodeRuntimeDiagnostics()).resolves.toEqual(diagnostics);
+    await expect(bridge.ai.isOpenCodeInstalled()).resolves.toEqual(installed);
+    await expect(bridge.ai.cursorCloudStreamRun({ agentId: "agent-1", runId: "run-1" })).resolves.toEqual(stream);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ai", action: "getOpenCodeRuntimeDiagnostics" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ai", action: "isOpenCodeInstalled" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "ai",
+        action: "cursorCloudStreamRun",
+        args: { agentId: "agent-1", runId: "run-1" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiGetOpenCodeRuntimeDiagnostics);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiIsOpenCodeInstalled);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiCursorCloudStreamRun, expect.anything());
+  });
+
+  it("routes APNs settings reads through a bound remote runtime", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const status = {
+      enabled: true,
+      configured: true,
+      keyStored: true,
+      keyId: "KEY123",
+      teamId: "TEAM123",
+      bundleId: "com.ade.ios",
+      env: "sandbox",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        return { ok: true, domain: "notifications_apns", action: "getStatus", result: status, statusHints: {} };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.notifications.apns.getStatus()).resolves.toEqual(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "notifications_apns",
+        action: "getStatus",
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.notificationsApnsGetStatus);
+  });
+
+  it("fans out remote PTY data notifications from the live runtime event stream", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const ptyEvent = {
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "hello from studio",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.pty.onData(callback);
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 1,
+        timestamp: "2026-05-10T12:00:01.000Z",
+        category: "pty",
+        payload: { type: "pty_data", event: ptyEvent },
+      },
+    });
+    expect(callback).toHaveBeenCalledWith(ptyEvent);
+
+    unsubscribe();
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 2,
+        timestamp: "2026-05-10T12:00:02.000Z",
+        category: "pty",
+        payload: { type: "pty_data", event: { ...ptyEvent, data: "later" } },
+      },
+    });
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans out remote macOS VM notifications from the live runtime event stream", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const status = {
+      activeProvider: { kind: "lume", available: true, version: null },
+      tools: [],
+      laneVm: null,
+      vms: [],
+      globalLease: null,
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.macosVm.onEvent(callback);
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 1,
+        timestamp: "2026-05-10T12:00:01.000Z",
+        category: "runtime",
+        payload: { type: "macos_vm", eventType: "status", status },
+      },
+    });
+    expect(callback).toHaveBeenCalledWith({ type: "status", status });
+
+    unsubscribe();
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 2,
+        timestamp: "2026-05-10T12:00:02.000Z",
+        category: "runtime",
+        payload: { type: "macos_vm", eventType: "status", status },
+      },
+    });
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans out remote runtime events for routed project utility domains", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const usageUpdate = vi.fn();
+    const usageThreshold = vi.fn();
+    const automations = vi.fn();
+    const conflicts = vi.fn();
+    const rebase = vi.fn();
+    const githubStatusChanged = vi.fn();
+    const linearWorkflow = vi.fn();
+    const feedback = vi.fn();
+    const computerUse = vi.fn();
+    const iosSimulator = vi.fn();
+    const appControl = vi.fn();
+
+    const unsubscribers = [
+      bridge.usage.onUpdate(usageUpdate),
+      bridge.usage.onThreshold(usageThreshold),
+      bridge.automations.onEvent(automations),
+      bridge.conflicts.onEvent(conflicts),
+      bridge.rebase.onEvent(rebase),
+      bridge.github.onStatusChanged(githubStatusChanged),
+      bridge.cto.onLinearWorkflowEvent(linearWorkflow),
+      bridge.feedback.onUpdate(feedback),
+      bridge.computerUse.onEvent(computerUse),
+      bridge.iosSimulator.onEvent(iosSimulator),
+      bridge.appControl.onEvent(appControl),
+    ];
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    const emit = (id: number, payload: Record<string, unknown>) => {
+      runtimeListener({}, {
+        bindingKey: binding.key,
+        event: {
+          id,
+          timestamp: `2026-05-10T12:00:${String(id).padStart(2, "0")}.000Z`,
+          category: "runtime",
+          payload,
+        },
+      });
+    };
+
+    const usageSnapshot = { windows: [], pacing: {}, costs: [], extraUsage: [], lastPolledAt: "now", errors: [] };
+    const threshold = { provider: "claude", threshold: 75, percent: 80, resetsAt: "later", firedAt: "now" };
+    const automationEvent = { type: "runs-updated", automationId: "auto-1" };
+    const conflictEvent = { type: "rebase-started", laneId: "lane-1", timestamp: "now" };
+    const githubStatus = {
+      tokenStored: true,
+      tokenDecryptionFailed: false,
+      storageScope: "app",
+      tokenType: "classic",
+      repo: { owner: "acme", name: "repo" },
+      hasOrigin: true,
+      userLogin: "octocat",
+      scopes: ["repo"],
+      checkedAt: "now",
+      repoAccessOk: true,
+      repoAccessError: null,
+      connected: true,
+    };
+    const linearWorkflowEvent = {
+      type: "linear-workflow-ingress",
+      projectId: "project-1",
+      source: "manual",
+      issueId: "issue-1",
+      issueIdentifier: "ADE-1",
+      summary: "Received Linear issue",
+      createdAt: "now",
+    };
+    const feedbackEvent = { type: "feedback-submission-updated", submission: { id: "sub-1" } };
+    const computerUseEvent = { type: "artifact-ingested", artifactId: "artifact-1", at: "now" };
+    const iosEvent = { type: "session-updated", session: null };
+    const appControlEvent = { type: "session-updated", session: null };
+
+    emit(1, { type: "usage", snapshot: usageSnapshot });
+    emit(2, { type: "usage_threshold", event: threshold });
+    emit(3, { ...automationEvent, source: "automations" });
+    emit(4, { type: "conflict_event", event: conflictEvent });
+    emit(5, { type: "github_status_changed", event: githubStatus });
+    emit(6, { type: "linear_workflow_event", event: linearWorkflowEvent });
+    emit(7, { type: "feedback_submission_event", event: feedbackEvent });
+    emit(8, { type: "computer_use_event", event: computerUseEvent });
+    emit(9, { type: "ios_simulator_event", event: iosEvent });
+    emit(10, { type: "app_control_event", event: appControlEvent });
+
+    expect(usageUpdate).toHaveBeenCalledWith(usageSnapshot);
+    expect(usageThreshold).toHaveBeenCalledWith(threshold);
+    expect(automations).toHaveBeenCalledWith(automationEvent);
+    expect(conflicts).toHaveBeenCalledWith(conflictEvent);
+    expect(rebase).toHaveBeenCalledWith(conflictEvent);
+    expect(githubStatusChanged).toHaveBeenCalledWith(githubStatus);
+    expect(linearWorkflow).toHaveBeenCalledWith(linearWorkflowEvent);
+    expect(feedback).toHaveBeenCalledWith(feedbackEvent);
+    expect(computerUse).toHaveBeenCalledWith(computerUseEvent);
+    expect(iosSimulator).toHaveBeenCalledWith(iosEvent);
+    expect(appControl).toHaveBeenCalledWith(appControlEvent);
+
+    for (const unsubscribe of unsubscribers) unsubscribe();
+    emit(11, { type: "usage", snapshot: { ...usageSnapshot, lastPolledAt: "later" } });
+    expect(usageUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays older remote runtime events during remote binding catch-up", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-10T12:00:00.000Z"));
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const projectEvent = {
+        type: "config-changed",
+        at: "2026-05-10T11:55:00.000Z",
+        filePath: "/remote/project/.ade/ade.yaml",
+      };
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return {
+            events: [
+              {
+                id: 1,
+                timestamp: "2026-05-10T11:55:00.000Z",
+                category: "runtime",
+                payload: { type: "project_state_event", event: projectEvent },
+              },
+            ],
+            nextCursor: 1,
+            hasMore: false,
+          };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const callback = vi.fn();
+      const unsubscribe = bridge.project.onStateEvent(callback);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, {
+        id: "target-1",
+        projectId: "project-1",
+        request: { cursor: 0, limit: 100 },
+      });
+      expect(callback).toHaveBeenCalledWith(projectEvent);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops stale remote runtime catch-up when the project binding changes mid-poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const firstBinding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const secondBinding = {
+        kind: "remote",
+        key: "remote:target-2:project-2",
+        targetId: "target-2",
+        runtimeName: "Studio",
+        projectId: "project-2",
+        rootPath: "/studio/project",
+        displayName: "Studio project",
+      };
+      let binding = firstBinding;
+      let resolveFirstStream!: (value: {
+        events: unknown[];
+        nextCursor: number;
+        hasMore: boolean;
+        eventEpoch: string;
+      }) => void;
+      const firstStream = new Promise<{
+        events: unknown[];
+        nextCursor: number;
+        hasMore: boolean;
+        eventEpoch: string;
+      }>((resolve) => {
+        resolveFirstStream = resolve;
+      });
+      const projectEvent = {
+        type: "config-changed",
+        at: "2026-05-10T11:55:00.000Z",
+        filePath: "/remote/project/.ade/ade.yaml",
+      };
+      const streamRequests: unknown[] = [];
+      const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(arg);
+          if (streamRequests.length === 1) return firstStream;
+          return { events: [], nextCursor: 0, hasMore: false, eventEpoch: "epoch-2" };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const callback = vi.fn();
+      const unsubscribe = bridge.project.onStateEvent(callback);
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(vi.fn());
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(streamRequests).toHaveLength(1);
+      const bindingListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.appProjectBindingChanged,
+      )?.[1];
+      expect(typeof bindingListener).toBe("function");
+      binding = secondBinding;
+      bindingListener({}, secondBinding);
+      resolveFirstStream({
+        events: [
+          {
+            id: 1,
+            timestamp: "2026-05-10T11:55:00.000Z",
+            category: "runtime",
+            payload: { type: "project_state_event", event: projectEvent },
+          },
+        ],
+        nextCursor: 1,
+        hasMore: false,
+        eventEpoch: "epoch-1",
+      });
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(callback).not.toHaveBeenCalled();
+      expect(streamRequests).toHaveLength(2);
+      expect(streamRequests[1]).toEqual({
+        id: "target-2",
+        projectId: "project-2",
+        request: { cursor: 0, limit: 100 },
+      });
+
+      unsubscribeBinding();
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the remote runtime event cursor when the runtime event epoch changes", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const oldEvent = {
+        type: "config-changed",
+        at: "2026-05-10T11:55:00.000Z",
+        filePath: "/remote/project/.ade/ade.yaml",
+      };
+      const newEvent = {
+        type: "config-changed",
+        at: "2026-05-10T12:05:00.000Z",
+        filePath: "/remote/project/.ade/local.yaml",
+      };
+      const streamRequests: unknown[] = [];
+      const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(arg);
+          if (streamRequests.length === 1) {
+            return {
+              events: [
+                {
+                  id: 12,
+                  timestamp: "2026-05-10T11:55:00.000Z",
+                  category: "runtime",
+                  payload: { type: "project_state_event", event: oldEvent },
+                },
+              ],
+              nextCursor: 12,
+              hasMore: false,
+              eventEpoch: "epoch-a",
+            };
+          }
+          if (streamRequests.length === 2) {
+            return {
+              events: [],
+              nextCursor: 12,
+              hasMore: false,
+              eventEpoch: "epoch-b",
+            };
+          }
+          return {
+            events: [
+              {
+                id: 1,
+                timestamp: "2026-05-10T12:05:00.000Z",
+                category: "runtime",
+                payload: { type: "project_state_event", event: newEvent },
+              },
+            ],
+            nextCursor: 1,
+            hasMore: false,
+            eventEpoch: "epoch-b",
+          };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const callback = vi.fn();
+      const unsubscribe = bridge.project.onStateEvent(callback);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(750);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(streamRequests).toEqual([
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100 },
+        },
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 12, limit: 100 },
+        },
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100 },
+        },
+      ]);
+      expect(callback).toHaveBeenCalledWith(oldEvent);
+      expect(callback).toHaveBeenCalledWith(newEvent);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets a stale nonzero cursor when a runtime first reports an event epoch", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const oldEvent = {
+        type: "config-changed",
+        at: "2026-05-10T11:55:00.000Z",
+        filePath: "/remote/project/.ade/ade.yaml",
+      };
+      const newEvent = {
+        type: "config-changed",
+        at: "2026-05-10T12:05:00.000Z",
+        filePath: "/remote/project/.ade/local.yaml",
+      };
+      const streamRequests: unknown[] = [];
+      const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(arg);
+          if (streamRequests.length === 1) {
+            return {
+              events: [
+                {
+                  id: 12,
+                  timestamp: "2026-05-10T11:55:00.000Z",
+                  category: "runtime",
+                  payload: { type: "project_state_event", event: oldEvent },
+                },
+              ],
+              nextCursor: 12,
+              hasMore: false,
+            };
+          }
+          if (streamRequests.length === 2) {
+            return {
+              events: [],
+              nextCursor: 12,
+              hasMore: false,
+              eventEpoch: "epoch-a",
+            };
+          }
+          return {
+            events: [
+              {
+                id: 1,
+                timestamp: "2026-05-10T12:05:00.000Z",
+                category: "runtime",
+                payload: { type: "project_state_event", event: newEvent },
+              },
+            ],
+            nextCursor: 1,
+            hasMore: false,
+            eventEpoch: "epoch-a",
+          };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const callback = vi.fn();
+      const unsubscribe = bridge.project.onStateEvent(callback);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(750);
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(streamRequests).toEqual([
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100 },
+        },
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 12, limit: 100 },
+        },
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100 },
+        },
+      ]);
+      expect(callback).toHaveBeenCalledWith(oldEvent);
+      expect(callback).toHaveBeenCalledWith(newEvent);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("fans out project state events from local IPC and remote runtime events", async () => {

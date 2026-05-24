@@ -69,6 +69,10 @@ import type { createAutomationIngressService } from "../../desktop/src/main/serv
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
+  ApnsKeyStore,
+  ApnsService,
+} from "../../desktop/src/main/services/notifications/apnsService";
+import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
@@ -222,6 +226,8 @@ export type AdeRuntime = {
   missionBudgetService?: ReturnType<typeof createMissionBudgetService> | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
+  apnsService?: ApnsService | null;
+  apnsKeyStore?: ApnsKeyStore | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
@@ -792,6 +798,7 @@ export async function createAdeRuntime(args: {
     missionService,
     orchestratorService,
     logger,
+    onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
   });
   const missionPreflightService = createMissionPreflightService({
     logger,
@@ -808,6 +815,7 @@ export async function createAdeRuntime(args: {
     : createIosSimulatorService({
         projectRoot,
         logger,
+        onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
       });
   // Late-bound chat session lookup. agentChatService is created after
   // appControlService below, so we capture a holder that the resolveLaneId
@@ -820,6 +828,7 @@ export async function createAdeRuntime(args: {
         projectRoot,
         logger,
         ptyService,
+        onEvent: (event) => pushEvent("runtime", { type: "app_control_event", event }),
         resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
           const explicitLaneId = laneId?.trim();
           if (explicitLaneId) return explicitLaneId;
@@ -906,6 +915,10 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService,
     orchestratorService,
     openExternal: async () => {},
+    onGitHubStatusChanged: (status) =>
+      pushEvent("runtime", { type: "github_status_changed", event: status }),
+    onLinearWorkflowEvent: (event) =>
+      pushEvent("runtime", { type: "linear_workflow_event", event }),
   });
   const linearOAuthService = createLinearOAuthService({
     credentials: headlessLinearServices.linearCredentialService as never,
@@ -1071,6 +1084,39 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
+  const apnsService = new ApnsService({ logger });
+  const projectSecretsDir = path.join(projectRoot, ".ade", "secrets");
+  const apnsKeyStore = new ApnsKeyStore({
+    encryptedKeyPath: path.join(projectSecretsDir, "apns.key.enc"),
+    credentialStore: new EncryptedFileCredentialStore({
+      secretsDir: projectSecretsDir,
+    }),
+  });
+  try {
+    const apnsConfig = projectConfigService.get().effective.notifications?.apns;
+    if (
+      apnsConfig?.enabled &&
+      apnsKeyStore.has() &&
+      apnsConfig.keyId &&
+      apnsConfig.teamId &&
+      apnsConfig.bundleId
+    ) {
+      const pem = apnsKeyStore.load();
+      if (pem) {
+        apnsService.configure({
+          keyP8Pem: pem,
+          keyId: apnsConfig.keyId,
+          teamId: apnsConfig.teamId,
+          bundleId: apnsConfig.bundleId,
+          env: apnsConfig.env ?? "sandbox",
+        });
+      }
+    }
+  } catch (error) {
+    logger.warn("apns.configure_on_startup_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
   automationService.bindMissionRuntime({
     missionService,
     aiOrchestratorService,
@@ -1177,6 +1223,8 @@ export async function createAdeRuntime(args: {
     missionBudgetService,
     syncService,
     syncHostService: syncService?.getHostService() ?? null,
+    apnsService,
+    apnsKeyStore,
     laneWorktreeLockService,
     ptyService,
     testService,
@@ -1222,6 +1270,7 @@ export async function createAdeRuntime(args: {
       void configReloadService.dispose().catch(() => {});
       swallow(() => automationService.dispose());
       swallow(() => usageTrackingService.dispose());
+      swallow(() => apnsService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => pathToMergeOrchestrator.dispose());
       swallow(() => processService.disposeAll());

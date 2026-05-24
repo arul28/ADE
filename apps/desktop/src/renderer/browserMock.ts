@@ -2924,7 +2924,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         updatedAt: Date.now(),
       }),
       onConnectionSnapshotChanged: noop,
-      listDiscoveredMachines: resolved([]),
+      listDiscoveredMachines: resolved({ machines: [], diagnostics: [] }),
       saveTarget: resolvedArg({
         id: "mock-remote",
         name: "Mock remote",

@@ -150,6 +150,8 @@ describe("RemoteConnectionPool", () => {
       result: connectResult("1.0.0"),
     });
     const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const onEvicted = vi.fn();
+    pool.onEntryEvicted(onEvicted);
 
     await expect(pool.connect(target)).resolves.toMatchObject({
       version: "1.0.0",
@@ -157,6 +159,9 @@ describe("RemoteConnectionPool", () => {
     firstClient.emitDisconnect(new Error("stream closed"));
 
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(onEvicted).toHaveBeenCalledWith(target.id, expect.objectContaining({
+      message: "stream closed",
+    }));
 
     const secondClient = createClient();
     const secondSsh = createSsh();
@@ -170,6 +175,27 @@ describe("RemoteConnectionPool", () => {
       version: "1.0.1",
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not emit an eviction notification for intentional disconnects", async () => {
+    const client = createClient();
+    const ssh = createSsh();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const onEvicted = vi.fn();
+    pool.onEntryEvicted(onEvicted);
+
+    await pool.connect(target);
+    pool.disconnect(target.id);
+    await Promise.resolve();
+
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(ssh.end).toHaveBeenCalledTimes(1);
+    expect(onEvicted).not.toHaveBeenCalled();
   });
 
   it("evicts cached entries and closes the RPC client after SSH closes", async () => {
@@ -369,7 +395,129 @@ describe("RemoteConnectionPool", () => {
     ).rejects.toThrow(/retry the action/i);
 
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledTimes(1);
+    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "create",
+        args: { name: "work" },
+      },
+    });
     expect(secondClient.call).not.toHaveBeenCalled();
+  });
+
+  it("retries read-only project actions once after reconnecting", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(
+      new Error("Remote runtime connection failed: stream closed"),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce({
+      ok: true,
+      domain: "lane",
+      action: "list",
+      result: [{ id: "lane-main" }],
+      statusHints: { reconnected: true },
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "lane",
+        action: "list",
+      }),
+    ).resolves.toEqual({
+      domain: "lane",
+      action: "list",
+      result: [{ id: "lane-main" }],
+      statusHints: { reconnected: true },
+    });
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledTimes(1);
+    expect(firstClient.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "list",
+      },
+    });
+    expect(secondClient.call).toHaveBeenCalledTimes(1);
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "lane",
+        action: "list",
+      },
+    });
+  });
+
+  it("lists remote ADE actions as grouped registry entries", async () => {
+    const client = createClient();
+    client.call.mockResolvedValueOnce({
+      count: 3,
+      actions: [
+        {
+          domain: "git",
+          action: "push",
+          name: "git.push",
+          usage: "ade actions run git.push",
+        },
+        {
+          domain: "chat",
+          action: "codexOpenInCli",
+          name: "chat.codexOpenInCli",
+          usage: "ade actions run chat.codexOpenInCli",
+        },
+        {
+          domain: "git",
+          action: "status",
+          name: "git.status",
+          usage: "ade actions run git.status",
+        },
+      ],
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.listActionRegistryForTarget(target, "project-1"),
+    ).resolves.toEqual([
+      {
+        domain: "chat",
+        actions: [{ name: "codexOpenInCli" }],
+      },
+      {
+        domain: "git",
+        actions: [{ name: "push" }, { name: "status" }],
+      },
+    ]);
+
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "list_ade_actions",
+      arguments: { domain: "all" },
+    });
   });
 
   it("reconnects before running a target-scoped action after the cached SSH session drops", async () => {

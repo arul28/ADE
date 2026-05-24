@@ -1,10 +1,11 @@
-import { BrowserWindow, ipcMain, type WebContents } from "electron";
+import { BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
   CloneProjectInput,
   CreateProjectInput,
+  AdeActionRegistryEntry,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
   OpenProjectBinding,
@@ -17,7 +18,7 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
-  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryResult,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
@@ -279,6 +280,11 @@ export function registerRuntimeBridge({
     remoteConnectionService.startAutoconnect();
   }, 0);
   autoconnectTimer.unref?.();
+  const probeRemoteConnectionsAfterWake = (): void => {
+    remoteConnectionService.probeSavedConnections();
+  };
+  powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
+  powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
 
   const cleanupRuntimeEventSubscription = (senderId: number): void => {
     const existing = runtimeEventSubscriptions.get(senderId);
@@ -383,7 +389,7 @@ export function registerRuntimeBridge({
 
   ipcMain.handle(
     IPC.remoteRuntimeListDiscoveredMachines,
-    async (): Promise<RemoteRuntimeDiscoveredMachine[]> => {
+    async (): Promise<RemoteRuntimeDiscoveryResult> => {
       return discoverLanRuntimes();
     },
   );
@@ -574,6 +580,26 @@ export function registerRuntimeBridge({
         binding,
       );
       return binding;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeListActionRegistry,
+    async (
+      _event,
+      arg: { id: string; projectId: string },
+    ): Promise<AdeActionRegistryEntry[]> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const target = id ? remoteConnectionService.getTarget(id) : null;
+      if (!target) throw new Error("Remote target was not found.");
+      if (!projectId) throw new Error("Remote project is required.");
+      await remoteConnectionService.connect(target.id);
+      return await remoteConnectionPool.listActionRegistryForTarget(
+        target,
+        projectId,
+      );
     },
   );
 

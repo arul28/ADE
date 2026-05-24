@@ -58,6 +58,7 @@ export const IPC = {
   remoteRuntimeCloneProject: "ade.remoteRuntime.cloneProject",
   remoteRuntimeListMyGitHubRepos: "ade.remoteRuntime.listMyGitHubRepos",
   remoteRuntimeOpenProject: "ade.remoteRuntime.openProject",
+  remoteRuntimeListActionRegistry: "ade.remoteRuntime.listActionRegistry",
   remoteRuntimeCallAction: "ade.remoteRuntime.callAction",
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeStreamEvents: "ade.remoteRuntime.streamEvents",

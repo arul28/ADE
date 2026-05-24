@@ -639,6 +639,9 @@ export class LocalRuntimeConnectionPool {
         throw new Error(typeof error.message === "string" ? error.message : "Local ADE service event stream failed.");
       }
 
+      const eventEpoch = typeof record.eventEpoch === "string" && record.eventEpoch.trim()
+        ? record.eventEpoch.trim()
+        : null;
       return {
         events: Array.isArray(record.events)
           ? record.events.map(normalizeBufferedEvent).filter((event): event is RemoteRuntimeBufferedEvent => event != null)
@@ -647,6 +650,7 @@ export class LocalRuntimeConnectionPool {
           ? Math.max(0, Math.floor(record.nextCursor))
           : clampCursor(request.cursor),
         hasMore: record.hasMore === true,
+        ...(eventEpoch ? { eventEpoch } : {}),
       };
     }
 

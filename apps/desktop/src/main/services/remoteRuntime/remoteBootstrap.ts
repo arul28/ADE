@@ -2,10 +2,18 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Client } from "ssh2";
-import type { RemoteRuntimeConnectResult, RemoteRuntimeProjectRecord, RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeConnectResult,
+  RemoteRuntimeProjectRecord,
+  RemoteRuntimeTarget,
+  RemoteRuntimeTargetRoute,
+} from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { connectSsh, execSsh, openSshRuntimeTransport } from "./sshTransport";
-import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import { connectSshWithRoute, execSsh, openSshRuntimeTransport } from "./sshTransport";
+import {
+  normalizeRemoteTargetRoutes,
+  type RemoteTargetRegistry,
+} from "./remoteTargetRegistry";
 
 export function normalizeRemoteArch(raw: string): { platform: string; arch: string; label: string } {
   const lower = raw.toLowerCase();
@@ -320,13 +328,47 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
   });
 }
 
+function routeKey(route: Pick<RemoteRuntimeTargetRoute, "hostname" | "port">): string {
+  return `${route.hostname.toLowerCase().replace(/\.$/, "")}:${route.port ?? ""}`;
+}
+
+export function markRemoteTargetRouteSucceeded(args: {
+  target: RemoteRuntimeTarget;
+  route: RemoteRuntimeTargetRoute;
+  nowMs: number;
+}): RemoteRuntimeTargetRoute[] {
+  const routes = normalizeRemoteTargetRoutes({
+    hostname: args.target.hostname,
+    port: args.target.port,
+    routes: args.target.routes,
+  });
+  const successKey = routeKey(args.route);
+  let matched = false;
+  const updated = routes.map((route) => {
+    if (routeKey(route) !== successKey) return route;
+    matched = true;
+    return {
+      ...route,
+      source:
+        route.source === "manual" && args.route.source !== "manual"
+          ? args.route.source
+          : route.source,
+      lastSucceededAt: args.nowMs,
+    };
+  });
+  if (!matched) {
+    updated.push({ ...args.route, lastSucceededAt: args.nowMs });
+  }
+  return updated;
+}
+
 export async function bootstrapRemoteRuntime(args: {
   target: RemoteRuntimeTarget;
   registry: RemoteTargetRegistry;
   resourcesPath: string;
   appVersion: string;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
-  const ssh = await connectSsh(args.target);
+  const { client: ssh, route: connectedRoute } = await connectSshWithRoute(args.target);
   try {
     const uname = await execSsh(ssh, "uname -sm");
     if (uname.code !== 0) {
@@ -433,10 +475,16 @@ export async function bootstrapRemoteRuntime(args: {
       });
     }
     const projects = coerceProjects(await client.call("projects.list", {}));
+    const connectedAt = Date.now();
     const updated = args.registry.update(args.target.id, {
       lastSeenArch: arch.label,
       runtimeBinaryVersion: runtimeVersion,
-      lastConnectedAt: Date.now(),
+      lastConnectedAt: connectedAt,
+      routes: markRemoteTargetRouteSucceeded({
+        target: args.target,
+        route: connectedRoute,
+        nowMs: connectedAt,
+      }),
     });
     return {
       client,

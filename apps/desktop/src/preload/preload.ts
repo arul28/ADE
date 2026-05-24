@@ -741,7 +741,7 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
-  RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryResult,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
@@ -1182,6 +1182,46 @@ async function getProjectRuntimeBinding(options?: { fresh?: boolean }): Promise<
   return refreshProjectBinding();
 }
 
+function normalizePathForContainment(value: string): string {
+  const trimmed = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  return trimmed || "/";
+}
+
+function isAbsoluteOrHomePath(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    /^[A-Za-z]:[\\/]/.test(trimmed)
+  );
+}
+
+async function assertNotRemoteProjectPathAction(
+  action: string,
+  paths: Array<string | null | undefined>,
+): Promise<void> {
+  const binding = await getProjectRuntimeBinding();
+  if (binding?.kind !== "remote") return;
+  const remoteRoot = normalizePathForContainment(binding.rootPath);
+  const hasRemotePath = paths.some((value) => {
+    const pathValue = value?.trim();
+    if (!pathValue) return false;
+    if (!isAbsoluteOrHomePath(pathValue)) return true;
+    const normalized = normalizePathForContainment(pathValue);
+    return normalized === remoteRoot || normalized.startsWith(`${remoteRoot}/`);
+  });
+  if (!hasRemotePath) return;
+  throw new Error(
+    `${action} is only available for local desktop paths, not remote project paths.`,
+  );
+}
+
+async function assertLocalProjectHostAction(action: string): Promise<void> {
+  const binding = await getProjectRuntimeBinding();
+  if (binding?.kind !== "remote") return;
+  throw new Error(`${action} is only available on the local project host.`);
+}
+
 async function callRemoteProjectActionIfBound<T>(
   domain: string,
   action: string,
@@ -1275,6 +1315,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "warmupModel",
   "rewindFiles",
   "saveTempAttachment",
+  "codexOpenInCli",
 ]);
 
 async function callProjectRuntimeActionIfBound<T>(
@@ -1489,6 +1530,39 @@ const remoteSyncStatusEventCallbacks = new Set<
 const remoteReviewEventCallbacks = new Set<
   (payload: ReviewEventPayload) => void
 >();
+const remoteMacosVmEventCallbacks = new Set<
+  (payload: MacosVmEventPayload) => void
+>();
+const remoteUsageUpdateEventCallbacks = new Set<
+  (payload: UsageSnapshot) => void
+>();
+const remoteUsageThresholdEventCallbacks = new Set<
+  (payload: UsageThresholdEvent) => void
+>();
+const remoteAutomationsEventCallbacks = new Set<
+  (payload: AutomationsEventPayload) => void
+>();
+const remoteConflictEventCallbacks = new Set<
+  (payload: ConflictEventPayload) => void
+>();
+const remoteGitHubStatusChangedCallbacks = new Set<
+  (payload: GitHubStatus) => void
+>();
+const remoteLinearWorkflowEventCallbacks = new Set<
+  (payload: LinearWorkflowEventPayload) => void
+>();
+const remoteFeedbackEventCallbacks = new Set<
+  (payload: FeedbackSubmissionEvent) => void
+>();
+const remoteComputerUseEventCallbacks = new Set<
+  (payload: ComputerUseEventPayload) => void
+>();
+const remoteIosSimulatorEventCallbacks = new Set<
+  (payload: IosSimulatorEventPayload) => void
+>();
+const remoteAppControlEventCallbacks = new Set<
+  (payload: AppControlEventPayload) => void
+>();
 
 function createLocalIpcEventSubscription<T>(
   channel: string,
@@ -1533,12 +1607,38 @@ const subscribeLocalPrEvents = createLocalIpcEventSubscription<PrEventPayload>(
   IPC.prsEvent,
   "PR event",
 );
+const subscribeLocalUsageUpdateEvents =
+  createLocalIpcEventSubscription<UsageSnapshot>(
+    IPC.usageEvent,
+    "usage update",
+  );
+const subscribeLocalUsageThresholdEvents =
+  createLocalIpcEventSubscription<UsageThresholdEvent>(
+    IPC.usageThresholdEvent,
+    "usage threshold",
+  );
+const subscribeLocalAutomationsEvents =
+  createLocalIpcEventSubscription<AutomationsEventPayload>(
+    IPC.automationsEvent,
+    "automation event",
+  );
+const subscribeLocalConflictEvents =
+  createLocalIpcEventSubscription<ConflictEventPayload>(
+    IPC.conflictsEvent,
+    "conflict event",
+  );
+const subscribeLocalFeedbackEvents =
+  createLocalIpcEventSubscription<FeedbackSubmissionEvent>(
+    IPC.feedbackOnUpdate,
+    "feedback event",
+  );
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
 let remoteRuntimeEventCursor = 0;
 let remoteRuntimeEventBindingKey: string | null = null;
 let remoteRuntimeEventGeneration = -1;
+let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
@@ -1616,6 +1716,17 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteFileChangeEventCallbacks.size > 0 ||
     remotePrEventCallbacks.size > 0 ||
     remoteProjectStateEventCallbacks.size > 0 ||
+    remoteMacosVmEventCallbacks.size > 0 ||
+    remoteUsageUpdateEventCallbacks.size > 0 ||
+    remoteUsageThresholdEventCallbacks.size > 0 ||
+    remoteAutomationsEventCallbacks.size > 0 ||
+    remoteConflictEventCallbacks.size > 0 ||
+    remoteGitHubStatusChangedCallbacks.size > 0 ||
+    remoteLinearWorkflowEventCallbacks.size > 0 ||
+    remoteFeedbackEventCallbacks.size > 0 ||
+    remoteComputerUseEventCallbacks.size > 0 ||
+    remoteIosSimulatorEventCallbacks.size > 0 ||
+    remoteAppControlEventCallbacks.size > 0 ||
     remotePrAiResolutionEventCallbacks.size > 0
   );
 }
@@ -1653,6 +1764,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;
+      remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs = 0;
       resetRemoteRuntimeEventDedup(null);
       resetLocalRuntimeEventPollingSuppression();
@@ -1675,10 +1787,14 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = binding.key;
       remoteRuntimeEventGeneration = projectBindingGeneration;
-      remoteRuntimeEventStartedAtMs = Date.now();
+      remoteRuntimeEventEpoch = null;
+      remoteRuntimeEventStartedAtMs =
+        binding.kind === "local" ? Date.now() : 0;
       resetRemoteRuntimeEventDedup(binding.key);
     }
 
+    const pollingBindingKey = binding.key;
+    const pollingGeneration = projectBindingGeneration;
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
@@ -1695,6 +1811,31 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
             request,
           })) as RemoteRuntimeStreamEventsResult);
 
+    if (
+      currentProjectBinding?.key !== pollingBindingKey ||
+      projectBindingGeneration !== pollingGeneration
+    ) {
+      nextDelayMs = 0;
+      return;
+    }
+
+    const batchEpoch =
+      typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
+        ? batch.eventEpoch.trim()
+        : null;
+    if (batchEpoch) {
+      const epochChanged = remoteRuntimeEventEpoch
+        ? batchEpoch !== remoteRuntimeEventEpoch
+        : remoteRuntimeEventCursor > 0;
+      remoteRuntimeEventEpoch = batchEpoch;
+      if (epochChanged) {
+        remoteRuntimeEventCursor = 0;
+        resetRemoteRuntimeEventDedup(binding.key);
+        nextDelayMs = 0;
+        return;
+      }
+    }
+
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
       ? Math.max(0, Math.floor(batch.nextCursor))
       : remoteRuntimeEventCursor;
@@ -1702,6 +1843,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     for (const event of batch.events) {
       const eventTime = Date.parse(event.timestamp);
       if (
+        binding.kind === "local" &&
         remoteRuntimeEventStartedAtMs > 0 &&
         Number.isFinite(eventTime) &&
         eventTime < remoteRuntimeEventStartedAtMs - 1_000
@@ -1746,6 +1888,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
   if (!payload || !binding || payload.bindingKey !== binding.key) return;
   const eventTime = Date.parse(payload.event.timestamp);
   if (
+    binding.kind === "local" &&
     remoteRuntimeEventStartedAtMs > 0 &&
     Number.isFinite(eventTime) &&
     eventTime < remoteRuntimeEventStartedAtMs - 1_000
@@ -1779,7 +1922,8 @@ function toRemoteRuntimeBufferedEvent(
     category !== "orchestrator" &&
     category !== "dag_mutation" &&
     category !== "runtime" &&
-    category !== "mission"
+    category !== "mission" &&
+    category !== "pty"
   ) {
     return null;
   }
@@ -1815,6 +1959,144 @@ function dispatchRemoteRuntimeEventPayload(
         cb(payload as SyncStatusEventPayload);
       } catch (error) {
         console.error("preload remote sync listener failed", error);
+      }
+    }
+  }
+
+  if (payload.type === "usage" && isRecord(payload.snapshot)) {
+    for (const cb of [...remoteUsageUpdateEventCallbacks]) {
+      try {
+        cb(payload.snapshot as unknown as UsageSnapshot);
+      } catch (error) {
+        console.error("preload remote usage listener failed", error);
+      }
+    }
+  }
+
+  const usageThresholdEvent = toWrappedEvent<UsageThresholdEvent>(
+    payload,
+    "usage_threshold",
+  );
+  if (usageThresholdEvent) {
+    for (const cb of [...remoteUsageThresholdEventCallbacks]) {
+      try {
+        cb(usageThresholdEvent);
+      } catch (error) {
+        console.error("preload remote usage threshold listener failed", error);
+      }
+    }
+  }
+
+  const automationsEvent = toAutomationsRuntimeEvent(payload);
+  if (automationsEvent) {
+    for (const cb of [...remoteAutomationsEventCallbacks]) {
+      try {
+        cb(automationsEvent);
+      } catch (error) {
+        console.error("preload remote automation listener failed", error);
+      }
+    }
+  }
+
+  const conflictEvent = toWrappedEvent<ConflictEventPayload>(
+    payload,
+    "conflict_event",
+  );
+  if (conflictEvent) {
+    for (const cb of [...remoteConflictEventCallbacks]) {
+      try {
+        cb(conflictEvent);
+      } catch (error) {
+        console.error("preload remote conflict listener failed", error);
+      }
+    }
+  }
+
+  const githubStatus = toWrappedEvent<GitHubStatus>(
+    payload,
+    "github_status_changed",
+  );
+  if (githubStatus) {
+    githubStatusCache.clear();
+    githubRemoteStatusCache.clear();
+    for (const cb of [...remoteGitHubStatusChangedCallbacks]) {
+      try {
+        cb(githubStatus);
+      } catch (error) {
+        console.error("preload remote GitHub status listener failed", error);
+      }
+    }
+  }
+
+  const linearWorkflowEvent = toWrappedEvent<LinearWorkflowEventPayload>(
+    payload,
+    "linear_workflow_event",
+  );
+  if (linearWorkflowEvent) {
+    for (const cb of [...remoteLinearWorkflowEventCallbacks]) {
+      try {
+        cb(linearWorkflowEvent);
+      } catch (error) {
+        console.error("preload remote Linear workflow listener failed", error);
+      }
+    }
+  }
+
+  const feedbackEvent = toWrappedEvent<FeedbackSubmissionEvent>(
+    payload,
+    "feedback_submission_event",
+  );
+  if (feedbackEvent) {
+    for (const cb of [...remoteFeedbackEventCallbacks]) {
+      try {
+        cb(feedbackEvent);
+      } catch (error) {
+        console.error("preload remote feedback listener failed", error);
+      }
+    }
+  }
+
+  const computerUseEvent = toWrappedEvent<ComputerUseEventPayload>(
+    payload,
+    "computer_use_event",
+  );
+  if (computerUseEvent) {
+    computerUseOwnerSnapshotCache.clear();
+    for (const cb of [...remoteComputerUseEventCallbacks]) {
+      try {
+        cb(computerUseEvent);
+      } catch (error) {
+        console.error("preload remote computer use listener failed", error);
+      }
+    }
+  }
+
+  const iosSimulatorEvent = toWrappedEvent<IosSimulatorEventPayload>(
+    payload,
+    "ios_simulator_event",
+  );
+  if (iosSimulatorEvent) {
+    clearIosSimulatorStatusCaches();
+    for (const cb of [...remoteIosSimulatorEventCallbacks]) {
+      try {
+        cb(iosSimulatorEvent);
+      } catch (error) {
+        console.error("preload remote iOS simulator listener failed", error);
+      }
+    }
+  }
+
+  const appControlEvent = toWrappedEvent<AppControlEventPayload>(
+    payload,
+    "app_control_event",
+  );
+  if (appControlEvent) {
+    appControlStatusCache.clear();
+    for (const cb of [...remoteAppControlEventCallbacks]) {
+      try {
+        cb(appControlEvent);
+      } catch (error) {
+        console.error("preload remote App Control listener failed", error);
       }
     }
   }
@@ -2135,6 +2417,18 @@ function dispatchRemoteRuntimeEventPayload(
       }
     }
   }
+
+  const macosVmEvent = toMacosVmRuntimeEvent(payload);
+  if (macosVmEvent) {
+    macosVmStatusCache.clear();
+    for (const cb of [...remoteMacosVmEventCallbacks]) {
+      try {
+        cb(macosVmEvent);
+      } catch (error) {
+        console.error("preload remote macOS VM listener failed", error);
+      }
+    }
+  }
 }
 
 function subscribeRemoteAgentChatEvents(
@@ -2387,6 +2681,116 @@ function subscribeRemoteProjectStateEvents(
   };
 }
 
+function subscribeRemoteMacosVmEvents(
+  cb: (payload: MacosVmEventPayload) => void,
+): () => void {
+  remoteMacosVmEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteMacosVmEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteUsageUpdateEvents(
+  cb: (payload: UsageSnapshot) => void,
+): () => void {
+  remoteUsageUpdateEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteUsageUpdateEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteUsageThresholdEvents(
+  cb: (payload: UsageThresholdEvent) => void,
+): () => void {
+  remoteUsageThresholdEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteUsageThresholdEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteAutomationsEvents(
+  cb: (payload: AutomationsEventPayload) => void,
+): () => void {
+  remoteAutomationsEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteAutomationsEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteConflictEvents(
+  cb: (payload: ConflictEventPayload) => void,
+): () => void {
+  remoteConflictEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteConflictEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteGitHubStatusChangedEvents(
+  cb: (payload: GitHubStatus) => void,
+): () => void {
+  remoteGitHubStatusChangedCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteGitHubStatusChangedCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLinearWorkflowEvents(
+  cb: (payload: LinearWorkflowEventPayload) => void,
+): () => void {
+  remoteLinearWorkflowEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLinearWorkflowEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteFeedbackEvents(
+  cb: (payload: FeedbackSubmissionEvent) => void,
+): () => void {
+  remoteFeedbackEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteFeedbackEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteComputerUseEvents(
+  cb: (payload: ComputerUseEventPayload) => void,
+): () => void {
+  remoteComputerUseEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteComputerUseEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteIosSimulatorEvents(
+  cb: (payload: IosSimulatorEventPayload) => void,
+): () => void {
+  remoteIosSimulatorEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteIosSimulatorEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteAppControlEvents(
+  cb: (payload: AppControlEventPayload) => void,
+): () => void {
+  remoteAppControlEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteAppControlEventCallbacks.delete(cb);
+  };
+}
+
 function subscribeAgentChatEvents(
   cb: (payload: AgentChatEventEnvelope) => void,
 ): () => void {
@@ -2414,6 +2818,115 @@ function subscribePtyExitEvents(
 ): () => void {
   const removeLocal = ptyExitEventFanout(cb);
   const removeRemote = subscribeRemotePtyExitEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeMacosVmEvents(
+  cb: (payload: MacosVmEventPayload) => void,
+): () => void {
+  const removeLocal = macosVmEventFanout(cb);
+  const removeRemote = subscribeRemoteMacosVmEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeUsageUpdateEvents(
+  cb: (payload: UsageSnapshot) => void,
+): () => void {
+  const removeLocal = subscribeLocalUsageUpdateEvents(cb);
+  const removeRemote = subscribeRemoteUsageUpdateEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeUsageThresholdEvents(
+  cb: (payload: UsageThresholdEvent) => void,
+): () => void {
+  const removeLocal = subscribeLocalUsageThresholdEvents(cb);
+  const removeRemote = subscribeRemoteUsageThresholdEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeAutomationsEvents(
+  cb: (payload: AutomationsEventPayload) => void,
+): () => void {
+  const removeLocal = subscribeLocalAutomationsEvents(cb);
+  const removeRemote = subscribeRemoteAutomationsEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeConflictEvents(
+  cb: (payload: ConflictEventPayload) => void,
+): () => void {
+  const removeLocal = subscribeLocalConflictEvents(cb);
+  const removeRemote = subscribeRemoteConflictEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function isRebaseEventPayload(
+  payload: ConflictEventPayload,
+): payload is RebaseEventPayload {
+  return (
+    payload.type === "rebase-needs-updated" ||
+    payload.type === "rebase-started" ||
+    payload.type === "rebase-completed"
+  );
+}
+
+function subscribeFeedbackEvents(
+  cb: (payload: FeedbackSubmissionEvent) => void,
+): () => void {
+  const removeLocal = subscribeLocalFeedbackEvents(cb);
+  const removeRemote = subscribeRemoteFeedbackEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeComputerUseEvents(
+  cb: (payload: ComputerUseEventPayload) => void,
+): () => void {
+  const removeLocal = computerUseEventFanout(cb);
+  const removeRemote = subscribeRemoteComputerUseEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeIosSimulatorEvents(
+  cb: (payload: IosSimulatorEventPayload) => void,
+): () => void {
+  const removeLocal = iosSimulatorEventFanout(cb);
+  const removeRemote = subscribeRemoteIosSimulatorEvents(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+function subscribeAppControlEvents(
+  cb: (payload: AppControlEventPayload) => void,
+): () => void {
+  const removeLocal = appControlEventFanout(cb);
+  const removeRemote = subscribeRemoteAppControlEvents(cb);
   return () => {
     removeRemote();
     removeLocal();
@@ -2459,6 +2972,33 @@ function toWrappedEvent<T>(payload: unknown, type: string): T | null {
   if (!isRecord(payload) || payload.type !== type || !isRecord(payload.event))
     return null;
   return payload.event as T;
+}
+
+function toAutomationsRuntimeEvent(
+  payload: unknown,
+): AutomationsEventPayload | null {
+  if (!isRecord(payload)) return null;
+  if (payload.source !== "automations") return null;
+  if (
+    payload.type !== "runs-updated" &&
+    payload.type !== "webhook-status-updated" &&
+    payload.type !== "ingress-updated"
+  ) {
+    return null;
+  }
+  const event: Record<string, unknown> = { ...payload };
+  delete event.source;
+  return event as unknown as AutomationsEventPayload;
+}
+
+function toMacosVmRuntimeEvent(payload: unknown): MacosVmEventPayload | null {
+  if (!isRecord(payload) || payload.type !== "macos_vm") return null;
+  const eventType =
+    typeof payload.eventType === "string" ? payload.eventType.trim() : "";
+  if (!eventType) return null;
+  const event: Record<string, unknown> = { ...payload, type: eventType };
+  delete event.eventType;
+  return event as unknown as MacosVmEventPayload;
 }
 
 function toProcessEvent(payload: unknown): ProcessEvent | null {
@@ -2719,10 +3259,14 @@ contextBridge.exposeInMainWorld("ade", {
     },
     openExternal: async (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenExternal, { url }),
-    revealPath: async (path: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.appRevealPath, { path }),
-    openPath: async (path: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.appOpenPath, { path }),
+    revealPath: async (path: string): Promise<void> => {
+      await assertNotRemoteProjectPathAction("Reveal path", [path]);
+      return ipcRenderer.invoke(IPC.appRevealPath, { path });
+    },
+    openPath: async (path: string): Promise<void> => {
+      await assertNotRemoteProjectPathAction("Open path", [path]);
+      return ipcRenderer.invoke(IPC.appOpenPath, { path });
+    },
     writeClipboardText: async (text: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appWriteClipboardText, { text }),
     readClipboardText: async (): Promise<string> =>
@@ -2739,15 +3283,24 @@ contextBridge.exposeInMainWorld("ade", {
       mimeType: string;
       previewDataUrl: string | null;
     } | null> => ipcRenderer.invoke(IPC.appSaveClipboardImageAttachment),
-    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
-      imageDataUrlCache.get(path),
-    writeClipboardImage: async (path: string): Promise<void> =>
-      ipcRenderer.invoke(IPC.appWriteClipboardImage, { path }),
+    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> => {
+      await assertNotRemoteProjectPathAction("Read image file", [path]);
+      return imageDataUrlCache.get(path);
+    },
+    writeClipboardImage: async (path: string): Promise<void> => {
+      await assertNotRemoteProjectPathAction("Write clipboard image", [path]);
+      return ipcRenderer.invoke(IPC.appWriteClipboardImage, { path });
+    },
     openPathInEditor: async (args: {
       rootPath: string;
       relativePath?: string;
       target: "default" | "finder" | "vscode" | "cursor" | "zed";
-    }): Promise<void> => ipcRenderer.invoke(IPC.appOpenPathInEditor, args),
+    }): Promise<void> => {
+      await assertNotRemoteProjectPathAction("Open path in editor", [
+        args.rootPath,
+      ]);
+      return ipcRenderer.invoke(IPC.appOpenPathInEditor, args);
+    },
     logDebugEvent: (
       event: string,
       payload: Record<string, unknown> = {},
@@ -2923,7 +3476,7 @@ contextBridge.exposeInMainWorld("ade", {
         );
     },
     listDiscoveredMachines: async (): Promise<
-      RemoteRuntimeDiscoveredMachine[]
+      RemoteRuntimeDiscoveryResult
     > => ipcRenderer.invoke(IPC.remoteRuntimeListDiscoveredMachines),
     saveTarget: async (
       input: RemoteRuntimeTargetInput,
@@ -3036,9 +3589,13 @@ contextBridge.exposeInMainWorld("ade", {
       return aiStatusCache.get(cacheKey);
     },
     getOpenCodeRuntimeDiagnostics: async (): Promise<OpenCodeRuntimeSnapshot> =>
-      ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
+      callProjectRuntimeActionOr("ai", "getOpenCodeRuntimeDiagnostics", {}, () =>
+        ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
+      ),
     isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "bundled" | "missing" }> =>
-      ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
+      callProjectRuntimeActionOr("ai", "isOpenCodeInstalled", {}, () =>
+        ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
+      ),
     storeApiKey: async (provider: string, key: string): Promise<void> =>
       clearAround(
         () => aiStatusCache.clear(),
@@ -3151,7 +3708,9 @@ contextBridge.exposeInMainWorld("ade", {
     cursorCloudStreamRun: async (
       args: CursorCloudStreamRunRequest,
     ): Promise<CursorCloudStreamRunResult> =>
-      ipcRenderer.invoke(IPC.aiCursorCloudStreamRun, args),
+      callProjectRuntimeActionOr("ai", "cursorCloudStreamRun", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudStreamRun, args),
+      ),
     cursorCloudCancelRun: async (args: {
       agentId: string;
       runId: string;
@@ -3292,21 +3851,31 @@ contextBridge.exposeInMainWorld("ade", {
   notifications: {
     apns: {
       getStatus: async (): Promise<ApnsBridgeStatus> =>
-        ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
+        callProjectRuntimeActionOr("notifications_apns", "getStatus", {}, () =>
+          ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
+        ),
       saveConfig: async (
         args: ApnsBridgeSaveConfigArgs,
       ): Promise<ApnsBridgeStatus> =>
-        ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
+        callProjectRuntimeActionOr("notifications_apns", "saveConfig", { args }, () =>
+          ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
+        ),
       uploadKey: async (
         args: ApnsBridgeUploadKeyArgs,
       ): Promise<ApnsBridgeStatus> =>
-        ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
+        callProjectRuntimeActionOr("notifications_apns", "uploadKey", { args }, () =>
+          ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
+        ),
       clearKey: async (): Promise<ApnsBridgeStatus> =>
-        ipcRenderer.invoke(IPC.notificationsApnsClearKey),
+        callProjectRuntimeActionOr("notifications_apns", "clearKey", {}, () =>
+          ipcRenderer.invoke(IPC.notificationsApnsClearKey),
+        ),
       sendTestPush: async (
         args: ApnsBridgeSendTestPushArgs,
       ): Promise<ApnsBridgeSendTestPushResult> =>
-        ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
+        callProjectRuntimeActionOr("notifications_apns", "sendTestPush", { args }, () =>
+          ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
+        ),
     },
   },
   agentTools: {
@@ -3609,14 +4178,7 @@ contextBridge.exposeInMainWorld("ade", {
         { args: req },
         () => ipcRenderer.invoke(IPC.automationsSimulate, req),
       ),
-    onEvent: (cb: (ev: AutomationsEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AutomationsEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.automationsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.automationsEvent, listener);
-    },
+    onEvent: subscribeAutomationsEvents,
   },
   review: {
     listLaunchContext: async (): Promise<ReviewLaunchContext> =>
@@ -3687,8 +4249,16 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   actions: {
-    listRegistry: async (): Promise<AdeActionRegistryEntry[]> =>
-      ipcRenderer.invoke(IPC.adeActionsListRegistry),
+    listRegistry: async (): Promise<AdeActionRegistryEntry[]> => {
+      const binding = await getRemoteProjectBinding({ fresh: true });
+      if (binding) {
+        return ipcRenderer.invoke(IPC.remoteRuntimeListActionRegistry, {
+          id: binding.targetId,
+          projectId: binding.projectId,
+        });
+      }
+      return ipcRenderer.invoke(IPC.adeActionsListRegistry);
+    },
   },
   usage: {
     getSnapshot: async (): Promise<UsageSnapshot | null> =>
@@ -3732,22 +4302,8 @@ contextBridge.exposeInMainWorld("ade", {
         { args: config },
         () => ipcRenderer.invoke(IPC.usageSaveBudgetConfig, config),
       ),
-    onUpdate: (cb: (snapshot: UsageSnapshot) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        snapshot: UsageSnapshot,
-      ) => cb(snapshot);
-      ipcRenderer.on(IPC.usageEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.usageEvent, listener);
-    },
-    onThreshold: (cb: (event: UsageThresholdEvent) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        thresholdEvent: UsageThresholdEvent,
-      ) => cb(thresholdEvent);
-      ipcRenderer.on(IPC.usageThresholdEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.usageThresholdEvent, listener);
-    },
+    onUpdate: subscribeUsageUpdateEvents,
+    onThreshold: subscribeUsageThresholdEvents,
   },
   missions: {
     list: async (args: ListMissionsArgs = {}): Promise<MissionSummary[]> =>
@@ -5394,8 +5950,7 @@ contextBridge.exposeInMainWorld("ade", {
         AgentChatSlashCommand[]
       >("chat", "getSlashCommands", { args });
       if (runtime.handled) {
-        const result = Array.isArray(runtime.result) ? runtime.result : [];
-        if (result.length > 0 || args.sessionId || !args.provider) return result;
+        return Array.isArray(runtime.result) ? runtime.result : [];
       }
       return ipcRenderer.invoke(IPC.agentChatSlashCommands, args);
     },
@@ -5512,7 +6067,9 @@ contextBridge.exposeInMainWorld("ade", {
       openInCli: (
         args: AgentChatCodexOpenInCliArgs,
       ): Promise<AgentChatCodexOpenInCliResult> =>
-        ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
+        callProjectRuntimeActionOr("chat", "codexOpenInCli", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
+        ),
     },
   },
   computerUse: {
@@ -5564,7 +6121,7 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
       ),
-    onEvent: computerUseEventFanout,
+    onEvent: subscribeComputerUseEvents,
   },
   iosSimulator: {
     getStatus: async (): Promise<IosSimulatorStatus> =>
@@ -5727,11 +6284,14 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ios_simulator", "getStreamStatus", {}, () =>
         ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
       ),
-    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> =>
-      ipcRenderer.invoke(IPC.iosSimulatorGetWindowState),
+    getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
+      await assertLocalProjectHostAction("iOS Simulator window state");
+      return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
+    },
     listSimulatorWindowSources: async (): Promise<
       IosSimulatorWindowSource[]
     > => {
+      await assertLocalProjectHostAction("iOS Simulator window sources");
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources);
     },
     tap: async (args: {
@@ -5768,7 +6328,7 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ios_simulator", "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
       ),
-    onEvent: iosSimulatorEventFanout,
+    onEvent: subscribeIosSimulatorEvents,
   },
   appControl: {
     getStatus: async (): Promise<AppControlStatus> =>
@@ -5877,11 +6437,11 @@ contextBridge.exposeInMainWorld("ade", {
           callProjectRuntimeActionOr(
             "app_control",
             "attachToTarget",
-            { args },
+            { argsList: [args.targetId] },
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
           ),
       ),
-    onEvent: appControlEventFanout,
+    onEvent: subscribeAppControlEvents,
   },
   builtInBrowser: {
     getStatus: async (): Promise<BuiltInBrowserStatus> =>
@@ -6031,13 +6591,10 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     getDisplaySession: async (
       args: MacosVmDisplaySessionArgs,
-    ): Promise<MacosVmDisplaySession> =>
-      callRemoteProjectRuntimeActionOr(
-        "macos_vm",
-        "getDisplaySession",
-        { args },
-        () => ipcRenderer.invoke(IPC.macosVmGetDisplaySession, args),
-      ),
+    ): Promise<MacosVmDisplaySession> => {
+      await assertLocalProjectHostAction("macOS VM display session");
+      return ipcRenderer.invoke(IPC.macosVmGetDisplaySession, args);
+    },
     captureScreenshot: async (
       args: MacosVmCaptureScreenshotArgs,
     ): Promise<MacosVmCaptureScreenshotResult> =>
@@ -6099,10 +6656,10 @@ contextBridge.exposeInMainWorld("ade", {
     setCredentials: async (args: MacosVmSetCredentialsArgs): Promise<{ ok: true }> =>
       clearAround(
         () => macosVmStatusCache.clear(),
-        () =>
-          callRemoteProjectRuntimeActionOr("macos_vm", "setCredentials", { args }, () =>
-            ipcRenderer.invoke(IPC.macosVmSetCredentials, args),
-          ),
+        async () => {
+          await assertLocalProjectHostAction("macOS VM credentials");
+          return ipcRenderer.invoke(IPC.macosVmSetCredentials, args);
+        },
       ),
     getCredentials: async (
       args: MacosVmGetCredentialsArgs,
@@ -6113,16 +6670,16 @@ contextBridge.exposeInMainWorld("ade", {
     detachLane: async (args: MacosVmDetachLaneArgs): Promise<MacosVmDetachLaneResult> =>
       clearAround(
         () => macosVmStatusCache.clear(),
-        () =>
-          callRemoteProjectRuntimeActionOr("macos_vm", "detachLane", { args }, () =>
-            ipcRenderer.invoke(IPC.macosVmDetachLane, args),
-          ),
+        async () => {
+          await assertLocalProjectHostAction("macOS VM lane detach");
+          return ipcRenderer.invoke(IPC.macosVmDetachLane, args);
+        },
       ),
     getStorageInfo: async (): Promise<MacosVmStorageInfo> =>
       callRemoteProjectRuntimeActionOr("macos_vm", "getStorageInfo", {}, () =>
         ipcRenderer.invoke(IPC.macosVmGetStorageInfo),
       ),
-    onEvent: macosVmEventFanout,
+    onEvent: subscribeMacosVmEvents,
   },
   terminal: {
     list: async (
@@ -7067,14 +7624,7 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
       ),
-    onEvent: (cb: (ev: ConflictEventPayload) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ConflictEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.conflictsEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.conflictsEvent, listener);
-    },
+    onEvent: subscribeConflictEvents,
   },
   feedback: {
     prepareDraft: async (
@@ -7096,14 +7646,7 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("feedback", "list", {}, () =>
         ipcRenderer.invoke(IPC.feedbackList),
       ),
-    onUpdate: (cb: (event: FeedbackSubmissionEvent) => void): (() => void) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        payload: FeedbackSubmissionEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.feedbackOnUpdate, handler);
-      return () => ipcRenderer.removeListener(IPC.feedbackOnUpdate, handler);
-    },
+    onUpdate: subscribeFeedbackEvents,
   },
   github: {
     getStatus: async (opts?: {
@@ -7206,8 +7749,16 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     listMyRepos: async (
       input: ListMyGitHubReposInput = {},
-    ): Promise<ListMyGitHubReposResult> =>
-      ipcRenderer.invoke(IPC.githubListMyRepos, input),
+    ): Promise<ListMyGitHubReposResult> => {
+      const binding = await getRemoteProjectBinding({ fresh: true });
+      if (binding) {
+        return ipcRenderer.invoke(IPC.remoteRuntimeListMyGitHubRepos, {
+          id: binding.targetId,
+          input,
+        });
+      }
+      return ipcRenderer.invoke(IPC.githubListMyRepos, input);
+    },
     publishCurrentProject: async (
       input: PublishProjectInput,
     ): Promise<PublishProjectResult> =>
@@ -7234,8 +7785,11 @@ contextBridge.exposeInMainWorld("ade", {
         cb(payload);
       };
       ipcRenderer.on(IPC.githubStatusChanged, listener);
-      return () =>
+      const removeRemote = subscribeRemoteGitHubStatusChangedEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.githubStatusChanged, listener);
+      };
     },
   },
   prs: {
@@ -7341,6 +7895,7 @@ contextBridge.exposeInMainWorld("ade", {
           await ipcRenderer.invoke(IPC.appOpenExternal, { url: pr.githubUrl });
           return;
         }
+        throw new Error(`Remote PR ${prId} was not found or does not have a GitHub URL.`);
       }
       await ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId });
     },
@@ -7953,7 +8508,13 @@ contextBridge.exposeInMainWorld("ade", {
         payload: RebaseEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.rebaseEvent, listener);
-      return () => ipcRenderer.removeListener(IPC.rebaseEvent, listener);
+      const removeRemote = subscribeRemoteConflictEvents((payload) => {
+        if (isRebaseEventPayload(payload)) cb(payload);
+      });
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.rebaseEvent, listener);
+      };
     },
   },
   history: {
@@ -8610,8 +9171,11 @@ contextBridge.exposeInMainWorld("ade", {
         payload: LinearWorkflowEventPayload,
       ) => cb(payload);
       ipcRenderer.on(IPC.ctoLinearWorkflowEvent, listener);
-      return () =>
+      const removeRemote = subscribeRemoteLinearWorkflowEvents(cb);
+      return () => {
+        removeRemote();
         ipcRenderer.removeListener(IPC.ctoLinearWorkflowEvent, listener);
+      };
     },
     listAgentTaskSessions: async (
       args: CtoListAgentTaskSessionsArgs,

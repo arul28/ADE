@@ -23,6 +23,7 @@ type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
 type RemoteConnectionServiceOptions = {
   autoconnectIntervalMs?: number;
+  pingTimeoutMs?: number;
 };
 
 function errorMessage(error: unknown): string {
@@ -53,7 +54,19 @@ export class RemoteConnectionService {
     private readonly registry: RemoteTargetRegistry,
     private readonly pool: RemoteConnectionPool,
     private readonly options: RemoteConnectionServiceOptions = {},
-  ) {}
+  ) {
+    this.pool.onEntryEvicted((targetId, error) => {
+      const current = this.statusById.get(targetId);
+      if (current?.state !== "connected" && current?.state !== "connecting") {
+        return;
+      }
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: errorMessage(error),
+        lastAttemptedAt: Date.now(),
+      });
+    });
+  }
 
   listTargets(): RemoteRuntimeTarget[] {
     return this.registry.list();
@@ -159,6 +172,12 @@ export class RemoteConnectionService {
   disconnect(targetId: string): void {
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
+  }
+
+  probeSavedConnections(): void {
+    void this.maintainSavedConnections({
+      pingTimeoutMs: this.options.pingTimeoutMs ?? 5_000,
+    });
   }
 
   async projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]> {
@@ -293,13 +312,17 @@ export class RemoteConnectionService {
     this.listeners.clear();
   }
 
-  private async maintainSavedConnections(): Promise<void> {
+  private async maintainSavedConnections(
+    options: { pingTimeoutMs?: number } = {},
+  ): Promise<void> {
     for (const target of this.registry.list()) {
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
         try {
-          await this.pool.callMachineForTarget(target, "ping", {});
+          await this.pool.callMachineForTarget(target, "ping", {}, {
+            timeoutMs: options.pingTimeoutMs,
+          });
           continue;
         } catch {
           this.pool.disconnect(target.id);
