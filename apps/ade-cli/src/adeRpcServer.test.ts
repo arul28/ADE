@@ -1441,6 +1441,31 @@ describe("adeRpcServer", () => {
     }
   });
 
+  it("allows trusted runtimes to serve lower-privilege requested roles", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "cto" }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {
+          identity: {
+            callerId: "agent-client",
+            role: "agent",
+          },
+        },
+      });
+      const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+
+      const names = (result.actions ?? []).map((tool: any) => tool.name);
+      expect(names).toContain("delegate_to_subagent");
+      expect(names).not.toContain("get_cto_state");
+      expect(names).not.toContain("getLinearSyncDashboard");
+    });
+  });
+
   it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
@@ -1590,6 +1615,32 @@ describe("adeRpcServer", () => {
         "macos_vm_type",
       ]),
     );
+  });
+
+  it("keeps the action list static for the initialized session", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, {
+      callerId: "worker-1",
+      role: "agent",
+      missionId: "mission-1",
+      runId: "run-1",
+      stepId: "step-1",
+      attemptId: "attempt-1",
+    });
+    const before = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+    const beforeNames = (before.actions ?? []).map((tool: any) => tool.name);
+    expect(beforeNames).toContain("screenshot_environment");
+
+    fixture.runtime.computerUseArtifactBrokerService.getBackendStatus.mockReturnValue({
+      backends: [{ id: "external-proof", available: true }],
+    });
+
+    const after = (await handler({ jsonrpc: "2.0", id: 4, method: "ade/actions/list" })) as any;
+    const afterNames = (after.actions ?? []).map((tool: any) => tool.name);
+    expect(afterNames).toEqual(beforeNames);
+    expect(fixture.runtime.computerUseArtifactBrokerService.getBackendStatus).toHaveBeenCalledTimes(1);
   });
 
   it("routes macOS VM computer-use tools and ingests screenshots as proof artifacts", async () => {

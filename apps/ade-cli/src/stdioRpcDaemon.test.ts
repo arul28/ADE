@@ -362,7 +362,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("restarts a same-version daemon when its default role is stale", async () => {
+  itUnix("keeps a compatible cto daemon when the proxy requests an agent role", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-role-"));
@@ -379,7 +379,7 @@ describe("ade rpc --stdio daemon bridge", () => {
       cwd: packageRoot,
       env: {
         ...baseEnv,
-        ADE_DEFAULT_ROLE: "external",
+        ADE_DEFAULT_ROLE: "cto",
         ADE_RUNTIME_BUILD_HASH: fileSha256(cliPath),
       },
       socketPath,
@@ -406,10 +406,11 @@ describe("ade rpc --stdio daemon bridge", () => {
       expect(initialize).toMatchObject({
         runtimeInfo: {
           version: "2.0.0",
-          defaultRole: "agent",
+          defaultRole: "cto",
           multiProject: true,
         },
       });
+      expect((initialize as { runtimeInfo?: { pid?: number | null } }).runtimeInfo?.pid).toBe(oldDaemon.pid);
 
       await expect(proxy.request("shutdown")).resolves.toEqual({});
       proxy.closeInput();

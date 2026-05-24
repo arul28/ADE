@@ -6970,34 +6970,40 @@ Check all worker statuses and continue managing the mission from here. Read work
     return interventionId;
   };
 
+  const stableString = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  const resolveMissionStepForRunStep = (
+    mission: MissionDetail,
+    runStep: OrchestratorRunGraph["steps"][number],
+    missionStepById: Map<string, MissionDetail["steps"][number]> = new Map(mission.steps.map((step) => [step.id, step])),
+  ): MissionDetail["steps"][number] | null => {
+    if (runStep.missionStepId) {
+      const byId = missionStepById.get(runStep.missionStepId);
+      if (byId) return byId;
+    }
+    const runStepId = stableString(runStep.id);
+    const runStepKey = stableString(runStep.stepKey);
+    return mission.steps.find((step) => {
+      const metadata = isRecord(step.metadata) ? step.metadata : null;
+      if (!metadata) return false;
+      const metadataOrchestratorStepId = stableString(metadata.orchestratorStepId);
+      if (runStepId && metadataOrchestratorStepId === runStepId) return true;
+      const metadataStepKey = stableString(metadata.stepKey);
+      return Boolean(runStepKey && metadataStepKey === runStepKey);
+    }) ?? null;
+  };
+
   const syncMissionStepsFromRun = (graph: OrchestratorRunGraph) => {
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
     const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
-    const stableString = (value: unknown): string | null => {
-      if (typeof value !== "string") return null;
-      const trimmed = value.trim();
-      return trimmed.length > 0 ? trimmed : null;
-    };
-    const resolveMissionStepForRunStep = (runStep: OrchestratorRunGraph["steps"][number]) => {
-      if (runStep.missionStepId) {
-        const byId = missionStepById.get(runStep.missionStepId);
-        if (byId) return byId;
-      }
-      const runStepId = stableString(runStep.id);
-      const runStepKey = stableString(runStep.stepKey);
-      return mission.steps.find((step) => {
-        const metadata = isRecord(step.metadata) ? step.metadata : null;
-        if (!metadata) return false;
-        const metadataOrchestratorStepId = stableString(metadata.orchestratorStepId);
-        if (runStepId && metadataOrchestratorStepId === runStepId) return true;
-        const metadataStepKey = stableString(metadata.stepKey);
-        return Boolean(runStepKey && metadataStepKey === runStepKey);
-      }) ?? null;
-    };
 
     for (const runStep of graph.steps) {
-      const missionStep = resolveMissionStepForRunStep(runStep);
+      const missionStep = resolveMissionStepForRunStep(mission, runStep, missionStepById);
       if (!missionStep) continue;
       const nextStatus = mapOrchestratorStepStatus(runStep.status);
       if (missionStep.status === nextStatus) continue;
@@ -7048,16 +7054,21 @@ Check all worker statuses and continue managing the mission from here. Read work
     if (graph.run.status !== "failed") return;
     const mission = missionService.get(graph.run.missionId);
     if (!mission) return;
-    if (mission.interventions.some((entry) => entry.status === "open" && entry.interventionType === "failed_step")) {
-      return;
-    }
 
-    const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
     const failedRunStep = graph.steps.find((step) => step.status === "failed");
-    const failedMissionStep = failedRunStep?.missionStepId
-      ? missionStepById.get(failedRunStep.missionStepId) ?? null
+    const missionStepById = new Map(mission.steps.map((step) => [step.id, step]));
+    const failedMissionStep = failedRunStep
+      ? resolveMissionStepForRunStep(mission, failedRunStep, missionStepById)
       : mission.steps.find((step) => step.status === "failed") ?? null;
     if (!failedRunStep && !failedMissionStep) return;
+    const hasMatchingOpenIntervention = mission.interventions.some((entry) => {
+      if (entry.status !== "open" || entry.interventionType !== "failed_step") return false;
+      const metadata = isRecord(entry.metadata) ? entry.metadata : null;
+      if (!metadata) return false;
+      if (failedMissionStep?.id && metadata.stepId === failedMissionStep.id) return true;
+      return Boolean(!failedMissionStep && failedRunStep?.id && metadata.orchestratorStepId === failedRunStep.id);
+    });
+    if (hasMatchingOpenIntervention) return;
     const failedStepTitle = failedMissionStep?.title ?? failedRunStep?.title ?? "Run step";
 
     missionService.addIntervention({

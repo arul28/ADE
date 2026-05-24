@@ -3404,6 +3404,30 @@ function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
     || callerCtx.role === "agent";
 }
 
+function canDefaultRoleServeRequestedRole(
+  defaultRole: SessionIdentity["role"] | null,
+  requestedRole: SessionIdentity["role"],
+): boolean {
+  if (requestedRole === "external") return true;
+  if (!defaultRole) return false;
+  if (defaultRole === "cto") return true;
+  if (defaultRole === "orchestrator") return requestedRole !== "cto";
+  if (defaultRole === "agent") return requestedRole === "agent";
+  if (defaultRole === "evaluator") return requestedRole === "evaluator";
+  return false;
+}
+
+function resolveSessionRole(
+  defaultRole: SessionIdentity["role"] | null,
+  requestedRole: SessionIdentity["role"] | null,
+): SessionIdentity["role"] {
+  if (!defaultRole) return "external";
+  if (!requestedRole) return defaultRole;
+  return canDefaultRoleServeRequestedRole(defaultRole, requestedRole)
+    ? requestedRole
+    : defaultRole;
+}
+
 async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionState): Promise<ToolSpec[]> {
   const callerCtx = await resolveEffectiveCallerContext(runtime, session);
   const externalComputerUseAvailable = runtime.computerUseArtifactBrokerService
@@ -3438,7 +3462,10 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const validRole: SessionIdentity["role"] = envContext.role ?? "external";
+  const validRole = resolveSessionRole(
+    envContext.role,
+    normalizeAdeRuntimeRole(identity.role),
+  );
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
   const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
@@ -7414,13 +7441,18 @@ export function createAdeRpcRequestHandler(args: {
     }
   };
 
-  const listActions = async (): Promise<Record<string, unknown>> => ({
-    actions: (await listToolSpecsForSession(runtime, session)).map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: sanitizeToolSchema(tool.inputSchema),
-    })),
-  });
+  let sessionActionSpecs: ToolSpec[] | null = null;
+
+  const listActions = async (): Promise<Record<string, unknown>> => {
+    const actionSpecs = sessionActionSpecs ?? await listToolSpecsForSession(runtime, session);
+    return {
+      actions: actionSpecs.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: sanitizeToolSchema(tool.inputSchema),
+      })),
+    };
+  };
 
   const callAction = async (actionName: string, actionArgs: Record<string, unknown>): Promise<unknown> => {
     return await auditActionCall(actionName, actionArgs, async () => {
@@ -7450,6 +7482,7 @@ export function createAdeRpcRequestHandler(args: {
       session.initialized = true;
       session.protocolVersion = asOptionalTrimmedString(params.protocolVersion) ?? DEFAULT_PROTOCOL_VERSION;
       session.identity = parseInitializeIdentity(runtime, params);
+      sessionActionSpecs = await listToolSpecsForSession(runtime, session);
       const resourcesEnabled = session.identity.role !== "orchestrator";
       return {
         protocolVersion: session.protocolVersion,

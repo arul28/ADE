@@ -6978,13 +6978,25 @@ describe("aiOrchestratorService", () => {
       const missionStep = fixture.missionService.get(mission.id)?.steps[0];
       expect(missionStep?.id).toBeTruthy();
 
-      const launch = await fixture.aiOrchestratorService.startMissionRun({
+      const started = fixture.orchestratorService.startRun({
         missionId: mission.id,
-        runMode: "manual",
-        defaultExecutorKind: "manual"
+        steps: [
+          {
+            stepKey: "implement-risky-change",
+            title: missionStep!.title,
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            missionStepId: missionStep!.id,
+            metadata: { stepType: "implementation" }
+          }
+        ]
       });
-      if (!launch.started) throw new Error("Expected mission run to start");
-      const runId = launch.started.run.id;
+      const runId = started.run.id;
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
       const failedAt = new Date().toISOString();
       fixture.db.run(
         `update orchestrator_runs set status = 'failed', updated_at = ? where id = ?`,
@@ -7002,6 +7014,88 @@ describe("aiOrchestratorService", () => {
       expect(refreshed?.interventions.some((entry) =>
         entry.status === "open" && entry.interventionType === "failed_step"
       )).toBe(true);
+    } finally {
+      fixture.dispose();
+    }
+  });
+
+  it("opens terminal failed-step interventions for each matched failed mission step", async () => {
+    const fixture = await createFixture();
+    try {
+      const mission = fixture.missionService.create({
+        prompt: "Keep failed-step interventions targeted.",
+        laneId: fixture.laneId,
+        plannedSteps: [
+          {
+            index: 0,
+            title: "Implement API",
+            detail: "First failure",
+            kind: "implementation",
+            metadata: { stepType: "implementation", stepKey: "first-step" }
+          },
+          {
+            index: 1,
+            title: "Validate API",
+            detail: "Second failure",
+            kind: "test",
+            metadata: { stepType: "test", stepKey: "second-step" }
+          }
+        ]
+      });
+      const missionSteps = fixture.missionService.get(mission.id)?.steps ?? [];
+      const firstStep = missionSteps[0];
+      const secondStep = missionSteps[1];
+      if (!firstStep || !secondStep) throw new Error("Expected mission steps");
+      fixture.missionService.update({
+        missionId: mission.id,
+        status: "in_progress",
+      });
+      fixture.missionService.addIntervention({
+        missionId: mission.id,
+        interventionType: "failed_step",
+        title: "Step failed: Implement API",
+        body: "Existing first-step intervention.",
+        requestedAction: "Review the failure.",
+        metadata: {
+          stepId: firstStep.id,
+          stepKey: "first-step",
+          orchestratorStepId: "old-run-step",
+          reasonCode: "terminal_run_failed_step",
+        },
+      });
+      const started = fixture.orchestratorService.startRun({
+        missionId: mission.id,
+        steps: [
+          {
+            stepKey: "second-step",
+            title: secondStep.title,
+            stepIndex: 0,
+            dependencyStepKeys: [],
+            executorKind: "manual",
+            missionStepId: secondStep.id,
+            metadata: { stepType: "test", stepKey: "second-step" }
+          }
+        ]
+      });
+      const runId = started.run.id;
+      const failedAt = new Date().toISOString();
+      fixture.db.run(
+        `update orchestrator_runs set status = 'failed', updated_at = ? where id = ?`,
+        [failedAt, runId],
+      );
+      fixture.db.run(
+        `update orchestrator_steps set status = 'failed', completed_at = ?, updated_at = ? where run_id = ?`,
+        [failedAt, failedAt, runId],
+      );
+
+      await fixture.aiOrchestratorService.syncMissionFromRun(runId, "run_failed");
+
+      const refreshed = fixture.missionService.get(mission.id);
+      const failedStepInterventions = refreshed?.interventions.filter((entry) =>
+        entry.status === "open" && entry.interventionType === "failed_step"
+      ) ?? [];
+      expect(failedStepInterventions).toHaveLength(2);
+      expect(failedStepInterventions.some((entry) => entry.metadata?.stepId === secondStep.id)).toBe(true);
     } finally {
       fixture.dispose();
     }

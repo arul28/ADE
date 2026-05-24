@@ -58,6 +58,7 @@ describe("kvDb migrations - orchestrator schema bootstrap", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-orchestrator-"));
     const dbPath = path.join(root, "ade.db");
     const db = await openKvDb(dbPath, createLogger());
+    try {
 
     const expectedTables = [
       "orchestrator_runs",
@@ -404,8 +405,9 @@ describe("kvDb migrations - orchestrator schema bootstrap", () => {
       "select sql from sqlite_master where type = 'index' and name = 'idx_orchestrator_claims_active_scope' limit 1",
     );
     expect((activeScopeSql?.sql ?? "").toLowerCase()).toContain("where state = 'active'");
-
-    db.close();
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -606,6 +608,7 @@ describe("kvDb migrations - mission schema", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-missions-"));
     const dbPath = path.join(root, "ade.db");
     const db = await openKvDb(dbPath, createLogger());
+    try {
 
     const expectedTables = [
       "missions",
@@ -673,8 +676,9 @@ describe("kvDb migrations - mission schema", () => {
     ];
 
     expectIndexes(db, expectedIndexes);
-
-    db.close();
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -683,6 +687,7 @@ describe("kvDb migrations - worker agent schema", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-workers-"));
     const dbPath = path.join(root, "ade.db");
     const db = await openKvDb(dbPath, createLogger());
+    try {
 
     const expectedTables = [
       "worker_agents",
@@ -796,7 +801,8 @@ describe("kvDb migrations - worker agent schema", () => {
     ];
 
     expectIndexes(db, expectedIndexes);
-
-    db.close();
+    } finally {
+      db.close();
+    }
   });
 });

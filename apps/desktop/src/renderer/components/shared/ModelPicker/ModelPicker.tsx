@@ -162,7 +162,12 @@ export const ModelPicker = memo(function ModelPicker({
   );
 
   const modelList = useMemo<readonly ModelDescriptor[]>(() => {
-    if (models && models.length) return models;
+    if (models && models.length) {
+      if (!constrainToAvailableModelIds) return models;
+      const available = new Set((availableModelIds ?? []).map((id) => id.trim()).filter(Boolean));
+      const constrainedModels = models.filter((model) => available.has(model.id.trim()));
+      if (constrainedModels.length > 0) return constrainedModels;
+    }
     const selectedValue = (() => {
       if (!constrainToAvailableModelIds) return value;
       const normalizedValue = value.trim();

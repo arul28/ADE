@@ -10784,6 +10784,19 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
   };
 }
 
+function canRuntimeDefaultRoleServe(
+  defaultRole: MachineRuntimeInfo["defaultRole"],
+  requestedRole: GlobalOptions["role"],
+): boolean {
+  if (requestedRole === "external") return true;
+  if (!defaultRole) return false;
+  if (defaultRole === "cto") return true;
+  if (defaultRole === "orchestrator") return requestedRole !== "cto";
+  if (defaultRole === "agent") return requestedRole === "agent";
+  if (defaultRole === "evaluator") return requestedRole === "evaluator";
+  return false;
+}
+
 function machineRuntimeMismatchReason(
   runtimeInfo: MachineRuntimeInfo,
   expectedBuildHash: string | null,
@@ -10806,8 +10819,8 @@ function machineRuntimeMismatchReason(
   if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
     return runtimeInfo.buildHash ? "build hash changed" : "build hash missing";
   }
-  if (runtimeInfo.defaultRole !== expectedDefaultRole) {
-    return `default role ${runtimeInfo.defaultRole ?? "missing"} does not match CLI role ${expectedDefaultRole}`;
+  if (!canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, expectedDefaultRole)) {
+    return `default role ${runtimeInfo.defaultRole ?? "missing"} cannot serve CLI role ${expectedDefaultRole}`;
   }
   return null;
 }

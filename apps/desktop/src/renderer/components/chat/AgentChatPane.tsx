@@ -4837,7 +4837,7 @@ export function AgentChatPane({
     if (!laneId) return null;
     if (constrainedModelSelectionError) {
       setError(constrainedModelSelectionError);
-      return null;
+      throw new Error(constrainedModelSelectionError);
     }
     const createPromise = createSessionForLane(laneId, { select: true, notify: true })
       .then((created) => created.id);
@@ -5256,7 +5256,9 @@ export function AgentChatPane({
     if (selectedSessionId || lockSessionId || initialSessionId) return;
     if (forceDraft) return;
     eagerCreateFiredRef.current = true;
-    void createSession();
+    void createSession().catch(() => {
+      eagerCreateFiredRef.current = false;
+    });
   }, [preferencesReady, laneId, modelId, selectedSessionId, lockSessionId, initialSessionId, forceDraft, createSession]);
 
   const submit = useCallback(async () => {
