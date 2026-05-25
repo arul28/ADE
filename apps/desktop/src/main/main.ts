@@ -5480,6 +5480,14 @@ app.whenReady().then(async () => {
       BrowserWindow.getAllWindows()
         .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
     if (!targetWindow) {
+      targetWindow =
+        BrowserWindow.getAllWindows()
+          .find((win) => !win.isDestroyed() && windowProjectTabRoots.get(win.id)?.has(normalizedRoot) === true) ?? null;
+      if (targetWindow) {
+        bindWindowToProject(targetWindow.id, normalizedRoot, { emit: true, foreground: true });
+      }
+    }
+    if (!targetWindow) {
       const opened = await openAdeWindow({ projectRoot: normalizedRoot });
       targetWindow = opened.windowId != null ? BrowserWindow.fromId(opened.windowId) : null;
     }

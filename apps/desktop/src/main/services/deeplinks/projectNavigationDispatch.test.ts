@@ -57,4 +57,35 @@ describe("project-scoped deeplink dispatch contract", () => {
 
     expect(focusedDispatch).toHaveBeenCalledWith(request);
   });
+
+  it("activates an existing project tab before opening a duplicate window", async () => {
+    const activeProjectRoots = new Map<number, string | null>([[1, "/projects/alpha"]]);
+    const openProjectTabRoots = new Map<number, Set<string>>([
+      [1, new Set(["/projects/alpha", "/projects/beta"])],
+    ]);
+    const activateProjectTab = vi.fn((windowId: number, root: string) => {
+      activeProjectRoots.set(windowId, root);
+    });
+    const openWindow = vi.fn(async (root: string) => {
+      activeProjectRoots.set(2, root);
+      openProjectTabRoots.set(2, new Set([root]));
+      return 2;
+    });
+
+    const deliverToProject = async (targetProjectRoot: string): Promise<number> => {
+      const activeWindow = [...activeProjectRoots].find(([, root]) => root === targetProjectRoot)?.[0] ?? null;
+      if (activeWindow != null) return activeWindow;
+      const tabWindow =
+        [...openProjectTabRoots].find(([, roots]) => roots.has(targetProjectRoot))?.[0] ?? null;
+      if (tabWindow != null) {
+        activateProjectTab(tabWindow, targetProjectRoot);
+        return tabWindow;
+      }
+      return openWindow(targetProjectRoot);
+    };
+
+    await expect(deliverToProject("/projects/beta")).resolves.toBe(1);
+    expect(activateProjectTab).toHaveBeenCalledWith(1, "/projects/beta");
+    expect(openWindow).not.toHaveBeenCalled();
+  });
 });
