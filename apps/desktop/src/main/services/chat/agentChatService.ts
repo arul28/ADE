@@ -118,6 +118,7 @@ import type {
   AgentChatExecutionMode,
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatEventMetadata,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
@@ -458,6 +459,7 @@ type PersistedPendingSteer = {
   text: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
 };
 
 type PendingRpc = {
@@ -557,6 +559,7 @@ type QueuedSteer = {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
+  metadata?: AgentChatEventMetadata | null | undefined;
 };
 
 type ClaudeRuntime = {
@@ -1601,6 +1604,7 @@ type ManagedChatSession = {
     config: { type?: string; name?: string; url?: string; headers?: unknown };
     close: () => Promise<void>;
   } | null;
+  activeBashControllers: Set<AbortController>;
   eventSequence: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
@@ -1673,6 +1677,7 @@ type PreparedSendMessage = {
   attachments: AgentChatFileRef[];
   contextAttachments: AgentChatContextAttachment[];
   resolvedAttachments: ResolvedAgentChatFileRef[];
+  metadata?: AgentChatEventMetadata | null | undefined;
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
@@ -3330,12 +3335,10 @@ function activityForToolName(
   return { activity: "tool_calling", detail: normalized };
 }
 
-// Permission mapping functions are shared with the orchestrator/mission system.
-// Delegate to the single source of truth in permissionMapping.ts.
 import {
   mapPermissionToClaude,
   mapPermissionToCodex
-} from "../orchestrator/permissionMapping";
+} from "./permissionMapping";
 
 function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   switch (sandbox) {
@@ -3472,7 +3475,13 @@ const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "complete
 
 const VALID_PERMISSION_MODES = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
 const VALID_EXECUTION_MODES = new Set(["focused", "parallel", "subagents", "teams"]);
-const VALID_INTERACTION_MODES = new Set(["default", "plan"]);
+const VALID_INTERACTION_MODES = new Set([
+  "default",
+  "plan",
+  "orchestrator-lead",
+  "orchestrator-worker",
+  "orchestrator-validator",
+]);
 const VALID_CLAUDE_PERMISSION_MODES = new Set(["default", "auto", "plan", "acceptEdits", "bypassPermissions"]);
 const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-failure", "never"]);
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
@@ -3865,6 +3874,127 @@ function orchestrationRoleForMode(
   if (mode === "orchestrator-lead") return "lead";
   if (mode === "orchestrator-validator") return "validator";
   return "worker";
+}
+
+function orchestrationInteractionModeForRole(
+  role: OrchestrationSessionContext["role"],
+): OrchestrationInteractionMode {
+  if (role === "lead") return "orchestrator-lead";
+  if (role === "validator") return "orchestrator-validator";
+  return "orchestrator-worker";
+}
+
+function lockedOrchestrationPermissionMode(
+  session: Pick<AgentChatSession, "interactionMode" | "orchestrationRole">,
+): AgentChatSession["permissionMode"] | null {
+  const role = session.orchestrationRole
+    ?? (isOrchestrationInteractionMode(session.interactionMode)
+      ? orchestrationRoleForMode(session.interactionMode)
+      : null);
+  if (role === "lead") return "plan";
+  if (role === "worker" || role === "validator") return "full-auto";
+  return null;
+}
+
+function cursorModeIdForLockedPermissionMode(
+  mode: AgentChatSession["permissionMode"],
+): string | null {
+  if (mode === "full-auto") return "full-auto";
+  if (mode === "plan") return "plan";
+  return null;
+}
+
+function enforceOrchestrationLockedPermissionMode(
+  session: Pick<
+    AgentChatSession,
+    | "provider"
+    | "permissionMode"
+    | "interactionMode"
+    | "orchestrationRole"
+    | "claudePermissionMode"
+    | "codexApprovalPolicy"
+    | "codexSandbox"
+    | "codexConfigSource"
+    | "opencodePermissionMode"
+    | "droidPermissionMode"
+    | "cursorModeId"
+  >,
+): boolean {
+  const lockedMode = lockedOrchestrationPermissionMode(session);
+  if (!lockedMode) return false;
+
+  const orchestrationMode = isOrchestrationInteractionMode(session.interactionMode)
+    ? session.interactionMode
+    : null;
+  applyLegacyPermissionModeToNativeControls(session, lockedMode);
+  if (orchestrationMode) session.interactionMode = orchestrationMode;
+  if (session.provider === "cursor") {
+    session.cursorModeId = cursorModeIdForLockedPermissionMode(lockedMode);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration field helpers — single source of truth for the 6-field bag
+// that gets spread/read in persistence, hydration, session creation, summary,
+// and dead-session reconstruction.  Every call-site that previously copy-pasted
+// these fields now delegates here.
+// ---------------------------------------------------------------------------
+
+const ORCHESTRATION_SESSION_FIELD_NAMES = [
+  "orchestrationRunId",
+  "orchestrationRole",
+  "orchestrationParentSessionId",
+  "orchestrationTag",
+  "orchestrationStepId",
+  "orchestrationBundlePath",
+] as const;
+
+type OrchestrationFieldSource = Partial<Record<(typeof ORCHESTRATION_SESSION_FIELD_NAMES)[number], unknown>>;
+
+const VALID_ORCHESTRATION_ROLES = new Set(["lead", "worker", "validator"]);
+
+/**
+ * Read orchestration fields from an untyped record (e.g. persisted JSON),
+ * validating and trimming each value.  Returns only the fields that are
+ * present and valid, ready to spread into a typed object.
+ */
+function hydrateOrchestrationFields(
+  record: Record<string, unknown>,
+): Partial<PersistedChatState> {
+  const out: Partial<PersistedChatState> = {};
+  const runId = record.orchestrationRunId;
+  if (typeof runId === "string" && runId.trim().length) out.orchestrationRunId = runId.trim();
+  const role = record.orchestrationRole;
+  if (typeof role === "string" && VALID_ORCHESTRATION_ROLES.has(role)) {
+    out.orchestrationRole = role as "lead" | "worker" | "validator";
+  }
+  const parentId = record.orchestrationParentSessionId;
+  if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
+  const tag = record.orchestrationTag;
+  if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
+  const stepId = record.orchestrationStepId;
+  if (typeof stepId === "string" && stepId.trim().length) out.orchestrationStepId = stepId.trim();
+  const bundlePath = record.orchestrationBundlePath;
+  if (typeof bundlePath === "string" && bundlePath.trim().length) out.orchestrationBundlePath = bundlePath.trim();
+  return out;
+}
+
+/**
+ * Collect orchestration fields from a live session or persisted state, falling
+ * back from live to persisted when the live value is absent.  Returns a spread-
+ * ready partial.
+ */
+function collectOrchestrationFields(
+  live: OrchestrationFieldSource | null | undefined,
+  persisted: OrchestrationFieldSource | null | undefined,
+): Partial<PersistedChatState> {
+  const out: Partial<PersistedChatState> = {};
+  for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
+    const value = (live as Record<string, unknown>)?.[key] ?? (persisted as Record<string, unknown>)?.[key];
+    if (value != null) (out as Record<string, unknown>)[key] = value;
+  }
+  return out;
 }
 
 const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
@@ -5463,82 +5593,64 @@ export function createAgentChatService(args: {
     }
   };
 
-  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
-    try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      if (!transcriptPath) return [];
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
-      const entries: TranscriptDraftEntry[] = [];
-      const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
-      let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
-      const flushAssistantDraft = (): void => {
-        if (!assistantDraft) return;
-        const text = assistantDraft.text.trim();
-        if (text.length > 0) {
-          entries.push({
-            role: "assistant",
-            text,
-            timestamp: assistantDraft.timestamp,
-            ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
-          });
-        }
-        assistantDraft = null;
-      };
-      const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
-        const messageId = event.messageId?.trim();
-        if (messageId) return `message:${messageId}`;
-        const turnId = event.turnId?.trim();
-        if (turnId) return `turn:${turnId}`;
-        return null;
-      };
+  const transcriptEntriesFromEnvelopes = (
+    sessionId: string,
+    envelopes: readonly AgentChatEventEnvelope[],
+  ): AgentChatTranscriptEntry[] => {
+    type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
+    const entries: TranscriptDraftEntry[] = [];
+    const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
+    let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
+    const flushAssistantDraft = (): void => {
+      if (!assistantDraft) return;
+      const text = assistantDraft.text.trim();
+      if (text.length > 0) {
+        entries.push({
+          role: "assistant",
+          text,
+          timestamp: assistantDraft.timestamp,
+          ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
+        });
+      }
+      assistantDraft = null;
+    };
+    const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
+      const messageId = event.messageId?.trim();
+      if (messageId) return `message:${messageId}`;
+      const turnId = event.turnId?.trim();
+      if (turnId) return `turn:${turnId}`;
+      return null;
+    };
 
-      for (const entry of parseAgentChatTranscript(raw)) {
-        if (entry.sessionId !== managed.session.id) continue;
-        if (entry.event.type === "user_message") {
+    for (const entry of envelopes) {
+      if (entry.sessionId !== sessionId) continue;
+      if (entry.event.type === "user_message") {
+        flushAssistantDraft();
+        const text = entry.event.text.trim();
+        if (!text.length) continue;
+        const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
+          ? entry.event.displayText.trim()
+          : undefined;
+        entries.push({
+          role: "user",
+          text,
+          ...(displayText ? { displayText } : {}),
+          timestamp: entry.timestamp,
+          turnId: entry.event.turnId,
+        });
+        continue;
+      }
+      if (entry.event.type === "text") {
+        if (!entry.event.text.trim().length) continue;
+        const mergeKey = assistantTranscriptMergeKey(entry.event);
+        if (mergeKey) {
           flushAssistantDraft();
-          const text = entry.event.text.trim();
-          if (!text.length) continue;
-          const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
-            ? entry.event.displayText.trim()
-            : undefined;
-          entries.push({
-            role: "user",
-            text,
-            ...(displayText ? { displayText } : {}),
-            timestamp: entry.timestamp,
-            turnId: entry.event.turnId,
-          });
-          continue;
-        }
-        if (entry.event.type === "text") {
-          if (!entry.event.text.trim().length) continue;
-          const mergeKey = assistantTranscriptMergeKey(entry.event);
-          if (mergeKey) {
-            flushAssistantDraft();
-            const existing = assistantDraftsByKey.get(mergeKey);
-            if (existing) {
-              existing.text = `${existing.text}${entry.event.text}`;
-              continue;
-            }
-            const draft: TranscriptDraftEntry = {
-              role: "assistant",
-              text: entry.event.text,
-              timestamp: entry.timestamp,
-              ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
-              ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
-              ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
-            };
-            assistantDraftsByKey.set(mergeKey, draft);
-            entries.push(draft);
+          const existing = assistantDraftsByKey.get(mergeKey);
+          if (existing) {
+            existing.text = `${existing.text}${entry.event.text}`;
             continue;
           }
-          if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
-            assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
-            continue;
-          }
-          flushAssistantDraft();
-          assistantDraft = {
+          const draft: TranscriptDraftEntry = {
             role: "assistant",
             text: entry.event.text,
             timestamp: entry.timestamp,
@@ -5546,20 +5658,45 @@ export function createAgentChatService(args: {
             ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
             ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
           };
+          assistantDraftsByKey.set(mergeKey, draft);
+          entries.push(draft);
+          continue;
+        }
+        if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
+          assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
           continue;
         }
         flushAssistantDraft();
+        assistantDraft = {
+          role: "assistant",
+          text: entry.event.text,
+          timestamp: entry.timestamp,
+          ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+          ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
+          ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+        };
+        continue;
       }
       flushAssistantDraft();
-      return entries
-        .map((entry) => ({
-          role: entry.role,
-          text: entry.text.trim(),
-          ...(entry.displayText ? { displayText: entry.displayText } : {}),
-          timestamp: entry.timestamp,
-          ...(entry.turnId ? { turnId: entry.turnId } : {}),
-        }))
-        .filter((entry) => entry.text.length > 0);
+    }
+    flushAssistantDraft();
+    return entries
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+        ...(entry.displayText ? { displayText: entry.displayText } : {}),
+        timestamp: entry.timestamp,
+        ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      }))
+      .filter((entry) => entry.text.length > 0);
+  };
+
+  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
+    try {
+      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      if (!transcriptPath) return [];
+      const raw = fs.readFileSync(transcriptPath, "utf8");
+      return transcriptEntriesFromEnvelopes(managed.session.id, parseAgentChatTranscript(raw));
     } catch {
       return [];
     }
@@ -7194,6 +7331,7 @@ export function createAgentChatService(args: {
               text: s.text,
               ...(s.attachments.length ? { attachments: s.attachments } : {}),
               ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
+              ...(s.metadata ? { metadata: s.metadata } : {}),
             })),
           }
         : prevPersisted?.pendingSteers?.length ? { pendingSteers: prevPersisted.pendingSteers } : {}),
@@ -7258,24 +7396,7 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
-      ...(managed.session.orchestrationRunId
-        ? { orchestrationRunId: managed.session.orchestrationRunId }
-        : prevPersisted?.orchestrationRunId ? { orchestrationRunId: prevPersisted.orchestrationRunId } : {}),
-      ...(managed.session.orchestrationRole
-        ? { orchestrationRole: managed.session.orchestrationRole }
-        : prevPersisted?.orchestrationRole ? { orchestrationRole: prevPersisted.orchestrationRole } : {}),
-      ...(managed.session.orchestrationParentSessionId
-        ? { orchestrationParentSessionId: managed.session.orchestrationParentSessionId }
-        : prevPersisted?.orchestrationParentSessionId ? { orchestrationParentSessionId: prevPersisted.orchestrationParentSessionId } : {}),
-      ...(managed.session.orchestrationTag
-        ? { orchestrationTag: managed.session.orchestrationTag }
-        : prevPersisted?.orchestrationTag ? { orchestrationTag: prevPersisted.orchestrationTag } : {}),
-      ...(managed.session.orchestrationStepId
-        ? { orchestrationStepId: managed.session.orchestrationStepId }
-        : prevPersisted?.orchestrationStepId ? { orchestrationStepId: prevPersisted.orchestrationStepId } : {}),
-      ...(managed.session.orchestrationBundlePath
-        ? { orchestrationBundlePath: managed.session.orchestrationBundlePath }
-        : prevPersisted?.orchestrationBundlePath ? { orchestrationBundlePath: prevPersisted.orchestrationBundlePath } : {}),
+      ...collectOrchestrationFields(managed.session, prevPersisted),
       updatedAt: nowIso()
     };
 
@@ -7509,54 +7630,14 @@ export function createAgentChatService(args: {
         ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
           ? { runtimeMode: record.runtimeMode }
           : {}),
-        ...(typeof (record as { orchestrationRunId?: unknown }).orchestrationRunId === "string"
-          ? {
-              orchestrationRunId: (
-                record as { orchestrationRunId: string }
-              ).orchestrationRunId.trim(),
-            }
-          : {}),
-        ...(typeof (record as { orchestrationRole?: unknown }).orchestrationRole === "string" &&
-        ["lead", "worker", "validator"].includes(
-          (record as { orchestrationRole: string }).orchestrationRole,
-        )
-          ? {
-              orchestrationRole: (
-                record as { orchestrationRole: "lead" | "worker" | "validator" }
-              ).orchestrationRole,
-            }
-          : {}),
-        ...(typeof (record as { orchestrationParentSessionId?: unknown }).orchestrationParentSessionId === "string"
-          ? {
-              orchestrationParentSessionId: (
-                record as { orchestrationParentSessionId: string }
-              ).orchestrationParentSessionId.trim(),
-            }
-          : {}),
-        ...(typeof (record as { orchestrationTag?: unknown }).orchestrationTag === "string"
-          ? {
-              orchestrationTag: (
-                record as { orchestrationTag: string }
-              ).orchestrationTag.trim(),
-            }
-          : {}),
-        ...(typeof (record as { orchestrationStepId?: unknown }).orchestrationStepId === "string"
-          ? {
-              orchestrationStepId: (
-                record as { orchestrationStepId: string }
-              ).orchestrationStepId.trim(),
-            }
-          : {}),
-        ...(typeof (record as { orchestrationBundlePath?: unknown }).orchestrationBundlePath === "string"
-          ? {
-              orchestrationBundlePath: (
-                record as { orchestrationBundlePath: string }
-              ).orchestrationBundlePath.trim(),
-            }
-          : {}),
+        ...hydrateOrchestrationFields(record as Record<string, unknown>),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
+      if (!hydrated.interactionMode && hydrated.orchestrationRole) {
+        hydrated.interactionMode = orchestrationInteractionModeForRole(hydrated.orchestrationRole);
+      }
       hydrateNativePermissionControls(hydrated as Parameters<typeof hydrateNativePermissionControls>[0]);
+      enforceOrchestrationLockedPermissionMode(hydrated);
       return hydrated;
     } catch {
       return null;
@@ -8171,6 +8252,18 @@ export function createAgentChatService(args: {
       }
     }
 
+    if (request?.kind === "model_selection") {
+      const rawSelection = answers?.selection;
+      const selectionValues = Array.isArray(rawSelection)
+        ? trimValues(rawSelection.filter((value): value is string => typeof value === "string"))
+        : typeof rawSelection === "string"
+          ? trimValues([rawSelection])
+          : [];
+      if (selectionValues.length > 0) {
+        normalized.selection = selectionValues;
+      }
+    }
+
     const trimmedResponse = typeof responseText === "string" ? responseText.trim() : "";
     if (trimmedResponse.length > 0) {
       if (request?.questions.length === 1) {
@@ -8209,8 +8302,12 @@ export function createAgentChatService(args: {
     interactionMode: OrchestrationInteractionMode;
     sessionContext: OrchestrationSessionContext;
   } | null => {
-    const interactionMode = managed.session.interactionMode;
-    if (!isOrchestrationInteractionMode(interactionMode)) return null;
+    const interactionMode = isOrchestrationInteractionMode(managed.session.interactionMode)
+      ? managed.session.interactionMode
+      : managed.session.orchestrationRole
+        ? orchestrationInteractionModeForRole(managed.session.orchestrationRole)
+        : null;
+    if (!interactionMode) return null;
     const runId = managed.session.orchestrationRunId?.trim();
     const bundlePath = managed.session.orchestrationBundlePath?.trim();
     if (!runId || !bundlePath) return null;
@@ -8227,6 +8324,16 @@ export function createAgentChatService(args: {
           : {}),
       },
     };
+  };
+
+  const abortActiveBashControllers = (managed: ManagedChatSession, reason: string): void => {
+    if (!managed.activeBashControllers.size) return;
+    for (const controller of [...managed.activeBashControllers]) {
+      if (!controller.signal.aborted) {
+        controller.abort(reason);
+      }
+    }
+    managed.activeBashControllers.clear();
   };
 
   const buildOrchestrationUniversalOptions = (
@@ -8305,6 +8412,15 @@ export function createAgentChatService(args: {
         reason: response.responseText,
       };
     },
+    registerActiveBash: (controller) => {
+      managed.activeBashControllers.add(controller);
+      if (managed.closed && !controller.signal.aborted) {
+        controller.abort("Session is closed.");
+      }
+      return () => {
+        managed.activeBashControllers.delete(controller);
+      };
+    },
   });
 
   const createOrchestrationRuntimeToolMap = (
@@ -8321,6 +8437,7 @@ export function createAgentChatService(args: {
       orchestrationService,
       agentChatService: {
         createSession: (args) => createSession(args as never),
+        deleteSession: (args) => deleteSession(args),
         sendMessage: (args, options) => sendMessage(args as never, options),
         steer: (args) => steer(args as never),
         interrupt: (args) => interrupt(args as never),
@@ -8502,7 +8619,7 @@ export function createAgentChatService(args: {
 
     const preserveClaudeResumeState =
       managed.runtime.kind === "claude" && reasonAllowsPreservation;
-    if (managed.runtime?.kind === "codex") {
+    if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
       const shouldMarkInterrupted =
@@ -8909,16 +9026,7 @@ export function createAgentChatService(args: {
         ...(persisted?.requestedCwd != null && String(persisted.requestedCwd).trim().length
           ? { requestedCwd: String(persisted.requestedCwd).trim() }
           : {}),
-        ...(persisted?.orchestrationRunId ? { orchestrationRunId: persisted.orchestrationRunId } : {}),
-        ...(persisted?.orchestrationRole ? { orchestrationRole: persisted.orchestrationRole } : {}),
-        ...(persisted?.orchestrationParentSessionId
-          ? { orchestrationParentSessionId: persisted.orchestrationParentSessionId }
-          : {}),
-        ...(persisted?.orchestrationTag ? { orchestrationTag: persisted.orchestrationTag } : {}),
-        ...(persisted?.orchestrationStepId ? { orchestrationStepId: persisted.orchestrationStepId } : {}),
-        ...(persisted?.orchestrationBundlePath
-          ? { orchestrationBundlePath: persisted.orchestrationBundlePath }
-          : {}),
+        ...collectOrchestrationFields(null, persisted),
         createdAt: row.startedAt,
         lastActivityAt: persisted?.updatedAt ?? row.endedAt ?? row.startedAt
       },
@@ -8963,6 +9071,7 @@ export function createAgentChatService(args: {
       })) ?? [],
       localPendingInputs: new Map(),
       orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -8971,7 +9080,11 @@ export function createAgentChatService(args: {
       claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
     };
     managed.todoItems = readLatestTranscriptTodoItems(managed);
+    if (!managed.session.interactionMode && managed.session.orchestrationRole) {
+      managed.session.interactionMode = orchestrationInteractionModeForRole(managed.session.orchestrationRole);
+    }
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -8986,6 +9099,7 @@ export function createAgentChatService(args: {
       displayText?: string;
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       turnId?: string;
       messageId?: string;
       laneDirectiveKey?: string | null;
@@ -9000,6 +9114,7 @@ export function createAgentChatService(args: {
         : {}),
       attachments: args.attachments,
       ...(args.contextAttachments.length ? { contextAttachments: args.contextAttachments } : {}),
+      ...(args.metadata ? { metadata: args.metadata } : {}),
       ...(args.turnId ? { turnId: args.turnId } : {}),
       ...(args.messageId ? { messageId: args.messageId } : {}),
     });
@@ -9029,6 +9144,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -9069,6 +9185,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments,
         contextAttachments,
+        metadata: args.metadata,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: markDispatched,
       });
@@ -9604,6 +9721,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -9643,6 +9761,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       messageId: userMessageId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -11189,6 +11308,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -11225,6 +11345,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       messageId: userMessageId,
       laneDirectiveKey: args.laneDirectiveKey,
@@ -11318,6 +11439,7 @@ export function createAgentChatService(args: {
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];
       resolvedAttachments?: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
@@ -11358,6 +11480,7 @@ export function createAgentChatService(args: {
       displayText,
       attachments,
       contextAttachments,
+      metadata: args.metadata,
       turnId,
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
@@ -12653,6 +12776,50 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       });
+    }
+  };
+
+  const buildPlanApprovalFollowupText = (
+    decision: AgentChatApprovalDecision,
+    responseText?: string | null,
+  ): string => {
+    const approved = decision === "accept" || decision === "accept_for_session";
+    const feedback = typeof responseText === "string" ? responseText.trim() : "";
+    if (approved) {
+      return "The user approved the plan. Please proceed with implementation.";
+    }
+    return feedback.length > 0
+      ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
+      : "The user rejected the plan. Please revise your approach.";
+  };
+
+  const stageCodexPlanApprovalFollowup = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    args: {
+      itemId: string;
+      decision: AgentChatApprovalDecision;
+      request?: PendingInputRequest | null;
+      responseText?: string | null;
+    },
+  ): void => {
+    const approved = args.decision === "accept" || args.decision === "accept_for_session";
+    if (approved) {
+      managed.session.permissionMode = "edit";
+      applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+      managed.session.interactionMode = "default";
+      runtime.threadResumed = false;
+      runtime.canAttachResumedTurnStart = false;
+      persistChatState(managed);
+    }
+    runtime.pendingPlanFollowups.push({
+      itemId: args.itemId,
+      decision: args.decision,
+      turnId: args.request?.turnId ?? null,
+      followupText: buildPlanApprovalFollowupText(args.decision, args.responseText),
+    });
+    if (!runtime.activeTurnId) {
+      drainPendingPlanFollowups(managed, runtime);
     }
   };
 
@@ -14385,15 +14552,15 @@ export function createAgentChatService(args: {
     codexPolicy: CodexPolicy;
   } => {
     const config = resolveChatConfig();
-    if (managed.session.interactionMode === "orchestrator-lead") {
-      const codexPolicy: CodexPolicy = {
-        approvalPolicy: "on-request",
-        sandbox: "read-only",
-      };
+    const lockedMode = lockedOrchestrationPermissionMode(managed.session);
+    if (lockedMode) {
+      const codexPolicy: CodexPolicy = lockedMode === "plan"
+        ? { approvalPolicy: "on-request", sandbox: "read-only" }
+        : { approvalPolicy: "never", sandbox: "danger-full-access" };
       managed.session.codexConfigSource = "flags";
       managed.session.codexApprovalPolicy = codexPolicy.approvalPolicy;
       managed.session.codexSandbox = codexPolicy.sandbox;
-      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? "plan";
+      managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? lockedMode;
       return { codexPolicy };
     }
     const codexConfigSource = resolveSessionCodexConfigSource(managed.session);
@@ -15115,6 +15282,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "cursor") {
@@ -15124,6 +15292,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "droid") {
@@ -15133,6 +15302,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else {
@@ -15142,6 +15312,7 @@ export function createAgentChatService(args: {
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     }
@@ -15159,6 +15330,7 @@ export function createAgentChatService(args: {
     attachments: AgentChatFileRef[] = [],
     contextAttachments: AgentChatContextAttachment[] = [],
     resolvedAttachments: ResolvedAgentChatFileRef[] = [],
+    metadata?: AgentChatEventMetadata | null,
   ): boolean => {
     if (runtime.pendingSteers.length >= MAX_PENDING_STEERS) {
       logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: runtime.pendingSteers.length });
@@ -15170,12 +15342,13 @@ export function createAgentChatService(args: {
       });
       return false;
     }
-    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments });
+    runtime.pendingSteers.push({ steerId, text, attachments, contextAttachments, resolvedAttachments, ...(metadata ? { metadata } : {}) });
     emitChatEvent(managed, {
       type: "user_message",
       text,
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
+      ...(metadata ? { metadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -15347,7 +15520,14 @@ export function createAgentChatService(args: {
         });
         continue;
       }
-      out.push({ steerId: entry.steerId, text, attachments, contextAttachments, resolvedAttachments });
+      out.push({
+        steerId: entry.steerId,
+        text,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        ...(entry.metadata ? { metadata: entry.metadata } : {}),
+      });
       if (out.length >= MAX_PENDING_STEERS) break;
     }
     return out;
@@ -15451,6 +15631,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -15740,16 +15921,22 @@ export function createAgentChatService(args: {
     // opencodePermissionMode.
     const identityPinned = isPrimaryPinnedIdentity(identityKey);
     const effectiveInteractionMode = identityPinned ? undefined : requestedInteractionMode;
-    const effectiveClaudePermissionMode = identityPinned ? undefined : requestedClaudePermissionMode;
-    const effectiveCodexApprovalPolicy = identityPinned ? undefined : requestedCodexApprovalPolicy;
-    const effectiveCodexSandbox = identityPinned ? undefined : requestedCodexSandbox;
-    const effectiveCodexConfigSource = identityPinned ? undefined : requestedCodexConfigSource;
-    const requestedDroidPermissionMode = identityPinned ? undefined : requestedDroidPermissionModeArg;
+    const orchestrationLeadRequested =
+      effectiveInteractionMode === "orchestrator-lead" || requestedOrchestrationRole === "lead";
+    const permissionsPinned = identityPinned || orchestrationLeadRequested;
+    const effectiveClaudePermissionMode = permissionsPinned ? undefined : requestedClaudePermissionMode;
+    const effectiveCodexApprovalPolicy = permissionsPinned ? undefined : requestedCodexApprovalPolicy;
+    const effectiveCodexSandbox = permissionsPinned ? undefined : requestedCodexSandbox;
+    const effectiveCodexConfigSource = permissionsPinned ? undefined : requestedCodexConfigSource;
+    const requestedDroidPermissionMode = permissionsPinned ? undefined : requestedDroidPermissionModeArg;
     let effectivePermissionMode = identityKey
       ? normalizeIdentityPermissionMode(identityKey, requestedPermMode, effectiveProvider)
       : requestedPermMode;
+    if (orchestrationLeadRequested) {
+      effectivePermissionMode = "plan";
+    }
     const chatConfig = resolveChatConfig();
-    let requestedOpenCodePermissionMode = identityPinned ? undefined : requestedOpenCodePermissionModeArg;
+    let requestedOpenCodePermissionMode = permissionsPinned ? undefined : requestedOpenCodePermissionModeArg;
     const localHarnessPermissions = applyLocalHarnessPermissionMode({
       descriptor: resolvedDescriptor,
       requestedPermissionMode: effectivePermissionMode,
@@ -15875,16 +16062,14 @@ export function createAgentChatService(args: {
           ? { requestedCwd: requestedCwd.trim() }
           : {}),
         ...(runtimeMode === "print" ? { runtimeMode: "print" as const } : {}),
-        ...(requestedOrchestrationRunId ? { orchestrationRunId: requestedOrchestrationRunId } : {}),
-        ...(requestedOrchestrationRole ? { orchestrationRole: requestedOrchestrationRole } : {}),
-        ...(requestedOrchestrationParentSessionId
-          ? { orchestrationParentSessionId: requestedOrchestrationParentSessionId }
-          : {}),
-        ...(requestedOrchestrationTag ? { orchestrationTag: requestedOrchestrationTag } : {}),
-        ...(requestedOrchestrationStepId ? { orchestrationStepId: requestedOrchestrationStepId } : {}),
-        ...(requestedOrchestrationBundlePath
-          ? { orchestrationBundlePath: requestedOrchestrationBundlePath }
-          : {}),
+        ...collectOrchestrationFields({
+          orchestrationRunId: requestedOrchestrationRunId,
+          orchestrationRole: requestedOrchestrationRole,
+          orchestrationParentSessionId: requestedOrchestrationParentSessionId,
+          orchestrationTag: requestedOrchestrationTag,
+          orchestrationStepId: requestedOrchestrationStepId,
+          orchestrationBundlePath: requestedOrchestrationBundlePath,
+        }, null),
       },
       transcriptPath,
       transcriptBytesWritten: fileSizeOrZero(transcriptPath),
@@ -15922,6 +16107,7 @@ export function createAgentChatService(args: {
       recentConversationEntries: [],
       localPendingInputs: new Map(),
       orchestrationHttpMcpServer: null,
+      activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
       turnBeforeSha: null,
@@ -15930,6 +16116,7 @@ export function createAgentChatService(args: {
       claudeBackgroundLogText: "",
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
+    enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
 
@@ -16099,6 +16286,7 @@ export function createAgentChatService(args: {
     displayText,
     attachments = [],
     contextAttachments = [],
+    metadata,
     reasoningEffort,
     executionMode,
     interactionMode,
@@ -16302,6 +16490,7 @@ export function createAgentChatService(args: {
       attachments: publicAttachments,
       contextAttachments: publicContextAttachments,
       resolvedAttachments,
+      ...(metadata ? { metadata } : {}),
       reasoningEffort,
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
@@ -17510,6 +17699,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
@@ -17537,6 +17727,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -17861,6 +18052,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticCursorTurnStart?: boolean;
@@ -17894,6 +18086,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -18595,6 +18788,7 @@ export function createAgentChatService(args: {
       attachments: AgentChatFileRef[];
       contextAttachments: AgentChatContextAttachment[];
       resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
       laneDirectiveKey?: string | null;
       turnId?: string;
       optimisticDroidTurnStart?: boolean;
@@ -18640,6 +18834,7 @@ export function createAgentChatService(args: {
         displayText,
         attachments: args.attachments,
         contextAttachments: args.contextAttachments,
+        metadata: args.metadata,
         turnId,
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
@@ -18867,6 +19062,7 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       resolvedAttachments,
+      metadata,
       reasoningEffort,
       laneDirectiveKey,
       providerSlashCommand,
@@ -18910,6 +19106,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         providerSlashCommand,
         onDispatched,
@@ -18937,6 +19134,7 @@ export function createAgentChatService(args: {
           attachments,
           contextAttachments,
           resolvedAttachments,
+          metadata,
           laneDirectiveKey,
           turnId,
           optimisticCursorTurnStart,
@@ -18952,6 +19150,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         turnId,
         optimisticCursorTurnStart,
@@ -18974,6 +19173,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         turnId,
         optimisticDroidTurnStart,
@@ -19019,7 +19219,7 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
-            refreshCodexDynamicTools(managed, runtime);
+            const dynamicTools = refreshCodexDynamicTools(managed, runtime);
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
@@ -19038,6 +19238,7 @@ export function createAgentChatService(args: {
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
+              ...(dynamicTools.length ? { dynamicTools } : {}),
               excludeTurns: true,
               persistExtendedHistory: true
             });
@@ -19103,6 +19304,7 @@ export function createAgentChatService(args: {
         attachments,
         contextAttachments,
         resolvedAttachments,
+        metadata,
         laneDirectiveKey,
         providerSlashCommand,
         optimisticCodexTurnStart,
@@ -19128,6 +19330,7 @@ export function createAgentChatService(args: {
       attachments,
       contextAttachments,
       resolvedAttachments,
+      metadata,
       laneDirectiveKey,
       providerSlashCommand,
       forceClaudeUserMessage,
@@ -19175,6 +19378,7 @@ export function createAgentChatService(args: {
         ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
         attachments: prepared.attachments,
         ...(prepared.contextAttachments.length ? { contextAttachments: prepared.contextAttachments } : {}),
+        ...(prepared.metadata ? { metadata: prepared.metadata } : {}),
         turnId,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started", turnId });
@@ -19199,6 +19403,7 @@ export function createAgentChatService(args: {
         displayText: prepared.visibleText,
         attachments: prepared.attachments,
         contextAttachments: prepared.contextAttachments,
+        metadata: prepared.metadata,
         laneDirectiveKey: prepared.laneDirectiveKey,
       });
       emitChatEvent(prepared.managed, { type: "status", turnStatus: "started" });
@@ -19233,7 +19438,7 @@ export function createAgentChatService(args: {
     }
   };
 
-  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [] }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
+  const steer = async ({ sessionId, text, attachments = [], contextAttachments = [], metadata }: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const trimmed = text.trim();
     const steerId = randomUUID();
     // Allow context-only steers: if text is empty but issue context attachments
@@ -19257,6 +19462,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments,
           contextAttachments,
+          metadata,
         });
         if (!preparedSteer) {
           return { steerId, queued: false };
@@ -19270,6 +19476,7 @@ export function createAgentChatService(args: {
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
+          preparedSteer.metadata,
         );
         return { steerId, queued: true };
       }
@@ -19279,6 +19486,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -19296,6 +19504,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments,
           contextAttachments,
+          metadata,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -19317,12 +19526,14 @@ export function createAgentChatService(args: {
           attachments: preparedSteer.attachments,
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: preparedSteer.resolvedAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
           text: preparedSteer.visibleText,
           ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
           ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -19343,6 +19554,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -19360,6 +19572,7 @@ export function createAgentChatService(args: {
           displayText: trimmed,
           attachments: [],
           contextAttachments,
+          metadata,
           allowActiveSession: true,
         });
         if (!preparedSteer) {
@@ -19381,11 +19594,13 @@ export function createAgentChatService(args: {
           attachments: [],
           contextAttachments: preparedSteer.contextAttachments,
           resolvedAttachments: [],
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         });
         emitChatEvent(managed, {
           type: "user_message",
           text: preparedSteer.visibleText,
           ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
           steerId,
           turnId: rt.activeTurnId ?? undefined,
           deliveryState: "queued",
@@ -19406,6 +19621,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments: [],
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -19424,6 +19640,7 @@ export function createAgentChatService(args: {
         displayText: trimmed,
         attachments,
         contextAttachments,
+        metadata,
       });
       if (!preparedSteer) {
         return { steerId, queued: false };
@@ -19472,6 +19689,7 @@ export function createAgentChatService(args: {
         text: preparedSteer.visibleText,
         ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
         ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+        ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
         steerId,
         deliveryState: "delivered",
         turnId: runtime.activeTurnId,
@@ -19485,6 +19703,7 @@ export function createAgentChatService(args: {
       displayText: trimmed,
       attachments,
       contextAttachments,
+      metadata,
     });
     if (!preparedSteer) {
       return { steerId, queued: false };
@@ -19501,6 +19720,7 @@ export function createAgentChatService(args: {
           preparedSteer.attachments,
           preparedSteer.contextAttachments,
           preparedSteer.resolvedAttachments,
+          preparedSteer.metadata,
         );
         return { steerId, queued: true };
       }
@@ -19560,6 +19780,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, {
       type: "user_message",
       text: trimmed,
+      ...(runtime.pendingSteers[idx].metadata ? { metadata: runtime.pendingSteers[idx].metadata } : {}),
       steerId,
       turnId: runtime.activeTurnId ?? undefined,
       deliveryState: "queued",
@@ -19605,6 +19826,7 @@ export function createAgentChatService(args: {
           displayText: steer.text,
           attachments: steer.attachments,
           contextAttachments: steer.contextAttachments,
+          metadata: steer.metadata,
         });
         if (!prepared) {
           logger.warn("agent_chat.dispatch_steer_inline_drop_skipped", {
@@ -19654,6 +19876,7 @@ export function createAgentChatService(args: {
         text: steer.text,
         ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
         ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+        ...(steer.metadata ? { metadata: steer.metadata } : {}),
         steerId,
         deliveryState: "inline",
         turnId: runtime.activeTurnId ?? undefined,
@@ -19738,6 +19961,7 @@ export function createAgentChatService(args: {
 
   const interrupt = async ({ sessionId }: AgentChatInterruptArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    abortActiveBashControllers(managed, "Session interrupt requested.");
 
     // OpenCode runtime interrupt
     if (managed.runtime?.kind === "opencode") {
@@ -19945,7 +20169,7 @@ export function createAgentChatService(args: {
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
-          refreshCodexDynamicTools(managed, runtime);
+          const dynamicTools = refreshCodexDynamicTools(managed, runtime);
           const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
@@ -19953,6 +20177,7 @@ export function createAgentChatService(args: {
             effort: managed.session.reasoningEffort,
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
+            ...(dynamicTools.length ? { dynamicTools } : {}),
             excludeTurns: true,
             persistExtendedHistory: true
           });
@@ -20105,6 +20330,61 @@ export function createAgentChatService(args: {
     return latest;
   };
 
+  const latestTranscriptPlanApprovalRequest = (
+    sessionId: string,
+    itemId: string,
+  ): PendingInputRequest | null => {
+    const pending = new Map<string, PendingInputRequest>();
+    for (const envelope of getChatEventHistory(sessionId, { maxEvents: 512 }).events) {
+      const event = envelope.event;
+      if (event.type === "approval_request") {
+        const detail = asRecord(event.detail);
+        const request = asRecord(detail?.request);
+        const requestKind = typeof request?.kind === "string" ? request.kind.trim() : "";
+        const requestItemId = typeof request?.itemId === "string" && request.itemId.trim().length
+          ? request.itemId.trim()
+          : event.itemId;
+        if (requestKind === "plan_approval") {
+          pending.set(requestItemId, request as unknown as PendingInputRequest);
+        } else {
+          const planContent = typeof detail?.planContent === "string" ? detail.planContent.trim() : "";
+          if (planContent.length > 0) {
+            pending.set(requestItemId, {
+              requestId: requestItemId,
+              itemId: requestItemId,
+              source: "codex",
+              kind: "plan_approval",
+              title: "Plan Ready for Review",
+              description: planContent,
+              questions: [{
+                id: "plan_decision",
+                header: "Implementation Plan",
+                question: planContent,
+                options: [
+                  { label: "Implement", value: "approve", recommended: true },
+                  { label: "Keep planning", value: "reject" },
+                ],
+                allowsFreeform: true,
+              }],
+              allowsFreeform: true,
+              blocking: true,
+              canProceedWithoutAnswer: false,
+              providerMetadata: { tool: "codexPlanApproval" },
+              turnId: typeof event.turnId === "string" && event.turnId.trim().length ? event.turnId.trim() : null,
+            });
+          } else {
+            pending.delete(event.itemId);
+          }
+        }
+        continue;
+      }
+      if (event.type === "pending_input_resolved") {
+        pending.delete(event.itemId);
+      }
+    }
+    return pending.get(itemId) ?? null;
+  };
+
   const latestPendingInputItemIdForSession = (
     sessionId: string,
     managed: ManagedChatSession | null | undefined,
@@ -20230,7 +20510,8 @@ export function createAgentChatService(args: {
         : {}),
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
-        : {})
+        : {}),
+      ...collectOrchestrationFields(liveSession, persisted)
     } satisfies AgentChatSessionSummary;
   };
 
@@ -20429,10 +20710,22 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (managed.runtime?.kind === "codex") {
-      const runtime = managed.runtime;
+    if (managed.session.provider === "codex") {
+      const runtime = managed.runtime?.kind === "codex"
+        ? managed.runtime
+        : await ensureCodexSessionRuntime(managed);
       const pending = runtime.approvals.get(itemId);
       if (!pending) {
+        const recoveredPlanApproval = latestTranscriptPlanApprovalRequest(sessionId, itemId);
+        if (recoveredPlanApproval) {
+          stageCodexPlanApprovalFollowup(managed, runtime, {
+            itemId,
+            decision: resolvedDecision,
+            request: recoveredPlanApproval,
+            responseText,
+          });
+          return;
+        }
         logger.warn("agent_chat.codex_approval_not_found", {
           sessionId,
           itemId,
@@ -20466,30 +20759,12 @@ export function createAgentChatService(args: {
       // sees the planning turn finish before the implementation turn
       // starts.
       if (pending.kind === "plan_approval") {
-        const approved = resolvedDecision === "accept" || resolvedDecision === "accept_for_session";
-        const feedback = typeof responseText === "string" ? responseText.trim() : "";
-        const followupText = approved
-          ? "The user approved the plan. Please proceed with implementation."
-          : feedback.length > 0
-            ? `The user rejected the plan with feedback: "${feedback}". Please revise.`
-            : "The user rejected the plan. Please revise your approach.";
-        if (approved) {
-          managed.session.permissionMode = "edit";
-          applyLegacyPermissionModeToNativeControls(managed.session, "edit");
-          managed.session.interactionMode = "default";
-          runtime.threadResumed = false;
-          runtime.canAttachResumedTurnStart = false;
-          persistChatState(managed);
-        }
-        runtime.pendingPlanFollowups.push({
+        stageCodexPlanApprovalFollowup(managed, runtime, {
           itemId,
           decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-          followupText,
+          request: pending.request,
+          responseText,
         });
-        if (!runtime.activeTurnId) {
-          drainPendingPlanFollowups(managed, runtime);
-        }
         return;
       }
 
@@ -21242,6 +21517,7 @@ export function createAgentChatService(args: {
 
   const dispose = async ({ sessionId }: AgentChatDisposeArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    abortActiveBashControllers(managed, "Session disposed.");
 
     // Interrupt active codex turn before teardown
     if (managed.runtime?.kind === "codex") {
@@ -21422,6 +21698,7 @@ export function createAgentChatService(args: {
           pending.resolve({ decision: "cancel" });
         }
         managed.localPendingInputs.clear();
+        abortActiveBashControllers(managed, "Session closed during shutdown.");
         managed.closed = true;
         managed.endedNotified = true;
         managed.ctoSessionStartedAt = null;
@@ -21498,6 +21775,8 @@ export function createAgentChatService(args: {
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
+    const orchestrationLockedMode = lockedOrchestrationPermissionMode(managed.session);
+    const permissionsPinned = identityPinned || orchestrationLockedMode !== null;
     const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
@@ -21572,7 +21851,9 @@ export function createAgentChatService(args: {
         resumeCommand: resumeCommandForProvider(nextProvider, sessionId)
       });
 
-      if (isIdentitySession) {
+      if (orchestrationLockedMode) {
+        enforceOrchestrationLockedPermissionMode(managed.session);
+      } else if (isIdentitySession) {
         managed.session.permissionMode = normalizeIdentityPermissionMode(
           managed.session.identityKey,
           managed.session.permissionMode,
@@ -21638,9 +21919,10 @@ export function createAgentChatService(args: {
     }
 
     if (permissionMode !== undefined) {
-      managed.session.permissionMode = isIdentitySession
+      managed.session.permissionMode = orchestrationLockedMode
+        ?? (isIdentitySession
         ? normalizeIdentityPermissionMode(managed.session.identityKey, permissionMode, managed.session.provider)
-        : permissionMode;
+          : permissionMode);
       applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
     }
 
@@ -21648,11 +21930,11 @@ export function createAgentChatService(args: {
     // Ignore incoming native permission overrides — applyLegacyPermissionMode-
     // ToNativeControls() has already derived the correct native fields from
     // full-auto, and we must not let callers layer a stricter mode on top.
-    if (interactionMode !== undefined && !identityPinned) {
+    if (interactionMode !== undefined && !permissionsPinned) {
       managed.session.interactionMode = interactionMode;
     }
 
-    if (claudePermissionMode !== undefined && !identityPinned) {
+    if (claudePermissionMode !== undefined && !permissionsPinned) {
       if (claudePermissionMode === "plan") {
         managed.session.interactionMode = "plan";
       } else {
@@ -21660,15 +21942,15 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (codexApprovalPolicy !== undefined && !identityPinned) {
+    if (codexApprovalPolicy !== undefined && !permissionsPinned) {
       managed.session.codexApprovalPolicy = codexApprovalPolicy;
     }
 
-    if (codexSandbox !== undefined && !identityPinned) {
+    if (codexSandbox !== undefined && !permissionsPinned) {
       managed.session.codexSandbox = codexSandbox;
     }
 
-    if (codexConfigSource !== undefined && !identityPinned) {
+    if (codexConfigSource !== undefined && !permissionsPinned) {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
@@ -21680,15 +21962,15 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (opencodePermissionMode !== undefined && !identityPinned) {
+    if (opencodePermissionMode !== undefined && !permissionsPinned) {
       managed.session.opencodePermissionMode = opencodePermissionMode;
     }
 
-    if (droidPermissionMode !== undefined && !identityPinned) {
+    if (droidPermissionMode !== undefined && !permissionsPinned) {
       managed.session.droidPermissionMode = droidPermissionMode;
     }
 
-    if (cursorModeId !== undefined) {
+    if (cursorModeId !== undefined && !permissionsPinned) {
       managed.session.cursorModeId = typeof cursorModeId === "string"
         ? (cursorModeId.trim() || null)
         : null;
@@ -21715,6 +21997,7 @@ export function createAgentChatService(args: {
     ) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      enforceOrchestrationLockedPermissionMode(managed.session);
       if (managed.runtime?.kind === "opencode") {
         managed.runtime.permissionMode = resolveSessionOpenCodePermissionMode(
           managed.session,
@@ -22878,7 +23161,7 @@ export function createAgentChatService(args: {
       source: args.source ?? "ade",
       kind: args.kind ?? (questions.some((q) => q.options?.length) ? "structured_question" : "question"),
       title: args.title,
-      description: questions[0]?.question ?? args.body,
+      description: args.kind === "plan_approval" ? args.body : (questions[0]?.question ?? args.body),
       questions,
       allowsFreeform: args.allowsFreeform ?? true,
       blocking: true,
@@ -22965,8 +23248,9 @@ export function createAgentChatService(args: {
     since?: string,
   ): Promise<AgentChatTranscriptEntry[]> => {
     const managed = managedSessions.get(sessionId);
-    if (!managed) return [];
-    const entries = readTranscriptEntries(managed);
+    const entries = managed
+      ? readTranscriptEntries(managed)
+      : transcriptEntriesFromEnvelopes(sessionId, readTranscriptEnvelopesForSessionId(sessionId));
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {
       filtered = filtered.filter((entry) => entry.timestamp >= since);
@@ -22997,45 +23281,21 @@ export function createAgentChatService(args: {
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
     const hadOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
-    const session = managed.session as AgentChatSession & {
-      orchestrationRunId?: string;
-      orchestrationRole?: "lead" | "worker" | "validator";
-      orchestrationParentSessionId?: string;
-      orchestrationTag?: string;
-      orchestrationStepId?: string;
-      orchestrationBundlePath?: string;
-    };
-    if (fields.orchestrationRunId !== undefined) {
-      if (fields.orchestrationRunId) session.orchestrationRunId = fields.orchestrationRunId;
-      else delete session.orchestrationRunId;
-    }
-    if (fields.orchestrationRole !== undefined) {
-      if (fields.orchestrationRole) session.orchestrationRole = fields.orchestrationRole;
-      else delete session.orchestrationRole;
+    const session = managed.session;
+    for (const key of ORCHESTRATION_SESSION_FIELD_NAMES) {
+      const value = fields[key];
+      if (value === undefined) continue;
+      if (value) {
+        (session as Record<string, unknown>)[key] = value;
+      } else {
+        delete (session as Record<string, unknown>)[key];
+      }
     }
     if (
       fields.orchestrationRole === "lead"
       && !isOrchestrationInteractionMode(session.interactionMode)
     ) {
       session.interactionMode = "orchestrator-lead";
-    }
-    if (fields.orchestrationParentSessionId !== undefined) {
-      if (fields.orchestrationParentSessionId)
-        session.orchestrationParentSessionId = fields.orchestrationParentSessionId;
-      else delete session.orchestrationParentSessionId;
-    }
-    if (fields.orchestrationTag !== undefined) {
-      if (fields.orchestrationTag) session.orchestrationTag = fields.orchestrationTag;
-      else delete session.orchestrationTag;
-    }
-    if (fields.orchestrationStepId !== undefined) {
-      if (fields.orchestrationStepId) session.orchestrationStepId = fields.orchestrationStepId;
-      else delete session.orchestrationStepId;
-    }
-    if (fields.orchestrationBundlePath !== undefined) {
-      if (fields.orchestrationBundlePath)
-        session.orchestrationBundlePath = fields.orchestrationBundlePath;
-      else delete session.orchestrationBundlePath;
     }
     const hasOrchestrationToolContext = buildOrchestrationSessionContext(managed) != null;
     if (

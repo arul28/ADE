@@ -96,6 +96,15 @@ function OrchestrationRolePill({
   );
 }
 
+function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null): string {
+  if (role === "worker" && tag && tag.trim().length > 0) {
+    return `Worker · ${tag.trim().toLowerCase()}`;
+  }
+  if (role === "lead") return "Lead";
+  if (role === "validator") return "Validator";
+  return role;
+}
+
 function getPreviewLine(session: TerminalSessionSummary, primaryText: string): string | null {
   const summary = preferredSessionLabel(session.summary);
   if (summary && summary !== primaryText) return summary;
@@ -152,6 +161,9 @@ export const SessionCard = React.memo(function SessionCard({
   const hasDeltaChips = Boolean(delta && (delta.insertions > 0 || delta.deletions > 0));
   const hasFooterMeta =
     showClaudeCacheTimer || hasDeltaChips || (session.exitCode != null && session.exitCode !== 0);
+  const orchestrationLabel = session.orchestrationRole
+    ? orchestrationRoleA11yLabel(session.orchestrationRole, session.orchestrationTag ?? null)
+    : null;
 
   return (
     <div className="group relative" onContextMenu={onContextMenu}>
@@ -178,6 +190,7 @@ export const SessionCard = React.memo(function SessionCard({
               }
             : {}),
         }}
+        {...(orchestrationLabel ? { "aria-label": `${orchestrationLabel}: ${primaryText}` } : {})}
         onClick={(event) => onSelect(session.id, event)}
       >
         <div className={cn("flex items-stretch", compact ? "gap-2 px-2 py-1" : "gap-2.5 px-2.5 py-2")}>
@@ -199,10 +212,13 @@ export const SessionCard = React.memo(function SessionCard({
                 {primaryText}
               </span>
               {session.orchestrationRole ? (
-                <OrchestrationRolePill
-                  role={session.orchestrationRole}
-                  tag={session.orchestrationTag ?? null}
-                />
+                <>
+                  <span className="sr-only">{orchestrationLabel}</span>
+                  <OrchestrationRolePill
+                    role={session.orchestrationRole}
+                    tag={session.orchestrationTag ?? null}
+                  />
+                </>
               ) : null}
               {staleAgeHours != null ? (
                 <span

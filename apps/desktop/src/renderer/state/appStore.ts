@@ -235,7 +235,9 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     activeItemId: normalizeOptionalString(candidate.activeItemId),
     selectedItemId: normalizeOptionalString(candidate.selectedItemId),
     viewMode: candidate.viewMode === "grid" ? "grid" : "tabs",
-    draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
+    draftKind: candidate.draftKind === "cli" || candidate.draftKind === "chat-orchestrator"
+      ? candidate.draftKind
+      : "chat",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     statusFilter:

@@ -238,6 +238,8 @@ export type AgentChatCloudRunStatus =
   | "cancelled"
   | "expired";
 
+export type AgentChatEventMetadata = Record<string, unknown>;
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1210,6 +1212,7 @@ export type AgentChatSendArgs = {
   displayText?: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
@@ -1224,6 +1227,7 @@ export type AgentChatSteerArgs = {
   text: string;
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
 };
 
 export type AgentChatSteerResult = {

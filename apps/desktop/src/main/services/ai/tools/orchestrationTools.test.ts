@@ -72,12 +72,14 @@ Run targeted vitest files, typecheck, and diff checks as proof.
 function makeChatStub(): OrchestrationAgentChatHandle & {
   createSession: ReturnType<typeof vi.fn>;
   sendMessage: ReturnType<typeof vi.fn>;
+  deleteSession: ReturnType<typeof vi.fn>;
   steer: ReturnType<typeof vi.fn>;
   interrupt: ReturnType<typeof vi.fn>;
   readTranscript: ReturnType<typeof vi.fn>;
 } {
   return {
     createSession: vi.fn(async () => ({ id: "S-spawned-1" })),
+    deleteSession: vi.fn(async () => undefined),
     sendMessage: vi.fn(async () => undefined),
     steer: vi.fn(async () => undefined),
     interrupt: vi.fn(async () => undefined),
@@ -200,6 +202,7 @@ describe("createOrchestrationToolSet", () => {
     expect(tools.registerAsset).toBeDefined();
     expect(tools.claimTask).toBeDefined();
     expect(tools.releaseTask).toBeDefined();
+    expect(tools.recordValidationRun).toBeDefined();
   });
 
   it("worker toolset has editFile/writeFile/bash + orchestration tools but no lead-only tools", async () => {
@@ -220,6 +223,7 @@ describe("createOrchestrationToolSet", () => {
     expect(tools.messageAgent).toBeDefined();
     expect(tools.getAgentTranscript).toBeDefined();
     expect(tools.registerAsset).toBeDefined();
+    expect(tools.recordValidationRun).toBeDefined();
   });
 
   it("worker bash aborts when the manifest requests cancellation", async () => {
@@ -722,6 +726,84 @@ describe("claimTask tool", () => {
     const result: any = await tools.claimTask!.execute({ taskId: "T-1" });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("validator_non_validation_task");
+  });
+});
+
+describe("recordValidationRun tool", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("lets a worker record an owned per-worker gate before release", async () => {
+    setup = await setupWithRun("worker");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    const seeded = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-worker",
+              role: "worker",
+              tag: "impl",
+              goalSummary: "implement",
+              status: "running",
+              spawnedAt: "now",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-1",
+              concern: "reverify_changes",
+              scope: "per_worker",
+              required: true,
+              prompt: "Re-read touched files.",
+              evidenceRequired: ["plan_md_section"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "developing",
+              title: "build it",
+              description: "x",
+              status: "claimed",
+              validationGate: { required: true, stepIds: ["V-1"] },
+              assigneeSessionId: "S-worker",
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    expect(seeded.ok).toBe(true);
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const result: any = await tools.recordValidationRun!.execute({
+      taskId: "T-1",
+      stepId: "V-1",
+      status: "passed",
+      notes: "plan evidence appended",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.checklistItemId).toMatch(/T-1/);
+    expect(setup.chat.steer).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "S-lead",
+      text: expect.stringContaining("recorded validation V-1"),
+    }));
+
+    const release: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    expect(release.ok).toBe(true);
   });
 });
 

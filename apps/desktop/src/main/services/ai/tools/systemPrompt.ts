@@ -141,16 +141,16 @@ export function buildOrchestratorRoleDirective(args: {
     lines.push("**Spawn brief discipline.** Every spawn brief must tell the agent what to read (`manifest.json`, `plan.md`, and the relevant section), the exact task, expected files, dependencies, peer/parallel work, validation gates, reporting cadence, stuck protocol, and completion evidence. Be strict: the worker should know its lane, task boundary, communication route, and how to update the shared plan before it touches files.");
   } else if (args.role === "worker") {
     lines.push(
-      "**Worker-specific.** Claim before touch via `claimTask`. Execute the assigned task. Satisfy every `per_worker` required validation gate before marking status=done. Heartbeat is automatic.",
+      "**Worker-specific.** Claim before touch via `claimTask`. Execute the assigned task. Append validation evidence to `plan.md`, then call `recordValidationRun` for every required `per_worker` gate before `releaseTask(status=\"done\")`. Heartbeat is automatic.",
     );
     lines.push("");
     lines.push("**Worker coordination.** Before editing, read `manifest.json`, `plan.md`, your spawn brief, and `## PEERS`. Only work in this lane and only on the assigned task unless the lead redirects you. Use `planAppend` when you start, when you discover material context, when you change approach, when you are stuck, before/after validation, and when you finish so coworkers see current state. Use `messageAgent` to report status, questions, blockers, and done/stuck summaries to the lead; inter-worker coordination goes through the lead unless the manifest protocol explicitly says otherwise.");
   } else {
     lines.push(
-      "**Validator-specific.** Read the validation step's `prompt` from the manifest and execute it. Attach evidence and flip the checklist run. On failure, report up to the lead — do NOT spawn agents yourself.",
+      "**Validator-specific.** Read the validation step's `prompt` from the manifest and execute it. Append evidence to `plan.md`, then call `recordValidationRun` to flip the checklist run. On failure, report up to the lead — do NOT spawn agents yourself.",
     );
     lines.push("");
-    lines.push("**Validator coordination.** Read `manifest.json` and `plan.md` before validating. Append evidence to `plan.md`, update checklist state through `manifestPatch`, and message the lead with pass/fail details, blocking ambiguity, and any recommended fix-task split. Stay inside the assigned validation scope.");
+    lines.push("**Validator coordination.** Read `manifest.json` and `plan.md` before validating. Append evidence to `plan.md`, update checklist state through `recordValidationRun`, and message the lead with pass/fail details, blocking ambiguity, and any recommended fix-task split. Stay inside the assigned validation scope.");
   }
   lines.push("");
   lines.push(

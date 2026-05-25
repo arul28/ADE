@@ -156,6 +156,112 @@ describe("validation concerns gating", () => {
     await svc.dispose();
   });
 
+  it("lets an assigned worker record its per-worker gate and release done", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    const m1 = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-worker",
+              role: "worker",
+              tag: "impl",
+              goalSummary: "implement",
+              status: "running",
+              spawnedAt: "now",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-worker-reverify",
+              concern: "reverify_changes",
+              scope: "per_worker",
+              required: true,
+              prompt: "Re-read every touched file and append evidence to plan.md.",
+              evidenceRequired: ["plan_md_section"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "developing",
+              title: "x",
+              description: "",
+              status: "claimed",
+              validationGate: { required: true, stepIds: ["V-worker-reverify"] },
+              assigneeSessionId: "S-worker",
+            },
+          },
+        ],
+      },
+      manifest.bundlePath,
+    );
+    expect(m1.ok).toBe(true);
+    if (!m1.ok) return;
+
+    const beforeGate = await svc.releaseTask(
+      {
+        runId: manifest.runId,
+        taskId: "T-1",
+        sessionId: "S-worker",
+        status: "done",
+      },
+      manifest.bundlePath,
+    ).then(
+      () => "unexpected",
+      (err) => String(err),
+    );
+    expect(beforeGate).toContain("required validation gates not satisfied");
+
+    const gate = await svc.recordValidationRun(
+      {
+        runId: manifest.runId,
+        taskId: "T-1",
+        stepId: "V-worker-reverify",
+        sessionId: "S-worker",
+        status: "passed",
+        notes: "plan.md evidence appended; npm test passed",
+      },
+      manifest.bundlePath,
+    );
+    expect(gate.ok).toBe(true);
+    if (!gate.ok) return;
+    expect(gate.manifest.validationStrategy.checklist).toMatchObject([
+      {
+        stepId: "V-worker-reverify",
+        taskId: "T-1",
+        latestRunId: gate.runId,
+      },
+    ]);
+
+    const released = await svc.releaseTask(
+      {
+        runId: manifest.runId,
+        taskId: "T-1",
+        sessionId: "S-worker",
+        status: "done",
+      },
+      manifest.bundlePath,
+    );
+    expect(released.manifest.tasks.find((task) => task.id === "T-1")?.status).toBe("done");
+    await svc.dispose();
+  });
+
   it("lead cannot lower validationGate.required without override pair", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const { manifest } = await svc.runCreate({

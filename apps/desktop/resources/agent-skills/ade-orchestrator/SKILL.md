@@ -7,7 +7,7 @@ description: Orchestrator-mode protocol for ADE Work-tab lead, worker, and valid
 
 You are running inside ADE's Work-tab orchestrator. Your role (lead, worker, or validator) is declared in the system prompt. This skill is the protocol everyone follows.
 
-The orchestration **bundle** at `<bundlePath>/manifest.json` + `<bundlePath>/plan.md` is the single source of truth. Read it before reasoning. Write through tools (`manifestPatch`, `planAppend`, `claimTask`, etc.) — never invent state, never fork canonical state into chat-only prose.
+The orchestration **bundle** at `<bundlePath>/manifest.json` + `<bundlePath>/plan.md` is the single source of truth. Read it before reasoning. Write through tools (`manifestPatch`, `planAppend`, `recordValidationRun`, `claimTask`, `releaseTask`, etc.) — never invent state, never fork canonical state into chat-only prose.
 
 ## §1 — User authority overrides defaults
 
@@ -73,15 +73,15 @@ When you accept an override:
 
 5. **Execute.** Implement the change. Workers have full edit-capable tools (`editFile`, `writeFile`, `bash`), but `bash` refuses writes to `<bundlePath>/manifest.json` and `<bundlePath>/plan.md` — go through the orchestration tools.
 
-6. **Satisfy validation gates.** After substantive edits, satisfy every `validationGate.stepIds[]` entry on the task that has `scope: "per_worker"` and `required: true`. Default gate (when present): `reverify_changes` — execute its `prompt` from the manifest. Write evidence via `planAppend`; tick the `validationStrategy.checklist`.
+6. **Satisfy validation gates.** After substantive edits, satisfy every `validationGate.stepIds[]` entry on the task that has `scope: "per_worker"` and `required: true`. Default gate (when present): `reverify_changes` — execute its `prompt` from the manifest. Write evidence via `planAppend`, then call `recordValidationRun({ taskId, stepId, status: "passed" | "failed", notes, attachedEvidence })`. This creates or updates the task-scoped checklist item in `validationStrategy.checklist`.
 
-7. **Mark done.** Patch `tasks[mine].status = "done"`. The server rejects this if required checklist items are not all `passed`, unless the same patch transaction also includes `humanOverride` on the task plus a matching `UserOverrideEntry`. Workers usually do NOT submit overrides — that's the lead's call.
+7. **Mark done.** Call `releaseTask({ taskId, status: "done" })`. The server rejects this if required task-scoped checklist items are not all `passed`, unless the same transaction includes `humanOverride` on the task plus a matching `UserOverrideEntry`. Workers usually do NOT submit overrides — that's the lead's call. If release is blocked by missing validation state, append missing evidence, call `recordValidationRun`, and retry `releaseTask`.
 
 ## §5 — Validating protocol (validator only)
 
 1. For each assigned step, read its `prompt` from `manifest.validationStrategy.steps[]` and execute it. The prompt is codebase-specific — do not assume vitest/jest/pytest or specific doc paths.
 
-2. Attach evidence and flip the checklist run to `passed` or `failed`. Use `manifestPatch` to add a new `ValidationChecklistRun` entry with `supersedes: <priorRunId>` to preserve history.
+2. Attach evidence and record the checklist run as `passed` or `failed`. Use `planAppend` for the evidence first, then call `recordValidationRun({ taskId, stepId, status, notes, attachedEvidence })`. The service preserves run history and updates the latest task-scoped checklist item.
 
 3. **On failure**: spawn a fix-task by *reporting up to the lead*. Validators do NOT spawn agents themselves. Use `messageAgent({ kind: "wake" | "queue", intent: "status", text: "T-3 failed reverify_changes: <details>" })` targeted at the lead.
 
@@ -211,6 +211,6 @@ The brief must also say: read `manifest.json`, `plan.md`, and the relevant plan 
 - Using `bash` to edit `<bundlePath>/{manifest.json, plan.md}` — sandbox enforces this server-side too.
 - Validators spawning agents — they report up to the lead instead.
 - Workers patching their own `validationGate` — server rejects.
-- Workers patching `validationStrategy.checklist` items — server rejects; only validators may.
+- Patching `validationStrategy.checklist` items directly for validation state. Workers and validators must use `recordValidationRun`; direct checklist patches are reserved for lead-level reconciliation only.
 - Lowering `validationGate.required` without `humanOverride` + `UserOverrideEntry` in the same patch transaction — server rejects.
 - Re-prompting a default the user already waived in this scope.

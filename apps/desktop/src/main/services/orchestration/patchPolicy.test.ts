@@ -121,6 +121,87 @@ describe("patchPolicy", () => {
     expect(gate.allowed).toBe(false);
   });
 
+  it("worker may record its own per-worker checklist run", () => {
+    const manifest = makeManifest();
+    manifest.tasks[0]!.validationGate.stepIds = ["V-1"];
+    manifest.validationStrategy.steps = [
+      {
+        id: "V-1",
+        concern: "reverify_changes",
+        scope: "per_worker",
+        required: true,
+        prompt: "Re-read touched files.",
+        evidenceRequired: ["plan_md_section"],
+      },
+    ];
+    manifest.validationStrategy.checklist = [
+      {
+        id: "C-1",
+        stepId: "V-1",
+        taskId: "T-1",
+        runs: [],
+        latestRunId: "",
+      },
+    ];
+
+    const ok = checkPatchOp(
+      {
+        op: "add",
+        path: "/validationStrategy/checklist/{id:C-1}/runs/-",
+        value: {
+          id: "R-1",
+          runBySessionId: "S-worker",
+          status: "passed",
+          startedAt: "now",
+          endedAt: "now",
+        },
+      },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(ok.allowed).toBe(true);
+
+    const latest = checkPatchOp(
+      {
+        op: "replace",
+        path: "/validationStrategy/checklist/{id:C-1}/latestRunId",
+        value: "R-1",
+      },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(latest.allowed).toBe(true);
+
+    const foreignRun = checkPatchOp(
+      {
+        op: "add",
+        path: "/validationStrategy/checklist/{id:C-1}/runs/-",
+        value: {
+          id: "R-2",
+          runBySessionId: "S-other-worker",
+          status: "passed",
+          startedAt: "now",
+          endedAt: "now",
+        },
+      },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(foreignRun.allowed).toBe(false);
+
+    const globalItem = checkPatchOp(
+      {
+        op: "add",
+        path: "/validationStrategy/checklist/-",
+        value: {
+          id: "C-global",
+          stepId: "V-1",
+          runs: [],
+          latestRunId: "",
+        },
+      },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(globalItem.allowed).toBe(false);
+  });
+
   it("worker cannot patch another worker's task", () => {
     const manifest = makeManifest();
     const denied = checkPatchOp(

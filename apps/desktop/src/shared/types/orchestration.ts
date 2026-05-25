@@ -443,6 +443,18 @@ export type OrchestrationReleaseTaskRequest = {
   status: OrchestrationTaskStatus;
 };
 
+export type OrchestrationRecordValidationRunRequest = {
+  runId: string;
+  taskId: string;
+  stepId: string;
+  sessionId: string;
+  status: ValidationChecklistRun["status"];
+  notes?: string;
+  attachedEvidence?: EvidenceRef[];
+  startedAt?: string;
+  endedAt?: string;
+};
+
 export type OrchestrationPlanAppendRequest = {
   runId: string;
   section: string;

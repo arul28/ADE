@@ -855,6 +855,42 @@ function pathJoinOrchestration(worktree: string, runId: string): string {
   return path.join(worktree, ".ade", "orchestration", runId);
 }
 
+/**
+ * Project chat-level runtime state and orchestration identity onto a terminal
+ * session summary. Centralises the mapping so that every IPC endpoint that
+ * enriches sessions with chat data produces identical results.
+ */
+function projectChatOntoSession(
+  session: TerminalSessionSummary,
+  chat: AgentChatSessionSummary,
+): TerminalSessionSummary {
+  const base: TerminalSessionSummary = {
+    ...session,
+    ...(chat.orchestrationRunId
+      ? {
+          orchestrationRunId: chat.orchestrationRunId,
+          orchestrationRole: chat.orchestrationRole,
+          orchestrationTag: chat.orchestrationTag,
+        }
+      : {}),
+  };
+  if (chat.awaitingInput) {
+    return {
+      ...base,
+      runtimeState: "waiting-input" as const,
+      chatIdleSinceAt: null,
+      pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+    };
+  }
+  if (chat.status === "active") {
+    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
+  }
+  if (chat.status === "idle" || chat.status === "ended") {
+    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+  }
+  return base;
+}
+
 function escapeCsvCell(value: string | null | undefined): string {
   const input = value ?? "";
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
@@ -6397,31 +6433,7 @@ export function registerIpc({
           if (!isChatToolType(session.toolType)) return session;
           const chat = chatSummaryBySessionId.get(session.id);
           if (!chat) return session;
-          // Project orchestration fields onto every chat-backed terminal session
-          // so the sidebar can render role badges regardless of runtime status.
-          const orchestrationProjection = chat.orchestrationRunId
-            ? {
-                orchestrationRunId: chat.orchestrationRunId,
-                orchestrationRole: chat.orchestrationRole,
-                orchestrationTag: chat.orchestrationTag,
-              }
-            : {};
-          if (chat.awaitingInput) {
-            return {
-              ...session,
-              ...orchestrationProjection,
-              runtimeState: "waiting-input" as const,
-              chatIdleSinceAt: null,
-              pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
-            };
-          }
-          if (chat.status === "active") {
-            return { ...session, ...orchestrationProjection, runtimeState: "running" as const, chatIdleSinceAt: null };
-          }
-          if (chat.status === "idle" || chat.status === "ended") {
-            return { ...session, ...orchestrationProjection, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-          }
-          return { ...session, ...orchestrationProjection };
+          return projectChatOntoSession(session, chat);
         });
       },
       {
@@ -6969,7 +6981,7 @@ export function registerIpc({
       orchestrationStepId: arg.stepId,
       orchestrationBundlePath: bundlePath,
       goal: arg.goalSummary,
-    } as never);
+    });
     const spawnedAt = new Date().toISOString();
     const fp = {
       provider: routedSelection.provider,
@@ -7027,7 +7039,7 @@ export function registerIpc({
         sessionId: created.id,
         text: arg.initialMessage,
         metadata: { orchestrationOrigin: origin },
-      } as never,
+      },
       { awaitDispatch: false },
     );
     return { sessionId: created.id, etag: patchRes.etag };
@@ -7057,15 +7069,15 @@ export function registerIpc({
         sessionId: arg.targetSessionId,
         text: arg.payload.text,
         metadata: { orchestrationOrigin: origin },
-      } as never);
+      });
     } else if (arg.payload.kind === "interrupt-replace") {
-      await ctx.agentChatService.interrupt({ sessionId: arg.targetSessionId } as never);
+      await ctx.agentChatService.interrupt({ sessionId: arg.targetSessionId });
       await ctx.agentChatService.sendMessage(
         {
           sessionId: arg.targetSessionId,
           text: arg.payload.text,
           metadata: { orchestrationOrigin: origin },
-        } as never,
+        },
         { awaitDispatch: false },
       );
     } else {
@@ -7074,7 +7086,7 @@ export function registerIpc({
           sessionId: arg.targetSessionId,
           text: arg.payload.text,
           metadata: { orchestrationOrigin: origin },
-        } as never,
+        },
         { awaitDispatch: false },
       );
     }

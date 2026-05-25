@@ -7,20 +7,18 @@
  * keeps the full edit-capable set (for worker/validator) and layers
  * orchestration tools on top.
  *
- * All tools call into the main-process `OrchestrationService` handle directly
- * — they live inside the chat runtime and do not round-trip through IPC.
+ * Plan-quality assessment lives in `./orchestrationPlanQuality.ts`.
+ * Runtime infrastructure (heartbeat, cancellation, lead notification,
+ * sandbox config) lives in `./orchestrationRuntime.ts`.
  */
 
-import path from "node:path";
 import { z } from "zod";
 import { executableTool as tool, type ExecutableTool } from "./executableTool";
 import { createUniversalToolSet, type UniversalToolSetOptions } from "./universalTools";
-import { DEFAULT_WORKER_SANDBOX_CONFIG } from "../../orchestrator/orchestratorConstants";
-import type { WorkerSandboxConfig } from "../../../../shared/types";
 import type {
+  EvidenceRef,
   ManifestPatchOp,
   OrchestrationAssetKind,
-  OrchestrationEventPayload,
   OrchestrationManifest,
   OrchestrationPingIntent,
   OrchestrationPingKind,
@@ -39,6 +37,22 @@ import {
   isOrchestrationPlanApproved,
   resolveOrchestrationModel,
 } from "../../orchestration/runtimeProfile";
+
+// Extracted modules
+import { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
+import {
+  buildOrchestrationSandboxConfig,
+  errorMessage,
+  manifestOrThrow,
+  registerOrchestrationBashCancellation,
+  withHeartbeat,
+  withMutationSideEffects,
+} from "./orchestrationRuntime";
+
+// Re-export plan quality and sandbox config so existing consumers keep working
+export { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
+export type { OrchestrationPlanQualityMissing } from "./orchestrationPlanQuality";
+export { buildOrchestrationSandboxConfig } from "./orchestrationRuntime";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -75,6 +89,7 @@ export type OrchestrationSessionContext = {
  */
 export type OrchestrationAgentChatHandle = {
   createSession: (args: Record<string, unknown>) => Promise<{ id: string }>;
+  deleteSession: (args: { sessionId: string }) => Promise<void>;
   sendMessage: (
     args: Record<string, unknown>,
     options?: { awaitDispatch?: boolean },
@@ -122,6 +137,7 @@ const TASK_STATUS_VALUES = [
   "done",
   "failed",
 ] as const;
+const VALIDATION_RUN_STATUS_VALUES = ["running", "passed", "failed"] as const;
 const ASSET_KIND_VALUES = [
   "html_spec",
   "screenshot",
@@ -149,358 +165,7 @@ const LEAD_READ_ONLY_BASE = new Set([
   "summarizeFrontendStructure",
 ]);
 
-export type OrchestrationPlanQualityMissing = {
-  id: string;
-  label: string;
-  message: string;
-};
 
-type PlanQualityRequirement = OrchestrationPlanQualityMissing & {
-  patterns: RegExp[];
-};
-
-const PLAN_QUALITY_REQUIREMENTS: PlanQualityRequirement[] = [
-  {
-    id: "out_of_scope",
-    label: "Out of scope / non-goals",
-    message: "Add a clear out-of-scope or non-goals section.",
-    patterns: [
-      /out[-\s]?of[-\s]?scope/i,
-      /non[-\s]?goals?/i,
-      /not doing/i,
-      /excluded/i,
-      /deferred/i,
-    ],
-  },
-  {
-    id: "implementation_order",
-    label: "Implementation order",
-    message: "Add the planned implementation order, dependencies, or phase sequence.",
-    patterns: [
-      /implementation order/i,
-      /execution order/i,
-      /planned order/i,
-      /work order/i,
-      /sequence/i,
-      /phases?/i,
-      /dependencies?/i,
-      /\bfirst\b/i,
-      /\bthen\b/i,
-      /\bafter\b/i,
-      /\bparallel\b/i,
-    ],
-  },
-  {
-    id: "agent_plan",
-    label: "Agent plan",
-    message: "Add which workers/validators to spawn and what each owns.",
-    patterns: [
-      /agent plan/i,
-      /workers?/i,
-      /validators?/i,
-      /spawn/i,
-      /assignee/i,
-      /owner/i,
-      /tags?/i,
-      /role\/tag/i,
-      /model routing/i,
-      /model picks?/i,
-    ],
-  },
-  {
-    id: "validation_plan",
-    label: "Validation / proof plan",
-    message: "Add concrete validation, proof, or evidence expectations.",
-    patterns: [
-      /validation/i,
-      /validate/i,
-      /verify/i,
-      /test/i,
-      /typecheck/i,
-      /lint/i,
-      /build/i,
-      /smoke/i,
-      /proof/i,
-      /evidence/i,
-      /gates?/i,
-      /checks?/i,
-    ],
-  },
-  {
-    id: "ui_impact",
-    label: "UI decisions or N/A",
-    message: "Add UI/user-facing decisions, or explicitly say UI is not applicable.",
-    patterns: [
-      /\bui\b/i,
-      /\bux\b/i,
-      /user[-\s]?facing/i,
-      /interface/i,
-      /screen/i,
-      /view/i,
-      /visual/i,
-      /accessibility/i,
-      /not applicable/i,
-      /\bn\/a\b/i,
-      /no ui/i,
-      /non[-\s]?ui/i,
-      /backend[-\s]?only/i,
-      /cli[-\s]?only/i,
-    ],
-  },
-  {
-    id: "coordination_log",
-    label: "Coordination / live log",
-    message: "Add how plan.md and the manifest stay updated as agents work.",
-    patterns: [
-      /coordination/i,
-      /plan\.md/i,
-      /manifest/i,
-      /status update/i,
-      /progress update/i,
-      /live update/i,
-      /planAppend/i,
-      /messageAgent/i,
-      /report back/i,
-      /stuck/i,
-      /handoff/i,
-      /sync(?:ed)?/i,
-    ],
-  },
-  {
-    id: "alternatives",
-    label: "Alternatives / tradeoffs",
-    message: "Add alternatives, options, or tradeoffs considered for major choices.",
-    patterns: [
-      /alternatives?/i,
-      /options?/i,
-      /trade[-\s]?offs?/i,
-      /considered/i,
-      /approach/i,
-      /rejected/i,
-      /decision/i,
-    ],
-  },
-];
-
-export function assessOrchestrationPlanQuality(planSummary: string): {
-  ok: boolean;
-  missing: OrchestrationPlanQualityMissing[];
-} {
-  const text = planSummary.trim();
-  const missing = PLAN_QUALITY_REQUIREMENTS
-    .filter((requirement) => !requirement.patterns.some((pattern) => pattern.test(text)))
-    .map(({ id, label, message }) => ({ id, label, message }));
-  return { ok: missing.length === 0, missing };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Build a `WorkerSandboxConfig` for orchestration workers/validators by
- * extending the platform default with:
- *   - bundle `manifest.json` + `plan.md` as protected paths
- *   - `blockByDefault: true` so unknown commands fall through to a reject
- *
- * The `<bundlePath>/artifacts/**` tree remains writable through the standard
- * `allowedPaths` rule (project root contains the bundle).
- */
-export function buildOrchestrationSandboxConfig(
-  bundlePath: string,
-  base: WorkerSandboxConfig = DEFAULT_WORKER_SANDBOX_CONFIG,
-): WorkerSandboxConfig {
-  const manifestPath = path.join(bundlePath, "manifest.json");
-  const planPath = path.join(bundlePath, "plan.md");
-  const extraProtected = [
-    // anchor with start/end so a substring like "plan.md.bak" doesn't trip it
-    `^${escapeRegExp(manifestPath)}$`,
-    `^${escapeRegExp(planPath)}$`,
-    // Also block bundle manifest/plan when referenced via the bundle dir.
-    `${escapeRegExp(path.join(bundlePath, "manifest.json"))}`,
-    `${escapeRegExp(path.join(bundlePath, "plan.md"))}`,
-  ];
-  return {
-    ...base,
-    protectedFiles: [...base.protectedFiles, ...extraProtected],
-    blockByDefault: true,
-  };
-}
-
-function manifestOrThrow(
-  svc: ReturnType<typeof createOrchestrationService>,
-  runId: string,
-): OrchestrationManifest {
-  const manifest = svc.getManifestForRun(runId);
-  if (!manifest) {
-    throw new Error(
-      `Orchestration run ${runId} not loaded — call orchestrationBundleRead first.`,
-    );
-  }
-  return manifest;
-}
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
-}
-
-async function touchHeartbeat(
-  ctx: OrchestrationSessionContext,
-  svc: ReturnType<typeof createOrchestrationService>,
-): Promise<void> {
-  await svc.agentHeartbeat({
-    runId: ctx.runId,
-    sessionId: ctx.sessionId,
-  }, ctx.bundlePath).catch(() => undefined);
-}
-
-function leadSessionIdFor(
-  manifest: OrchestrationManifest,
-  ctx: OrchestrationSessionContext,
-): string | null {
-  const explicit = ctx.leadSessionId?.trim();
-  if (explicit) return explicit;
-  return manifest.agents.find((agent) => agent.role === "lead")?.sessionId ?? null;
-}
-
-async function notifyLeadStatus(args: {
-  ctx: OrchestrationSessionContext;
-  svc: ReturnType<typeof createOrchestrationService>;
-  chat: OrchestrationAgentChatHandle;
-  text: string;
-  taskId?: string;
-}): Promise<void> {
-  if (args.ctx.role === "lead") return;
-  const manifest = args.svc.getManifestForRun(args.ctx.runId);
-  if (!manifest) return;
-  const leadSessionId = leadSessionIdFor(manifest, args.ctx);
-  if (!leadSessionId || leadSessionId === args.ctx.sessionId) return;
-  await args.chat.steer({
-    sessionId: leadSessionId,
-    text: args.text,
-    metadata: {
-      orchestrationOrigin: {
-        runId: args.ctx.runId,
-        fromSessionId: args.ctx.sessionId,
-        kind: "queue" as OrchestrationPingKind,
-        intent: "status" as OrchestrationPingIntent,
-        ...(args.taskId ? { taskId: args.taskId } : {}),
-      },
-    },
-  }).catch(() => undefined);
-}
-
-function toolResultOk(result: unknown): boolean {
-  if (!result || typeof result !== "object") return true;
-  if (!("ok" in result)) return true;
-  return (result as { ok?: unknown }).ok === true;
-}
-
-async function withHeartbeat<T>(
-  ctx: OrchestrationSessionContext,
-  svc: ReturnType<typeof createOrchestrationService>,
-  fn: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await fn();
-  } finally {
-    await touchHeartbeat(ctx, svc);
-  }
-}
-
-async function withMutationSideEffects<T>(args: {
-  ctx: OrchestrationSessionContext;
-  svc: ReturnType<typeof createOrchestrationService>;
-  chat: OrchestrationAgentChatHandle;
-  notifyText: string;
-  taskId?: string;
-  fn: () => Promise<T>;
-}): Promise<T> {
-  let result: T;
-  try {
-    result = await args.fn();
-  } finally {
-    await touchHeartbeat(args.ctx, args.svc);
-  }
-  if (toolResultOk(result)) {
-    await notifyLeadStatus({
-      ctx: args.ctx,
-      svc: args.svc,
-      chat: args.chat,
-      text: args.notifyText,
-      ...(args.taskId ? { taskId: args.taskId } : {}),
-    });
-  }
-  return result;
-}
-
-type CancellationRegistry = {
-  controllers: Set<AbortController>;
-  unsubscribe: (() => void) | null;
-};
-
-const cancellationRegistries = new WeakMap<
-  ReturnType<typeof createOrchestrationService>,
-  Map<string, CancellationRegistry>
->();
-
-function cancellationRegistryKey(ctx: OrchestrationSessionContext): string {
-  return `${ctx.runId}\u0000${ctx.sessionId}`;
-}
-
-function manifestRequestsCancellation(
-  manifest: OrchestrationManifest | null | undefined,
-  sessionId: string,
-): boolean {
-  return manifest?.agents.some(
-    (agent) =>
-      agent.sessionId === sessionId &&
-      agent.cancellationRequested === true,
-  ) === true;
-}
-
-function registerOrchestrationBashCancellation(
-  svc: ReturnType<typeof createOrchestrationService>,
-  ctx: OrchestrationSessionContext,
-  controller: AbortController,
-): () => void {
-  if (manifestRequestsCancellation(svc.getManifestForRun(ctx.runId), ctx.sessionId)) {
-    controller.abort("orchestration cancellation requested");
-    return () => {};
-  }
-
-  let byService = cancellationRegistries.get(svc);
-  if (!byService) {
-    byService = new Map();
-    cancellationRegistries.set(svc, byService);
-  }
-  const key = cancellationRegistryKey(ctx);
-  let registry = byService.get(key);
-  if (!registry) {
-    registry = { controllers: new Set(), unsubscribe: null };
-    const onEvent = (payload: OrchestrationEventPayload) => {
-      if (payload.runId !== ctx.runId || payload.kind !== "manifest") return;
-      const manifest = payload.manifest ?? svc.getManifestForRun(ctx.runId);
-      if (!manifestRequestsCancellation(manifest, ctx.sessionId)) return;
-      for (const active of registry?.controllers ?? []) {
-        active.abort("orchestration cancellation requested");
-      }
-    };
-    registry.unsubscribe = svc.on("event", onEvent);
-    byService.set(key, registry);
-  }
-
-  registry.controllers.add(controller);
-  return () => {
-    const current = byService?.get(key);
-    if (!current) return;
-    current.controllers.delete(controller);
-    if (current.controllers.size > 0) return;
-    current.unsubscribe?.();
-    byService?.delete(key);
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Tool factories (per orchestration concept)
@@ -521,7 +186,7 @@ function createSpawnAgentTool(
       role: z.enum(["worker", "validator"]),
       tag: z.string().min(1, "tag is required"),
       goalSummary: z.string().min(1, "goalSummary is required"),
-      stepId: z.string().optional(),
+      stepId: z.string().min(1, "stepId is required"),
       initialMessage: z.string().min(1, "initialMessage is required"),
       modelOverride: z
         .object({
@@ -897,7 +562,7 @@ function createPlanAppendTool(
     description:
       "Append a section to the run's plan.md. " +
       "Use this to write decisions, progress updates, blockers, replans, evidence summaries, and Q&A history. " +
-      "Workers/validators must planAppend their evidence before ticking a checklist run.",
+      "Workers/validators must planAppend their evidence before calling recordValidationRun.",
     inputSchema: z.object({
       section: z.string().min(1, "section heading is required"),
       body: z.string().min(1, "body is required"),
@@ -1096,7 +761,7 @@ function createClaimTaskTool(
   return tool({
     description:
       "Claim a task before touching files. Default lease is 30 minutes. " +
-      "Heartbeats are automatic; release with `releaseTask` once you patch status=done/failed. " +
+      "Heartbeats are automatic; release with `releaseTask` after required validation runs are recorded. " +
       "Validators may only claim validation tasks.",
     inputSchema: z.object({
       taskId: z.string().min(1),
@@ -1189,6 +854,64 @@ function createReleaseTaskTool(
             return {
               ok: false as const,
               error: "release_failed",
+              message: errorMessage(err),
+            };
+          }
+        },
+      });
+    },
+  });
+}
+
+function createRecordValidationRunTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
+) {
+  return tool({
+    description:
+      "Record a validation checklist run for a task/step after appending evidence to plan.md. " +
+      "Workers may record only their own required per_worker gates; validators record their assigned validation gates. " +
+      "Call this before releaseTask(status='done') when the task has required validation gates.",
+    inputSchema: z.object({
+      taskId: z.string().min(1),
+      stepId: z.string().min(1),
+      status: z.enum(VALIDATION_RUN_STATUS_VALUES),
+      notes: z.string().optional(),
+      attachedEvidence: z.array(z.any()).optional(),
+      startedAt: z.string().optional(),
+      endedAt: z.string().optional(),
+    }),
+    execute: async (input) => {
+      return withMutationSideEffects({
+        ctx,
+        svc,
+        chat,
+        notifyText: `${ctx.role} ${ctx.sessionId} recorded validation ${input.stepId} for task ${input.taskId} as ${input.status}.`,
+        taskId: input.taskId,
+        fn: async () => {
+          try {
+            const res = await svc.recordValidationRun(
+              {
+                runId: ctx.runId,
+                sessionId: ctx.sessionId,
+                taskId: input.taskId,
+                stepId: input.stepId,
+                status: input.status,
+                ...(input.notes ? { notes: input.notes } : {}),
+                ...(input.attachedEvidence?.length
+                  ? { attachedEvidence: input.attachedEvidence as EvidenceRef[] }
+                  : {}),
+                ...(input.startedAt ? { startedAt: input.startedAt } : {}),
+                ...(input.endedAt ? { endedAt: input.endedAt } : {}),
+              },
+              ctx.bundlePath,
+            );
+            return res;
+          } catch (err) {
+            return {
+              ok: false as const,
+              error: "record_validation_run_failed",
               message: errorMessage(err),
             };
           }
@@ -1458,6 +1181,7 @@ export function createOrchestrationToolSet(
     // not having editFile/writeFile/bash.
     tools.claimTask = createClaimTaskTool(sessionContext, svc, chat);
     tools.releaseTask = createReleaseTaskTool(sessionContext, svc, chat);
+    tools.recordValidationRun = createRecordValidationRunTool(sessionContext, svc, chat);
     return tools;
   }
 
@@ -1465,6 +1189,7 @@ export function createOrchestrationToolSet(
   // enforces patch-path whitelists and per-role restrictions.
   tools.claimTask = createClaimTaskTool(sessionContext, svc, chat);
   tools.releaseTask = createReleaseTaskTool(sessionContext, svc, chat);
+  tools.recordValidationRun = createRecordValidationRunTool(sessionContext, svc, chat);
   tools.manifestPatch = createManifestPatchTool(sessionContext, svc, chat);
   tools.planAppend = createPlanAppendTool(sessionContext, svc, chat);
   tools.messageAgent = createMessageAgentTool({

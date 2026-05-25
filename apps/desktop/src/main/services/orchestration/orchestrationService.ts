@@ -24,17 +24,29 @@ import {
   type ManifestSection,
   type OrchestrationClaimTaskRequest,
   type OrchestrationReleaseTaskRequest,
+  type OrchestrationRecordValidationRunRequest,
   type OrchestrationRunCreateRequest,
   type OrchestrationRunCreateResponse,
   type OrchestrationTaskStatus,
 } from "../../../shared/types/orchestration";
 import {
   checkPatchOp,
+  extractTaskIdFromPath,
   isTaskHumanOverridePatch,
   isTaskStatusDonePatch,
   isUserOverrideEntryAppend,
   isValidationGateRequiredOff,
+  taskValidationGatesSatisfied,
 } from "./patchPolicy";
+import { applyPatches } from "./applyPatches";
+import {
+  normalizeManifestShape,
+  validateManifestShape,
+  buildPhaseTransitionOpsAfterTaskRelease,
+  inferValidationRerunSupersedes,
+  mergeSupersedes,
+  taskSupersedesIds,
+} from "./manifestNormalization";
 
 // Lightweight async mutex — small, dependency-free, FIFO. Replicates the
 // pattern used elsewhere in agentChatService.ts so behaviour is consistent.
@@ -57,6 +69,8 @@ const SELF_WRITE_WINDOW_MS = 1_000;
 const WATCHER_DEBOUNCE_MS = 50;
 const WATCHER_IDLE_CLOSE_MS = 30_000;
 const ORCHESTRATION_INDEX_VERSION = 1;
+const RUN_LIST_DEFAULT_LIMIT = 100;
+const RUN_LIST_MAX_LIMIT = 250;
 
 export type OrchestrationServiceEvents = {
   event: (payload: OrchestrationEventPayload) => void;
@@ -78,9 +92,17 @@ type RunRuntime = {
 
 type RunIndexEntry = {
   runId: string;
+  laneId: string;
   createdAt: string;
+  updatedAt: string;
   title: string;
+  goalSummary: string;
+  currentPhase: OrchestrationRunSummary["currentPhase"];
+  etag: string;
   bundlePath: string;
+  status: OrchestrationRunSummary["status"];
+  agentCount: number;
+  taskCount: number;
 };
 
 type RunIndex = {
@@ -178,6 +200,52 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     return path.join(orchestrationDirForLane(laneId), INDEX_FILE);
   }
 
+  function runIndexEntryFromManifest(
+    manifest: OrchestrationManifest,
+    status: OrchestrationRunSummary["status"] = "active",
+  ): RunIndexEntry {
+    return {
+      runId: manifest.runId,
+      laneId: manifest.laneId,
+      createdAt: manifest.createdAt,
+      updatedAt: manifest.updatedAt,
+      title: manifest.title,
+      goalSummary: manifest.goalSummary,
+      currentPhase: manifest.currentPhase,
+      etag: manifest.etag,
+      bundlePath: manifest.bundlePath,
+      status,
+      agentCount: manifest.agents.length,
+      taskCount: manifest.tasks.length,
+    };
+  }
+
+  function summaryFromRunIndexEntry(
+    entry: RunIndexEntry,
+    laneIdFallback: string,
+  ): OrchestrationRunSummary {
+    return {
+      runId: entry.runId,
+      laneId: entry.laneId || laneIdFallback,
+      title: entry.title,
+      goalSummary: entry.goalSummary,
+      currentPhase: entry.currentPhase,
+      etag: entry.etag,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      status: entry.status,
+      agentCount: entry.agentCount,
+      taskCount: entry.taskCount,
+    };
+  }
+
+  function normalizeRunListLimit(limit: unknown): number {
+    if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
+      return RUN_LIST_DEFAULT_LIMIT;
+    }
+    return Math.min(RUN_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
+  }
+
   function parseRunIndex(raw: string): RunIndex {
     const parsed = JSON.parse(raw) as Partial<RunIndex>;
     if (parsed.version !== ORCHESTRATION_INDEX_VERSION || !Array.isArray(parsed.runs)) {
@@ -228,14 +296,34 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
 
   async function readRunIndexEntriesOrScan(laneId: string): Promise<RunIndexEntry[]> {
     const index = await getLaneIndexMutex(laneId).run(() => readRunIndex(laneId));
-    const scanned = await scanRunIndexEntries(laneId);
-    if (!index) return mergeScannedIntoRunIndex(laneId, scanned);
+    if (!index) return mergeScannedIntoRunIndex(laneId, await scanRunIndexEntries(laneId));
 
-    const merged = mergeRunIndexEntries(index.runs, scanned);
-    if (merged.length !== index.runs.length) {
+    // Filter out stale entries whose manifest file has been deleted
+    const entries: RunIndexEntry[] = [];
+    let changed = false;
+    for (const entry of index.runs) {
+      if (!existsSync(path.join(entry.bundlePath, MANIFEST_FILE))) {
+        changed = true;
+        continue;
+      }
+      entries.push(entry);
+    }
+    if (changed) {
+      await getLaneIndexMutex(laneId).run(async () => {
+        await atomicWrite(
+          indexPathForLane(laneId),
+          JSON.stringify({ version: ORCHESTRATION_INDEX_VERSION, runs: entries } satisfies RunIndex, null, 2),
+        );
+      });
+    }
+    // Scan for manifests that exist on disk but are missing from the index,
+    // then merge them in to self-heal the index after partial writes or
+    // external modifications.
+    const scanned = await scanRunIndexEntries(laneId);
+    if (scanned.length > entries.length) {
       return mergeScannedIntoRunIndex(laneId, scanned);
     }
-    return merged;
+    return entries;
   }
 
   async function mergeScannedIntoRunIndex(
@@ -297,12 +385,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ) {
           continue;
         }
-        out.push({
-          runId: manifest.runId,
-          createdAt: manifest.createdAt,
-          title: manifest.title,
+        out.push(runIndexEntryFromManifest({
+          ...manifest,
           bundlePath: manifest.bundlePath || bundlePath,
-        });
+        }));
       } catch {
         // Ignore stale or malformed bundles while discovering runs.
       }
@@ -367,7 +453,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           `manifest.runId ${manifest.runId} does not match expected ${runtime.runId}`,
         );
       }
-      runtime.manifest = manifest;
+      runtime.manifest = normalizeManifestShape(manifest);
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e && e.code === "ENOENT") {
@@ -474,7 +560,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const planPath = path.join(runtime.bundlePath, PLAN_FILE);
       if (kind === "manifest") {
         const raw = await fsp.readFile(manifestPath, "utf-8");
-        const next = JSON.parse(raw) as OrchestrationManifest;
+        const next = normalizeManifestShape(JSON.parse(raw) as OrchestrationManifest);
         // Resilience: if runId mismatches (e.g. branch checkout swapped the
         // file), do not blindly etag-bump; mark suspended and ignore.
         if (next.runId !== runtime.runId) {
@@ -527,6 +613,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     await atomicWrite(manifestPath, JSON.stringify(manifest, null, 2));
     await writeServerGeneration(runtime.bundlePath, manifest.serverGeneration);
     runtime.manifest = manifest;
+    await appendRunIndexEntry(
+      manifest.laneId,
+      runIndexEntryFromManifest(manifest, runtime.suspended ? "suspended" : "active"),
+    );
   }
 
   async function persistPlan(runtime: RunRuntime, plan: string): Promise<void> {
@@ -592,12 +682,6 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       };
       await persistManifest(runtime, manifest);
       await persistPlan(runtime, initialPlanMd(manifest));
-      await appendRunIndexEntry(req.laneId, {
-        runId,
-        createdAt,
-        title: manifest.title,
-        bundlePath,
-      });
       emit({
         runId,
         kind: "manifest",
@@ -699,16 +783,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           const task = current.tasks.find((t) => t.id === taskId);
           if (!task) continue;
           if (!task.validationGate.required) continue;
-          const checklistOk = task.validationGate.stepIds.every((sid) => {
-            const items = current.validationStrategy.checklist.filter(
-              (c) => c.stepId === sid && (!c.taskId || c.taskId === taskId),
-            );
-            if (!items.length) return false;
-            return items.every((it) => {
-              const latest = it.runs.find((r) => r.id === it.latestRunId);
-              return latest?.status === "passed";
-            });
-          });
+          const checklistOk = taskValidationGatesSatisfied(current, taskId);
           if (!checklistOk && !(hasHumanOverride && hasUserOverrideEntry)) {
             return {
               ok: false,
@@ -731,7 +806,17 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         }
       }
 
-      const next = applyPatches(current, req.patches);
+      const next = normalizeManifestShape(applyPatches(current, req.patches));
+      const shapeError = validateManifestShape(next);
+      if (shapeError) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: shapeError,
+          manifest: current,
+          etag: current.etag,
+        };
+      }
       const updatedAt = nowIso();
       const serverGeneration = current.serverGeneration + 1;
       const etag = makeEtag(runtime, serverGeneration);
@@ -876,6 +961,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       const claimedAt = nowIso();
       const leaseUntil = new Date(Date.now() + req.leaseMs).toISOString();
+      const actor = manifest.agents.find((agent) => agent.sessionId === req.sessionId);
       const ops: ManifestPatchOp[] = [
         {
           op: "replace",
@@ -898,6 +984,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           value: leaseUntil,
         },
       ];
+      if (actor) {
+        ops.push({
+          op: "replace",
+          path: `/agents/{sessionId:${req.sessionId}}/status`,
+          value: "running" as const,
+        });
+      }
       const patchRes = await directPatch(runtime, ops, "claim");
       return { ok: true, manifest: patchRes.manifest, etag: patchRes.etag };
     });
@@ -910,6 +1003,28 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
+      const manifest = runtime.manifest;
+      if (!manifest) throw new Error(`run ${req.runId} not found`);
+      const task = manifest.tasks.find((entry) => entry.id === req.taskId);
+      if (!task) throw new Error(`task ${req.taskId} not found`);
+      const actor = manifest.agents.find((agent) => agent.sessionId === req.sessionId);
+      if (!actor) throw new Error(`agent ${req.sessionId} not registered in run ${req.runId}`);
+      if (
+        actor.role !== "lead"
+        && task.assigneeSessionId
+        && task.assigneeSessionId !== req.sessionId
+      ) {
+        throw new Error(`task ${req.taskId} is assigned to ${task.assigneeSessionId}, not ${req.sessionId}`);
+      }
+      if (
+        req.status === "done"
+        && task.validationGate.required
+        && !taskValidationGatesSatisfied(manifest, req.taskId)
+      ) {
+        throw new Error(
+          `task ${req.taskId} cannot be marked done: required validation gates not satisfied`,
+        );
+      }
       const ops: ManifestPatchOp[] = [
         {
           op: "replace",
@@ -922,8 +1037,186 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           value: null,
         },
       ];
+      const inferredSupersededTaskIds = inferValidationRerunSupersedes(
+        manifest,
+        task,
+        req.status,
+      );
+      if (inferredSupersededTaskIds.length) {
+        ops.push({
+          op: "replace",
+          path: `/tasks/{id:${req.taskId}}/supersedes`,
+          value: mergeSupersedes(taskSupersedesIds(task), inferredSupersededTaskIds),
+        });
+      }
+      if (actor.role !== "lead") {
+        const agentStatus =
+          req.status === "done"
+            ? "completed"
+            : req.status === "failed"
+              ? "failed"
+              : "blocked";
+        ops.push({
+          op: "replace",
+          path: `/agents/{sessionId:${req.sessionId}}/status`,
+          value: agentStatus,
+        });
+      }
+      const projectedManifest = applyPatches(manifest, ops);
+      ops.push(
+        ...buildPhaseTransitionOpsAfterTaskRelease(
+          projectedManifest,
+          req.taskId,
+          req.status,
+          nowIso(),
+        ),
+      );
       const patchRes = await directPatch(runtime, ops, "release");
       return { manifest: patchRes.manifest, etag: patchRes.etag };
+    });
+  }
+
+  async function recordValidationRun(
+    req: OrchestrationRecordValidationRunRequest,
+    bundlePath: string,
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string; checklistItemId: string; runId: string }
+    | { ok: false; error: "not_found" | "policy_denied" | "validation_failed"; message: string; manifest?: OrchestrationManifest; etag?: string }
+  > {
+    const runtime = getOrCreateRuntime(req.runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return {
+          ok: false,
+          error: "not_found",
+          message: `run ${req.runId} not found`,
+        };
+      }
+      const actor = manifest.agents.find((agent) => agent.sessionId === req.sessionId);
+      if (!actor) {
+        return {
+          ok: false,
+          error: "not_found",
+          message: `agent ${req.sessionId} not registered in run ${req.runId}`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      const task = manifest.tasks.find((entry) => entry.id === req.taskId);
+      if (!task) {
+        return {
+          ok: false,
+          error: "not_found",
+          message: `task ${req.taskId} not found`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      const step = manifest.validationStrategy.steps.find((entry) => entry.id === req.stepId);
+      if (!step) {
+        return {
+          ok: false,
+          error: "not_found",
+          message: `validation step ${req.stepId} not found`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      if (!task.validationGate.stepIds.includes(req.stepId)) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `validation step ${req.stepId} is not required by task ${req.taskId}`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      if (step.appliesToTaskIds?.length && !step.appliesToTaskIds.includes(req.taskId)) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `validation step ${req.stepId} does not apply to task ${req.taskId}`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      if (
+        actor.role === "worker" &&
+        (task.assigneeSessionId !== req.sessionId || step.scope !== "per_worker")
+      ) {
+        return {
+          ok: false,
+          error: "policy_denied",
+          message: "workers may only record validation runs for their own per-worker gates",
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+      if (actor.role !== "lead" && actor.role !== "worker" && actor.role !== "validator") {
+        return {
+          ok: false,
+          error: "policy_denied",
+          message: `actor role ${actor.role} cannot record validation runs`,
+          manifest,
+          etag: manifest.etag,
+        };
+      }
+
+      const startedAt = req.startedAt?.trim() || nowIso();
+      const runId = `run-${escapeId(req.taskId)}-${escapeId(req.stepId)}-${shortRand()}`;
+      const run = {
+        id: runId,
+        runBySessionId: req.sessionId,
+        status: req.status,
+        startedAt,
+        ...(req.status !== "running" ? { endedAt: req.endedAt?.trim() || startedAt } : {}),
+        ...(req.notes?.trim() ? { notes: req.notes.trim() } : {}),
+        ...(req.attachedEvidence?.length ? { attachedEvidence: req.attachedEvidence } : {}),
+      };
+      const existing = manifest.validationStrategy.checklist.find(
+        (entry) => entry.taskId === req.taskId && entry.stepId === req.stepId,
+      );
+      const itemId = existing?.id ?? `C-${escapeId(req.taskId)}-${escapeId(req.stepId)}`;
+      const patches: ManifestPatchOp[] = existing
+        ? [
+            {
+              op: "add",
+              path: `/validationStrategy/checklist/{id:${itemId}}/runs/-`,
+              value: run,
+            },
+            {
+              op: "replace",
+              path: `/validationStrategy/checklist/{id:${itemId}}/latestRunId`,
+              value: runId,
+            },
+          ]
+        : [
+            {
+              op: "add",
+              path: "/validationStrategy/checklist/-",
+              value: {
+                id: itemId,
+                stepId: req.stepId,
+                taskId: req.taskId,
+                runs: [run],
+                latestRunId: runId,
+              },
+            },
+          ];
+      const patchRes = await directPatch(
+        runtime,
+        patches,
+        `record validation ${req.taskId}/${req.stepId} ${req.status}`,
+      );
+      return {
+        ok: true,
+        manifest: patchRes.manifest,
+        etag: patchRes.etag,
+        checklistItemId: itemId,
+        runId,
+      };
     });
   }
 
@@ -939,27 +1232,35 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
         return { ok: false, reason: `agent ${req.sessionId} not found`, etag: manifest.etag };
       }
-      const patchRes = await directPatch(
-        runtime,
-        [{
+      const next = structuredClone(manifest) as OrchestrationManifest;
+      const agent = next.agents.find((entry) => entry.sessionId === req.sessionId);
+      if (agent) agent.lastHeartbeatAt = nowIso();
+      // Heartbeats are liveness metadata. They must not invalidate the optimistic
+      // concurrency etag that agents use for the next manifest mutation.
+      await persistManifest(runtime, next);
+      emit({
+        runId: req.runId,
+        kind: "manifest",
+        etag: next.etag,
+        manifest: next,
+        patch: [{
           op: "add",
           path: `/agents/{sessionId:${req.sessionId}}/lastHeartbeatAt`,
-          value: nowIso(),
+          value: agent?.lastHeartbeatAt,
         }],
-        "heartbeat",
-      );
-      return { ok: true, etag: patchRes.etag };
+      });
+      return { ok: true, etag: next.etag };
     });
   }
 
-  async function runList(laneId?: string): Promise<OrchestrationRunSummary[]> {
+  async function runList(
+    laneId?: string,
+    options: { limit?: number } = {},
+  ): Promise<OrchestrationRunSummary[]> {
+    const limit = normalizeRunListLimit(options.limit);
     if (laneId) {
       const entries = await readRunIndexEntriesOrScan(laneId);
-      for (const entry of entries) {
-        const existing = runs.get(entry.runId);
-        if (existing?.manifest) continue;
-        await hydrateRunForList(entry);
-      }
+      return entries.slice(-limit).map((entry) => summaryFromRunIndexEntry(entry, laneId));
     }
     const out: OrchestrationRunSummary[] = [];
     for (const runtime of runs.values()) {
@@ -980,7 +1281,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         taskCount: m.tasks.length,
       });
     }
-    return out;
+    return out
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(-limit);
   }
 
   /** Release a subscriber's reference; closes watcher when refCount hits zero. */
@@ -988,15 +1291,26 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const runtime = runs.get(runId);
     if (!runtime) return;
     runtime.refCount = Math.max(0, runtime.refCount - 1);
-    if (runtime.refCount === 0 && runtime.watcher) {
-      if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
-      runtime.watcherIdleTimer = setTimeout(() => {
-        runtime.watcherIdleTimer = null;
-        if (runtime.refCount > 0 || !runtime.watcher) return;
-        void runtime.watcher.close().catch(() => undefined);
-        runtime.watcher = null;
-      }, WATCHER_IDLE_CLOSE_MS);
-      runtime.watcherIdleTimer.unref?.();
+    if (runtime.refCount === 0) {
+      if (runtime.watcherDebounceTimer) {
+        clearTimeout(runtime.watcherDebounceTimer);
+        runtime.watcherDebounceTimer = null;
+      }
+      if (runtime.watcher) {
+        if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
+        runtime.watcherIdleTimer = setTimeout(() => {
+          runtime.watcherIdleTimer = null;
+          if (runtime.refCount > 0 || !runtime.watcher) return;
+          void runtime.watcher.close().catch(() => undefined);
+          runtime.watcher = null;
+          if (runtime.refCount === 0) {
+            runs.delete(runId);
+          }
+        }, WATCHER_IDLE_CLOSE_MS);
+        runtime.watcherIdleTimer.unref?.();
+      } else {
+        runs.delete(runId);
+      }
     }
   }
 
@@ -1048,7 +1362,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     summary: string,
   ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
     if (!runtime.manifest) throw new Error("manifest not loaded");
-    const next = applyPatches(runtime.manifest, patches);
+    const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
     const updatedAt = nowIso();
     const serverGeneration = runtime.manifest.serverGeneration + 1;
     const etag = makeEtag(runtime, serverGeneration);
@@ -1080,6 +1394,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     assetRegister,
     claimTask,
     releaseTask,
+    recordValidationRun,
     agentHeartbeat,
     runList,
     subscribe,
@@ -1112,125 +1427,12 @@ function escapeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-function extractTaskIdFromPath(path: string): string | null {
-  const m = /\/tasks\/\{id:([^}]+)\}/.exec(path);
-  return m ? m[1]! : null;
-}
-
 function initialPlanMd(manifest: OrchestrationManifest): string {
   return `# ${manifest.title}\n\n<sub>run id: ${manifest.runId} · lane: ${manifest.laneId} · created ${manifest.createdAt}</sub>\n\n## Goal\n\n${manifest.goalSummary || "_pending — the lead will fill this in_"}\n\n`;
 }
 
-/**
- * Apply a list of RFC-6902 subset patches to a manifest. Returns a fresh
- * (deep-cloned) manifest. Throws on invalid paths. Arrays are addressed by
- * id-predicate segments — `/tasks/{id:T-1}/...`.
- */
-export function applyPatches(
-  manifest: OrchestrationManifest,
-  patches: readonly ManifestPatchOp[],
-): OrchestrationManifest {
-  const next = structuredClone(manifest) as OrchestrationManifest;
-  for (const op of patches) {
-    applyPatch(next, op);
-  }
-  return next;
-}
-
-function applyPatch(root: unknown, op: ManifestPatchOp): void {
-  const segments = op.path
-    .slice(1)
-    .split("/")
-    .filter((s) => s.length > 0);
-  if (!segments.length) throw new Error("patch path empty");
-  let parent: unknown = root;
-  for (let i = 0; i < segments.length - 1; i++) {
-    parent = navigate(parent, segments[i]!, false);
-  }
-  const last = segments[segments.length - 1]!;
-  setOrRemove(parent, last, op);
-}
-
-const PREDICATE_RE = /^\{([a-zA-Z][a-zA-Z0-9]*):([^}]+)\}$/;
-
-function navigate(parent: unknown, segment: string, createMissing: boolean): unknown {
-  if (parent == null) throw new Error("cannot navigate into null/undefined");
-  const match = PREDICATE_RE.exec(segment);
-  if (match) {
-    const [, field, value] = match;
-    if (!Array.isArray(parent)) {
-      throw new Error(`predicate segment {${field}:${value}} requires array parent`);
-    }
-    const found = (parent as Array<Record<string, unknown>>).find(
-      (entry) => entry?.[field!] === value,
-    );
-    if (!found) throw new Error(`predicate ${field}=${value} matched no entry`);
-    return found;
-  }
-  if (segment === "-") {
-    throw new Error("'-' append segment only valid in trailing position");
-  }
-  if (Array.isArray(parent)) {
-    throw new Error(`numeric/string index segments not allowed on arrays (got "${segment}")`);
-  }
-  const obj = parent as Record<string, unknown>;
-  if (!(segment in obj)) {
-    if (createMissing) obj[segment] = {};
-    else throw new Error(`path segment "${segment}" does not exist`);
-  }
-  return obj[segment];
-}
-
-function setOrRemove(parent: unknown, last: string, op: ManifestPatchOp): void {
-  const match = PREDICATE_RE.exec(last);
-  if (match) {
-    const [, field, value] = match;
-    if (!Array.isArray(parent)) {
-      throw new Error(`predicate segment {${field}:${value}} requires array parent`);
-    }
-    const arr = parent as Array<Record<string, unknown>>;
-    const idx = arr.findIndex((e) => e?.[field!] === value);
-    if (op.op === "remove") {
-      if (idx === -1) return;
-      arr.splice(idx, 1);
-      return;
-    }
-    if (idx === -1) {
-      if (op.op === "add") {
-        arr.push(op.value as Record<string, unknown>);
-      } else {
-        throw new Error(`predicate ${field}=${value} matched no entry to replace`);
-      }
-      return;
-    }
-    if (op.op === "add") {
-      throw new Error(
-        `add op against existing entry ${field}=${value} — use replace instead`,
-      );
-    }
-    arr[idx] = op.value as Record<string, unknown>;
-    return;
-  }
-  if (last === "-") {
-    if (!Array.isArray(parent)) {
-      throw new Error("'-' append segment requires array parent");
-    }
-    if (op.op !== "add") {
-      throw new Error("'-' append segment only valid with add");
-    }
-    (parent as unknown[]).push(op.value);
-    return;
-  }
-  if (Array.isArray(parent)) {
-    throw new Error(`literal segment "${last}" not allowed on array`);
-  }
-  const obj = parent as Record<string, unknown>;
-  if (op.op === "remove") {
-    delete obj[last];
-    return;
-  }
-  obj[last] = op.value;
-}
+// Re-export applyPatches for external consumers that import from this module
+export { applyPatches } from "./applyPatches";
 
 export function validateSpawnBrief(initialMessage: string): {
   ok: boolean;

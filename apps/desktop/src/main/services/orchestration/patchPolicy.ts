@@ -123,7 +123,8 @@ const LEAD_DENY_PATTERNS = [
  * Worker allow-list. Workers may patch:
  *  - their own agent row's status/currentStepId/lastHeartbeatAt
  *  - tasks they have claimed: status, evidence, attempts
- *  - never validationGate or validationStrategy.checklist
+ *  - checklist run records only for their own required per-worker gates
+ *  - never validationGate or global/foreign validationStrategy.checklist rows
  */
 const WORKER_ALLOW_PATTERNS = [
   "/agents/{sessionId:SELF}/status",
@@ -183,6 +184,108 @@ function matchesAnyWithSelf(
   );
 }
 
+function extractChecklistItemId(path: string): string | null {
+  const m = /\/validationStrategy\/checklist\/\{id:([^}]+)\}/.exec(path);
+  return m ? m[1]! : null;
+}
+
+function isValidationRunStatus(value: unknown): boolean {
+  return value === "running" || value === "passed" || value === "failed";
+}
+
+function workerOwnsValidationTask(
+  manifest: OrchestrationManifest,
+  actorSessionId: string | undefined,
+  taskId: string | undefined,
+  stepId: string | undefined,
+): boolean {
+  if (!actorSessionId || !taskId || !stepId) return false;
+  const task = manifest.tasks.find((entry) => entry.id === taskId);
+  if (!task || task.assigneeSessionId !== actorSessionId) return false;
+  if (!task.validationGate.stepIds.includes(stepId)) return false;
+  const step = manifest.validationStrategy.steps.find((entry) => entry.id === stepId);
+  return step?.scope === "per_worker";
+}
+
+function runValueBelongsToWorker(value: unknown, actorSessionId: string | undefined): boolean {
+  if (!value || typeof value !== "object" || !actorSessionId) return false;
+  const run = value as Record<string, unknown>;
+  return run.runBySessionId === actorSessionId && isValidationRunStatus(run.status);
+}
+
+function workerChecklistPatchPolicy(
+  op: ManifestPatchOp,
+  parsed: ParsedPatchPath,
+  ctx: PatchPolicyContext,
+): PatchPolicyResult | null {
+  if (pathMatchesPattern(parsed, "/validationStrategy/checklist/-")) {
+    if (op.op !== "add" || !op.value || typeof op.value !== "object") {
+      return {
+        allowed: false,
+        reason: "workers may only append owned per-worker checklist items",
+        path: op.path,
+      };
+    }
+    const item = op.value as {
+      taskId?: unknown;
+      stepId?: unknown;
+      runs?: unknown;
+    };
+    const taskId = typeof item.taskId === "string" ? item.taskId : undefined;
+    const stepId = typeof item.stepId === "string" ? item.stepId : undefined;
+    if (!workerOwnsValidationTask(ctx.manifest, ctx.actorSessionId, taskId, stepId)) {
+      return {
+        allowed: false,
+        reason: "workers may only append checklist items for their own per-worker gates",
+        path: op.path,
+      };
+    }
+    if (
+      Array.isArray(item.runs) &&
+      item.runs.some((run) => !runValueBelongsToWorker(run, ctx.actorSessionId))
+    ) {
+      return {
+        allowed: false,
+        reason: "workers may only record their own checklist runs",
+        path: op.path,
+      };
+    }
+    return { allowed: true };
+  }
+
+  if (
+    !pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/runs/-") &&
+    !pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/latestRunId")
+  ) {
+    return null;
+  }
+  const itemId = extractChecklistItemId(op.path);
+  const item = ctx.manifest.validationStrategy.checklist.find((entry) => entry.id === itemId);
+  if (!item || !workerOwnsValidationTask(ctx.manifest, ctx.actorSessionId, item.taskId, item.stepId)) {
+    return {
+      allowed: false,
+      reason: "workers may only update checklist runs for their own per-worker gates",
+      path: op.path,
+    };
+  }
+  if (pathMatchesPattern(parsed, "/validationStrategy/checklist/{id:*}/runs/-")) {
+    if (op.op !== "add" || !runValueBelongsToWorker(op.value, ctx.actorSessionId)) {
+      return {
+        allowed: false,
+        reason: "workers may only append their own checklist run records",
+        path: op.path,
+      };
+    }
+  } else if (op.op === "remove" || typeof op.value !== "string") {
+    return {
+      allowed: false,
+      reason: "workers may only replace latestRunId with a run id",
+      path: op.path,
+    };
+  }
+  return { allowed: true };
+}
+
 /**
  * Decide whether a single patch op is allowed for the actor.
  */
@@ -209,6 +312,8 @@ export function checkPatchOp(
   }
 
   if (ctx.actorRole === "worker") {
+    const checklistPolicy = workerChecklistPatchPolicy(op, parsed, ctx);
+    if (checklistPolicy) return checklistPolicy;
     if (matchesAny(parsed, WORKER_DENY_PATTERNS)) {
       return {
         allowed: false,
@@ -269,6 +374,9 @@ function extractTaskId(path: string): string | null {
   return m ? m[1]! : null;
 }
 
+/** Exported alias of extractTaskId for use by orchestrationService. */
+export const extractTaskIdFromPath = extractTaskId;
+
 /**
  * Inspect a patch transaction holistically — used by IPC handler to detect
  * coordinated patches (e.g. status="done" together with humanOverride +
@@ -296,6 +404,27 @@ export function isUserOverrideEntryAppend(op: ManifestPatchOp): boolean {
   if (op.op === "remove") return false;
   if (op.path === "/userOverrides/-") return true;
   return /^\/userOverrides\/\{id:[^}]+\}$/.test(op.path);
+}
+
+export function taskValidationGatesSatisfied(
+  manifest: OrchestrationManifest,
+  taskId: string,
+): boolean {
+  const task = manifest.tasks.find((entry) => entry.id === taskId);
+  if (!task || !task.validationGate.required) return true;
+  return task.validationGate.stepIds.every((stepId) => {
+    const step = manifest.validationStrategy.steps.find((entry) => entry.id === stepId);
+    const items = manifest.validationStrategy.checklist.filter(
+      (entry) =>
+        entry.stepId === stepId &&
+        (entry.taskId === taskId || (!entry.taskId && step?.scope !== "per_worker")),
+    );
+    if (!items.length) return false;
+    return items.every((item) => {
+      const latest = item.runs.find((run) => run.id === item.latestRunId);
+      return latest?.status === "passed";
+    });
+  });
 }
 
 export function isValidationGateRequiredOff(op: ManifestPatchOp): boolean {

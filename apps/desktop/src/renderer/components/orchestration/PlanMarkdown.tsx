@@ -36,7 +36,7 @@ import { cn } from "../ui/cn";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
 export type PlanAssetResolver = (path: string) =>
-  | { url: string; kind?: "image" | "html" | "other" }
+  | { url: string; kind?: "image" | "html" | "other"; srcDoc?: string }
   | null
   | undefined;
 
