@@ -35,7 +35,7 @@ Do not make speculative cleanup the main result. If you cannot reproduce a suspe
    - `AGENTS.md` or the prompt-provided project instructions.
    - `docs/ARCHITECTURE.md` if the change crosses app/service boundaries.
    - Feature docs under `docs/features/**` that match `$ARGUMENTS`.
-   - Existing playbooks if the surface involves PRs, lanes, missions, computer use, sync, or release.
+   - Existing playbooks if the surface involves PRs, lanes, computer use, sync, or release.
 
 2. Inspect the changed surface:
    - `git status --short`
@@ -143,7 +143,7 @@ Run realistic flows with logs open.
    - Review
    - History
    - Automations
-   - Missions
+   - CTO
    - Settings
 
 If `$ARGUMENTS` names a surface, spend most time there but still check adjacent routes that stay mounted or subscribe to the same data.

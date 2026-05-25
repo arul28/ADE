@@ -1694,41 +1694,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // orchestrator
-  // ---------------------------------------------------------------------------
-  { domain: "orchestrator", action: "cancelRunGracefully", label: "Cancel orchestrator run gracefully", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator", action: "finalizeRun", label: "Finalize orchestrator run", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator", action: "getTeamMembers", label: "Get team members", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator", action: "getThreadMessages", label: "Get thread messages", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator", action: "getWorkerStates", label: "Get worker states", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator", action: "listChatThreads", label: "List orchestrator chat threads", description: "Advanced action — pass arguments as JSON.", params: [] },
-
-  // ---------------------------------------------------------------------------
-  // orchestrator_core
-  // ---------------------------------------------------------------------------
-  { domain: "orchestrator_core", action: "addReflection", label: "Add reflection", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "addSteps", label: "Add steps", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "appendRuntimeEvent", label: "Append runtime event", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "appendTimelineEvent", label: "Append timeline event", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "completeAttempt", label: "Complete attempt", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "createHandoff", label: "Create handoff", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "emitRuntimeUpdate", label: "Emit runtime update", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "getRunGraph", label: "Get run graph", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listAttempts", label: "List attempts", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listRetrospectivePatternStats", label: "List retrospective pattern stats", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listRetrospectiveTrends", label: "List retrospective trends", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listRetrospectives", label: "List retrospectives", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listRuns", label: "List runs", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "listTimeline", label: "List timeline", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "pauseRun", label: "Pause run", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "resumeRun", label: "Resume run", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "skipStep", label: "Skip step", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "startReadyAutopilotAttempts", label: "Start ready autopilot attempts", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "supersedeStep", label: "Supersede step", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "updateStepDependencies", label: "Update step dependencies", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "orchestrator_core", action: "updateStepMetadata", label: "Update step metadata", description: "Advanced action — pass arguments as JSON.", params: [] },
-
-  // ---------------------------------------------------------------------------
   // cto_state
   // ---------------------------------------------------------------------------
   { domain: "cto_state", action: "getIdentity", label: "Get CTO identity", description: "Return the CTO agent's identity record.", params: [] },
