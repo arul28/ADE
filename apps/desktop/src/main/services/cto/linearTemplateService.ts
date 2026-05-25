@@ -4,7 +4,7 @@ import YAML from "yaml";
 import type { NormalizedLinearIssue } from "../../../shared/types";
 import { isRecord, toOptionalString as asString } from "../shared/utils";
 
-export type LinearMissionTemplate = {
+export type LinearTemplate = {
   id: string;
   name: string;
   promptTemplate: string;
@@ -22,7 +22,7 @@ export type RenderTemplateResult = {
   metadata: Record<string, unknown>;
 };
 
-const FALLBACK_TEMPLATE: LinearMissionTemplate = {
+const FALLBACK_TEMPLATE: LinearTemplate = {
   id: "default",
   name: "Linear Intake",
   promptTemplate: [
@@ -56,7 +56,7 @@ function slugFromFilename(fileName: string): string {
     .replace(/^-+|-+$/g, "") || "template";
 }
 
-function parseTemplateFile(filePath: string): LinearMissionTemplate | null {
+function parseTemplateFile(filePath: string): LinearTemplate | null {
   let parsed: unknown = null;
   try {
     parsed = YAML.parse(fs.readFileSync(filePath, "utf8"));
@@ -120,14 +120,14 @@ function renderTemplateString(template: string, values: Record<string, unknown>)
 export function createLinearTemplateService(args: { adeDir: string }) {
   const templatesDir = path.join(args.adeDir, "templates");
 
-  const listTemplates = (): LinearMissionTemplate[] => {
+  const listTemplates = (): LinearTemplate[] => {
     if (!fs.existsSync(templatesDir)) return [FALLBACK_TEMPLATE];
 
     const templates = fs
       .readdirSync(templatesDir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name))
       .map((entry) => parseTemplateFile(path.join(templatesDir, entry.name)))
-      .filter((entry): entry is LinearMissionTemplate => entry != null)
+      .filter((entry): entry is LinearTemplate => entry != null)
       .sort((a, b) => a.name.localeCompare(b.name));
 
     const hasFallback = templates.some((entry) => entry.id === FALLBACK_TEMPLATE.id);
@@ -135,7 +135,7 @@ export function createLinearTemplateService(args: { adeDir: string }) {
     return templates;
   };
 
-  const getTemplate = (templateId: string | null | undefined): LinearMissionTemplate => {
+  const getTemplate = (templateId: string | null | undefined): LinearTemplate => {
     const all = listTemplates();
     const key = String(templateId ?? "").trim().toLowerCase();
     if (!key.length) return all[0] ?? FALLBACK_TEMPLATE;

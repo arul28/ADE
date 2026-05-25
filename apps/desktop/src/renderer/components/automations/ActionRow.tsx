@@ -4,7 +4,6 @@ import {
   Code,
   GitBranch,
   Lightning,
-  Rocket,
   TerminalWindow,
   TestTube,
   Trash,
@@ -12,13 +11,13 @@ import {
 } from "@phosphor-icons/react";
 import type { ElementType } from "react";
 import type {
-  MissionPermissionConfig,
+  AutomationRuleDraft,
   ModelConfig,
   TestSuiteDefinition,
 } from "../../../shared/types";
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
-import { ModelSelector } from "../missions/ModelSelector";
+import { ModelSelector } from "../shared/ModelSelector";
 import { permissionControlsForModel, patchPermissionConfig } from "./permissionControls";
 import { inputCls, labelCls, selectCls, textareaCls } from "./designTokens";
 import { AdeActionEditor, type AdeActionValue } from "./AdeActionEditor";
@@ -29,8 +28,9 @@ export type ActionRowKind =
   | "ade-action"
   | "run-tests"
   | "run-command"
-  | "predict-conflicts"
-  | "launch-mission";
+  | "predict-conflicts";
+
+type AutomationPermissionConfig = NonNullable<AutomationRuleDraft["permissionConfig"]>;
 
 export type ActionRowValue = {
   kind: ActionRowKind;
@@ -45,7 +45,7 @@ export type ActionRowValue = {
   sessionTitle?: string;
   modelConfig?: ModelConfig;
   codexFastMode?: boolean;
-  permissionConfig?: MissionPermissionConfig;
+  permissionConfig?: AutomationPermissionConfig;
   // Create lane
   laneNameTemplate?: string;
   laneDescriptionTemplate?: string;
@@ -57,8 +57,6 @@ export type ActionRowValue = {
   // run-command
   command?: string;
   cwd?: string;
-  // Mission
-  missionTitle?: string;
 };
 
 const KIND_META: Record<ActionRowKind, { label: string; icon: ElementType; accent: string }> = {
@@ -68,7 +66,6 @@ const KIND_META: Record<ActionRowKind, { label: string; icon: ElementType; accen
   "run-tests": { label: "Run tests", icon: TestTube, accent: "#22C55E" },
   "run-command": { label: "Run command", icon: TerminalWindow, accent: "#F59E0B" },
   "predict-conflicts": { label: "Predict conflicts", icon: Warning, accent: "#F97316" },
-  "launch-mission": { label: "Launch mission", icon: Rocket, accent: "#94A3B8" },
 };
 
 export function ActionRow({
@@ -335,18 +332,6 @@ export function ActionRow({
           </div>
         ) : null}
 
-        {value.kind === "launch-mission" ? (
-          <div className="space-y-2">
-            <input
-              className={inputCls}
-              value={value.missionTitle ?? ""}
-              onChange={(event) => onChange({ ...value, missionTitle: event.target.value })}
-              placeholder="Mission title"
-            />
-            <Chip className="text-[9px] text-[#B6B2C9]">Starts a mission and records the mission id in run history.</Chip>
-          </div>
-        ) : null}
-
         {value.kind !== "create-lane" ? (
           <RuntimeControls
             value={value}
@@ -365,8 +350,7 @@ function supportsLaneOverride(kind: ActionRowKind): boolean {
   return kind === "agent-session"
     || kind === "run-tests"
     || kind === "run-command"
-    || kind === "predict-conflicts"
-    || kind === "launch-mission";
+    || kind === "predict-conflicts";
 }
 
 function secondsFromMs(ms: number | undefined): number | "" {

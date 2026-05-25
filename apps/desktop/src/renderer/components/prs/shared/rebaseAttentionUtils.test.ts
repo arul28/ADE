@@ -61,8 +61,6 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     icon: overrides.icon ?? null,
     tags: overrides.tags ?? [],
     folder: overrides.folder ?? null,
-    missionId: overrides.missionId ?? null,
-    laneRole: overrides.laneRole ?? null,
     createdAt: overrides.createdAt ?? "2026-04-01T11:00:00.000Z",
     archivedAt: overrides.archivedAt ?? null,
   };

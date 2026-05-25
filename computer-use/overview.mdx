@@ -1,12 +1,12 @@
 ---
 title: "Proof Overview"
-description: "Proof is ADE's intentional evidence system. Agents capture screenshots, recordings, traces, and logs via the `ade proof` CLI; ADE stores and links them to missions, chats, PRs, and Linear issues."
+description: "Proof is ADE's intentional evidence system. Agents capture screenshots, recordings, traces, and logs via the `ade proof` CLI; ADE stores and links them to worker runs, chats, PRs, and Linear issues."
 icon: "camera"
 ---
 
 ## Overview
 
-Proof is ADE's way of collecting **intentional evidence** during agent work. Workers and chat agents capture screenshots, short recordings, browser traces, verification snapshots, and console logs through the `ade proof` CLI. ADE stores the resulting artifacts, normalizes them, and links them to the mission, chat session, PR, or Linear issue that produced them.
+Proof is ADE's way of collecting **intentional evidence** during agent work. Workers and chat agents capture screenshots, short recordings, browser traces, verification snapshots, and console logs through the `ade proof` CLI. ADE stores the resulting artifacts, normalizes them, and links them to the worker run, chat session, PR, or Linear issue that produced them.
 
 There is no separate computer-use broker, no backend negotiation, and no per-session policy chip. Agents simply call `ade proof` when they want to leave a trail.
 
@@ -15,13 +15,13 @@ There is no separate computer-use broker, no backend negotiation, and no per-ses
     Proof is explicit. Agents decide when a piece of work deserves a screenshot or recording — there is no background recording of every action.
   </Card>
   <Card title="Unified Artifacts" icon="database">
-    Every proof is stored with a canonical record: kind, owner, storage path, MIME type, and metadata. The same normalized schema powers mission artifact tabs, chat session history, and PR attachments.
+    Every proof is stored with a canonical record: kind, owner, storage path, MIME type, and metadata. The same normalized schema powers worker run artifact tabs, chat session history, and PR attachments.
   </Card>
   <Card title="Single CLI Surface" icon="terminal">
     Agents use `ade proof capture`, `ade proof record`, `ade proof list`, and a few related commands. See the [Setup](/computer-use/setup) page for the full command list.
   </Card>
   <Card title="Routed to Owners" icon="link">
-    Proofs are linked to lanes, missions, chat sessions, PRs, and Linear issues. Review and publish them from the Mission Artifacts tab or the chat artifact panel.
+    Proofs are linked to lanes, worker runs, chat sessions, PRs, and Linear issues. Review and publish them from the Worker run Artifacts tab or the chat artifact panel.
   </Card>
 </CardGroup>
 
@@ -47,7 +47,7 @@ Screenshots and short recordings are the most common kinds, because they can be 
 
 | Context | Where proofs appear |
 |---|---|
-| Missions | The **Artifacts tab** on every mission detail view lists every proof captured during that mission |
+| Workers | The **Artifacts tab** on every worker run detail view lists every proof captured during that worker run |
 | Agent Chat | The session artifact panel surfaces proofs captured inside a chat session |
 | Pull Requests | Proofs routed to a PR appear in the **Path to Merge** tab as inline attachments |
 | Linear Issues | Published proofs are posted as attachments on the linked Linear issue |

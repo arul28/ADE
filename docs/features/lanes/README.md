@@ -59,7 +59,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 
 | File | Responsibility |
 |------|---------------|
-| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, mission role tagging, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. |
+| `laneService.ts` | Lane CRUD, worktree creation/removal, status computation, stack chain traversal, rebase runs, reparent, startup repair routines, and the multi-step lane teardown pipeline (`getDeleteRisk`, `delete`, `cancelDelete`) that streams `LaneDeleteProgress` events as it stops processes/PTYs/watchers, cancels auto-rebase, runs `git worktree remove` / `git branch -D` / optional `git push --delete origin`, verifies residual worktree files are gone before DB cleanup, and cleans the pack directory + DB rows. Deletes now run to completion once started, so `cancelDelete` reports that no active delete can be cancelled. `reparent` accepts an optional `stackBaseBranchRef` to pick a specific branch to stack onto (resolved in the project repo with `origin/` preferred); when both the parent link and the resolved base branch are unchanged the call short-circuits without touching git. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths (Phase 5 W1) |
@@ -210,7 +210,6 @@ a lane parented to primary would always show zero behind.
 - `stackDepth: number`
 - `childCount: number`
 - `tags: string[]`, `color`, `icon`, `folder`
-- `missionId`, `laneRole` (nullable; see mission roles)
 - `devicesOpen?: LaneDevicePresence[]` — decoration added by
   `syncHostService` on response paths (`lanes.list`, `lanes.getDetail`,
   `lanes.create`, `lanes.attach`, etc.) from the in-memory lane
@@ -250,23 +249,6 @@ a lane parented to primary would always show zero behind.
   PRs that touch multiple tickets get cross-linked automatically.
   See [features/linear-integration/README.md](../linear-integration/README.md)
   for the cross-feature picture.
-
-## Mission lane roles
-
-Lanes may belong to a mission via `missionId` + `laneRole`. Roles:
-
-| Role | Meaning |
-|------|---------|
-| `mission_root` | Base lane the mission launched from |
-| `worker` | Lane for an individual worker agent |
-| `integration` | Merge target (legacy, retained for compatibility) |
-| `result` | Single output lane holding consolidated changes |
-
-`laneService.setMissionOwnership()` tags or re-tags a lane after
-creation. `createChildLane` also accepts these fields so worker/result
-lanes are tagged at birth. Mission-owned worker lanes are hidden by
-default from the Lanes list (see `isMissionLaneHiddenByDefault` in
-`renderer/components/lanes/laneUtils.ts`).
 
 ## Lane lifecycle
 
@@ -532,6 +514,3 @@ open lanes; primary lanes render with a home icon.
 - **Worktree paths must remain absolute.** `laneService` stores
   resolved absolute paths. Relative paths persisted by a bad caller
   break `git -C` across shells.
-- **Mission lanes hidden by default.** If a test expects a mission
-  worker lane to be visible, it must explicitly include mission
-  lanes via `isMissionLaneHiddenByDefault` filter bypass.

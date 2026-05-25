@@ -11,8 +11,6 @@ struct LaneActionsCard: View {
   var laneId: String? = nil
   var branchRef: String? = nil
   var laneType: String? = nil
-  var missionId: String? = nil
-  var laneRole: String? = nil
   var onRefresh: (@MainActor () async -> Void)? = nil
 
   @State private var moreExpanded = false
@@ -50,15 +48,6 @@ struct LaneActionsCard: View {
   private var branchSwitchDisabledReason: String? {
     if laneType == "attached" {
       return "Branch switching is disabled for attached lanes — manage this worktree with your own tools."
-    }
-    if missionId != nil, laneRole == "result" {
-      return "Branch switching is disabled for mission result lanes to keep their output stable."
-    }
-    // Only block when we *know* the lane is a mission worker (laneRole is set
-    // to a non-"result" value). Treat a missing/unknown role as "allowed" —
-    // older callers without a role shouldn't be silently locked out.
-    if missionId != nil, let role = laneRole, role != "result" {
-      return "Branch switching isn't available on mission worker lanes."
     }
     return nil
   }

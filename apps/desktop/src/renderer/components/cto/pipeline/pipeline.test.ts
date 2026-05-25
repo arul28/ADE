@@ -58,7 +58,6 @@ describe("pipelineHelpers (file group)", () => {
     const types: LinearWorkflowTarget["type"][] = [
       "worker_run",
       "employee_session",
-      "mission",
       "pr_resolution",
       "review_gate",
     ];
@@ -111,9 +110,8 @@ describe("pipelineHelpers (file group)", () => {
     it("strips downstreamTarget from each stage", () => {
       const target = makeTarget({
         downstreamTarget: {
-          type: "mission",
+          type: "pr_resolution",
           runMode: "autopilot",
-          missionTemplate: "default",
         },
       });
       const stages = flattenTargetChain(target);
@@ -209,12 +207,12 @@ describe("pipelineHelpers (file group)", () => {
 
     it("appends at the end", () => {
       const target = makeTarget();
-      const newStage: PipelineStage = { type: "mission", runMode: "autopilot" };
+      const newStage: PipelineStage = { type: "review_gate", runMode: "manual" };
       const result = insertStageAt(target, 1, newStage);
       const flat = flattenTargetChain(result);
       expect(flat).toHaveLength(2);
       expect(flat[0].type).toBe("worker_run");
-      expect(flat[1].type).toBe("mission");
+      expect(flat[1].type).toBe("review_gate");
     });
 
     it("inserts in the middle of a 3-stage chain", () => {
@@ -228,7 +226,7 @@ describe("pipelineHelpers (file group)", () => {
 
     it("throws for out-of-bounds index", () => {
       const target = makeTarget();
-      const newStage: PipelineStage = { type: "mission", runMode: "autopilot" };
+      const newStage: PipelineStage = { type: "review_gate", runMode: "manual" };
       expect(() => insertStageAt(target, -1, newStage)).toThrow("out of range");
       expect(() => insertStageAt(target, 5, newStage)).toThrow("out of range");
     });
@@ -278,7 +276,7 @@ describe("pipelineHelpers (file group)", () => {
       expect(flat[1].runMode).toBe("manual");
       // Other stages unchanged
       expect(flat[0].type).toBe("worker_run");
-      expect(flat[2].type).toBe("mission");
+      expect(flat[2].type).toBe("pr_resolution");
     });
 
     it("throws for out-of-bounds index", () => {
@@ -317,13 +315,6 @@ describe("pipelineHelpers (file group)", () => {
       expect(stage.workerSelector).toEqual({ mode: "none" });
       expect(stage.laneSelection).toBe("fresh_issue_lane");
       expect(stage.prTiming).toBe("none");
-    });
-
-    it("creates a default mission stage", () => {
-      const stage = createDefaultStage("mission");
-      expect(stage.type).toBe("mission");
-      expect(stage.runMode).toBe("autopilot");
-      expect(stage.missionTemplate).toBe("default");
     });
 
     it("creates a default pr_resolution stage", () => {
@@ -379,7 +370,7 @@ describe("pipelineLabels (file group)", () => {
 
   describe("label constants", () => {
     it("TARGET_TYPE_LABELS covers all target types", () => {
-      const expectedTypes = ["employee_session", "worker_run", "mission", "pr_resolution", "review_gate"];
+      const expectedTypes = ["employee_session", "worker_run", "pr_resolution", "review_gate"];
       for (const type of expectedTypes) {
         expect(TARGET_TYPE_LABELS[type], `missing label for target type: ${type}`).toBeDefined();
         expect(TARGET_TYPE_LABELS[type].displayName).toBeTruthy();
@@ -421,7 +412,7 @@ describe("pipelineLabels (file group)", () => {
     });
 
     it("STAGE_COLORS maps all target types to hex colors", () => {
-      const types = ["employee_session", "worker_run", "mission", "pr_resolution", "review_gate"];
+      const types = ["employee_session", "worker_run", "pr_resolution", "review_gate"];
       for (const type of types) {
         expect(STAGE_COLORS[type], `missing color for: ${type}`).toBeTruthy();
         expect(STAGE_COLORS[type]).toMatch(/^#[0-9A-Fa-f]{6}$/);
@@ -429,7 +420,7 @@ describe("pipelineLabels (file group)", () => {
     });
 
     it("PRESET_TEMPLATE_DESCRIPTIONS covers all target types", () => {
-      const types = ["employee_session", "mission", "worker_run", "pr_resolution", "review_gate"];
+      const types = ["employee_session", "worker_run", "pr_resolution", "review_gate"];
       for (const type of types) {
         expect(PRESET_TEMPLATE_DESCRIPTIONS[type], `missing description for: ${type}`).toBeTruthy();
       }

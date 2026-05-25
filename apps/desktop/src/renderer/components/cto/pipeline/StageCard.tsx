@@ -1,5 +1,5 @@
 import React from "react";
-import { Robot, Lightning as LightningIcon, GitBranch, ShieldCheck, Kanban } from "@phosphor-icons/react";
+import { Robot, Lightning as LightningIcon, GitBranch, ShieldCheck } from "@phosphor-icons/react";
 import type { LinearWorkflowTarget } from "../../../../shared/types/linearSync";
 import {
   TARGET_TYPE_LABELS,
@@ -15,7 +15,6 @@ import { cn } from "../../ui/cn";
 const TYPE_ICONS: Record<string, React.ElementType> = {
   employee_session: Robot,
   worker_run: LightningIcon,
-  mission: Kanban,
   pr_resolution: GitBranch,
   review_gate: ShieldCheck,
 };

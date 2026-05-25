@@ -9,7 +9,6 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
-import { parseWorkerDigestRow } from "../orchestrator/workerTracking";
 import type { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { AdeDb } from "../state/kvDb";
 import type { createTestService } from "../tests/testService";
@@ -20,8 +19,6 @@ import {
   type MatchedReviewRuleOverlay,
 } from "./reviewRuleRegistry";
 
-const MISSION_LIMIT = 1;
-const WORKER_DIGEST_LIMIT = 3;
 const SESSION_DELTA_LIMIT = 3;
 const PRIOR_REVIEW_LIMIT = 2;
 const VALIDATION_SIGNAL_LIMIT = 5;
@@ -40,15 +37,6 @@ type LinkedPrRow = {
   updated_at: string;
 };
 
-type MissionRow = {
-  mission_id: string | null;
-  title: string | null;
-  prompt: string | null;
-  status: string | null;
-  outcome_summary: string | null;
-  updated_at: string | null;
-};
-
 type PriorReviewRow = {
   id: string;
   status: string;
@@ -58,51 +46,12 @@ type PriorReviewRow = {
   publication_count: number;
 };
 
-type WorkerDigestRow = {
-  id: string;
-  mission_id: string;
-  run_id: string;
-  step_id: string;
-  attempt_id: string;
-  lane_id: string | null;
-  session_id: string | null;
-  step_key: string | null;
-  status: string;
-  summary: string;
-  files_changed_json: string | null;
-  tests_run_json: string | null;
-  warnings_json: string | null;
-  tokens_json: string | null;
-  cost_usd: number | null;
-  suggested_next_actions_json: string | null;
-  created_at: string;
-};
-
 export type ReviewContextProvenancePayload = {
   changedPaths: string[];
   laneSnapshot: {
     updatedAt: string | null;
     agentSummary: string | null;
-    missionSummary: string | null;
   } | null;
-  missions: Array<{
-    id: string;
-    title: string;
-    status: string | null;
-    outcomeSummary: string | null;
-    intentSummary: string | null;
-    updatedAt: string | null;
-  }>;
-  workerDigests: Array<{
-    id: string;
-    stepKey: string | null;
-    status: string;
-    summary: string;
-    filesChanged: string[];
-    testsSummary: string | null;
-    warnings: string[];
-    createdAt: string;
-  }>;
   sessionDeltas: Array<{
     sessionId: string;
     startedAt: string;
@@ -250,7 +199,6 @@ function summarizeRecord(record: Record<string, unknown> | null): string | null 
     "statusSummary",
     "latestMessage",
     "intent",
-    "mission",
   ];
   const directValues = directKeys
     .map((key) => record[key])
@@ -336,55 +284,6 @@ export function createReviewContextBuilder({
       `,
       [projectId, run.laneId],
     );
-  }
-
-  function getMissionRow(laneId: string): MissionRow | null {
-    return db.get<MissionRow>(
-      `
-        select
-          l.mission_id as mission_id,
-          m.title as title,
-          m.prompt as prompt,
-          m.status as status,
-          m.outcome_summary as outcome_summary,
-          m.updated_at as updated_at
-        from lanes l
-        left join missions m on m.id = l.mission_id
-        where l.id = ?
-          and l.project_id = ?
-        limit 1
-      `,
-      [laneId, projectId],
-    );
-  }
-
-  function listWorkerDigests(missionId: string | null, laneId: string): ReviewContextProvenancePayload["workerDigests"] {
-    if (!missionId?.trim()) return [];
-    const rows = db.all<WorkerDigestRow>(
-      `
-        select *
-        from orchestrator_worker_digests
-        where mission_id = ?
-          and project_id = ?
-          and (lane_id = ? or lane_id is null)
-        order by created_at desc
-        limit ?
-      `,
-      [missionId, projectId, laneId, WORKER_DIGEST_LIMIT],
-    );
-    return rows.map((row) => {
-      const digest = parseWorkerDigestRow(row);
-      return {
-        id: digest.id,
-        stepKey: digest.stepKey,
-        status: digest.status,
-        summary: clipText(digest.summary) ?? "No summary",
-        filesChanged: digest.filesChanged.slice(0, 4),
-        testsSummary: clipText(digest.testsRun?.summary ?? null),
-        warnings: compactList(digest.warnings, 2),
-        createdAt: digest.createdAt,
-      };
-    });
   }
 
   function listPriorReviews(runId: string, laneId: string, changedPaths: string[]): ReviewContextProvenancePayload["priorReviews"] {
@@ -588,8 +487,6 @@ export function createReviewContextBuilder({
   function buildProvenancePayload(args: {
     materialized: ReviewMaterializedTarget;
     laneSnapshot: ReturnType<Pick<ReturnType<typeof createLaneService>, "getStateSnapshot">["getStateSnapshot"]>;
-    missionRow: MissionRow | null;
-    workerDigests: ReviewContextProvenancePayload["workerDigests"];
     sessionDeltas: SessionDeltaSummary[];
     priorReviews: ReviewContextProvenancePayload["priorReviews"];
     validation: ReviewContextValidationPayload;
@@ -604,14 +501,6 @@ export function createReviewContextBuilder({
       failureLines: compactList(delta.failureLines, 3),
       computedAt: delta.computedAt,
     }));
-    const missions = args.missionRow?.mission_id && MISSION_LIMIT > 0 ? [{
-      id: args.missionRow.mission_id,
-      title: clipText(args.missionRow.title, 120) ?? args.missionRow.mission_id,
-      status: args.missionRow.status,
-      outcomeSummary: clipText(args.missionRow.outcome_summary),
-      intentSummary: clipText(args.missionRow.prompt),
-      updatedAt: args.missionRow.updated_at,
-    }] : [];
     const lateStageSignals: ReviewContextProvenancePayload["lateStageSignals"] = [];
     for (const delta of normalizedSessionDeltas) {
       const overlappingPaths = overlapsChangedPaths(delta.touchedFiles, changedPaths);
@@ -653,10 +542,7 @@ export function createReviewContextBuilder({
       laneSnapshot: args.laneSnapshot ? {
         updatedAt: args.laneSnapshot.updatedAt,
         agentSummary: clipText(summarizeRecord(args.laneSnapshot.agentSummary)),
-        missionSummary: clipText(summarizeRecord(args.laneSnapshot.missionSummary)),
       } : null,
-      missions,
-      workerDigests: args.workerDigests,
       sessionDeltas: normalizedSessionDeltas,
       priorReviews: args.priorReviews,
       lateStageSignals: lateStageSignals.slice(0, VALIDATION_SIGNAL_LIMIT),
@@ -667,15 +553,6 @@ export function createReviewContextBuilder({
     const lines: string[] = [];
     if (payload.laneSnapshot?.agentSummary) {
       lines.push(`- Lane agent summary: ${payload.laneSnapshot.agentSummary}`);
-    }
-    if (payload.laneSnapshot?.missionSummary) {
-      lines.push(`- Lane mission summary: ${payload.laneSnapshot.missionSummary}`);
-    }
-    for (const mission of payload.missions) {
-      lines.push(`- Mission: ${mission.title}${mission.status ? ` [${mission.status}]` : ""}${mission.outcomeSummary ? ` — ${mission.outcomeSummary}` : mission.intentSummary ? ` — ${mission.intentSummary}` : ""}`);
-    }
-    for (const digest of payload.workerDigests) {
-      lines.push(`- Worker digest: ${digest.stepKey ?? "worker"} ${digest.status} — ${digest.summary}`);
     }
     for (const delta of payload.sessionDeltas) {
       if (delta.failureLines.length > 0) {
@@ -721,8 +598,6 @@ export function createReviewContextBuilder({
 
   function buildProvenanceSummary(payload: ReviewContextProvenancePayload): string {
     const parts = [
-      payload.missions.length > 0 ? `${payload.missions.length} mission` : null,
-      payload.workerDigests.length > 0 ? `${payload.workerDigests.length} worker digest${payload.workerDigests.length === 1 ? "" : "s"}` : null,
       payload.sessionDeltas.length > 0 ? `${payload.sessionDeltas.length} session delta${payload.sessionDeltas.length === 1 ? "" : "s"}` : null,
       payload.priorReviews.length > 0 ? `${payload.priorReviews.length} prior review${payload.priorReviews.length === 1 ? "" : "s"}` : null,
       payload.lateStageSignals.length > 0 ? `${payload.lateStageSignals.length} late-stage signal${payload.lateStageSignals.length === 1 ? "" : "s"}` : null,
@@ -752,9 +627,7 @@ export function createReviewContextBuilder({
     }): Promise<ReviewContextPacket> {
       const changedPaths = args.materialized.changedFiles.map((file) => file.filePath);
       const laneSnapshot = laneService.getStateSnapshot(args.run.laneId);
-      const missionRow = getMissionRow(args.run.laneId);
       const sessionDeltas = sessionDeltaService.listRecentLaneSessionDeltas(args.run.laneId, SESSION_DELTA_LIMIT);
-      const workerDigests = listWorkerDigests(missionRow?.mission_id ?? null, args.run.laneId);
       const priorReviews = listPriorReviews(args.run.id, args.run.laneId, changedPaths);
       const linkedPr = getLinkedPrRow(args.run);
       const matchedRules = matchReviewRuleOverlays(changedPaths);
@@ -775,8 +648,6 @@ export function createReviewContextBuilder({
       const provenancePayload = buildProvenancePayload({
         materialized: args.materialized,
         laneSnapshot,
-        missionRow,
-        workerDigests,
         sessionDeltas,
         priorReviews,
         validation: validationPayload,
@@ -804,13 +675,9 @@ export function createReviewContextBuilder({
           metadata: {
             summary: buildProvenanceSummary(provenancePayload),
             provenanceCount:
-              provenancePayload.missions.length
-              + provenancePayload.workerDigests.length
-              + provenancePayload.sessionDeltas.length
+              provenancePayload.sessionDeltas.length
               + provenancePayload.priorReviews.length
               + provenancePayload.lateStageSignals.length,
-            missionCount: provenancePayload.missions.length,
-            workerDigestCount: provenancePayload.workerDigests.length,
             sessionDeltaCount: provenancePayload.sessionDeltas.length,
             priorReviewCount: provenancePayload.priorReviews.length,
             lateStageSignalCount: provenancePayload.lateStageSignals.length,

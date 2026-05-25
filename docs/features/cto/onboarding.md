@@ -73,7 +73,7 @@ The editor reuses the personality preset grid from the wizard. Nothing outside t
 
 `CtoPromptPreview.tsx` renders the system prompt exactly as the runtime assembles it:
 
-1. Doctrine — immutable ADE-owned CTO mission statement.
+1. Doctrine — immutable ADE-owned CTO charter.
 2. Personality overlay — the selected preset's `systemOverlay` text, or the custom text.
 3. CTO continuity + environment model — the operating rules for continuity and the intent-to-tool routing map.
 

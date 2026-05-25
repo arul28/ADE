@@ -1,6 +1,6 @@
 # Automations
 
-Automations are rule-based background workflows. Each rule has a trigger, a target execution surface, a prompt/mission template, an optional tool palette, an optional output contract, and guardrails. Automations sit between the CTO (heavy, stateful, chat-driven) and raw cron (deterministic, no AI). The execution surface choice is the key control point.
+Automations are rule-based background workflows. Each rule has a trigger, a target execution surface, a prompt template or action chain, an optional tool palette, an optional output contract, and guardrails. Automations sit between the CTO (heavy, stateful, chat-driven) and raw cron (deterministic, no AI). The execution surface choice is the key control point.
 
 Automations never duplicate Linear issue intake — the CTO owns that. Automations can consume Linear as context or write to it as an action, but the canonical intake and routing logic lives in the CTO/Linear services hosted by the runtime daemon.
 
@@ -16,7 +16,7 @@ Caveat: GitHub-polling and webhook ingress only work on a runtime that can reach
 
 These services are loaded by the runtime daemon's project scope (and by the desktop main process when it hosts a local project) — the path reflects the source tree, not where the code "runs".
 
-- `automationService.ts` — main service. Rule CRUD, execution dispatch (`mission`, `agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
+- `automationService.ts` — main service. Rule CRUD, execution dispatch (`agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`.
 - `automationIngressService.ts` — HTTP webhook ingress (GitHub, custom webhooks) and polling-relay ingress (GitHub relay API). Signature verification for webhooks. `AutomationIngressEventRecord` is the normalized event shape.
 - `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Diffs per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` trigger events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
@@ -24,7 +24,7 @@ These services are loaded by the runtime daemon's project scope (and by the desk
 
 ### ADE Actions registry
 
-- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
+- `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
 
 ### Renderer
 
@@ -54,12 +54,11 @@ Each `AutomationRule` carries:
 - `id`, `name`, `description`, `enabled`.
 - `triggers` — one or more trigger descriptors (see `triggers-and-actions.md`). Normalized to a single primary trigger for legacy compatibility.
 - `execution` — which surface launches. `AutomationExecution`:
-  - `{ kind: "mission", targetLaneId?, mission? }` — launches the full mission runtime.
   - `{ kind: "agent-session", targetLaneId?, session? }` — launches a scoped AI chat thread, recorded as an automation-only chat. `session` carries optional `title`, `reasoningEffort`, and `codexFastMode` (boolean); `codexFastMode` is forwarded to the chat service only when the resolved provider is Codex and the model supports fast mode, so it is safe to set on a rule that may later switch models.
   - `{ kind: "built-in", targetLaneId?, builtIn: { actions: [...] } }` — runs ADE-native deterministic actions (`AutomationAction[]`).
 - `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs).
 - `reviewProfile` — `quick` | `incremental` | `full` | `security` | `release-risk` | `cross-repo-contract`. Drives confidence base and output expectations.
-- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`, `mission`).
+- `toolPalette` — explicit tool family list (`repo`, `git`, `tests`, `github`, `linear`, `browser`).
 - `contextSources` — e.g. recent PRs or configured project context sources.
 - `guardrails` — `confidenceThreshold`, `maxDurationMin`, `requireHuman`, path/lane allowlists (see `guardrails.md`).
 - `outputs.disposition` — `comment-only` | `open-task` | `open-lane` | `prepare-patch` | `open-pr-draft`.
@@ -88,23 +87,14 @@ Best for lightweight autonomous text-work: reviews, audits, short summaries, sta
 - Appears in Automations > History as a thread.
 - Minimal orchestration overhead — no planner, no run-graph, no worker pool.
 
-### mission
-
-Best for code-affecting or multi-step tasks.
-
-- Launches through `aiOrchestratorService.startMission`.
-- Gets the full mission runtime: planner, phases, worker pool, interventions, validation, result-lane closeout.
-- Appears in the Missions UI (not Automations > History) because mission runs already have their own surface.
-- Budget telemetry respects the rule's `billingCode`.
-
 ### built-in
 
 Best for deterministic ADE operations.
 
 - Runs a sequence of `AutomationAction` steps with typed input/output.
-- `AutomationActionType` values: `create-lane` (spawns a new lane and threads it into the rest of the chain), `run-command` (shell), `run-tests`, `predict-conflicts`, `launch-mission`, `agent-session` (embedded agent step), `ade-action` (see below).
+- `AutomationActionType` values: `create-lane` (spawns a new lane and threads it into the rest of the chain), `run-command` (shell), `run-tests`, `predict-conflicts`, `agent-session` (embedded agent step), `ade-action` (see below).
 - Each action may override `targetLaneId` for that step alone; `agent-session` actions additionally accept `modelConfig` and `permissionConfig` overrides that layer on top of the rule's defaults (allowed-tool lists are merged, not replaced). See `triggers-and-actions.md` for the override resolution order.
-- No separate mission thread.
+- No separate worker thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
 
 The `ade-action` action type dispatches directly into a main-process domain service through the ADE Actions registry (`apps/desktop/src/main/services/adeActions/registry.ts`). `RunAdeActionConfig` points at a `domain` + `action` on the allowlist (e.g. `pr.addComment`, `linear_sync.runSyncNow`, `issue.close`), with `args` that may embed `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time, or an explicit `resolvers` map for the same. This gives built-in rules typed access to ADE services without writing a shell command or a bespoke tool.
@@ -153,23 +143,22 @@ The queue dashboard renders severity summaries and suggested actions so operator
 
 Automations route outputs based on `outputs.disposition`:
 
-- `comment-only` — write a comment to the mission or PR.
+- `comment-only` — write a comment to the automation log or PR.
 - `open-pr` — open a draft PR from the target lane.
 - `linear-comment` — post a Linear comment (uses CTO's Linear client).
 - `in-app-notification` — push a desktop notification.
 - `evidence-only` — leave the run record; no external output.
 
-`createArtifact: true` produces a `MissionArtifact` even for non-mission runs so the evidence is indexable. `notificationChannel` lets a rule override the default channel.
+`createArtifact: true` records proof evidence for indexing. `notificationChannel` lets a rule override the default channel.
 
 ## Budget policy
 
-- Budget caps come from the header Usage popup → Automation guardrails (shared with Missions). Rule-level caps via `guardrails.maxDurationMin` prevent runaway runs.
+- Budget caps come from the header Usage popup → Automation guardrails. Rule-level caps via `guardrails.maxDurationMin` prevent runaway runs.
 - Usage telemetry respects `billingCode` so operators can slice spend per rule.
 
 ## Boundaries
 
 - **CTO owns Linear intake.** Automations cannot define `linear.issue_created` intake logic that competes with CTO workflows. Automations can trigger on Linear events for their own context, but the CTO's `linearDispatcherService` is the canonical dispatch path for Linear issues.
-- **Mission runtime is the only mission surface.** Automations don't re-implement mission planning — `kind: "mission"` launches the real runtime.
 - **Built-in actions are deterministic.** They should not wrap an AI call. Use `agent-session` for AI-driven logic.
 
 ## Gotchas
@@ -182,12 +171,9 @@ Automations route outputs based on `outputs.disposition`:
 - **Webhook secret verification is timing-safe.** Don't refactor `safeCompareSignature` into a plain string compare.
 - **Relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref; resolve via `automationSecretService`, never hard-coded.
 - **Confidence threshold is `0.65` baseline.** Rules that explicitly raise the threshold penalize confidence proportionally — document this in rule descriptions so operators understand scoring.
-- **Mission execution does not receive the automation's tool palette directly.** The mission runtime has its own permission model; set the `execution.mission.permissions` field (if used) rather than hoping the top-level tool palette is inherited.
-
 ## Cross-links
 
 - `triggers-and-actions.md` — full trigger and action surface.
 - `guardrails.md` — approval gates, safety boundaries, verification modes.
 - `../cto/linear-integration.md` — the CTO owns Linear intake; automations do not duplicate it.
-- `../missions/README.md` — mission execution surface details.
-- `../computer-use/README.md` — automations can request computer-use proof via the mission surface.
+- `../computer-use/README.md` — automations can request computer-use proof.

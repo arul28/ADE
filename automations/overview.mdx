@@ -1,6 +1,6 @@
 ---
 title: "Automations Overview"
-description: "Programmable rules that run background work by time or action. Each automation can launch an agent session, a mission, or a built-in task from a single surface."
+description: "Programmable rules that run background work by time or action. Each automation can launch an agent session, a worker run, or a built-in task from a single surface."
 icon: "bolt"
 ---
 ## Overview
@@ -8,7 +8,7 @@ icon: "bolt"
 Automations is ADE's background execution layer. Each automation is a **Trigger → Execution** rule. When a trigger fires, ADE executes through one of three surfaces:
 
 - **agent-session** — an automation-only AI chat thread with scoped tools.
-- **mission** — a full mission run with phases, workers, and intervention support. (Paused in packaged builds until Missions ships; see the Execution Surfaces page.)
+- **worker run** — a delegated worker run with phases, workers, and intervention support. (Paused in packaged builds until Workers ships; see the Execution Surfaces page.)
 - **built-in** — an ADE-native operation (tests, conflict prediction, status sync) with no chat session. Can target a specific lane or auto-select from the trigger.
 
 The trigger can come from a schedule (`schedule`) or an action event (`webhook`, `github.webhook`, `git.push`, `git.commit`, manual run).
@@ -18,7 +18,7 @@ The trigger can come from a schedule (`schedule`) or an action event (`webhook`,
     Time-based (cron) and action-based triggers fire automatically based on events from git, files, webhooks, and user actions.
   </Card>
   <Card title="Execution Surfaces" icon="robot">
-    Choose between Agent Session, Mission, and Built-In Task based on autonomy and audit needs.
+    Choose between Agent Session, Worker run, and Built-In Task based on autonomy and audit needs.
   </Card>
   <Card title="Configurable Guardrails" icon="shield-check">
     Budget caps, scoped tools, dry-run mode, and verification gates keep automation outcomes controlled.
@@ -56,7 +56,7 @@ The trigger can come from a schedule (`schedule`) or an action event (`webhook`,
 
 <CardGroup cols={2}>
   <Card title="Execution surfaces" icon="robot" href="/automations/executors">
-    Learn about agent-session, mission, and built-in execution and how to pick the right one.
+    Learn about agent-session, worker run, and built-in execution and how to pick the right one.
   </Card>
   <Card title="Templates & Outputs" icon="layer-group" href="/automations/templates">
     Browse built-in automation templates and configure output routing.

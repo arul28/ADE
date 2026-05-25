@@ -1,6 +1,6 @@
 # Triggers and Actions
 
-The complete surface of triggers the automation runtime listens for, and the actions available in `built-in` execution. For execution surfaces (`mission`, `agent-session`, `built-in`) and rule structure, see the `README.md`.
+The complete surface of triggers the automation runtime listens for, and the actions available in `built-in` execution. For execution surfaces (`agent-session`, `built-in`) and rule structure, see the `README.md`.
 
 ## Source file map
 
@@ -118,7 +118,6 @@ Label normalization helper `normalizeLabels` accepts either string arrays or obj
 - `github` -> `Bash`, `bash`, `ade.github__get_pull_request`, `ade.github__create_pull_request`, `ade.github__add_issue_comment`.
 - `linear` -> `ade.linear__get_issue`, `ade.linear__save_comment`, `ade.linear__save_issue`.
 - `browser` -> `agent-browser`, `get_environment_info`, `launch_app`, `interact_gui`, `screenshot_environment`, `record_environment`, `ade.playwright__*`.
-- `mission` -> `get_mission`, `get_run_graph`, `stream_events`, `get_timeline`, `get_pending_messages`, `report_status`, `report_result`, `ask_user`.
 
 `PUBLISH_CAPABLE_TOOL_FAMILIES` — `github`, `linear`, `browser` — are the families that can publish outputs externally. Guardrails apply specifically to these.
 
@@ -134,7 +133,7 @@ Baseline tools (always available) come from `buildClaudeReadOnlyWorkerAllowedToo
   - `targetLaneId` — overrides the lane this action runs against. Resolves through `getConfiguredTargetLaneId(rule, action)` → `execution.targetLaneId` → trigger lane → primary lane.
   - `modelConfig` (`agent-session` only) — `{ modelId, thinkingLevel? }` overriding the rule's orchestrator model for this step. `thinkingLevel` also feeds the agent-session reasoning effort.
   - `codexFastMode` (`agent-session` only) — boolean that enables Codex Fast Mode for this step. Only applied when the resolved provider group is `codex` AND the resolved model descriptor supports fast mode (`modelSupportsFastMode`); silently ignored otherwise. Forwarded to the chat service as `codexFastMode: true` on the session create, which causes Codex `thread/start` + `turn/start` JSON-RPC calls to carry `serviceTier: "fast"`. Mirrors the rule-level `execution.session.codexFastMode` toggle and stacks the same way as `modelConfig` / `permissionConfig`.
-  - `permissionConfig` (`agent-session` only) — `MissionPermissionConfig` whose `cli`/`providers`/`inProcess` fields are merged onto the rule's permission config; `providers.allowedTools` and `cli.allowedTools` extend (not replace) the rule's allow-list. The `cursor` provider key is supported alongside `claude`/`codex`/`opencode`.
+  - `permissionConfig` (`agent-session` only) — provider permission config whose `cli`/`providers`/`inProcess` fields are merged onto the rule's permission config; `providers.allowedTools` and `cli.allowedTools` extend (not replace) the rule's allow-list. The `cursor` provider key is supported alongside `claude`/`codex`/`opencode`.
 - Action-specific config on the same object (`command`, `cwd`, `suiteId`, `adeAction`, `prompt`, `sessionTitle`, `laneNameTemplate`, `laneDescriptionTemplate`, `parentLaneId`).
 
 Runtime `AutomationActionResult.status` is one of `running` | `succeeded` | `failed` | `skipped` | `cancelled`. Rows are persisted in the `automation_actions` table with `started_at`, `ended_at`, `output`, `error_message`.
@@ -148,10 +147,9 @@ Action types (`AutomationActionType`):
 - `run-command` — shell command. `command` + optional `cwd`. Cwd validated via `validateAutomationCwd` + `resolvePathWithinRoot`; must stay inside the target lane worktree or project root.
 - `run-tests` — invokes the ADE test runner for `suiteId`.
 - `predict-conflicts` — runs the conflicts service's prediction for the target lane; no extra config.
-- `launch-mission` — dispatches a mission via the mission runtime. Same surface as `execution.kind === "mission"` but from inside an action chain.
 - `agent-session` — embeds an agent-session step inside a built-in chain. `prompt` + optional `sessionTitle`; the rule's tool palette applies.
 - `ade-action` — dispatches a registered ADE action. `adeAction: RunAdeActionConfig`:
-  - `domain` — one of the allowlisted `AdeActionDomain` values (`lane`, `git`, `pr`, `issue`, `chat`, `mission`, `linear_sync`, `file`, `pty`, `automations`, etc.).
+  - `domain` — one of the allowlisted `AdeActionDomain` values (`lane`, `git`, `pr`, `issue`, `chat`, `linear_sync`, `file`, `pty`, `automations`, etc.).
   - `action` — an entry on that domain's allowlist (e.g. `pr.addComment`, `issue.close`, `linear_sync.runSyncNow`).
   - `args` — object or array passed to the domain method. Strings may contain `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time.
   - `resolvers` — optional explicit `{ key: "trigger.path" }` mapping for placeholders that are not embedded in `args` strings.
@@ -187,4 +185,3 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - `README.md` — rule structure, execution surfaces, budget.
 - `guardrails.md` — approval gates, confidence thresholds, human review.
 - `../cto/linear-integration.md` — Linear intake boundary.
-- `../missions/README.md` — when a rule dispatches as `kind: "mission"`.

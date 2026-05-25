@@ -75,8 +75,8 @@ New `openCodeServerManager.ts` (488 lines) providing managed OpenCode server lif
 </Note>
 
 - New tool capabilities and enhanced request routing
-- `parseInitializeIdentity` now validates `identity.missionId` against the server-authorized run context, preventing cross-mission request injection
-- `ask_user` tool routing to mission interventions with proper orchestrator pause semantics
+- `parseInitializeIdentity` now validates `identity.runId` against the server-authorized run context, preventing cross-run request injection
+- `ask_user` tool routing to run interventions with proper orchestrator pause semantics
 - Test suite restructured with corrected identity/environment alignment
 
 ---
@@ -101,7 +101,7 @@ New `openCodeServerManager.ts` (488 lines) providing managed OpenCode server lif
 
 ## Housekeeping
 
-- Removed stale test files: `CtoPage.test.tsx`, `CommitTimeline.test.tsx`, `missionHelpers.test.ts`, `PrAiResolverPanel.test.tsx`
+- Removed stale test files: `CtoPage.test.tsx`, `CommitTimeline.test.tsx`, `runHelpers.test.ts`, `PrAiResolverPanel.test.tsx`
 - Removed 10 brittle `AgentChatMessageList` render tests broken by the work log redesign
 - Added global `lottie-react` jsdom stub in `vitest.workspace.ts` to prevent canvas crashes in renderer tests
 - New `opencode-ai-sdk.d.ts` type declarations

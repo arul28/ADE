@@ -121,7 +121,7 @@ export function buildLegacyPendingInputFromApprovalEvent(
     return {
       requestId: event.itemId,
       itemId: event.itemId,
-      source: "mission",
+      source: "ade",
       kind: optionList.length ? "structured_question" : "question",
       description: question,
       questions: [
@@ -144,7 +144,7 @@ export function buildLegacyPendingInputFromApprovalEvent(
   return {
     requestId: event.itemId,
     itemId: event.itemId,
-    source: "mission",
+    source: "ade",
     kind: "approval",
     description: event.description,
     questions: [],
@@ -162,7 +162,7 @@ function buildLegacyPendingInputFromStructuredQuestion(envelope: AgentChatEventE
   return {
     requestId: event.itemId,
     itemId: event.itemId,
-    source: "mission",
+    source: "ade",
     kind: "structured_question",
     description: event.question,
     questions: [

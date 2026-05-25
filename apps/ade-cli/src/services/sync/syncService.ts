@@ -40,7 +40,6 @@ import type { createLaneTemplateService } from "../../../../desktop/src/main/ser
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createMissionService } from "../../../../desktop/src/main/services/missions/missionService";
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { createIssueInventoryService } from "../../../../desktop/src/main/services/prs/issueInventoryService";
 import type { PathToMergeOrchestrator } from "../../../../desktop/src/main/services/prs/pathToMergeOrchestrator";
@@ -100,7 +99,6 @@ type SyncServiceArgs = {
   computerUseArtifactBrokerService: ReturnType<
     typeof createComputerUseArtifactBrokerService
   >;
-  missionService: ReturnType<typeof createMissionService>;
   agentChatService: ReturnType<typeof createAgentChatService>;
   workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
   workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
@@ -129,7 +127,7 @@ type SyncServiceArgs = {
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   /**
    * Optional notification bus forwarded to the sync host. The host publishes
-   * chat/PR/mission/system events and invokes `sendInAppNotification` for
+   * chat/PR/system events and invokes `sendInAppNotification` for
    * connected iOS peers.
    */
   notificationEventBus?: NotificationEventBus | null;
@@ -812,18 +810,6 @@ export function createSyncService(args: SyncServiceArgs) {
   const computeTransferReadiness = async (): Promise<SyncTransferReadiness> => {
     const blockers: SyncTransferBlocker[] = [];
 
-    for (const mission of args.missionService.list({
-      status: "active",
-      limit: 200,
-    })) {
-      blockers.push({
-        kind: "mission_run",
-        id: mission.id,
-        label: mission.title || mission.id,
-        detail: `Mission is ${mission.status}. Paused missions can transfer, but active mission work cannot.`,
-      });
-    }
-
     const chats = await args.agentChatService.listSessions(undefined, {
       includeIdentity: true,
       includeAutomation: true,
@@ -878,7 +864,6 @@ export function createSyncService(args: SyncServiceArgs) {
       ready: blockers.length === 0,
       blockers,
       survivableState: [
-        "Paused missions remain paused and can resume on the new host.",
         "CTO history and idle threads remain available on the new host.",
         "Idle and ended agent chats remain available and resumable on the new host.",
       ],
@@ -987,7 +972,7 @@ export function createSyncService(args: SyncServiceArgs) {
             : "Machine sync is disabled because the CRDT database extension is unavailable on this platform.",
         blockingStateText:
           crdtSyncAvailable
-            ? "Live missions, chats, terminals, or run processes must stop first."
+            ? "Live chats, terminals, or run processes must stop first."
             : "Install Windows cr-sqlite support before pairing or syncing devices.",
       };
     },
@@ -1119,7 +1104,7 @@ export function createSyncService(args: SyncServiceArgs) {
       if (current.role === "brain") return current;
       if (!current.transferReadiness.ready) {
         throw new Error(
-          "Stop live missions, chats, terminals, and run processes before transferring the host role.",
+          "Stop live chats, terminals, and run processes before transferring the host role.",
         );
       }
       const localDevice = deviceRegistryService.ensureLocalDevice();

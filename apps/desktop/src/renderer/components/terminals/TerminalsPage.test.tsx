@@ -40,8 +40,6 @@ const workMocks = vi.hoisted(() => {
     icon: null,
     tags: [],
     folder: null,
-    missionId: null,
-    laneRole: null,
     status: laneStatus,
     createdAt: "2026-05-14T18:00:00.000Z",
     archivedAt: null,

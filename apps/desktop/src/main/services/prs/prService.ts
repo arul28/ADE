@@ -4610,8 +4610,6 @@ export function createPrService({
     baseBranch: string;
     description?: string;
     allowDirtyWorktree?: boolean;
-    missionId?: string | null;
-    laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
   }): Promise<{
     integrationLane: LaneSummary;
     mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
@@ -4647,8 +4645,6 @@ export function createPrService({
         parentLaneId: preflight.baseLane.id,
         name: integrationLaneName,
         description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
-        missionId: args.missionId ?? null,
-        laneRole: args.laneRole ?? "integration",
       });
       integrationLockToken = acquireLaneMutationLock({
         lane: integrationLane,
@@ -6114,7 +6110,6 @@ export function createPrService({
         permissionMode: "guarded_edit",
         confidenceThreshold: null,
         originSurface: "manual",
-        originMissionId: null,
         originRunId: null,
         originLabel: null,
       },
@@ -7077,8 +7072,6 @@ export function createPrService({
       baseBranch: string;
       description?: string;
       allowDirtyWorktree?: boolean;
-      missionId?: string | null;
-      laneRole?: "mission_root" | "worker" | "integration" | "result" | null;
     }): Promise<{
       integrationLane: LaneSummary;
       mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;

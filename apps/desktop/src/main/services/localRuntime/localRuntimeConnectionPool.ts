@@ -879,7 +879,7 @@ function clampLimit(value: unknown): number {
 }
 
 function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
-  return value === "orchestrator" || value === "dag_mutation" || value === "runtime" || value === "mission" || value === "pty";
+  return value === "orchestrator" || value === "dag_mutation" || value === "runtime" || value === "pty";
 }
 
 function normalizeBufferedEvent(value: unknown): RemoteRuntimeBufferedEvent | null {

@@ -1,19 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_MODELS,
-  BUILT_IN_PROFILES,
   CLAUDE_MODELS,
   CLAUDE_THINKING_LEVELS,
   CODEX_MODELS,
   CODEX_THINKING_LEVELS,
   findModel,
   getModelsForProvider,
-  getProfileById,
   getThinkingLevels,
   MODEL_PRICING,
   modelConfigToServiceModel,
-  ORCHESTRATOR_CALL_TYPES,
-  resolveCallTypeModel,
   thinkingLevelToReasoningEffort,
   updateModelPricing,
 } from "./modelProfiles";
@@ -142,144 +138,6 @@ describe("thinking levels", () => {
     expect(levels.map((t) => t.value)).toEqual(["low", "medium", "high"]);
   });
 });
-
-// ---------------------------------------------------------------------------
-// ORCHESTRATOR_CALL_TYPES
-// ---------------------------------------------------------------------------
-
-describe("ORCHESTRATOR_CALL_TYPES", () => {
-  it("contains coordinator and chat_response entries", () => {
-    const keys = ORCHESTRATOR_CALL_TYPES.map((c) => c.key);
-    expect(keys).toContain("coordinator");
-    expect(keys).toContain("chat_response");
-  });
-
-  it("every entry has a label, description, and defaultProvider", () => {
-    for (const ct of ORCHESTRATOR_CALL_TYPES) {
-      expect(typeof ct.label).toBe("string");
-      expect(ct.label.length).toBeGreaterThan(0);
-      expect(typeof ct.description).toBe("string");
-      expect(ct.description.length).toBeGreaterThan(0);
-      expect(typeof ct.defaultProvider).toBe("string");
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Built-in profiles
-// ---------------------------------------------------------------------------
-
-describe("BUILT_IN_PROFILES", () => {
-  it("has exactly 5 built-in profiles", () => {
-    expect(BUILT_IN_PROFILES).toHaveLength(5);
-  });
-
-  const expectedIds = ["standard", "fast-cheap", "max-quality", "codex-only", "claude-only"];
-
-  it.each(expectedIds)("contains the '%s' profile", (id) => {
-    const profile = BUILT_IN_PROFILES.find((p) => p.id === id);
-    expect(profile).toBeDefined();
-    expect(profile!.isBuiltIn).toBe(true);
-  });
-
-  it("every profile has a valid structure", () => {
-    for (const profile of BUILT_IN_PROFILES) {
-      expect(typeof profile.id).toBe("string");
-      expect(typeof profile.name).toBe("string");
-      expect(typeof profile.description).toBe("string");
-      expect(profile.isBuiltIn).toBe(true);
-      expect(profile.orchestratorModel).toBeDefined();
-      expect(profile.orchestratorModel.modelId).toBeTruthy();
-      expect(profile.phaseDefaults).toBeDefined();
-      expect(profile.phaseDefaults.planning).toBeDefined();
-      expect(profile.phaseDefaults.implementation).toBeDefined();
-      expect(profile.phaseDefaults.testing).toBeDefined();
-      expect(profile.phaseDefaults.validation).toBeDefined();
-      expect(profile.phaseDefaults.codeReview).toBeDefined();
-      expect(profile.phaseDefaults.testReview).toBeDefined();
-      expect(profile.intelligenceConfig).toBeDefined();
-    }
-  });
-
-  it("codex-only profile uses only codex-provider models", () => {
-    const profile = getProfileById("codex-only")!;
-    expect(profile.orchestratorModel.provider).toBe("codex");
-    expect(profile.phaseDefaults.planning.provider).toBe("codex");
-    expect(profile.phaseDefaults.implementation.provider).toBe("codex");
-  });
-
-  it("claude-only profile uses only claude-provider models", () => {
-    const profile = getProfileById("claude-only")!;
-    expect(profile.orchestratorModel.provider).toBe("claude");
-    expect(profile.phaseDefaults.planning.provider).toBe("claude");
-    expect(profile.phaseDefaults.implementation.provider).toBe("claude");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getProfileById
-// ---------------------------------------------------------------------------
-
-describe("getProfileById", () => {
-  it("returns the standard profile by id", () => {
-    const profile = getProfileById("standard");
-    expect(profile).toBeDefined();
-    expect(profile!.name).toBe("Standard");
-  });
-
-  it("returns undefined for an unknown profile id", () => {
-    expect(getProfileById("nonexistent")).toBeUndefined();
-  });
-
-  it("returns undefined for an empty string", () => {
-    expect(getProfileById("")).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// resolveCallTypeModel
-// ---------------------------------------------------------------------------
-
-describe("resolveCallTypeModel", () => {
-  it("returns explicit config when present in intelligenceConfig", () => {
-    const config = { provider: "codex" as const, modelId: "openai/gpt-5.4", thinkingLevel: "high" as const };
-    const result = resolveCallTypeModel("coordinator", { coordinator: config });
-    expect(result).toBe(config);
-  });
-
-  it("falls back to fallbackModel when intelligenceConfig has no entry", () => {
-    const fallback = { provider: "claude" as const, modelId: "anthropic/claude-haiku-4-5", thinkingLevel: "low" as const };
-    const result = resolveCallTypeModel("coordinator", {}, fallback);
-    expect(result).toBe(fallback);
-  });
-
-  it("falls back to fallbackModel when intelligenceConfig is null", () => {
-    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4" };
-    const result = resolveCallTypeModel("chat_response", null, fallback);
-    expect(result).toBe(fallback);
-  });
-
-  it("falls back to fallbackModel when intelligenceConfig is undefined", () => {
-    const fallback = { provider: "codex" as const, modelId: "openai/gpt-5.4" };
-    const result = resolveCallTypeModel("coordinator", undefined, fallback);
-    expect(result).toBe(fallback);
-  });
-
-  it("returns ultimate fallback (Claude Sonnet) when no config or fallback", () => {
-    const result = resolveCallTypeModel("coordinator");
-    expect(result.modelId).toBe("anthropic/claude-sonnet-4-6");
-    expect(result.provider).toBe("claude");
-  });
-
-  it("returns ultimate fallback when both intelligenceConfig and fallback are null", () => {
-    const result = resolveCallTypeModel("chat_response", null, null);
-    expect(result.modelId).toBe("anthropic/claude-sonnet-4-6");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// modelConfigToServiceModel
-// ---------------------------------------------------------------------------
 
 describe("modelConfigToServiceModel", () => {
   it("returns the modelId when it is a non-empty string", () => {

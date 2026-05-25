@@ -50,14 +50,6 @@ export const GLOSSARY: Term[] = [
     docUrl: docs.lanesCreating,
   },
   {
-    id: "mission",
-    term: "Mission",
-    shortDefinition: "A job you hand to ADE to complete.",
-    longDefinition:
-      "A Mission is a piece of work described in plain words. ADE breaks it into steps and runs them, usually in its own Lane with one or more Workers doing the job.",
-    docUrl: docs.keyConcepts,
-  },
-  {
     id: "worker",
     term: "Worker",
     shortDefinition: "An AI agent that does work inside a Lane.",

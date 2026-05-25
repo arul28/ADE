@@ -126,7 +126,7 @@ export function buildCodingAgentSystemPrompt(args: {
         ]
       : []),
     "",
-    "## Mission",
+    "## Task",
     describeMode(mode),
     describePermissionMode(permissionMode),
     "",

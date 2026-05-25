@@ -20,7 +20,6 @@ enum NotificationCategories {
     static let prMergeReady = "PR_MERGE_READY"
     static let ctoSubagentStarted = "CTO_SUBAGENT_STARTED"
     static let ctoSubagentFinished = "CTO_SUBAGENT_FINISHED"
-    static let ctoMissionPhase = "CTO_MISSION_PHASE"
     static let systemAlert = "SYSTEM_ALERT"
   }
 
@@ -62,10 +61,9 @@ enum NotificationCategories {
       textInputPlaceholder: "Reply\u{2026}"
     )
 
-    // Generic "Open" — used by CHAT_TURN_COMPLETED, CTO_MISSION_PHASE, and
-    // SYSTEM_ALERT. Per-category titles (e.g. "Open agent", "Open mission") are
-    // built inline below so the same action identifier can carry different
-    // labels; AppDelegate routes on identifier, not title.
+    // Generic "Open" — used by CHAT_TURN_COMPLETED and SYSTEM_ALERT. Per-category
+    // titles are built inline below so the same action identifier can carry
+    // different labels; AppDelegate routes on identifier, not title.
     let open = UNNotificationAction(
       identifier: Action.open,
       title: "Open",
@@ -75,12 +73,6 @@ enum NotificationCategories {
     let openAgent = UNNotificationAction(
       identifier: Action.open,
       title: "Open agent",
-      options: [.foreground]
-    )
-
-    let openMission = UNNotificationAction(
-      identifier: Action.open,
-      title: "Open mission",
       options: [.foreground]
     )
 
@@ -159,21 +151,14 @@ enum NotificationCategories {
 
     let ctoSubagentFinished = UNNotificationCategory(
       identifier: Identifier.ctoSubagentFinished,
-      actions: [openMission],
+      actions: [openAgent],
       intentIdentifiers: [],
       options: []
     )
 
     let ctoSubagentStarted = UNNotificationCategory(
       identifier: Identifier.ctoSubagentStarted,
-      actions: [openMission],
-      intentIdentifiers: [],
-      options: []
-    )
-
-    let ctoMissionPhase = UNNotificationCategory(
-      identifier: Identifier.ctoMissionPhase,
-      actions: [open],
+      actions: [openAgent],
       intentIdentifiers: [],
       options: []
     )
@@ -195,7 +180,6 @@ enum NotificationCategories {
       prMergeReady,
       ctoSubagentStarted,
       ctoSubagentFinished,
-      ctoMissionPhase,
       systemAlert,
     ]
   }

@@ -22,11 +22,9 @@ import {
   buildApnsPayload,
   isAllowedByPrefs,
   mapChatEvent,
-  mapMissionEvent,
   mapPrEvent,
   mapSystemEvent,
   type MappedNotification,
-  type MissionPhaseEvent,
   type SystemEvent,
 } from "./notificationMapper";
 import type { ApnsEnvelope, ApnsService } from "./apnsService";
@@ -205,7 +203,7 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
       if (!args.apnsService || !args.apnsService.isConfigured()) continue;
 
       // `apns-expiration` drops the push if it can't be delivered within the
-      // window. For priority-5 / passive pushes (turn completed, mission phase,
+      // window. For priority-5 / passive pushes (turn completed,
       // sub-agent started) we don't want APNs queueing a stale banner if the
       // device is offline for hours — 10 minutes is plenty for them to still
       // feel "live". For priority-10 attention pushes (awaiting input, CI
@@ -283,10 +281,6 @@ export function createNotificationEventBus(args: NotificationEventBusArgs) {
     },
     publishPrEvent(event: { kind: PrNotificationKind; pr: PrSummary; titleOverride?: string; messageOverride?: string }): void {
       const mapped = mapPrEvent(event);
-      if (mapped.length > 0) fanOut(mapped);
-    },
-    publishMissionEvent(event: MissionPhaseEvent): void {
-      const mapped = mapMissionEvent(event);
       if (mapped.length > 0) fanOut(mapped);
     },
     publishSystemEvent(event: SystemEvent): void {

@@ -123,7 +123,6 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { rewriteMissionControlTextToolEvents } from "./missionControlTextTools";
 import {
   buildAutomaticMacosVmContextForPrompt,
   createAppControlContextInstanceId,
@@ -417,7 +416,7 @@ function getExecutionModeOptions(model: ModelDescriptor | null | undefined): Exe
         value: "parallel",
         label: "Parallel",
         summary: "Droid delegates",
-        helper: "Tell Droid to use available delegation or mission-style tools for independent subtasks, then reconcile the result.",
+        helper: "Tell Droid to use available delegation tools for independent subtasks, then reconcile the result.",
         accent: "#10B981",
       },
     ];
@@ -2268,9 +2267,7 @@ export function AgentChatPane({
       ? [...selectedEvents, optimisticOutgoingMessage.envelope]
       : selectedEvents;
     const renderableEvents = baseEvents.filter((envelope) => !envelope.event.type.startsWith("subagent."));
-    const displayEvents = presentation?.rewriteMissionControlTextTools === true || presentation?.mode === "mission-thread"
-      ? rewriteMissionControlTextToolEvents(renderableEvents)
-      : renderableEvents;
+    const displayEvents = renderableEvents;
     const promotedTurnId = selectedSession?.cursorPromotedTurnId;
     const cloudAgentId = selectedSession?.cursorCloudAgentId;
     if (!promotedTurnId || !cloudAgentId) return displayEvents;
@@ -2299,7 +2296,7 @@ export function AgentChatPane({
       },
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
-  }, [optimisticOutgoingMessage, presentation?.mode, presentation?.rewriteMissionControlTextTools, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
     let sawGoalEvent = false;
@@ -6662,7 +6659,6 @@ export function AgentChatPane({
           ) : null}
           {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
           {selectedSession?.provider === "codex"
-            && selectedSession.surface !== "mission"
             && selectedSessionId
             && selectedSession.threadId ? (
             <CodexOpenInCliButton

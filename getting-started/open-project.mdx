@@ -29,12 +29,12 @@ When ADE opens a repository for the first time, it creates a `.ade/` directory a
 
 ```
 .ade/
-  artifacts/           ← packs, proofs, and mission outputs
+  artifacts/           ← packs, proofs, and worker run outputs
     packs/
       lanes/           ← lane artifacts and compatibility snapshots
       features/        ← feature artifacts (Linear-linked)
       conflicts/       ← conflict resolution context
-      missions/        ← mission plans and phase snapshots
+      worker runs/        ← worker run plans and phase snapshots
   cto/                 ← CTO identity and configuration
   worktrees/           ← git worktrees for lanes (one per lane)
   db/                  ← SQLite database for lanes, sessions, history
@@ -82,7 +82,7 @@ You can skip any step and configure it later in **Settings**. For a detailed wal
 Once the wizard completes, ADE loads the project and you land on the **Lanes** view. You will see:
 
 - **Primary Lane** — your main repository checkout, always present and read-only by default
-- **Left sidebar** — navigation to Lanes, CTO, Missions, Automations, History, and Settings
+- **Left sidebar** — navigation to Lanes, CTO, Workers, Automations, History, and Settings
 - **Right inspector** — context-sensitive detail panel showing lane info, packs, and environment
 
 From here, [create your first lane](/getting-started/first-lane) and [run your first agent](/getting-started/first-agent).

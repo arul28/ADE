@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 export type BufferedEvent = {
   id: number;
   timestamp: string;
-  category: "orchestrator" | "dag_mutation" | "runtime" | "mission" | "pty";
+  category: "orchestrator" | "dag_mutation" | "runtime" | "pty";
   payload: Record<string, unknown>;
 };
 

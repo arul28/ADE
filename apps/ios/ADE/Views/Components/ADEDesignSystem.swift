@@ -81,7 +81,6 @@ enum ADEColor {
   static let tintPRs = purpleAccent
   static let tintHistory = Color(red: 0xd9 / 255.0, green: 0x77 / 255.0, blue: 0x06 / 255.0)
   static let tintAutomations = Color(red: 0xf9 / 255.0, green: 0x73 / 255.0, blue: 0x16 / 255.0)
-  static let tintMissions = Color(red: 0x3b / 255.0, green: 0x82 / 255.0, blue: 0xf6 / 255.0)
   static let tintSettings = Color(red: 0x71 / 255.0, green: 0x71 / 255.0, blue: 0x7a / 255.0)
 
   /// Per-provider brand colors mirroring desktop's PROVIDER_BADGE_COLORS.

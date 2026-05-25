@@ -78,7 +78,7 @@ Each row lists which registered external backends declared support (via `support
 `ComputerUsePolicy` is edited in two places:
 
 1. **Global default** — Settings > Computer Use. Controls the project-wide default policy.
-2. **Per-scope override** — mission settings (for mission scope), chat header (for chat session scope), lane metadata (for lane scope).
+2. **Per-scope override** — chat header (for chat session scope), lane metadata (for lane scope).
 
 Fields:
 
@@ -117,17 +117,6 @@ In a chat session, the header shows the policy toggle and summary:
 - `Proof` — `retainProof === true`.
 
 The inline monitor renders `buildComputerUseOwnerSnapshot({ broker, owner: { kind: "chat_session", id }, policy })` for live backend / activity / artifact status.
-
-## Mission preflight readiness
-
-Mission preflight computes:
-
-- Required proof kinds from `collectRequiredComputerUseKindsFromPhases(phases)` (reads `phase.validationGate.evidenceRequirements` for kinds in `COMPUTER_USE_KINDS`).
-- Current `ComputerUsePolicy` (mission metadata > project default).
-- Available external backends.
-- Gap analysis: which required kinds have no available backend?
-
-Gaps become preflight warnings. If the gap is not satisfiable externally and local fallback is disallowed for the scope, launch is blocked.
 
 ## Setup flows
 
@@ -178,5 +167,4 @@ From Settings:
 - `README.md` — control-plane overview.
 - `backends.md` — detection internals for Ghost OS, agent-browser, ADE local.
 - `artifact-broker.md` — ingestion, storage, review, publication.
-- `../missions/README.md` — preflight readiness checks consume this surface.
 - `../cto/README.md` — CTO operator tool surface includes computer-use artifact actions.

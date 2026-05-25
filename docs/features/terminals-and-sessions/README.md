@@ -445,7 +445,7 @@ iOS Work surfaces:
   `PaneTilingLayout`-backed grid mode), `WorkStartSurface`,
   `TerminalView`, and state hooks.
 - [runtime-isolation.md](./runtime-isolation.md) — how a session stays
-  bound to a single lane worktree and a single mission/run context.
+  bound to a single lane worktree and caller context.
 
 ## Session model
 
@@ -455,7 +455,7 @@ schema is used for:
 - interactive shell PTYs (`toolType = "shell"`)
 - managed processes launched by `processService` (`toolType = "run-shell"`)
 - tracked CLI agent terminals (`claude`, `codex`, `cursor-cli`, `droid`,
-  `opencode`, plus the `*-orchestrated` variants used by missions)
+  `opencode`)
 - agent chat sessions that run through the Claude/Codex/Cursor/Droid/
   OpenCode SDKs rather than a PTY (`claude-chat`, `codex-chat`,
   `opencode-chat`, `cursor-chat`, `droid-chat`)

@@ -2,7 +2,7 @@
 
 ## About this project
 
-- ADE is a local-first desktop application for orchestrating coding agents, missions, lanes, PR workflows, and proof/artifact capture.
+- ADE is a local-first desktop application for orchestrating coding agents, lanes, PR workflows, and proof/artifact capture.
 - The main product lives in `apps/desktop` and is built with Electron, React, and TypeScript.
 - The ADE CLI lives in `apps/ade-cli` and shares core services with the desktop app.
 - State is primarily stored under `.ade/` inside the active project, with runtime metadata in SQLite and machine-local files under `.ade/secrets`, `.ade/cache`, and `.ade/artifacts`.
@@ -36,7 +36,6 @@
 ## Terminology
 
 - Use "lane" for ADE worktrees/branches.
-- Use "mission" for orchestrated multi-step work.
 - Use "computer use" for screenshot/video/GUI/browser proof flows.
 ## Style preferences
 

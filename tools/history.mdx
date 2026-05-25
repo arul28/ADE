@@ -1,16 +1,16 @@
 ---
 title: "History"
-description: "A complete, searchable operations timeline for your project — every agent action, commit, mission phase, pack regeneration, and conflict event, with full replay from any checkpoint."
+description: "A complete, searchable operations timeline for your project — every agent action, commit, worker run phase, pack regeneration, and conflict event, with full replay from any checkpoint."
 icon: "clock-rotate-left"
 ---
 
 ## What is the History View?
 
-The History view is ADE's complete operations ledger — every agent action, commit, pack regeneration, mission phase, conflict, and PR event, timestamped with full operational context. It is the single place where you can answer: "What exactly happened in this project over the last two days?"
+The History view is ADE's complete operations ledger — every agent action, commit, pack regeneration, worker run phase, conflict, and PR event, timestamped with full operational context. It is the single place where you can answer: "What exactly happened in this project over the last two days?"
 
 <CardGroup cols={3}>
   <Card title="Complete Audit Trail" icon="clipboard-list">
-    Every agent action, git operation, lane event, and mission milestone is recorded with full metadata and context.
+    Every agent action, git operation, lane event, and worker run milestone is recorded with full metadata and context.
   </Card>
   <Card title="Checkpoints as Save Points" icon="bookmark">
     Immutable snapshots at significant moments. Return to any checkpoint to see exactly what the project looked like at that instant.
@@ -75,22 +75,22 @@ The History timeline records the following event categories. Each is displayed w
     - `lane.stacked` — lane's base was changed (reparented onto another lane)
     - `lane.pack_regenerated` — manual pack regeneration triggered
   </Accordion>
-  <Accordion title="Mission Events" icon="target">
-    Recorded at each phase transition and significant milestone in a Mission's lifecycle.
+  <Accordion title="Worker run Events" icon="target">
+    Recorded at each phase transition and significant milestone in a Worker run's lifecycle.
 
     | Event | Description |
     |-------|-------------|
-    | `mission.created` | Mission created with initial intent |
-    | `mission.planning` | Mission entered the Planning phase |
-    | `mission.approval_requested` | Plan presented to user for approval |
-    | `mission.approved` | User approved the plan |
-    | `mission.execution_started` | Workers began executing tasks |
-    | `mission.validation_started` | Execution complete, validation phase begun |
-    | `mission.completed` | Mission finished successfully |
-    | `mission.failed` | Mission failed (with reason and last known state) |
-    | `mission.cancelled` | User cancelled the mission mid-execution |
+    | `worker run.created` | Worker run created with initial intent |
+    | `worker run.planning` | Worker run entered the Planning phase |
+    | `worker run.approval_requested` | Plan presented to user for approval |
+    | `worker run.approved` | User approved the plan |
+    | `worker run.execution_started` | Workers began executing tasks |
+    | `worker run.validation_started` | Execution complete, validation phase begun |
+    | `worker run.completed` | Worker run finished successfully |
+    | `worker run.failed` | Worker run failed (with reason and last known state) |
+    | `worker run.cancelled` | User cancelled the worker run mid-execution |
 
-    The detail panel for mission events shows a **mini mission summary**: the plan that was approved, the worker assignments, the validation results, and a phase timeline bar.
+    The detail panel for worker run events shows a **mini worker run summary**: the plan that was approved, the worker assignments, the validation results, and a phase timeline bar.
   </Accordion>
   <Accordion title="Automation Events" icon="bolt">
     Recorded when an Automation rule fires.
@@ -132,7 +132,7 @@ The left panel shows all events in reverse chronological order (newest first). E
 - **Event type icon** — a distinct icon for the event category
 - **Short description** — a human-readable summary (e.g., "Commit to `auth-refactor`: add session expiry logic")
 - **Timestamp** — relative time (e.g., "3 hours ago") with full timestamp on hover
-- **Lane / Mission badge** — which lane or mission the event belongs to, colored by lane
+- **Lane / Worker run badge** — which lane or worker run the event belongs to, colored by lane
 
 ### Filtering the Timeline
 
@@ -140,11 +140,11 @@ Use the filter bar at the top of the timeline to narrow the event list:
 
 | Filter | Options |
 |--------|---------|
-| **Event type** | One or more categories (commits, sessions, missions, automations, conflicts, PRs, packs, lanes) |
+| **Event type** | One or more categories (commits, sessions, worker runs, automations, conflicts, PRs, packs, lanes) |
 | **Lane** | One or more specific lanes |
 | **Date range** | Preset ranges (today, last 7 days, last 30 days) or a custom start/end |
 | **Agent** | Filter to events involving a specific AI model or agent role |
-| **Mission** | Show only events belonging to a specific mission |
+| **Worker run** | Show only events belonging to a specific worker run |
 
 ### Grouping the Timeline
 
@@ -153,7 +153,7 @@ Use the **Group by** dropdown to change how events are organized:
 - **None** — flat chronological list (default)
 - **Day** — events grouped by calendar day with date dividers
 - **Session** — events grouped by the agent or terminal session that produced them
-- **Mission** — events grouped under their parent mission
+- **Worker run** — events grouped under their parent worker run
 - **Lane** — all events from a given lane are grouped together
 
 ### Searching
@@ -183,8 +183,8 @@ Clicking any event in the timeline opens its full detail in the right panel. The
     - Session outcome tag: `completed`, `cancelled`, `error`, `timed_out`
     - "Replay This Session" button (see [Replay](#replay))
   </Tab>
-  <Tab title="Mission">
-    - Mission intent (the original goal)
+  <Tab title="Worker run">
+    - Worker run intent (the original goal)
     - Approved plan summary
     - Phase timeline: planning → approval → execution → validation, with timestamps for each transition
     - Worker assignments: which agent ran which task in which lane
@@ -219,7 +219,7 @@ Checkpoints are the "save points" of ADE's history. They are created automatical
 |---------|-------------|
 | Git commit | A checkpoint is created for every commit in every lane |
 | Session end | When a terminal or agent session closes, a checkpoint captures the session transcript and the lane's git state at that moment |
-| Mission phase transition | A checkpoint is created at the completion of each mission phase |
+| Worker run phase transition | A checkpoint is created at the completion of each worker run phase |
 | Manual checkpoint | You can create a manual checkpoint at any time via the "Create Checkpoint" button in the lane detail header |
 
 ### What a Checkpoint Contains
@@ -227,7 +227,7 @@ Checkpoints are the "save points" of ADE's history. They are created automatical
 - **Git state**: The commit SHA the lane was on at this moment (or the diff if between commits)
 - **Session transcript**: The full session transcript if this checkpoint was triggered by a session end
 - **Lane Pack snapshot**: The Lane Pack content at this exact moment
-- **Metadata**: Timestamp, the agent or user that triggered it, the associated lane and mission (if any)
+- **Metadata**: Timestamp, the agent or user that triggered it, the associated lane and worker run (if any)
 - **Validation results**: Test pass/fail counts, CI status at this point (if available)
 
 <Note>Checkpoints for deleted lanes are retained in ADE's local database for 30 days. After 30 days, checkpoints for deleted lanes are purged. Checkpoints for active and archived lanes are retained indefinitely.</Note>
@@ -286,11 +286,11 @@ From any checkpoint, you can branch a new lane from that point and optionally re
 
 The **Feature view** is a specialized mode in the History tab that groups all events related to a single Linear issue into one coherent narrative.
 
-To open Feature view: use the **Group by: Mission** or **Group by: Linear Issue** options, then click any mission or issue to expand its full event tree.
+To open Feature view: use the **Group by: Worker run** or **Group by: Linear Issue** options, then click any worker run or issue to expand its full event tree.
 
 A Feature view entry shows:
 
-1. **Planning events** — the CTO's initial triage, mission creation, plan generation, and approval
+1. **Planning events** — the CTO's initial triage, worker run creation, plan generation, and approval
 2. **Execution events** — all commits, sessions, and worker actions across all lanes involved in the feature
 3. **Conflict events** — any conflicts that arose during development, and how they were resolved
 4. **PR events** — PR creation, review submissions, CI runs, and merge
@@ -320,8 +320,8 @@ This is the canonical record for understanding the full lifecycle of a feature, 
   <Card title="Conflicts" icon="triangle-exclamation" href="/tools/conflicts">
     Understand how conflict events are generated and how to use the resolution workflow.
   </Card>
-  <Card title="Missions" icon="target" href="/missions/overview">
-    See how mission phase transitions create checkpoints and how replay fits into mission debugging.
+  <Card title="Workers" icon="target" href="/cto/workers">
+    See how worker run phase transitions create checkpoints and how replay fits into worker run debugging.
   </Card>
   <Card title="Lanes" icon="code-branch" href="/lanes/overview">
     Learn how Lane Packs are generated and how pack events appear in the History timeline.

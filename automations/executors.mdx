@@ -1,6 +1,6 @@
 ---
 title: "Execution surfaces"
-description: "Pick between an automation-only agent session, a Mission, or a built-in task for each automation rule."
+description: "Pick between an automation-only agent session, a Worker run, or a built-in task for each automation rule."
 icon: "robot"
 ---
 
@@ -11,11 +11,11 @@ Every automation rule answers the same question twice: what triggers it, and wha
 | Surface | Best for | Cost |
 |---|---|---|
 | `agent-session` | Lightweight checks, short summaries, a single deterministic output | One short agent thread |
-| `mission` | Multi-step code changes, long workflows that need reviewable plans | A full mission run |
+| `worker run` | Multi-step code changes, long workflows that need reviewable plans | A delegated worker run |
 | `built-in` | Deterministic ADE operations — tests, conflict prediction, status sync | No agent; no tokens |
 
 <Note>
-**Mission execution is paused in production builds.** In packaged releases the rule editor and the Templates tab still display Mission as an option so teams can see how they would wire it, but selecting Mission is disabled with a "Coming soon" chip and the Save button is blocked. Dev and internal builds run mission automations today. When you plan an automation that needs a mission surface, use Chat or a built-in task as a stand-in until Missions ships.
+**Worker run execution is paused in production builds.** In packaged releases the rule editor and the Templates tab still display Worker run as an option so teams can see how they would wire it, but selecting Worker run is disabled with a "Coming soon" chip and the Save button is blocked. Dev and internal builds run worker run automations today. When you plan an automation that needs a worker run surface, use Chat or a built-in task as a stand-in until Workers ships.
 </Note>
 
 ---
@@ -34,23 +34,23 @@ Every automation rule answers the same question twice: what triggers it, and wha
     Agent-session runs are recorded as **automation-only chat threads** visible in **Automations → History**.
   </Accordion>
 
-  <Accordion title="mission" icon="bullseye">
-    A full mission run for work that needs a reviewable plan, multiple workers, or durable checkpoints.
+  <Accordion title="worker run" icon="bullseye">
+    A delegated worker run for work that needs a reviewable plan, multiple workers, or durable checkpoints.
 
     - Planner, approval gate, execution, and validation phases
     - Retry, intervention, and closeout handling
     - Worker lifecycle with lane affinity
     - Artifacts, step events, and the full intervention feed
 
-    Mission outputs are visible in **Missions** — History rows for mission-executed automation runs link directly into the mission detail view.
+    Worker run outputs are visible in **Workers** — History rows for worker run-executed automation runs link directly into the worker run detail view.
 
-    In packaged builds the option appears but is disabled until Missions ships.
+    In packaged builds the option appears but is disabled until Workers ships.
   </Accordion>
 
   <Accordion title="built-in" icon="gear">
     A structured ADE-native task for short, deterministic work that doesn't need a conversation.
 
-    - No full chat or mission thread
+    - No full chat or worker run thread
     - Strongly typed inputs and outputs
     - Useful for running test suites, predicting conflicts, and other maintenance sweeps
 
@@ -65,7 +65,7 @@ Every automation rule answers the same question twice: what triggers it, and wha
 1. Pick a **time-based** (`schedule`) or **action-based** (git, file, lane, webhook, Linear, manual) trigger.
 2. Pick an execution surface:
    - `agent-session` for a quick AI output
-   - `mission` for a complex or high-stakes workflow (dev builds only today)
+   - `worker run` for a complex or high-stakes workflow (dev builds only today)
    - `built-in` for a known ADE operation
 3. For built-in rules, pick the **target lane** or leave it on "Auto-select from the trigger or primary lane."
 4. Set a tool palette and context policy.
@@ -81,4 +81,4 @@ Agent-session rules can still route their outputs to artifacts, PR comments, or 
 - **PR reviewer** — trigger `git.pr_opened`, execution `agent-session`, output an automation thread plus an optional PR comment.
 - **Nightly test sweep** — trigger `schedule` (`0 8 * * 1-5`), execution `built-in` (run-tests) targeted at the primary lane. No tokens, just a test report artifact.
 - **Cache cleanup** — trigger `github-webhook`, execution `built-in`, internal usage summary with a status event.
-- **Release triage** — trigger `linear.issue_created`, execution `mission` (dev builds) or a multi-step `agent-session` as a fallback while Mission is gated.
+- **Release triage** — trigger `linear.issue_created`, execution `worker run` (dev builds) or a multi-step `agent-session` as a fallback while Worker run is gated.

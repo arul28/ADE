@@ -1,6 +1,6 @@
 ---
 title: "Run your first agent"
-description: "Choose between a direct chat and a structured mission for your first ADE task — with step-by-step instructions for each approach and guidance on what to try first."
+description: "Choose between a direct chat and a structured worker run for your first ADE task — with step-by-step instructions for each approach and guidance on what to try first."
 icon: "robot"
 ---
 
@@ -45,12 +45,12 @@ You have a lane ready. Now it is time to run an agent in it. ADE offers two path
     If the agent asks a question, a question modal appears in the chat. Read the options, select your answer, and the agent continues. This is ADE's **AskUserQuestion** flow — the agent pauses cleanly instead of guessing when it needs your input.
     </Tip>
   </Tab>
-  <Tab title="Mission (for structured work)">
-    Use a Mission when the task needs a formal plan, parallel workers, validation, or a stronger audit trail. Missions are overkill for a first test — but if you want to see ADE's full orchestration, here is how.
+  <Tab title="Worker run (for structured work)">
+    Use a Worker run when the task needs a formal plan, parallel workers, validation, or a stronger audit trail. Workers are overkill for a first test — but if you want to see ADE's full orchestration, here is how.
 
     <Steps>
-      <Step title="Open Missions">
-        Click **Missions** in the left sidebar. Click **+ New Mission**.
+      <Step title="Open Workers">
+        Click **Workers** in the left sidebar. Click **+ New Worker run**.
       </Step>
       <Step title="Set a goal">
         Write a clear, specific goal. The planner agent uses this to generate a structured execution plan.
@@ -58,21 +58,21 @@ You have a lane ready. Now it is time to run an agent in it. ADE offers two path
         Example: *"Add a REST endpoint `GET /api/health` that returns `{ status: 'ok' }` with a corresponding test."*
       </Step>
       <Step title="Choose launch mode">
-        Select **Supervised** for your first mission. This pauses for your approval before the agent starts executing — so you can review the plan before any code is written.
+        Select **Supervised** for your first worker run. This pauses for your approval before the agent starts executing — so you can review the plan before any code is written.
       </Step>
       <Step title="Review the plan">
         The planner generates a step-by-step execution plan. Review the steps, lane assignments, and estimated cost. Click **Approve** to proceed or **Edit** to adjust.
       </Step>
       <Step title="Monitor execution">
-        Workers execute the plan. The Mission Run panel shows:
+        Workers execute the plan. The worker detail panel shows:
         - Live status of each step (queued, running, completed, failed)
         - Terminal output from each worker
         - File changes and tool call logs
 
-        When all steps complete, the mission enters validation.
+        When all steps complete, the worker run enters validation.
       </Step>
       <Step title="Review results">
-        Check the Artifacts tab for test reports, code changes, and summaries. Create a PR from the mission's result lane if the work looks good.
+        Check the Artifacts tab for test reports, code changes, and summaries. Create a PR from the worker run's result lane if the work looks good.
       </Step>
     </Steps>
   </Tab>
@@ -154,13 +154,13 @@ Once you have verified the result:
 
 <CardGroup cols={2}>
   <Card title="Key Concepts" icon="book" href="/key-concepts">
-    Understand every core concept in ADE: Lanes, Packs, Missions, the CTO, Automations, and more.
+    Understand every core concept in ADE: Lanes, Packs, Workers, the CTO, Automations, and more.
   </Card>
   <Card title="Chat Capabilities" icon="toolbox" href="/chat/capabilities">
-    See the full list of what the chat agent can do — file operations, git, PRs, missions, and more.
+    See the full list of what the chat agent can do — file operations, git, PRs, worker runs, and more.
   </Card>
-  <Card title="Missions" icon="bullseye" href="/missions/overview">
-    Learn how to configure multi-step missions with planning, validation, and cost tracking.
+  <Card title="Workers" icon="bullseye" href="/cto/workers">
+    Learn how to configure multi-step worker runs with planning, validation, and cost tracking.
   </Card>
   <Card title="Multi-Agent Setup" icon="users" href="/guides/multi-agent-setup">
     Run parallel agents across multiple lanes and monitor them from the Workspace Graph.

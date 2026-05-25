@@ -219,7 +219,6 @@ describe("TopBar", () => {
       lanes: { list: vi.fn(async () => []) },
       sessions: { list: vi.fn(async () => []) },
       agentChat: { list: vi.fn(async () => []) },
-      missions: { list: vi.fn(async () => []) },
       processes: { listRuntime: vi.fn(async () => []) },
     } as any;
   });

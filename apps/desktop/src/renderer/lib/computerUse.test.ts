@@ -8,7 +8,7 @@ import {
 
 function createSnapshot(overrides: Partial<ComputerUseOwnerSnapshot> = {}): ComputerUseOwnerSnapshot {
   return {
-    owner: { kind: "mission", id: "mission-1" },
+    owner: { kind: "lane", id: "lane-1" },
     backendStatus: {
       backends: [],
       localFallback: {
@@ -27,14 +27,12 @@ function createSnapshot(overrides: Partial<ComputerUseOwnerSnapshot> = {}): Comp
 }
 
 describe("computerUse renderer helpers", () => {
-  it("builds route presets for chat, mission, and lane owners", () => {
+  it("builds route presets for chat and lane owners", () => {
     expect(buildComputerUseRoutePresets({
       chatSessionId: "chat-1",
-      missionId: "mission-1",
       laneId: "lane-1",
     })).toEqual([
       { label: "Keep in chat", owner: { kind: "chat_session", id: "chat-1" } },
-      { label: "Attach to mission", owner: { kind: "mission", id: "mission-1" } },
       { label: "Attach to lane", owner: { kind: "lane", id: "lane-1" } },
     ]);
   });
@@ -44,8 +42,8 @@ describe("computerUse renderer helpers", () => {
       {
         id: "link-1",
         artifactId: "artifact-1",
-        ownerKind: "mission",
-        ownerId: "mission-1",
+        ownerKind: "chat_session",
+        ownerId: "chat-1",
         relation: "attached_to",
         metadata: null,
         createdAt: "2026-03-12T14:00:00.000Z",
@@ -59,7 +57,7 @@ describe("computerUse renderer helpers", () => {
         metadata: null,
         createdAt: "2026-03-12T14:01:00.000Z",
       },
-    ])).toBe("mission:mission-1 • lane:lane-1");
+    ])).toBe("chat session:chat-1 • lane:lane-1");
 
     expect(summarizeComputerUseProof(createSnapshot())).toBe("No proof captured yet.");
     expect(summarizeComputerUseProof(createSnapshot({

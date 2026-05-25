@@ -285,19 +285,11 @@ function repairLegacyPaths(paths: AdeLayoutPaths, actions: AdeSyncAction[]): voi
 
   const legacyFiles = fs.existsSync(paths.adeDir) ? fs.readdirSync(paths.adeDir) : [];
   for (const fileName of legacyFiles) {
-    if (fileName.startsWith("mission-state-") && fileName.endsWith(".json")) {
-      moveIfExists(
-        path.join(paths.adeDir, fileName),
-        path.join(paths.missionStateDir, fileName),
-        path.join("cache/mission-state", fileName),
-        actions
-      );
-    }
     if (fileName.startsWith("coordinator-checkpoint-") && fileName.endsWith(".json")) {
       moveIfExists(
         path.join(paths.adeDir, fileName),
-        path.join(paths.missionStateDir, fileName),
-        path.join("cache/mission-state", fileName),
+        path.join(paths.orchestratorCacheDir, fileName),
+        path.join("cache/orchestrator", fileName),
         actions
       );
     }
@@ -354,7 +346,6 @@ export function initializeOrRepairAdeProject(projectRoot: string, options: Repai
   ensureDir(paths.chatSessionsDir, "cache/chat-sessions", actions);
   ensureDir(paths.chatTranscriptsDir, "transcripts/chat", actions);
   ensureDir(paths.orchestratorCacheDir, "cache/orchestrator", actions);
-  ensureDir(paths.missionStateDir, "cache/mission-state", actions);
   ensureDir(paths.packsDir, "artifacts/packs", actions);
   ensureDir(paths.logBundlesDir, "artifacts/log-bundles", actions);
   ensureDir(paths.githubSecretsDir, "secrets/github", actions);
@@ -440,7 +431,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
     args.ctoStateService?.getSnapshot?.();
     args.workerAgentService?.listAgents?.();
     const jsonlTargets = [
-      path.join(repair.paths.historyDir, "missions.jsonl"),
       path.join(repair.paths.ctoDir, "sessions.jsonl"),
     ];
     if (fs.existsSync(repair.paths.agentsDir)) {

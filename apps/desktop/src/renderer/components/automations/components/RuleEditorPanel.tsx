@@ -37,7 +37,7 @@ import type {
   AutomationTrigger,
   TestSuiteDefinition,
 } from "../../../../shared/types";
-import { ModelSelector } from "../../missions/ModelSelector";
+import { ModelSelector } from "../../shared/ModelSelector";
 import { Button } from "../../ui/Button";
 import { Chip } from "../../ui/Chip";
 import { cn } from "../../ui/cn";
@@ -150,7 +150,6 @@ const TOOL_FAMILIES: Array<{ value: AutomationToolFamily; label: string }> = [
   { value: "github", label: "GitHub" },
   { value: "linear", label: "Linear" },
   { value: "browser", label: "Browser" },
-  { value: "mission", label: "Mission" },
 ];
 
 const OUTPUT_DISPOSITIONS: Array<{ value: AutomationOutputDisposition; label: string }> = [
@@ -387,11 +386,6 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
       sessionTitle: execution.session?.title ?? "",
       codexFastMode: execution.session?.codexFastMode === true,
     });
-  } else if (execution?.kind === "mission") {
-    rows.push({
-      kind: "launch-mission",
-      missionTitle: execution.mission?.title ?? "",
-    });
   } else if (execution?.kind === "built-in") {
     for (const action of execution.builtIn?.actions ?? []) {
       if (action.type === "create-lane") {
@@ -420,8 +414,6 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           permissionConfig: action.permissionConfig,
           ...actionRuntimeOptions(action),
         });
-      } else if (action.type === "launch-mission") {
-        rows.push({ kind: "launch-mission", missionTitle: action.sessionTitle ?? "", ...actionRuntimeOptions(action) });
       }
     }
   }
@@ -433,7 +425,6 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
     ? rows.map((row) => stripActionTargetLaneId(row) as ActionRowValue)
     : rows;
   const soloAgent = rowsForSave.length === 1 && rowsForSave[0]!.kind === "agent-session" && !rowHasRuntimeOptions(rowsForSave[0]!);
-  const soloMission = rowsForSave.length === 1 && rowsForSave[0]!.kind === "launch-mission" && !rowHasRuntimeOptions(rowsForSave[0]!);
 
   if (soloAgent) {
     const first = rowsForSave[0]!;
@@ -453,23 +444,9 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
           ...(first.codexFastMode === true ? { codexFastMode: true } : {}),
         },
       },
-      ...(first.modelConfig ? { modelConfig: { orchestratorModel: first.modelConfig } } : {}),
+      ...(first.modelConfig ? { modelConfig: first.modelConfig } : {}),
       ...(first.permissionConfig ? { permissionConfig: first.permissionConfig } : {}),
       prompt: first.prompt ?? "",
-      actions: [],
-      legacyActions: [],
-    };
-  }
-
-  if (soloMission) {
-    const first = rowsForSave[0]!;
-    return {
-      ...draft,
-      execution: {
-        ...(draft.execution ?? { kind: "mission" }),
-        kind: "mission",
-        mission: { ...(draft.execution?.kind === "mission" ? draft.execution.mission : {}), title: first.missionTitle || null },
-      },
       actions: [],
       legacyActions: [],
     };
@@ -530,12 +507,6 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
         ...(row.prompt ? { prompt: row.prompt } : {}),
         ...(row.sessionTitle ? { sessionTitle: row.sessionTitle } : {}),
       };
-    case "launch-mission":
-      return {
-        type: "launch-mission",
-        ...rowRuntimeOptions(row),
-        ...(row.missionTitle ? { sessionTitle: row.missionTitle } : {}),
-      };
   }
 }
 
@@ -578,12 +549,6 @@ function automationActionToDraftAction(
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       };
-    case "launch-mission":
-      return {
-        type: "launch-mission",
-        ...rowRuntimeOptions(actionToRow(action)),
-        ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
-      };
     case "lane-setup":
       // Synthetic action emitted by the runtime when execution.laneMode is
       // "create"; never authored by the user, so it has no draft form.
@@ -615,7 +580,6 @@ export function RuleEditorPanel({
   setDraft: (draft: AutomationRuleDraft) => void;
   lanes: Array<{ id: string; name: string }>;
   suites: TestSuiteDefinition[];
-  missionsEnabled: boolean;
   issues: AutomationDraftIssue[];
   requiredConfirmations: AutomationDraftConfirmationRequirement[];
   acceptedConfirmations: Set<string>;
@@ -636,10 +600,10 @@ export function RuleEditorPanel({
 
   const actionRows = useMemo(() => draftToActionRows(draft), [draft]);
   const includeProjectContext = computeIncludeProjectContext(draft);
-  const modelValue = draft.modelConfig?.orchestratorModel ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
+  const modelValue = draft.modelConfig ?? { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" as const };
   const outputs = draft.outputs ?? { disposition: "comment-only" as const, createArtifact: true };
   const verification = draft.verification ?? { verifyBeforePublish: false, mode: "intervention" as const };
-  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo", "mission"];
+  const toolPalette: AutomationToolFamily[] = draft.toolPalette ?? ["repo"];
   const permissionMeta = permissionControlsForModel(modelValue.modelId);
   const currentPermission = permissionMeta
     ? draft.permissionConfig?.providers?.[permissionMeta.key] ?? ""
@@ -994,7 +958,7 @@ export function RuleEditorPanel({
                     onChange={(next) =>
                       setDraft({
                         ...draft,
-                        modelConfig: { orchestratorModel: next },
+                        modelConfig: next,
                       })
                     }
                     onOpenAiSettings={openAiSettings}

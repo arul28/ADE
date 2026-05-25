@@ -40,7 +40,6 @@ const visualManagedStepTypes = new Set<LinearWorkflowStep["type"]>([
 
 function workflowIdForTargetType(targetType: LinearWorkflowTargetType): string {
   if (targetType === "employee_session") return "assigned-employee-session";
-  if (targetType === "mission") return "assigned-mission-run";
   if (targetType === "worker_run") return "assigned-worker-run";
   if (targetType === "pr_resolution") return "assigned-pr-resolution";
   return "assigned-review-gate";
@@ -48,7 +47,6 @@ function workflowIdForTargetType(targetType: LinearWorkflowTargetType): string {
 
 export function defaultWorkflowName(targetType: LinearWorkflowTargetType): string {
   if (targetType === "employee_session") return "Assigned employee -> review handoff";
-  if (targetType === "mission") return "Mission autopilot";
   if (targetType === "worker_run") return "Worker run";
   if (targetType === "pr_resolution") return "PR resolution";
   return "Human review gate";
@@ -67,7 +65,7 @@ function defaultLaunchStep(targetType: LinearWorkflowTargetType): LinearWorkflow
             ? "Launch PR workflow"
             : targetType === "worker_run"
               ? "Launch worker run"
-              : "Launch mission",
+              : "Create review gate",
   };
 }
 
@@ -97,7 +95,6 @@ function defaultNotificationStep(targetType: LinearWorkflowTargetType): LinearWo
 }
 
 export function defaultCompletionContract(targetType: LinearWorkflowTargetType): LinearWorkflowCompletionContract {
-  if (targetType === "mission") return "wait_for_runtime_success";
   if (targetType === "pr_resolution") return "wait_for_pr_created";
   if (targetType === "employee_session" || targetType === "worker_run") {
     return "wait_for_explicit_completion";
@@ -122,9 +119,6 @@ export function resolveWorkflowTargetWaitStatus(
   step?: LinearWorkflowStep,
 ): LinearWorkflowStep["targetStatus"] {
   if (!step || step.type !== "wait_for_target_status") return undefined;
-  if (workflow.target.type === "mission") {
-    return step.targetStatus ?? "runtime_completed";
-  }
   if (!step.targetStatus || step.targetStatus === "completed") {
     return "explicit_completion";
   }
@@ -171,12 +165,6 @@ export function createWorkflowPreset(
               laneSelection: "fresh_issue_lane",
               prTiming: "after_target_complete",
             }
-          : targetType === "mission"
-            ? {
-                type: targetType,
-                runMode: "autopilot",
-                missionTemplate: "default",
-              }
             : {
                 type: targetType,
                 runMode: "autopilot",
@@ -198,7 +186,7 @@ export function createWorkflowPreset(
         id: "wait",
         type: "wait_for_target_status",
         name: "Wait for delegated work",
-        targetStatus: targetType === "mission" ? "runtime_completed" : "explicit_completion",
+        targetStatus: "explicit_completion",
       });
     }
     steps.push({ id: "wait-pr", type: "wait_for_pr", name: "Wait for PR" });
@@ -209,9 +197,7 @@ export function createWorkflowPreset(
       name: "Wait for delegated work",
       targetStatus:
         completionContract === "wait_for_runtime_success"
-          ? targetType === "mission"
-            ? "runtime_completed"
-            : "runtime_completed"
+          ? "runtime_completed"
           : "explicit_completion",
     });
   }
@@ -340,7 +326,7 @@ export function rebuildWorkflowSteps(
       id: "wait",
       type: "wait_for_target_status",
       name: "Wait for delegated work",
-      targetStatus: workflow.target.type === "mission" ? "runtime_completed" : "explicit_completion",
+      targetStatus: "explicit_completion",
     };
     if (nextPlan.completionContract === "wait_for_runtime_success") {
       steps.push({
@@ -359,7 +345,7 @@ export function rebuildWorkflowSteps(
     ) {
       steps.push({
         ...targetWaitStep,
-        targetStatus: workflow.target.type === "mission" ? "runtime_completed" : "explicit_completion",
+        targetStatus: "explicit_completion",
       });
     }
   }

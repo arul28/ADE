@@ -56,7 +56,7 @@ describe("createEventBuffer", () => {
   it("returns empty result when cursor is at the end", () => {
     const buffer = createEventBuffer();
 
-    buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: "mission", payload: {} });
+    buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: "runtime", payload: {} });
 
     const result = buffer.drain(1);
     expect(result.events).toHaveLength(0);
@@ -134,14 +134,14 @@ describe("createEventBuffer", () => {
 
   it("preserves event category and payload through push and drain", () => {
     const buffer = createEventBuffer();
-    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "mission", "pty"];
+    const categories: BufferedEvent["category"][] = ["orchestrator", "dag_mutation", "runtime", "pty"];
 
     for (const category of categories) {
       buffer.push({ timestamp: "t", category, payload: { kind: category } });
     }
 
     const result = buffer.drain(0);
-    expect(result.events).toHaveLength(5);
+    expect(result.events).toHaveLength(categories.length);
     for (let i = 0; i < categories.length; i++) {
       expect(result.events[i]!.category).toBe(categories[i]);
       expect(result.events[i]!.payload).toEqual({ kind: categories[i] });

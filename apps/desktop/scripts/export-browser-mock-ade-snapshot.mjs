@@ -680,7 +680,6 @@ function rowToQueueState(row) {
       permissionMode: "guarded_edit",
       confidenceThreshold: null,
       originSurface: "manual",
-      originMissionId: null,
       originRunId: null,
       originLabel: null,
       ...safeJson(row.config_json, {}),
@@ -862,167 +861,6 @@ function buildGithubSnapshot({
   };
 }
 
-function buildMissionSummaries(projectId) {
-  if (!hasTable("missions")) return [];
-  return allRows(
-    `
-      select
-        m.*,
-        l.name as lane_name,
-        ml.name as mission_lane_name,
-        rl.name as result_lane_name,
-        (select count(*) from mission_artifacts ma where ma.mission_id = m.id) as artifact_count,
-        (select count(*) from mission_interventions mi where mi.mission_id = m.id and mi.status = 'open') as open_interventions,
-        (select count(*) from mission_steps ms where ms.mission_id = m.id) as total_steps,
-        (select count(*) from mission_steps ms where ms.mission_id = m.id and ms.status = 'completed') as completed_steps
-      from missions m
-      left join lanes l on l.id = m.lane_id
-      left join lanes ml on ml.id = m.mission_lane_id
-      left join lanes rl on rl.id = m.result_lane_id
-      where m.project_id = ?
-        and m.archived_at is null
-      order by m.updated_at desc, m.created_at desc
-      limit 300
-    `,
-    [projectId],
-  ).map((row) => ({
-    id: row.id,
-    title: row.title,
-    prompt: row.prompt,
-    laneId: row.lane_id,
-    laneName: row.lane_name,
-    missionLaneId: row.mission_lane_id ?? null,
-    missionLaneName: row.mission_lane_name ?? null,
-    resultLaneId: row.result_lane_id ?? null,
-    resultLaneName: row.result_lane_name ?? null,
-    status: row.status,
-    priority: row.priority,
-    executionMode: row.execution_mode,
-    targetMachineId: row.target_machine_id,
-    outcomeSummary: row.outcome_summary,
-    lastError: row.last_error,
-    artifactCount: Number(row.artifact_count ?? 0),
-    openInterventions: Number(row.open_interventions ?? 0),
-    totalSteps: Number(row.total_steps ?? 0),
-    completedSteps: Number(row.completed_steps ?? 0),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    startedAt: row.started_at,
-    completedAt: row.completed_at,
-  }));
-}
-
-function buildMissionDashboard(missions) {
-  const activeStatuses = new Set(["queued", "planning", "plan_review", "in_progress", "intervention_required"]);
-  const completed = missions.filter((mission) => mission.status === "completed").length;
-  const failed = missions.filter((mission) => mission.status === "failed").length;
-  const finished = completed + failed;
-  return {
-    active: missions.filter((mission) => activeStatuses.has(mission.status)).slice(0, 50),
-    recent: missions.slice(0, 12),
-    weekly: {
-      missions: missions.length,
-      successRate: finished > 0 ? completed / finished : 0,
-      avgDurationMs: 0,
-      totalCostUsd: 0,
-    },
-  };
-}
-
-function buildMissionFullViews({ projectId, missions }) {
-  if (!missions.length) return {};
-  const steps = maybeAll(
-    "mission_steps",
-    "select * from mission_steps where project_id = ? order by mission_id asc, step_index asc",
-    [projectId],
-  );
-  const artifacts = maybeAll(
-    "mission_artifacts",
-    "select * from mission_artifacts where project_id = ? order by created_at desc",
-    [projectId],
-  );
-  const interventions = maybeAll(
-    "mission_interventions",
-    "select * from mission_interventions where project_id = ? order by created_at desc",
-    [projectId],
-  );
-  const stepsByMission = Map.groupBy
-    ? Map.groupBy(steps, (row) => row.mission_id)
-    : groupBy(steps, (row) => row.mission_id);
-  const artifactsByMission = Map.groupBy
-    ? Map.groupBy(artifacts, (row) => row.mission_id)
-    : groupBy(artifacts, (row) => row.mission_id);
-  const interventionsByMission = Map.groupBy
-    ? Map.groupBy(interventions, (row) => row.mission_id)
-    : groupBy(interventions, (row) => row.mission_id);
-  return Object.fromEntries(
-    missions.map((mission) => [
-      mission.id,
-      {
-        mission,
-        steps: (stepsByMission.get(mission.id) ?? []).map((row) => ({
-          id: row.id,
-          missionId: row.mission_id,
-          index: Number(row.step_index ?? 0),
-          title: row.title,
-          detail: row.detail,
-          kind: row.kind,
-          laneId: row.lane_id,
-          status: row.status,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          startedAt: row.started_at,
-          completedAt: row.completed_at,
-          metadata: safeJson(row.metadata_json, {}),
-        })),
-        artifacts: (artifactsByMission.get(mission.id) ?? []).map((row) => ({
-          id: row.id,
-          missionId: row.mission_id,
-          artifactType: row.artifact_type,
-          title: row.title,
-          description: row.description,
-          uri: row.uri,
-          laneId: row.lane_id,
-          metadata: safeJson(row.metadata_json, {}),
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          createdBy: row.created_by,
-        })),
-        interventions: (interventionsByMission.get(mission.id) ?? []).map((row) => ({
-          id: row.id,
-          missionId: row.mission_id,
-          interventionType: row.intervention_type,
-          status: row.status,
-          resolutionKind: row.resolution_kind,
-          title: row.title,
-          body: row.body,
-          requestedAction: row.requested_action,
-          resolutionNote: row.resolution_note,
-          laneId: row.lane_id,
-          metadata: safeJson(row.metadata_json, {}),
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
-          resolvedAt: row.resolved_at,
-        })),
-        runGraph: null,
-        checkpoints: [],
-        dashboard: null,
-      },
-    ]),
-  );
-}
-
-function groupBy(items, keyFn) {
-  const grouped = new Map();
-  for (const item of items) {
-    const key = keyFn(item);
-    const bucket = grouped.get(key) ?? [];
-    bucket.push(item);
-    grouped.set(key, bucket);
-  }
-  return grouped;
-}
-
 function buildOperations(projectId) {
   return maybeAll(
     "operations",
@@ -1192,7 +1030,6 @@ function buildAutomations(projectId) {
     id: row.id,
     automationId: row.automation_id,
     chatSessionId: row.chat_session_id,
-    missionId: row.mission_id,
     triggerType: row.trigger_type,
     startedAt: row.started_at,
     endedAt: row.ended_at,
@@ -1276,7 +1113,7 @@ const hasLaneSnapshots = hasTable("lane_state_snapshots");
 
 const laneRows = allRows(
   `select id, name, description, lane_type, base_ref, branch_ref, worktree_path, attached_root_path,
-          is_edit_protected, parent_lane_id, color, icon, tags_json, folder, mission_id, lane_role,
+          is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
           status, created_at, archived_at
    from lanes
    where project_id = ?
@@ -1315,8 +1152,6 @@ const lanes = laneRows.map((row) => {
     icon: row.icon,
     tags: safeJson(row.tags_json, []),
     folder: row.folder,
-    missionId: row.mission_id,
-    laneRole: row.lane_role,
     status: {
       dirty: Boolean(snap?.dirty),
       ahead: Number(snap?.ahead ?? 0),
@@ -1374,7 +1209,6 @@ const githubSnapshot = buildGithubSnapshot({
   integrationWorkflows,
   prSnapshots,
 });
-const missions = buildMissionSummaries(projectId);
 const operations = buildOperations(projectId);
 const sessions = buildSessions(projectId);
 let processDefinitions = buildProcessDefinitions(projectId);
@@ -1396,8 +1230,6 @@ const processGroups = finalizedRun.processGroups;
 processRuntime = ensureDemoProcessRuntime(processRuntime, lanes, processDefinitions);
 
 const automations = buildAutomations(projectId);
-const missionDashboard = buildMissionDashboard(missions);
-const missionFullViews = buildMissionFullViews({ projectId, missions });
 const usageSnapshot = buildUsageSnapshot();
 const ctoState = getCtoState(projectId);
 
@@ -1436,9 +1268,6 @@ const snapshot = {
   integrationWorkflows,
   rebaseNeeds,
   githubSnapshot,
-  missions,
-  missionDashboard,
-  missionFullViews,
   operations,
   sessions,
   chatTranscripts,
@@ -1457,7 +1286,7 @@ const snapshot = {
 await fs.writeFile(OUT_FILE, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
 console.log(
   `[export-browser-mock-ade] Wrote browser snapshot for ${projectRow.displayName} → ${OUT_FILE}\n` +
-    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length} processes=${processDefinitions.length}/${processRuntime.length} stacks=${stackButtons.length} groups=${processGroups.length} missions=${missions.length}\n` +
+    `  lanes=${lanes.length} prs=${prs.length} prSnapshots=${prSnapshots.length} operations=${operations.length} sessions=${sessions.length} chatTranscripts=${Object.keys(chatTranscripts).length} processes=${processDefinitions.length}/${processRuntime.length} stacks=${stackButtons.length} groups=${processGroups.length}\n` +
     `  filesWorkspaces=${lanes.length} filesTreeWorkspaces=${filesTreeWorkspaceCount} filesTreeDirs=${filesTreeDirKeys} filesWithEmbeddedText=${filesContentEntryCount}\n` +
     "Restart Vite or refresh the browser to pick up the updated data.",
 );

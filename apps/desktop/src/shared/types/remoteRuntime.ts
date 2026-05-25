@@ -120,7 +120,6 @@ export type RemoteRuntimeEventCategory =
   | "orchestrator"
   | "dag_mutation"
   | "runtime"
-  | "mission"
   | "pty";
 
 export type RemoteRuntimeBufferedEvent = {

@@ -448,7 +448,6 @@ over Apple Push Notification service. The full stack is implemented:
   | `CHAT_COMPLETED` | chat | alert | 5 |
   | `CTO_SUBAGENT_STARTED` | cto | alert | 5 |
   | `CTO_SUBAGENT_FINISHED` | cto | alert | 5 |
-  | `CTO_MISSION_PHASE` | cto | alert | 5 |
   | `PR_CI_FAILING` | pr | alert | 10 |
   | `PR_REVIEW_REQUESTED` | pr | alert | 10 |
   | `PR_CHANGES_REQUESTED` | pr | alert | 10 |
@@ -463,7 +462,7 @@ over Apple Push Notification service. The full stack is implemented:
 
 - `notificationEventBus.ts` — routes domain events to APNs and/or
   in-app WebSocket delivery. Call surface: `publishChatEvent`,
-  `publishPrEvent`, `publishMissionEvent`, `publishSystemEvent`,
+  `publishPrEvent`, `publishSystemEvent`,
   `sendTestPush`. The bus asks `listPushTargets()` and
   `getPrefsForDevice()` at send time so preference toggles take effect
   immediately. If the device is currently connected over WebSocket,
@@ -504,7 +503,7 @@ over Apple Push Notification service. The full stack is implemented:
   `CHAT_AWAITING_INPUT` gets Approve + Deny + Reply (text input);
   `CHAT_FAILED` gets Open agent + Restart; `PR_CI_FAILING` gets
   Open PR + Retry checks; `PR_MERGE_READY` gets View PR; CTO
-  and system categories get generic Open / Open mission actions.
+  and system categories get generic Open actions.
 
 - `ADENotificationService/NotificationService.swift` — Notification
   Service Extension that decorates inbound APNs payloads before
@@ -611,7 +610,7 @@ extension without importing the main app's heavier renderer code.
 ### Haptic Feedback
 
 - `UIImpactFeedbackGenerator` and `UINotificationFeedbackGenerator`
-  on message send, intervention approval, mission launch, PR merge.
+  on message send, intervention approval, worker launch, PR merge.
 
 ### Attention Drawer
 
@@ -700,7 +699,7 @@ duplicate. Project list dedup runs as a final pass
 
 ### Planned
 
-- Missions, Automations, Graph, History tabs.
+- Automations, Graph, History tabs.
 - Full Settings parity with the desktop.
 - iPad adaptive layout, Spotlight.
 
@@ -832,7 +831,6 @@ reflected in the phone's UI on the next descriptor read.
 | Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
-| Missions tab | Planned |
 | CTO / Automations / Graph / History tabs | Planned |
 | Full Settings parity | Planned |
 | Push notifications (APNs) | Implemented (categories, actions, Notification Service Extension, per-device preferences) |
@@ -845,8 +843,8 @@ reflected in the phone's UI on the next descriptor read.
 
 - **Phones never host.** Any future feature that needs to run on the
   phone should be implemented as a controller operation that sends a
-  command to the host. Agent processes, PTYs, worktrees, workers,
-  mission orchestration — all host-side.
+  command to the host. Agent processes, PTYs, worktrees, and workers
+  are all host-side.
 - **The phone's local DB is authoritative for reads.** If a read
   looks stale, the fix is on the host push side (make sure the table
   is a CRR, make sure writes land in a table the phone reads), not

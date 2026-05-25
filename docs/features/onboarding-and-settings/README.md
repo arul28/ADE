@@ -134,7 +134,7 @@ Renderer — onboarding:
   dialog-scoped steps can be composed from multiple tours.
 - `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
   `lanesTour`, `laneWorkPaneTour`, `workTour`, `filesTour`,
-  `runTour`, `missionsTour`, `prsTour`, `graphTour`, `historyTour`,
+  `runTour`, `prsTour`, `graphTour`, `historyTour`,
   `automationsTour`, `ctoTour`, `settingsTour`, plus the first-session
   `firstJourneyTour`. The first-session tour reuses individual steps
   from the per-surface tours via a small `tutorialSection(sectionId,
@@ -416,8 +416,8 @@ behavior. Current behavior:
 
 - **guest mode** — deterministic features remain usable; AI-backed
   features degrade cleanly (no narrative generation, no summaries).
-- **subscription mode** — unlocks chat, narratives, summaries,
-  mission orchestration.
+- **subscription mode** — unlocks chat, narratives, summaries, and
+  worker delegation.
 
 Legacy `providers.mode` migration ran during earlier releases and is
 no longer part of the contract; `projectConfigService` still contains

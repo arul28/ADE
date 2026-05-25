@@ -56,7 +56,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear list", description: "List Linear work", placement: "right" },
   { name: "/linear workflows", description: "List Linear workflow runs", placement: "right" },
   { name: "/linear run", description: "Inspect or resolve a Linear run", placement: "right", argumentHint: "<status|resolve|cancel|reroute>" },
-  { name: "/linear route", description: "Route a Linear issue", placement: "right", argumentHint: "<cto|mission|worker>" },
+  { name: "/linear route", description: "Route a Linear issue", placement: "right", argumentHint: "<cto|worker>" },
   { name: "/linear sync", description: "Operate Linear sync", placement: "right", argumentHint: "<dashboard|run|queue|resolve|detail>" },
   { name: "/linear ingress", description: "Inspect Linear ingress", placement: "right", argumentHint: "<status|events|webhook>" },
   { name: "/linear pull", description: "Pull a Linear ticket into chat context", placement: "right", argumentHint: "<id>" },

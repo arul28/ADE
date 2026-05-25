@@ -23,12 +23,7 @@ import type {
   ComputerUseEventPayload,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import {
-  normalizeComputerUseArtifactKind,
-  resolveReportArtifactKind,
-} from "../../../shared/proofArtifacts";
-import type { createMissionService } from "../missions/missionService";
-import type { createOrchestratorService } from "../orchestrator/orchestratorService";
+import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { SqlValue } from "../state/kvDb";
@@ -241,12 +236,10 @@ export function createComputerUseArtifactBrokerService(args: {
   db: AdeDb;
   projectId: string;
   projectRoot: string;
-  missionService: ReturnType<typeof createMissionService>;
-  orchestratorService: ReturnType<typeof createOrchestratorService>;
   logger?: Logger | null;
   onEvent?: (payload: ComputerUseEventPayload) => void;
 }) {
-  const { db, projectId, projectRoot, missionService, orchestratorService, onEvent } = args;
+  const { db, projectId, projectRoot, onEvent } = args;
   const layout = resolveAdeLayout(projectRoot);
   const allowedImportRoots = Array.from(new Set([
     layout.artifactsDir,
@@ -457,62 +450,6 @@ export function createComputerUseArtifactBrokerService(args: {
     return toArtifactView(refreshed, readLinkRows([artifactId]));
   };
 
-  const projectArtifact = (record: ComputerUseArtifactRecord, owners: ComputerUseArtifactOwner[]): void => {
-    const missionId = owners.find((owner) => owner.kind === "mission")?.id ?? null;
-    const runId = owners.find((owner) => owner.kind === "orchestrator_run")?.id ?? null;
-    const stepId = owners.find((owner) => owner.kind === "orchestrator_step")?.id ?? null;
-    const attemptId = owners.find((owner) => owner.kind === "orchestrator_attempt")?.id ?? null;
-    const laneId = owners.find((owner) => owner.kind === "lane")?.id ?? null;
-
-    if (missionId) {
-      missionService.addArtifact({
-        missionId,
-        artifactType: record.kind,
-        title: record.title,
-        description: record.description,
-        uri: record.uri,
-        laneId,
-        metadata: {
-          brokerArtifactId: record.id,
-          backendStyle: record.backendStyle,
-          backendName: record.backendName,
-          sourceToolName: record.sourceToolName,
-          originalType: record.originalType,
-        },
-        createdBy: "system",
-        actor: "system",
-      });
-    }
-
-    if (missionId && runId && stepId && attemptId) {
-      orchestratorService.registerArtifact({
-        missionId,
-        runId,
-        stepId,
-        attemptId,
-        artifactKey: record.kind,
-        kind: resolveReportArtifactKind({
-          type: record.kind,
-          artifactKey: record.kind,
-          uri: record.uri,
-          metadata: record.metadata,
-        }),
-        value: record.uri,
-        metadata: {
-          brokerArtifactId: record.id,
-          title: record.title,
-          description: record.description,
-          backendStyle: record.backendStyle,
-          backendName: record.backendName,
-          sourceToolName: record.sourceToolName,
-          uri: record.uri,
-          ...record.metadata,
-        },
-        declared: true,
-      });
-    }
-  };
-
   const readArtifactRows = (query: string, params: SqlValue[]): ComputerUseArtifactRecord[] =>
     db.all<StoredArtifactRow>(query, params).map((row) => ({
       id: row.id,
@@ -641,7 +578,6 @@ export function createComputerUseArtifactBrokerService(args: {
             owner,
           });
         }
-        projectArtifact(record, owners);
         emit({
           type: "artifact-ingested",
           artifactId: record.id,
@@ -723,7 +659,6 @@ export function createComputerUseArtifactBrokerService(args: {
       const existing = getLink(artifactId, owner);
       if (!existing) {
         insertLink(artifactId, owner);
-        projectArtifact(record, [owner]);
         emit({
           type: "artifact-linked",
           artifactId,

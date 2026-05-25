@@ -22,7 +22,7 @@ The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI age
     Drives PRs to merge readiness autonomously — starts convergence rounds, monitors CI and review comments, and manages the full resolution loop via five dedicated operator tools.
   </Card>
   <Card title="Project Awareness" icon="diagram-project">
-    Uses current lane, PR, Linear, mission, and repository context to make delegation decisions.
+    Uses current lane, PR, Linear, worker run, and repository context to make delegation decisions.
   </Card>
 </CardGroup>
 
@@ -30,17 +30,17 @@ The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI age
 
 ## CTO vs. Regular Agents
 
-Understanding how the CTO differs from the agents you spawn manually (in chat sessions or missions) helps you know when to use each.
+Understanding how the CTO differs from the agents you spawn manually (in chat sessions or worker runs) helps you know when to use each.
 
 | | **CTO Agent** | **Regular / Worker Agent** |
 |--|---------------|---------------------------|
 | **Lifecycle** | Always on; persistent across sessions | Ephemeral; lives for one task or session |
-| **Scope** | Entire project | Specific lane, task, or mission |
-| **Context** | Project, lane, PR, Linear, and mission state | Current session or assigned lane |
+| **Scope** | Entire project | Specific lane, task, or worker run |
+| **Context** | Project, lane, PR, Linear, and worker run state | Current session or assigned lane |
 | **Triggers** | Heartbeat schedule + events + manual chat | Explicit user action or automation trigger |
-| **Authority** | Can spawn lanes, create missions, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
+| **Authority** | Can spawn lanes, create worker runs, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
 | **Linear access** | Full bidirectional sync (owner) | Read-only via ADE CLI tools, if granted |
-| **Primary UI** | CTO tab | Lane terminal, Chat pane, Missions tab |
+| **Primary UI** | CTO tab | Lane terminal, Chat pane, Workers tab |
 
 ---
 

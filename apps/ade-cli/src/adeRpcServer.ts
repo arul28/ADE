@@ -4,11 +4,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
 import {
-  createCoordinatorToolSet,
-  type CoordinatorExecutableTool,
-} from "../../desktop/src/main/services/orchestrator/coordinatorTools";
-import { isDisplayOnlyTaskStep } from "../../desktop/src/main/services/orchestrator/orchestratorContext";
-import {
   createComputerUseArtifactPath,
   getLocalComputerUseCapabilities,
   toProjectArtifactUri,
@@ -23,8 +18,6 @@ import {
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { ReflectionValidationError } from "../../desktop/src/main/services/orchestrator/orchestratorService";
-import { getTeamMembersForRun, registerTeamMember, updateTeamMemberStatus } from "../../desktop/src/main/services/orchestrator/teamRuntimeState";
 import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../../desktop/src/main/services/prs/prIssueResolver";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
@@ -154,7 +147,6 @@ type SessionIdentity = {
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
   chatSessionId: string | null;
   standaloneChatSession: boolean;
-  missionId: string | null;
   runId: string | null;
   stepId: string | null;
   attemptId: string | null;
@@ -344,7 +336,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_ade_action_status",
-    description: "Check status/progress for long-running ADE actions by operation/test/chat/run/mission identifiers.",
+    description: "Check status/progress for long-running ADE actions by operation/test/chat/run identifiers.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -353,7 +345,6 @@ const TOOL_SPECS: ToolSpec[] = [
         testRunId: { type: "string", minLength: 1 },
         chatSessionId: { type: "string", minLength: 1 },
         runId: { type: "string", minLength: 1 },
-        missionId: { type: "string", minLength: 1 },
         prId: { type: "string", minLength: 1 },
         previousHash: { type: "string" },
         waitForMs: { type: "number", minimum: 0, maximum: 120000, default: 0 },
@@ -390,13 +381,12 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "ask_user",
-    description: "Ask the user a question and wait for their answer. Works in both mission contexts (with missionId) and standalone chat sessions (without missionId). Returns explicit outcome fields (`outcome`, `resolved`, `answered`, `declined`, `cancelled`, `timedOut`, `awaitingUserResponse`) so declines/cancels/timeouts cannot be mistaken for a still-pending question.",
+    description: "Ask the user a question and wait for their answer from an active chat session. Returns explicit outcome fields (`outcome`, `resolved`, `answered`, `declined`, `cancelled`, `timedOut`, `awaitingUserResponse`) so declines/cancels/timeouts cannot be mistaken for a still-pending question.",
     inputSchema: {
       type: "object",
       required: ["title", "body"],
       additionalProperties: false,
       properties: {
-        missionId: { type: "string", minLength: 1 },
         title: { type: "string", minLength: 1 },
         body: { type: "string", minLength: 1 },
         questions: {
@@ -440,32 +430,6 @@ const TOOL_SPECS: ToolSpec[] = [
         phase: { type: "string" },
         waitForResolutionMs: { type: "number", minimum: 0, maximum: 3600000 },
         pollIntervalMs: { type: "number", minimum: 100, maximum: 10000 }
-      }
-    }
-  },
-  {
-    name: "reflection_add",
-    description: "Record a structured reflection entry for mission introspection and retrospective synthesis.",
-    inputSchema: {
-      type: "object",
-      required: ["signalType", "observation", "agentRole", "phase", "recommendation", "context", "occurredAt"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string" },
-        runId: { type: "string" },
-        stepId: { type: "string" },
-        attemptId: { type: "string" },
-        agentRole: { type: "string", minLength: 1 },
-        phase: { type: "string", minLength: 1 },
-        signalType: { type: "string", enum: ["wish", "frustration", "idea", "pattern", "limitation"] },
-        observation: { type: "string", minLength: 1 },
-        recommendation: { type: "string", minLength: 1 },
-        context: { type: "string", minLength: 1 },
-        occurredAt: {
-          type: "string",
-          minLength: 1,
-          pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$"
-        }
       }
     }
   },
@@ -709,10 +673,6 @@ const TOOL_SPECS: ToolSpec[] = [
                 type: "string",
                 enum: [
                   "lane",
-                  "mission",
-                  "orchestrator_run",
-                  "orchestrator_step",
-                  "orchestrator_attempt",
                   "chat_session",
                   "automation_run",
                   "github_pr",
@@ -746,10 +706,6 @@ const TOOL_SPECS: ToolSpec[] = [
           type: "string",
           enum: [
             "lane",
-            "mission",
-            "orchestrator_run",
-            "orchestrator_step",
-            "orchestrator_attempt",
             "chat_session",
             "automation_run",
             "github_pr",
@@ -1341,132 +1297,7 @@ const TOOL_SPECS: ToolSpec[] = [
       }
     }
   },
-  // ── Mission Lifecycle Tools ──────────────────────────────────────
-  {
-    name: "create_mission",
-    description: "Create a new mission from a prompt.",
-    inputSchema: {
-      type: "object",
-      required: ["prompt"],
-      additionalProperties: false,
-      properties: {
-        prompt: { type: "string", minLength: 1 },
-        title: { type: "string" },
-        laneId: { type: "string" },
-        priority: { type: "string", enum: ["low", "medium", "high", "critical"] },
-        executionMode: { type: "string", enum: ["autopilot", "manual"] },
-        prStrategy: { type: "string", enum: ["integration", "per-lane", "manual"] },
-        executorPolicy: { type: "object" }
-      }
-    }
-  },
-  {
-    name: "start_mission",
-    description: "Start a mission run, triggering planning and execution.",
-    inputSchema: {
-      type: "object",
-      required: ["missionId"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", minLength: 1 },
-        runMode: { type: "string", enum: ["autopilot", "manual"] },
-        defaultExecutorKind: { type: "string" },
-        coordinatorModel: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "pause_mission",
-    description: "Pause an active mission run.",
-    inputSchema: {
-      type: "object",
-      required: ["runId"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        reason: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "resume_mission",
-    description: "Resume a paused mission run.",
-    inputSchema: {
-      type: "object",
-      required: ["runId"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "cancel_mission",
-    description: "Cancel an active mission run gracefully.",
-    inputSchema: {
-      type: "object",
-      required: ["runId"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        reason: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "steer_mission",
-    description: "Inject a steering directive into an active mission.",
-    inputSchema: {
-      type: "object",
-      required: ["missionId", "directive"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", minLength: 1 },
-        directive: { type: "string", minLength: 1 },
-        targetStepKey: { type: "string" },
-        priority: { type: "string", enum: ["suggestion", "instruction", "override"] }
-      }
-    }
-  },
-  {
-    name: "resolve_intervention",
-    description: "Resolve an open mission intervention.",
-    inputSchema: {
-      type: "object",
-      required: ["missionId", "interventionId", "status"],
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", minLength: 1 },
-        interventionId: { type: "string", minLength: 1 },
-        status: { type: "string", enum: ["resolved", "dismissed"] },
-        note: { type: "string" }
-      }
-    }
-  },
   // ── Observation Tools ────────────────────────────────────────────
-  {
-    name: "get_mission",
-    description: "Get full mission details including steps, interventions, and metadata. When called by a worker, missionId defaults to the worker's own mission.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", description: "Mission ID. Auto-populated from caller context if omitted." }
-      }
-    }
-  },
-  {
-    name: "get_run_graph",
-    description: "Get the full run graph: run, steps, attempts, claims, timeline. When called by a worker, runId defaults to the worker's own run.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
-        timelineLimit: { type: "number", minimum: 0, maximum: 1000 }
-      }
-    }
-  },
   {
     name: "stream_events",
     description: "Poll buffered orchestrator events using a cursor for incremental streaming.",
@@ -1476,194 +1307,15 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         cursor: { type: "number", minimum: 0 },
         limit: { type: "number", minimum: 1, maximum: 1000 },
-        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "mission", "pty"] }
+        category: { type: "string", enum: ["orchestrator", "dag_mutation", "runtime", "pty"] }
       }
     }
   },
-  {
-    name: "get_step_output",
-    description: "Get the output/result of a specific step in a run. When called by a worker, runId defaults to the worker's own run.",
-    inputSchema: {
-      type: "object",
-      required: ["stepKey"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
-        stepKey: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "get_worker_states",
-    description: "Get active worker runtime states plus persisted run worker rows. When called by a worker, runId defaults to the worker's own run, so you can see your peers without passing parameters.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." }
-      }
-    }
-  },
-  {
-    name: "get_timeline",
-    description: "Get timeline events for a run, optionally filtered by step. When called by a worker, runId defaults to the worker's own run.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." },
-        limit: { type: "number", minimum: 1, maximum: 1000 },
-        stepId: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "list_retrospectives",
-    description: "List generated retrospectives. When called by a worker, missionId defaults to the worker mission.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "list_reflection_trends",
-    description: "List cross-mission reflection trend entries linked to source retrospectives.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", description: "Mission ID filter. Auto-populated from caller context if omitted." },
-        runId: { type: "string", description: "Run ID filter. Auto-populated from caller context if omitted." },
-        limit: { type: "number", minimum: 1, maximum: 500 }
-      }
-    }
-  },
-  {
-    name: "list_reflection_pattern_stats",
-    description: "List reflection pattern repetition stats and candidate-promotion linkage.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        limit: { type: "number", minimum: 1, maximum: 500 }
-      }
-    }
-  },
-  {
-    name: "get_mission_metrics",
-    description: "Get aggregated metrics for a mission. When called by a worker, missionId defaults to the worker's own mission.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string", description: "Mission ID. Auto-populated from caller context if omitted." }
-      }
-    }
-  },
-  {
-    name: "get_final_diff",
-    description: "Get the final diff output for a completed run. When called by a worker, runId defaults to the worker's own run.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", description: "Run ID. Auto-populated from caller context if omitted." }
-      }
-    }
-  },
-  // ── Evaluation Tools ─────────────────────────────────────────────
-  {
-    name: "evaluate_run",
-    description: "Submit a structured evaluation of a mission run.",
-    inputSchema: {
-      type: "object",
-      required: ["runId", "missionId", "scores", "issues", "summary"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        missionId: { type: "string", minLength: 1 },
-        scores: {
-          type: "object",
-          required: ["planQuality", "parallelism", "coordinatorDecisions", "resourceEfficiency", "outcomeQuality"],
-          additionalProperties: false,
-          properties: {
-            planQuality: { type: "number", minimum: 0, maximum: 10 },
-            parallelism: { type: "number", minimum: 0, maximum: 10 },
-            coordinatorDecisions: { type: "number", minimum: 0, maximum: 10 },
-            resourceEfficiency: { type: "number", minimum: 0, maximum: 10 },
-            outcomeQuality: { type: "number", minimum: 0, maximum: 10 }
-          }
-        },
-        issues: {
-          type: "array",
-          items: {
-            type: "object",
-            required: ["category", "severity", "description", "recommendation"],
-            additionalProperties: false,
-            properties: {
-              category: { type: "string", enum: ["planning", "execution", "coordination", "recovery", "output"] },
-              severity: { type: "string", enum: ["minor", "major", "critical"] },
-              description: { type: "string", minLength: 1 },
-              stepKey: { type: "string" },
-              recommendation: { type: "string", minLength: 1 }
-            }
-          }
-        },
-        summary: { type: "string", minLength: 1 },
-        improvements: { type: "array", items: { type: "string" } },
-        metadata: { type: "object" }
-      }
-    }
-  },
-  {
-    name: "list_evaluations",
-    description: "List evaluations for a mission or run.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        missionId: { type: "string" },
-        runId: { type: "string" },
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "get_evaluation_report",
-    description: "Get a full evaluation report with run context.",
-    inputSchema: {
-      type: "object",
-      required: ["evaluationId"],
-      additionalProperties: false,
-      properties: {
-        evaluationId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  // ── Worker Collaboration Tools ─────────────────────────────────
-  {
-    name: "get_pending_messages",
-    description: "Get pending messages for this worker. Returns messages from coordinator, peers, or system. Uses caller identity from environment to auto-resolve the worker.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        since_cursor: {
-          type: "string",
-          description: "Optional ISO timestamp cursor to get messages after a certain point"
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of messages to return (default 50, max 200)"
-        }
-      }
-    }
-  }
 ];
+
+const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
+  "spawn_agent",
+]);
 
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
@@ -1817,21 +1469,6 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "routeLinearIssueToMission",
-    description: "Create a mission from a Linear issue and optionally launch it.",
-    inputSchema: {
-      type: "object",
-      required: ["issueId"],
-      additionalProperties: false,
-      properties: {
-        issueId: { type: "string", minLength: 1 },
-        laneId: { type: "string" },
-        launch: { type: "boolean" },
-        runMode: { type: "string", enum: ["autopilot", "manual"] }
-      }
-    }
-  },
-  {
     name: "routeLinearIssueToWorker",
     description: "Wake a worker agent with a Linear issue as the task context.",
     inputSchema: {
@@ -1854,12 +1491,10 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         runId: { type: "string", minLength: 1 },
-        target: { type: "string", enum: ["cto", "mission", "worker"] },
+        target: { type: "string", enum: ["cto", "worker"] },
         reason: { type: "string", minLength: 1 },
         laneId: { type: "string" },
         reuseExisting: { type: "boolean" },
-        launch: { type: "boolean" },
-        runMode: { type: "string", enum: ["autopilot", "manual"] },
         agentId: { type: "string" },
         taskKey: { type: "string" }
       }
@@ -2000,86 +1635,10 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
   },
 ];
 
-const COORDINATOR_TOOL_SPECS: ToolSpec[] = [
-  {
-    name: "spawn_worker",
-    description: "Coordinator: spawn a new worker step in the current mission run.",
-    inputSchema: {
-      type: "object",
-      required: ["name", "prompt"],
-      additionalProperties: true,
-      properties: {
-        name: { type: "string", minLength: 1 },
-        prompt: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  { name: "insert_milestone", description: "Coordinator: insert a milestone gate into the DAG.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "request_specialist", description: "Coordinator: request a specialist worker role.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "delegate_to_subagent", description: "Coordinator: delegate a subtask from a parent worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "delegate_parallel", description: "Coordinator: delegate multiple child subtasks from one parent in a single call.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "stop_worker", description: "Coordinator: stop a running worker attempt.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "send_message", description: "Coordinator: send a direct message to a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "message_worker", description: "Coordinator: relay a message between two workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "broadcast", description: "Coordinator: broadcast a message to active workers.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "get_worker_output", description: "Coordinator: fetch latest output/report for a worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "list_workers", description: "Coordinator: list current worker states.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "report_status", description: "Worker: report progress/status to the coordinator.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "report_result", description: "Worker: report completion result to the coordinator.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "report_validation", description: "Validator: report validation verdict/findings for a step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "read_mission_status", description: "Coordinator: read full mission/run status snapshot.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "read_mission_state", description: "Coordinator: read persisted mission state document.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "update_mission_state", description: "Coordinator: patch persisted mission state document.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "revise_plan", description: "Coordinator: revise mission DAG/plan.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "update_tool_profiles", description: "Coordinator: update runtime role/tool profiles.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "transfer_lane", description: "Coordinator: transfer a worker step to another lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "provision_lane", description: "Coordinator: provision a new mission child lane.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "set_current_phase", description: "Coordinator: set the active mission phase.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "create_task", description: "Coordinator: create a logical mission task without spawning a worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "update_task", description: "Coordinator: update task metadata/status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "assign_task", description: "Coordinator: assign a task to an existing worker.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "list_tasks", description: "Coordinator: list mission tasks and status.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "skip_step", description: "Coordinator: skip a worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "mark_step_complete", description: "Coordinator: mark a worker step as succeeded.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "mark_step_failed", description: "Coordinator: mark a worker step as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "retry_step", description: "Coordinator: retry a failed worker step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "complete_mission", description: "Coordinator: request mission success finalization. The runtime still enforces completion gates before success is granted.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "fail_mission", description: "Coordinator: finalize the mission run as failed.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "get_budget_status", description: "Coordinator: inspect mission budget pressure/hard caps.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "request_user_input", description: "Coordinator: open a user intervention with a question.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "read_file", description: "Coordinator: read a file within project root.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "read_step_output", description: "Coordinator: read output artifact for a specific step.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "search_files", description: "Coordinator: search files/content in project root.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-  { name: "get_project_context", description: "Coordinator: return compact mission/project context for planning.", inputSchema: { type: "object", additionalProperties: true, properties: {} } },
-];
-
-const AGENT_VISIBLE_COORDINATOR_TOOL_NAMES = new Set([
-  "report_status",
-  "report_result",
-  "report_validation",
-  "message_worker",
-  "delegate_to_subagent",
-  "delegate_parallel",
-  "get_worker_output",
-  "list_workers",
-  "read_mission_status",
-  "read_mission_state",
-  "list_tasks",
-  "get_budget_status",
-  "get_project_context",
-]);
-
-const AGENT_VISIBLE_COORDINATOR_TOOL_SPECS = COORDINATOR_TOOL_SPECS.filter((tool) =>
-  AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(tool.name)
-);
-
-const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
-  "spawn_agent",
-  ...COORDINATOR_TOOL_SPECS.map((tool) => tool.name),
-]);
 
 const CTO_OPERATOR_TOOL_NAMES = new Set(CTO_OPERATOR_TOOL_SPECS.map((tool) => tool.name));
 const CTO_LINEAR_SYNC_TOOL_NAMES = new Set(CTO_LINEAR_SYNC_TOOL_SPECS.map((tool) => tool.name));
+const DISABLED_ADE_ACTION_DOMAINS = new Set<AdeActionDomain>();
 
 const LOCAL_COMPUTER_USE_TOOL_NAMES = new Set([
   "get_environment_info",
@@ -2100,11 +1659,16 @@ const MACOS_VM_TOOL_NAMES = new Set([
   "macos_vm_type",
 ]);
 
-const COORDINATOR_TOOL_NAMES = new Set(COORDINATOR_TOOL_SPECS.map((tool) => tool.name));
+const ALL_TOOL_SPECS: ToolSpec[] = [
+  ...TOOL_SPECS,
+  ...CTO_OPERATOR_TOOL_SPECS,
+  ...CTO_LINEAR_SYNC_TOOL_SPECS,
+];
 const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
   "list_ade_actions",
   "get_ade_action_status",
+  "stream_events",
   "get_lane_status",
   "get_lane_conflict_state",
   "list_lanes",
@@ -2178,14 +1742,12 @@ const MUTATION_TOOLS = new Set([
   "pr_start_issue_resolution",
   "pr_reply_to_review_thread",
   "pr_resolve_review_thread",
-  "reflection_add",
   "spawnChat",
   "sendChatMessage",
   "interruptChat",
   "resolveLinearRunAction",
   "cancelLinearRun",
   "routeLinearIssueToCto",
-  "routeLinearIssueToMission",
   "routeLinearIssueToWorker",
   "rerouteLinearRun",
   "runLinearSyncNow",
@@ -2206,40 +1768,6 @@ const MUTATION_TOOLS = new Set([
   "spawn_agent"
 ]);
 
-const ORCHESTRATION_TOOLS = new Set([
-  "create_mission",
-  "start_mission",
-  "pause_mission",
-  "resume_mission",
-  "cancel_mission",
-  "steer_mission",
-  "resolve_intervention"
-]);
-
-const OBSERVATION_TOOLS = new Set([
-  "get_mission",
-  "get_run_graph",
-  "stream_events",
-  "get_step_output",
-  "get_worker_states",
-  "get_timeline",
-  "list_retrospectives",
-  "list_reflection_trends",
-  "list_reflection_pattern_stats",
-  "get_mission_metrics",
-  "get_final_diff",
-  "get_pending_messages"
-]);
-
-const EVALUATOR_TOOLS = new Set([
-  "evaluate_run"
-]);
-
-const EVALUATION_READ_TOOLS = new Set([
-  "list_evaluations",
-  "get_evaluation_report"
-]);
-
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -2254,13 +1782,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
-}
-
-function isRunWorkerStep(step: { stepKey?: unknown; metadata?: unknown }): boolean {
-  if (step.stepKey === "__planner__") return false;
-  const metadata = isRecord(step.metadata) ? step.metadata : {};
-  if (metadata.systemManaged === true || metadata.plannerLaunchTracker === true) return false;
-  return !isDisplayOnlyTaskStep(step);
 }
 
 /**
@@ -2504,10 +2025,6 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     else if (rawKind === "pr") normalizedKind = "github_pr";
     switch (normalizedKind) {
       case "lane":
-      case "mission":
-      case "orchestrator_run":
-      case "orchestrator_step":
-      case "orchestrator_attempt":
       case "chat_session":
       case "automation_run":
       case "github_pr":
@@ -2517,9 +2034,7 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
           ownerId,
           normalizedKind === "github_pr" || normalizedKind === "linear_issue"
             ? "published_to"
-            : normalizedKind === "orchestrator_attempt"
-              ? "produced_by"
-              : "attached_to",
+            : "attached_to",
         );
         break;
       default:
@@ -2528,10 +2043,6 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
   };
 
   addExplicitOwner();
-  add("mission", session.identity.missionId);
-  add("orchestrator_run", session.identity.runId);
-  add("orchestrator_step", session.identity.stepId);
-  add("orchestrator_attempt", session.identity.attemptId, "produced_by");
   add("lane", asOptionalTrimmedString(toolArgs.laneId));
   const explicitChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
   if (explicitChatSessionId) {
@@ -2540,8 +2051,7 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     add("chat_session", session.identity.chatSessionId);
   } else {
     const looksLikeStandaloneChat =
-      !session.identity.missionId
-      && !session.identity.runId
+      !session.identity.runId
       && !session.identity.stepId
       && session.identity.role !== "orchestrator"
       && session.identity.role !== "evaluator";
@@ -2901,21 +2411,9 @@ function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefin
 }
 
 function resolveRunContextLaneId(runtime: AdeRuntime, callerCtx: CallerContext): string | null {
-  const runId = asOptionalTrimmedString(callerCtx.runId);
-  if (!runId) return null;
-
-  const graph = getRunGraphSafe(runtime, runId);
-  if (graph) {
-    const inferredWorkerId = inferWorkerIdFromCaller(graph, callerCtx);
-    const step = resolveStepFromGraph(graph, callerCtx.stepId, inferredWorkerId);
-    const stepLaneId = asOptionalTrimmedString(step?.laneId);
-    if (stepLaneId) return stepLaneId;
-  }
-
-  const missionId = asOptionalTrimmedString(callerCtx.missionId) ?? resolveMissionIdForRun(runtime, runId);
-  if (!missionId) return null;
-  const mission = runtime.missionService.get(missionId) as Record<string, unknown> | null;
-  return asOptionalTrimmedString(mission?.laneId) ?? asOptionalTrimmedString(mission?.lane_id);
+  void runtime;
+  void callerCtx;
+  return null;
 }
 
 function resolveRequestedOrSessionLaneId(
@@ -3086,8 +2584,6 @@ async function runCtoOperatorBridgeTool(
     sessionService: runtime.sessionService,
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
-    missionService: runtime.missionService,
-    aiOrchestratorService: runtime.aiOrchestratorService,
     workerAgentService: runtime.workerAgentService,
     linearDispatcherService: runtime.linearDispatcherService ?? null,
     flowPolicyService: runtime.flowPolicyService ?? null,
@@ -3244,7 +2740,7 @@ function resolveSpawnContextFile(args: {
   const payload = {
     schema: "ade.agent.spawnContext.v1",
     generatedAt: nowIso(),
-    mission: {
+    runContext: {
       runId: args.runId,
       stepId: args.stepId,
       attemptId: args.attemptId
@@ -3296,7 +2792,7 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
 
 /**
  * Caller context resolved from environment variables.
- * Workers spawned by the orchestrator have ADE_MISSION_ID, ADE_RUN_ID, etc.
+ * Worker-like callers can provide ADE_RUN_ID/ADE_STEP_ID/ADE_ATTEMPT_ID
  * set in their environment. These provide automatic identity and context defaults.
  */
 type CallerContext = {
@@ -3304,7 +2800,6 @@ type CallerContext = {
   role: SessionIdentity["role"] | null;
   chatSessionId: string | null;
   standaloneChatSession: boolean;
-  missionId: string | null;
   runId: string | null;
   stepId: string | null;
   attemptId: string | null;
@@ -3314,7 +2809,6 @@ type CallerContext = {
 function resolveEnvCallerContext(): CallerContext {
   const envRole = normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE);
   const envChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
-  const envMissionId = process.env.ADE_MISSION_ID?.trim() || null;
   const envRunId = process.env.ADE_RUN_ID?.trim() || null;
   const envStepId = process.env.ADE_STEP_ID?.trim() || null;
   const envAttemptId = process.env.ADE_ATTEMPT_ID?.trim() || null;
@@ -3322,8 +2816,7 @@ function resolveEnvCallerContext(): CallerContext {
     callerId: envChatSessionId ?? envAttemptId ?? null,
     role: envRole,
     chatSessionId: envChatSessionId,
-    standaloneChatSession: Boolean(envChatSessionId) && !envMissionId && !envRunId && !envStepId && !envAttemptId,
-    missionId: envMissionId,
+    standaloneChatSession: Boolean(envChatSessionId) && !envRunId && !envStepId && !envAttemptId,
     runId: envRunId,
     stepId: envStepId,
     attemptId: envAttemptId,
@@ -3339,7 +2832,6 @@ function resolveCallerContext(session?: SessionState): CallerContext {
     role: session.identity.role ?? envContext.role,
     chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
     standaloneChatSession: session.identity.standaloneChatSession,
-    missionId: session.identity.missionId ?? envContext.missionId,
     runId: session.identity.runId ?? envContext.runId,
     stepId: session.identity.stepId ?? envContext.stepId,
     attemptId: session.identity.attemptId ?? envContext.attemptId,
@@ -3360,10 +2852,6 @@ async function resolveEffectiveCallerContext(
 ): Promise<CallerContext> {
   const callerCtx = { ...resolveCallerContext(session) };
 
-  if (!callerCtx.missionId && callerCtx.runId) {
-    callerCtx.missionId = resolveMissionIdForRun(runtime, callerCtx.runId);
-  }
-
   if (!callerCtx.ownerId && callerCtx.chatSessionId && runtime.agentChatService?.getSessionSummary) {
     try {
       const summary = await runtime.agentChatService.getSessionSummary(callerCtx.chatSessionId);
@@ -3382,20 +2870,6 @@ function isStandaloneChatCaller(callerCtx: CallerContext): boolean {
 
 function isToolHiddenForStandaloneChat(name: string, callerCtx: CallerContext): boolean {
   return isStandaloneChatCaller(callerCtx) && STANDALONE_CHAT_HIDDEN_TOOL_NAMES.has(name);
-}
-
-function canCallerAccessCoordinatorTool(name: string, callerCtx: CallerContext): boolean {
-  if (!COORDINATOR_TOOL_NAMES.has(name)) return true;
-  if (isToolHiddenForStandaloneChat(name, callerCtx)) return false;
-  if (callerCtx.role === "orchestrator") return true;
-  if (callerCtx.role === "agent" && AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)) return true;
-  if (
-    AGENT_VISIBLE_COORDINATOR_TOOL_NAMES.has(name)
-    && (callerCtx.attemptId || callerCtx.stepId || callerCtx.runId || callerCtx.missionId)
-  ) {
-    return true;
-  }
-  return false;
 }
 
 function isLocalComputerUseAllowed(callerCtx: CallerContext): boolean {
@@ -3441,24 +2915,24 @@ async function listToolSpecsForSession(runtime: AdeRuntime, session: SessionStat
     && (macosVmAllowed || !MACOS_VM_TOOL_NAMES.has(tool.name))
   );
   const visibleBaseTools = TOOL_SPECS.filter(keepVisibleTool);
-  const visibleCoordinatorTools = COORDINATOR_TOOL_SPECS.filter(keepVisibleTool);
   const allVisibleTools = (() => {
     if (callerCtx.role === "external" || !callerCtx.role) {
       return visibleBaseTools;
     }
     if (callerCtx.role === "agent") {
-      return [...visibleBaseTools, ...AGENT_VISIBLE_COORDINATOR_TOOL_SPECS];
+      return visibleBaseTools;
     }
     if (callerCtx.role === "cto") {
       return [...visibleBaseTools, ...CTO_OPERATOR_TOOL_SPECS, ...CTO_LINEAR_SYNC_TOOL_SPECS];
     }
-    return [...visibleBaseTools, ...visibleCoordinatorTools];
+    return visibleBaseTools;
   })();
 
   return allVisibleTools.filter((tool) => !isToolHiddenForStandaloneChat(tool.name, callerCtx));
 }
 
 function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionIdentity {
+  void runtime;
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
@@ -3471,19 +2945,8 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
-  const requestedMissionId = asOptionalTrimmedString(identity.missionId);
-  const resolvedMissionId =
-    envContext.missionId
-    ?? (resolvedRunId ? resolveMissionIdForRun(runtime, resolvedRunId) : null);
-  if (requestedMissionId && resolvedMissionId && requestedMissionId !== resolvedMissionId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      "identity.missionId does not match the server-authorized run context",
-    );
-  }
 
   const standaloneChatSession = Boolean(resolvedChatSessionId)
-    && !envContext.missionId
     && !resolvedRunId
     && !resolvedStepId
     && !resolvedAttemptId;
@@ -3493,7 +2956,6 @@ function parseInitializeIdentity(runtime: AdeRuntime, params: unknown): SessionI
     role: validRole,
     chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
-    missionId: resolvedMissionId ?? requestedMissionId ?? null,
     runId: resolvedRunId,
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
@@ -3675,953 +3137,6 @@ function ensureAskUserAllowed(session: SessionState): void {
   session.askUserEvents.push(now);
   GLOBAL_ASK_USER_RATE_LIMIT.events.push(now);
 }
-
-type CoordinatorToolCacheEntry = {
-  missionId: string;
-  tools: Record<string, ExecutableTool>;
-};
-
-const coordinatorToolCacheByRuntime = new WeakMap<AdeRuntime, Map<string, CoordinatorToolCacheEntry>>();
-
-function resolveMissionIdForRun(runtime: AdeRuntime, runId: string): string | null {
-  const graphMissionId = (() => {
-    try {
-      const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-      const runRecord = safeObject(graph.run);
-      return asOptionalTrimmedString(runRecord.missionId);
-    } catch {
-      return null;
-    }
-  })();
-  if (graphMissionId) return graphMissionId;
-  const row = runtime.db.get<{ mission_id: string | null }>(
-    `
-      select mission_id
-      from orchestrator_runs
-      where id = ?
-      limit 1
-    `,
-    [runId]
-  );
-  return asOptionalTrimmedString(row?.mission_id);
-}
-
-function resolveRunIdForMission(runtime: AdeRuntime, missionId: string): string | null {
-  const row = runtime.db.get<{ id: string | null }>(
-    `
-      select id
-      from orchestrator_runs
-      where mission_id = ?
-      order by
-        case status
-          when 'active' then 0
-          when 'bootstrapping' then 1
-          when 'queued' then 2
-          when 'paused' then 3
-          else 4
-        end,
-        datetime(updated_at) desc,
-        datetime(created_at) desc
-      limit 1
-    `,
-    [missionId]
-  );
-  return asOptionalTrimmedString(row?.id);
-}
-
-function getCoordinatorToolSet(args: {
-  runtime: AdeRuntime;
-  runId: string;
-  missionId: string;
-}): Record<string, ExecutableTool> {
-  let runtimeCache = coordinatorToolCacheByRuntime.get(args.runtime);
-  if (!runtimeCache) {
-    runtimeCache = new Map<string, CoordinatorToolCacheEntry>();
-    coordinatorToolCacheByRuntime.set(args.runtime, runtimeCache);
-  }
-  const cached = runtimeCache.get(args.runId);
-  if (cached && cached.missionId === args.missionId) {
-    return cached.tools;
-  }
-
-  const missionRecord = safeObject(args.runtime.missionService.get(args.missionId));
-  const missionLaneId = asOptionalTrimmedString(missionRecord.laneId ?? missionRecord.lane_id);
-  const toolSet = createCoordinatorToolSet({
-    orchestratorService: args.runtime.orchestratorService,
-    missionService: args.runtime.missionService,
-    runId: args.runId,
-    missionId: args.missionId,
-    logger: args.runtime.logger,
-    db: args.runtime.db,
-    projectRoot: args.runtime.projectRoot,
-    workspaceRoot: (() => {
-      const laneWorkspaceRoot = resolveLaneWorktreePath(args.runtime, missionLaneId);
-      if (missionLaneId && !laneWorkspaceRoot) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          `Mission lane '${missionLaneId}' does not have an available worktree.`,
-        );
-      }
-      return laneWorkspaceRoot
-        ?? (typeof args.runtime.workspaceRoot === "string" && args.runtime.workspaceRoot.trim().length > 0
-          ? args.runtime.workspaceRoot.trim()
-          : args.runtime.projectRoot);
-    })(),
-    missionLaneId: missionLaneId ?? undefined,
-    onRunFinalize: ({ runId }) => {
-      args.runtime.aiOrchestratorService.finalizeRun({ runId, force: true });
-    },
-    onDagMutation: (event) => {
-      args.runtime.eventBuffer.push({
-        timestamp: nowIso(),
-        category: "dag_mutation",
-        payload: event as unknown as Record<string, unknown>
-      });
-    }
-  });
-  const normalizedToolSet = toolSet as unknown as Record<string, CoordinatorExecutableTool>;
-  runtimeCache.set(args.runId, {
-    missionId: args.missionId,
-    tools: normalizedToolSet
-  });
-  return normalizedToolSet;
-}
-
-type NativeCallerRegistration = {
-  memberId: string;
-  parentWorkerId: string;
-  parentStepId: string;
-  sourceAttemptId: string;
-};
-
-function getTeamRuntimeContext(runtime: AdeRuntime): import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext {
-  return {
-    db: runtime.db,
-    logger: runtime.logger,
-  } as import("../../desktop/src/main/services/orchestrator/orchestratorContext").OrchestratorContext;
-}
-
-function getRunGraphSafe(runtime: AdeRuntime, runId: string): Record<string, unknown> | null {
-  try {
-    return runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 }) as unknown as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-function getTeamMembersForRunSafe(runtime: AdeRuntime, runId: string): Array<Record<string, unknown>> {
-  const aiService = runtime.aiOrchestratorService as unknown as { getTeamMembers?: (args: { runId: string }) => unknown };
-  if (typeof aiService.getTeamMembers === "function") {
-    try {
-      const members = aiService.getTeamMembers({ runId });
-      if (Array.isArray(members)) return members as Array<Record<string, unknown>>;
-    } catch {
-      // Fall through to DB-backed path.
-    }
-  }
-  return getTeamMembersForRun(getTeamRuntimeContext(runtime), runId) as unknown as Array<Record<string, unknown>>;
-}
-
-function resolveStepFromGraph(graph: Record<string, unknown>, stepId: string | null, stepKey: string | null): Record<string, unknown> | null {
-  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
-  if (stepId) {
-    const byId = steps.find((step) => asOptionalTrimmedString(step.id) === stepId);
-    if (byId) return byId;
-  }
-  if (stepKey) {
-    const byKey = steps.find((step) => asOptionalTrimmedString(step.stepKey) === stepKey);
-    if (byKey) return byKey;
-  }
-  return null;
-}
-
-function titleCaseWords(raw: string): string {
-  return raw
-    .split(/[\s_-]+/)
-    .map((token) => token ? `${token.charAt(0).toUpperCase()}${token.slice(1).toLowerCase()}` : "")
-    .join(" ")
-    .trim();
-}
-
-function deriveQuestionOwnerFromPhase(args: {
-  phaseKey?: string | null;
-  phaseName?: string | null;
-}): { ownerKind: string; ownerLabel: string } {
-  const normalizedPhaseKey = asOptionalTrimmedString(args.phaseKey)?.toLowerCase() ?? "";
-  const normalizedPhaseName = asOptionalTrimmedString(args.phaseName)?.toLowerCase() ?? "";
-  const normalized = normalizedPhaseKey || normalizedPhaseName;
-  if (normalized === "planning") {
-    return { ownerKind: "planner", ownerLabel: "Planner question" };
-  }
-  if (normalized === "development") {
-    return { ownerKind: "developer", ownerLabel: "Developer question" };
-  }
-  if (normalized === "validation") {
-    return { ownerKind: "validator", ownerLabel: "Validator question" };
-  }
-  if (normalized === "testing") {
-    return { ownerKind: "tester", ownerLabel: "Tester question" };
-  }
-  const humanPhase = asOptionalTrimmedString(args.phaseName) ?? asOptionalTrimmedString(args.phaseKey);
-  if (humanPhase) {
-    return {
-      ownerKind: normalized || "phase_worker",
-      ownerLabel: `${titleCaseWords(humanPhase)} question`,
-    };
-  }
-  return { ownerKind: "worker", ownerLabel: "Worker question" };
-}
-
-function getAgentAskUserPolicy(args: {
-  runtime: AdeRuntime;
-  callerCtx: CallerContext;
-}): {
-  stepId: string | null;
-  stepKey: string | null;
-  phase: string | null;
-  phaseName: string | null;
-  enabled: boolean;
-  maxQuestions: number | null;
-  ownerKind: string;
-  ownerLabel: string;
-  existingQuestions: number;
-} | null {
-  if (args.callerCtx.role !== "agent" || !args.callerCtx.runId) return null;
-  const graph = getRunGraphSafe(args.runtime, args.callerCtx.runId);
-  if (!graph) return null;
-
-  const inferredWorkerId = inferWorkerIdFromCaller(graph, args.callerCtx);
-  const step = resolveStepFromGraph(graph, args.callerCtx.stepId, inferredWorkerId);
-  if (!step) return null;
-
-  const metadata = safeObject(step.metadata);
-  const phase = asOptionalTrimmedString(metadata.phaseKey);
-  const phaseName = asOptionalTrimmedString(metadata.phaseName);
-  const phaseAskQuestions = safeObject(metadata.phaseAskQuestions);
-  const defaultEnabled = (phase?.toLowerCase() ?? phaseName?.toLowerCase() ?? "") === "planning";
-  const enabled = typeof phaseAskQuestions.enabled === "boolean"
-    ? phaseAskQuestions.enabled
-    : defaultEnabled;
-  const rawMaxQuestions = Number(phaseAskQuestions.maxQuestions ?? Number.NaN);
-  const maxQuestions = enabled
-    ? Number.isFinite(rawMaxQuestions)
-      ? Math.max(1, Math.min(10, Math.floor(rawMaxQuestions)))
-      : 5
-    : null;
-  const mission = args.callerCtx.missionId ? args.runtime.missionService.get(args.callerCtx.missionId) : null;
-  const stepId = asOptionalTrimmedString(step.id);
-  const stepKey = asOptionalTrimmedString(step.stepKey);
-  const existingQuestions = (mission?.interventions ?? []).filter((entry) => {
-    if (entry.interventionType !== "manual_input") return false;
-    const metadata = safeObject(entry.metadata);
-    if (asOptionalTrimmedString(metadata.source) !== "ask_user") return false;
-    if (asOptionalTrimmedString(metadata.runId) !== args.callerCtx.runId) return false;
-    const entryStepId = asOptionalTrimmedString(metadata.stepId);
-    const entryStepKey = asOptionalTrimmedString(metadata.stepKey);
-    if (stepId && entryStepId === stepId) return true;
-    if (stepKey && entryStepKey === stepKey) return true;
-    const entryPhase = asOptionalTrimmedString(metadata.phase)?.toLowerCase() ?? "";
-    const normalizedPhase = (phase ?? phaseName ?? "").toLowerCase();
-    return normalizedPhase.length > 0 && entryPhase === normalizedPhase;
-  }).length ?? 0;
-
-  const owner = deriveQuestionOwnerFromPhase({ phaseKey: phase, phaseName });
-  return {
-    stepId,
-    stepKey,
-    phase,
-    phaseName,
-    enabled,
-    maxQuestions,
-    ownerKind: owner.ownerKind,
-    ownerLabel: owner.ownerLabel,
-    existingQuestions,
-  };
-}
-
-function inferWorkerIdFromCaller(graph: Record<string, unknown>, callerCtx: CallerContext): string | null {
-  const directStep = resolveStepFromGraph(graph, callerCtx.stepId, null);
-  const directKey = asOptionalTrimmedString(directStep?.stepKey);
-  if (directKey) return directKey;
-
-  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
-  const attemptId = asOptionalTrimmedString(callerCtx.attemptId) ?? asOptionalTrimmedString(callerCtx.callerId);
-  if (!attemptId) return null;
-  const attempt = attempts.find((entry) => asOptionalTrimmedString(entry.id) === attemptId);
-  const stepId = asOptionalTrimmedString(attempt?.stepId);
-  if (!stepId) return null;
-  const step = resolveStepFromGraph(graph, stepId, null);
-  return asOptionalTrimmedString(step?.stepKey);
-}
-
-function normalizeWorkerOutcome(raw: unknown): "succeeded" | "failed" | "partial" {
-  const normalized = asOptionalTrimmedString(raw)?.toLowerCase() ?? "";
-  if (normalized === "succeeded" || normalized === "success" || normalized === "pass" || normalized === "passed" || normalized === "done" || normalized === "completed") {
-    return "succeeded";
-  }
-  if (normalized === "failed" || normalized === "fail" || normalized === "error") {
-    return "failed";
-  }
-  return "partial";
-}
-
-function parseLegacyTestCount(text: string, labels: string[]): number | null {
-  const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const labelFirst = new RegExp(`(?:^|[^\\w])(?:${escapedLabels})\\s*:?\\s*(\\d+)\\b`, "i");
-  const valueFirst = new RegExp(`\\b(\\d+)\\s+(?:${escapedLabels})\\b`, "i");
-  const match = labelFirst.exec(text) ?? valueFirst.exec(text);
-  if (!match?.[1]) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function summarizeLegacyTestsRun(entries: unknown): Record<string, unknown> | null {
-  if (!Array.isArray(entries)) return null;
-  const statusCounts = { passed: 0, failed: 0, skipped: 0 };
-  const counted = { passed: 0, failed: 0, skipped: 0 };
-  const rawEntries: string[] = [];
-  const commands: string[] = [];
-  let sawNumericCount = false;
-  for (const entry of entries) {
-    const record = safeObject(entry);
-    const stringEntry = typeof entry === "string" ? entry.trim() : "";
-    const command = asOptionalTrimmedString(record.command) ?? asOptionalTrimmedString(record.name) ?? "";
-    const result = asOptionalTrimmedString(record.result)?.toLowerCase() ?? "";
-    const text = [stringEntry, command, result, asOptionalTrimmedString(record.raw) ?? ""].filter((part) => part.length > 0).join(" ");
-    if (text.trim().length > 0) rawEntries.push(text.trim());
-    if (command) commands.push(command);
-
-    const failedCount = parseLegacyTestCount(text, ["failed", "failures", "failure", "fail"]);
-    const skippedCount = parseLegacyTestCount(text, ["skipped", "skip"]);
-    const passedFromTests =
-      /\b(?:pass|passed|passing|success|successful)\b/i.test(text)
-        ? /\b(\d+)\s+tests?\b/i.exec(text)?.[1]
-        : null;
-    const passedCount = passedFromTests && Number.isFinite(Number(passedFromTests))
-      ? Number(passedFromTests)
-      : parseLegacyTestCount(text, ["passed", "passing", "pass"]);
-    if (passedCount != null || failedCount != null || skippedCount != null) {
-      sawNumericCount = true;
-      counted.passed += passedCount ?? 0;
-      counted.failed += failedCount ?? 0;
-      counted.skipped += skippedCount ?? 0;
-      continue;
-    }
-
-    if (result === "pass" || result === "passed" || result === "success" || result === "succeeded") {
-      statusCounts.passed += 1;
-    } else if (!result && /\b(?:pass|passed|success|succeeded)\b/i.test(text) && !/\b(?:fail|failed|error)\b/i.test(text)) {
-      statusCounts.passed += 1;
-    } else if (result === "fail" || result === "failed" || result === "error") {
-      statusCounts.failed += 1;
-    } else if (!result && /\b(?:fail|failed|failure|error)\b/i.test(text)) {
-      statusCounts.failed += 1;
-    } else {
-      statusCounts.skipped += 1;
-    }
-  }
-  const summary = sawNumericCount
-    ? {
-        passed: counted.passed,
-        failed: counted.failed + statusCounts.failed,
-        skipped: counted.skipped + statusCounts.skipped,
-      }
-    : statusCounts;
-  return {
-    ...summary,
-    ...(commands.length > 0 ? { command: commands.join("; ") } : {}),
-    ...(rawEntries.length > 0 ? { raw: rawEntries.join("\n") } : {}),
-  };
-}
-
-function normalizeCoordinatorWorkerToolArgs(args: {
-  name: string;
-  toolArgs: Record<string, unknown>;
-  callerCtx: CallerContext;
-  graph: Record<string, unknown> | null;
-}): Record<string, unknown> {
-  const normalized = { ...args.toolArgs };
-  const inferredWorkerId = args.graph ? inferWorkerIdFromCaller(args.graph, args.callerCtx) : null;
-  const stepKeyAlias = asOptionalTrimmedString(normalized.stepKey);
-  const explicitWorkerId = asOptionalTrimmedString(normalized.workerId);
-
-  if (!explicitWorkerId && stepKeyAlias) {
-    normalized.workerId = stepKeyAlias;
-  } else if (!explicitWorkerId && inferredWorkerId) {
-    normalized.workerId = inferredWorkerId;
-  }
-
-  if (args.name === "report_status") {
-    const summary = asOptionalTrimmedString(normalized.summary);
-    if (!asOptionalTrimmedString(normalized.nextAction) && summary) {
-      normalized.nextAction = summary;
-    }
-    if (!asOptionalTrimmedString(normalized.details) && summary) {
-      normalized.details = summary;
-    }
-    if (!Array.isArray(normalized.blockers) && typeof normalized.blockers === "string") {
-      normalized.blockers = [normalized.blockers];
-    }
-    const rawProgress = Number(normalized.progressPct ?? Number.NaN);
-    if (!Number.isFinite(rawProgress)) {
-      const status = asOptionalTrimmedString(normalized.status)?.toLowerCase() ?? "";
-      if (status === "succeeded" || status === "success" || status === "completed" || status === "done") {
-        normalized.progressPct = 100;
-      } else if (status === "running" || status === "working" || status === "in_progress" || status === "in-progress") {
-        normalized.progressPct = 50;
-      } else if (status === "blocked" || status === "waiting") {
-        normalized.progressPct = 25;
-      } else {
-        normalized.progressPct = 0;
-      }
-    }
-  } else if (args.name === "report_result") {
-    normalized.outcome = normalizeWorkerOutcome(normalized.outcome);
-    const summarizedTests = summarizeLegacyTestsRun(normalized.testsRun);
-    if (summarizedTests) {
-      normalized.testsRun = summarizedTests;
-    }
-  } else if (args.name === "report_validation") {
-    if (!asOptionalTrimmedString(normalized.validatorWorkerId) && inferredWorkerId) {
-      normalized.validatorWorkerId = inferredWorkerId;
-    }
-    if (!Array.isArray(normalized.findings)) {
-      normalized.findings = [];
-    }
-    if (!Array.isArray(normalized.remediationInstructions)) {
-      const notes = Array.isArray(normalized.notes)
-        ? normalized.notes.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-        : [];
-      normalized.remediationInstructions = notes;
-    }
-  }
-
-  return normalized;
-}
-
-function normalizeAgentDelegationToolArgs(args: {
-  name: string;
-  toolArgs: Record<string, unknown>;
-  callerCtx: CallerContext;
-  graph: Record<string, unknown> | null;
-}): Record<string, unknown> {
-  const normalized = { ...args.toolArgs };
-  if (args.callerCtx.role !== "agent") return normalized;
-  if (args.name === "message_worker") {
-    if (!args.graph) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        "Agent caller cannot use 'message_worker' without an active run graph."
-      );
-    }
-    const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
-    if (!ownedWorkerId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        "Agent caller cannot use 'message_worker' without an active worker context."
-      );
-    }
-    const requestedFromWorkerId = asOptionalTrimmedString(normalized.fromWorkerId);
-    if (requestedFromWorkerId && requestedFromWorkerId !== ownedWorkerId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        `Agent caller may only send messages from its own worker '${ownedWorkerId}'.`
-      );
-    }
-    normalized.fromWorkerId = ownedWorkerId;
-    return normalized;
-  }
-  if (args.name !== "delegate_to_subagent" && args.name !== "delegate_parallel") return normalized;
-  if (!args.graph) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Agent caller cannot use '${args.name}' without an active run graph.`
-    );
-  }
-
-  const ownedWorkerId = inferWorkerIdFromCaller(args.graph, args.callerCtx);
-  if (!ownedWorkerId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Agent caller cannot use '${args.name}' without an active parent worker context.`
-    );
-  }
-
-  const requestedParentWorkerId = asOptionalTrimmedString(normalized.parentWorkerId);
-  if (requestedParentWorkerId && requestedParentWorkerId !== ownedWorkerId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Agent caller may only delegate beneath its own worker '${ownedWorkerId}'.`
-    );
-  }
-
-  normalized.parentWorkerId = ownedWorkerId;
-  return normalized;
-}
-
-function resolveParentAttemptIdFromGraph(graph: Record<string, unknown>, parentWorkerId: string): string | null {
-  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
-  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
-  const parentStep = steps.find((step) => asOptionalTrimmedString(step.stepKey) === parentWorkerId);
-  const parentStepId = asOptionalTrimmedString(parentStep?.id);
-  if (!parentStepId) return null;
-  const parentAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === parentStepId);
-  if (!parentAttempts.length) return null;
-  const running = parentAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
-  if (running) return asOptionalTrimmedString(running.id);
-  const sorted = [...parentAttempts].sort((left, right) => {
-    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
-    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
-    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
-  });
-  return asOptionalTrimmedString(sorted[0]?.id);
-}
-
-function resolveAttemptIdForWorkerRef(graph: Record<string, unknown>, workerRef: string | null | undefined): string | null {
-  const ref = asOptionalTrimmedString(workerRef);
-  if (!ref) return null;
-  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
-  const step = resolveStepFromGraph(graph, ref, ref);
-  const stepId = asOptionalTrimmedString(step?.id);
-  if (!stepId) return null;
-  const stepAttempts = attempts.filter((attempt) => asOptionalTrimmedString(attempt.stepId) === stepId);
-  if (!stepAttempts.length) return null;
-  const running = stepAttempts.find((attempt) => asOptionalTrimmedString(attempt.status) === "running");
-  if (running) return asOptionalTrimmedString(running.id);
-  const lastAttemptId = asOptionalTrimmedString(step?.lastAttemptId);
-  if (lastAttemptId && stepAttempts.some((attempt) => asOptionalTrimmedString(attempt.id) === lastAttemptId)) {
-    return lastAttemptId;
-  }
-  const sorted = [...stepAttempts].sort((left, right) => {
-    const leftTs = Date.parse(asOptionalTrimmedString(left.completedAt) ?? asOptionalTrimmedString(left.createdAt) ?? "");
-    const rightTs = Date.parse(asOptionalTrimmedString(right.completedAt) ?? asOptionalTrimmedString(right.createdAt) ?? "");
-    return (Number.isFinite(rightTs) ? rightTs : 0) - (Number.isFinite(leftTs) ? leftTs : 0);
-  });
-  return asOptionalTrimmedString(sorted[0]?.id);
-}
-
-function inferParallelismCap(graph: Record<string, unknown>): number {
-  const run = safeObject(graph.run);
-  const runMetadata = safeObject(run.metadata);
-  const autopilot = safeObject(runMetadata.autopilot);
-  const raw = Number(autopilot.parallelismCap ?? runMetadata.maxParallelWorkers ?? Number.NaN);
-  if (Number.isFinite(raw) && raw > 0) {
-    return Math.max(1, Math.min(32, Math.floor(raw)));
-  }
-  return 4;
-}
-
-function ensureNativeTeammateRegistration(args: {
-  runtime: AdeRuntime;
-  runId: string;
-  missionId: string;
-  callerCtx: CallerContext;
-  toolName: string;
-  toolArgs: Record<string, unknown>;
-}): NativeCallerRegistration | null {
-  if (args.toolName !== "report_status" && args.toolName !== "report_result") return null;
-  if (args.callerCtx.role !== "agent") return null;
-  const graph = getRunGraphSafe(args.runtime, args.runId);
-  if (!graph) return null;
-
-  const callerId = asOptionalTrimmedString(args.callerCtx.callerId) ?? asOptionalTrimmedString(args.callerCtx.attemptId);
-  if (!callerId || callerId === "unknown") return null;
-
-  const attempts = Array.isArray(graph.attempts) ? (graph.attempts as Array<Record<string, unknown>>) : [];
-  const steps = Array.isArray(graph.steps) ? (graph.steps as Array<Record<string, unknown>>) : [];
-  const knownAttemptIds = new Set(
-    attempts
-      .map((attempt) => asOptionalTrimmedString(attempt.id))
-      .filter((entry): entry is string => Boolean(entry))
-  );
-  const knownStepKeys = new Set(
-    steps
-      .map((step) => asOptionalTrimmedString(step.stepKey))
-      .filter((entry): entry is string => Boolean(entry))
-  );
-  const existingMembers = getTeamMembersForRunSafe(args.runtime, args.runId);
-  const knownTeamMemberIds = new Set(
-    existingMembers
-      .map((member) => asOptionalTrimmedString(member.id))
-      .filter((entry): entry is string => Boolean(entry))
-  );
-  if (knownAttemptIds.has(callerId) || knownStepKeys.has(callerId) || knownTeamMemberIds.has(callerId)) {
-    return null;
-  }
-
-  let parentStep: Record<string, unknown> | null = null;
-  if (args.callerCtx.stepId) {
-    parentStep = resolveStepFromGraph(graph, args.callerCtx.stepId, null);
-  }
-  if (!parentStep && args.callerCtx.attemptId) {
-    const parentAttempt = attempts.find((attempt) => asOptionalTrimmedString(attempt.id) === args.callerCtx.attemptId);
-    const parentStepId = asOptionalTrimmedString(parentAttempt?.stepId);
-    if (parentStepId) {
-      parentStep = resolveStepFromGraph(graph, parentStepId, null);
-    }
-  }
-  if (!parentStep) {
-    const fallbackWorkerId = asOptionalTrimmedString(args.toolArgs.workerId);
-    if (fallbackWorkerId) {
-      parentStep = resolveStepFromGraph(graph, null, fallbackWorkerId);
-    }
-  }
-  if (!parentStep) return null;
-
-  const parentWorkerId = asOptionalTrimmedString(parentStep.stepKey);
-  const parentStepId = asOptionalTrimmedString(parentStep.id);
-  if (!parentWorkerId || !parentStepId) return null;
-
-  const nativeMemberId = `claude-native:${args.runId}:${createHash("sha1").update(callerId).digest("hex").slice(0, 16)}`;
-  const existing = existingMembers.find((member) => asOptionalTrimmedString(member.id) === nativeMemberId) ?? null;
-  const cap = inferParallelismCap(graph);
-  const activeForParent = existingMembers.filter((member) => {
-    const metadata = safeObject(member.metadata);
-    const source = asOptionalTrimmedString(member.source) ?? asOptionalTrimmedString(metadata.source);
-    const memberParent = asOptionalTrimmedString(member.parentWorkerId) ?? asOptionalTrimmedString(metadata.parentWorkerId);
-    const status = asOptionalTrimmedString(member.status) ?? "unknown";
-    return source === "claude-native"
-      && memberParent === parentWorkerId
-      && status !== "terminated"
-      && status !== "failed";
-  }).length;
-  if (!existing && activeForParent >= cap) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Native teammate allocation cap exceeded for parent '${parentWorkerId}' (${activeForParent}/${cap}).`
-    );
-  }
-
-  const parentMetadata = safeObject(parentStep.metadata);
-  const inferredModel = asOptionalTrimmedString(parentMetadata.modelId) ?? "claude-native";
-  const now = nowIso();
-  if (existing) {
-    updateTeamMemberStatus(getTeamRuntimeContext(args.runtime), nativeMemberId, {
-      status: "active"
-    });
-  } else {
-    registerTeamMember(getTeamRuntimeContext(args.runtime), {
-      id: nativeMemberId,
-      runId: args.runId,
-      missionId: args.missionId,
-      provider: "claude",
-      model: inferredModel,
-      role: "teammate",
-      source: "claude-native",
-      parentWorkerId,
-      sessionId: null,
-      status: "active",
-      claimedTaskIds: [],
-      metadata: {
-        source: "claude-native",
-        parentWorkerId,
-        parentStepId,
-        parentAttemptId: args.callerCtx.attemptId ?? null,
-        nativeCallerId: callerId,
-      },
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  if (!asOptionalTrimmedString(args.toolArgs.workerId)) {
-    args.toolArgs.workerId = parentWorkerId;
-  }
-
-  return {
-    memberId: nativeMemberId,
-    parentWorkerId,
-    parentStepId,
-    sourceAttemptId: nativeMemberId,
-  };
-}
-
-async function maybeSendInterAgentMessage(args: {
-  runtime: AdeRuntime;
-  missionId: string;
-  fromAttemptId: string;
-  toAttemptId: string;
-  content: string;
-  metadata: Record<string, unknown>;
-}): Promise<void> {
-  const sender = (args.runtime.aiOrchestratorService as unknown as {
-    sendAgentMessage?: (msg: {
-      missionId: string;
-      fromAttemptId: string;
-      toAttemptId: string;
-      content: string;
-      metadata?: Record<string, unknown> | null;
-    }) => unknown;
-  }).sendAgentMessage;
-  if (typeof sender !== "function") return;
-  await Promise.resolve(sender({
-    missionId: args.missionId,
-    fromAttemptId: args.fromAttemptId,
-    toAttemptId: args.toAttemptId,
-    content: args.content,
-    metadata: args.metadata,
-  }));
-}
-
-async function maybeRecordMessageWorkerHandoffForPolling(args: {
-  runtime: AdeRuntime;
-  missionId: string;
-  graph: Record<string, unknown> | null;
-  callerCtx: CallerContext;
-  toolArgs: Record<string, unknown>;
-}): Promise<{
-  fromAttemptId: string;
-  toAttemptId: string;
-  fromWorkerId: string;
-  toWorkerId: string;
-} | null> {
-  if (!args.graph) return null;
-  const fromWorkerId = asOptionalTrimmedString(args.toolArgs.fromWorkerId)
-    ?? inferWorkerIdFromCaller(args.graph, args.callerCtx);
-  const toWorkerId = asOptionalTrimmedString(args.toolArgs.toWorkerId);
-  const rawContent = args.toolArgs.content;
-  const content = typeof rawContent === "string"
-    ? rawContent
-    : rawContent == null
-      ? ""
-      : String(rawContent);
-  if (!fromWorkerId || !toWorkerId || !content.trim().length) return null;
-
-  const fromAttemptId =
-    asOptionalTrimmedString(args.callerCtx.attemptId)
-    ?? resolveAttemptIdForWorkerRef(args.graph, fromWorkerId);
-  const toAttemptId = resolveAttemptIdForWorkerRef(args.graph, toWorkerId);
-  if (!fromAttemptId || !toAttemptId || fromAttemptId === toAttemptId) return null;
-
-  await maybeSendInterAgentMessage({
-    runtime: args.runtime,
-    missionId: args.missionId,
-    fromAttemptId,
-    toAttemptId,
-    content,
-    metadata: {
-      source: "message_worker",
-      fromWorkerId,
-      toWorkerId,
-      priority: asOptionalTrimmedString(args.toolArgs.priority) ?? "normal",
-      queuedForPolling: true,
-    },
-  });
-
-  return {
-    fromAttemptId,
-    toAttemptId,
-    fromWorkerId,
-    toWorkerId,
-  };
-}
-
-async function postProcessCoordinatorToolResult(args: {
-  runtime: AdeRuntime;
-  toolName: string;
-  runId: string;
-  missionId: string;
-  callerCtx: CallerContext;
-  result: Record<string, unknown>;
-  nativeRegistration: NativeCallerRegistration | null;
-}): Promise<void> {
-  if (args.toolName === "report_status") {
-    const report = safeObject(args.result.report);
-    const workerId = asOptionalTrimmedString(report.workerId);
-    const stepId = asOptionalTrimmedString(report.stepId);
-    const progressPct = Number(report.progressPct ?? Number.NaN);
-    const nextAction = asOptionalTrimmedString(report.nextAction) ?? "status update";
-    const blockers = Array.isArray(report.blockers)
-      ? report.blockers.map((entry) => String(entry ?? "").trim()).filter((entry) => entry.length > 0)
-      : [];
-
-    args.runtime.eventBuffer.push({
-      timestamp: nowIso(),
-      category: "runtime",
-      payload: {
-        type: "worker_status_reported",
-        runId: args.runId,
-        stepId,
-        attemptId: args.callerCtx.attemptId ?? null,
-        reason: "report_status",
-        detail: report,
-      }
-    });
-
-    const graph = getRunGraphSafe(args.runtime, args.runId);
-    if (!graph) return;
-    const step = resolveStepFromGraph(graph, stepId, workerId);
-    const stepMetadata = safeObject(step?.metadata);
-    const parentWorkerId =
-      args.nativeRegistration?.parentWorkerId
-      ?? asOptionalTrimmedString(stepMetadata.parentWorkerId);
-    if (!parentWorkerId) return;
-    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, parentWorkerId);
-    if (!parentAttemptId) return;
-    const fromAttemptId =
-      args.nativeRegistration?.sourceAttemptId
-      ?? asOptionalTrimmedString(args.callerCtx.attemptId)
-      ?? workerId;
-    if (!fromAttemptId || fromAttemptId === parentAttemptId) return;
-
-    const workerLabel = asOptionalTrimmedString(step?.title) ?? workerId ?? "sub-agent";
-    const progressLabel = Number.isFinite(progressPct) ? `${Math.max(0, Math.min(100, Math.round(progressPct)))}%` : "progress";
-    const blockerSuffix = blockers.length > 0 ? ` Blockers: ${blockers.join("; ")}` : "";
-    const content = `[sub-agent:${workerLabel}] ${progressLabel} — ${nextAction}.${blockerSuffix}`;
-
-    await maybeSendInterAgentMessage({
-      runtime: args.runtime,
-      missionId: args.missionId,
-      fromAttemptId,
-      toAttemptId: parentAttemptId,
-      content,
-      metadata: {
-        source: "subagent_status_rollup",
-        parentWorkerId,
-        workerId: workerId ?? null,
-        isNative: Boolean(args.nativeRegistration),
-      },
-    });
-    return;
-  }
-
-  if (args.toolName === "report_result" && args.nativeRegistration) {
-    const report = safeObject(args.result.report);
-    const graph = getRunGraphSafe(args.runtime, args.runId);
-    if (!graph) return;
-    const parentAttemptId = resolveParentAttemptIdFromGraph(graph, args.nativeRegistration.parentWorkerId);
-    if (!parentAttemptId) return;
-    const outcome = asOptionalTrimmedString(report.outcome) ?? "completed";
-    const summary = asOptionalTrimmedString(report.summary) ?? "No summary provided.";
-    const content = `Sub-agent '${args.nativeRegistration.memberId}' completed (${outcome}): ${summary}`;
-    await maybeSendInterAgentMessage({
-      runtime: args.runtime,
-      missionId: args.missionId,
-      fromAttemptId: args.nativeRegistration.sourceAttemptId,
-      toAttemptId: parentAttemptId,
-      content,
-      metadata: {
-        source: "subagent_result_rollup",
-        parentWorkerId: args.nativeRegistration.parentWorkerId,
-        isNative: true,
-      },
-    });
-  }
-}
-
-async function runCoordinatorTool(args: {
-  runtime: AdeRuntime;
-  name: string;
-  toolArgs: Record<string, unknown>;
-  callerCtx: CallerContext;
-}): Promise<Record<string, unknown>> {
-  const missionIdFromContext =
-    args.callerCtx.missionId
-    ?? asOptionalTrimmedString(args.toolArgs.missionId);
-  const runId =
-    args.callerCtx.runId
-    ?? asOptionalTrimmedString(args.toolArgs.runId)
-    ?? (missionIdFromContext ? resolveRunIdForMission(args.runtime, missionIdFromContext) : null);
-  if (!runId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Coordinator tool '${args.name}' requires run context. Provide runId or set ADE_RUN_ID.`
-    );
-  }
-  const missionId =
-    missionIdFromContext
-    ?? resolveMissionIdForRun(args.runtime, runId);
-  if (!missionId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `Coordinator tool '${args.name}' requires mission context. Provide missionId or set ADE_MISSION_ID.`
-    );
-  }
-
-  const toolSet = getCoordinatorToolSet({
-    runtime: args.runtime,
-    runId,
-    missionId
-  });
-  const toolEntry = toolSet[args.name] as { execute?: (input: Record<string, unknown>) => Promise<unknown> } | undefined;
-  if (!toolEntry?.execute) {
-    throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Coordinator tool not found: ${args.name}`);
-  }
-  const graph = getRunGraphSafe(args.runtime, runId);
-  const normalizedToolArgs =
-    args.name === "report_status" || args.name === "report_result" || args.name === "report_validation"
-      ? normalizeCoordinatorWorkerToolArgs({
-          name: args.name,
-          toolArgs: args.toolArgs,
-          callerCtx: args.callerCtx,
-          graph,
-        })
-      : { ...args.toolArgs };
-  const effectiveToolArgs = normalizeAgentDelegationToolArgs({
-    name: args.name,
-    toolArgs: normalizedToolArgs,
-    callerCtx: args.callerCtx,
-    graph,
-  });
-  const nativeRegistration = ensureNativeTeammateRegistration({
-    runtime: args.runtime,
-    runId,
-    missionId,
-    callerCtx: args.callerCtx,
-    toolName: args.name,
-    toolArgs: effectiveToolArgs,
-  });
-  const output = await toolEntry.execute(effectiveToolArgs);
-  if (isRecord(output)) {
-    if (args.name === "message_worker") {
-      const liveDelivered = output.delivered === true;
-      if (liveDelivered) {
-        return {
-          ...output,
-          queuedForPolling: false,
-        };
-      }
-      const queued = await maybeRecordMessageWorkerHandoffForPolling({
-        runtime: args.runtime,
-        missionId,
-        graph,
-        callerCtx: args.callerCtx,
-        toolArgs: effectiveToolArgs,
-      });
-      if (queued) {
-        return {
-          ...output,
-          ok: true,
-          delivered: false,
-          method: "thread",
-          reason: "queued_for_polling",
-          queuedForPolling: true,
-          fromAttemptId: queued.fromAttemptId,
-          toAttemptId: queued.toAttemptId,
-          fromWorkerId: queued.fromWorkerId,
-          toWorkerId: queued.toWorkerId,
-        };
-      }
-    }
-    if (output.ok === true && (args.name === "report_status" || args.name === "report_result")) {
-      await postProcessCoordinatorToolResult({
-        runtime: args.runtime,
-        toolName: args.name,
-        runId,
-        missionId,
-        callerCtx: args.callerCtx,
-        result: output,
-        nativeRegistration,
-      });
-    }
-    return output;
-  }
-  return {
-    ok: true,
-    result: output ?? null
-  };
-}
-
 
 async function runTool(args: {
   runtime: AdeRuntime;
@@ -5046,21 +3561,15 @@ async function runTool(args: {
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
   }
 
-  if (COORDINATOR_TOOL_NAMES.has(name)) {
-    if (!canCallerAccessCoordinatorTool(name, callerCtx)) {
-      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
-    }
-    return await runCoordinatorTool({ runtime, name, toolArgs, callerCtx });
-  }
-
   if (name === "list_ade_actions") {
     const domain = asOptionalTrimmedString(toolArgs.domain) ?? "all";
     const services = getAdeActionDomainServices(runtime);
     const domains = domain === "all"
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
+    const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
-    const actions = domains.flatMap((entry) => {
+    const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
@@ -5081,6 +3590,9 @@ async function runTool(args: {
   if (name === "run_ade_action") {
     const domain = assertNonEmptyString(toolArgs.domain, "domain") as AdeActionDomain;
     const action = assertNonEmptyString(toolArgs.action, "action");
+    if (DISABLED_ADE_ACTION_DOMAINS.has(domain)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
+    }
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
     if (!service) {
@@ -5113,12 +3625,6 @@ async function runTool(args: {
       testRunId: typeof record?.id === "string" && domain === "tests" ? record.id : null,
       chatSessionId: typeof record?.sessionId === "string" ? record.sessionId : null,
       runId: typeof record?.runId === "string" ? record.runId : null,
-      missionId:
-        typeof record?.missionId === "string"
-          ? record.missionId
-          : typeof record?.id === "string" && domain === "mission"
-            ? record.id
-            : null,
     };
     return {
       domain,
@@ -5260,8 +3766,6 @@ async function runTool(args: {
     const operationId = asOptionalTrimmedString(toolArgs.operationId);
     const testRunId = asOptionalTrimmedString(toolArgs.testRunId);
     const chatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
-    const runId = asOptionalTrimmedString(toolArgs.runId);
-    const missionId = asOptionalTrimmedString(toolArgs.missionId);
     const prId = asOptionalTrimmedString(toolArgs.prId);
     const previousHash = asOptionalTrimmedString(toolArgs.previousHash);
     const waitForMs = Math.max(0, Math.min(120_000, Math.floor(asNumber(toolArgs.waitForMs, 0))));
@@ -5280,12 +3784,6 @@ async function runTool(args: {
       }
       if (chatSessionId && runtime.agentChatService) {
         payload.chatSession = await runtime.agentChatService.getSessionSummary(chatSessionId);
-      }
-      if (runId) {
-        payload.runGraph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 150 });
-      }
-      if (missionId) {
-        payload.mission = runtime.missionService.get(missionId);
       }
       if (prId && runtime.prService) {
         payload.pr = {
@@ -5473,14 +3971,9 @@ async function runTool(args: {
   if (name === "ask_user") {
     ensureAskUserAllowed(session);
 
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
     const title = assertNonEmptyString(toolArgs.title, "title");
     const body = assertNonEmptyString(toolArgs.body, "body");
-    const requestedAction = asOptionalTrimmedString(toolArgs.requestedAction);
-    const laneId = asOptionalTrimmedString(toolArgs.laneId);
-    const phase = asOptionalTrimmedString(toolArgs.phase);
     const waitForResolutionMs = Math.max(0, Math.floor(asNumber(toolArgs.waitForResolutionMs, 0)));
-    const pollIntervalMs = Math.max(100, Math.floor(asNumber(toolArgs.pollIntervalMs, 1000)));
     const structuredQuestions = Array.isArray(toolArgs.questions)
       ? toolArgs.questions.flatMap((rawQuestion, index) => {
           if (!rawQuestion || typeof rawQuestion !== "object") return [];
@@ -5523,7 +4016,6 @@ async function runTool(args: {
           }];
         })
       : undefined;
-    const askUserPolicy = getAgentAskUserPolicy({ runtime, callerCtx });
     const summarizeAskUserDecision = (decision: string, responseText: string | null, answered: boolean): string | null => {
       const trimmed = typeof responseText === "string" ? responseText.trim() : "";
       if (trimmed.length) return trimmed;
@@ -5534,182 +4026,77 @@ async function runTool(args: {
       return "The user did not answer the question.";
     };
     const buildAskUserResult = (args: {
-      intervention?: unknown;
       awaitingUserResponse: boolean;
       blocking: boolean;
-      outcome: "pending" | "answered" | "declined" | "cancelled" | "timed_out";
+      outcome: "answered" | "declined" | "cancelled" | "timed_out";
       decision?: string;
       responseText?: string | null;
       answers?: Record<string, string[]>;
     }): Record<string, unknown> => ({
       decision: args.decision ?? (args.outcome === "answered" ? "accept" : args.outcome),
       outcome: args.outcome,
-      resolved: args.outcome !== "pending" && !args.awaitingUserResponse,
+      resolved: !args.awaitingUserResponse,
       answered: args.outcome === "answered",
       declined: args.outcome === "declined",
       cancelled: args.outcome === "cancelled",
       timedOut: args.outcome === "timed_out",
       awaitingUserResponse: args.awaitingUserResponse,
       blocking: args.blocking,
-      ...(args.intervention ? { intervention: args.intervention } : {}),
       answers: args.answers ?? {},
       responseText: args.responseText ?? null,
     });
 
-    // ── Standalone chat session path (no missionId) ──
-    // Route through agentChatService.requestChatInput which creates an inline
-    // pending-input in the chat UI and blocks until the user answers.
-    if (!missionId) {
-      // Use server-authorized chatSessionId; reject unverified client-supplied ids.
-      const serverChatSessionId = callerCtx.chatSessionId;
-      const clientChatSessionId = session.identity.chatSessionId;
-      if (clientChatSessionId && serverChatSessionId && clientChatSessionId !== serverChatSessionId) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "ask_user: client-supplied chatSessionId does not match server-authorized session.",
-        );
-      }
-      const chatSessionId = serverChatSessionId ?? clientChatSessionId;
-      if (!chatSessionId || !runtime.agentChatService) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "ask_user requires either a missionId or an active chat session (chatSessionId).",
-        );
-      }
-
-      // Race the chat input against an optional timeout.
-      const inputPromise = runtime.agentChatService.requestChatInput({
-        chatSessionId,
-        title,
-        body,
-        ...(structuredQuestions?.length ? { questions: structuredQuestions } : {}),
-      });
-      const result = waitForResolutionMs > 0
-        ? await Promise.race([
-            inputPromise,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), waitForResolutionMs)),
-          ])
-        : await inputPromise;
-
-      if (!result) {
-        return buildAskUserResult({
-          awaitingUserResponse: true,
-          blocking: true,
-          outcome: "timed_out",
-          decision: "timeout",
-          responseText: summarizeAskUserDecision("timeout", null, false),
-        });
-      }
-      const answered = result.decision !== "decline" && result.decision !== "cancel";
-      const outcome = result.decision === "decline"
-        ? "declined"
-        : result.decision === "cancel"
-          ? "cancelled"
-          : "answered";
-      return buildAskUserResult({
-        awaitingUserResponse: false,
-        blocking: false,
-        outcome,
-        decision: result.decision,
-        answers: result.answers,
-        responseText: summarizeAskUserDecision(result.decision, result.responseText, answered),
-      });
-    }
-
-    if (askUserPolicy && !askUserPolicy.enabled) {
+    const serverChatSessionId = callerCtx.chatSessionId;
+    const clientChatSessionId = session.identity.chatSessionId;
+    if (clientChatSessionId && serverChatSessionId && clientChatSessionId !== serverChatSessionId) {
       throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        "Ask Questions is disabled for this phase. Proceed with the best grounded assumption instead.",
+        JsonRpcErrorCode.invalidParams,
+        "ask_user: client-supplied chatSessionId does not match server-authorized session.",
       );
     }
-    if (
-      askUserPolicy
-      && askUserPolicy.maxQuestions != null
-      && askUserPolicy.existingQuestions >= askUserPolicy.maxQuestions
-    ) {
+    const chatSessionId = serverChatSessionId ?? clientChatSessionId;
+    if (!chatSessionId || !runtime.agentChatService) {
       throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `This phase already reached its Ask Questions limit (${askUserPolicy.maxQuestions}) for the active worker.`,
+        JsonRpcErrorCode.invalidParams,
+        "ask_user requires an active chat session (chatSessionId).",
       );
     }
 
-    const resolvedPhase = phase ?? askUserPolicy?.phase ?? null;
-    const resolvedPhaseName = askUserPolicy?.phaseName ?? null;
-    const ownerKind = callerCtx.role === "orchestrator"
-      ? "coordinator"
-      : askUserPolicy?.ownerKind ?? "worker";
-    const ownerLabel = callerCtx.role === "orchestrator"
-      ? "Coordinator question"
-      : askUserPolicy?.ownerLabel ?? "Worker question";
-
-    const intervention = runtime.missionService.addIntervention({
-      missionId,
-      interventionType: "manual_input",
+    const inputPromise = runtime.agentChatService.requestChatInput({
+      chatSessionId,
       title,
       body,
-      ...(requestedAction ? { requestedAction } : {}),
-      ...(laneId ? { laneId } : {}),
-      metadata: {
-        source: "ask_user",
-        ...(callerCtx.runId ? { runId: callerCtx.runId } : {}),
-        ...(resolvedPhase ? { phase: resolvedPhase } : {}),
-        ...(resolvedPhaseName ? { phaseName: resolvedPhaseName } : {}),
-        ...(askUserPolicy?.stepId ? { stepId: askUserPolicy.stepId } : {}),
-        ...(askUserPolicy?.stepKey ? { stepKey: askUserPolicy.stepKey } : {}),
-        questionOwnerKind: ownerKind,
-        questionOwnerLabel: ownerLabel,
-        ownerRole: callerCtx.role ?? "external",
-        blocking: true,
-        canProceedWithoutAnswer: false,
-      }
+      ...(structuredQuestions?.length ? { questions: structuredQuestions } : {}),
     });
+    const result = waitForResolutionMs > 0
+      ? await Promise.race([
+          inputPromise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), waitForResolutionMs)),
+        ])
+      : await inputPromise;
 
-    if (callerCtx.runId) {
-      try {
-        runtime.orchestratorService.pauseRun({
-          runId: callerCtx.runId,
-          reason: `Blocking user question: ${title.slice(0, 120)}`,
-          metadata: {
-            interventionSource: "ask_user",
-            interventionId: intervention.id,
-          },
-        });
-      } catch {
-        // Best-effort: the run may already be paused or terminal.
-      }
-    }
-
-    if (session.identity.role === "orchestrator" || callerCtx.runId || waitForResolutionMs <= 0) {
+    if (!result) {
       return buildAskUserResult({
-        intervention,
         awaitingUserResponse: true,
         blocking: true,
-        outcome: "pending",
+        outcome: "timed_out",
+        decision: "timeout",
+        responseText: summarizeAskUserDecision("timeout", null, false),
       });
     }
-
-    const deadline = Date.now() + waitForResolutionMs;
-    while (Date.now() <= deadline) {
-      const mission = runtime.missionService.get(missionId);
-      const latest = mission?.interventions.find((entry) => entry.id === intervention.id) ?? null;
-      if (latest && latest.status !== "open") {
-        return buildAskUserResult({
-          intervention: latest,
-          awaitingUserResponse: false,
-          blocking: false,
-          outcome: latest.status === "dismissed" ? "declined" : "answered",
-        });
-      }
-      await sleep(pollIntervalMs);
-    }
-
-    const mission = runtime.missionService.get(missionId);
-    const latest = mission?.interventions.find((entry) => entry.id === intervention.id) ?? intervention;
+    const answered = result.decision !== "decline" && result.decision !== "cancel";
+    const outcome = result.decision === "decline"
+      ? "declined"
+      : result.decision === "cancel"
+        ? "cancelled"
+        : "answered";
     return buildAskUserResult({
-      intervention: latest,
-      awaitingUserResponse: true,
-      blocking: true,
-      outcome: "timed_out",
+      awaitingUserResponse: false,
+      blocking: false,
+      outcome,
+      decision: result.decision,
+      answers: result.answers,
+      responseText: summarizeAskUserDecision(result.decision, result.responseText, answered),
     });
   }
 
@@ -6005,52 +4392,6 @@ async function runTool(args: {
 
   if (name === "get_computer_use_backend_status") {
     return runtime.computerUseArtifactBrokerService.getBackendStatus();
-  }
-
-  if (name === "reflection_add") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    const signalType = assertNonEmptyString(toolArgs.signalType, "signalType");
-    const observation = assertNonEmptyString(toolArgs.observation, "observation");
-    const agentRole = assertNonEmptyString(toolArgs.agentRole, "agentRole");
-    const phase = assertNonEmptyString(toolArgs.phase, "phase");
-    if (!missionId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (either argument or initialize identity).");
-    }
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (either argument or initialize identity).");
-    }
-
-    let reflection;
-    try {
-      reflection = runtime.orchestratorService.addReflection({
-        missionId,
-        runId,
-        stepId: asOptionalTrimmedString(toolArgs.stepId) ?? callerCtx.stepId,
-        attemptId: asOptionalTrimmedString(toolArgs.attemptId) ?? callerCtx.attemptId,
-        signalType: signalType as "wish" | "frustration" | "idea" | "pattern" | "limitation",
-        observation,
-        recommendation: assertNonEmptyString(toolArgs.recommendation, "recommendation"),
-        context: assertNonEmptyString(toolArgs.context, "context"),
-        agentRole,
-        phase,
-        occurredAt: assertNonEmptyString(toolArgs.occurredAt, "occurredAt"),
-      });
-    } catch (error) {
-      if (error instanceof ReflectionValidationError) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          `Invalid reflection input [${error.code}]: ${error.message}`,
-          {
-            code: error.code,
-            ...(error.details ? { details: error.details } : {})
-          }
-        );
-      }
-      throw error;
-    }
-
-    return { reflection };
   }
 
   if (name === "run_tests") {
@@ -6689,7 +5030,7 @@ async function runTool(args: {
     promptSegments.push(buildAdeInlineGuidanceForLane(laneWorktreePath));
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
-        `Mission context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`
+        `Run context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`
       );
     }
     if (contextRef.contextFilePath) {
@@ -6769,7 +5110,6 @@ async function runTool(args: {
     addWorkerEnv("ADE_RUN_ID", runId);
     addWorkerEnv("ADE_STEP_ID", stepId);
     addWorkerEnv("ADE_ATTEMPT_ID", attemptId);
-    addWorkerEnv("ADE_MISSION_ID", callerCtx.missionId);
     addWorkerEnv("ADE_OWNER_ID", callerCtx.ownerId);
     workerEnv.ADE_DEFAULT_ROLE = "agent";
     envPrefixParts.push("ADE_DEFAULT_ROLE=agent");
@@ -6809,191 +5149,6 @@ async function runTool(args: {
     };
   }
 
-  // ── Mission Lifecycle Tools ──────────────────────────────────────
-
-  if (name === "create_mission") {
-
-    const prompt = assertNonEmptyString(toolArgs.prompt, "prompt");
-    const title = asOptionalTrimmedString(toolArgs.title);
-    const laneId = asOptionalTrimmedString(toolArgs.laneId);
-    const priority = asOptionalTrimmedString(toolArgs.priority);
-    const executionMode = asOptionalTrimmedString(toolArgs.executionMode);
-    const prStrategy = asOptionalTrimmedString(toolArgs.prStrategy);
-    const executorPolicy = isRecord(toolArgs.executorPolicy) ? toolArgs.executorPolicy : undefined;
-
-    const createArgs: Record<string, unknown> = { prompt };
-    if (title) createArgs.title = title;
-    if (laneId) createArgs.laneId = laneId;
-    if (priority) createArgs.priority = priority;
-    if (executionMode) createArgs.executionMode = executionMode;
-    if (prStrategy) createArgs.prStrategy = prStrategy;
-    if (executorPolicy) createArgs.executionPolicy = executorPolicy;
-    const mission = runtime.missionService.create(createArgs as any);
-
-    runtime.eventBuffer.push({
-      timestamp: nowIso(),
-      category: "mission",
-      payload: { type: "mission_created", missionId: mission.id }
-    });
-
-    return { mission };
-  }
-
-  if (name === "start_mission") {
-
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const runMode = asOptionalTrimmedString(toolArgs.runMode) as "autopilot" | "manual" | null;
-    const defaultExecutorKind = asOptionalTrimmedString(toolArgs.defaultExecutorKind);
-    const coordinatorModel = asOptionalTrimmedString(toolArgs.coordinatorModel);
-
-    const startArgs: Record<string, unknown> = { missionId };
-    if (runMode) startArgs.runMode = runMode;
-    if (defaultExecutorKind) startArgs.defaultExecutorKind = defaultExecutorKind;
-    if (coordinatorModel) startArgs.defaultModelId = coordinatorModel;
-    const result = await runtime.aiOrchestratorService.startMissionRun(startArgs as any);
-
-    const runId = result.started?.run.id ?? null;
-
-    runtime.eventBuffer.push({
-      timestamp: nowIso(),
-      category: "mission",
-      payload: { type: "mission_started", missionId, runId }
-    });
-
-    return { ...result, runId };
-  }
-
-  if (name === "pause_mission") {
-
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const reason = asOptionalTrimmedString(toolArgs.reason);
-    const run = runtime.orchestratorService.pauseRun({
-      runId,
-      ...(reason ? { reason } : {})
-    });
-    return { run };
-  }
-
-  if (name === "resume_mission") {
-
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const run = await runtime.aiOrchestratorService.resumeRun({ runId });
-    return { run };
-  }
-
-  if (name === "cancel_mission") {
-
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const reason = asOptionalTrimmedString(toolArgs.reason);
-    const result = await runtime.aiOrchestratorService.cancelRunGracefully({
-      runId,
-      ...(reason ? { reason } : {})
-    });
-    return result;
-  }
-
-  if (name === "steer_mission") {
-
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const directive = assertNonEmptyString(toolArgs.directive, "directive");
-    const targetStepKey = asOptionalTrimmedString(toolArgs.targetStepKey);
-    const interventionId = asOptionalTrimmedString(toolArgs.interventionId);
-    const resolutionKind = asOptionalTrimmedString(toolArgs.resolutionKind);
-    const priorityRaw = asOptionalTrimmedString(toolArgs.priority);
-    const validPriorities = new Set(["suggestion", "instruction", "override"]);
-    const priority: "suggestion" | "instruction" | "override" =
-      priorityRaw && validPriorities.has(priorityRaw)
-        ? (priorityRaw as "suggestion" | "instruction" | "override")
-        : "suggestion";
-    const result = runtime.aiOrchestratorService.steerMission({
-      missionId,
-      directive,
-      priority,
-      ...(targetStepKey ? { targetStepKey } : {}),
-      ...(interventionId ? { interventionId } : {}),
-      ...(resolutionKind ? { resolutionKind: resolutionKind as any } : {})
-    });
-    return result;
-  }
-
-  if (name === "resolve_intervention") {
-
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const interventionId = assertNonEmptyString(toolArgs.interventionId, "interventionId");
-    const statusRaw = assertNonEmptyString(toolArgs.status, "status");
-    const status = statusRaw === "dismissed" ? "dismissed" as const : "resolved" as const;
-    const note = asOptionalTrimmedString(toolArgs.note);
-    const resolutionKind = asOptionalTrimmedString(toolArgs.resolutionKind);
-    const intervention = runtime.missionService.resolveIntervention({
-      missionId,
-      interventionId,
-      status,
-      ...(note ? { note } : {}),
-      ...(resolutionKind ? { resolutionKind: resolutionKind as any } : {})
-    });
-    return { intervention };
-  }
-
-  // ── Observation Tools ────────────────────────────────────────────
-  // Observation tools support auto-population from caller context (env vars).
-  // When a worker calls these tools without explicit IDs, they default to
-  // the worker's own mission/run context.
-
-  if (name === "get_mission") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
-    if (!missionId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (not available from caller context)");
-    }
-    const mission = runtime.missionService.get(missionId);
-    if (!mission) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Mission not found: ${missionId}`);
-    }
-    return { mission };
-  }
-
-  if (name === "list_retrospectives") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
-    const limit = asNumber(toolArgs.limit, 20);
-    const retrospectives = runtime.orchestratorService.listRetrospectives({
-      ...(missionId ? { missionId } : {}),
-      limit
-    });
-    return { retrospectives };
-  }
-
-  if (name === "list_reflection_trends") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId ?? undefined;
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId ?? undefined;
-    const limit = asNumber(toolArgs.limit, 100);
-    const trends = runtime.orchestratorService.listRetrospectiveTrends({
-      ...(missionId ? { missionId } : {}),
-      ...(runId ? { runId } : {}),
-      limit
-    });
-    return { trends };
-  }
-
-  if (name === "list_reflection_pattern_stats") {
-    const limit = asNumber(toolArgs.limit, 100);
-    const patternStats = runtime.orchestratorService.listRetrospectivePatternStats({ limit });
-    return { patternStats };
-  }
-
-  if (name === "get_run_graph") {
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
-    }
-    const timelineLimit = asNumber(toolArgs.timelineLimit, 300);
-    try {
-      const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit });
-      return { graph };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Run not found or inaccessible: ${runId}. ${msg}`);
-    }
-  }
-
   if (name === "stream_events") {
     const cursor = asNumber(toolArgs.cursor, 0);
     const limit = asNumber(toolArgs.limit, 100);
@@ -7014,304 +5169,6 @@ async function runTool(args: {
       };
     }
     return runtime.eventBuffer.drain(cursor, limit);
-  }
-
-  if (name === "get_step_output") {
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
-    }
-    const stepKey = assertNonEmptyString(toolArgs.stepKey, "stepKey");
-    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    const step = graph.steps.find((s) => s.stepKey === stepKey);
-    if (!step) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Step not found: ${stepKey}`);
-    }
-    const attempts = graph.attempts.filter((a) => a.stepId === step.id);
-    return { step, attempts };
-  }
-
-  if (name === "get_worker_states") {
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
-    }
-    const states = runtime.aiOrchestratorService.getWorkerStates({ runId });
-    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    const runWorkers = graph.steps
-      .filter(isRunWorkerStep)
-      .map((step) => {
-        const runningAttempt = graph.attempts.find((attempt) => attempt.stepId === step.id && attempt.status === "running");
-        const latestAttempt = [...graph.attempts]
-          .filter((attempt) => attempt.stepId === step.id)
-          .sort((a, b) => String(b.completedAt ?? b.createdAt ?? "").localeCompare(String(a.completedAt ?? a.createdAt ?? "")))[0];
-        return {
-          workerId: step.stepKey,
-          stepId: step.id,
-          title: step.title,
-          status: step.status,
-          phaseKey: isRecord(step.metadata) && typeof step.metadata.phaseKey === "string" ? step.metadata.phaseKey : null,
-          hasRunningAttempt: Boolean(runningAttempt),
-          activeAttemptId: runningAttempt?.id ?? null,
-          lastAttemptStatus: latestAttempt?.status ?? null,
-          retryCount: step.retryCount,
-        };
-      });
-    return { runId, workers: states, runWorkers };
-  }
-
-  if (name === "get_timeline") {
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
-    }
-    const limit = asNumber(toolArgs.limit, 300);
-    const stepId = asOptionalTrimmedString(toolArgs.stepId);
-    const timeline = runtime.orchestratorService.listTimeline({ runId, limit });
-    if (stepId) {
-      const filtered = timeline.filter((e) => e.stepId === stepId);
-      return { timeline: filtered };
-    }
-    return { timeline };
-  }
-
-  if (name === "get_mission_metrics") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId) ?? callerCtx.missionId;
-    if (!missionId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "missionId is required (not available from caller context)");
-    }
-    const metrics = runtime.aiOrchestratorService.getMissionMetrics({ missionId });
-    return { metrics };
-  }
-
-  if (name === "get_final_diff") {
-    const runId = asOptionalTrimmedString(toolArgs.runId) ?? callerCtx.runId;
-    if (!runId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "runId is required (not available from caller context)");
-    }
-    const graph = runtime.orchestratorService.getRunGraph({ runId, timelineLimit: 0 });
-    const laneIds = [...new Set(graph.steps.map((s) => s.laneId).filter(Boolean))] as string[];
-    const diffs: Record<string, unknown> = {};
-    for (const laneId of laneIds) {
-      diffs[laneId] = await runtime.diffService.getChanges(laneId);
-    }
-    return { runId, diffs };
-  }
-
-  // ── Worker Collaboration Tools ─────────────────────────────────
-
-  if (name === "get_pending_messages") {
-    const missionId = callerCtx.missionId;
-    const attemptId = callerCtx.attemptId ?? session.identity.attemptId;
-    if (!missionId || !attemptId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        "get_pending_messages requires worker identity (ADE_MISSION_ID and ADE_ATTEMPT_ID env vars). This tool is only available to workers spawned by the orchestrator."
-      );
-    }
-
-    const sinceCursor = asOptionalTrimmedString(toolArgs.since_cursor);
-    const limit = Math.max(1, Math.min(200, Math.floor(asNumber(toolArgs.limit, 50))));
-
-    // Find the worker's thread by attemptId
-    const threads = runtime.aiOrchestratorService.listChatThreads({ missionId });
-    const workerThread = threads.find(
-      (t: Record<string, unknown>) =>
-        (t.attemptId === attemptId) ||
-        (t.threadType === "worker" && t.attemptId === attemptId)
-    );
-
-    if (!workerThread) {
-      return {
-        messages: [],
-        workerAttemptId: attemptId,
-        missionId,
-        threadId: null,
-        note: "No message thread found for this worker yet"
-      };
-    }
-
-    const threadId = String(workerThread.id ?? "");
-    const allMessages = runtime.aiOrchestratorService.getThreadMessages({
-      missionId,
-      threadId,
-      limit: limit * 2 // fetch extra to filter
-    });
-
-    // Filter to messages addressed to this worker (not from this worker)
-    let messages = allMessages.filter((msg: Record<string, unknown>) => {
-      // Include messages from coordinator, user, or other agents
-      if (msg.role === "orchestrator" || msg.role === "user" || msg.role === "system") return true;
-      // Include inter-agent messages targeted at this worker
-      const target = msg.target as Record<string, unknown> | null | undefined;
-      if (target?.targetAttemptId === attemptId && msg.attemptId !== attemptId) return true;
-      // Include agent messages that are inter-agent deliveries to this thread
-      const metadata = msg.metadata as Record<string, unknown> | null | undefined;
-      if (metadata?.interAgentDelivery === true && msg.attemptId !== attemptId) return true;
-      return false;
-    });
-
-    // Apply cursor filter
-    if (sinceCursor) {
-      const cursorTime = Date.parse(sinceCursor);
-      if (!Number.isNaN(cursorTime)) {
-        messages = messages.filter((msg: Record<string, unknown>) => {
-          const ts = Date.parse(String(msg.timestamp ?? ""));
-          return !Number.isNaN(ts) && ts > cursorTime;
-        });
-      }
-    }
-
-    // Limit
-    messages = messages.slice(-limit);
-
-    return {
-      messages: messages.map((msg: Record<string, unknown>) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        timestamp: msg.timestamp,
-        stepKey: msg.stepKey ?? null,
-        attemptId: msg.attemptId ?? null,
-        metadata: msg.metadata ?? null
-      })),
-      workerAttemptId: attemptId,
-      missionId,
-      threadId,
-      count: messages.length
-    };
-  }
-
-  // ── Evaluation Tools ─────────────────────────────────────────────
-
-  if (name === "evaluate_run") {
-
-    const runId = assertNonEmptyString(toolArgs.runId, "runId");
-    const missionId = assertNonEmptyString(toolArgs.missionId, "missionId");
-    const scores = safeObject(toolArgs.scores);
-    const issues = Array.isArray(toolArgs.issues) ? toolArgs.issues : [];
-    const summary = assertNonEmptyString(toolArgs.summary, "summary");
-    const improvements = Array.isArray(toolArgs.improvements) ? toolArgs.improvements : [];
-    const metadata = isRecord(toolArgs.metadata) ? toolArgs.metadata : {};
-
-    const id = randomUUID();
-    const evaluatedAt = nowIso();
-
-    runtime.db.run(
-      `INSERT INTO orchestrator_evaluations (id, project_id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        runtime.projectId,
-        runId,
-        missionId,
-        session.identity.callerId,
-        JSON.stringify(scores),
-        JSON.stringify(issues),
-        summary,
-        JSON.stringify(improvements),
-        JSON.stringify(metadata),
-        evaluatedAt
-      ]
-    );
-
-    return {
-      id,
-      runId,
-      missionId,
-      evaluatorId: session.identity.callerId,
-      scores,
-      issues,
-      summary,
-      improvements,
-      evaluatedAt
-    };
-  }
-
-  if (name === "list_evaluations") {
-    const missionId = asOptionalTrimmedString(toolArgs.missionId);
-    const runId = asOptionalTrimmedString(toolArgs.runId);
-    const limit = Math.max(1, Math.min(100, Math.floor(asNumber(toolArgs.limit, 20))));
-
-    const where: string[] = ["project_id = ?"];
-    const params: Array<string | number> = [runtime.projectId];
-    if (missionId) { where.push("mission_id = ?"); params.push(missionId); }
-    if (runId) { where.push("run_id = ?"); params.push(runId); }
-    params.push(limit);
-
-    const rows = runtime.db.all<{
-      id: string; run_id: string; mission_id: string; evaluator_id: string;
-      scores_json: string; issues_json: string; summary: string;
-      improvements_json: string | null; metadata_json: string | null; evaluated_at: string;
-    }>(
-      `SELECT id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at
-       FROM orchestrator_evaluations
-       WHERE ${where.join(" AND ")}
-       ORDER BY evaluated_at DESC
-       LIMIT ?`,
-      params
-    );
-
-    const evaluations = rows.map((row) => ({
-      id: row.id,
-      runId: row.run_id,
-      missionId: row.mission_id,
-      evaluatorId: row.evaluator_id,
-      scores: JSON.parse(row.scores_json),
-      issueCount: JSON.parse(row.issues_json).length,
-      summary: row.summary,
-      evaluatedAt: row.evaluated_at
-    }));
-
-    return { evaluations };
-  }
-
-  if (name === "get_evaluation_report") {
-    const evaluationId = assertNonEmptyString(toolArgs.evaluationId, "evaluationId");
-
-    const row = runtime.db.get<{
-      id: string; run_id: string; mission_id: string; evaluator_id: string;
-      scores_json: string; issues_json: string; summary: string;
-      improvements_json: string | null; metadata_json: string | null; evaluated_at: string;
-    }>(
-      `SELECT id, run_id, mission_id, evaluator_id, scores_json, issues_json, summary, improvements_json, metadata_json, evaluated_at
-       FROM orchestrator_evaluations
-       WHERE id = ? AND project_id = ?`,
-      [evaluationId, runtime.projectId]
-    );
-
-    if (!row) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Evaluation not found: ${evaluationId}`);
-    }
-
-    let runContext: Record<string, unknown> | null = null;
-    try {
-      const graph = runtime.orchestratorService.getRunGraph({ runId: row.run_id, timelineLimit: 50 });
-      runContext = {
-        run: graph.run,
-        stepCount: graph.steps.length,
-        attemptCount: graph.attempts.length,
-        completionEvaluation: graph.completionEvaluation
-      };
-    } catch {
-      // Run may no longer exist
-    }
-
-    return {
-      evaluation: {
-        id: row.id,
-        runId: row.run_id,
-        missionId: row.mission_id,
-        evaluatorId: row.evaluator_id,
-        scores: JSON.parse(row.scores_json),
-        issues: JSON.parse(row.issues_json),
-        summary: row.summary,
-        improvements: row.improvements_json ? JSON.parse(row.improvements_json) : [],
-        metadata: row.metadata_json ? JSON.parse(row.metadata_json) : {},
-        evaluatedAt: row.evaluated_at
-      },
-      runContext
-    };
   }
 
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unknown ADE action: ${name}`);
@@ -7378,7 +5235,6 @@ export function createAdeRpcRequestHandler(args: {
       role: "external",
       chatSessionId: null,
       standaloneChatSession: false,
-      missionId: null,
       runId: null,
       stepId: null,
       attemptId: null,
@@ -7406,7 +5262,6 @@ export function createAdeRpcRequestHandler(args: {
         callerId: session.identity.callerId,
         role: session.identity.role,
         chatSessionId: session.identity.chatSessionId,
-        missionId: session.identity.missionId,
         runId: session.identity.runId,
         stepId: session.identity.stepId,
         attemptId: session.identity.attemptId,
@@ -7457,11 +5312,6 @@ export function createAdeRpcRequestHandler(args: {
       if (
         READ_ONLY_TOOLS.has(actionName) ||
         MUTATION_TOOLS.has(actionName) ||
-        ORCHESTRATION_TOOLS.has(actionName) ||
-        OBSERVATION_TOOLS.has(actionName) ||
-        EVALUATOR_TOOLS.has(actionName) ||
-        EVALUATION_READ_TOOLS.has(actionName) ||
-        COORDINATOR_TOOL_NAMES.has(actionName) ||
         actionName === "spawn_agent" ||
         actionName === "ask_user"
       ) {

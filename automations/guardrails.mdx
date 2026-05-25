@@ -1,6 +1,6 @@
 ---
 title: "Guardrails & Security"
-description: "Secure your automations with tool palette restrictions, budget caps, and preflight controls. Covers agent-session, mission, and built-in-task execution."
+description: "Secure your automations with tool palette restrictions, budget caps, and preflight controls. Covers agent-session, worker run, and built-in-task execution."
 icon: "shield-check"
 ---
 
@@ -13,7 +13,7 @@ Every automation can restrict its ADE tool surface with a **tool palette**. This
 | `read-only` | Read files, read git history, read context packs | Review, summarization, analysis |
 | `write-files` | `read-only` + write and create files | Code/document edits, lightweight maintenance |
 | `full-git` | `write-files` + all git operations | Commit/branch automation, PR prep |
-| `full-ade` | All ADE tools including mission/Linear/gh actions | Complex orchestration automation |
+| `full-ade` | All ADE tools including worker run/Linear/gh actions | Complex orchestration automation |
 | Custom | Explicitly listed tools | Precise scope for a specific workflow |
 
 <Warning>
@@ -51,7 +51,7 @@ Control how much execution state an automation carries between runs.
 Automation budgets are enforced from shared settings in **Settings > Usage** and apply across:
 
 - Background automations
-- Missions
+- Workers
 - Chat and terminal automation helpers
 - Linear and GitHub maintenance jobs
 

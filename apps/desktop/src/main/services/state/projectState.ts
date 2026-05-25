@@ -19,7 +19,6 @@ export type AdePaths = {
   chatSessionsDir: string;
   chatTranscriptsDir: string;
   orchestratorCacheDir: string;
-  missionStateDir: string;
 };
 
 function resolveProjectRoot(): string {
@@ -64,6 +63,5 @@ export function ensureAdeDirs(projectRoot: string): AdePaths {
     chatSessionsDir: layout.chatSessionsDir,
     chatTranscriptsDir: layout.chatTranscriptsDir,
     orchestratorCacheDir: layout.orchestratorCacheDir,
-    missionStateDir: layout.missionStateDir,
   };
 }

@@ -247,18 +247,18 @@ conflicts:
 
 ## Phase 3 Orchestrator Conflict Handling
 
-During **Mission** execution, ADE's orchestrator monitors for conflicts introduced by worker agent actions in real time.
+During **Worker run** execution, ADE's orchestrator monitors for conflicts introduced by worker agent actions in real time.
 
 When a worker agent's commit would introduce a conflict with another active lane:
 
 1. The orchestrator detects the conflict via the continuous simulation cycle
 2. The affected worker is **paused** — it receives no new instructions until the conflict is resolved
-3. The conflict is surfaced in both the Mission run panel and the Conflicts tab
+3. The conflict is surfaced in both the Worker run run panel and the Conflicts tab
 4. After you resolve the conflict (via any resolution path), the orchestrator resumes the paused worker from where it left off
 
 This prevents the orchestrator from building further work on top of a conflicted foundation, which would compound the resolution effort.
 
-<Note>The orchestrator does not automatically resolve conflicts on your behalf during mission execution. Resolution always requires human approval of the proposed changes — ADE will generate a proposal and pause, but it will not apply it without your confirmation.</Note>
+<Note>The orchestrator does not automatically resolve conflicts on your behalf during worker run execution. Resolution always requires human approval of the proposed changes — ADE will generate a proposal and pause, but it will not apply it without your confirmation.</Note>
 
 ---
 
@@ -293,8 +293,8 @@ This prevents the orchestrator from building further work on top of a conflicted
   <Card title="Pull Requests" icon="code-pull-request" href="/tools/pull-requests">
     Run integration simulations before merging and manage stacked PRs with automatic rebase.
   </Card>
-  <Card title="Missions" icon="target" href="/missions/overview">
-    Learn how the orchestrator handles conflicts mid-mission and coordinates multi-lane work.
+  <Card title="Workers" icon="target" href="/cto/workers">
+    Learn how the orchestrator handles conflicts mid-worker run and coordinates multi-lane work.
   </Card>
   <Card title="Lanes" icon="code-branch" href="/lanes/overview">
     Understand how lane isolation and stacking reduce the conflict surface in the first place.

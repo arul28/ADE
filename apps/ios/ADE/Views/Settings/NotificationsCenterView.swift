@@ -69,12 +69,6 @@ struct NotificationsCenterView: View {
             subtitle: nil,
             toggle: binding(\.ctoSubagentFinished)
           )
-          rowSeparator()
-          settingsRow(
-            title: "Mission phase change",
-            subtitle: nil,
-            toggle: binding(\.ctoMissionPhase)
-          )
         }
 
         section(title: "Pull requests") {

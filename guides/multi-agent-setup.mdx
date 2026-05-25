@@ -50,9 +50,6 @@ Launch an agent in each lane. There are several ways to do this:
   <Accordion title="From the CTO" icon="crown">
     Ask the CTO to delegate work. It will create lanes and spawn workers automatically based on your instructions.
   </Accordion>
-  <Accordion title="Via a Mission" icon="bullseye">
-    Create a mission with a plan that has parallel steps. The mission coordinator spawns workers into separate lanes and manages them.
-  </Accordion>
   <Accordion title="Via Automations" icon="bolt">
     Set up automation rules that spawn agents in response to triggers. Each rule can target a specific lane or create a new one.
   </Accordion>
@@ -86,7 +83,6 @@ While agents run, you can inspect their work from several views:
 | **Lane Terminals** | Live terminal output for each agent session |
 | **Agent Chat** | The agent's reasoning and tool calls in chat format |
 | **History** | Timeline of all events across all lanes |
-| **Missions > Run** | Step-by-step progress if agents were launched via a mission |
 
 Switch between lanes in the Lanes panel to focus on a specific agent, or use the Workspace Graph for the high-level view.
 
@@ -121,7 +117,7 @@ When multiple agents modify overlapping files, ADE detects the conflict risk:
 As agents complete their work:
 
 - Each lane has its changes committed and ready for PR
-- Mission artifacts (if applicable) are collected in the Artifacts tab
+- Proof artifacts and logs are attached to the lane, PR, or automation run that produced them
 - The CTO can review results across all lanes and post summaries
 
 Open PRs from each lane through the lane context menu or the PR panel.
@@ -134,7 +130,7 @@ Open PRs from each lane through the lane context menu or the PR panel.
 |---|---|
 | 1-3 | Fine for any machine. Monitor via Lanes panel. |
 | 4-8 | Use the Workspace Graph for overview. Set budget caps per agent. |
-| 8+ | Use missions with parallelism caps. Monitor total token spend in Settings > Usage. |
+| 8+ | Split work across named lanes, cap concurrent agents, and monitor total token spend in Settings > Usage. |
 
 ---
 

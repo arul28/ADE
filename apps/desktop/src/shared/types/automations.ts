@@ -17,10 +17,10 @@ import type {
   AutomationTrigger,
   AutomationTriggerType,
   AutomationVerification,
+  AiPermissionSettings,
   RunAdeActionConfig,
 } from "./config";
-import type { MissionPermissionConfig } from "./missions";
-import type { MissionModelConfig, ModelConfig } from "./models";
+import type { ModelConfig } from "./models";
 import type { AgentChatSessionSummary } from "./chat";
 
 export type AutomationRunStatus =
@@ -43,7 +43,6 @@ export type AutomationRun = {
   id: string;
   automationId: string;
   chatSessionId: string | null;
-  missionId: string | null;
   triggerType: AutomationTriggerType;
   startedAt: string;
   endedAt: string | null;
@@ -232,10 +231,9 @@ export type AutomationDraftAction =
       targetLaneId?: string | null;
       modelConfig?: ModelConfig;
       codexFastMode?: boolean;
-      permissionConfig?: MissionPermissionConfig;
+      permissionConfig?: AiPermissionSettings;
     })
-  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig })
-  | (AutomationDraftActionBase & { type: "launch-mission"; missionTitle?: string; targetLaneId?: string | null });
+  | (AutomationDraftActionBase & { type: "ade-action"; adeAction: RunAdeActionConfig });
 
 export type AutomationRuleDraft = {
   id?: string | null;
@@ -248,8 +246,8 @@ export type AutomationRuleDraft = {
   trigger: AutomationTrigger;
   execution?: AutomationExecution;
   executor: AutomationExecutor;
-  modelConfig?: MissionModelConfig;
-  permissionConfig?: MissionPermissionConfig;
+  modelConfig?: ModelConfig;
+  permissionConfig?: AiPermissionSettings;
   templateId?: string;
   prompt?: string;
   reviewProfile: AutomationReviewProfile;
@@ -354,7 +352,7 @@ export type AutomationSaveDraftResult = {
 
 export type AutomationSimulationAction = {
   index: number;
-  type: AutomationActionType | "mission-dispatch" | "review-summary" | "queue-result";
+  type: AutomationActionType | "review-summary" | "queue-result";
   summary: string;
   commandPreview?: string;
   cwdPreview?: string;

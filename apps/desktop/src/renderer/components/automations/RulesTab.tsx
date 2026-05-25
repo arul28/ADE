@@ -44,9 +44,7 @@ function createBlankDraft(): AutomationRuleDraft {
     trigger: { type: "manual" },
     execution: { kind: "agent-session", session: {} },
     executor: { mode: "automation-bot" },
-    modelConfig: {
-      orchestratorModel: { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" },
-    },
+    modelConfig: { modelId: DEFAULT_MODEL_ID, thinkingLevel: "medium" },
     permissionConfig: {
       providers: {
         claude: "full-auto",
@@ -57,7 +55,7 @@ function createBlankDraft(): AutomationRuleDraft {
     },
     prompt: "",
     reviewProfile: "quick",
-    toolPalette: ["repo", "git", "mission"],
+    toolPalette: ["repo", "git"],
     contextSources: [],
     guardrails: { maxDurationMin: 20 },
     outputs: { disposition: "comment-only", createArtifact: true },
@@ -128,13 +126,6 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
       } as any;
     }
-    if (action.type === "launch-mission") {
-      return {
-        type: action.type,
-        ...runtimeActionFields(action),
-        ...(action.sessionTitle ? { missionTitle: action.sessionTitle } : {}),
-      } as any;
-    }
     return { type: action.type, ...runtimeActionFields(action) } as any;
   });
   return {
@@ -175,13 +166,12 @@ function primaryTriggerLabel(rule: AutomationRuleSummary): string {
 }
 
 function executionLabel(rule: AutomationRuleSummary): string {
-  if (rule.execution?.kind === "mission") return "Mission";
   if (rule.execution?.kind === "built-in") return "Built-in";
   return "Agent session";
 }
 
 function modeSummary(rule: AutomationRuleSummary): string {
-  return [rule.mode, rule.reviewProfile, rule.modelConfig?.orchestratorModel.modelId ?? null].filter(Boolean).join(" · ");
+  return [rule.mode, rule.reviewProfile, rule.modelConfig?.modelId ?? null].filter(Boolean).join(" · ");
 }
 
 function RuleListRow({
@@ -312,13 +302,11 @@ export function RulesTab({
   pendingDraft,
   onDraftConsumed,
   onOpenTemplates,
-  missionsEnabled,
 }: {
   active?: boolean;
   pendingDraft: AutomationRuleDraft | null;
   onDraftConsumed: () => void;
   onOpenTemplates: () => void;
-  missionsEnabled: boolean;
 }) {
   const [detailView, setDetailView] = useState<DetailView>("editor");
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
@@ -685,7 +673,6 @@ export function RulesTab({
               setDraft={setDraft}
               lanes={lanes.map((lane) => ({ id: lane.id, name: lane.name }))}
               suites={suites}
-              missionsEnabled={missionsEnabled}
               issues={issues}
               requiredConfirmations={requiredConfirmations}
               acceptedConfirmations={acceptedConfirmations}
@@ -707,7 +694,7 @@ export function RulesTab({
               <div className={cn(cardCls, "max-w-md text-center")}>
                 <div className="text-[17px] font-semibold text-fg">Create an automation</div>
                 <div className="mt-2 text-sm leading-relaxed text-muted-fg/70">
-                  Start with a schedule or a product event, then tell ADE whether it should run a built-in task, send a prompt to an automation chat thread, or launch a mission.
+                  Start with a schedule or a product event, then tell ADE whether it should run a built-in task or send a prompt to an automation chat thread.
                 </div>
                 <div className="mt-4 flex justify-center gap-2">
                   <Button size="sm" variant="primary" onClick={createRule}>

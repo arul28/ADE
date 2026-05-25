@@ -77,8 +77,7 @@ function normalizeTarget(input: unknown): LinearWorkflowDefinition["target"] | n
   if (!isRecord(input)) return null;
   const targetType = input.type;
   if (
-    targetType !== "mission"
-    && targetType !== "employee_session"
+    targetType !== "employee_session"
     && targetType !== "worker_run"
     && targetType !== "pr_resolution"
     && targetType !== "review_gate"
@@ -97,7 +96,6 @@ function normalizeTarget(input: unknown): LinearWorkflowDefinition["target"] | n
       ? { employeeIdentityKey: input.employeeIdentityKey.trim() as LinearWorkflowDefinition["target"]["employeeIdentityKey"] }
       : {}),
     ...(typeof input.sessionTemplate === "string" ? { sessionTemplate: input.sessionTemplate } : {}),
-    ...(typeof input.missionTemplate === "string" ? { missionTemplate: input.missionTemplate } : {}),
     ...(input.executorKind === "cto" || input.executorKind === "employee" || input.executorKind === "worker"
       ? { executorKind: input.executorKind }
       : {}),
@@ -240,20 +238,12 @@ function normalizeWorkflow(input: unknown, fallbackId: string): LinearWorkflowDe
 }
 
 function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): LinearWorkflowConfig {
-  const baseWorkflow = createWorkflowPreset("mission", {
-    id: "cto-mission-autopilot",
-    name: "CTO -> Mission autopilot",
-    description: "Default migrated mission-backed workflow.",
-  });
-  baseWorkflow.target = { ...baseWorkflow.target, type: "mission", runMode: "autopilot", missionTemplate: "default" };
-
   if (!legacy) {
     const base = createDefaultLinearWorkflowConfig();
     return {
       ...base,
       intake: normalizeIntake(null),
       workflows: [
-        baseWorkflow,
         {
           ...createWorkflowPreset("employee_session", {
             id: "cto-direct-employee-session",
@@ -323,7 +313,7 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
   const defaultProjectSlug = projects[0]?.slug ?? null;
 
   for (const [index, rule] of (legacy.autoDispatch?.rules ?? []).entries()) {
-    const targetType = rule.action === "auto" ? "mission" : "review_gate";
+    const targetType = rule.action === "auto" ? "worker_run" : "review_gate";
     const labelMatch = rule.match?.labels?.[0]?.trim().toLowerCase() ?? null;
     const labelRoute = labelMatch ? legacy.routing?.byLabel?.[labelMatch] : null;
     const projectWorker = defaultProjectSlug
@@ -347,7 +337,7 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
       target: {
         type: targetType,
         runMode: targetType === "review_gate" ? "manual" : "autopilot",
-        missionTemplate: rule.template ?? "default",
+        sessionTemplate: rule.template ?? "default",
         ...(labelRoute
           ? { workerSelector: { mode: "slug", value: labelRoute } as const }
           : projectWorker
@@ -358,7 +348,7 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
         { id: "launch", type: "launch_target", name: "Launch target" },
         ...(targetType === "review_gate"
           ? [{ id: "review", type: "request_human_review", name: "Review gate" } as const]
-          : [{ id: "wait", type: "wait_for_target_status", name: "Wait for mission", targetStatus: "completed" } as const]),
+          : [{ id: "wait", type: "wait_for_target_status", name: "Wait for worker", targetStatus: "runtime_completed" } as const]),
         { id: "complete", type: "complete_issue", name: "Complete issue" },
       ],
       closeout: {
@@ -386,7 +376,7 @@ function migrateLegacyConfig(legacy: LinearSyncConfig | null | undefined): Linea
   }
 
   if (!workflows.length) {
-    workflows.push(baseWorkflow);
+    workflows.push(createWorkflowPreset("worker_run"));
   }
 
   return {

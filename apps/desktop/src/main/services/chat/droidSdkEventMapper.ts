@@ -218,12 +218,6 @@ export function mapDroidSdkMessageToChatEvents(
     case "mcp_status_changed":
     case "mcp_auth_required":
     case "mcp_auth_completed":
-    case "mission_state_changed":
-    case "mission_features_changed":
-    case "mission_progress_entry":
-    case "mission_heartbeat":
-    case "mission_worker_started":
-    case "mission_worker_completed":
       return [];
     case "error":
       return [{

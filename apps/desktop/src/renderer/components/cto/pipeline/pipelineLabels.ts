@@ -54,8 +54,6 @@ export const FIELD_LABELS: Record<string, FieldLabel> = {
   "target.prStrategy.draft": { displayName: "Start as Draft PR", description: "Create the PR in draft mode until it's ready for review.", tier: "advanced" },
   "target.prTiming": { displayName: "PR Timing", description: "When in the workflow ADE creates or links the PR.", tier: "essential" },
   "target.sessionTemplate": { displayName: "Session Template", description: "Template to use when creating the agent session.", tier: "expert" },
-  "target.missionTemplate": { displayName: "Mission Template", description: "Template to use when creating the mission.", tier: "expert" },
-  "target.phaseProfile": { displayName: "Phase Profile", description: "Named phase configuration for multi-phase missions.", tier: "expert" },
   "target.downstreamTarget": { displayName: "Follow-up Action", description: "A second action that runs after the primary work completes.", tier: "expert" },
 
   // Visual plan
@@ -109,7 +107,6 @@ export type EnumLabel = {
 export const TARGET_TYPE_LABELS: Record<string, EnumLabel> = {
   employee_session: { displayName: "Agent Chat Session", description: "Hand the issue to an agent in a chat session." },
   worker_run: { displayName: "Background Worker", description: "Delegate to an isolated worker for autonomous work." },
-  mission: { displayName: "Multi-Step Mission", description: "Broader mission with planning, execution, and verification." },
   pr_resolution: { displayName: "PR Workflow", description: "Focus on creating and resolving a pull request." },
   review_gate: { displayName: "Approval Gate", description: "Pause for human approval before continuing." },
 };
@@ -147,7 +144,7 @@ export const PR_STRATEGY_KIND_LABELS: Record<string, EnumLabel> = {
 export const COMPLETION_CONTRACT_LABELS: Record<string, EnumLabel> = {
   complete_on_launch: { displayName: "Immediately after starting", description: "Done as soon as work is launched." },
   wait_for_explicit_completion: { displayName: "Agent marks done", description: "Wait for the agent to explicitly report completion." },
-  wait_for_runtime_success: { displayName: "Runtime finishes successfully", description: "Wait for the mission or worker to finish with success." },
+  wait_for_runtime_success: { displayName: "Runtime finishes successfully", description: "Wait for the worker to finish with success." },
   wait_for_pr_created: { displayName: "A pull request exists", description: "Wait until a linked PR has been created." },
   wait_for_review_ready: { displayName: "PR passes review checks", description: "Wait until the PR is approved and checks pass." },
 };
@@ -226,7 +223,6 @@ export const ISSUE_STATE_LABELS: Record<string, EnumLabel> = {
 export const STAGE_COLORS: Record<string, string> = {
   employee_session: "#A78BFA", // violet
   worker_run: "#34D399",      // emerald
-  mission: "#A78BFA",         // violet
   pr_resolution: "#FB7185",   // rose
   review_gate: "#FBBF24",     // amber
 };
@@ -235,7 +231,6 @@ export const STAGE_COLORS: Record<string, string> = {
 
 export const PRESET_TEMPLATE_DESCRIPTIONS: Record<string, string> = {
   employee_session: "Hand an issue to an agent in a live chat session.",
-  mission: "Broad multi-step mission with planning and verification.",
   worker_run: "Run isolated background work with a dedicated worker.",
   pr_resolution: "Create, track, and land a pull request automatically.",
   review_gate: "Pause the pipeline for human approval before continuing.",

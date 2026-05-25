@@ -12,7 +12,6 @@ import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { GitHubRepoSyncBar } from "./shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "./shared/GitHubPrSearchInput";
 import { SANS_FONT } from "../lanes/laneDesignTokens";
-import { isMissionLaneHiddenByDefault } from "../lanes/laneUtils";
 import {
   buildPrsRouteSearch,
   parsePrsRouteState,
@@ -141,10 +140,7 @@ function PRsPageInner() {
       return null;
     }
   });
-  const visibleLanes = React.useMemo(
-    () => lanes.filter((lane) => !isMissionLaneHiddenByDefault(lane)),
-    [lanes],
-  );
+  const visibleLanes = lanes;
 
   React.useEffect(() => {
     if (activeTab !== "normal") {

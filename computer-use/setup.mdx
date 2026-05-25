@@ -22,7 +22,7 @@ The first time `ade proof capture` runs, macOS asks for **Screen Recording** per
 
 ## The `ade proof` CLI
 
-All proof flow happens through the `ade` CLI. Agents call these commands from terminal sessions inside a lane, and the results are stored in `.ade/artifacts/computer-use/` and linked to the lane, mission, chat session, PR, or Linear issue they originated from.
+All proof flow happens through the `ade` CLI. Agents call these commands from terminal sessions inside a lane, and the results are stored in `.ade/artifacts/computer-use/` and linked to the lane, chat session, PR, or Linear issue they originated from.
 
 | Command | What it does |
 |---|---|
@@ -32,7 +32,7 @@ All proof flow happens through the `ade` CLI. Agents call these commands from te
 | `ade proof record --seconds 20` | Capture a short screen recording |
 | `ade proof ingest --input-json '{...}'` | Ingest proofs produced by external tools (browser traces, verifications, console logs) |
 
-`ade proof` accepts the same `--lane`, `--mission`, `--chat-session`, `--pr`, and `--linear-issue` owner flags as the rest of the ADE CLI, so agents can attach the captured proof to one or more owners in a single call.
+`ade proof` accepts the same `--lane`, `--chat-session`, `--pr`, and `--linear-issue` owner flags as the rest of the ADE CLI, so agents can attach the captured proof to one or more owners in a single call.
 
 ### Typical Flow
 
@@ -47,7 +47,7 @@ All proof flow happens through the `ade` CLI. Agents call these commands from te
     ADE stores the file under `.ade/artifacts/computer-use/` and records a `ComputerUseArtifact` row with kind, owner, and metadata. A link is created to the lane, and any additional owners passed via flags.
   </Step>
   <Step title="Review in the UI">
-    The proof shows up in the Mission Artifacts tab (if the agent was in a mission), the chat artifact panel (if in chat), or the PR attachments panel (if linked to a PR).
+    The proof shows up in the chat artifact panel, the PR attachments panel, or the Linear issue attachment list depending on its owners.
   </Step>
 </Steps>
 
@@ -63,7 +63,7 @@ ade proof ingest --input-json '{
     { "kind": "console_logs", "title": "checkout console", "text": "..." }
   ],
   "owners": [
-    { "kind": "mission", "id": "mission_abc" }
+    { "kind": "worker_task", "id": "worker_task_abc" }
   ]
 }'
 ```

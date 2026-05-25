@@ -53,12 +53,6 @@ const FEATURES: Feature[] = [
     docs: "/cto/linear",
   },
   {
-    label: "Missions",
-    blurb: "Long-running agent workflows — plan, build, test, ship. Spans multiple worktrees.",
-    src: "/images/features/missions.png",
-    docs: "/missions/overview",
-  },
-  {
     label: "Automations",
     blurb: "Run agents on a schedule or a trigger. They ship the PR and ping you when it's done.",
     src: "/images/features/automations.png",

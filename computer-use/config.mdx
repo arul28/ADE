@@ -29,7 +29,7 @@ By default, ADE retains all captured proofs until you explicitly dismiss them. T
 - For bulk cleanup, delete the row via the UI; the file is removed with it
 
 <Note>
-Proofs linked to closed PRs and completed Linear issues remain on disk until explicitly cleaned up. This is deliberate — it keeps the audit trail intact long after a mission ends.
+Proofs linked to closed PRs and completed Linear issues remain on disk until explicitly cleaned up. This is deliberate — it keeps the audit trail intact long after a worker run ends.
 </Note>
 
 ---
@@ -57,7 +57,7 @@ Proofs linked to closed PRs and completed Linear issues remain on disk until exp
   </Accordion>
 
   <Accordion title="A proof is not showing up on a PR" icon="code-pull-request">
-    Check that the proof's workflow state is `published` (review states of `accepted` on their own do not publish). In the Mission Artifacts tab, open the proof, click **Publish**, and choose the PR as a target.
+    Check that the proof's workflow state is `published` (review states of `accepted` on their own do not publish). In the Worker run Artifacts tab, open the proof, click **Publish**, and choose the PR as a target.
 
     If the PR no longer exists or has been closed, the publish call returns an error in the CLI output. Re-target the proof to a different owner.
   </Accordion>

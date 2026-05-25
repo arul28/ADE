@@ -1,7 +1,6 @@
 import type {
   AgentChatSessionSummary,
   CtoSnapshot,
-  MissionSummary,
   OperationRecord,
   WorkerAgentRun,
 } from "../../../shared/types";
@@ -10,7 +9,6 @@ type OperationStatus = OperationRecord["status"];
 
 export type HistoryActivitySourceData = {
   chats?: AgentChatSessionSummary[];
-  missions?: MissionSummary[];
   ctoSnapshot?: CtoSnapshot | null;
   workerRuns?: WorkerAgentRun[];
 };
@@ -39,19 +37,6 @@ function chatStatus(status: AgentChatSessionSummary["status"]): OperationStatus 
   return status === "active" ? "running" : "succeeded";
 }
 
-function missionStatus(status: MissionSummary["status"]): OperationStatus {
-  switch (status) {
-    case "completed":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "canceled":
-      return "canceled";
-    default:
-      return "running";
-  }
-}
-
 function workerStatus(status: WorkerAgentRun["status"]): OperationStatus {
   switch (status) {
     case "completed":
@@ -63,19 +48,6 @@ function workerStatus(status: WorkerAgentRun["status"]): OperationStatus {
       return "canceled";
     default:
       return "running";
-  }
-}
-
-function missionKind(status: MissionSummary["status"]): string {
-  switch (status) {
-    case "completed":
-      return "mission.completed";
-    case "failed":
-      return "mission.failed";
-    case "intervention_required":
-      return "mission.intervention";
-    default:
-      return "mission.update";
   }
 }
 
@@ -126,43 +98,6 @@ function chatRecord(chat: AgentChatSessionSummary): OperationRecord | null {
       awaitingInput: chat.awaitingInput === true,
       automationId: chat.automationId ?? null,
       automationRunId: chat.automationRunId ?? null,
-    }),
-  };
-}
-
-function missionRecord(mission: MissionSummary): OperationRecord | null {
-  const timestamp =
-    validIso(mission.completedAt) ??
-    validIso(mission.updatedAt) ??
-    validIso(mission.startedAt) ??
-    validIso(mission.createdAt);
-  if (!timestamp) return null;
-  const status = missionStatus(mission.status);
-
-  return {
-    id: `mission:${mission.id}`,
-    laneId: mission.laneId,
-    laneName: mission.laneName,
-    kind: missionKind(mission.status),
-    startedAt: timestamp,
-    endedAt: terminalEndedAt(status, timestamp),
-    status,
-    preHeadSha: null,
-    postHeadSha: null,
-    metadataJson: metadataJson({
-      source: "mission",
-      eventLabel: `Mission: ${mission.title}`,
-      missionId: mission.id,
-      title: mission.title,
-      summary: mission.outcomeSummary ?? mission.prompt,
-      actor: "mission",
-      priority: mission.priority,
-      missionStatus: mission.status,
-      completedSteps: mission.completedSteps,
-      totalSteps: mission.totalSteps,
-      openInterventions: mission.openInterventions,
-      artifactCount: mission.artifactCount,
-      lastError: mission.lastError,
     }),
   };
 }
@@ -279,11 +214,6 @@ export function buildSupplementalTimelineRecords(
     if (record) records.push(record);
   }
 
-  for (const mission of data.missions ?? []) {
-    const record = missionRecord(mission);
-    if (record) records.push(record);
-  }
-
   for (const run of data.workerRuns ?? []) {
     const record = workerRunRecord(run);
     if (record) records.push(record);
@@ -312,12 +242,9 @@ export async function fetchSupplementalTimelineRecords(
   const safeLimit = Number.isFinite(roundedLimit)
     ? Math.max(1, Math.min(500, roundedLimit))
     : 500;
-  const [chats, missions, ctoSnapshot, workerRuns] = await Promise.all([
+  const [chats, ctoSnapshot, workerRuns] = await Promise.all([
     typeof window.ade?.agentChat?.list === "function"
       ? settle(window.ade.agentChat.list({ includeAutomation: true }))
-      : Promise.resolve(null),
-    typeof window.ade?.missions?.list === "function"
-      ? settle(window.ade.missions.list({ limit: safeLimit, includeArchived: true }))
       : Promise.resolve(null),
     typeof window.ade?.cto?.getState === "function"
       ? settle(window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }))
@@ -329,7 +256,6 @@ export async function fetchSupplementalTimelineRecords(
 
   return buildSupplementalTimelineRecords({
     chats: chats ?? [],
-    missions: missions ?? [],
     ctoSnapshot,
     workerRuns: workerRuns ?? [],
   });

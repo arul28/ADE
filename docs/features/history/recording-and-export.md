@@ -26,7 +26,7 @@ user's local machine).
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (writes `terminal_sessions` rows and persists transcripts to disk). |
 | `apps/desktop/src/shared/chatTranscript.ts` | JSON-lines parser for chat transcripts; used to reconstruct chat state, generate summaries, and derive activity signals. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations` and `ade.history.exportOperations` handlers, plus the new git IPC the History toolbar relies on (`gitCreateTag`, `gitResetToCommit`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, multi-mode `gitPull`). |
-| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `missions.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
+| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
 
 ## Recording pattern
 
@@ -201,22 +201,22 @@ guard trips. The UI surfaces those errors verbatim through
 
 The Activity surface in the History UI merges persisted
 `OperationRecord` rows with synthesized rows pulled from chat,
-mission, CTO, and worker feeds. Synthesis happens in
+CTO, and worker feeds. Synthesis happens in
 `apps/desktop/src/renderer/components/history/historyActivitySources.ts`
 and never writes to the operations table.
 
 The renderer fetches the four feeds in parallel with
 `fetchSupplementalTimelineRecords(limit)` and folds the results into
 `OperationRecord`-shaped objects with namespaced IDs (`chat:`,
-`mission:`, `worker-run:`, `cto-session:`, `cto-activity:`). Each
+`worker-run:`, `cto-session:`, `cto-activity:`). Each
 record carries:
 
-- `kind` -- `chat.session`, `mission.{completed|failed|intervention|update}`,
-  `worker.run`, `cto.session`, or `worker.activity`. The taxonomy in
+- `kind` -- `chat.session`, `worker.run`, `cto.session`, or
+  `worker.activity`. The taxonomy in
   `eventTaxonomy.ts` ensures each kind has a category, icon, and
   importance level.
-- `status` -- mapped from the source's status enum (e.g. mission
-  `intervention_required` → `running`, worker `cancelled` → `canceled`).
+- `status` -- mapped from the source's status enum (for example,
+  worker `cancelled` → `canceled`).
 - `metadataJson` -- a `JSON.stringify`'d object with at minimum
   `source`, `eventLabel`, and an `actor` field so the detail panel can
   render uniformly regardless of source.
@@ -244,8 +244,6 @@ parser is `parseAgentChatTranscript` in
 - `event` -- the `AgentChatEvent` discriminated union.
 - `sequence` -- optional monotonic index for ordering across parallel
   streams.
-- `provenance` -- optional metadata for mission-scoped chats (thread
-  id, role, source session id, attempt id, step key, lane id, run id).
 
 Malformed lines are silently skipped; the parser is tolerant by design
 so a single corrupt line does not poison an entire transcript.

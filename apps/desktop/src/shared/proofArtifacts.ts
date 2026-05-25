@@ -1,15 +1,4 @@
-import type { MissionArtifactType, ValidationEvidenceRequirement } from "./types/missions";
-import type { MissionCloseoutRequirementKey, OrchestratorArtifactKind } from "./types/orchestrator";
-
 type ArtifactMetadataLike = Record<string, unknown> | null | undefined;
-
-const PROOF_ARTIFACT_KEYS = new Set<MissionCloseoutRequirementKey>([
-  "screenshot",
-  "browser_verification",
-  "browser_trace",
-  "video_recording",
-  "console_logs",
-]);
 
 export const COMPUTER_USE_ARTIFACT_KINDS = [
   "screenshot",
@@ -19,7 +8,36 @@ export const COMPUTER_USE_ARTIFACT_KINDS = [
   "console_logs",
 ] as const;
 
-const CLOSEOUT_ARTIFACT_KEY_SET = new Set<MissionCloseoutRequirementKey>([
+export type ComputerUseProofArtifactKind = (typeof COMPUTER_USE_ARTIFACT_KINDS)[number];
+
+export type ReportArtifactKey =
+  | "planning_document"
+  | "research_summary"
+  | "changed_files_summary"
+  | "test_report"
+  | "implementation_summary"
+  | "validation_verdict"
+  | "screenshot"
+  | "browser_verification"
+  | "browser_trace"
+  | "video_recording"
+  | "console_logs"
+  | "risk_notes"
+  | "pr_url"
+  | "proposal_url"
+  | "review_summary"
+  | "final_outcome_summary"
+  | "summary"
+  | "link"
+  | "note"
+  | "patch"
+  | "plan"
+  | "implementation_pr"
+  | "feature_branch";
+
+const PROOF_ARTIFACT_KEYS = new Set<ComputerUseProofArtifactKind>(COMPUTER_USE_ARTIFACT_KINDS);
+
+const REPORT_ARTIFACT_KEY_SET = new Set<ReportArtifactKey>([
   "planning_document",
   "research_summary",
   "changed_files_summary",
@@ -36,21 +54,13 @@ const CLOSEOUT_ARTIFACT_KEY_SET = new Set<MissionCloseoutRequirementKey>([
   "proposal_url",
   "review_summary",
   "final_outcome_summary",
-]);
-
-const MISSION_ARTIFACT_TYPE_SET = new Set<MissionArtifactType>([
   "summary",
-  "pr",
   "link",
   "note",
   "patch",
   "plan",
-  "test_report",
-  "screenshot",
-  "browser_verification",
-  "browser_trace",
-  "video_recording",
-  "console_logs",
+  "implementation_pr",
+  "feature_branch",
 ]);
 
 function normalizeArtifactToken(value: string | null | undefined): string {
@@ -77,7 +87,7 @@ function metadataCandidates(metadata: ArtifactMetadataLike): string[] {
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 }
 
-function canonicalizeProofArtifactKey(value: string | null | undefined): Extract<MissionArtifactType, "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs"> | null {
+function canonicalizeProofArtifactKey(value: string | null | undefined): ComputerUseProofArtifactKind | null {
   const token = normalizeArtifactToken(value);
   if (!token) return null;
   if (
@@ -133,45 +143,28 @@ function canonicalizeProofArtifactKey(value: string | null | undefined): Extract
 
 export function normalizeComputerUseArtifactKind(
   value: string | null | undefined,
-): Extract<MissionArtifactType, "screenshot" | "browser_verification" | "browser_trace" | "video_recording" | "console_logs"> | null {
+): ComputerUseProofArtifactKind | null {
   return canonicalizeProofArtifactKey(value);
 }
 
-function resolveMissionArtifactAlias(value: string | null | undefined): MissionArtifactType | null {
+function resolveReportArtifactAlias(value: string | null | undefined): ReportArtifactKey | null {
   const token = normalizeArtifactToken(value);
   if (!token) return null;
   const proofKey = canonicalizeProofArtifactKey(token);
   if (proofKey) return proofKey;
-  if (token === "pull_request" || token === "pr_link") return "pr";
-  if (token === "planning_document" || token === "mission_plan") return "plan";
+  if (token === "pull_request" || token === "pr" || token === "pr_link") return "implementation_pr";
+  if (token === "planning_document") return "planning_document";
   if (token === "test_results") return "test_report";
-  if (MISSION_ARTIFACT_TYPE_SET.has(token as MissionArtifactType)) return token as MissionArtifactType;
-  return null;
-}
-
-function resolveCloseoutAlias(value: string | null | undefined): MissionCloseoutRequirementKey | null {
-  const token = normalizeArtifactToken(value);
-  if (!token) return null;
-  const proofKey = canonicalizeProofArtifactKey(token);
-  if (proofKey) return proofKey;
-  if (token === "plan" || token === "mission_plan") return "planning_document";
-  if (token === "pr" || token === "pull_request") return "pr_url";
-  if (token === "test_results") return "test_report";
-  if (CLOSEOUT_ARTIFACT_KEY_SET.has(token as MissionCloseoutRequirementKey)) {
-    return token as MissionCloseoutRequirementKey;
-  }
+  if (token === "branch") return "feature_branch";
+  if (REPORT_ARTIFACT_KEY_SET.has(token as ReportArtifactKey)) return token as ReportArtifactKey;
   return null;
 }
 
 export function isProofEvidenceRequirement(
-  value: MissionCloseoutRequirementKey | ValidationEvidenceRequirement | string | null | undefined,
+  value: string | null | undefined,
 ): boolean {
-  const key = resolveCloseoutAlias(value);
-  return key != null && PROOF_ARTIFACT_KEYS.has(key);
-}
-
-export function normalizeMissionArtifactType(value: string): MissionArtifactType {
-  return resolveMissionArtifactAlias(value) ?? "note";
+  const key = resolveReportArtifactAlias(value);
+  return key != null && PROOF_ARTIFACT_KEYS.has(key as ComputerUseProofArtifactKind);
 }
 
 export function resolveCloseoutRequirementKeyFromArtifact(args: {
@@ -179,7 +172,7 @@ export function resolveCloseoutRequirementKeyFromArtifact(args: {
   artifactKey?: string | null;
   kind?: string | null;
   metadata?: ArtifactMetadataLike;
-}): MissionCloseoutRequirementKey | null {
+}): ReportArtifactKey | null {
   const candidates = [
     args.artifactType,
     args.artifactKey,
@@ -187,7 +180,7 @@ export function resolveCloseoutRequirementKeyFromArtifact(args: {
     ...metadataCandidates(args.metadata),
   ];
   for (const candidate of candidates) {
-    const resolved = resolveCloseoutAlias(candidate);
+    const resolved = resolveReportArtifactAlias(candidate);
     if (resolved) return resolved;
   }
   return null;
@@ -207,12 +200,8 @@ export function resolveReportArtifactKey(args: {
   for (const candidate of candidates) {
     const proofKey = canonicalizeProofArtifactKey(candidate);
     if (proofKey) return proofKey;
-    const missionType = resolveMissionArtifactAlias(candidate);
-    if (missionType === "plan" || missionType === "summary" || missionType === "link" || missionType === "note" || missionType === "patch" || missionType === "pr" || missionType === "test_report") {
-      return missionType === "pr" ? "implementation_pr" : missionType;
-    }
-    const closeoutKey = resolveCloseoutAlias(candidate);
-    if (closeoutKey) return closeoutKey;
+    const artifactKey = resolveReportArtifactAlias(candidate);
+    if (artifactKey) return artifactKey;
   }
   if (normalizeArtifactToken(args.type) === "branch") return "feature_branch";
   if (normalizeArtifactToken(args.type) === "pull_request") return "implementation_pr";
@@ -220,65 +209,4 @@ export function resolveReportArtifactKey(args: {
   const rawTitle = typeof args.title === "string" ? args.title.trim() : "";
   if (!rawTitle.length) return fallbackKey;
   return normalizeArtifactToken(rawTitle) || fallbackKey;
-}
-
-export function resolveReportArtifactMissionType(args: {
-  type?: string | null;
-  artifactKey?: string | null;
-  metadata?: ArtifactMetadataLike;
-}): MissionArtifactType | null {
-  const candidates = [
-    args.type,
-    args.artifactKey,
-    ...metadataCandidates(args.metadata),
-  ];
-  for (const candidate of candidates) {
-    const missionType = resolveMissionArtifactAlias(candidate);
-    if (missionType) return missionType;
-  }
-  return null;
-}
-
-export function resolveReportArtifactKind(args: {
-  type?: string | null;
-  artifactKey?: string | null;
-  uri?: string | null;
-  metadata?: ArtifactMetadataLike;
-}): OrchestratorArtifactKind {
-  const closeoutKey = resolveCloseoutRequirementKeyFromArtifact({
-    artifactType: args.type,
-    artifactKey: args.artifactKey,
-    metadata: args.metadata,
-  });
-  if (closeoutKey === "screenshot") return "screenshot";
-  if (closeoutKey === "video_recording") return "video";
-  const rawType = normalizeArtifactToken(args.type);
-  if (rawType === "branch") return "branch";
-  if (rawType === "pr" || rawType === "pull_request") return "pr";
-  if (rawType === "test_report" || rawType === "test_results") return "test_report";
-  const uri = typeof args.uri === "string" ? args.uri.trim() : "";
-  if (closeoutKey === "browser_trace" || closeoutKey === "browser_verification" || closeoutKey === "console_logs") {
-    return uri.length > 0 ? "file" : "custom";
-  }
-  return uri.length > 0 ? "file" : "custom";
-}
-
-export function resolveOrchestratorArtifactUri(args: {
-  kind: string;
-  value: string;
-  metadata?: ArtifactMetadataLike;
-}): string | null {
-  const value = args.value.trim();
-  const metadataUri = typeof args.metadata?.uri === "string" ? args.metadata.uri.trim() : "";
-  if (!value.length) return metadataUri.length > 0 ? metadataUri : null;
-  if (
-    args.kind === "file"
-    || args.kind === "branch"
-    || args.kind === "pr"
-    || args.kind === "screenshot"
-    || args.kind === "video"
-  ) {
-    return value;
-  }
-  return metadataUri.length > 0 ? metadataUri : null;
 }

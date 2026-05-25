@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createComputerUseArtifactBrokerService } from "./computerUseArtifactBrokerService";
 
@@ -44,16 +44,12 @@ describe("computerUseArtifactBrokerService", () => {
   });
 
   it("routes ingested artifacts to additional owners and persists review metadata", () => {
-    const missionService = { addArtifact: vi.fn() } as any;
-    const orchestratorService = { registerArtifact: vi.fn() } as any;
     const events: Array<{ type: string; artifactId: string }> = [];
 
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
-      missionService,
-      orchestratorService,
       logger: createLogger(),
       onEvent: (payload) => events.push({ type: payload.type, artifactId: payload.artifactId }),
     });
@@ -80,19 +76,12 @@ describe("computerUseArtifactBrokerService", () => {
 
     const routed = broker.routeArtifact({
       artifactId,
-      owner: { kind: "mission", id: "mission-1" },
+      owner: { kind: "linear_issue", id: "issue-1" },
     });
     expect(routed.links.map((link) => `${link.ownerKind}:${link.ownerId}`)).toEqual([
       "lane:lane-1",
-      "mission:mission-1",
+      "linear_issue:issue-1",
     ]);
-    expect(missionService.addArtifact).toHaveBeenCalledWith(expect.objectContaining({
-      missionId: "mission-1",
-      metadata: expect.objectContaining({
-        brokerArtifactId: artifactId,
-        backendName: "agent-browser",
-      }),
-    }));
 
     const reviewed = broker.updateArtifactReview({
       artifactId,
@@ -118,14 +107,10 @@ describe("computerUseArtifactBrokerService", () => {
   });
 
   it("reads image previews only from the project artifact directory", async () => {
-    const missionService = { addArtifact: vi.fn() } as any;
-    const orchestratorService = { registerArtifact: vi.fn() } as any;
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
-      missionService,
-      orchestratorService,
       logger: createLogger(),
     });
     const artifactDir = path.join(projectRoot, ".ade", "artifacts", "computer-use");
@@ -144,14 +129,10 @@ describe("computerUseArtifactBrokerService", () => {
   });
 
   it("rejects local file imports outside allowed artifact roots", () => {
-    const missionService = { addArtifact: vi.fn() } as any;
-    const orchestratorService = { registerArtifact: vi.fn() } as any;
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
-      missionService,
-      orchestratorService,
       logger: createLogger(),
     });
 
@@ -210,14 +191,10 @@ describe("computerUseArtifactBrokerService", () => {
   });
 
   it("rejects symlinked artifact paths that escape the project artifact directory", () => {
-    const missionService = { addArtifact: vi.fn() } as any;
-    const orchestratorService = { registerArtifact: vi.fn() } as any;
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
       projectRoot,
-      missionService,
-      orchestratorService,
       logger: createLogger(),
     });
 

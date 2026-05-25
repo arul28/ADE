@@ -400,7 +400,7 @@ describe("multi-project RPC server", () => {
     });
     eventBuffer.push({
       timestamp: "2026-05-10T00:00:01.000Z",
-      category: "mission",
+      category: "orchestrator",
       payload: { type: "ignored" },
     });
 

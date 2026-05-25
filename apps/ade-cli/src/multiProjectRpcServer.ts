@@ -206,7 +206,6 @@ function readEventCategory(value: unknown): RuntimeEventCategory | null {
   return value === "orchestrator" ||
     value === "dag_mutation" ||
     value === "runtime" ||
-    value === "mission" ||
     value === "pty"
     ? value
     : null;

@@ -52,7 +52,7 @@ Core renderer files (`apps/desktop/src/renderer/components/graph/`):
 
 Detail doc in this folder:
 
-- [`data-sources.md`](./data-sources.md) — how lane/PR/mission state feeds the graph and what the hydration stages look like.
+- [`data-sources.md`](./data-sources.md) — how lane and PR state feeds the graph and what the hydration stages look like.
 
 ## What the graph shows
 

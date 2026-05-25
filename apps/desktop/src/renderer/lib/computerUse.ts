@@ -22,7 +22,6 @@ export function describeComputerUseLinks(links: ComputerUseArtifactLink[]): stri
 
 export function buildComputerUseRoutePresets(args: {
   laneId?: string | null;
-  missionId?: string | null;
   chatSessionId?: string | null;
 }) {
   const presets: Array<{ label: string; owner: ComputerUseArtifactOwner }> = [];
@@ -30,12 +29,6 @@ export function buildComputerUseRoutePresets(args: {
     presets.push({
       label: "Keep in chat",
       owner: { kind: "chat_session", id: args.chatSessionId },
-    });
-  }
-  if (args.missionId) {
-    presets.push({
-      label: "Attach to mission",
-      owner: { kind: "mission", id: args.missionId },
     });
   }
   if (args.laneId) {

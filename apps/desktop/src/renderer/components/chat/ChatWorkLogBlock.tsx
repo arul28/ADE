@@ -16,7 +16,7 @@ import { getToolMeta } from "./chatToolAppearance";
 import { replaceInternalToolNames } from "./toolPresentation";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 
-const NAVIGATION_SURFACES = new Set(["work", "missions", "lanes", "cto"]);
+const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 const WORK_LOG_DETAIL_TRUNCATE_LIMIT = 500;
 
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
@@ -32,7 +32,6 @@ function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSug
     label,
     ...(typeof record.laneId === "string" ? { laneId: record.laneId } : {}),
     ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
-    ...(typeof record.missionId === "string" ? { missionId: record.missionId } : {}),
   };
 }
 

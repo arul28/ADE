@@ -54,8 +54,7 @@ The CTO can route incoming Linear issues to different execution surfaces:
 | Target | When to use |
 |--------|------------|
 | `employee_session` | Simple tasks a single worker can handle in one session |
-| `worker_run` | Tasks that need a dedicated lane but not full mission structure |
-| `mission` | Complex multi-step work requiring planning, validation, and audit |
+| `worker_run` | Tasks that need a dedicated lane, durable status, and audit |
 | `pr_resolution` | PR review comments or failing checks that need fixing |
 | `review_gate` | Work that should be reviewed by the CTO before proceeding |
 
@@ -69,7 +68,7 @@ When new issues arrive in Linear, the CTO can triage them:
 
 - **Read the issue** — the CTO reads the title, description, and any comments
 - **Assess complexity** — estimates effort and identifies which parts of the codebase are involved
-- **Propose a plan** — suggests whether the issue should be a mission, a single-lane task, or deferred
+- **Propose a plan** — suggests whether the issue should be a worker run, PR fix, review gate, or deferred
 - **Assign priority** — updates the Linear issue with a recommended priority if auto-triage is enabled
 
 In Supervised mode, you review the CTO's triage in its chat interface before any work begins. In Auto-delegate mode, the CTO proceeds directly to delegation.
@@ -92,7 +91,7 @@ When the CTO decides to act on an issue, it:
   </Step>
 </Steps>
 
-If the issue is complex enough to warrant a mission, the CTO creates one instead of a single worker session.
+For larger issues, the CTO splits the work into dedicated lanes and worker runs.
 
 ---
 
@@ -104,7 +103,7 @@ As work progresses, ADE keeps Linear updated:
 |---|---|
 | Worker starts | Issue moves to **In Progress** |
 | PR opened | Issue linked to the PR, comment added |
-| Mission completed | Issue moves to **Done**, summary comment added |
+| Worker completed | Issue moves to **Done**, summary comment added |
 | Worker failed | Issue flagged with a comment describing the failure |
 | Intervention needed | Issue comment requesting human input |
 
@@ -116,7 +115,7 @@ Configure status mappings in **Settings → Integrations → Linear**:
 |-----------|----------------------|--------------|
 | Worker started | In Progress | Yes |
 | PR opened | In Review | Yes |
-| Mission completed | Done | Yes |
+| Worker completed | Done | Yes |
 | Worker failed | Blocked | Yes |
 | Intervention needed | Blocked | Yes |
 
@@ -126,11 +125,11 @@ You can also configure `activeStateTypes` (which Linear states trigger CTO atten
 
 ## 6. Review and Close
 
-When a worker or mission completes:
+When a worker completes:
 
 - The CTO posts a summary comment on the Linear issue with links to the PR and any artifacts
 - The issue status is updated based on the outcome
-- You can review the work in ADE's Mission or History views, then close the issue in Linear
+- You can review the work in ADE's History view or PR panel, then close the issue in Linear
 
 ---
 
@@ -148,7 +147,7 @@ When a worker or mission completes:
   <Card title="CTO Concepts" icon="crown" href="/key-concepts#cto">
     Understand the CTO's role and org chart model.
   </Card>
-  <Card title="Your First Mission" icon="bullseye" href="/guides/first-mission">
-    Learn how missions work — the execution unit the CTO uses for complex issues.
+  <Card title="Worker Delegation" icon="users" href="/cto/workers">
+    Learn how CTO workers pick up delegated tasks and report progress.
   </Card>
 </CardGroup>

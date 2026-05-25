@@ -11,7 +11,7 @@ Templates are pre-configured automation rules you can activate with a click. Eac
 Navigate to **Automations → Templates** to browse them.
 
 <Note>
-Templates whose execution surface is a Mission show a **"Coming soon"** chip in packaged builds and the Use Template button reads "Coming Soon" with a tooltip explaining why. The card is still visible so you can see the shape of the rule and plan around it.
+Templates whose execution surface is a Worker run show a **"Coming soon"** chip in packaged builds and the Use Template button reads "Coming Soon" with a tooltip explaining why. The card is still visible so you can see the shape of the rule and plan around it.
 </Note>
 
 ### Built-in templates
@@ -21,7 +21,7 @@ Templates whose execution surface is a Mission show a **"Coming soon"** chip in 
     **Trigger:** `schedule` — weekdays at 9am.
     **Execution:** Agent session.
 
-    Summarizes repo activity since the last weekday brief — commits, PRs, missions, and risk signals — in an automation-only chat thread. Pulls repo state and procedures as context.
+    Summarizes repo activity since the last weekday brief — commits, PRs, worker runs, and risk signals — in an automation-only chat thread. Pulls repo state and procedures as context.
   </Card>
   <Card title="PR Review Session" icon="code-pull-request">
     **Trigger:** `git.pr_opened` on `main`.
@@ -29,17 +29,17 @@ Templates whose execution surface is a Mission show a **"Coming soon"** chip in 
 
     Reviews every new PR for risky changes, missing tests, and release impact. Posts findings citing specific files and checks, with high thinking level for thorough analysis.
   </Card>
-  <Card title="Linear Triage Mission" icon="flag">
+  <Card title="Linear Triage Worker run" icon="flag">
     **Trigger:** `linear.issue_created` (team: ENG).
-    **Execution:** Mission (disabled in packaged builds).
+    **Execution:** Worker run (disabled in packaged builds).
 
-    Launches a triage mission on new Linear issues — owner, severity, next action — using mission-level tooling. In production builds the card shows "Coming soon" until Missions ships.
+    Launches a triage worker run on new Linear issues — owner, severity, next action — using worker run-level tooling. In production builds the card shows "Coming soon" until Workers ships.
   </Card>
   <Card title="Nightly Test Sweep" icon="flask">
     **Trigger:** `schedule` — weekdays at 2am.
     **Execution:** Built-in (`run-tests`).
 
-    Runs your configured test suite without starting a chat or mission. Results are saved as automation artifacts. Requires a test suite ID in project config.
+    Runs your configured test suite without starting a chat or worker run. Results are saved as automation artifacts. Requires a test suite ID in project config.
   </Card>
   <Card title="Push Conflict Scan" icon="bug">
     **Trigger:** `git.push` on `main`.
@@ -58,7 +58,7 @@ Templates whose execution surface is a Mission show a **"Coming soon"** chip in 
     Open **Automations → Templates**. Each card shows trigger, execution kind, and a short summary.
   </Step>
   <Step title="Use Template">
-    Click **Use Template**. ADE creates a new rule pre-filled with the template's configuration and opens it in the editor. (For a mission-based template in a packaged build the button reads **Coming Soon** and is disabled.)
+    Click **Use Template**. ADE creates a new rule pre-filled with the template's configuration and opens it in the editor. (For a worker run-based template in a packaged build the button reads **Coming Soon** and is disabled.)
   </Step>
   <Step title="Customize">
     Adjust trigger conditions, prompt, model, guardrails, and outputs. Built-in rules expose a **Target lane** dropdown at the top of the action editor — leave it on the default to auto-select from the trigger or primary lane, or pick a specific lane.
@@ -82,11 +82,11 @@ Every template produces a rule with these fields:
 |---|---|
 | Name | Identifier shown in the Automations list |
 | Trigger | Event or schedule that fires the rule |
-| Execution kind | `agent-session`, `mission`, or `built-in` |
+| Execution kind | `agent-session`, `worker run`, or `built-in` |
 | Executor mode | Always `automation-bot` for templates |
-| Prompt | Instruction given to the agent (for agent-session and mission kinds) |
+| Prompt | Instruction given to the agent (for agent-session and worker run kinds) |
 | Model config | Model ID and thinking level |
-| Tool palette | ADE CLI domains the agent can use (repo, git, github, linear, mission, tests) |
+| Tool palette | ADE CLI domains the agent can use (repo, git, github, linear, worker run, tests) |
 | Context sources | What context is seeded (repo state, procedures, lane packs) |
 | Guardrails | Max duration, confidence threshold, review gates |
 | Outputs | Where results land (see below) |
@@ -123,7 +123,7 @@ Automations can produce several output types. Configure routing in the rule's se
 
 ## Viewing automation runs
 
-The **History** tab lists every run with its status, trigger, duration, and cost. Run rows now support direct navigation — if a run executed as a mission, the detail panel includes a link that opens the mission in the Missions view.
+The **History** tab lists every run with its status, trigger, duration, and cost. Run rows now support direct navigation — if a run executed as a worker run, the detail panel includes a link that opens the worker run in the Workers view.
 
 Rows are filterable by rule, status, and time window. Errors are surfaced inline; you don't have to open the detail panel to see that something failed.
 

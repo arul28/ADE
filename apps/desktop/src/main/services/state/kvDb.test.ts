@@ -84,15 +84,15 @@ function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
   );
   db.run(
     `insert into lane_state_snapshots(
-      lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, mission_summary_json, updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ["lane-primary", 0, 0, 0, 0, 0, null, null, now],
+      lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ["lane-primary", 0, 0, 0, 0, 0, null, now],
   );
   db.run(
     `insert into lane_state_snapshots(
-      lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, mission_summary_json, updated_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ["lane-child", 1, 0, 1, 0, 0, null, null, "2026-03-17T00:05:00.000Z"],
+      lane_id, dirty, ahead, behind, remote_behind, rebase_in_progress, agent_summary_json, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ["lane-child", 1, 0, 1, 0, 0, null, "2026-03-17T00:05:00.000Z"],
   );
 }
 

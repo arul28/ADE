@@ -49,8 +49,8 @@ stream plus session metadata.
    - Todo items via `deriveTodoItems()` in `chatExecutionSummary.ts`.
    - Subagent snapshots via `deriveChatSubagentSnapshots()`.
    - Turn diff summaries via `deriveTurnDiffSummaries()`.
-3. Resolves a `ChatSurfacePresentation` (standard, resolver, mission
-   thread, mission feed) to drive header title, accent color, chips.
+3. Resolves a `ChatSurfacePresentation` (standard, resolver, worker
+   thread, activity feed) to drive header title, accent color, chips.
 4. Mounts the header, message list, composer, and the appropriate
    side panels based on the session's `executionMode` and
    capabilities.
@@ -282,7 +282,7 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`authenticated` / `missing` / `unknown`) per `ProviderFamily` from the AI integration status. |
 | `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
 | `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to `~/.ade/modelPicker.json` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. The TUI shares the same store. |
-| `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, mission planning, etc.) — keyed by surface so each call site can have its own remembered default. |
+| `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, worker delegation, etc.) — keyed by surface so each call site can have its own remembered default. |
 | `useReasoningByFamily.ts` | Last-used reasoning effort per model family. |
 
 Renderer state and the TUI share descriptors and ordering: the TUI
@@ -491,8 +491,8 @@ surface's visual treatment:
 
 | Field | Effect |
 |---|---|
-| `mode` | `standard \| resolver \| mission-thread \| mission-feed`. |
-| `profile` | `standard \| persistent_identity` -- persistent identity adjusts accent color, chips, title, and some layouts. |
+| `mode` | `standard | resolver | worker-thread | activity-feed`. |
+| `profile` | `standard | persistent_identity` -- persistent identity adjusts accent color, chips, title, and some layouts. |
 | `modelSwitchPolicy` | Overrides the default switch policy for the session. |
 | `title`, `subtitle`, `assistantLabel`, `messagePlaceholder` | Text overrides. |
 | `accentColor` | Accent color used in header, chips, and active-turn indicators. |

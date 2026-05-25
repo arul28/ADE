@@ -940,12 +940,11 @@ export function TopBar() {
       if (project?.rootPath !== projectRootPath) return true;
 
       try {
-        const [lanes, runningSessions, agentChats, activeMissions] =
+        const [lanes, runningSessions, agentChats] =
           await Promise.all([
             window.ade.lanes.list({ includeArchived: false }),
             window.ade.sessions.list({ status: "running" }),
             window.ade.agentChat.list(),
-            window.ade.missions.list({ status: "active" }),
           ]);
 
         const laneRuntimes = await Promise.all(
@@ -985,12 +984,6 @@ export function TopBar() {
             `${activeChatCount} active chat${activeChatCount === 1 ? "" : "s"}`,
           );
         }
-        if (activeMissions.length > 0) {
-          warnings.push(
-            `${activeMissions.length} active mission${activeMissions.length === 1 ? "" : "s"}`,
-          );
-        }
-
         if (warnings.length === 0) return true;
 
         const message = [

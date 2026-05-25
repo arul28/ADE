@@ -29,35 +29,7 @@ function createRuntime() {
   const operationFinish = vi.fn();
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-test-"));
   fs.mkdirSync(path.join(projectRoot, ".ade", "orchestrator"), { recursive: true });
-  const teamMembers: Array<Record<string, unknown>> = [];
-  const threadRows: Array<Record<string, unknown>> = [];
-  const threadMessages = new Map<string, Array<Record<string, unknown>>>();
-  let messageCounter = 0;
   const kv = new Map<string, unknown>();
-
-  const ensureThread = (input: { missionId: string; attemptId: string; runId?: string | null }): Record<string, unknown> => {
-    const existing = threadRows.find(
-      (thread) => thread.missionId === input.missionId && thread.attemptId === input.attemptId
-    );
-    if (existing) return existing;
-    const thread = {
-      id: `thread-${input.attemptId}`,
-      missionId: input.missionId,
-      threadType: "worker",
-      runId: input.runId ?? "run-1",
-      attemptId: input.attemptId
-    };
-    threadRows.push(thread);
-    threadMessages.set(thread.id, []);
-    return thread;
-  };
-
-  const appendThreadMessage = (threadId: string, entry: Record<string, unknown>): void => {
-    const existing = threadMessages.get(threadId) ?? [];
-    existing.push(entry);
-    threadMessages.set(threadId, existing);
-  };
-
   const laneRows = [
     {
       id: "lane-1",
@@ -111,50 +83,9 @@ function createRuntime() {
         }
         kv.set(key, value);
       }),
-      get: vi.fn((sql: string) => {
-        if (sql.includes("orchestrator_evaluations") && sql.includes("SELECT")) {
-          return {
-            id: "eval-1", run_id: "run-1", mission_id: "mission-1", evaluator_id: "evaluator-1",
-            scores_json: '{"planQuality":8}', issues_json: '[]', summary: "Good run",
-            improvements_json: '[]', metadata_json: '{}', evaluated_at: new Date().toISOString()
-          };
-        }
-        return { count: 0 };
-      }),
-      all: vi.fn((sql: string) => {
-        if (sql.includes("from missions")) return [{ id: "mission-1" }];
-        if (sql.includes("orchestrator_evaluations")) return [{
-          id: "eval-1", run_id: "run-1", mission_id: "mission-1", evaluator_id: "evaluator-1",
-          scores_json: '{"planQuality":8}', issues_json: '[]', summary: "Good run",
-          improvements_json: null, metadata_json: null, evaluated_at: new Date().toISOString()
-        }];
-        return [];
-      }),
-      run: vi.fn((sql: string, params?: unknown[]) => {
-        if (
-          sql.toLowerCase().includes("insert into orchestrator_team_members")
-          && Array.isArray(params)
-          && params.length >= 12
-        ) {
-          const metadataRaw = params[9];
-          const metadata = typeof metadataRaw === "string" && metadataRaw.length > 0
-            ? JSON.parse(metadataRaw)
-            : {};
-          teamMembers.push({
-            id: params[0],
-            runId: params[1],
-            missionId: params[2],
-            provider: params[3],
-            model: params[4],
-            role: params[5],
-            sessionId: params[6],
-            status: params[7],
-            source: typeof metadata.source === "string" ? metadata.source : "claude-native",
-            parentWorkerId: typeof metadata.parentWorkerId === "string" ? metadata.parentWorkerId : null,
-            metadata
-          });
-        }
-      })
+      get: vi.fn(() => ({ count: 0 })),
+      all: vi.fn(() => []),
+      run: vi.fn()
     },
     keybindingsService: {
       get: vi.fn(() => [{ command: "ade.openCommandPalette", binding: "mod+k" }]),
@@ -303,26 +234,6 @@ function createRuntime() {
     },
     diffService: {
       getChanges: vi.fn(async () => ({ unstaged: [], staged: [] }))
-    },
-    missionService: {
-      addIntervention: vi.fn(({ missionId, title, body }: { missionId: string; title: string; body: string }) => ({
-        id: "intervention-1",
-        missionId,
-        status: "open",
-        title,
-        body
-      })),
-      get: vi.fn((missionId: string) => ({
-        id: missionId,
-        prompt: "test mission",
-        status: "running",
-        laneId: "lane-1",
-        interventions: []
-      })),
-      create: vi.fn(({ prompt }: any) => ({ id: "mission-new", prompt, status: "planned" })),
-      resolveIntervention: vi.fn(({ missionId, interventionId, status }: any) => ({
-        id: interventionId, missionId, status
-      }))
     },
     ptyService: {
       create: vi.fn(async () => ({ ptyId: "pty-1", sessionId: "session-1" })),
@@ -846,181 +757,6 @@ function createRuntime() {
       }),
       typeText: vi.fn(async ({ laneId, text }: { laneId: string; text: string }) => ({ ok: true, laneId, textLength: text.length })),
     } as any,
-    orchestratorService: {
-      listRuns: vi.fn(() => []),
-      pauseRun: vi.fn(({ runId }: any) => ({ id: runId, status: "paused" })),
-      resumeRun: vi.fn(({ runId }: any) => ({ id: runId, status: "running" })),
-      getRunGraph: vi.fn(({ runId }: any) => ({
-        run: { id: runId, missionId: "mission-1", status: "running" },
-        steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "completed" }],
-        attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [{ id: "tl-1", runId, eventType: "step_started", reason: "started" }],
-        runtimeEvents: [],
-        completionEvaluation: { complete: true }
-      })),
-      listTimeline: vi.fn(({ runId }: any) => [
-        { id: "tl-1", runId, stepId: null, eventType: "run_started", reason: "started" },
-        { id: "tl-2", runId, stepId: "step-1", eventType: "step_started", reason: "started" }
-      ]),
-      listAttempts: vi.fn(() => []),
-      addSteps: vi.fn(({ steps }: { steps: Array<Record<string, unknown>> }) =>
-        steps.map((step, index) => ({
-          id: `step-created-${index + 1}`,
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: String(step.stepKey ?? `step-created-${index + 1}`),
-          stepIndex: Number(step.stepIndex ?? index),
-          title: String(step.title ?? "Created step"),
-          laneId: typeof step.laneId === "string" ? step.laneId : null,
-          status: "pending",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: null,
-          completedAt: null,
-          metadata: step.metadata ?? {}
-        }))
-      ),
-      createHandoff: vi.fn(),
-      startReadyAutopilotAttempts: vi.fn(async () => 0),
-      skipStep: vi.fn(),
-      completeAttempt: vi.fn(),
-      updateStepMetadata: vi.fn(),
-      supersedeStep: vi.fn(),
-      updateStepDependencies: vi.fn(),
-      appendRuntimeEvent: vi.fn(),
-      appendTimelineEvent: vi.fn(),
-      emitRuntimeUpdate: vi.fn(),
-      listRetrospectives: vi.fn(() => [
-        {
-          id: "retro:run-1",
-          missionId: "mission-1",
-          runId: "run-1",
-          generatedAt: new Date().toISOString(),
-          schemaVersion: 1,
-          finalStatus: "succeeded",
-          wins: [],
-          failures: [],
-          unresolvedRisks: [],
-          followUpActions: [],
-          topPainPoints: [],
-          topImprovements: [],
-          patternsToCapture: [],
-          estimatedImpact: "n/a",
-          changelog: []
-        }
-      ]),
-      listRetrospectiveTrends: vi.fn(() => [
-        {
-          id: "trend-1",
-          projectId: "project-1",
-          missionId: "mission-1",
-          runId: "run-1",
-          retrospectiveId: "retro:run-1",
-          sourceMissionId: "mission-0",
-          sourceRunId: "run-0",
-          sourceRetrospectiveId: "retro:run-0",
-          painPointKey: "slow-tests",
-          painPointLabel: "Slow tests",
-          status: "still_open",
-          previousPainScore: 2,
-          currentPainScore: 2,
-          createdAt: new Date().toISOString()
-        }
-      ]),
-      listRetrospectivePatternStats: vi.fn(() => [
-        {
-          id: "pattern-stat-1",
-          projectId: "project-1",
-          patternKey: "slow-tests",
-          patternLabel: "Slow tests",
-          occurrenceCount: 2,
-          firstSeenRetrospectiveId: "retro:run-0",
-          firstSeenRunId: "run-0",
-          lastSeenRetrospectiveId: "retro:run-1",
-          lastSeenRunId: "run-1",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-      ]),
-      addReflection: vi.fn((input: any) => ({
-        id: "reflection-1",
-        projectId: "project-1",
-        missionId: input.missionId,
-        runId: input.runId,
-        stepId: input.stepId ?? null,
-        attemptId: input.attemptId ?? null,
-        agentRole: input.agentRole,
-        phase: input.phase,
-        signalType: input.signalType,
-        observation: input.observation,
-        recommendation: input.recommendation ?? "",
-        context: input.context ?? "",
-        occurredAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        schemaVersion: 1
-      }))
-    } as any,
-    aiOrchestratorService: {
-      startMissionRun: vi.fn(async ({ missionId }: any) => ({
-        started: { run: { id: "run-1", missionId, status: "running" }, steps: [] },
-        mission: { id: missionId }
-      })),
-      finalizeRun: vi.fn(() => ({ finalized: true, blockers: [], finalStatus: "succeeded" })),
-      cancelRunGracefully: vi.fn(async ({ runId }: any) => ({ cancelled: true, runId })),
-      resumeRun: vi.fn(async ({ runId }: any) => ({ id: runId, status: "running" })),
-      steerMission: vi.fn(({ missionId }: any) => ({ acknowledged: true, appliedAt: new Date().toISOString() })),
-      getWorkerStates: vi.fn(({ runId }: any) => [
-        { attemptId: "a-1", stepId: "s-1", runId, state: "running" }
-      ]),
-      getMissionMetrics: vi.fn(({ missionId }: any) => ({ missionId, samples: [] })),
-      getTeamMembers: vi.fn(() => teamMembers),
-      listChatThreads: vi.fn(({ missionId }: any) =>
-        threadRows.filter((thread) => thread.missionId === missionId)
-      ),
-      getThreadMessages: vi.fn(({ threadId, limit }: any) => {
-        const entries = threadMessages.get(String(threadId)) ?? [];
-        const max = typeof limit === "number" ? Math.max(1, Math.floor(limit)) : entries.length;
-        return entries.slice(-max);
-      }),
-      sendAgentMessage: vi.fn(({ missionId, fromAttemptId, toAttemptId, content, metadata }: any) => {
-        const sourceThread = ensureThread({ missionId, attemptId: String(fromAttemptId), runId: "run-1" });
-        const targetThread = ensureThread({ missionId, attemptId: String(toAttemptId), runId: "run-1" });
-        const timestamp = new Date().toISOString();
-        const sourceEntry = {
-          id: `msg-${++messageCounter}`,
-          role: "agent",
-          content,
-          timestamp,
-          threadId: sourceThread.id,
-          attemptId: fromAttemptId,
-          target: { targetAttemptId: toAttemptId },
-          metadata: metadata ?? null
-        };
-        const deliveryEntry = {
-          id: `msg-${++messageCounter}`,
-          role: "agent",
-          content,
-          timestamp,
-          threadId: targetThread.id,
-          attemptId: fromAttemptId,
-          target: { targetAttemptId: toAttemptId },
-          metadata: { ...(metadata ?? {}), interAgentDelivery: true }
-        };
-        appendThreadMessage(String(sourceThread.id), sourceEntry);
-        appendThreadMessage(String(targetThread.id), deliveryEntry);
-        return sourceEntry;
-      }),
-      dispose: vi.fn()
-    } as any,
     eventBuffer: {
       push: vi.fn(),
       drain: vi.fn((cursor: number, limit?: number) => ({
@@ -1415,7 +1151,6 @@ describe("adeRpcServer", () => {
 
       const names = (result.actions ?? []).map((tool: any) => tool.name);
       expect(names).not.toContain("spawn_worker");
-      expect(names).not.toContain("read_mission_status");
       expect(names).not.toContain("get_cto_state");
       expect(names).not.toContain("get_environment_info");
       expect(names).not.toContain("launch_app");
@@ -1466,7 +1201,7 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("lists the full tool surface including coordinator orchestration tools for orchestrator callers", async () => {
+  it("lists the orchestration-safe tool surface for orchestrator callers", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
 
@@ -1481,7 +1216,6 @@ describe("adeRpcServer", () => {
         "check_conflicts",
         "merge_lane",
         "ask_user",
-        "reflection_add",
         "get_environment_info",
         "launch_app",
         "interact_gui",
@@ -1493,99 +1227,13 @@ describe("adeRpcServer", () => {
         "get_lane_status",
         "list_lanes",
         "commit_changes",
-        "create_mission",
-        "start_mission",
-        "pause_mission",
-        "resume_mission",
-        "cancel_mission",
-        "steer_mission",
-        "resolve_intervention",
-        "get_mission",
-        "get_run_graph",
         "stream_events",
-        "get_step_output",
-        "get_worker_states",
-        "get_timeline",
-        "list_retrospectives",
-        "list_reflection_trends",
-        "list_reflection_pattern_stats",
-        "get_mission_metrics",
-        "get_final_diff",
-        "evaluate_run",
-        "list_evaluations",
-        "get_evaluation_report",
-        "spawn_worker",
-        "delegate_parallel",
-        "read_mission_status",
-        "revise_plan",
-        "retry_step",
-        "skip_step",
-        "message_worker",
-        "report_status",
-        "report_result",
-        "report_validation",
-        "update_tool_profiles",
-        "transfer_lane",
-        "request_specialist",
-        "read_file",
-        "search_files",
-        "get_project_context"
       ])
     );
-    expect(names.length).toBeGreaterThan(38);
+    expect(names).not.toContain("reflection_add");
+    expect(names.length).toBeGreaterThan(20);
   });
 
-  it("shows agent-safe delegation, reporting, and observation coordinator tools to agent callers", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, {
-      callerId: "worker-1",
-      role: "agent",
-      missionId: "mission-1",
-      runId: "run-1",
-      stepId: "step-1",
-      attemptId: "attempt-1"
-    });
-
-    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
-    const names = (result.actions ?? []).map((tool: any) => tool.name);
-
-    expect(names).toEqual(
-      expect.arrayContaining([
-        "commit_changes",
-        "rebase_lane",
-        "stash_push",
-        "list_stashes",
-        "stash_apply",
-        "stash_pop",
-        "stash_drop",
-        "stash_clear",
-        "report_status",
-        "report_result",
-        "report_validation",
-        "delegate_to_subagent",
-        "delegate_parallel",
-        "message_worker",
-        "get_worker_output",
-        "list_workers",
-        "read_mission_status",
-        "read_mission_state",
-        "list_tasks",
-        "get_budget_status",
-        "get_project_context",
-      ])
-    );
-    expect(names).not.toEqual(
-      expect.arrayContaining([
-        "spawn_worker",
-        "revise_plan",
-        "request_specialist",
-        "set_current_phase",
-        "update_tool_profiles",
-      ])
-    );
-  });
 
   it("exposes lane-tied macOS VM computer-use tools to agent callers", async () => {
     const fixture = createRuntime();
@@ -1594,7 +1242,6 @@ describe("adeRpcServer", () => {
     await initialize(handler, {
       callerId: "worker-1",
       role: "agent",
-      missionId: "mission-1",
       runId: "run-1",
       stepId: "step-1",
       attemptId: "attempt-1",
@@ -1756,7 +1403,7 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("hides ADE spawn and mission-worker tools from standalone chat callers", async () => {
+  it("hides ADE spawn tools from standalone chat callers", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
       const { runtime } = createRuntime();
       const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
@@ -1778,7 +1425,6 @@ describe("adeRpcServer", () => {
       expect(names).not.toContain("report_status");
       expect(names).not.toContain("report_result");
       expect(names).not.toContain("get_worker_output");
-      expect(names).not.toContain("read_mission_status");
       expect(names).not.toContain("list_workers");
     });
   });
@@ -2054,62 +1700,7 @@ describe("adeRpcServer", () => {
     }
   });
 
-  it("lets agent callers use safe mission observation coordinator tools", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [],
-        attempts: [],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false }
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-1",
-        attemptId: "attempt-1"
-      });
-
-      const response = await callTool(handler, "read_mission_status", {});
-
-      expect(response.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(response.structuredContent.runId).toBe("run-1");
-    });
-  });
-
-  it("rejects coordinator-only tool calls from agent callers before coordinator dispatch", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const { runtime } = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-1",
-        attemptId: "attempt-1"
-      });
-
-      const response = await callTool(handler, "spawn_worker", {
-        name: "implementation-worker",
-        prompt: "Do work"
-      });
-
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
-    });
-  });
 
   it("rejects standalone chat calls to ADE spawn_agent", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
@@ -2128,279 +1719,12 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("lets agent callers delegate nested work only beneath their own worker", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [{ id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} }],
-        attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false }
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-1",
-        attemptId: "attempt-1"
-      });
 
-      const response = await callTool(handler, "delegate_parallel", {
-        tasks: [
-          { name: "child-1", prompt: "Handle the first child task.", modelId: "openai/gpt-5.3-codex" },
-          { name: "child-2", prompt: "Handle the second child task.", modelId: "openai/gpt-5.3-codex" },
-        ]
-      });
 
-      expect(response.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(response.structuredContent.parentWorkerId).toBe("step-a");
-      expect(response.structuredContent.total).toBe(2);
-    });
-  });
 
-  it("rejects agent delegation attempts that target another worker", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [
-          { id: "step-1", stepKey: "step-a", laneId: "lane-1", status: "running", metadata: {} },
-          { id: "step-2", stepKey: "step-b", laneId: "lane-1", status: "running", metadata: {} },
-        ],
-        attempts: [{ id: "attempt-1", stepId: "step-1", status: "running" }],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false }
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-1",
-        attemptId: "attempt-1"
-      });
 
-      const response = await callTool(handler, "delegate_to_subagent", {
-        parentWorkerId: "step-b",
-        name: "rogue-child",
-        prompt: "Try to escape the current worker scope."
-      });
-
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-        "may only delegate beneath its own worker 'step-a'"
-      );
-    });
-  });
-
-  it("still routes coordinator-only tool calls for orchestrator callers", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
-    const response = await callTool(handler, "spawn_worker", {
-      name: "implementation-worker",
-      prompt: "Do work"
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("requires run context");
-  });
-
-  it("spawns workers for active runs when project and workspace roots differ", async () => {
-    await withEnv({ ADE_MISSION_ID: "mission-1", ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-runtime-workspace-"));
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(({ runId }: any) => ({
-        run: {
-          id: runId,
-          missionId: "mission-1",
-          status: "running",
-          metadata: {
-            phaseOverride: [
-              {
-                id: "phase-planning",
-                phaseKey: "planning",
-                name: "Planning",
-                position: 0,
-                instructions: "Plan first.",
-                model: { modelId: "anthropic/claude-sonnet-4-6" },
-                budget: {},
-                askQuestions: { enabled: true, maxQuestions: 3 },
-                validationGate: { tier: "none", required: false },
-                orderingConstraints: { mustBeFirst: true },
-              },
-            ],
-            phaseRuntime: {
-              currentPhaseKey: "planning",
-              currentPhaseName: "Planning",
-              currentPhaseModel: {
-                modelId: "anthropic/claude-sonnet-4-6",
-              },
-            },
-          },
-        },
-        steps: [],
-        attempts: [],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false },
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "coord-1",
-        role: "orchestrator",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-      });
-
-      const response = await callTool(handler, "spawn_worker", {
-        name: "planning-worker",
-        prompt: "Research the codebase and propose a plan.",
-        laneId: "lane-1",
-      });
-
-      expect(response.isError).toBeUndefined();
-      expect(response.structuredContent).toMatchObject({
-        ok: true,
-        name: "planning-worker",
-      });
-      expect(fixture.runtime.projectRoot).not.toBe(fixture.runtime.workspaceRoot);
-      expect(JSON.stringify(response.structuredContent ?? {})).not.toContain("Run not found");
-    });
-  });
-
-  it("falls back to env orchestrator role when initialize sends an unknown role", async () => {
-    const fixture = createRuntime();
-    const previousRole = process.env.ADE_DEFAULT_ROLE;
-    const previousMissionId = process.env.ADE_MISSION_ID;
-    const previousRunId = process.env.ADE_RUN_ID;
-    process.env.ADE_DEFAULT_ROLE = "orchestrator";
-    process.env.ADE_MISSION_ID = "mission-1";
-    process.env.ADE_RUN_ID = "run-1";
-    try {
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [],
-        attempts: [],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false }
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, { callerId: "coord-1", role: "assistant" as any });
-      const response = await callTool(handler, "read_mission_status", {});
-
-      expect(response.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(response.structuredContent.runId).toBe("run-1");
-    } finally {
-      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-      else process.env.ADE_DEFAULT_ROLE = previousRole;
-      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
-      else process.env.ADE_MISSION_ID = previousMissionId;
-      if (previousRunId == null) delete process.env.ADE_RUN_ID;
-      else process.env.ADE_RUN_ID = previousRunId;
-    }
-  });
-
-  it("keeps env orchestrator role even when initialize requests agent", async () => {
-    const fixture = createRuntime();
-    const previousRole = process.env.ADE_DEFAULT_ROLE;
-    const previousMissionId = process.env.ADE_MISSION_ID;
-    const previousRunId = process.env.ADE_RUN_ID;
-    process.env.ADE_DEFAULT_ROLE = "orchestrator";
-    process.env.ADE_MISSION_ID = "mission-1";
-    process.env.ADE_RUN_ID = "run-1";
-    try {
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [],
-        attempts: [],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false }
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, { callerId: "coord-1", role: "agent" as any });
-      const response = await callTool(handler, "read_mission_status", {});
-
-      expect(response.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(response.structuredContent.runId).toBe("run-1");
-    } finally {
-      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-      else process.env.ADE_DEFAULT_ROLE = previousRole;
-      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
-      else process.env.ADE_MISSION_ID = previousMissionId;
-      if (previousRunId == null) delete process.env.ADE_RUN_ID;
-      else process.env.ADE_RUN_ID = previousRunId;
-    }
-  });
-
-  it("does not let env agent sessions escalate to orchestrator tools", async () => {
-    const fixture = createRuntime();
-    const previousRole = process.env.ADE_DEFAULT_ROLE;
-    const previousMissionId = process.env.ADE_MISSION_ID;
-    const previousRunId = process.env.ADE_RUN_ID;
-    const previousStepId = process.env.ADE_STEP_ID;
-    const previousAttemptId = process.env.ADE_ATTEMPT_ID;
-    process.env.ADE_DEFAULT_ROLE = "agent";
-    process.env.ADE_MISSION_ID = "mission-1";
-    process.env.ADE_RUN_ID = "run-1";
-    process.env.ADE_STEP_ID = "step-1";
-    process.env.ADE_ATTEMPT_ID = "attempt-1";
-    try {
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, { callerId: "worker-1", role: "orchestrator" as any });
-      const response = await callTool(handler, "spawn_worker", {
-        name: "rogue-worker",
-        prompt: "Try to escape worker scope",
-      });
-
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("Unsupported tool: spawn_worker");
-    } finally {
-      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
-      else process.env.ADE_DEFAULT_ROLE = previousRole;
-      if (previousMissionId == null) delete process.env.ADE_MISSION_ID;
-      else process.env.ADE_MISSION_ID = previousMissionId;
-      if (previousRunId == null) delete process.env.ADE_RUN_ID;
-      else process.env.ADE_RUN_ID = previousRunId;
-      if (previousStepId == null) delete process.env.ADE_STEP_ID;
-      else process.env.ADE_STEP_ID = previousStepId;
-      if (previousAttemptId == null) delete process.env.ADE_ATTEMPT_ID;
-      else process.env.ADE_ATTEMPT_ID = previousAttemptId;
-    }
-  });
 
   it("does not advertise resources to orchestrator callers", async () => {
     const { runtime } = createRuntime();
@@ -2423,101 +1747,8 @@ describe("adeRpcServer", () => {
     }
   });
 
-  it("routes reflection_add and uses initialize identity fallback", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-1",
-        attemptId: "attempt-1"
-      });
 
-      const response = await callTool(handler, "reflection_add", {
-        signalType: "frustration",
-        agentRole: "implementer",
-        phase: "development",
-        observation: "Typecheck takes too long for small edits",
-        recommendation: "Cache incremental build artifacts",
-        context: "Running npm run typecheck repeatedly",
-        occurredAt: "2026-03-05T01:23:45.000Z"
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.orchestratorService.addReflection).toHaveBeenCalledWith(
-        expect.objectContaining({
-          missionId: "mission-1",
-          runId: "run-1",
-          stepId: "step-1",
-          attemptId: "attempt-1",
-          signalType: "frustration",
-        })
-      );
-      expect(response.structuredContent.reflection.id).toBe("reflection-1");
-    });
-  });
-
-  it("rejects reflection_add payloads missing strict fields", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-      });
-
-      const response = await callTool(handler, "reflection_add", {
-        signalType: "idea",
-        agentRole: "implementer",
-        phase: "development",
-        observation: "Need a faster test target",
-        recommendation: "Split unit and integration suites",
-        context: "running test command"
-      });
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.structuredContent ?? {})).toContain("occurredAt");
-    });
-  });
-
-  it("lists retrospectives, trends, and pattern stats with caller-context fallback", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(handler, {
-        callerId: "worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-      });
-
-      const retrospectivesResponse = await callTool(handler, "list_retrospectives", {});
-      expect(retrospectivesResponse?.isError).toBeUndefined();
-      expect(fixture.runtime.orchestratorService.listRetrospectives).toHaveBeenCalledWith(
-        expect.objectContaining({ missionId: "mission-1" })
-      );
-      expect(Array.isArray(retrospectivesResponse.structuredContent.retrospectives)).toBe(true);
-
-      const trendsResponse = await callTool(handler, "list_reflection_trends", {});
-      expect(trendsResponse?.isError).toBeUndefined();
-      expect(fixture.runtime.orchestratorService.listRetrospectiveTrends).toHaveBeenCalledWith(
-        expect.objectContaining({ missionId: "mission-1", runId: "run-1" })
-      );
-      expect(Array.isArray(trendsResponse.structuredContent.trends)).toBe(true);
-
-      const patternStatsResponse = await callTool(handler, "list_reflection_pattern_stats", {});
-      expect(patternStatsResponse?.isError).toBeUndefined();
-      expect(fixture.runtime.orchestratorService.listRetrospectivePatternStats).toHaveBeenCalledWith(
-        expect.objectContaining({ limit: 100 })
-      );
-      expect(Array.isArray(patternStatsResponse.structuredContent.patternStats)).toBe(true);
-    });
-  });
 
   it("routes spawn_agent to lane-scoped tracked pty sessions", async () => {
     const fixture = createRuntime();
@@ -3079,777 +2310,14 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
   });
 
-  it("routes coordinator report_status via ADE RPC and mutates run metadata through coordinator tools", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [
-          {
-            id: "step-worker-1",
-            runId: "run-1",
-            missionStepId: null,
-            stepKey: "worker-1",
-            stepIndex: 0,
-            title: "Worker 1",
-            laneId: "lane-1",
-            status: "running",
-            joinPolicy: "all_success",
-            quorumCount: null,
-            dependencyStepIds: [],
-            retryLimit: 1,
-            retryCount: 0,
-            lastAttemptId: null,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            startedAt: new Date().toISOString(),
-            completedAt: null,
-            metadata: {}
-          }
-        ],
-        attempts: [],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: null
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-from-identity" });
-      const response = await callTool(handler, "report_status", {
-        workerId: "worker-1",
-        progressPct: 45,
-        blockers: [],
-        confidence: 0.82,
-        nextAction: "continue implementation",
-        laneId: "lane-1",
-        details: "working through API edge cases"
-      });
 
-      expect(response?.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(fixture.runtime.orchestratorService.updateStepMetadata).toHaveBeenCalled();
-      expect(fixture.runtime.orchestratorService.appendRuntimeEvent).toHaveBeenCalled();
-    });
-  });
 
-  it("forwards sub-agent report_status updates to parent and emits worker_status_reported runtime events", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        },
-        {
-          id: "step-child",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "child-worker",
-          stepIndex: 1,
-          title: "Child Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-child",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {
-            isSubAgent: true,
-            parentWorkerId: "parent-worker"
-          }
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() },
-        { id: "attempt-child", stepId: "step-child", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "attempt-child",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-child",
-        attemptId: "attempt-child"
-      });
-      const response = await callTool(handler, "report_status", {
-        workerId: "child-worker",
-        progressPct: 45,
-        blockers: [],
-        confidence: 0.8,
-        nextAction: "Continue implementation",
-        laneId: "lane-1"
-      });
 
-      expect(response?.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
-        expect.objectContaining({
-          category: "runtime",
-          payload: expect.objectContaining({
-            type: "worker_status_reported",
-            runId: "run-1",
-            reason: "report_status"
-          })
-        })
-      );
-      expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          missionId: "mission-1",
-          fromAttemptId: "attempt-child",
-          toAttemptId: "attempt-parent",
-          content: expect.stringContaining("[sub-agent:Child Worker]"),
-          metadata: expect.objectContaining({
-            source: "subagent_status_rollup",
-            parentWorkerId: "parent-worker"
-          })
-        })
-      );
-    });
-  });
 
-  it("auto-registers unknown native callers as claude-native teammates under the parent worker", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: {
-        id: "run-1",
-        missionId: "mission-1",
-        status: "running",
-        metadata: { autopilot: { parallelismCap: 6 } }
-      },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: { modelId: "anthropic/claude-sonnet-4-6" }
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "native-worker-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-      const response = await callTool(handler, "report_status", {
-        workerId: "parent-worker",
-        progressPct: 10,
-        blockers: [],
-        confidence: 0.7,
-        nextAction: "Running native sub-task"
-      });
 
-      expect(response?.isError).toBeUndefined();
-      expect(response.structuredContent.ok).toBe(true);
-      const insertCall = fixture.runtime.db.run.mock.calls.find((call: any[]) =>
-        String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
-      );
-      expect(insertCall).toBeTruthy();
-      const metadataJson = String(insertCall?.[1]?.[9] ?? "{}");
-      const metadata = JSON.parse(metadataJson);
-      expect(metadata).toMatchObject({
-        source: "claude-native",
-        parentWorkerId: "parent-worker",
-        parentStepId: "step-parent",
-        nativeCallerId: "native-worker-1"
-      });
-    });
-  });
-
-  it("blocks unknown native reports when parent allocation cap is exceeded", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.aiOrchestratorService.getTeamMembers = vi.fn(() => [
-      { id: "native-1", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
-      { id: "native-2", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
-      { id: "native-3", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } },
-      { id: "native-4", source: "claude-native", parentWorkerId: "parent-worker", status: "active", metadata: { source: "claude-native", parentWorkerId: "parent-worker" } }
-    ]);
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "native-worker-over-cap",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-      const response = await callTool(handler, "report_status", {
-        workerId: "parent-worker",
-        progressPct: 30,
-        blockers: [],
-        confidence: 0.6,
-        nextAction: "Still running"
-      });
-
-      expect(response.isError).toBe(true);
-      expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain("allocation cap exceeded");
-      const insertCalls = fixture.runtime.db.run.mock.calls.filter((call: any[]) =>
-        String(call[0] ?? "").toLowerCase().includes("insert into orchestrator_team_members")
-      );
-      expect(insertCalls).toHaveLength(0);
-    });
-  });
-
-  it("surfaces forwarded status rollups through get_pending_messages for parent workers", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        },
-        {
-          id: "step-child",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "child-worker",
-          stepIndex: 1,
-          title: "Child Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-child",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {
-            isSubAgent: true,
-            parentWorkerId: "parent-worker"
-          }
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() },
-        { id: "attempt-child", stepId: "step-child", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-
-      const childHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(childHandler, {
-        callerId: "attempt-child",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-child",
-        attemptId: "attempt-child"
-      });
-      const statusResponse = await callTool(childHandler, "report_status", {
-        workerId: "child-worker",
-        progressPct: 60,
-        blockers: [],
-        confidence: 0.84,
-        nextAction: "Finalize patch set"
-      });
-      expect(statusResponse?.isError).toBeUndefined();
-
-      const parentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(parentHandler, {
-        callerId: "attempt-parent",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-      const pending = await callTool(parentHandler, "get_pending_messages", {});
-
-      expect(pending?.isError).toBeUndefined();
-      expect(pending.structuredContent.workerAttemptId).toBe("attempt-parent");
-      expect(pending.structuredContent.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            role: "agent",
-            content: expect.stringContaining("[sub-agent:Child Worker]"),
-            metadata: expect.objectContaining({
-              source: "subagent_status_rollup"
-            })
-          })
-        ])
-      );
-    });
-  });
-
-  it("queues message_worker handoffs for get_pending_messages when live delivery is unavailable", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-a",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "worker-a",
-          stepIndex: 0,
-          title: "Worker A",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-a",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        },
-        {
-          id: "step-b",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "worker-b",
-          stepIndex: 1,
-          title: "Worker B",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-b",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        }
-      ],
-      attempts: [
-        { id: "attempt-a", stepId: "step-a", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-a" },
-        { id: "attempt-b", stepId: "step-b", status: "running", createdAt: new Date().toISOString(), executorSessionId: "session-b" }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-
-      const senderHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(senderHandler, {
-        callerId: "attempt-a",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-1",
-        stepId: "step-a",
-        attemptId: "attempt-a"
-      });
-      const sent = await callTool(senderHandler, "message_worker", {
-        toWorkerId: "worker-b",
-        content: "contract is ready",
-      });
-
-      expect(sent?.isError).toBeUndefined();
-      expect(sent.structuredContent.ok).toBe(true);
-      expect(sent.structuredContent.delivered).toBe(false);
-      expect(sent.structuredContent.reason).toBe("queued_for_polling");
-      expect(fixture.runtime.aiOrchestratorService.sendAgentMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          missionId: "mission-1",
-          fromAttemptId: "attempt-a",
-          toAttemptId: "attempt-b",
-          content: "contract is ready",
-          metadata: expect.objectContaining({
-            source: "message_worker",
-            fromWorkerId: "worker-a",
-            toWorkerId: "worker-b",
-            queuedForPolling: true
-          })
-        })
-      );
-
-      const recipientHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(recipientHandler, {
-        callerId: "attempt-b",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-1",
-        stepId: "step-b",
-        attemptId: "attempt-b"
-      });
-      const pending = await callTool(recipientHandler, "get_pending_messages", {});
-
-      expect(pending?.isError).toBeUndefined();
-      expect(pending.structuredContent.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            role: "agent",
-            content: "contract is ready",
-            metadata: expect.objectContaining({
-              source: "message_worker",
-              interAgentDelivery: true
-            })
-          })
-        ])
-      );
-    });
-  });
-
-  it("surfaces native terminal rollups through get_pending_messages after report_result", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-
-      const nativeHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(nativeHandler, {
-        callerId: "native-worker-result",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-      const resultResponse = await callTool(nativeHandler, "report_result", {
-        workerId: "parent-worker",
-        outcome: "succeeded",
-        summary: "Native child done.",
-        artifacts: [],
-        filesChanged: [],
-        testsRun: null
-      });
-      expect(resultResponse?.isError).toBeUndefined();
-
-      const parentHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(parentHandler, {
-        callerId: "attempt-parent",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-      const pending = await callTool(parentHandler, "get_pending_messages", {});
-
-      expect(pending?.isError).toBeUndefined();
-      expect(pending.structuredContent.messages).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            role: "agent",
-            content: expect.stringContaining("completed (succeeded): Native child done."),
-            metadata: expect.objectContaining({
-              source: "subagent_result_rollup"
-            })
-          })
-        ])
-      );
-    });
-  });
-
-  it("infers workerId for report_result from initialized worker identity", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-      steps: [
-        {
-          id: "step-parent",
-          runId: "run-1",
-          missionStepId: null,
-          stepKey: "parent-worker",
-          stepIndex: 0,
-          title: "Parent Worker",
-          laneId: "lane-1",
-          status: "running",
-          joinPolicy: "all_success",
-          quorumCount: null,
-          dependencyStepIds: [],
-          retryLimit: 1,
-          retryCount: 0,
-          lastAttemptId: "attempt-parent",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          startedAt: new Date().toISOString(),
-          completedAt: null,
-          metadata: {}
-        }
-      ],
-      attempts: [
-        { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
-      ],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null
-    }));
-
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(handler, {
-        callerId: "attempt-parent",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-
-      const response = await callTool(handler, "report_result", {
-        outcome: "succeeded",
-        summary: "Finished without explicitly sending workerId.",
-        artifacts: [],
-        filesChanged: [],
-        testsRun: null
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(response.structuredContent).toEqual(expect.objectContaining({
-        ok: true,
-        report: expect.objectContaining({
-          workerId: "parent-worker",
-          stepId: "step-parent",
-          outcome: "succeeded",
-        }),
-      }));
-    });
-  });
-
-  it("normalizes legacy string test summaries for report_result", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running", metadata: {} },
-        steps: [
-          {
-            id: "step-parent",
-            runId: "run-1",
-            missionStepId: null,
-            stepKey: "parent-worker",
-            stepIndex: 0,
-            title: "Parent Worker",
-            laneId: "lane-1",
-            status: "running",
-            joinPolicy: "all_success",
-            quorumCount: null,
-            dependencyStepIds: [],
-            retryLimit: 1,
-            retryCount: 0,
-            lastAttemptId: "attempt-parent",
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            startedAt: new Date().toISOString(),
-            completedAt: null,
-            metadata: {}
-          }
-        ],
-        attempts: [
-          { id: "attempt-parent", stepId: "step-parent", status: "running", createdAt: new Date().toISOString() }
-        ],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: null
-      }));
-
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(handler, {
-        callerId: "attempt-parent",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-parent",
-        attemptId: "attempt-parent"
-      });
-
-      const response = await callTool(handler, "report_result", {
-        outcome: "succeeded",
-        summary: "Finished with validation.",
-        artifacts: [],
-        filesChanged: [],
-        testsRun: [
-          "npm run typecheck (passed)",
-          "npm test (passed: 2 files, 3 tests)",
-          "ADE_PROJECT_ROOT=/tmp/app npm run build (passed)"
-        ]
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(response.structuredContent.report.testsRun).toMatchObject({
-        passed: 3,
-        failed: 0,
-        skipped: 0,
-        raw: expect.stringContaining("npm test (passed: 2 files, 3 tests)")
-      });
-      const raw = String(response.structuredContent.report.testsRun.raw ?? "");
-      expect(raw).toContain("npm run typecheck (passed)");
-      expect(raw).toContain("npm test (passed: 2 files, 3 tests)");
-      expect(raw).toContain("ADE_PROJECT_ROOT=/tmp/app npm run build (passed)");
-    });
-  });
 
   it("materializes compact context manifests for spawn_agent to keep prompts lightweight", async () => {
     const fixture = createRuntime();
@@ -3885,7 +2353,7 @@ describe("adeRpcServer", () => {
     expect(fs.existsSync(contextPath)).toBe(true);
     const manifest = JSON.parse(fs.readFileSync(contextPath, "utf8"));
     expect(manifest.schema).toBe("ade.agent.spawnContext.v1");
-    expect(manifest.mission.runId).toBe("run-123");
+    expect(manifest.runContext.runId).toBe("run-123");
   });
 
   it("routes run_tests for suite and ad-hoc command contracts", async () => {
@@ -3919,42 +2387,6 @@ describe("adeRpcServer", () => {
     expect(commandResult.structuredContent.mode).toBe("command");
   });
 
-  it("routes ask_user to mission interventions", async () => {
-    await withEnv({ ADE_MISSION_ID: "mission-1", ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, { callerId: "coord-1", role: "orchestrator", missionId: "mission-1", runId: "run-1" });
-      const response = await callTool(handler, "ask_user", {
-        missionId: "mission-1",
-        title: "Need decision",
-        body: "Choose the merge order",
-        phase: "planning"
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledTimes(1);
-      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
-        metadata: expect.objectContaining({
-          source: "ask_user",
-          runId: "run-1",
-          phase: "planning",
-          questionOwnerKind: "coordinator",
-          questionOwnerLabel: "Coordinator question",
-          blocking: true,
-          canProceedWithoutAnswer: false,
-        }),
-      }));
-      expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(expect.objectContaining({
-        runId: "run-1",
-        metadata: expect.objectContaining({
-          interventionSource: "ask_user",
-        }),
-      }));
-      expect(response.structuredContent.awaitingUserResponse).toBe(true);
-      expect(response.structuredContent.blocking).toBe(true);
-    });
-  });
 
   it("returns explicit declined semantics for standalone ask_user with structured questions", async () => {
     await withEnv({ ADE_CHAT_SESSION_ID: "chat-session-env" }, async () => {
@@ -4067,113 +2499,7 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("stamps worker-owned ask_user provenance and enforces per-step phase policy", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-        run: { id: "run-1", missionId: "mission-1", status: "running" },
-        steps: [
-          {
-            id: "step-plan-1",
-            stepKey: "planning-worker",
-            laneId: "lane-1",
-            status: "running",
-            metadata: {
-              phaseKey: "planning",
-              phaseName: "Planning",
-              phaseAskQuestions: { enabled: true, maxQuestions: 2 },
-            },
-          },
-        ],
-        attempts: [{ id: "attempt-1", stepId: "step-plan-1", status: "running" }],
-        claims: [],
-        contextSnapshots: [],
-        handoffs: [],
-        timeline: [],
-        runtimeEvents: [],
-        completionEvaluation: { complete: false },
-      }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-      await initialize(handler, {
-        callerId: "attempt-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-plan-1",
-        attemptId: "attempt-1",
-      });
-      const response = await callTool(handler, "ask_user", {
-        missionId: "mission-1",
-        title: "Need product direction",
-        body: "Should the planner optimize for a lightweight patch or a more complete refactor?",
-      });
-
-      expect(response?.isError).toBeUndefined();
-      expect(fixture.runtime.missionService.addIntervention).toHaveBeenCalledWith(expect.objectContaining({
-        metadata: expect.objectContaining({
-          source: "ask_user",
-          runId: "run-1",
-          phase: "planning",
-          phaseName: "Planning",
-          stepId: "step-plan-1",
-          stepKey: "planning-worker",
-          questionOwnerKind: "planner",
-          questionOwnerLabel: "Planner question",
-        }),
-      }));
-      expect(response.structuredContent.awaitingUserResponse).toBe(true);
-      expect(response.structuredContent.blocking).toBe(true);
-    });
-  });
-
-  it("denies worker ask_user when the current phase disables questions", async () => {
-    await withEnv({ ADE_RUN_ID: "run-1" }, async () => {
-      const fixture = createRuntime();
-      fixture.runtime.orchestratorService.getRunGraph = vi.fn(() => ({
-      run: { id: "run-1", missionId: "mission-1", status: "running" },
-      steps: [
-        {
-          id: "step-dev-1",
-          stepKey: "development-worker",
-          laneId: "lane-1",
-          status: "running",
-          metadata: {
-            phaseKey: "development",
-            phaseName: "Development",
-            phaseAskQuestions: { enabled: false },
-          },
-        },
-      ],
-      attempts: [{ id: "attempt-1", stepId: "step-dev-1", status: "running" }],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: { complete: false },
-    }));
-      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-      await initialize(handler, {
-        callerId: "attempt-1",
-        role: "agent",
-        missionId: "mission-1",
-        runId: "run-from-identity",
-        stepId: "step-dev-1",
-        attemptId: "attempt-1",
-      });
-      const response = await callTool(handler, "ask_user", {
-        missionId: "mission-1",
-        title: "Need guidance",
-        body: "Should I stop and ask a development question?",
-      });
-
-      expect(response?.isError).toBe(true);
-      expect(JSON.stringify(response?.error ?? response?.structuredContent ?? {})).toContain("Ask Questions is disabled for this phase");
-      expect(fixture.runtime.missionService.addIntervention).not.toHaveBeenCalled();
-    });
-  });
 
   it("allows mutations for any session", async () => {
     const fixture = createRuntime();
@@ -4383,9 +2709,8 @@ describe("adeRpcServer", () => {
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "mission")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(false);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "cto_state")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "worker_agent")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "computer_use_artifacts")).toBe(true);
@@ -4527,61 +2852,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.result.config.budgets.unlimited).toBe(true);
   });
 
-  it("binds service method context when invoking dynamic ADE actions", async () => {
-    const fixture = createRuntime();
-    const missionService = fixture.runtime.missionService as any;
-    missionService.create = vi.fn(function (this: { get: (missionId: string) => unknown }, args: { prompt: string }) {
-      expect(args.prompt).toBe("smoke mission");
-      return this.get("mission-new");
-    });
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
 
-    const response = await callTool(handler, "run_ade_action", {
-      domain: "mission",
-      action: "create",
-      args: { prompt: "smoke mission" },
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(missionService.create).toHaveBeenCalledWith({ prompt: "smoke mission" });
-    expect(response.structuredContent.result).toMatchObject({ id: "mission-new", status: "running" });
-    expect(response.structuredContent.statusHints.missionId).toBe("mission-new");
-  });
-
-  it("compacts orchestrator ADE action results for runtime transport", async () => {
-    const fixture = createRuntime();
-    const docs = Array.from({ length: 16 }, (_, index) => ({
-      path: index === 0 ? ".ade/internal.md" : `docs/${index}.md`,
-      bytes: index + 1,
-      sha256: `sha-${index}`,
-    }));
-    fixture.runtime.orchestratorService.listRuns.mockReturnValueOnce([
-      {
-        id: "run-compact",
-        missionId: "mission-1",
-        status: "running",
-        metadata: { runtimeCursor: { docs } },
-      },
-    ]);
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const response = await callTool(handler, "run_ade_action", {
-      domain: "orchestrator_core",
-      action: "listRuns",
-      args: { limit: 10 },
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.orchestratorService.listRuns).toHaveBeenCalledWith({ limit: 10 });
-    const runs = response.structuredContent.result;
-    expect(runs).toHaveLength(1);
-    const cursor = runs[0].metadata.runtimeCursor;
-    expect(cursor.docs).toHaveLength(12);
-    expect(cursor.docs.map((entry: { path: string }) => entry.path)).not.toContain(".ade/internal.md");
-    expect(cursor.docsOmittedCount).toBe(4);
-  });
 
   it("does not expose unlisted service methods through dynamic ADE actions", async () => {
     const fixture = createRuntime();
@@ -4627,25 +2898,21 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("reads ADE action status snapshots across operation/test/chat/mission/run", async () => {
+  it("reads ADE action status snapshots across operation/test/chat/pr", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent", runId: "run-1", missionId: "mission-1" });
+    await initialize(handler, { callerId: "agent-1", role: "agent" });
 
     const response = await callTool(handler, "get_ade_action_status", {
       operationId: "op-1",
       testRunId: "test-run-1",
       chatSessionId: "chat-1",
-      runId: "run-1",
-      missionId: "mission-1",
       prId: "pr-1",
     });
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.operation.id).toBe("op-1");
     expect(response.structuredContent.testRun.id).toBe("test-run-1");
     expect(response.structuredContent.chatSession.sessionId).toBe("chat-1");
-    expect(response.structuredContent.runGraph.run.id).toBe("run-1");
-    expect(response.structuredContent.mission.id).toBe("mission-1");
     expect(response.structuredContent.pr.health.prId).toBe("pr-1");
     expect(typeof response.structuredContent.hash).toBe("string");
     expect(response.structuredContent.changed).toBe(true);
@@ -4654,8 +2921,6 @@ describe("adeRpcServer", () => {
       operationId: "op-1",
       testRunId: "test-run-1",
       chatSessionId: "chat-1",
-      runId: "run-1",
-      missionId: "mission-1",
       prId: "pr-1",
       previousHash: response.structuredContent.hash,
       waitForMs: 0,
@@ -4789,16 +3054,15 @@ describe("adeRpcServer", () => {
     // Create two independent sessions (simulating session recycling)
     const fixture1 = createRuntime();
     const handler1 = createAdeRpcRequestHandler({ runtime: fixture1.runtime, serverVersion: "test" });
-    await initialize(handler1);
+    await initialize(handler1, { callerId: "chat-1", role: "agent", chatSessionId: "chat-1" });
 
     const fixture2 = createRuntime();
     const handler2 = createAdeRpcRequestHandler({ runtime: fixture2.runtime, serverVersion: "test" });
-    await initialize(handler2);
+    await initialize(handler2, { callerId: "chat-2", role: "agent", chatSessionId: "chat-2" });
 
     // Fire 6 calls from session 1 (per-session limit)
     for (let i = 0; i < 6; i++) {
       const r = await callTool(handler1, "ask_user", {
-        missionId: "mission-1",
         title: `Question ${i}`,
         body: `Body ${i}`
       });
@@ -4807,7 +3071,6 @@ describe("adeRpcServer", () => {
 
     // Session 1 should be rate-limited (per-session: 6/min)
     const overLimit = await callTool(handler1, "ask_user", {
-      missionId: "mission-1",
       title: "Over limit",
       body: "Should fail"
     });
@@ -4818,7 +3081,6 @@ describe("adeRpcServer", () => {
     // but global limit is 20, so with 6 from session 1, session 2 can do 6 more
     for (let i = 0; i < 6; i++) {
       const r = await callTool(handler2, "ask_user", {
-        missionId: "mission-1",
         title: `S2 Question ${i}`,
         body: `S2 Body ${i}`
       });
@@ -5225,191 +3487,9 @@ describe("adeRpcServer", () => {
     expect(JSON.stringify(response.structuredContent ?? {})).toContain("suiteId or command");
   });
 
-  // ---------- Mission Lifecycle Tools ----------
-
-  it("routes create_mission with orchestration authorization", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "create_mission", {
-      prompt: "Build the authentication module",
-      title: "Auth Module",
-      priority: "high"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.mission.id).toBe("mission-new");
-    expect(response.structuredContent.mission.prompt).toBe("Build the authentication module");
-    expect(response.structuredContent.mission.status).toBe("planned");
-    expect(fixture.runtime.missionService.create).toHaveBeenCalledWith(
-      expect.objectContaining({ prompt: "Build the authentication module", title: "Auth Module", priority: "high" })
-    );
-    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "mission",
-        payload: expect.objectContaining({ type: "mission_created", missionId: "mission-new" })
-      })
-    );
-  });
-
-  it("routes start_mission and returns run info", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "start_mission", {
-      missionId: "mission-1",
-      runMode: "autopilot"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.runId).toBe("run-1");
-    expect(response.structuredContent.started.run.status).toBe("running");
-    expect(fixture.runtime.aiOrchestratorService.startMissionRun).toHaveBeenCalledWith(
-      expect.objectContaining({ missionId: "mission-1", runMode: "autopilot" })
-    );
-    expect(fixture.runtime.eventBuffer.push).toHaveBeenCalledWith(
-      expect.objectContaining({
-        category: "mission",
-        payload: expect.objectContaining({ type: "mission_started", missionId: "mission-1", runId: "run-1" })
-      })
-    );
-  });
-
-  it("routes pause_mission to orchestratorService.pauseRun", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "pause_mission", {
-      runId: "run-1",
-      reason: "User requested pause"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.run.id).toBe("run-1");
-    expect(response.structuredContent.run.status).toBe("paused");
-    expect(fixture.runtime.orchestratorService.pauseRun).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", reason: "User requested pause" })
-    );
-  });
-
-  it("routes resume_mission through aiOrchestratorService.resumeRun so coordinator runtime restarts", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "resume_mission", { runId: "run-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.run.id).toBe("run-1");
-    expect(response.structuredContent.run.status).toBe("running");
-    expect(fixture.runtime.aiOrchestratorService.resumeRun).toHaveBeenCalledWith({ runId: "run-1" });
-  });
-
-  it("routes cancel_mission to aiOrchestratorService.cancelRunGracefully", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "cancel_mission", {
-      runId: "run-1",
-      reason: "No longer needed"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.cancelled).toBe(true);
-    expect(response.structuredContent.runId).toBe("run-1");
-    expect(fixture.runtime.aiOrchestratorService.cancelRunGracefully).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", reason: "No longer needed" })
-    );
-  });
-
-  it("routes steer_mission with directive", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "steer_mission", {
-      missionId: "mission-1",
-      directive: "Focus on API layer first",
-      interventionId: "intervention-1",
-      resolutionKind: "answer_provided",
-      targetStepKey: "step-a",
-      priority: "instruction"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.acknowledged).toBe(true);
-    expect(fixture.runtime.aiOrchestratorService.steerMission).toHaveBeenCalledWith(
-      expect.objectContaining({
-        missionId: "mission-1",
-        directive: "Focus on API layer first",
-        interventionId: "intervention-1",
-        resolutionKind: "answer_provided",
-        priority: "instruction",
-        targetStepKey: "step-a"
-      })
-    );
-  });
-
-  it("routes resolve_intervention with status", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "resolve_intervention", {
-      missionId: "mission-1",
-      interventionId: "intervention-1",
-      status: "resolved",
-      resolutionKind: "skip_question",
-      note: "Issue addressed"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.intervention.id).toBe("intervention-1");
-    expect(response.structuredContent.intervention.status).toBe("resolved");
-    expect(fixture.runtime.missionService.resolveIntervention).toHaveBeenCalledWith(
-      expect.objectContaining({
-        missionId: "mission-1",
-        interventionId: "intervention-1",
-        status: "resolved",
-        resolutionKind: "skip_question",
-        note: "Issue addressed"
-      })
-    );
-  });
-
   // ---------- Observation Tools ----------
 
-  it("routes get_mission to missionService.get", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_mission", { missionId: "mission-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.mission.id).toBe("mission-1");
-    expect(fixture.runtime.missionService.get).toHaveBeenCalledWith("mission-1");
-  });
-
-  it("routes get_run_graph to orchestratorService.getRunGraph", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_run_graph", { runId: "run-1", timelineLimit: 50 });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.graph.run.id).toBe("run-1");
-    expect(response.structuredContent.graph.steps).toHaveLength(1);
-    expect(response.structuredContent.graph.completionEvaluation.complete).toBe(true);
-    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", timelineLimit: 50 })
-    );
-  });
 
   it("routes stream_events to eventBuffer.drain", async () => {
     const fixture = createRuntime();
@@ -5425,264 +3505,19 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.eventBuffer.drain).toHaveBeenCalledWith(0, 50);
   });
 
-  it("routes get_step_output and filters attempts by step", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_step_output", {
-      runId: "run-1",
-      stepKey: "step-a"
-    });
 
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.step.stepKey).toBe("step-a");
-    expect(response.structuredContent.attempts).toHaveLength(1);
-    expect(response.structuredContent.attempts[0].stepId).toBe("step-1");
-    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", timelineLimit: 0 })
-    );
-  });
 
-  it("routes get_step_output returns error for unknown step", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_step_output", {
-      runId: "run-1",
-      stepKey: "nonexistent-step"
-    });
 
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.structuredContent ?? {})).toContain("Step not found");
-  });
 
-  it("routes get_worker_states to aiOrchestratorService.getWorkerStates", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    fixture.runtime.orchestratorService.getRunGraph.mockReturnValueOnce({
-      run: { id: "run-1", missionId: "mission-1", status: "running" },
-      steps: [
-        { id: "step-1", stepKey: "step-a", laneId: "lane-1", title: "Worker", status: "completed", retryCount: 0, metadata: {} },
-        { id: "task-1", stepKey: "task-a", laneId: null, title: "Display task", status: "pending", retryCount: 0, metadata: { isTask: true } },
-        { id: "system-1", stepKey: "system-a", laneId: null, title: "System", status: "pending", retryCount: 0, metadata: { systemManaged: true } },
-        { id: "tracker-1", stepKey: "tracker-a", laneId: null, title: "Tracker", status: "pending", retryCount: 0, metadata: { plannerLaunchTracker: true } },
-        { id: "planner-1", stepKey: "__planner__", laneId: null, title: "Planner", status: "succeeded", retryCount: 0, metadata: {} },
-      ],
-      attempts: [{ id: "attempt-1", stepId: "step-1", status: "completed" }],
-      claims: [],
-      contextSnapshots: [],
-      handoffs: [],
-      timeline: [],
-      runtimeEvents: [],
-      completionEvaluation: null,
-    });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_worker_states", { runId: "run-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.runId).toBe("run-1");
-    expect(response.structuredContent.workers).toHaveLength(1);
-    expect(response.structuredContent.workers[0].state).toBe("running");
-    expect(response.structuredContent.runWorkers).toHaveLength(1);
-    expect(response.structuredContent.runWorkers[0]).toMatchObject({
-      workerId: "step-a",
-      status: "completed",
-    });
-    expect(fixture.runtime.aiOrchestratorService.getWorkerStates).toHaveBeenCalledWith({ runId: "run-1" });
-    expect(fixture.runtime.orchestratorService.getRunGraph).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", timelineLimit: 0 })
-    );
-  });
-
-  it("routes get_timeline to orchestratorService.listTimeline", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_timeline", { runId: "run-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.timeline).toHaveLength(2);
-    expect(response.structuredContent.timeline[0].eventType).toBe("run_started");
-    expect(fixture.runtime.orchestratorService.listTimeline).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-1", limit: 300 })
-    );
-  });
-
-  it("routes get_timeline with stepId filter", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_timeline", { runId: "run-1", stepId: "step-1" });
-
-    expect(response?.isError).toBeUndefined();
-    // Only the entry with stepId "step-1" should be returned
-    expect(response.structuredContent.timeline).toHaveLength(1);
-    expect(response.structuredContent.timeline[0].stepId).toBe("step-1");
-  });
-
-  it("routes get_mission_metrics to aiOrchestratorService.getMissionMetrics", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_mission_metrics", { missionId: "mission-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.metrics.missionId).toBe("mission-1");
-    expect(response.structuredContent.metrics.samples).toEqual([]);
-    expect(fixture.runtime.aiOrchestratorService.getMissionMetrics).toHaveBeenCalledWith({ missionId: "mission-1" });
-  });
-
-  it("routes get_final_diff with per-lane diffs", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_final_diff", { runId: "run-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.runId).toBe("run-1");
-    // The mock graph has one step with laneId "lane-1", so we should get diffs for that lane
-    expect(response.structuredContent.diffs["lane-1"]).toBeDefined();
-    expect(fixture.runtime.diffService.getChanges).toHaveBeenCalledWith("lane-1");
-  });
 
   // ---------- Evaluation Tools ----------
 
-  it("routes evaluate_run with evaluator authorization and writes to DB", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "evaluator" });
-    const response = await callTool(handler, "evaluate_run", {
-      runId: "run-1",
-      missionId: "mission-1",
-      scores: {
-        planQuality: 8,
-        parallelism: 7,
-        coordinatorDecisions: 9,
-        resourceEfficiency: 6,
-        outcomeQuality: 8
-      },
-      issues: [
-        {
-          category: "planning",
-          severity: "minor",
-          description: "Could have parallelized more",
-          recommendation: "Use wider lanes"
-        }
-      ],
-      summary: "Good overall execution with minor planning gaps",
-      improvements: ["Increase lane parallelism"],
-      metadata: { evaluatorVersion: "1.0" }
-    });
 
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.runId).toBe("run-1");
-    expect(response.structuredContent.missionId).toBe("mission-1");
-    expect(response.structuredContent.scores.planQuality).toBe(8);
-    expect(response.structuredContent.summary).toBe("Good overall execution with minor planning gaps");
-    expect(response.structuredContent.id).toBeTruthy();
-    expect(response.structuredContent.evaluatedAt).toBeTruthy();
-    expect(fixture.runtime.db.run).toHaveBeenCalledTimes(1);
-    // Verify the INSERT call has the correct SQL and the run_id parameter
-    const runCallArgs = fixture.runtime.db.run.mock.calls[0];
-    expect(runCallArgs[0]).toContain("INSERT INTO orchestrator_evaluations");
-    expect(runCallArgs[1]).toContain("run-1");
-    expect(runCallArgs[1]).toContain("mission-1");
-  });
 
-  it("routes list_evaluations and returns summaries", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "list_evaluations", {
-      missionId: "mission-1",
-      limit: 10
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.evaluations).toHaveLength(1);
-    expect(response.structuredContent.evaluations[0].id).toBe("eval-1");
-    expect(response.structuredContent.evaluations[0].scores.planQuality).toBe(8);
-    expect(response.structuredContent.evaluations[0].issueCount).toBe(0);
-    expect(response.structuredContent.evaluations[0].summary).toBe("Good run");
-    expect(fixture.runtime.db.all).toHaveBeenCalled();
-  });
-
-  it("routes get_evaluation_report with run context", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-    const response = await callTool(handler, "get_evaluation_report", { evaluationId: "eval-1" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.evaluation.id).toBe("eval-1");
-    expect(response.structuredContent.evaluation.runId).toBe("run-1");
-    expect(response.structuredContent.evaluation.scores.planQuality).toBe(8);
-    expect(response.structuredContent.evaluation.summary).toBe("Good run");
-    // run context should be populated from orchestratorService.getRunGraph
-    expect(response.structuredContent.runContext).toBeDefined();
-    expect(response.structuredContent.runContext.run.id).toBe("run-1");
-    expect(response.structuredContent.runContext.stepCount).toBe(1);
-    expect(response.structuredContent.runContext.attemptCount).toBe(1);
-  });
-
-  it("evaluator gets reads + orchestration + evaluation", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "evaluator" });
-
-    // Read-only observation tool should work
-    const readResponse = await callTool(handler, "get_mission", { missionId: "mission-1" });
-    expect(readResponse?.isError).toBeUndefined();
-
-    // Orchestration tool should work
-    const orchResponse = await callTool(handler, "pause_mission", { runId: "run-1" });
-    expect(orchResponse?.isError).toBeUndefined();
-
-    // Evaluation tool should work
-    const evalResponse = await callTool(handler, "evaluate_run", {
-      runId: "run-1",
-      missionId: "mission-1",
-      scores: { planQuality: 8, parallelism: 7, coordinatorDecisions: 9, resourceEfficiency: 6, outcomeQuality: 8 },
-      issues: [],
-      summary: "Test"
-    });
-    expect(evalResponse?.isError).toBeUndefined();
-  });
-
-  it("any session can access observation tools", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { role: "external" });
-
-    // Observation tools should be accessible
-    const missionResp = await callTool(handler, "get_mission", { missionId: "mission-1" });
-    expect(missionResp?.isError).toBeUndefined();
-
-    const graphResp = await callTool(handler, "get_run_graph", { runId: "run-1" });
-    expect(graphResp?.isError).toBeUndefined();
-
-    const timelineResp = await callTool(handler, "get_timeline", { runId: "run-1" });
-    expect(timelineResp?.isError).toBeUndefined();
-
-    // Evaluation read tools should also be accessible
-    const listResp = await callTool(handler, "list_evaluations", {});
-    expect(listResp?.isError).toBeUndefined();
-
-    const reportResp = await callTool(handler, "get_evaluation_report", { evaluationId: "eval-1" });
-    expect(reportResp?.isError).toBeUndefined();
-  });
 
   // ---------- Event Streaming Tests ----------
 
@@ -5725,7 +3560,7 @@ describe("adeRpcServer", () => {
     fixture.runtime.eventBuffer.drain = vi.fn((cursor: number) => ({
       events: [
         { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_started" } },
-        { id: cursor + 2, timestamp: new Date().toISOString(), category: "mission", payload: { type: "mission_created" } },
+        { id: cursor + 2, timestamp: new Date().toISOString(), category: "runtime", payload: { type: "terminal_session_changed" } },
         { id: cursor + 3, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "step_completed" } }
       ],
       nextCursor: cursor + 3,
@@ -5809,8 +3644,8 @@ describe("adeRpcServer", () => {
         {
           id: cursor + 4,
           timestamp: new Date().toISOString(),
-          category: "mission",
-          payload: { type: "mission_created" }
+          category: "pty",
+          payload: { type: "pty_exit" }
         }
       ],
       nextCursor: cursor + 4,
@@ -5855,7 +3690,6 @@ describe("adeRpcServer", () => {
           role: "external",
           chatSessionId: null,
           standaloneChatSession: false,
-          missionId: null,
           runId: null,
           stepId: null,
           attemptId: null,

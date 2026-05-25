@@ -7,7 +7,7 @@ description: Use this skill when the user asks for proof, screenshots, video, ar
 
 ## Rule
 
-When the user asks to capture, send, attach, or provide proof, create evidence with the relevant tool, then register it through ADE so it appears in the proof drawer for the active chat, mission, or lane.
+When the user asks to capture, send, attach, or provide proof, create evidence with the relevant tool, then register it through ADE so it appears in the proof drawer for the active chat or lane.
 
 ## Commands
 
@@ -30,4 +30,3 @@ ade help proof
 - Do not leave proof as an unregistered local file when the user expects ADE to show it.
 - Include enough context in the artifact name/description to understand what was verified.
 - Clean up stale processes you started before declaring proof complete.
-

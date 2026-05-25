@@ -58,8 +58,6 @@ import type {
   LinearAutoDispatchAction,
   LinearSyncConfig,
   ModelConfig,
-  MissionModelConfig,
-  MissionPermissionConfig,
   NotificationsConfig,
   NotificationApnsConfig,
   ProjectIdentityConfig,
@@ -84,12 +82,10 @@ const AUTOMATION_TOOL_FAMILIES: AutomationToolFamily[] = [
   "github",
   "linear",
   "browser",
-  "mission",
 ];
 const AUTOMATION_TRIGGER_TYPE_SET = new Set<string>(AUTOMATION_TRIGGER_TYPES);
 const AUTOMATION_ACTION_TYPE_SET = new Set<string>([
   "agent-session",
-  "launch-mission",
   "predict-conflicts",
   "run-tests",
   "run-command",
@@ -500,7 +496,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const sessionTitle = asString(value.sessionTitle);
   const modelConfig = coerceModelConfig(value.modelConfig);
   const codexFastMode = asBool(value.codexFastMode);
-  const permissionConfig = coerceMissionPermissionConfig(value.permissionConfig);
+  const permissionConfig = coerceAutomationPermissionConfig(value.permissionConfig);
 
   if (targetLaneId) out.targetLaneId = targetLaneId;
   if (suiteId != null) out.suiteId = suiteId;
@@ -538,7 +534,7 @@ function coerceRunAdeActionConfig(value: unknown): AutomationAction["adeAction"]
 function coerceAutomationExecution(value: unknown): AutomationExecution | undefined {
   if (!isRecord(value)) return undefined;
   const kindRaw = asString(value.kind)?.trim() ?? "";
-  const kind = kindRaw === "agent-session" || kindRaw === "mission" || kindRaw === "built-in"
+  const kind = kindRaw === "agent-session" || kindRaw === "built-in"
     ? kindRaw
     : null;
   if (!kind) return undefined;
@@ -584,18 +580,6 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
     };
   }
 
-  if (kind === "mission") {
-    const mission = isRecord(value.mission) && asString(value.mission.title)?.trim()
-      ? { title: asString(value.mission.title)!.trim() }
-      : undefined;
-    return {
-      kind,
-      ...sharedLaneFields,
-      ...(targetLaneId ? { targetLaneId } : {}),
-      ...(mission ? { mission } : {}),
-    };
-  }
-
   const actions = isRecord(value.builtIn) && Array.isArray(value.builtIn.actions)
     ? value.builtIn.actions.map(coerceAutomationAction).filter((x): x is AutomationAction => x != null)
     : [];
@@ -630,36 +614,17 @@ function coerceAutomationExecutor(value: unknown): AutomationExecutor | undefine
   };
 }
 
-function coerceMissionModelConfig(value: unknown): MissionModelConfig | undefined {
-  if (!isRecord(value) || !isRecord(value.orchestratorModel)) return undefined;
-  const modelId = asString(value.orchestratorModel.modelId)?.trim();
-  if (!modelId) return undefined;
-  return {
-    ...(asString(value.profileId)?.trim() ? { profileId: asString(value.profileId)!.trim() } : {}),
-    orchestratorModel: {
-      ...(asString(value.orchestratorModel.provider)?.trim()
-        ? { provider: asString(value.orchestratorModel.provider)!.trim() }
-        : {}),
-      modelId,
-      ...(asString(value.orchestratorModel.thinkingLevel)?.trim()
-        ? { thinkingLevel: asString(value.orchestratorModel.thinkingLevel)!.trim() as MissionModelConfig["orchestratorModel"]["thinkingLevel"] }
-        : {}),
-    },
-    ...(asNumber(value.decisionTimeoutCapHours) != null
-      ? { decisionTimeoutCapHours: asNumber(value.decisionTimeoutCapHours) as MissionModelConfig["decisionTimeoutCapHours"] }
-      : {}),
-  };
-}
+type AutomationPermissionConfig = NonNullable<AutomationRule["permissionConfig"]>;
 
-function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig | undefined {
+function coerceAutomationPermissionConfig(value: unknown): AutomationPermissionConfig | undefined {
   if (!isRecord(value)) return undefined;
   const cli = isRecord(value.cli)
     ? {
-        ...(asString(value.cli.mode)?.trim() ? { mode: asString(value.cli.mode)!.trim() as NonNullable<MissionPermissionConfig["cli"]>["mode"] } : {}),
+        ...(asString(value.cli.mode)?.trim() ? { mode: asString(value.cli.mode)!.trim() as NonNullable<AutomationPermissionConfig["cli"]>["mode"] } : {}),
         ...(asString(value.cli.sandboxPermissions)?.trim()
           ? {
               sandboxPermissions:
-                asString(value.cli.sandboxPermissions)!.trim() as NonNullable<MissionPermissionConfig["cli"]>["sandboxPermissions"]
+                asString(value.cli.sandboxPermissions)!.trim() as NonNullable<AutomationPermissionConfig["cli"]>["sandboxPermissions"]
             }
           : {}),
         ...(asStringArray(value.cli.writablePaths)?.length ? { writablePaths: asStringArray(value.cli.writablePaths) } : {}),
@@ -667,23 +632,23 @@ function coerceMissionPermissionConfig(value: unknown): MissionPermissionConfig 
       }
     : undefined;
   const inProcess = isRecord(value.inProcess) && asString(value.inProcess.mode)?.trim()
-    ? { mode: asString(value.inProcess.mode)!.trim() as NonNullable<MissionPermissionConfig["inProcess"]>["mode"] }
+    ? { mode: asString(value.inProcess.mode)!.trim() as NonNullable<AutomationPermissionConfig["inProcess"]>["mode"] }
     : undefined;
   const providers = isRecord(value.providers)
     ? {
         ...(asString(value.providers.claude)?.trim()
-          ? { claude: asString(value.providers.claude)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["claude"] }
+          ? { claude: asString(value.providers.claude)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["claude"] }
           : {}),
         ...(asString(value.providers.codex)?.trim()
-          ? { codex: asString(value.providers.codex)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["codex"] }
+          ? { codex: asString(value.providers.codex)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["codex"] }
           : {}),
         ...(asString(value.providers.opencode)?.trim()
-          ? { opencode: asString(value.providers.opencode)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["opencode"] }
+          ? { opencode: asString(value.providers.opencode)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["opencode"] }
           : {}),
         ...(asString(value.providers.codexSandbox)?.trim()
           ? {
               codexSandbox:
-                asString(value.providers.codexSandbox)!.trim() as NonNullable<MissionPermissionConfig["providers"]>["codexSandbox"]
+                asString(value.providers.codexSandbox)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["codexSandbox"]
             }
           : {}),
         ...(asStringArray(value.providers.writablePaths)?.length ? { writablePaths: asStringArray(value.providers.writablePaths) } : {}),
@@ -796,8 +761,8 @@ function coerceAutomationRule(value: unknown): ConfigAutomationRule | null {
     : undefined;
   const execution = coerceAutomationExecution(value.execution);
   const executor = coerceAutomationExecutor(value.executor);
-  const modelConfig = coerceMissionModelConfig(value.modelConfig);
-  const permissionConfig = coerceMissionPermissionConfig(value.permissionConfig);
+  const modelConfig = coerceModelConfig(value.modelConfig);
+  const permissionConfig = coerceAutomationPermissionConfig(value.permissionConfig);
   const templateId = asString(value.templateId);
   const prompt = asString(value.prompt);
   const reviewProfileRaw = asString(value.reviewProfile)?.trim();
@@ -1175,7 +1140,6 @@ const AI_TASK_KEYS: AiTaskRoutingKey[] = [
   "handoff_summary",
   "continuity_summary",
   "context_compaction",
-  "mission_planning",
   "initial_context"
 ];
 
@@ -1185,7 +1149,6 @@ const AI_FEATURE_KEYS: AiFeatureKey[] = [
   "commit_messages",
   "pr_descriptions",
   "terminal_summaries",
-  "mission_planning",
   "orchestrator",
   "initial_context"
 ];
@@ -1435,14 +1398,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
 
     const maxPerStepTokenBudget = asNumber(orchestratorRaw.maxPerStepTokenBudget);
     if (maxPerStepTokenBudget != null && maxPerStepTokenBudget > 0) orchestrator.maxPerStepTokenBudget = maxPerStepTokenBudget;
-
-    const defaultExecutionPolicy = isRecord(orchestratorRaw.defaultExecutionPolicy)
-      ? orchestratorRaw.defaultExecutionPolicy
-      : null;
-    if (defaultExecutionPolicy) {
-      orchestrator.defaultExecutionPolicy =
-        defaultExecutionPolicy as NonNullable<NonNullable<AiConfig["orchestrator"]>["defaultExecutionPolicy"]>;
-    }
 
     // Legacy defaultPlannerProvider is ignored -- use defaultOrchestratorModel instead.
 
@@ -1800,10 +1755,6 @@ function mergeAiOrchestrator(
   const orchestrator = {
     ...(sharedOrchestrator ?? {}),
     ...(localOrchestrator ?? {}),
-    defaultExecutionPolicy: {
-      ...(sharedOrchestrator?.defaultExecutionPolicy ?? {}),
-      ...(localOrchestrator?.defaultExecutionPolicy ?? {})
-    },
     hooks: {
       ...(sharedOrchestrator?.hooks ?? {}),
       ...(localOrchestrator?.hooks ?? {})
@@ -2274,7 +2225,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     const legacyTrigger = coerceAutomationTrigger(entry.trigger);
     const baseExecution = entry.execution ?? ((entry.actions?.length ?? 0) > 0
       ? { kind: "built-in" as const, builtIn: { actions: entry.actions ?? [] } }
-      : { kind: "mission" as const });
+      : { kind: "agent-session" as const, session: {} });
     // Lane-mode migration: legacy rules with a leading `create-lane` action collapse
     // into `execution.laneMode: "create"`, carrying the action's name template forward
     // as a "custom" preset. Rules without that action default to "reuse".
@@ -2329,7 +2280,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
       ...(entry.templateId?.trim() ? { templateId: entry.templateId.trim() } : {}),
       ...(entry.prompt?.trim() ? { prompt: entry.prompt.trim() } : {}),
       reviewProfile: entry.reviewProfile ?? "quick",
-      toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo", "mission"],
+      toolPalette: entry.toolPalette?.length ? [...new Set(entry.toolPalette)] : ["repo"],
       contextSources: entry.contextSources?.length ? entry.contextSources : [],
       guardrails: entry.guardrails ?? {},
       outputs: entry.outputs ?? { disposition: "comment-only", createArtifact: true },
@@ -2907,7 +2858,6 @@ function validateEffectiveConfig(
       issues.push({ path: `${p}.execution`, message: "Automation execution kind is required." });
     } else if (
       rule.execution.kind !== "agent-session"
-      && rule.execution.kind !== "mission"
       && rule.execution.kind !== "built-in"
     ) {
       issues.push({ path: `${p}.execution.kind`, message: `Unknown execution kind '${String((rule.execution as { kind?: unknown }).kind)}'` });

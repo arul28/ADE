@@ -3059,7 +3059,7 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
     }
     guard !workspace.readOnlyOnMobile else {
-      throw NSError(domain: "ADE", code: 119, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this mission."])
+      throw NSError(domain: "ADE", code: 119, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this workspace."])
     }
   }
 
@@ -6638,7 +6638,7 @@ final class SyncService: ObservableObject {
     case "chat":
       return NotificationCategories.Identifier.chatAwaitingInput
     case "cto":
-      return NotificationCategories.Identifier.ctoMissionPhase
+      return NotificationCategories.Identifier.ctoSubagentFinished
     case "pr":
       return NotificationCategories.Identifier.prReviewRequested
     default:
@@ -7803,7 +7803,6 @@ extension SyncService {
       "cto": [
         "subagentStarted": prefs.ctoSubagentStarted,
         "subagentFinished": prefs.ctoSubagentFinished,
-        "missionPhaseChanged": prefs.ctoMissionPhase,
       ],
       "prs": [
         "ciFailing": prefs.prCiFailing,

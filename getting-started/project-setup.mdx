@@ -42,7 +42,7 @@ Connect at least one AI provider so agents can run. ADE supports:
 ADE runs a health check on each provider. A green indicator means the provider is ready; amber means the CLI is installed but not authenticated; red means the key is invalid or the CLI is missing.
 
 <Tip>
-Start with one provider. You can add more any time in **Settings → AI**. Anthropic (Claude) is recommended for the most complete ADE experience — it works with chat, missions, CTO, and automations out of the box.
+Start with one provider. You can add more any time in **Settings → AI**. Anthropic (Claude) is recommended for the most complete ADE experience — it works with chat, worker runs, CTO, and automations out of the box.
 </Tip>
 
 ---
@@ -91,7 +91,7 @@ Connect Linear for bidirectional issue tracking between ADE and your Linear work
 | **Sync direction** | Bidirectional (default), read-only, or disabled |
 | **Default team** | Which Linear team receives new issues from ADE |
 
-When connected, the CTO agent can read Linear issues, update status, and create new issues. Missions can link to Linear issues for full traceability.
+When connected, the CTO agent can read Linear issues, update status, and create new issues. Workers can link to Linear issues for full traceability.
 
 <Tip>
 Linear integration is most valuable when paired with the CTO agent. The CTO can ingest new Linear issues and automatically delegate them to worker agents in dedicated lanes.
@@ -108,7 +108,7 @@ Once you finish (or skip) the wizard, ADE takes you to the **Run** tab. From her
     Fork a task into its own isolated worktree.
   </Card>
   <Card title="Start your first agent" icon="robot" href="/getting-started/first-agent">
-    Use chat for a quick task or launch a mission for structured execution.
+    Use chat for a quick task or launch a worker run for structured execution.
   </Card>
   <Card title="Set up managed processes" icon="play" href="/tools/project-home">
     Configure your dev stack so ADE can start everything with one button.

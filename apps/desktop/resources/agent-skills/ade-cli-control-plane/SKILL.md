@@ -7,7 +7,7 @@ description: Use this skill when an agent needs to inspect or operate ADE itself
 
 ## Core rule
 
-Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, missions, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, macOS VM, settings, usage, updates, or service actions.
+Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, macOS VM, settings, usage, updates, or service actions.
 
 ## First checks
 

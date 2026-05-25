@@ -184,7 +184,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     if (!active || surface !== "activity") return;
     // Tight polling only refreshes the cheap operations feed; supplemental sources
-    // (missions, CTO, worker runs) refresh on focus/visibility change instead.
+    // Supplemental sources refresh on focus/visibility change instead.
     const tightRefresh = () => {
       if (document.visibilityState !== "visible") return;
       void fetchEvents({ silent: true, skipSupplemental: true });

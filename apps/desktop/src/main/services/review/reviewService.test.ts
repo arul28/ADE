@@ -334,37 +334,14 @@ function makeContextPacket(overrides: Partial<Record<string, any>> = {}) {
   return {
     matchedRuleOverlays: [],
     provenance: {
-      summary: "1 mission, 1 late-stage signal",
-      prompt: "- Mission: keep renderer and preload behavior aligned.\n- Late-stage signal: recent validation failed on src/review.ts",
+      summary: "1 late-stage signal",
+      prompt: "- Lane agent summary: keep renderer and preload behavior aligned.\n- Late-stage signal: recent validation failed on src/review.ts",
       payload: {
         changedPaths: ["src/review.ts"],
         laneSnapshot: {
           updatedAt: "2026-04-06T09:58:00.000Z",
           agentSummary: "Recent ADE chat focused on restoring the review fallback path.",
-          missionSummary: "Finish the review engine rollout cleanly.",
         },
-        missions: [
-          {
-            id: "mission-1",
-            title: "Restore review fallback behavior",
-            status: "running",
-            outcomeSummary: null,
-            intentSummary: "Keep fallback behavior and ship the review engine safely.",
-            updatedAt: "2026-04-06T09:59:00.000Z",
-          },
-        ],
-        workerDigests: [
-          {
-            id: "digest-1",
-            stepKey: "implement",
-            status: "succeeded",
-            summary: "Updated the review engine behavior.",
-            filesChanged: ["src/review.ts"],
-            testsSummary: "1 failed",
-            warnings: [],
-            createdAt: "2026-04-06T10:00:00.000Z",
-          },
-        ],
         sessionDeltas: [
           {
             sessionId: "session-delta-1",
@@ -398,10 +375,8 @@ function makeContextPacket(overrides: Partial<Record<string, any>> = {}) {
         ],
       },
       metadata: {
-        summary: "1 mission, 1 worker digest, 1 session delta, 1 late-stage signal",
-        provenanceCount: 4,
-        missionCount: 1,
-        workerDigestCount: 1,
+        summary: "1 session delta, 1 late-stage signal",
+        provenanceCount: 3,
         sessionDeltaCount: 1,
         priorReviewCount: 1,
         lateStageSignalCount: 1,
@@ -1078,8 +1053,6 @@ describe("reviewService", () => {
         payload: {
           changedPaths: ["src/review.ts"],
           laneSnapshot: null,
-          missions: [],
-          workerDigests: [],
           sessionDeltas: [],
           priorReviews: [],
           lateStageSignals: [],
@@ -1087,8 +1060,6 @@ describe("reviewService", () => {
         metadata: {
           summary: "No ADE provenance context",
           provenanceCount: 0,
-          missionCount: 0,
-          workerDigestCount: 0,
           sessionDeltaCount: 0,
           priorReviewCount: 0,
           lateStageSignalCount: 0,

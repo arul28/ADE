@@ -3,7 +3,6 @@ import {
   buildApnsPayload,
   isAllowedByPrefs,
   mapChatEvent,
-  mapMissionEvent,
   mapPrEvent,
   mapSystemEvent,
   type MappedNotification,
@@ -131,13 +130,7 @@ describe("mapPrEvent", () => {
   });
 });
 
-describe("mapMissionEvent + mapSystemEvent", () => {
-  it("maps mission phase change to CTO category", () => {
-    const [mapped] = mapMissionEvent({ missionId: "m-1", phase: "development", message: "Entered development" });
-    expect(mapped.category).toBe("CTO_MISSION_PHASE");
-    expect(mapped.deepLink).toBe("ade://mission/m-1");
-  });
-
+describe("mapSystemEvent", () => {
   it("maps system auth_rate_limit to priority-10 alert", () => {
     const [mapped] = mapSystemEvent({
       kind: "auth_rate_limit",

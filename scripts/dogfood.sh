@@ -5,7 +5,7 @@
 #   ./scripts/dogfood.sh                  # run from main repo
 #   ./scripts/dogfood.sh <lane-name>      # run code from a lane's worktree
 #
-# Both instances share the same DB (lanes, missions, configs stay in sync).
+# Both instances share the same DB (lanes, configs, and runtime state stay in sync).
 # The dogfood instance uses an isolated ADE CLI socket. The sync host stays enabled
 # by default and will retry alternate ports if your primary ADE window already
 # owns the default port, which keeps mobile pairing usable while dogfooding.

@@ -74,7 +74,6 @@ const TOOL_META: Record<string, ToolMeta> = {
   request_specialist: { label: "Specialist", icon: User, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.role ?? a.name ?? "") || null },
   delegate_to_subagent: { label: "Delegate", icon: User, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.name ?? a.parentWorkerId ?? "") || null },
   delegate_parallel: { label: "Delegate Batch", icon: User, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => `${Array.isArray(a.tasks) ? a.tasks.length : 0} task(s)` },
-  read_mission_status: { label: "Mission Status", icon: MagnifyingGlass, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },
   get_worker_output: { label: "Worker Output", icon: FileCode, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent", getTarget: a => String(a.workerId ?? "") || null },
   revise_plan: { label: "Revise Plan", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },
   retry_step: { label: "Retry", icon: ArrowSquareOut, badgeCls: "border-amber-400/25 bg-amber-400/12 text-amber-200", category: "meta", sourceTone: "warning", getTarget: a => String(a.workerId ?? "") || null },

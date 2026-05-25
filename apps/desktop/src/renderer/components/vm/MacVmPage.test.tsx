@@ -47,7 +47,6 @@ const baseLane: LaneSummary = {
   color: null,
   icon: null,
   tags: [],
-  missionId: null,
 } as LaneSummary;
 
 const emptyStatus: MacosVmStatus = {

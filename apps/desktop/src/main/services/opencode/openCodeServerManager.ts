@@ -1095,7 +1095,7 @@ function enforceDedicatedBudget(
   const candidate = pickDedicatedEvictionCandidate(excludeKey);
   if (!candidate) {
     throw new Error(
-      `OpenCode runtime limit reached (${MAX_DEDICATED_OPENCODE_SERVERS} dedicated servers). Close or wait for an idle chat/mission runtime before starting another OpenCode session.`,
+      `OpenCode runtime limit reached (${MAX_DEDICATED_OPENCODE_SERVERS} dedicated servers). Close or wait for an idle chat runtime before starting another OpenCode session.`,
     );
   }
   candidate.onEvict?.("budget_eviction");

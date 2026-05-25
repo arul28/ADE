@@ -34,7 +34,6 @@ docs/
     ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # dispatch, sync, workflow presets
-    ├── missions/                          # orchestration, validation gates, workers
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
@@ -54,6 +53,6 @@ docs/
 
 ## Relationship to the public (Mintlify) docs
 
-`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./missions/`, etc.). That site is user-facing and separate.
+`docs.json` at the repo root configures the public-facing Mintlify docs site (`.mdx` files under `./chat/`, `./tools/`, `./cto/`, etc.). That site is user-facing and separate.
 
 **This folder (`docs/`) is internal-only** — for engineers and AI agents working on ADE itself.
