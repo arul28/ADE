@@ -2977,14 +2977,22 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     },
     applyChanges: (changes: CrsqlChangeRow[]) => {
       if (!crsqliteLoaded) return { appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false };
+      const actionableChanges = changes.filter(
+        (change) => !isIgnoredIncomingSyncTable(db, change.table),
+      );
+      if (actionableChanges.length === 0) {
+        return {
+          appliedCount: 0,
+          dbVersion: sync.getDbVersion(),
+          touchedTables: [],
+          rebuiltFts: false,
+        };
+      }
       let appliedCount = 0;
       const touchedTables = new Set<string>();
       runStatement(db, "begin");
       try {
-        for (const rawChange of changes) {
-          if (isIgnoredIncomingSyncTable(db, rawChange.table)) {
-            continue;
-          }
+        for (const rawChange of actionableChanges) {
           const change = normalizeIncomingCrsqlChange(db, rawChange);
           const result = runStatement(
             db,

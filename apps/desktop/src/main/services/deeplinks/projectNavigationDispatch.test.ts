@@ -35,9 +35,9 @@ describe("project-scoped deeplink dispatch contract", () => {
 
   it("falls back to focused-window dispatch when project dispatch is unavailable", () => {
     const focusedDispatch = vi.fn();
-    const dispatchAppNavigationForProjectRoot:
+    const getProjectDispatch = ():
       | ((targetProjectRoot: string, request: AppNavigationRequest) => void)
-      | null = null;
+      | null => null;
 
     const request: AppNavigationRequest = {
       target: { kind: "lane", laneId: "lane-1" },
@@ -45,7 +45,7 @@ describe("project-scoped deeplink dispatch contract", () => {
     };
 
     const dispatchSyncDeeplink = (req: AppNavigationRequest) => {
-      const projectDispatch = dispatchAppNavigationForProjectRoot;
+      const projectDispatch = getProjectDispatch();
       if (projectDispatch) {
         projectDispatch("/projects/beta", req);
         return;

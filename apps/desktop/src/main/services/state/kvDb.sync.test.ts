@@ -192,8 +192,11 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
       seq: 1,
     };
 
-    expect(() => db2.sync.applyChanges([legacyChange as any])).not.toThrow();
-    expect(db2.sync.getDbVersion()).toBe(0);
+    const beforeVersion = db2.sync.getDbVersion();
+    const result = db2.sync.applyChanges([legacyChange as any]);
+    expect(result.appliedCount).toBe(0);
+    expect(result.touchedTables).toEqual([]);
+    expect(db2.sync.getDbVersion()).toBe(beforeVersion);
 
     db2.close();
   });

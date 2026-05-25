@@ -1270,7 +1270,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(projectBStates).not.toContainEqual(
       expect.objectContaining({ openItemIds: [] }),
     );
-    expect(fakeAppStoreState.sessionsCacheByProject["/project/b"]).toEqual([sessionB]);
+    expect((fakeAppStoreState.sessionsCacheByProject as Record<string, unknown>)["/project/b"]).toEqual([sessionB]);
   });
 
   it("refetches after a session metadata update arrives", async () => {
